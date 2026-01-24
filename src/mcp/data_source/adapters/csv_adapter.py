@@ -82,7 +82,7 @@ class CSVAdapter(BaseSourceAdapter):
         # - ignore_errors=true: Mixed types become VARCHAR instead of failing
         # - null_padding=true: Handle rows with fewer columns gracefully
         conn.execute(f"""
-            CREATE OR REPLACE TABLE imported_data AS
+            CREATE OR REPLACE TABLE _raw_import AS
             SELECT * FROM read_csv(
                 '{file_path}',
                 auto_detect = true,
@@ -93,6 +93,22 @@ class CSVAdapter(BaseSourceAdapter):
                 header = {str(header).lower()}
             )
         """)
+
+        # Get column names to build the "all NULL" filter
+        raw_columns = conn.execute("DESCRIBE _raw_import").fetchall()
+        col_names = [col[0] for col in raw_columns]
+
+        # Filter out rows where ALL columns are NULL (empty rows)
+        # Per CONTEXT.md: "silent skip for empty rows"
+        null_checks = " AND ".join([f'"{col}" IS NULL' for col in col_names])
+        conn.execute(f"""
+            CREATE OR REPLACE TABLE imported_data AS
+            SELECT * FROM _raw_import
+            WHERE NOT ({null_checks})
+        """)
+
+        # Clean up temporary table
+        conn.execute("DROP TABLE IF EXISTS _raw_import")
 
         # Get schema from DuckDB DESCRIBE
         schema_rows = conn.execute("DESCRIBE imported_data").fetchall()
