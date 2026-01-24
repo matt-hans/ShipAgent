@@ -62,10 +62,20 @@ mcp = FastMCP("DataSource", lifespan=lifespan)
 
 
 # Import and register tools
-from src.mcp.data_source.tools.import_tools import import_csv
+from src.mcp.data_source.tools.import_tools import (
+    import_csv,
+    import_database,
+    import_excel,
+    list_sheets,
+    list_tables,
+)
 
-# Register as MCP tool using decorator pattern
+# Register as MCP tools using decorator pattern
 mcp.tool()(import_csv)
+mcp.tool()(import_database)
+mcp.tool()(import_excel)
+mcp.tool()(list_sheets)
+mcp.tool()(list_tables)
 
 
 if __name__ == "__main__":
