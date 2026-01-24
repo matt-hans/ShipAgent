@@ -69,6 +69,11 @@ from src.mcp.data_source.tools.import_tools import (
     list_sheets,
     list_tables,
 )
+from src.mcp.data_source.tools.query_tools import (
+    get_row,
+    get_rows_by_filter,
+    query_data,
+)
 from src.mcp.data_source.tools.schema_tools import (
     get_schema,
     override_column_type,
@@ -80,6 +85,9 @@ mcp.tool()(import_database)
 mcp.tool()(import_excel)
 mcp.tool()(list_sheets)
 mcp.tool()(list_tables)
+mcp.tool()(get_row)
+mcp.tool()(get_rows_by_filter)
+mcp.tool()(query_data)
 mcp.tool()(get_schema)
 mcp.tool()(override_column_type)
 
