@@ -13,12 +13,12 @@
 ## Current Position
 
 **Phase:** 3 of 7 (UPS Integration MCP) - IN PROGRESS
-**Plan:** 4 of 6 complete
+**Plan:** 5 of 6 complete
 **Status:** In progress
 
 ```
-Progress: [###############-----] 75%
-Phase 3 of 7 | Plan 4 of 6 complete
+Progress: [#################---] 85%
+Phase 3 of 7 | Plan 5 of 6 complete
 ```
 
 ---
@@ -27,7 +27,7 @@ Phase 3 of 7 | Plan 4 of 6 complete
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 14 |
+| Plans Completed | 16 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 2 / 7 |
@@ -81,6 +81,12 @@ Phase 3 of 7 | Plan 4 of 6 complete
 | Zod schema for MCP tools | MCP SDK expects Zod schemas for parameter validation, not JSON Schema | 03-03 |
 | Service name mapping | Map UPS service codes to human-readable names for better UX | 03-03 |
 | Package-level itemized charges | Extract fuel/delivery/residential surcharges from RatedPackage | 03-03 |
+| PDF only labels | Per CONTEXT.md Decision 3, simplified implementation with single format | 03-04 |
+| Tracking number as filename | Label files saved as {tracking_number}.pdf for easy lookup | 03-04 |
+| Overwrite existing labels | shipping_get_label overwrites existing file for reprints | 03-04 |
+| Address tool separate | address_validate is standalone, users compose into workflow | 03-05 |
+| XAV status enum | Use 'valid', 'ambiguous', 'invalid' mapping to UPS indicators | 03-05 |
+| ZIP+4 formatting | Extended postal codes formatted as ZIP-4 (e.g., 90001-1234) | 03-05 |
 
 ### Discovered TODOs
 
@@ -141,9 +147,16 @@ Phase 3 is building the UPS Integration MCP:
 | 03-01 | TypeScript Package & Schema Foundation | COMPLETE | @shipagent/ups-mcp package, Zod schemas, config validation |
 | 03-02 | OAuth Authentication | COMPLETE | UpsAuthManager, UpsApiClient, error types, 11 unit tests |
 | 03-03 | Rating Tools | COMPLETE | rating_quote, rating_shop tools, 15 unit tests |
-| 03-04 | Shipping Tools | Pending | |
-| 03-05 | Address Validation | Pending | |
+| 03-04 | Shipping Tools | COMPLETE | shipping_create, shipping_void, shipping_get_label, 13 unit tests |
+| 03-05 | Address Validation | COMPLETE | address_validate tool, 15 unit tests |
 | 03-06 | Integration Tests | Pending | |
+
+**Completed in 03-05:**
+- address_validate: Validate addresses with UPS, returns valid/ambiguous/invalid status
+- Classification extraction (commercial/residential/unknown)
+- Candidate suggestions for ambiguous addresses
+- Clear error reasons for invalid addresses
+- 15 unit tests for address tool
 
 **Completed in 03-01:**
 - TypeScript MCP package with ESM support
@@ -173,12 +186,12 @@ Phase 3 is building the UPS Integration MCP:
 ### Last Session
 
 **Date:** 2026-01-24
-**Action:** Completed Phase 3 Plan 3 (Rating Tools)
-**Outcome:** rating_quote and rating_shop MCP tools with cost breakdown and transit times
+**Action:** Completed Phase 3 Plan 5 (Address Validation)
+**Outcome:** address_validate MCP tool with valid/ambiguous/invalid status, classification, candidates
 
 ### Next Session
 
-**Resume with:** `/gsd:execute-phase 3` to continue with Plan 03-04 (Shipping Tools)
+**Resume with:** `/gsd:execute-phase 3` to continue with Plan 03-06 (Integration Tests)
 **Context needed:** None - STATE.md contains full context
 
 ---
