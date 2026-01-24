@@ -190,6 +190,33 @@ function transformRatedShipment(rated: RatedShipment): RateResponseOutput {
     });
   }
 
+  // Extract itemized charges from RatedPackage (includes fuel surcharge, accessorials)
+  const ratedPackages = rated.RatedPackage;
+  if (ratedPackages) {
+    const packages = Array.isArray(ratedPackages) ? ratedPackages : [ratedPackages];
+    for (const pkg of packages) {
+      if (pkg.ItemizedCharges) {
+        for (const charge of pkg.ItemizedCharges) {
+          // Map charge codes to descriptive names
+          let chargeType = charge.Code || "Accessorial";
+          if (charge.SubType) {
+            chargeType = `${chargeType} (${charge.SubType})`;
+          }
+          // Common charge code mappings
+          if (charge.Code === "376") chargeType = "Fuel Surcharge";
+          if (charge.Code === "375") chargeType = "Delivery Area Surcharge";
+          if (charge.Code === "400") chargeType = "Residential Surcharge";
+
+          breakdown.push({
+            type: chargeType,
+            currency: charge.CurrencyCode,
+            amount: charge.MonetaryValue,
+          });
+        }
+      }
+    }
+  }
+
   // Check for alerts that might indicate issues
   let unavailableReason: string | undefined;
   if (rated.RatedShipmentAlert && rated.RatedShipmentAlert.length > 0) {
