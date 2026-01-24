@@ -65,8 +65,9 @@ class ShipAgentError(Exception):
         message = error_def.message_template
         try:
             # Filter out special keys that shouldn't be in template
+            # Note: 'column' is allowed in template since it's commonly used in messages
             template_kwargs = {
-                k: v for k, v in kwargs.items() if k not in ("rows", "column", "details")
+                k: v for k, v in kwargs.items() if k not in ("rows", "details")
             }
             message = message.format(**template_kwargs)
         except KeyError:
