@@ -107,11 +107,45 @@ Natural language interface for batch shipment processing via UPS API. Users desc
 
 ## Traceability
 
-*Populated by roadmap creation*
-
-| Requirement | Phase | Plan |
-|-------------|-------|------|
-| | | |
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| DATA-01 | Phase 2: Data Source MCP | Pending |
+| DATA-02 | Phase 2: Data Source MCP | Pending |
+| DATA-03 | Phase 2: Data Source MCP | Pending |
+| DATA-04 | Phase 6: Batch Execution | Pending |
+| DATA-05 | Phase 2: Data Source MCP | Pending |
+| UPS-01 | Phase 3: UPS Integration MCP | Pending |
+| UPS-02 | Phase 3: UPS Integration MCP | Pending |
+| UPS-03 | Phase 3: UPS Integration MCP | Pending |
+| UPS-04 | Phase 3: UPS Integration MCP | Pending |
+| UPS-05 | Phase 3: UPS Integration MCP | Pending |
+| NL-01 | Phase 4: NL and Mapping | Pending |
+| NL-02 | Phase 4: NL and Mapping | Pending |
+| NL-03 | Phase 4: NL and Mapping | Pending |
+| NL-04 | Phase 4: NL and Mapping | Pending |
+| NL-05 | Phase 4: NL and Mapping | Pending |
+| NL-06 | Phase 4: NL and Mapping | Pending |
+| ORCH-01 | Phase 5: Orchestration | Pending |
+| ORCH-02 | Phase 2: Data Source MCP | Pending |
+| ORCH-03 | Phase 3: UPS Integration MCP | Pending |
+| ORCH-04 | Phase 5: Orchestration | Pending |
+| ORCH-05 | Phase 5: Orchestration | Pending |
+| BATCH-01 | Phase 6: Batch Execution | Pending |
+| BATCH-02 | Phase 6: Batch Execution | Pending |
+| BATCH-03 | Phase 6: Batch Execution | Pending |
+| BATCH-04 | Phase 6: Batch Execution | Pending |
+| BATCH-05 | Phase 6: Batch Execution | Pending |
+| BATCH-06 | Phase 6: Batch Execution | Pending |
+| BATCH-07 | Phase 1: Foundation | Pending |
+| OUT-01 | Phase 3: UPS Integration MCP | Pending |
+| OUT-02 | Phase 1: Foundation | Pending |
+| OUT-03 | Phase 1: Foundation | Pending |
+| OUT-04 | Phase 1: Foundation | Pending |
+| UI-01 | Phase 7: Web Interface | Pending |
+| UI-02 | Phase 7: Web Interface | Pending |
+| UI-03 | Phase 7: Web Interface | Pending |
+| UI-04 | Phase 7: Web Interface | Pending |
+| UI-05 | Phase 7: Web Interface | Pending |
 
 ---
 
