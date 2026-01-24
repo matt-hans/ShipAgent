@@ -13,12 +13,12 @@
 ## Current Position
 
 **Phase:** 3 of 7 (UPS Integration MCP) - IN PROGRESS
-**Plan:** 2 of 6 complete
+**Plan:** 4 of 6 complete
 **Status:** In progress
 
 ```
-Progress: [#############-------] 65%
-Phase 3 of 7 | Plan 2 of 6 complete
+Progress: [###############-----] 75%
+Phase 3 of 7 | Plan 4 of 6 complete
 ```
 
 ---
@@ -27,7 +27,7 @@ Phase 3 of 7 | Plan 2 of 6 complete
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 13 |
+| Plans Completed | 14 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 2 / 7 |
@@ -78,6 +78,9 @@ Phase 3 of 7 | Plan 2 of 6 complete
 | 60-second token buffer | Token refresh 60s before expiry provides safety margin for network latency | 03-02 |
 | No retry on 4xx errors | Client errors fail immediately; retrying won't fix request problems | 03-02 |
 | UPS transaction headers required | transId (UUID) and transactionSrc included in all API requests | 03-02 |
+| Zod schema for MCP tools | MCP SDK expects Zod schemas for parameter validation, not JSON Schema | 03-03 |
+| Service name mapping | Map UPS service codes to human-readable names for better UX | 03-03 |
+| Package-level itemized charges | Extract fuel/delivery/residential surcharges from RatedPackage | 03-03 |
 
 ### Discovered TODOs
 
@@ -137,7 +140,7 @@ Phase 3 is building the UPS Integration MCP:
 |------|------|--------|---------------|
 | 03-01 | TypeScript Package & Schema Foundation | COMPLETE | @shipagent/ups-mcp package, Zod schemas, config validation |
 | 03-02 | OAuth Authentication | COMPLETE | UpsAuthManager, UpsApiClient, error types, 11 unit tests |
-| 03-03 | Rating Tools | Pending | |
+| 03-03 | Rating Tools | COMPLETE | rating_quote, rating_shop tools, 15 unit tests |
 | 03-04 | Shipping Tools | Pending | |
 | 03-05 | Address Validation | Pending | |
 | 03-06 | Integration Tests | Pending | |
@@ -155,6 +158,14 @@ Phase 3 is building the UPS Integration MCP:
 - Error types: UpsAuthError, UpsApiError, UpsNetworkError
 - 11 unit tests for auth manager
 
+**Completed in 03-03:**
+- rating_quote: Get rate for specific UPS service with cost breakdown
+- rating_shop: Compare rates across all available services
+- Response transformation with service name mapping
+- Package-level itemized charge extraction (fuel, delivery, residential)
+- Unavailable services marked with reason (not omitted)
+- 15 unit tests for rating tools
+
 ---
 
 ## Session Continuity
@@ -162,12 +173,12 @@ Phase 3 is building the UPS Integration MCP:
 ### Last Session
 
 **Date:** 2026-01-24
-**Action:** Completed Phase 3 Plan 2 (OAuth Authentication)
-**Outcome:** OAuth token manager and HTTP client with retry logic
+**Action:** Completed Phase 3 Plan 3 (Rating Tools)
+**Outcome:** rating_quote and rating_shop MCP tools with cost breakdown and transit times
 
 ### Next Session
 
-**Resume with:** `/gsd:execute-phase 3` to continue with Plan 03-03 (Rating Tools)
+**Resume with:** `/gsd:execute-phase 3` to continue with Plan 03-04 (Shipping Tools)
 **Context needed:** None - STATE.md contains full context
 
 ---
