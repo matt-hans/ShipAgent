@@ -69,6 +69,10 @@ from src.mcp.data_source.tools.import_tools import (
     list_sheets,
     list_tables,
 )
+from src.mcp.data_source.tools.schema_tools import (
+    get_schema,
+    override_column_type,
+)
 
 # Register as MCP tools using decorator pattern
 mcp.tool()(import_csv)
@@ -76,6 +80,8 @@ mcp.tool()(import_database)
 mcp.tool()(import_excel)
 mcp.tool()(list_sheets)
 mcp.tool()(list_tables)
+mcp.tool()(get_schema)
+mcp.tool()(override_column_type)
 
 
 if __name__ == "__main__":
