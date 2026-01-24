@@ -6,19 +6,19 @@
 
 **Architecture:** LLM as Configuration Engine - generates templates, deterministic code executes on data.
 
-**Current Focus:** Phase 2 Complete - Ready for Phase 3 (UPS Integration MCP)
+**Current Focus:** Phase 3 In Progress - UPS Integration MCP
 
 ---
 
 ## Current Position
 
-**Phase:** 2 of 7 (Data Source MCP) - COMPLETE
-**Plan:** 6 of 6 complete
-**Status:** Phase complete
+**Phase:** 3 of 7 (UPS Integration MCP) - IN PROGRESS
+**Plan:** 1 of 6 complete
+**Status:** In progress
 
 ```
-Progress: [##########] 100%
-Phase 2 of 7 | Plan 6 of 6 complete
+Progress: [############--------] 60%
+Phase 3 of 7 | Plan 1 of 6 complete
 ```
 
 ---
@@ -27,7 +27,7 @@ Phase 2 of 7 | Plan 6 of 6 complete
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 11 |
+| Plans Completed | 12 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 2 / 7 |
@@ -72,6 +72,9 @@ Phase 2 of 7 | Plan 6 of 6 complete
 | 1-based row numbering | Matches user expectation (row 1 = first data row) | 02-05 |
 | Max 1000 rows per query | Prevent memory exhaustion from large result sets | 02-05 |
 | Block dangerous SQL keywords | Security: prevent unintended data modification | 02-05 |
+| Manual Zod schemas over auto-generation | openapi-zod-client produces TS inference errors; manual schemas are cleaner | 03-01 |
+| Removed .passthrough() from wrapper schemas | Deep nesting with passthrough causes TypeScript complexity errors | 03-01 |
+| Sandbox environment only | Per CONTEXT.md Decision 1, production support is out of scope for MVP | 03-01 |
 
 ### Discovered TODOs
 
@@ -123,17 +126,39 @@ Phase 2 delivered the Data Source MCP with 12 tools:
 
 ---
 
+## Phase 3 Progress
+
+Phase 3 is building the UPS Integration MCP:
+
+| Plan | Name | Status | Key Artifacts |
+|------|------|--------|---------------|
+| 03-01 | TypeScript Package & Schema Foundation | COMPLETE | @shipagent/ups-mcp package, Zod schemas, config validation |
+| 03-02 | OAuth Authentication | Pending | |
+| 03-03 | Rating Tools | Pending | |
+| 03-04 | Shipping Tools | Pending | |
+| 03-05 | Address Validation | Pending | |
+| 03-06 | Integration Tests | Pending | |
+
+**Completed in 03-01:**
+- TypeScript MCP package with ESM support
+- Zod schemas for UPS Shipping API (ShipmentRequest, ShipmentResponse, etc.)
+- Zod schemas for UPS Rating API (RateRequest, RateResponse, etc.)
+- Config validation with fail-fast on missing credentials
+- MCP server skeleton with stdio transport
+
+---
+
 ## Session Continuity
 
 ### Last Session
 
 **Date:** 2026-01-24
-**Action:** Completed Phase 2 (Data Source MCP)
-**Outcome:** 12 MCP tools, 61 passing tests, all requirements verified (DATA-01, DATA-02, DATA-03, DATA-05, ORCH-02)
+**Action:** Completed Phase 3 Plan 1 (TypeScript Package & Schema Foundation)
+**Outcome:** UPS MCP package foundation with Zod schemas and credential validation
 
 ### Next Session
 
-**Resume with:** `/gsd:discuss-phase 3` to gather context for UPS Integration MCP
+**Resume with:** `/gsd:execute-phase 3` to continue with Plan 03-02 (OAuth Authentication)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -143,9 +168,7 @@ Phase 2 delivered the Data Source MCP with 12 tools:
 | Command | Purpose |
 |---------|---------|
 | `/gsd:progress` | Check current status |
-| `/gsd:discuss-phase 3` | Gather context for Phase 3 |
-| `/gsd:plan-phase 3` | Create detailed plan for Phase 3 |
-| `/gsd:execute-phase 3` | Execute Phase 3 plans |
+| `/gsd:execute-phase 3` | Continue Phase 3 execution |
 | `/gsd:debug [issue]` | Debug specific problem |
 
 ---
