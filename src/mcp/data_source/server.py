@@ -62,6 +62,10 @@ mcp = FastMCP("DataSource", lifespan=lifespan)
 
 
 # Import and register tools
+from src.mcp.data_source.tools.checksum_tools import (
+    compute_checksums,
+    verify_checksum,
+)
 from src.mcp.data_source.tools.import_tools import (
     import_csv,
     import_database,
@@ -80,6 +84,7 @@ from src.mcp.data_source.tools.schema_tools import (
 )
 
 # Register as MCP tools using decorator pattern
+mcp.tool()(compute_checksums)
 mcp.tool()(import_csv)
 mcp.tool()(import_database)
 mcp.tool()(import_excel)
@@ -90,6 +95,7 @@ mcp.tool()(get_rows_by_filter)
 mcp.tool()(query_data)
 mcp.tool()(get_schema)
 mcp.tool()(override_column_type)
+mcp.tool()(verify_checksum)
 
 
 if __name__ == "__main__":
