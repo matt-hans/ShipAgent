@@ -61,12 +61,11 @@ async def lifespan(app: Any):
 mcp = FastMCP("DataSource", lifespan=lifespan)
 
 
-# Tools will be registered here in subsequent plans using @mcp.tool decorator
-# Example:
-#   @mcp.tool
-#   async def import_csv(file_path: str, ctx: Context) -> dict:
-#       db = ctx.lifespan_context.get("db")
-#       ...
+# Import and register tools
+from src.mcp.data_source.tools.import_tools import import_csv
+
+# Register as MCP tool using decorator pattern
+mcp.tool()(import_csv)
 
 
 if __name__ == "__main__":
