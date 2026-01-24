@@ -1,6 +1,9 @@
-# Data Source MCP server
-# Provides tools for importing CSV, Excel, and database sources with schema discovery
+"""Data Source MCP package.
 
+Provides MCP server for importing and querying shipment data.
+"""
+
+from src.mcp.data_source.server import mcp
 from src.mcp.data_source.models import (
     ChecksumResult,
     DateWarning,
@@ -10,8 +13,13 @@ from src.mcp.data_source.models import (
     SchemaColumn,
     ValidationError,
 )
+from src.mcp.data_source.adapters.base import BaseSourceAdapter
+from src.mcp.data_source.adapters.csv_adapter import CSVAdapter
+from src.mcp.data_source.adapters.excel_adapter import ExcelAdapter
+from src.mcp.data_source.adapters.db_adapter import DatabaseAdapter
 
 __all__ = [
+    "mcp",
     "SchemaColumn",
     "ImportResult",
     "RowData",
@@ -19,7 +27,8 @@ __all__ = [
     "ChecksumResult",
     "DateWarning",
     "ValidationError",
+    "BaseSourceAdapter",
+    "CSVAdapter",
+    "ExcelAdapter",
+    "DatabaseAdapter",
 ]
-
-# Note: mcp server is exported after creation in server.py
-# Import via: from src.mcp.data_source.server import mcp
