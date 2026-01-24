@@ -304,8 +304,15 @@ class ExcelAdapter(BaseSourceAdapter):
                 else:
                     sample_types.add("VARCHAR")
 
-            # If mixed types or includes VARCHAR, use VARCHAR
-            if "VARCHAR" in sample_types or len(sample_types) > 1:
+            # Handle type selection
+            if "VARCHAR" in sample_types:
+                # Any string makes it VARCHAR
+                types.append("VARCHAR")
+            elif sample_types == {"BIGINT", "DOUBLE"} or sample_types == {"BIGINT"} | {"DOUBLE"}:
+                # Mixed int/float is DOUBLE (integers can be stored as float)
+                types.append("DOUBLE")
+            elif len(sample_types) > 1:
+                # Other mixed types become VARCHAR
                 types.append("VARCHAR")
             elif "DOUBLE" in sample_types:
                 types.append("DOUBLE")
