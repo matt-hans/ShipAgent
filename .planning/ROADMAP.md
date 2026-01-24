@@ -59,6 +59,16 @@ Plans:
 4. Each imported row has unique SHA-256 checksum that changes if row data changes
 5. Data operations are exposed as MCP tools callable via stdio transport
 
+**Plans:** 6 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Package structure, Pydantic models, FastMCP server with DuckDB lifespan
+- [ ] 02-02-PLAN.md — CSV adapter and import_csv tool with schema discovery
+- [ ] 02-03-PLAN.md — Excel adapter with sheet selection and import_excel tool
+- [ ] 02-04-PLAN.md — Database adapter for PostgreSQL/MySQL with large table protection
+- [ ] 02-05-PLAN.md — Schema, query, and checksum tools
+- [ ] 02-06-PLAN.md — Integration testing and final verification
+
 ---
 
 ### Phase 3: UPS Integration MCP
@@ -181,7 +191,7 @@ Plans:
 | Phase | Status | Requirements | Completion |
 |-------|--------|--------------|------------|
 | 1 - Foundation | Complete | 4 | 100% |
-| 2 - Data Source MCP | Not Started | 5 | 0% |
+| 2 - Data Source MCP | Planned | 5 | 0% |
 | 3 - UPS Integration MCP | Not Started | 7 | 0% |
 | 4 - NL and Mapping | Not Started | 6 | 0% |
 | 5 - Orchestration | Not Started | 3 | 0% |
