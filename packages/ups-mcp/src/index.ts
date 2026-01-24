@@ -15,6 +15,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 // Import config to trigger validation on startup
 // This will throw immediately if credentials are missing
 import { config } from "./config.js";
+import { UpsAuthManager } from "./auth/manager.js";
+import { UpsApiClient } from "./client/api.js";
+import { registerAddressTools } from "./tools/address.js";
+import { registerRatingTools } from "./tools/rating.js";
+import { registerShippingTools } from "./tools/shipping.js";
 
 // Server name and version
 const SERVER_NAME = "ups-mcp";
@@ -34,6 +39,23 @@ async function main(): Promise<void> {
     name: SERVER_NAME,
     version: SERVER_VERSION,
   });
+
+  // Create OAuth manager and API client
+  const authManager = new UpsAuthManager(
+    config.clientId,
+    config.clientSecret
+  );
+  const apiClient = new UpsApiClient(authManager, config.baseUrl);
+
+  // Register tools
+  registerAddressTools(server, apiClient);
+  console.error(`[${SERVER_NAME}] Registered address validation tools`);
+
+  registerRatingTools(server, apiClient, config.accountNumber);
+  console.error(`[${SERVER_NAME}] Registered rating tools`);
+
+  registerShippingTools(server, apiClient, config.accountNumber, config.labelsOutputDir);
+  console.error(`[${SERVER_NAME}] Registered shipping tools`);
 
   // Create stdio transport for communication with Claude SDK
   const transport = new StdioServerTransport();
