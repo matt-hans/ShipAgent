@@ -13,12 +13,12 @@
 ## Current Position
 
 **Phase:** 3 of 7 (UPS Integration MCP) - IN PROGRESS
-**Plan:** 1 of 6 complete
+**Plan:** 2 of 6 complete
 **Status:** In progress
 
 ```
-Progress: [############--------] 60%
-Phase 3 of 7 | Plan 1 of 6 complete
+Progress: [#############-------] 65%
+Phase 3 of 7 | Plan 2 of 6 complete
 ```
 
 ---
@@ -27,7 +27,7 @@ Phase 3 of 7 | Plan 1 of 6 complete
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 12 |
+| Plans Completed | 13 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 2 / 7 |
@@ -75,6 +75,9 @@ Phase 3 of 7 | Plan 1 of 6 complete
 | Manual Zod schemas over auto-generation | openapi-zod-client produces TS inference errors; manual schemas are cleaner | 03-01 |
 | Removed .passthrough() from wrapper schemas | Deep nesting with passthrough causes TypeScript complexity errors | 03-01 |
 | Sandbox environment only | Per CONTEXT.md Decision 1, production support is out of scope for MVP | 03-01 |
+| 60-second token buffer | Token refresh 60s before expiry provides safety margin for network latency | 03-02 |
+| No retry on 4xx errors | Client errors fail immediately; retrying won't fix request problems | 03-02 |
+| UPS transaction headers required | transId (UUID) and transactionSrc included in all API requests | 03-02 |
 
 ### Discovered TODOs
 
@@ -133,7 +136,7 @@ Phase 3 is building the UPS Integration MCP:
 | Plan | Name | Status | Key Artifacts |
 |------|------|--------|---------------|
 | 03-01 | TypeScript Package & Schema Foundation | COMPLETE | @shipagent/ups-mcp package, Zod schemas, config validation |
-| 03-02 | OAuth Authentication | Pending | |
+| 03-02 | OAuth Authentication | COMPLETE | UpsAuthManager, UpsApiClient, error types, 11 unit tests |
 | 03-03 | Rating Tools | Pending | |
 | 03-04 | Shipping Tools | Pending | |
 | 03-05 | Address Validation | Pending | |
@@ -146,6 +149,12 @@ Phase 3 is building the UPS Integration MCP:
 - Config validation with fail-fast on missing credentials
 - MCP server skeleton with stdio transport
 
+**Completed in 03-02:**
+- UpsAuthManager: OAuth 2.0 client_credentials flow with token caching
+- UpsApiClient: HTTP client with exponential backoff retry
+- Error types: UpsAuthError, UpsApiError, UpsNetworkError
+- 11 unit tests for auth manager
+
 ---
 
 ## Session Continuity
@@ -153,12 +162,12 @@ Phase 3 is building the UPS Integration MCP:
 ### Last Session
 
 **Date:** 2026-01-24
-**Action:** Completed Phase 3 Plan 1 (TypeScript Package & Schema Foundation)
-**Outcome:** UPS MCP package foundation with Zod schemas and credential validation
+**Action:** Completed Phase 3 Plan 2 (OAuth Authentication)
+**Outcome:** OAuth token manager and HTTP client with retry logic
 
 ### Next Session
 
-**Resume with:** `/gsd:execute-phase 3` to continue with Plan 03-02 (OAuth Authentication)
+**Resume with:** `/gsd:execute-phase 3` to continue with Plan 03-03 (Rating Tools)
 **Context needed:** None - STATE.md contains full context
 
 ---
