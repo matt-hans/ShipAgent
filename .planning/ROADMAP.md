@@ -28,6 +28,15 @@ Natural language interface for batch shipment processing via UPS API. Users desc
 3. Error messages include specific failure reason and suggested remediation
 4. User can retrieve list of past jobs with their final status
 
+**Plans:** 5 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Database schema, SQLAlchemy models, connection management
+- [ ] 01-02-PLAN.md — Job state machine service with CRUD and per-row tracking
+- [ ] 01-03-PLAN.md — Audit logging service with redaction and export
+- [ ] 01-04-PLAN.md — Error handling framework with E-XXXX codes and UPS translation
+- [ ] 01-05-PLAN.md — FastAPI endpoints for jobs and audit logs
+
 ---
 
 ### Phase 2: Data Source MCP
@@ -171,7 +180,7 @@ Natural language interface for batch shipment processing via UPS API. Users desc
 
 | Phase | Status | Requirements | Completion |
 |-------|--------|--------------|------------|
-| 1 - Foundation | Not Started | 4 | 0% |
+| 1 - Foundation | Planned | 4 | 0% |
 | 2 - Data Source MCP | Not Started | 5 | 0% |
 | 3 - UPS Integration MCP | Not Started | 7 | 0% |
 | 4 - NL and Mapping | Not Started | 6 | 0% |
