@@ -2,22 +2,30 @@
  * Dashboard component for ShipAgent web interface.
  *
  * Manages the main workflow phases:
- * - input: Command entry
- * - preview: Preview before execution (Plan 05)
+ * - input: Command entry with history
+ * - preview: Preview grid before execution
  * - executing: Real-time progress display
  * - complete: Final summary and label downloads
  */
 
 import * as React from 'react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
+import { CommandInput } from '@/components/CommandInput';
+import { CommandHistory } from '@/components/CommandHistory';
+import { PreviewGrid } from '@/components/PreviewGrid';
+import { ConfirmationFooter } from '@/components/ConfirmationFooter';
 import { ProgressDisplay } from '@/components/ProgressDisplay';
 import { RowStatusTable } from '@/components/RowStatusTable';
 import { ErrorAlert } from '@/components/ErrorAlert';
 import { useJobProgress } from '@/hooks/useJobProgress';
-import { submitCommand, confirmJob, getJobPreview } from '@/lib/api';
-import type { BatchPreview } from '@/types/api';
+import {
+  submitCommand,
+  confirmJob,
+  getJobPreview,
+  getCommandHistory,
+} from '@/lib/api';
+import type { BatchPreview, CommandHistoryItem } from '@/types/api';
 
 /** Dashboard phase states. */
 type DashboardPhase = 'input' | 'preview' | 'executing' | 'complete';
@@ -33,8 +41,8 @@ function formatCurrency(cents: number): string {
  * Dashboard is the main application component.
  *
  * Workflow phases:
- * 1. input: User enters NL command
- * 2. preview: Shows batch preview with confirmation (Plan 05 will expand this)
+ * 1. input: User enters NL command or selects from history
+ * 2. preview: Shows batch preview grid with confirmation footer
  * 3. executing: Real-time progress via SSE
  * 4. complete: Final summary with label downloads
  */
@@ -42,14 +50,16 @@ export function Dashboard() {
   // Phase state
   const [phase, setPhase] = React.useState<DashboardPhase>('input');
 
-  // Command input state
-  const [command, setCommand] = React.useState('');
-  const [isSubmitting, setIsSubmitting] = React.useState(false);
+  // Command state
+  const [commandHistory, setCommandHistory] = React.useState<CommandHistoryItem[]>([]);
+  const [isHistoryLoading, setIsHistoryLoading] = React.useState(true);
   const [submitError, setSubmitError] = React.useState<string | null>(null);
 
   // Job state
   const [jobId, setJobId] = React.useState<string | null>(null);
   const [preview, setPreview] = React.useState<BatchPreview | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = React.useState(false);
+  const [isConfirming, setIsConfirming] = React.useState(false);
 
   // Progress state from SSE hook
   const { progress, disconnect } = useJobProgress(
@@ -61,6 +71,21 @@ export function Dashboard() {
 
   // Row table expansion state
   const [rowTableExpanded, setRowTableExpanded] = React.useState(false);
+
+  // Load command history on mount
+  React.useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const history = await getCommandHistory(10);
+        setCommandHistory(history);
+      } catch (err) {
+        console.error('Failed to load command history:', err);
+      } finally {
+        setIsHistoryLoading(false);
+      }
+    };
+    loadHistory();
+  }, []);
 
   // Handle phase transitions based on progress events
   React.useEffect(() => {
@@ -81,12 +106,9 @@ export function Dashboard() {
   }, [phase, progress.status, disconnect]);
 
   // Submit command handler
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!command.trim() || isSubmitting) return;
-
-    setIsSubmitting(true);
+  const handleSubmit = async (command: string) => {
     setSubmitError(null);
+    setIsPreviewLoading(true);
 
     try {
       const result = await submitCommand(command);
@@ -96,19 +118,30 @@ export function Dashboard() {
       const previewData = await getJobPreview(result.job_id);
       setPreview(previewData);
       setPhase('preview');
+
+      // Refresh command history
+      const history = await getCommandHistory(10);
+      setCommandHistory(history);
     } catch (err) {
       setSubmitError(
         err instanceof Error ? err.message : 'Failed to submit command'
       );
     } finally {
-      setIsSubmitting(false);
+      setIsPreviewLoading(false);
     }
+  };
+
+  // Select command from history
+  const handleSelectHistory = (command: string) => {
+    // Just populate - user will click submit
+    handleSubmit(command);
   };
 
   // Confirm batch handler
   const handleConfirm = async () => {
     if (!jobId) return;
 
+    setIsConfirming(true);
     try {
       await confirmJob(jobId);
       setPhase('executing');
@@ -118,18 +151,21 @@ export function Dashboard() {
       setSubmitError(
         err instanceof Error ? err.message : 'Failed to confirm batch'
       );
+    } finally {
+      setIsConfirming(false);
     }
   };
 
   // Start new batch handler
   const handleNewBatch = () => {
     setPhase('input');
-    setCommand('');
     setJobId(null);
     setPreview(null);
     setSubmitError(null);
     setRowTableExpanded(false);
     setShowError(true);
+    setIsPreviewLoading(false);
+    setIsConfirming(false);
   };
 
   // Cancel handler
@@ -138,7 +174,7 @@ export function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background pb-24">
       {/* Header */}
       <header className="border-b border-border bg-card">
         <div className="container mx-auto px-4 py-4">
@@ -150,135 +186,69 @@ export function Dashboard() {
       </header>
 
       {/* Main content */}
-      <main className="container mx-auto px-4 py-8 max-w-4xl">
+      <main className="container mx-auto px-4 py-8 max-w-5xl">
         {/* Input Phase */}
         {phase === 'input' && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Command Input</CardTitle>
-              <CardDescription>
-                Enter a natural language command to process shipments.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleSubmit}>
-                <div className="flex gap-2">
-                  <Input
-                    value={command}
-                    onChange={(e) => setCommand(e.target.value)}
-                    placeholder="Ship all California orders using UPS Ground"
-                    className="flex-1"
-                    disabled={isSubmitting}
-                  />
-                  <Button type="submit" disabled={isSubmitting || !command.trim()}>
-                    {isSubmitting ? 'Processing...' : 'Submit'}
-                  </Button>
-                </div>
-              </form>
-
-              {/* Submit error */}
-              {submitError && (
-                <p className="mt-3 text-sm text-red-600 dark:text-red-400">
-                  {submitError}
-                </p>
-              )}
-
-              {/* Example commands */}
-              <div className="mt-6">
-                <p className="text-sm text-muted-foreground mb-2">
-                  Try an example:
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    'Ship all orders from orders.csv using UPS Ground',
-                    'Ship pending orders from California using UPS Next Day Air',
-                    'Ship all items over 10 lbs using UPS Ground',
-                  ].map((example) => (
-                    <Button
-                      key={example}
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCommand(example)}
-                      className="text-xs"
-                    >
-                      {example}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Preview Phase - Basic implementation, Plan 05 will expand */}
-        {phase === 'preview' && preview && (
-          <div className="space-y-4">
+          <div className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle>Batch Preview</CardTitle>
+                <CardTitle>Create Shipments</CardTitle>
                 <CardDescription>
-                  Review shipments before processing
+                  Enter a natural language command to process shipments from your data source.
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <span className="text-muted-foreground">Total Shipments:</span>
-                      <span className="ml-2 font-medium">{preview.total_rows}</span>
-                    </div>
-                    <div>
-                      <span className="text-muted-foreground">Estimated Cost:</span>
-                      <span className="ml-2 font-medium">
-                        {formatCurrency(preview.total_estimated_cost_cents)}
-                      </span>
-                    </div>
-                  </div>
+                <CommandInput
+                  onSubmit={handleSubmit}
+                  disabled={isPreviewLoading}
+                />
 
-                  {/* Preview rows summary */}
-                  {preview.preview_rows.length > 0 && (
-                    <div className="border rounded-lg p-3">
-                      <p className="text-sm font-medium mb-2">Sample Shipments:</p>
-                      <div className="space-y-2">
-                        {preview.preview_rows.slice(0, 3).map((row) => (
-                          <div
-                            key={row.row_number}
-                            className="text-sm flex justify-between"
-                          >
-                            <span>
-                              Row {row.row_number}: {row.recipient_name} ({row.city_state})
-                            </span>
-                            <span className="font-mono">
-                              {formatCurrency(row.estimated_cost_cents)}
-                            </span>
-                          </div>
-                        ))}
-                        {preview.additional_rows > 0 && (
-                          <p className="text-xs text-muted-foreground">
-                            +{preview.additional_rows} more shipments...
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Warnings */}
-                  {preview.rows_with_warnings > 0 && (
-                    <p className="text-sm text-yellow-600 dark:text-yellow-400">
-                      {preview.rows_with_warnings} row(s) have warnings
-                    </p>
-                  )}
-                </div>
+                {/* Submit error */}
+                {submitError && (
+                  <p className="mt-4 text-sm text-red-600 dark:text-red-400">
+                    {submitError}
+                  </p>
+                )}
               </CardContent>
-              <CardFooter className="flex justify-between border-t pt-4">
-                <Button variant="outline" onClick={handleCancel}>
-                  Cancel
-                </Button>
-                <Button onClick={handleConfirm}>
-                  Confirm {preview.total_rows} Shipments ({formatCurrency(preview.total_estimated_cost_cents)})
-                </Button>
-              </CardFooter>
             </Card>
+
+            {/* Command history */}
+            <CommandHistory
+              commands={commandHistory}
+              onSelect={handleSelectHistory}
+              isLoading={isHistoryLoading}
+            />
+          </div>
+        )}
+
+        {/* Preview Phase */}
+        {phase === 'preview' && (
+          <div className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Review Shipments</CardTitle>
+                <CardDescription>
+                  Review the shipments below before confirming execution.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <PreviewGrid
+                  preview={preview}
+                  isLoading={isPreviewLoading}
+                />
+              </CardContent>
+            </Card>
+
+            {/* Submit error */}
+            {submitError && (
+              <Card className="border-red-200 dark:border-red-800">
+                <CardContent className="pt-6">
+                  <p className="text-sm text-red-600 dark:text-red-400">
+                    {submitError}
+                  </p>
+                </CardContent>
+              </Card>
+            )}
           </div>
         )}
 
@@ -354,7 +324,7 @@ export function Dashboard() {
                   </div>
                 </div>
 
-                {/* Label download section - prepared for Plan 05 */}
+                {/* Label download section */}
                 <div className="mt-6 p-4 border rounded-lg">
                   <div className="flex items-center justify-between">
                     <div>
@@ -387,6 +357,18 @@ export function Dashboard() {
           </div>
         )}
       </main>
+
+      {/* Sticky Confirmation Footer - only in preview phase */}
+      {phase === 'preview' && preview && (
+        <ConfirmationFooter
+          totalCost={preview.total_estimated_cost_cents}
+          rowCount={preview.total_rows}
+          onConfirm={handleConfirm}
+          onCancel={handleCancel}
+          isLoading={isConfirming}
+          visible={true}
+        />
+      )}
     </div>
   );
 }
