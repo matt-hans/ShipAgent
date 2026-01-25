@@ -1,10 +1,17 @@
 """Natural Language Engine for parsing shipping commands.
 
 This module provides intent parsing, filter generation, mapping
-template generation, and template validation using Claude's
-structured outputs.
+template generation, template validation, and elicitation using
+Claude's structured outputs.
 """
 
+from src.orchestrator.nl_engine.elicitation import (
+    ELICITATION_TEMPLATES,
+    create_elicitation_context,
+    create_elicitation_question,
+    handle_elicitation_response,
+    needs_elicitation,
+)
 from src.orchestrator.nl_engine.filter_generator import (
     FilterGenerationError,
     generate_filter,
@@ -15,6 +22,13 @@ from src.orchestrator.nl_engine.intent_parser import (
     parse_intent,
     resolve_service_code,
 )
+from src.orchestrator.nl_engine.mapping_generator import (
+    UPS_REQUIRED_FIELDS,
+    compute_schema_hash,
+    generate_mapping_template,
+    render_template,
+    suggest_mappings,
+)
 from src.orchestrator.nl_engine.template_validator import (
     TemplateValidationError,
     ValidationError,
@@ -22,13 +36,6 @@ from src.orchestrator.nl_engine.template_validator import (
     format_validation_errors,
     validate_field_value,
     validate_template_output,
-)
-from src.orchestrator.nl_engine.mapping_generator import (
-    UPS_REQUIRED_FIELDS,
-    compute_schema_hash,
-    generate_mapping_template,
-    render_template,
-    suggest_mappings,
 )
 from src.orchestrator.nl_engine.ups_schema import (
     UPS_PACKAGE_SCHEMA,
@@ -39,6 +46,12 @@ from src.orchestrator.nl_engine.ups_schema import (
 from src.orchestrator.models.mapping import MappingGenerationError
 
 __all__ = [
+    # Elicitation
+    "ELICITATION_TEMPLATES",
+    "create_elicitation_question",
+    "handle_elicitation_response",
+    "needs_elicitation",
+    "create_elicitation_context",
     # Intent parsing
     "parse_intent",
     "resolve_service_code",
