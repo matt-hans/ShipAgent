@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 5 of 7 (Orchestration Agent) - IN PROGRESS
-**Plan:** 3 of 5 complete (05-01, 05-02, 05-03)
+**Plan:** 4 of 5 complete (05-01, 05-02, 05-03, 05-04)
 **Status:** In progress
-**Last activity:** 2026-01-25 - Completed 05-03-PLAN.md (Orchestrator-Native Tools)
+**Last activity:** 2026-01-25 - Completed 05-04-PLAN.md (Agent Client)
 
 ```
-Progress: [##################--] 87%
-Phase 5 of 7 IN PROGRESS | Plan 3 of 5 complete | 28/30 total plans
+Progress: [###################-] 90%
+Phase 5 of 7 IN PROGRESS | Plan 4 of 5 complete | 29/30 total plans
 ```
 
 ---
@@ -28,7 +28,7 @@ Phase 5 of 7 IN PROGRESS | Plan 3 of 5 complete | 28/30 total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 28 |
+| Plans Completed | 29 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 4 / 7 |
@@ -113,6 +113,9 @@ Phase 5 of 7 IN PROGRESS | Plan 3 of 5 complete | 28/30 total plans
 | Hooks validate only, never modify | Per CONTEXT.md Decision 3, hooks act as gates not transformers | 05-02 |
 | All hook logging to stderr | Stdout reserved for MCP protocol; hooks log to stderr | 05-02 |
 | Hook denial format with hookSpecificOutput | Standard Claude Agent SDK denial pattern with permissionDecision | 05-02 |
+| ClaudeSDKClient for session continuity | SDK client maintains conversation context across multiple commands within session | 05-04 |
+| Eager MCP spawn at startup | Per CONTEXT.md Decision 1: spawn on connect(), not first tool use | 05-04 |
+| 5s graceful shutdown timeout | Per CONTEXT.md Decision 1: allow MCPs to clean up before force kill | 05-04 |
 
 ### Discovered TODOs
 
@@ -226,10 +229,11 @@ Phase 5 delivers the Orchestration Agent with Claude Agent SDK:
 | 05-01 | MCP Server Configuration | COMPLETE |
 | 05-02 | Hook System | COMPLETE |
 | 05-03 | Orchestrator-Native Tools | COMPLETE |
-| 05-04 | Agent Client | Pending |
+| 05-04 | Agent Client | COMPLETE |
 | 05-05 | Integration Tests | Pending |
 
 **Key Exports from `src/orchestrator/agent`:**
+- Client: OrchestrationAgent, create_agent
 - Configuration: PROJECT_ROOT, MCPServerConfig, get_data_mcp_config, get_ups_mcp_config, create_mcp_servers_config
 - Tools: process_command_tool, get_job_status_tool, list_tools_tool, get_orchestrator_tools
 - Hooks: validate_pre_tool, validate_shipping_input, validate_data_query, log_post_tool, detect_error_response, create_hook_matchers
@@ -241,12 +245,12 @@ Phase 5 delivers the Orchestration Agent with Claude Agent SDK:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 05-03-PLAN.md (Orchestrator-Native Tools)
-**Outcome:** Three orchestrator-native tools created: process_command (wraps NLMappingEngine), get_job_status (wraps JobService), list_tools (tool discovery). All tools return MCP-compliant response format.
+**Action:** Completed 05-04-PLAN.md (Agent Client)
+**Outcome:** OrchestrationAgent class created using ClaudeSDKClient. Coordinates MCPs (orchestrator, data, ups) with HookMatcher-based validation, async context manager support, and graceful shutdown with 5s timeout.
 
 ### Next Session
 
-**Resume with:** Execute 05-04-PLAN.md (SDK MCP Server)
+**Resume with:** Execute 05-05-PLAN.md (Integration Tests)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -256,11 +260,11 @@ Phase 5 delivers the Orchestration Agent with Claude Agent SDK:
 | Command | Purpose |
 |---------|---------|
 | `/gsd:progress` | Check current status |
-| `/gsd:discuss-phase 4` | Gather context for Phase 4 |
-| `/gsd:plan-phase 4` | Create detailed plan for Phase 4 |
-| `/gsd:execute-phase 4` | Execute Phase 4 plans |
+| `/gsd:discuss-phase 5` | Gather context for Phase 5 |
+| `/gsd:plan-phase 5` | Create detailed plan for Phase 5 |
+| `/gsd:execute-phase 5` | Execute Phase 5 plans |
 | `/gsd:debug [issue]` | Debug specific problem |
 
 ---
 
-*Last updated: 2026-01-25 (05-03 complete)*
+*Last updated: 2026-01-25 (05-04 complete)*
