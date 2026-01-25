@@ -45,7 +45,7 @@ def validate_sql_syntax(where_clause: str) -> bool:
         # Wrap in SELECT to validate as complete statement
         sqlglot.parse(f"SELECT * FROM t WHERE {where_clause}")
         return True
-    except sqlglot.errors.ParseError as e:
+    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError) as e:
         raise ValueError(f"Invalid SQL syntax: {e}") from e
 
 

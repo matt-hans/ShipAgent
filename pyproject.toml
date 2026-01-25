@@ -58,3 +58,6 @@ ignore = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: marks tests that require external API access (deselect with '-m \"not integration\"')",
+]
