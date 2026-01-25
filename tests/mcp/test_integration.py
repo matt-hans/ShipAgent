@@ -159,7 +159,7 @@ class TestAllToolsRegistered:
             return len(tools)
 
         count = asyncio.run(get_tool_count())
-        assert count == 12, f"Expected 12 tools, got {count}"
+        assert count == 13, f"Expected 13 tools, got {count}"
 
     def test_tool_names(self):
         """Verify all expected tool names are present."""
@@ -184,6 +184,7 @@ class TestAllToolsRegistered:
             "query_data",
             "compute_checksums",
             "verify_checksum",
+            "write_back",
         ]
 
         for name in expected:

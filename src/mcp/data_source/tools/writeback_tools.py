@@ -380,9 +380,14 @@ def _extract_table_name(query: str) -> Optional[str]:
 
     table_ref = parts[0]
 
-    # Remove any trailing WHERE, ORDER, etc.
-    for keyword in ["WHERE", "ORDER", "GROUP", "HAVING", "LIMIT", "OFFSET"]:
-        if keyword in table_ref.upper():
-            return None
+    # Check if the table reference itself IS a keyword (shouldn't be in valid SQL)
+    # Don't check for substring match as "orders" contains "ORDER"
+    keywords = {"WHERE", "ORDER", "GROUP", "HAVING", "LIMIT", "OFFSET", "JOIN", "LEFT", "RIGHT", "INNER", "OUTER"}
+    if table_ref.upper() in keywords:
+        return None
+
+    # Reject subqueries - table reference shouldn't start with parenthesis
+    if table_ref.startswith("("):
+        return None
 
     return table_ref
