@@ -192,6 +192,17 @@ Plans:
 6. After crash, system resumes from last successfully processed row
 7. Tracking numbers appear in original CSV/Excel/database after successful shipment
 
+**Plans:** 7 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — Write-back tool for Data MCP (tracking number persistence)
+- [ ] 06-02-PLAN.md — Batch foundation (modes, events, models)
+- [ ] 06-03-PLAN.md — PreviewGenerator for cost estimation
+- [ ] 06-04-PLAN.md — BatchExecutor with fail-fast and crash recovery
+- [ ] 06-05-PLAN.md — Crash recovery detection and prompts
+- [ ] 06-06-PLAN.md — Orchestrator batch tools (preview, execute, mode, resume)
+- [ ] 06-07-PLAN.md — Integration testing and requirement verification
+
 ---
 
 ### Phase 7: Web Interface
@@ -225,7 +236,7 @@ Plans:
 | 3 - UPS Integration MCP | Complete | 7 | 100% |
 | 4 - NL and Mapping | Complete | 6 | 100% |
 | 5 - Orchestration | Complete | 3 | 100% |
-| 6 - Batch Execution | Not Started | 7 | 0% |
+| 6 - Batch Execution | Planned | 7 | 0% |
 | 7 - Web Interface | Not Started | 5 | 0% |
 
 **Total:** 37 requirements across 7 phases (25 complete)
