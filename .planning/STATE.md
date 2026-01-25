@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 4 of 7 (Natural Language and Mapping Engine) - IN PROGRESS
-**Plan:** 1 of 7 complete
+**Plan:** 4 of 7 complete
 **Status:** In progress
-**Last activity:** 2026-01-25 - Completed 04-02-PLAN.md
+**Last activity:** 2026-01-25 - Completed 04-04-PLAN.md
 
 ```
-Progress: [##########----------] 46%
-Phase 4 of 7 | Plan 2 of 7 complete | 19/24 total plans
+Progress: [############--------] 58%
+Phase 4 of 7 | Plan 4 of 7 complete | 22/24 total plans
 ```
 
 ---
@@ -28,7 +28,7 @@ Phase 4 of 7 | Plan 2 of 7 complete | 19/24 total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 19 |
+| Plans Completed | 22 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 3 / 7 |
@@ -92,6 +92,9 @@ Phase 4 of 7 | Plan 2 of 7 complete | 19/24 total plans
 | sqlglot for SQL validation | Proper SQL parser catches real errors, prevents injection | 04-02 |
 | Catch TokenError + ParseError | sqlglot raises TokenError for lexical errors like unclosed strings | 04-02 |
 | Schema grounding in prompt | Prevents LLM from hallucinating column names | 04-02 |
+| Draft7Validator for JSON Schema | Widely supported, sufficient for UPS schema features | 04-04 |
+| Collect ALL errors via iter_errors() | Users need complete error list for efficient fixing | 04-04 |
+| ValidationError with full context | Per CONTEXT.md Decision 4: specific field, expected, actual, rule | 04-04 |
 
 ### Discovered TODOs
 
@@ -170,12 +173,12 @@ Phase 3 delivered the UPS Integration MCP with 6 MCP tools:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 04-02-PLAN.md (Filter Generator)
-**Outcome:** SQLFilterResult model, generate_filter function with schema grounding, sqlglot validation, 34 unit tests passing.
+**Action:** Completed 04-04-PLAN.md (Template Validation)
+**Outcome:** UPS JSON Schemas, validate_template_output with full error context, 50 unit tests passing.
 
 ### Next Session
 
-**Resume with:** `/gsd:execute-phase 4` to continue Phase 4 (04-03 through 04-07)
+**Resume with:** `/gsd:execute-phase 4` to continue Phase 4 (04-05 through 04-07)
 **Context needed:** None - STATE.md contains full context
 
 ---
