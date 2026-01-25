@@ -162,3 +162,120 @@ async def get_job_status_tool(args: dict[str, Any]) -> dict[str, Any]:
 GET_JOB_STATUS_SCHEMA = {
     "job_id": {"type": "string", "description": "UUID of the job to query"},
 }
+
+
+async def list_tools_tool(args: dict[str, Any]) -> dict[str, Any]:
+    """List all available tools across MCPs and orchestrator.
+
+    Returns a summary of available tools organized by namespace.
+    For detailed tool schemas, Claude can inspect individual tools.
+
+    Args:
+        args: Dict with:
+            - namespace (str, optional): Filter to specific namespace ("data", "ups", "orchestrator")
+
+    Returns:
+        MCP tool response listing available tools.
+    """
+    namespace = args.get("namespace")
+
+    # Orchestrator tools (always available)
+    tools = {
+        "orchestrator": [
+            {"name": "process_command", "description": "Process natural language shipping command"},
+            {"name": "get_job_status", "description": "Get shipping job status"},
+            {"name": "list_tools", "description": "List available tools"},
+        ],
+        "data": [
+            {"name": "import_csv", "description": "Import CSV file"},
+            {"name": "import_excel", "description": "Import Excel file"},
+            {"name": "import_database", "description": "Import from database"},
+            {"name": "list_sheets", "description": "List Excel sheets"},
+            {"name": "list_tables", "description": "List database tables"},
+            {"name": "get_schema", "description": "Get data schema"},
+            {"name": "override_column_type", "description": "Override column type"},
+            {"name": "get_row", "description": "Get single row"},
+            {"name": "get_rows_by_filter", "description": "Get filtered rows"},
+            {"name": "query_data", "description": "Execute SQL query"},
+            {"name": "compute_checksums", "description": "Compute row checksums"},
+            {"name": "verify_checksum", "description": "Verify row checksum"},
+        ],
+        "ups": [
+            {"name": "rating_quote", "description": "Get shipping rate quote"},
+            {"name": "rating_shop", "description": "Compare shipping rates"},
+            {"name": "shipping_create", "description": "Create shipment"},
+            {"name": "shipping_void", "description": "Void shipment"},
+            {"name": "shipping_get_label", "description": "Get shipping label"},
+            {"name": "address_validate", "description": "Validate address"},
+        ],
+    }
+
+    if namespace:
+        if namespace not in tools:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": f"Unknown namespace: {namespace}",
+                        "available": list(tools.keys())
+                    })
+                }],
+                "isError": True
+            }
+        tools = {namespace: tools[namespace]}
+
+    return {
+        "content": [{
+            "type": "text",
+            "text": json.dumps(tools, indent=2)
+        }]
+    }
+
+
+LIST_TOOLS_SCHEMA = {
+    "namespace": {"type": "string", "description": "Optional filter by namespace (data, ups, orchestrator)"},
+}
+
+
+def get_orchestrator_tools() -> list[dict[str, Any]]:
+    """Get list of orchestrator tool definitions for SDK MCP server registration.
+
+    Returns list of dicts with:
+    - name: Tool name
+    - description: Tool description
+    - schema: Parameter schema
+    - function: Async function to execute
+
+    Used by create_sdk_mcp_server() in Plan 04.
+    """
+    return [
+        {
+            "name": "process_command",
+            "description": "Process a natural language shipping command into structured intent and templates",
+            "schema": PROCESS_COMMAND_SCHEMA,
+            "function": process_command_tool,
+        },
+        {
+            "name": "get_job_status",
+            "description": "Get the status of a shipping job by ID",
+            "schema": GET_JOB_STATUS_SCHEMA,
+            "function": get_job_status_tool,
+        },
+        {
+            "name": "list_tools",
+            "description": "List all available tools across MCPs and orchestrator",
+            "schema": LIST_TOOLS_SCHEMA,
+            "function": list_tools_tool,
+        },
+    ]
+
+
+__all__ = [
+    "process_command_tool",
+    "get_job_status_tool",
+    "list_tools_tool",
+    "get_orchestrator_tools",
+    "PROCESS_COMMAND_SCHEMA",
+    "GET_JOB_STATUS_SCHEMA",
+    "LIST_TOOLS_SCHEMA",
+]
