@@ -13,6 +13,27 @@ Architecture:
 
 Modules:
     config: MCP server configuration for ClaudeAgentOptions
+
+Exports:
+    PROJECT_ROOT: Path to project root directory
+    MCPServerConfig: TypedDict for MCP server spawn configuration
+    get_data_mcp_config: Returns Data MCP configuration
+    get_ups_mcp_config: Returns UPS MCP configuration
+    create_mcp_servers_config: Returns combined MCP server configurations
 """
 
-# Exports populated after config.py is created (Task 2)
+from src.orchestrator.agent.config import (
+    PROJECT_ROOT,
+    MCPServerConfig,
+    get_data_mcp_config,
+    get_ups_mcp_config,
+    create_mcp_servers_config,
+)
+
+__all__ = [
+    "PROJECT_ROOT",
+    "MCPServerConfig",
+    "get_data_mcp_config",
+    "get_ups_mcp_config",
+    "create_mcp_servers_config",
+]
