@@ -5,6 +5,22 @@ template generation, template validation, self-correction, and
 elicitation using Claude's structured outputs.
 """
 
+# Import template_validator first to avoid circular imports
+# (self_correction and correction models depend on ValidationError)
+from src.orchestrator.nl_engine.template_validator import (
+    TemplateValidationError,
+    ValidationError,
+    ValidationResult,
+    format_validation_errors,
+    validate_field_value,
+    validate_template_output,
+)
+from src.orchestrator.nl_engine.ups_schema import (
+    UPS_PACKAGE_SCHEMA,
+    UPS_SHIPMENT_SCHEMA,
+    UPS_SHIPTO_SCHEMA,
+    get_schema_for_path,
+)
 from src.orchestrator.nl_engine.elicitation import (
     ELICITATION_TEMPLATES,
     create_elicitation_context,
@@ -34,20 +50,6 @@ from src.orchestrator.nl_engine.self_correction import (
     format_errors_for_llm,
     format_user_feedback,
     self_correction_loop,
-)
-from src.orchestrator.nl_engine.template_validator import (
-    TemplateValidationError,
-    ValidationError,
-    ValidationResult,
-    format_validation_errors,
-    validate_field_value,
-    validate_template_output,
-)
-from src.orchestrator.nl_engine.ups_schema import (
-    UPS_PACKAGE_SCHEMA,
-    UPS_SHIPMENT_SCHEMA,
-    UPS_SHIPTO_SCHEMA,
-    get_schema_for_path,
 )
 from src.orchestrator.models.correction import MaxCorrectionsExceeded
 from src.orchestrator.models.mapping import MappingGenerationError
