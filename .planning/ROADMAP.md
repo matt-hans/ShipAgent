@@ -126,6 +126,17 @@ Plans:
 4. Template validation runs against UPS schema and reports any mismatches before execution
 5. When validation fails, system automatically adjusts template and re-validates (max 3 attempts)
 
+**Plans:** 7 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Intent parser with Pydantic models and Claude structured outputs
+- [ ] 04-02-PLAN.md — SQL filter generator with schema grounding
+- [ ] 04-03-PLAN.md — Jinja2 mapping template generator with logistics filters
+- [ ] 04-04-PLAN.md — Template validator against UPS JSON schemas
+- [ ] 04-05-PLAN.md — Self-correction loop with max 3 attempts
+- [ ] 04-06-PLAN.md — Elicitation for ambiguous commands
+- [ ] 04-07-PLAN.md — Integration testing and human verification
+
 ---
 
 ### Phase 5: Orchestration Agent
@@ -203,7 +214,7 @@ Plans:
 | 1 - Foundation | Complete | 4 | 100% |
 | 2 - Data Source MCP | Complete | 5 | 100% |
 | 3 - UPS Integration MCP | Complete | 7 | 100% |
-| 4 - NL and Mapping | Not Started | 6 | 0% |
+| 4 - NL and Mapping | Planned | 6 | 0% |
 | 5 - Orchestration | Not Started | 3 | 0% |
 | 6 - Batch Execution | Not Started | 7 | 0% |
 | 7 - Web Interface | Not Started | 5 | 0% |
@@ -250,4 +261,4 @@ Phase 1: Foundation
 
 ---
 
-*Last updated: 2026-01-24*
+*Last updated: 2026-01-25*
