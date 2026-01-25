@@ -168,6 +168,11 @@ def _build_jinja_expression(mapping: FieldMapping) -> str:
     Returns:
         Jinja2 expression string.
 
+    Note:
+        default_value is applied BEFORE transformation so that None/empty
+        values get replaced before the transformation filter runs. This
+        prevents errors like to_ups_phone receiving None.
+
     Examples:
         >>> _build_jinja_expression(FieldMapping(source_column="name", target_path="ShipTo.Name"))
         '{{ name }}'
@@ -180,9 +185,7 @@ def _build_jinja_expression(mapping: FieldMapping) -> str:
     """
     expr = f"{{{{ {mapping.source_column}"
 
-    if mapping.transformation:
-        expr += f" | {mapping.transformation}"
-
+    # Apply default_value FIRST so None gets replaced before transformation
     if mapping.default_value is not None:
         # Escape string defaults
         if isinstance(mapping.default_value, str):
@@ -190,6 +193,10 @@ def _build_jinja_expression(mapping: FieldMapping) -> str:
             expr += f" | default_value('{default_escaped}')"
         else:
             expr += f" | default_value({mapping.default_value})"
+
+    # Apply transformation AFTER default_value
+    if mapping.transformation:
+        expr += f" | {mapping.transformation}"
 
     expr += " }}"
     return expr
