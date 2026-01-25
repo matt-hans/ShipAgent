@@ -1,7 +1,20 @@
 """Orchestration Agent package for ShipAgent.
 
-This package contains the Orchestration Agent that uses the Claude Agent SDK
-to coordinate MCP servers for natural language shipment processing.
+This package provides the Claude Agent SDK-based orchestration layer that
+coordinates multiple MCP servers (Data Source, UPS) via stdio transport.
+
+Main Entry Points:
+    OrchestrationAgent: Main agent class with lifecycle management
+    create_agent: Factory to create and start an agent
+
+Configuration:
+    create_mcp_servers_config: Get MCP server configurations
+    create_hook_matchers: Get hook configurations
+
+Per CONTEXT.md:
+- MCPs spawn eagerly at startup
+- Session persists for process lifetime
+- Graceful shutdown with 5s timeout
 
 Architecture:
     The agent spawns MCP servers as child processes via stdio transport:
@@ -15,8 +28,13 @@ Modules:
     config: MCP server configuration for ClaudeAgentOptions
     tools: Orchestrator-native tools for the SDK MCP server
     hooks: PreToolUse and PostToolUse hook implementations
+    client: Main OrchestrationAgent class
 
 Exports:
+    Client:
+        OrchestrationAgent: Main agent class
+        create_agent: Factory function to create started agent
+
     Configuration:
         PROJECT_ROOT: Path to project root directory
         MCPServerConfig: TypedDict for MCP server spawn configuration
@@ -66,7 +84,16 @@ from src.orchestrator.agent.hooks import (
     validate_shipping_input,
 )
 
+# Client
+from src.orchestrator.agent.client import (
+    OrchestrationAgent,
+    create_agent,
+)
+
 __all__ = [
+    # Main entry points
+    "OrchestrationAgent",
+    "create_agent",
     # Configuration
     "PROJECT_ROOT",
     "MCPServerConfig",
