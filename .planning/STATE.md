@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 6 of 7 (Batch Execution Engine)
-**Plan:** 2 of 7 complete (06-02)
+**Plan:** 4 of 7 complete (06-04)
 **Status:** In progress
-**Last activity:** 2026-01-25 - Completed 06-02-PLAN.md (Batch Core Models)
+**Last activity:** 2026-01-25 - Completed 06-04-PLAN.md (BatchExecutor Core)
 
 ```
-Progress: [################----] 86%
-Phase 6 of 7 IN PROGRESS | Plan 2 of 7 complete | 32/37 total plans
+Progress: [##################--] 91%
+Phase 6 of 7 IN PROGRESS | Plan 4 of 7 complete | 34/37 total plans
 ```
 
 ---
@@ -28,7 +28,7 @@ Phase 6 of 7 IN PROGRESS | Plan 2 of 7 complete | 32/37 total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 32 |
+| Plans Completed | 34 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 5 / 7 |
@@ -122,6 +122,11 @@ Phase 6 of 7 IN PROGRESS | Plan 2 of 7 complete | 32/37 total plans
 | str+Enum inheritance for ExecutionMode | JSON serialization friendly, consistent with Phase 1 enums | 06-02 |
 | Protocol for BatchEventObserver | Structural subtyping allows any conforming class without inheritance | 06-02 |
 | Exception isolation in event emission | One broken observer should not stop event delivery to others | 06-02 |
+| Callable injection for MCP tools | Decouples PreviewGenerator from MCP transport, enables testing | 06-03 |
+| Decimal for cost parsing | Avoids floating point precision issues with currency | 06-03 |
+| Fail-fast on preview error | User needs to fix data issues; partial preview misleading | 06-03 |
+| Callable pattern for BatchExecutor MCP calls | Decouples executor from MCP implementation, enables testing | 06-04 |
+| Event emission before re-raise on row failure | Observers notified of failure even when fail-fast halts execution | 06-04 |
 
 ### Discovered TODOs
 
@@ -258,12 +263,12 @@ Phase 5 delivered the Orchestration Agent with Claude Agent SDK:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 06-02-PLAN.md (Batch Core Models)
-**Outcome:** Verified batch package with ExecutionMode enum, SessionModeManager, BatchEventObserver Protocol, BatchEventEmitter, and 4 dataclasses (PreviewRow, BatchPreview, BatchResult, InterruptedJobInfo). 28 unit tests pass.
+**Action:** Completed 06-04-PLAN.md (BatchExecutor Core)
+**Outcome:** Created BatchExecutor class with fail-fast execution loop, per-row state checkpoints, crash recovery via pending rows, immediate write-back, and event emission. 19 unit tests pass, 67 total batch tests pass.
 
 ### Next Session
 
-**Resume with:** 06-03-PLAN.md (BatchExecutor Core)
+**Resume with:** 06-05-PLAN.md (Batch Orchestration Tools)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -278,4 +283,4 @@ Phase 5 delivered the Orchestration Agent with Claude Agent SDK:
 
 ---
 
-*Last updated: 2026-01-25 (06-02 complete, Phase 6 in progress)*
+*Last updated: 2026-01-25 (06-04 complete, Phase 6 in progress)*
