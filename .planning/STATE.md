@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 5 of 7 (Orchestration Agent) - IN PROGRESS
-**Plan:** 1 of 5 complete (05-01)
+**Plan:** 3 of 5 complete (05-01, 05-02, 05-03)
 **Status:** In progress
-**Last activity:** 2026-01-25 - Completed 05-01-PLAN.md (MCP Server Configuration)
+**Last activity:** 2026-01-25 - Completed 05-03-PLAN.md (Orchestrator-Native Tools)
 
 ```
-Progress: [#################---] 81%
-Phase 5 of 7 IN PROGRESS | Plan 1 of 5 complete | 26/30 total plans
+Progress: [##################--] 87%
+Phase 5 of 7 IN PROGRESS | Plan 3 of 5 complete | 28/30 total plans
 ```
 
 ---
@@ -28,7 +28,7 @@ Phase 5 of 7 IN PROGRESS | Plan 1 of 5 complete | 26/30 total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 26 |
+| Plans Completed | 28 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 4 / 7 |
@@ -107,6 +107,9 @@ Phase 5 of 7 IN PROGRESS | Plan 1 of 5 complete | 26/30 total plans
 | python3 as Data MCP command | Explicit python3 ensures Python 3 interpreter on all systems | 05-01 |
 | Warn but don't fail on missing UPS credentials | Let MCP fail with clear error rather than config-time failure | 05-01 |
 | TypedDict for MCPServerConfig | Strong typing without runtime overhead, compatible with dict-based APIs | 05-01 |
+| Singleton NLMappingEngine instance | Avoid recreating engine for each command, reuse Jinja environment | 05-03 |
+| Sync get_db_context in async tool | JobService uses sync Session; async wrapper adds complexity without benefit | 05-03 |
+| Hard-coded tool list in list_tools | Simple static list; dynamic discovery adds complexity for MVP | 05-03 |
 
 ### Discovered TODOs
 
@@ -218,14 +221,14 @@ Phase 5 delivers the Orchestration Agent with Claude Agent SDK:
 | Plan | Name | Status |
 |------|------|--------|
 | 05-01 | MCP Server Configuration | COMPLETE |
-| 05-02 | Claude SDK Client | Pending |
-| 05-03 | Agent Tools | Pending |
+| 05-02 | Claude SDK Client | COMPLETE |
+| 05-03 | Orchestrator-Native Tools | COMPLETE |
 | 05-04 | Batch Execution | Pending |
 | 05-05 | Integration Tests | Pending |
 
 **Key Exports from `src/orchestrator/agent`:**
-- PROJECT_ROOT, MCPServerConfig
-- get_data_mcp_config, get_ups_mcp_config, create_mcp_servers_config
+- Configuration: PROJECT_ROOT, MCPServerConfig, get_data_mcp_config, get_ups_mcp_config, create_mcp_servers_config
+- Tools: process_command_tool, get_job_status_tool, list_tools_tool, get_orchestrator_tools
 
 ---
 
@@ -234,12 +237,12 @@ Phase 5 delivers the Orchestration Agent with Claude Agent SDK:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 05-01-PLAN.md (MCP Server Configuration)
-**Outcome:** Agent package created with MCPServerConfig TypedDict, Data MCP and UPS MCP configurations ready for Claude Agent SDK integration.
+**Action:** Completed 05-03-PLAN.md (Orchestrator-Native Tools)
+**Outcome:** Three orchestrator-native tools created: process_command (wraps NLMappingEngine), get_job_status (wraps JobService), list_tools (tool discovery). All tools return MCP-compliant response format.
 
 ### Next Session
 
-**Resume with:** Execute 05-02-PLAN.md (Claude SDK Client)
+**Resume with:** Execute 05-04-PLAN.md (SDK MCP Server)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -256,4 +259,4 @@ Phase 5 delivers the Orchestration Agent with Claude Agent SDK:
 
 ---
 
-*Last updated: 2026-01-25 (05-01 complete)*
+*Last updated: 2026-01-25 (05-03 complete)*
