@@ -9,9 +9,25 @@ from src.orchestrator.models.filter import (
     FilterGenerationError,
     SQLFilterResult,
 )
+from src.orchestrator.models.intent import (
+    CODE_TO_SERVICE,
+    SERVICE_ALIASES,
+    FilterCriteria,
+    RowQualifier,
+    ServiceCode,
+    ShippingIntent,
+)
 
 __all__ = [
+    # Filter models
     "ColumnInfo",
     "SQLFilterResult",
     "FilterGenerationError",
+    # Intent models
+    "ShippingIntent",
+    "FilterCriteria",
+    "RowQualifier",
+    "ServiceCode",
+    "SERVICE_ALIASES",
+    "CODE_TO_SERVICE",
 ]
