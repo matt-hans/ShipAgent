@@ -5,6 +5,7 @@ handling, and crash recovery support.
 """
 
 from src.orchestrator.batch.events import BatchEventEmitter, BatchEventObserver
+from src.orchestrator.batch.executor import BatchExecutor
 from src.orchestrator.batch.modes import ExecutionMode, SessionModeManager
 from src.orchestrator.batch.models import (
     BatchPreview,
@@ -19,6 +20,7 @@ __all__ = [
     "SessionModeManager",
     "BatchEventObserver",
     "BatchEventEmitter",
+    "BatchExecutor",
     "BatchResult",
     "PreviewRow",
     "BatchPreview",
