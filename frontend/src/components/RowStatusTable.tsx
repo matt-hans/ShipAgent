@@ -9,6 +9,7 @@ import * as React from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { LabelDownloadButton } from '@/components/LabelDownloadButton';
 import { getJobRows } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import type { JobRow, RowStatus } from '@/types/api';
@@ -24,6 +25,8 @@ export interface RowStatusTableProps {
   autoRefresh?: boolean;
   /** Refresh interval in milliseconds. Default: 2000. */
   refreshInterval?: number;
+  /** Callback to open label preview for a tracking number. */
+  onPreviewLabel?: (trackingNumber: string) => void;
   /** Optional additional class name. */
   className?: string;
 }
@@ -101,6 +104,7 @@ export function RowStatusTable({
   onToggle,
   autoRefresh = false,
   refreshInterval = 2000,
+  onPreviewLabel,
   className,
 }: RowStatusTableProps) {
   const [rows, setRows] = React.useState<JobRow[]>([]);
@@ -219,6 +223,7 @@ export function RowStatusTable({
                     <th className="py-2 px-2 font-medium">Tracking</th>
                     <th className="py-2 px-2 font-medium w-20 text-right">Cost</th>
                     <th className="py-2 px-2 font-medium">Error</th>
+                    <th className="py-2 px-2 font-medium w-24 text-center">Label</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -257,6 +262,30 @@ export function RowStatusTable({
                           <span className="text-muted-foreground">-</span>
                         )}
                       </td>
+                      <td className="py-2 px-2 text-center">
+                        {row.tracking_number && row.status === 'completed' ? (
+                          <div className="flex items-center justify-center gap-1">
+                            {onPreviewLabel && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 w-8 p-0"
+                                onClick={() => onPreviewLabel(row.tracking_number!)}
+                                title="Preview label"
+                              >
+                                <EyeIcon className="h-4 w-4" />
+                                <span className="sr-only">Preview</span>
+                              </Button>
+                            )}
+                            <LabelDownloadButton
+                              trackingNumber={row.tracking_number}
+                              variant="icon"
+                            />
+                          </div>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -266,6 +295,25 @@ export function RowStatusTable({
         </CardContent>
       )}
     </Card>
+  );
+}
+
+// Eye icon for preview button
+function EyeIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
   );
 }
 

@@ -10,7 +10,7 @@
 
 import * as React from 'react';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CommandInput } from '@/components/CommandInput';
 import { CommandHistory } from '@/components/CommandHistory';
 import { PreviewGrid } from '@/components/PreviewGrid';
@@ -18,6 +18,8 @@ import { ConfirmationFooter } from '@/components/ConfirmationFooter';
 import { ProgressDisplay } from '@/components/ProgressDisplay';
 import { RowStatusTable } from '@/components/RowStatusTable';
 import { ErrorAlert } from '@/components/ErrorAlert';
+import { CompletionSummary } from '@/components/CompletionSummary';
+import { LabelPreview } from '@/components/LabelPreview';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import {
   submitCommand,
@@ -29,13 +31,6 @@ import type { BatchPreview, CommandHistoryItem } from '@/types/api';
 
 /** Dashboard phase states. */
 type DashboardPhase = 'input' | 'preview' | 'executing' | 'complete';
-
-/**
- * Formats cents as currency string.
- */
-function formatCurrency(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
 
 /**
  * Dashboard is the main application component.
@@ -71,6 +66,9 @@ export function Dashboard() {
 
   // Row table expansion state
   const [rowTableExpanded, setRowTableExpanded] = React.useState(false);
+
+  // Label preview modal state
+  const [previewTrackingNumber, setPreviewTrackingNumber] = React.useState<string | null>(null);
 
   // Load command history on mount
   React.useEffect(() => {
@@ -166,6 +164,17 @@ export function Dashboard() {
     setShowError(true);
     setIsPreviewLoading(false);
     setIsConfirming(false);
+    setPreviewTrackingNumber(null);
+  };
+
+  // Open label preview modal
+  const handlePreviewLabel = (trackingNumber: string) => {
+    setPreviewTrackingNumber(trackingNumber);
+  };
+
+  // Close label preview modal
+  const handleClosePreview = () => {
+    setPreviewTrackingNumber(null);
   };
 
   // Cancel handler
@@ -274,6 +283,7 @@ export function Dashboard() {
               isExpanded={rowTableExpanded}
               onToggle={() => setRowTableExpanded(!rowTableExpanded)}
               autoRefresh={progress.status === 'running'}
+              onPreviewLabel={handlePreviewLabel}
             />
 
             {/* Failed state actions */}
@@ -288,64 +298,16 @@ export function Dashboard() {
         {/* Complete Phase */}
         {phase === 'complete' && jobId && (
           <div className="space-y-4">
-            <Card>
-              <CardHeader className="text-center">
-                <div className="mx-auto mb-4 inline-flex items-center justify-center h-16 w-16 rounded-full bg-green-100 dark:bg-green-900/30">
-                  <CheckIcon className="h-8 w-8 text-green-600 dark:text-green-400" />
-                </div>
-                <CardTitle className="text-2xl">Batch Complete!</CardTitle>
-                <CardDescription>
-                  All shipments have been processed successfully
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
-                  <div className="p-4 rounded-lg bg-muted">
-                    <p className="text-2xl font-bold">{progress.total}</p>
-                    <p className="text-sm text-muted-foreground">Total</p>
-                  </div>
-                  <div className="p-4 rounded-lg bg-green-50 dark:bg-green-900/20">
-                    <p className="text-2xl font-bold text-green-600 dark:text-green-400">
-                      {progress.successful}
-                    </p>
-                    <p className="text-sm text-muted-foreground">Successful</p>
-                  </div>
-                  <div className="p-4 rounded-lg bg-red-50 dark:bg-red-900/20">
-                    <p className="text-2xl font-bold text-red-600 dark:text-red-400">
-                      {progress.failed}
-                    </p>
-                    <p className="text-sm text-muted-foreground">Failed</p>
-                  </div>
-                  <div className="p-4 rounded-lg bg-muted">
-                    <p className="text-2xl font-bold">
-                      {formatCurrency(progress.totalCostCents)}
-                    </p>
-                    <p className="text-sm text-muted-foreground">Total Cost</p>
-                  </div>
-                </div>
-
-                {/* Label download section */}
-                <div className="mt-6 p-4 border rounded-lg">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium">Download Labels</p>
-                      <p className="text-sm text-muted-foreground">
-                        {progress.successful} label(s) available
-                      </p>
-                    </div>
-                    <Button variant="outline" disabled>
-                      <DownloadIcon className="h-4 w-4 mr-2" />
-                      Download All (ZIP)
-                    </Button>
-                  </div>
-                </div>
-              </CardContent>
-              <CardFooter className="flex justify-center border-t pt-4">
-                <Button onClick={handleNewBatch} size="lg">
-                  Start New Batch
-                </Button>
-              </CardFooter>
-            </Card>
+            {/* Completion summary with label downloads */}
+            <CompletionSummary
+              jobId={jobId}
+              totalRows={progress.total}
+              successfulRows={progress.successful}
+              failedRows={progress.failed}
+              totalCostCents={progress.totalCostCents}
+              onNewBatch={handleNewBatch}
+              onPreviewLabel={handlePreviewLabel}
+            />
 
             {/* Row details for complete phase */}
             <RowStatusTable
@@ -353,6 +315,7 @@ export function Dashboard() {
               isExpanded={rowTableExpanded}
               onToggle={() => setRowTableExpanded(!rowTableExpanded)}
               autoRefresh={false}
+              onPreviewLabel={handlePreviewLabel}
             />
           </div>
         )}
@@ -369,44 +332,16 @@ export function Dashboard() {
           visible={true}
         />
       )}
+
+      {/* Label Preview Modal */}
+      {previewTrackingNumber && (
+        <LabelPreview
+          trackingNumber={previewTrackingNumber}
+          isOpen={true}
+          onClose={handleClosePreview}
+        />
+      )}
     </div>
-  );
-}
-
-// Simple SVG icons
-function CheckIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  );
-}
-
-function DownloadIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-      <polyline points="7 10 12 15 17 10" />
-      <line x1="12" y1="15" x2="12" y2="3" />
-    </svg>
   );
 }
 
