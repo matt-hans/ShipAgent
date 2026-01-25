@@ -14,6 +14,12 @@ from src.orchestrator.batch.models import (
     PreviewRow,
 )
 from src.orchestrator.batch.preview import PreviewGenerator
+from src.orchestrator.batch.recovery import (
+    RecoveryChoice,
+    check_interrupted_jobs,
+    get_recovery_prompt,
+    handle_recovery_choice,
+)
 
 __all__ = [
     "ExecutionMode",
@@ -26,4 +32,8 @@ __all__ = [
     "BatchPreview",
     "InterruptedJobInfo",
     "PreviewGenerator",
+    "RecoveryChoice",
+    "check_interrupted_jobs",
+    "get_recovery_prompt",
+    "handle_recovery_choice",
 ]
