@@ -157,6 +157,15 @@ Plans:
 4. Post-tool hooks validate outputs and trigger error handling when needed
 5. Agent maintains conversation context across multiple user commands
 
+**Plans:** 5 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — MCP server configuration (Data MCP and UPS MCP spawn configs)
+- [ ] 05-02-PLAN.md — Hook system (PreToolUse validation, PostToolUse logging)
+- [ ] 05-03-PLAN.md — Orchestrator tools (process_command, get_job_status, list_tools)
+- [ ] 05-04-PLAN.md — OrchestrationAgent client with ClaudeSDKClient lifecycle
+- [ ] 05-05-PLAN.md — Integration testing and verification
+
 ---
 
 ### Phase 6: Batch Execution Engine
@@ -215,7 +224,7 @@ Plans:
 | 2 - Data Source MCP | Complete | 5 | 100% |
 | 3 - UPS Integration MCP | Complete | 7 | 100% |
 | 4 - NL and Mapping | Complete | 6 | 100% |
-| 5 - Orchestration | Not Started | 3 | 0% |
+| 5 - Orchestration | Planned | 3 | 0% |
 | 6 - Batch Execution | Not Started | 7 | 0% |
 | 7 - Web Interface | Not Started | 5 | 0% |
 
