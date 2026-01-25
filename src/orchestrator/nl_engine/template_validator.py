@@ -282,25 +282,27 @@ def format_validation_errors(result: ValidationResult) -> str:
         >>> "Validation failed" in output
         True
     """
+    lines = []
+
     if result.valid:
-        return "Validation passed with no errors."
-
-    error_count = len(result.errors)
-    lines = [f"Validation failed with {error_count} error(s):"]
-    lines.append("")
-
-    for i, error in enumerate(result.errors, 1):
-        lines.append(f"Error {i}: {error.path}")
-        lines.append(f"  Expected: {error.expected}")
-        lines.append(f"  Got: {error.actual!r}")
-        lines.append(f"  Rule: {error.schema_rule}")
+        lines.append("Validation passed with no errors.")
+    else:
+        error_count = len(result.errors)
+        lines.append(f"Validation failed with {error_count} error(s):")
         lines.append("")
 
+        for i, error in enumerate(result.errors, 1):
+            lines.append(f"Error {i}: {error.path}")
+            lines.append(f"  Expected: {error.expected}")
+            lines.append(f"  Got: {error.actual!r}")
+            lines.append(f"  Rule: {error.schema_rule}")
+            lines.append("")
+
     if result.warnings:
+        lines.append("")
         lines.append("Warnings:")
         for warning in result.warnings:
             lines.append(f"  - {warning}")
-        lines.append("")
 
     return "\n".join(lines)
 
