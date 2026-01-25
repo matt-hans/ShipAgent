@@ -225,6 +225,16 @@ Plans:
 4. User can click to download individual labels or bulk download as ZIP
 5. FastAPI serves both API endpoints and static UI assets
 
+**Plans:** 6 plans
+
+Plans:
+- [ ] 07-01-PLAN.md — Backend API (commands, labels, SSE progress endpoints)
+- [ ] 07-02-PLAN.md — React frontend setup (Vite, Tailwind, shadcn/ui, hooks)
+- [ ] 07-03-PLAN.md — Command input and preview components
+- [ ] 07-04-PLAN.md — Real-time progress display with SSE
+- [ ] 07-05-PLAN.md — Label preview modal and downloads
+- [ ] 07-06-PLAN.md — Static serving and integration testing
+
 ---
 
 ## Progress
@@ -237,7 +247,7 @@ Plans:
 | 4 - NL and Mapping | Complete | 6 | 100% |
 | 5 - Orchestration | Complete | 3 | 100% |
 | 6 - Batch Execution | Complete | 7 | 100% |
-| 7 - Web Interface | Not Started | 5 | 0% |
+| 7 - Web Interface | Planned | 5 | 0% |
 
 **Total:** 37 requirements across 7 phases (32 complete)
 
