@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 6 of 7 (Batch Execution Engine)
-**Plan:** 4 of 7 complete (06-04)
+**Plan:** 5 of 7 complete (06-05)
 **Status:** In progress
-**Last activity:** 2026-01-25 - Completed 06-04-PLAN.md (BatchExecutor Core)
+**Last activity:** 2026-01-25 - Completed 06-05-PLAN.md (Crash Recovery)
 
 ```
-Progress: [##################--] 91%
-Phase 6 of 7 IN PROGRESS | Plan 4 of 7 complete | 34/37 total plans
+Progress: [##################--] 94%
+Phase 6 of 7 IN PROGRESS | Plan 5 of 7 complete | 35/37 total plans
 ```
 
 ---
@@ -28,7 +28,7 @@ Phase 6 of 7 IN PROGRESS | Plan 4 of 7 complete | 34/37 total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 34 |
+| Plans Completed | 35 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 5 / 7 |
@@ -127,6 +127,7 @@ Phase 6 of 7 IN PROGRESS | Plan 4 of 7 complete | 34/37 total plans
 | Fail-fast on preview error | User needs to fix data issues; partial preview misleading | 06-03 |
 | Callable pattern for BatchExecutor MCP calls | Decouples executor from MCP implementation, enables testing | 06-04 |
 | Event emission before re-raise on row failure | Observers notified of failure even when fail-fast halts execution | 06-04 |
+| Running state as crash indicator | Jobs in 'running' state indicate interrupted execution; normal completion transitions to completed/failed | 06-05 |
 
 ### Discovered TODOs
 
@@ -263,12 +264,12 @@ Phase 5 delivered the Orchestration Agent with Claude Agent SDK:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 06-04-PLAN.md (BatchExecutor Core)
-**Outcome:** Created BatchExecutor class with fail-fast execution loop, per-row state checkpoints, crash recovery via pending rows, immediate write-back, and event emission. 19 unit tests pass, 67 total batch tests pass.
+**Action:** Completed 06-05-PLAN.md (Crash Recovery)
+**Outcome:** Created recovery module with check_interrupted_jobs, get_recovery_prompt, handle_recovery_choice, and RecoveryChoice enum. 14 unit tests pass, 81 total batch tests pass.
 
 ### Next Session
 
-**Resume with:** 06-05-PLAN.md (Batch Orchestration Tools)
+**Resume with:** 06-06-PLAN.md (Batch Orchestration Tools)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -283,4 +284,4 @@ Phase 5 delivered the Orchestration Agent with Claude Agent SDK:
 
 ---
 
-*Last updated: 2026-01-25 (06-04 complete, Phase 6 in progress)*
+*Last updated: 2026-01-25 (06-05 complete, Phase 6 in progress)*

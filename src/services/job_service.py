@@ -522,6 +522,56 @@ class JobService:
         return row
 
     # =========================================================================
+    # Recovery Operations
+    # =========================================================================
+
+    def reset_job_for_restart(self, job_id: str) -> Job:
+        """Reset a job and all its rows for restart from scratch.
+
+        Resets job counters and marks all rows as pending. Used for crash
+        recovery when user chooses to restart instead of resume.
+
+        Args:
+            job_id: The UUID of the job to reset.
+
+        Returns:
+            The updated Job object.
+
+        Raises:
+            ValueError: If job not found.
+        """
+        job = self.get_job(job_id)
+        if job is None:
+            raise ValueError(f"Job not found: {job_id}")
+
+        now = _utc_now_iso()
+
+        # Reset job counters
+        job.processed_rows = 0
+        job.successful_rows = 0
+        job.failed_rows = 0
+        job.error_code = None
+        job.error_message = None
+        job.started_at = None
+        job.completed_at = None
+        job.updated_at = now
+
+        # Reset all rows to pending
+        rows = self.get_rows(job_id)
+        for row in rows:
+            row.status = RowStatus.pending.value
+            row.tracking_number = None
+            row.label_path = None
+            row.cost_cents = None
+            row.error_code = None
+            row.error_message = None
+            row.processed_at = None
+
+        self.db.commit()
+        self.db.refresh(job)
+        return job
+
+    # =========================================================================
     # Aggregation Operations
     # =========================================================================
 
