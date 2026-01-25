@@ -6,20 +6,20 @@
 
 **Architecture:** LLM as Configuration Engine - generates templates, deterministic code executes on data.
 
-**Current Focus:** Phase 5 COMPLETE - Orchestration Agent
+**Current Focus:** Phase 6 IN PROGRESS - Batch Execution Engine
 
 ---
 
 ## Current Position
 
-**Phase:** 5 of 7 (Orchestration Agent) - COMPLETE
-**Plan:** 5 of 5 complete (05-01, 05-02, 05-03, 05-04, 05-05)
-**Status:** Phase complete
-**Last activity:** 2026-01-25 - Completed 05-05-PLAN.md (Integration Tests)
+**Phase:** 6 of 7 (Batch Execution Engine)
+**Plan:** 1 of 7 complete (06-01)
+**Status:** In progress
+**Last activity:** 2026-01-25 - Completed 06-01-PLAN.md (Write-Back Tool)
 
 ```
-Progress: [####################] 100%
-Phase 5 of 7 COMPLETE | Plan 5 of 5 complete | 30/30 total plans
+Progress: [################----] 82%
+Phase 6 of 7 IN PROGRESS | Plan 1 of 7 complete | 31/37 total plans
 ```
 
 ---
@@ -28,7 +28,7 @@ Phase 5 of 7 COMPLETE | Plan 5 of 5 complete | 30/30 total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 30 |
+| Plans Completed | 31 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 5 / 7 |
@@ -117,6 +117,8 @@ Phase 5 of 7 COMPLETE | Plan 5 of 5 complete | 30/30 total plans
 | Eager MCP spawn at startup | Per CONTEXT.md Decision 1: spawn on connect(), not first tool use | 05-04 |
 | 5s graceful shutdown timeout | Per CONTEXT.md Decision 1: allow MCPs to clean up before force kill | 05-04 |
 | pytest.mark.integration for API tests | Integration tests require ANTHROPIC_API_KEY; can be skipped in CI | 05-05 |
+| Keyword exact match for table extraction | Substring check "ORDER in table_ref" matches "orders" incorrectly | 06-01 |
+| Reject subqueries in write-back | Cannot UPDATE a subquery result set | 06-01 |
 
 ### Discovered TODOs
 
@@ -253,12 +255,12 @@ Phase 5 delivered the Orchestration Agent with Claude Agent SDK:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 05-05-PLAN.md (Integration Tests)
-**Outcome:** Comprehensive test suite created with 107 unit tests covering config, hooks, tools, and client modules. 5 integration tests ready for API key execution.
+**Action:** Completed 06-01-PLAN.md (Write-Back Tool)
+**Outcome:** Fixed bugs in write_back tool (_extract_table_name substring match, subquery detection). Added 25 unit tests. Data MCP now has 13 tools.
 
 ### Next Session
 
-**Resume with:** Plan Phase 6 (Batch Execution Engine)
+**Resume with:** 06-02-PLAN.md (Batch Core Models)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -268,11 +270,9 @@ Phase 5 delivered the Orchestration Agent with Claude Agent SDK:
 | Command | Purpose |
 |---------|---------|
 | `/gsd:progress` | Check current status |
-| `/gsd:discuss-phase 6` | Gather context for Phase 6 |
-| `/gsd:plan-phase 6` | Create detailed plan for Phase 6 |
-| `/gsd:execute-phase 6` | Execute Phase 6 plans |
+| `/gsd:execute-phase 6` | Continue Phase 6 plans |
 | `/gsd:debug [issue]` | Debug specific problem |
 
 ---
 
-*Last updated: 2026-01-25 (05-05 complete, Phase 5 complete)*
+*Last updated: 2026-01-25 (06-01 complete, Phase 6 in progress)*
