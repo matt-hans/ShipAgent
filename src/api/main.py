@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.routes import commands, jobs, labels, logs, progress
+from src.api.routes import commands, jobs, labels, logs, preview, progress
 from src.db.connection import init_db
 from src.errors import ShipAgentError
 
@@ -64,6 +64,7 @@ app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(logs.router, prefix="/api/v1")
 app.include_router(commands.router, prefix="/api/v1")
 app.include_router(labels.router, prefix="/api/v1")
+app.include_router(preview.router, prefix="/api/v1")
 app.include_router(progress.router, prefix="/api/v1")
 
 

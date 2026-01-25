@@ -211,3 +211,45 @@ class CommandHistoryItem(BaseModel):
         """Pydantic config for ORM model conversion."""
 
         from_attributes = True
+
+
+# Preview schemas
+
+
+class PreviewRowResponse(BaseModel):
+    """Response schema for a single row in batch preview."""
+
+    row_number: int
+    recipient_name: str
+    city_state: str
+    service: str
+    estimated_cost_cents: int
+    warnings: list[str] = Field(default_factory=list)
+
+
+class BatchPreviewResponse(BaseModel):
+    """Response schema for batch preview before execution."""
+
+    job_id: str
+    total_rows: int
+    preview_rows: list[PreviewRowResponse]
+    additional_rows: int = Field(
+        default=0, description="Number of rows not included in preview"
+    )
+    total_estimated_cost_cents: int
+    rows_with_warnings: int = Field(
+        default=0, description="Number of rows with warnings"
+    )
+
+
+class ConfirmRequest(BaseModel):
+    """Request schema for confirming a batch for execution."""
+
+    job_id: str
+
+
+class ConfirmResponse(BaseModel):
+    """Response schema for batch confirmation."""
+
+    status: str
+    message: str
