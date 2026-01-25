@@ -1,9 +1,21 @@
 """Pydantic models for the Orchestration Agent.
 
 This module exports models used for intent parsing, filter generation,
-and mapping templates.
+mapping templates, elicitation, and self-correction tracking.
 """
 
+from src.orchestrator.models.correction import (
+    CorrectionAttempt,
+    CorrectionOptions,
+    CorrectionResult,
+    MaxCorrectionsExceeded,
+)
+from src.orchestrator.models.elicitation import (
+    ElicitationContext,
+    ElicitationOption,
+    ElicitationQuestion,
+    ElicitationResponse,
+)
 from src.orchestrator.models.filter import (
     ColumnInfo,
     FilterGenerationError,
@@ -25,6 +37,16 @@ from src.orchestrator.models.mapping import (
 )
 
 __all__ = [
+    # Correction models
+    "CorrectionAttempt",
+    "CorrectionResult",
+    "CorrectionOptions",
+    "MaxCorrectionsExceeded",
+    # Elicitation models
+    "ElicitationContext",
+    "ElicitationOption",
+    "ElicitationQuestion",
+    "ElicitationResponse",
     # Filter models
     "ColumnInfo",
     "SQLFilterResult",
