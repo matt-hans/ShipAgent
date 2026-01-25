@@ -7,11 +7,12 @@ attempts up to 3 corrections before escalating to the user with options.
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from pydantic import BaseModel, Field
 
-from src.orchestrator.nl_engine.template_validator import ValidationError
+if TYPE_CHECKING:
+    from src.orchestrator.nl_engine.template_validator import ValidationError
 
 
 class CorrectionOptions(str, Enum):
@@ -53,9 +54,9 @@ class CorrectionAttempt(BaseModel):
         ...,
         description="Jinja2 template before correction",
     )
-    validation_errors: list[ValidationError] = Field(
+    validation_errors: list[Any] = Field(
         default_factory=list,
-        description="Validation errors that triggered correction",
+        description="Validation errors that triggered correction (ValidationError objects)",
     )
     corrected_template: Optional[str] = Field(
         default=None,

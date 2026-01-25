@@ -1,8 +1,8 @@
 """Natural Language Engine for parsing shipping commands.
 
 This module provides intent parsing, filter generation, mapping
-template generation, template validation, and elicitation using
-Claude's structured outputs.
+template generation, template validation, self-correction, and
+elicitation using Claude's structured outputs.
 """
 
 from src.orchestrator.nl_engine.elicitation import (
@@ -29,6 +29,12 @@ from src.orchestrator.nl_engine.mapping_generator import (
     render_template,
     suggest_mappings,
 )
+from src.orchestrator.nl_engine.self_correction import (
+    extract_template_from_response,
+    format_errors_for_llm,
+    format_user_feedback,
+    self_correction_loop,
+)
 from src.orchestrator.nl_engine.template_validator import (
     TemplateValidationError,
     ValidationError,
@@ -43,6 +49,7 @@ from src.orchestrator.nl_engine.ups_schema import (
     UPS_SHIPTO_SCHEMA,
     get_schema_for_path,
 )
+from src.orchestrator.models.correction import MaxCorrectionsExceeded
 from src.orchestrator.models.mapping import MappingGenerationError
 
 __all__ = [
@@ -67,6 +74,12 @@ __all__ = [
     "ValidationResult",
     "ValidationError",
     "TemplateValidationError",
+    # Self-correction
+    "self_correction_loop",
+    "format_errors_for_llm",
+    "extract_template_from_response",
+    "format_user_feedback",
+    "MaxCorrectionsExceeded",
     # UPS Schemas
     "UPS_SHIPTO_SCHEMA",
     "UPS_PACKAGE_SCHEMA",
