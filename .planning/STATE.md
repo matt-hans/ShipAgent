@@ -110,6 +110,9 @@ Phase 5 of 7 IN PROGRESS | Plan 3 of 5 complete | 28/30 total plans
 | Singleton NLMappingEngine instance | Avoid recreating engine for each command, reuse Jinja environment | 05-03 |
 | Sync get_db_context in async tool | JobService uses sync Session; async wrapper adds complexity without benefit | 05-03 |
 | Hard-coded tool list in list_tools | Simple static list; dynamic discovery adds complexity for MVP | 05-03 |
+| Hooks validate only, never modify | Per CONTEXT.md Decision 3, hooks act as gates not transformers | 05-02 |
+| All hook logging to stderr | Stdout reserved for MCP protocol; hooks log to stderr | 05-02 |
+| Hook denial format with hookSpecificOutput | Standard Claude Agent SDK denial pattern with permissionDecision | 05-02 |
 
 ### Discovered TODOs
 
@@ -221,14 +224,15 @@ Phase 5 delivers the Orchestration Agent with Claude Agent SDK:
 | Plan | Name | Status |
 |------|------|--------|
 | 05-01 | MCP Server Configuration | COMPLETE |
-| 05-02 | Claude SDK Client | COMPLETE |
+| 05-02 | Hook System | COMPLETE |
 | 05-03 | Orchestrator-Native Tools | COMPLETE |
-| 05-04 | Batch Execution | Pending |
+| 05-04 | Agent Client | Pending |
 | 05-05 | Integration Tests | Pending |
 
 **Key Exports from `src/orchestrator/agent`:**
 - Configuration: PROJECT_ROOT, MCPServerConfig, get_data_mcp_config, get_ups_mcp_config, create_mcp_servers_config
 - Tools: process_command_tool, get_job_status_tool, list_tools_tool, get_orchestrator_tools
+- Hooks: validate_pre_tool, validate_shipping_input, validate_data_query, log_post_tool, detect_error_response, create_hook_matchers
 
 ---
 
