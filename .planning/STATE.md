@@ -13,12 +13,12 @@
 ## Current Position
 
 **Phase:** 4 of 7 (Natural Language and Mapping Engine) - IN PROGRESS
-**Plan:** 6 of 7 complete
+**Plan:** 6 of 7 complete (04-01 through 04-06)
 **Status:** In progress
-**Last activity:** 2026-01-25 - Completed 04-06-PLAN.md
+**Last activity:** 2026-01-25 - Completed 04-05-PLAN.md (Self-Correction Loop)
 
 ```
-Progress: [##############------] 67%
+Progress: [###############-----] 70%
 Phase 4 of 7 | Plan 6 of 7 complete | 24/26 total plans
 ```
 
@@ -96,6 +96,8 @@ Phase 4 of 7 | Plan 6 of 7 complete | 24/26 total plans
 | Collect ALL errors via iter_errors() | Users need complete error list for efficient fixing | 04-04 |
 | ValidationError with full context | Per CONTEXT.md Decision 4: specific field, expected, actual, rule | 04-04 |
 | Default value before transformation | Apply default_value filter before transformation filters to handle None | 04-03 |
+| TYPE_CHECKING for ValidationError import | Avoid circular import between correction.py and template_validator.py | 04-05 |
+| Max attempts clamped to 1-5 | Prevent infinite loops while allowing user configuration | 04-05 |
 | 5 elicitation templates from CONTEXT.md | Cover common scenarios: date column, weight, dimensions, big, service | 04-06 |
 | Max 4 questions per elicitation | Per Claude Agent SDK documentation limits | 04-06 |
 | Schema customization for question options | Replace generic options with actual columns from source data | 04-06 |
@@ -177,12 +179,12 @@ Phase 3 delivered the UPS Integration MCP with 6 MCP tools:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 04-06-PLAN.md (Elicitation for Ambiguous Commands)
-**Outcome:** MCP-style elicitation with 5 templates, schema customization, 48 unit tests passing.
+**Action:** Completed 04-05-PLAN.md (Self-Correction Loop)
+**Outcome:** LLM-powered template correction with 3-attempt retry, MaxCorrectionsExceeded with 4 user options, 28 unit tests passing.
 
 ### Next Session
 
-**Resume with:** `/gsd:execute-phase 4` to continue Phase 4 (04-07)
+**Resume with:** `/gsd:execute-phase 4` to complete Phase 4 (04-07 End-to-End Pipeline)
 **Context needed:** None - STATE.md contains full context
 
 ---
