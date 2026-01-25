@@ -296,10 +296,12 @@ class TestGetOrchestratorTools:
         for tool in tools:
             assert isinstance(tool["schema"], dict)
 
-    def test_returns_three_tools(self):
-        """Should return exactly 3 orchestrator tools."""
+    def test_returns_seven_tools(self):
+        """Should return exactly 7 orchestrator tools (3 core + 4 batch)."""
         tools = get_orchestrator_tools()
-        assert len(tools) == 3
+        # 3 original: process_command, get_job_status, list_tools
+        # 4 batch: batch_preview, batch_execute, batch_set_mode, batch_resume
+        assert len(tools) == 7
 
 
 class TestMCPResponseFormat:
