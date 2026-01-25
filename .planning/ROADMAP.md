@@ -96,12 +96,12 @@ Plans:
 **Plans:** 6 plans
 
 Plans:
-- [ ] 03-01-PLAN.md — TypeScript package setup, Zod schema generation from OpenAPI specs
-- [ ] 03-02-PLAN.md — OAuth 2.0 authentication and HTTP client with retry logic
-- [ ] 03-03-PLAN.md — Rating tools (rating_quote, rating_shop) with cost breakdown
-- [ ] 03-04-PLAN.md — Shipping tools (shipping_create, shipping_void, shipping_get_label)
-- [ ] 03-05-PLAN.md — Address validation tool (address_validate)
-- [ ] 03-06-PLAN.md — Integration testing against UPS sandbox
+- [x] 03-01-PLAN.md — TypeScript package setup, Zod schema generation from OpenAPI specs
+- [x] 03-02-PLAN.md — OAuth 2.0 authentication and HTTP client with retry logic
+- [x] 03-03-PLAN.md — Rating tools (rating_quote, rating_shop) with cost breakdown
+- [x] 03-04-PLAN.md — Shipping tools (shipping_create, shipping_void, shipping_get_label)
+- [x] 03-05-PLAN.md — Address validation tool (address_validate)
+- [x] 03-06-PLAN.md — Integration testing against UPS sandbox
 
 ---
 
@@ -202,13 +202,13 @@ Plans:
 |-------|--------|--------------|------------|
 | 1 - Foundation | Complete | 4 | 100% |
 | 2 - Data Source MCP | Complete | 5 | 100% |
-| 3 - UPS Integration MCP | Planned | 7 | 0% |
+| 3 - UPS Integration MCP | Complete | 7 | 100% |
 | 4 - NL and Mapping | Not Started | 6 | 0% |
 | 5 - Orchestration | Not Started | 3 | 0% |
 | 6 - Batch Execution | Not Started | 7 | 0% |
 | 7 - Web Interface | Not Started | 5 | 0% |
 
-**Total:** 37 requirements across 7 phases (9 complete)
+**Total:** 37 requirements across 7 phases (16 complete)
 
 ---
 

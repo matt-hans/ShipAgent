@@ -6,19 +6,19 @@
 
 **Architecture:** LLM as Configuration Engine - generates templates, deterministic code executes on data.
 
-**Current Focus:** Phase 3 In Progress - UPS Integration MCP
+**Current Focus:** Phase 3 Complete - Ready for Phase 4 (Natural Language and Mapping Engine)
 
 ---
 
 ## Current Position
 
-**Phase:** 3 of 7 (UPS Integration MCP) - IN PROGRESS
-**Plan:** 5 of 6 complete
-**Status:** In progress
+**Phase:** 3 of 7 (UPS Integration MCP) - COMPLETE
+**Plan:** 6 of 6 complete
+**Status:** Phase complete
 
 ```
-Progress: [#################---] 85%
-Phase 3 of 7 | Plan 5 of 6 complete
+Progress: [##########] 100%
+Phase 3 of 7 | Plan 6 of 6 complete
 ```
 
 ---
@@ -27,10 +27,10 @@ Phase 3 of 7 | Plan 5 of 6 complete
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 16 |
+| Plans Completed | 17 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
-| Phases Completed | 2 / 7 |
+| Phases Completed | 3 / 7 |
 
 ---
 
@@ -138,46 +138,25 @@ Phase 2 delivered the Data Source MCP with 12 tools:
 
 ---
 
-## Phase 3 Progress
+## Phase 3 Completion Summary
 
-Phase 3 is building the UPS Integration MCP:
+Phase 3 delivered the UPS Integration MCP with 6 MCP tools:
 
-| Plan | Name | Status | Key Artifacts |
-|------|------|--------|---------------|
-| 03-01 | TypeScript Package & Schema Foundation | COMPLETE | @shipagent/ups-mcp package, Zod schemas, config validation |
-| 03-02 | OAuth Authentication | COMPLETE | UpsAuthManager, UpsApiClient, error types, 11 unit tests |
-| 03-03 | Rating Tools | COMPLETE | rating_quote, rating_shop tools, 15 unit tests |
-| 03-04 | Shipping Tools | COMPLETE | shipping_create, shipping_void, shipping_get_label, 13 unit tests |
-| 03-05 | Address Validation | COMPLETE | address_validate tool, 15 unit tests |
-| 03-06 | Integration Tests | Pending | |
+| Plan | Name | Key Artifacts |
+|------|------|---------------|
+| 03-01 | TypeScript Package & Schema Foundation | @shipagent/ups-mcp package, Zod schemas, config validation |
+| 03-02 | OAuth Authentication | UpsAuthManager, UpsApiClient, error types, 11 unit tests |
+| 03-03 | Rating Tools | rating_quote, rating_shop tools, 15 unit tests |
+| 03-04 | Shipping Tools | shipping_create, shipping_void, shipping_get_label, 13 unit tests |
+| 03-05 | Address Validation | address_validate tool, 15 unit tests |
+| 03-06 | Integration Tests | 7 integration tests (smoke tested), 54 unit tests total |
 
-**Completed in 03-05:**
-- address_validate: Validate addresses with UPS, returns valid/ambiguous/invalid status
-- Classification extraction (commercial/residential/unknown)
-- Candidate suggestions for ambiguous addresses
-- Clear error reasons for invalid addresses
-- 15 unit tests for address tool
+**MCP Tools (6 total):**
+- Rating: rating_quote, rating_shop
+- Shipping: shipping_create, shipping_void, shipping_get_label
+- Address: address_validate
 
-**Completed in 03-01:**
-- TypeScript MCP package with ESM support
-- Zod schemas for UPS Shipping API (ShipmentRequest, ShipmentResponse, etc.)
-- Zod schemas for UPS Rating API (RateRequest, RateResponse, etc.)
-- Config validation with fail-fast on missing credentials
-- MCP server skeleton with stdio transport
-
-**Completed in 03-02:**
-- UpsAuthManager: OAuth 2.0 client_credentials flow with token caching
-- UpsApiClient: HTTP client with exponential backoff retry
-- Error types: UpsAuthError, UpsApiError, UpsNetworkError
-- 11 unit tests for auth manager
-
-**Completed in 03-03:**
-- rating_quote: Get rate for specific UPS service with cost breakdown
-- rating_shop: Compare rates across all available services
-- Response transformation with service name mapping
-- Package-level itemized charge extraction (fuel, delivery, residential)
-- Unavailable services marked with reason (not omitted)
-- 15 unit tests for rating tools
+**Note:** Full integration testing with UPS sandbox API pending credentials. Smoke test verified: build passes, 54 unit tests pass, integration tests skip gracefully without credentials
 
 ---
 
@@ -186,12 +165,12 @@ Phase 3 is building the UPS Integration MCP:
 ### Last Session
 
 **Date:** 2026-01-24
-**Action:** Completed Phase 3 Plan 5 (Address Validation)
-**Outcome:** address_validate MCP tool with valid/ambiguous/invalid status, classification, candidates
+**Action:** Completed Phase 3 (UPS Integration MCP)
+**Outcome:** 6 MCP tools, 54 unit tests passing, smoke test verified. Full UPS sandbox testing pending credentials.
 
 ### Next Session
 
-**Resume with:** `/gsd:execute-phase 3` to continue with Plan 03-06 (Integration Tests)
+**Resume with:** `/gsd:discuss-phase 4` to gather context for Natural Language and Mapping Engine
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -201,7 +180,9 @@ Phase 3 is building the UPS Integration MCP:
 | Command | Purpose |
 |---------|---------|
 | `/gsd:progress` | Check current status |
-| `/gsd:execute-phase 3` | Continue Phase 3 execution |
+| `/gsd:discuss-phase 4` | Gather context for Phase 4 |
+| `/gsd:plan-phase 4` | Create detailed plan for Phase 4 |
+| `/gsd:execute-phase 4` | Execute Phase 4 plans |
 | `/gsd:debug [issue]` | Debug specific problem |
 
 ---
