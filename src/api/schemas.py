@@ -181,3 +181,33 @@ class JobFilters(BaseModel):
     name: str | None = None  # Partial match
     created_after: date | None = None
     created_before: date | None = None
+
+
+# Command submission schemas
+
+
+class CommandSubmit(BaseModel):
+    """Request schema for submitting a natural language command."""
+
+    command: str = Field(..., min_length=1, description="Natural language shipping command")
+
+
+class CommandSubmitResponse(BaseModel):
+    """Response schema for command submission."""
+
+    job_id: str
+    status: str
+
+
+class CommandHistoryItem(BaseModel):
+    """Response schema for a command history entry."""
+
+    id: str
+    command: str
+    status: str
+    created_at: str
+
+    class Config:
+        """Pydantic config for ORM model conversion."""
+
+        from_attributes = True
