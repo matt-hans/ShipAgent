@@ -724,6 +724,7 @@ def get_orchestrator_tools() -> list[dict[str, Any]]:
 
 
 __all__ = [
+    # Existing exports
     "process_command_tool",
     "get_job_status_tool",
     "list_tools_tool",
@@ -731,4 +732,15 @@ __all__ = [
     "PROCESS_COMMAND_SCHEMA",
     "GET_JOB_STATUS_SCHEMA",
     "LIST_TOOLS_SCHEMA",
+    # New batch exports
+    "batch_preview_tool",
+    "batch_execute_tool",
+    "batch_set_mode_tool",
+    "batch_resume_tool",
+    "BATCH_PREVIEW_SCHEMA",
+    "BATCH_EXECUTE_SCHEMA",
+    "BATCH_SET_MODE_SCHEMA",
+    "BATCH_RESUME_SCHEMA",
+    # Testing utilities
+    "reset_mode_manager",
 ]
