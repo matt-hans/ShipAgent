@@ -20,6 +20,7 @@ from src.orchestrator.batch.recovery import (
     get_recovery_prompt,
     handle_recovery_choice,
 )
+from src.orchestrator.batch.sse_observer import SSEProgressObserver
 
 __all__ = [
     "ExecutionMode",
@@ -36,4 +37,5 @@ __all__ = [
     "check_interrupted_jobs",
     "get_recovery_prompt",
     "handle_recovery_choice",
+    "SSEProgressObserver",
 ]
