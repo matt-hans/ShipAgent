@@ -6,19 +6,20 @@
 
 **Architecture:** LLM as Configuration Engine - generates templates, deterministic code executes on data.
 
-**Current Focus:** Phase 3 Complete - Ready for Phase 4 (Natural Language and Mapping Engine)
+**Current Focus:** Phase 4 In Progress (Natural Language and Mapping Engine)
 
 ---
 
 ## Current Position
 
-**Phase:** 3 of 7 (UPS Integration MCP) - COMPLETE
-**Plan:** 6 of 6 complete
-**Status:** Phase complete
+**Phase:** 4 of 7 (Natural Language and Mapping Engine) - IN PROGRESS
+**Plan:** 1 of 7 complete
+**Status:** In progress
+**Last activity:** 2026-01-25 - Completed 04-02-PLAN.md
 
 ```
-Progress: [##########] 100%
-Phase 3 of 7 | Plan 6 of 6 complete
+Progress: [##########----------] 46%
+Phase 4 of 7 | Plan 2 of 7 complete | 19/24 total plans
 ```
 
 ---
@@ -27,7 +28,7 @@ Phase 3 of 7 | Plan 6 of 6 complete
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 17 |
+| Plans Completed | 19 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 3 / 7 |
@@ -87,6 +88,7 @@ Phase 3 of 7 | Plan 6 of 6 complete
 | Address tool separate | address_validate is standalone, users compose into workflow | 03-05 |
 | XAV status enum | Use 'valid', 'ambiguous', 'invalid' mapping to UPS indicators | 03-05 |
 | ZIP+4 formatting | Extended postal codes formatted as ZIP-4 (e.g., 90001-1234) | 03-05 |
+| tool_choice for structured output | Use Claude tool_choice instead of beta.messages.parse for structured outputs | 04-01 |
 
 ### Discovered TODOs
 
@@ -164,13 +166,13 @@ Phase 3 delivered the UPS Integration MCP with 6 MCP tools:
 
 ### Last Session
 
-**Date:** 2026-01-24
-**Action:** Completed Phase 3 (UPS Integration MCP)
-**Outcome:** 6 MCP tools, 54 unit tests passing, smoke test verified. Full UPS sandbox testing pending credentials.
+**Date:** 2026-01-25
+**Action:** Completed 04-02-PLAN.md (Intent Parsing Foundation)
+**Outcome:** ShippingIntent model, ServiceCode enum, 19 service aliases, parse_intent function, 49 unit tests passing.
 
 ### Next Session
 
-**Resume with:** `/gsd:discuss-phase 4` to gather context for Natural Language and Mapping Engine
+**Resume with:** `/gsd:execute-phase 4` to continue Phase 4 (04-02 through 04-07)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -187,4 +189,4 @@ Phase 3 delivered the UPS Integration MCP with 6 MCP tools:
 
 ---
 
-*Last updated: 2026-01-24*
+*Last updated: 2026-01-25*
