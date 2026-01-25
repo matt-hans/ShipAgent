@@ -89,6 +89,9 @@ Phase 4 of 7 | Plan 2 of 7 complete | 19/24 total plans
 | XAV status enum | Use 'valid', 'ambiguous', 'invalid' mapping to UPS indicators | 03-05 |
 | ZIP+4 formatting | Extended postal codes formatted as ZIP-4 (e.g., 90001-1234) | 03-05 |
 | tool_choice for structured output | Use Claude tool_choice instead of beta.messages.parse for structured outputs | 04-01 |
+| sqlglot for SQL validation | Proper SQL parser catches real errors, prevents injection | 04-02 |
+| Catch TokenError + ParseError | sqlglot raises TokenError for lexical errors like unclosed strings | 04-02 |
+| Schema grounding in prompt | Prevents LLM from hallucinating column names | 04-02 |
 
 ### Discovered TODOs
 
@@ -167,12 +170,12 @@ Phase 3 delivered the UPS Integration MCP with 6 MCP tools:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 04-02-PLAN.md (Intent Parsing Foundation)
-**Outcome:** ShippingIntent model, ServiceCode enum, 19 service aliases, parse_intent function, 49 unit tests passing.
+**Action:** Completed 04-02-PLAN.md (Filter Generator)
+**Outcome:** SQLFilterResult model, generate_filter function with schema grounding, sqlglot validation, 34 unit tests passing.
 
 ### Next Session
 
-**Resume with:** `/gsd:execute-phase 4` to continue Phase 4 (04-02 through 04-07)
+**Resume with:** `/gsd:execute-phase 4` to continue Phase 4 (04-03 through 04-07)
 **Context needed:** None - STATE.md contains full context
 
 ---
