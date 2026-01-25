@@ -6,20 +6,20 @@
 
 **Architecture:** LLM as Configuration Engine - generates templates, deterministic code executes on data.
 
-**Current Focus:** Phase 4 In Progress (Natural Language and Mapping Engine)
+**Current Focus:** Phase 4 COMPLETE - Ready for Phase 5 (Batch Execution)
 
 ---
 
 ## Current Position
 
-**Phase:** 4 of 7 (Natural Language and Mapping Engine) - IN PROGRESS
-**Plan:** 6 of 7 complete (04-01 through 04-06)
-**Status:** In progress
-**Last activity:** 2026-01-25 - Completed 04-05-PLAN.md (Self-Correction Loop)
+**Phase:** 4 of 7 (Natural Language and Mapping Engine) - COMPLETE
+**Plan:** 7 of 7 complete (04-01 through 04-07)
+**Status:** Phase complete
+**Last activity:** 2026-01-25 - Completed 04-07-PLAN.md (Integration Testing)
 
 ```
-Progress: [###############-----] 70%
-Phase 4 of 7 | Plan 6 of 7 complete | 24/26 total plans
+Progress: [################----] 80%
+Phase 4 of 7 COMPLETE | Plan 7 of 7 complete | 25/27 total plans
 ```
 
 ---
@@ -28,10 +28,10 @@ Phase 4 of 7 | Plan 6 of 7 complete | 24/26 total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 24 |
+| Plans Completed | 25 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
-| Phases Completed | 3 / 7 |
+| Phases Completed | 4 / 7 |
 
 ---
 
@@ -101,6 +101,9 @@ Phase 4 of 7 | Plan 6 of 7 complete | 24/26 total plans
 | 5 elicitation templates from CONTEXT.md | Cover common scenarios: date column, weight, dimensions, big, service | 04-06 |
 | Max 4 questions per elicitation | Per Claude Agent SDK documentation limits | 04-06 |
 | Schema customization for question options | Replace generic options with actual columns from source data | 04-06 |
+| process_command as single entry point | Simplifies consumer API; all components orchestrated internally | 04-07 |
+| CommandResult aggregates all artifacts | Caller gets intent, filter, template, validation, corrections in one object | 04-07 |
+| Mock data generation from schema | Template validation possible without real data | 04-07 |
 
 ### Discovered TODOs
 
@@ -174,17 +177,48 @@ Phase 3 delivered the UPS Integration MCP with 6 MCP tools:
 
 ---
 
+## Phase 4 Completion Summary
+
+Phase 4 delivered the Natural Language and Mapping Engine:
+
+| Plan | Name | Key Artifacts |
+|------|------|---------------|
+| 04-01 | Intent Parsing | ShippingIntent model, parse_intent with Claude tool_choice |
+| 04-02 | SQL Filter Generation | generate_filter with sqlglot validation, schema grounding |
+| 04-03 | Mapping Template Generation | Jinja2 templates, logistics filters, FieldMapping model |
+| 04-04 | Template Validation | UPS schema validation with Draft7Validator |
+| 04-05 | Self-Correction Loop | LLM-powered template correction, MaxCorrectionsExceeded |
+| 04-06 | Elicitation | 5 question templates, schema-aware customization |
+| 04-07 | Integration Testing | NLMappingEngine, 33 integration tests, 358 total tests |
+
+**All 6 NL Requirements Verified:**
+- NL-01: User can issue natural language commands
+- NL-02: System parses intent to extract data source, filter, service, package
+- NL-03: System generates Jinja2 mapping templates
+- NL-04: System validates templates against UPS schema
+- NL-05: System self-corrects when validation fails
+- NL-06: User can filter using natural language
+
+**Key Exports from `src/orchestrator`:**
+- NLMappingEngine, CommandResult, process_command
+- ShippingIntent, FilterCriteria, RowQualifier, ServiceCode
+- MappingTemplate, FieldMapping, ValidationResult
+- ElicitationQuestion, ElicitationResponse
+- CorrectionResult, MaxCorrectionsExceeded
+
+---
+
 ## Session Continuity
 
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 04-05-PLAN.md (Self-Correction Loop)
-**Outcome:** LLM-powered template correction with 3-attempt retry, MaxCorrectionsExceeded with 4 user options, 28 unit tests passing.
+**Action:** Completed 04-07-PLAN.md (Integration Testing)
+**Outcome:** Phase 4 complete. NLMappingEngine orchestrating all components, 33 integration tests covering all 6 NL requirements, 358 total tests passing.
 
 ### Next Session
 
-**Resume with:** `/gsd:execute-phase 4` to complete Phase 4 (04-07 End-to-End Pipeline)
+**Resume with:** `/gsd:execute-phase 5` to begin Phase 5 (Batch Execution)
 **Context needed:** None - STATE.md contains full context
 
 ---
