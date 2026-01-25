@@ -17,6 +17,12 @@ from src.orchestrator.models.intent import (
     ServiceCode,
     ShippingIntent,
 )
+from src.orchestrator.models.mapping import (
+    FieldMapping,
+    MappingGenerationError,
+    MappingTemplate,
+    UPSTargetField,
+)
 
 __all__ = [
     # Filter models
@@ -30,4 +36,9 @@ __all__ = [
     "ServiceCode",
     "SERVICE_ALIASES",
     "CODE_TO_SERVICE",
+    # Mapping models
+    "FieldMapping",
+    "MappingTemplate",
+    "UPSTargetField",
+    "MappingGenerationError",
 ]

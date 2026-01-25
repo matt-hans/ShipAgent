@@ -23,12 +23,20 @@ from src.orchestrator.nl_engine.template_validator import (
     validate_field_value,
     validate_template_output,
 )
+from src.orchestrator.nl_engine.mapping_generator import (
+    UPS_REQUIRED_FIELDS,
+    compute_schema_hash,
+    generate_mapping_template,
+    render_template,
+    suggest_mappings,
+)
 from src.orchestrator.nl_engine.ups_schema import (
     UPS_PACKAGE_SCHEMA,
     UPS_SHIPMENT_SCHEMA,
     UPS_SHIPTO_SCHEMA,
     get_schema_for_path,
 )
+from src.orchestrator.models.mapping import MappingGenerationError
 
 __all__ = [
     # Intent parsing
@@ -51,4 +59,11 @@ __all__ = [
     "UPS_PACKAGE_SCHEMA",
     "UPS_SHIPMENT_SCHEMA",
     "get_schema_for_path",
+    # Mapping generation
+    "generate_mapping_template",
+    "suggest_mappings",
+    "compute_schema_hash",
+    "render_template",
+    "UPS_REQUIRED_FIELDS",
+    "MappingGenerationError",
 ]
