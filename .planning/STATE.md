@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 6 of 7 (Batch Execution Engine)
-**Plan:** 1 of 7 complete (06-01)
+**Plan:** 2 of 7 complete (06-02)
 **Status:** In progress
-**Last activity:** 2026-01-25 - Completed 06-01-PLAN.md (Write-Back Tool)
+**Last activity:** 2026-01-25 - Completed 06-02-PLAN.md (Batch Core Models)
 
 ```
-Progress: [################----] 82%
-Phase 6 of 7 IN PROGRESS | Plan 1 of 7 complete | 31/37 total plans
+Progress: [################----] 86%
+Phase 6 of 7 IN PROGRESS | Plan 2 of 7 complete | 32/37 total plans
 ```
 
 ---
@@ -28,7 +28,7 @@ Phase 6 of 7 IN PROGRESS | Plan 1 of 7 complete | 31/37 total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 31 |
+| Plans Completed | 32 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 5 / 7 |
@@ -119,6 +119,9 @@ Phase 6 of 7 IN PROGRESS | Plan 1 of 7 complete | 31/37 total plans
 | pytest.mark.integration for API tests | Integration tests require ANTHROPIC_API_KEY; can be skipped in CI | 05-05 |
 | Keyword exact match for table extraction | Substring check "ORDER in table_ref" matches "orders" incorrectly | 06-01 |
 | Reject subqueries in write-back | Cannot UPDATE a subquery result set | 06-01 |
+| str+Enum inheritance for ExecutionMode | JSON serialization friendly, consistent with Phase 1 enums | 06-02 |
+| Protocol for BatchEventObserver | Structural subtyping allows any conforming class without inheritance | 06-02 |
+| Exception isolation in event emission | One broken observer should not stop event delivery to others | 06-02 |
 
 ### Discovered TODOs
 
@@ -255,12 +258,12 @@ Phase 5 delivered the Orchestration Agent with Claude Agent SDK:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 06-01-PLAN.md (Write-Back Tool)
-**Outcome:** Fixed bugs in write_back tool (_extract_table_name substring match, subquery detection). Added 25 unit tests. Data MCP now has 13 tools.
+**Action:** Completed 06-02-PLAN.md (Batch Core Models)
+**Outcome:** Verified batch package with ExecutionMode enum, SessionModeManager, BatchEventObserver Protocol, BatchEventEmitter, and 4 dataclasses (PreviewRow, BatchPreview, BatchResult, InterruptedJobInfo). 28 unit tests pass.
 
 ### Next Session
 
-**Resume with:** 06-02-PLAN.md (Batch Core Models)
+**Resume with:** 06-03-PLAN.md (BatchExecutor Core)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -275,4 +278,4 @@ Phase 5 delivered the Orchestration Agent with Claude Agent SDK:
 
 ---
 
-*Last updated: 2026-01-25 (06-01 complete, Phase 6 in progress)*
+*Last updated: 2026-01-25 (06-02 complete, Phase 6 in progress)*
