@@ -13,7 +13,7 @@ Natural language interface for batch shipment processing via UPS API. Users desc
 - [ ] **DATA-01**: User can import shipment data from CSV files with automatic schema discovery
 - [ ] **DATA-02**: User can import shipment data from Excel files (.xlsx) with sheet selection
 - [ ] **DATA-03**: User can import shipment data from database (Postgres/MySQL) via connection string
-- [ ] **DATA-04**: System writes tracking numbers back to original data source after successful shipment
+- [x] **DATA-04**: System writes tracking numbers back to original data source after successful shipment
 - [ ] **DATA-05**: System computes row checksums (SHA-256) for data integrity verification
 
 ### UPS Integration
@@ -35,20 +35,20 @@ Natural language interface for batch shipment processing via UPS API. Users desc
 
 ### Orchestration
 
-- [ ] **ORCH-01**: Claude Agent SDK orchestrates all MCPs and manages agentic workflow
-- [ ] **ORCH-02**: Data Source MCP built with FastMCP (Python) exposes tools for data access
-- [ ] **ORCH-03**: UPS MCP built with McpServer (TypeScript) exposes shipping/rating tools
-- [ ] **ORCH-04**: MCPs communicate via stdio transport as child processes
-- [ ] **ORCH-05**: Orchestration agent uses hooks for pre/post tool validation
+- [x] **ORCH-01**: Claude Agent SDK orchestrates all MCPs and manages agentic workflow
+- [x] **ORCH-02**: Data Source MCP built with FastMCP (Python) exposes tools for data access
+- [x] **ORCH-03**: UPS MCP built with McpServer (TypeScript) exposes shipping/rating tools
+- [x] **ORCH-04**: MCPs communicate via stdio transport as child processes
+- [x] **ORCH-05**: Orchestration agent uses hooks for pre/post tool validation
 
 ### Batch Execution
 
-- [ ] **BATCH-01**: System processes batches of 1-500+ shipments in a single job
-- [ ] **BATCH-02**: User can preview shipment details and total cost before execution (confirm mode)
-- [ ] **BATCH-03**: User can skip preview and execute immediately (auto mode)
-- [ ] **BATCH-04**: User can toggle between confirm mode and auto mode
-- [ ] **BATCH-05**: System halts entire batch on first error (fail-fast) to prevent incorrect shipments
-- [ ] **BATCH-06**: System tracks per-row state for crash recovery (can resume from last successful row)
+- [x] **BATCH-01**: System processes batches of 1-500+ shipments in a single job
+- [x] **BATCH-02**: User can preview shipment details and total cost before execution (confirm mode)
+- [x] **BATCH-03**: User can skip preview and execute immediately (auto mode)
+- [x] **BATCH-04**: User can toggle between confirm mode and auto mode
+- [x] **BATCH-05**: System halts entire batch on first error (fail-fast) to prevent incorrect shipments
+- [x] **BATCH-06**: System tracks per-row state for crash recovery (can resume from last successful row)
 - [ ] **BATCH-07**: System persists job state to SQLite for durability
 
 ### Output & Audit
@@ -112,7 +112,7 @@ Natural language interface for batch shipment processing via UPS API. Users desc
 | DATA-01 | Phase 2: Data Source MCP | Complete |
 | DATA-02 | Phase 2: Data Source MCP | Complete |
 | DATA-03 | Phase 2: Data Source MCP | Complete |
-| DATA-04 | Phase 6: Batch Execution | Pending |
+| DATA-04 | Phase 6: Batch Execution | Complete |
 | DATA-05 | Phase 2: Data Source MCP | Complete |
 | UPS-01 | Phase 3: UPS Integration MCP | Complete |
 | UPS-02 | Phase 3: UPS Integration MCP | Complete |
@@ -125,17 +125,17 @@ Natural language interface for batch shipment processing via UPS API. Users desc
 | NL-04 | Phase 4: NL and Mapping | Complete |
 | NL-05 | Phase 4: NL and Mapping | Complete |
 | NL-06 | Phase 4: NL and Mapping | Complete |
-| ORCH-01 | Phase 5: Orchestration | Pending |
+| ORCH-01 | Phase 5: Orchestration | Complete |
 | ORCH-02 | Phase 2: Data Source MCP | Complete |
 | ORCH-03 | Phase 3: UPS Integration MCP | Complete |
-| ORCH-04 | Phase 5: Orchestration | Pending |
-| ORCH-05 | Phase 5: Orchestration | Pending |
-| BATCH-01 | Phase 6: Batch Execution | Pending |
-| BATCH-02 | Phase 6: Batch Execution | Pending |
-| BATCH-03 | Phase 6: Batch Execution | Pending |
-| BATCH-04 | Phase 6: Batch Execution | Pending |
-| BATCH-05 | Phase 6: Batch Execution | Pending |
-| BATCH-06 | Phase 6: Batch Execution | Pending |
+| ORCH-04 | Phase 5: Orchestration | Complete |
+| ORCH-05 | Phase 5: Orchestration | Complete |
+| BATCH-01 | Phase 6: Batch Execution | Complete |
+| BATCH-02 | Phase 6: Batch Execution | Complete |
+| BATCH-03 | Phase 6: Batch Execution | Complete |
+| BATCH-04 | Phase 6: Batch Execution | Complete |
+| BATCH-05 | Phase 6: Batch Execution | Complete |
+| BATCH-06 | Phase 6: Batch Execution | Complete |
 | BATCH-07 | Phase 1: Foundation | Complete |
 | OUT-01 | Phase 3: UPS Integration MCP | Complete |
 | OUT-02 | Phase 1: Foundation | Complete |
