@@ -152,17 +152,24 @@ export async function getJobPreview(jobId: string): Promise<BatchPreview> {
 }
 
 /**
+ * Response from confirm endpoint.
+ */
+export interface ConfirmResponse {
+  status: string;
+  message: string;
+}
+
+/**
  * Confirm a job for execution.
  *
  * @param jobId - The job UUID.
+ * @returns Confirmation status and message.
  */
-export async function confirmJob(jobId: string): Promise<void> {
+export async function confirmJob(jobId: string): Promise<ConfirmResponse> {
   const response = await fetch(`${API_BASE}/jobs/${jobId}/confirm`, {
     method: 'POST',
   });
-  if (!response.ok) {
-    await parseResponse(response); // Will throw ApiError
-  }
+  return parseResponse<ConfirmResponse>(response);
 }
 
 /**
