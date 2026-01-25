@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 6 of 7 (Batch Execution Engine)
-**Plan:** 5 of 7 complete (06-05)
+**Plan:** 6 of 7 complete (06-06)
 **Status:** In progress
-**Last activity:** 2026-01-25 - Completed 06-05-PLAN.md (Crash Recovery)
+**Last activity:** 2026-01-25 - Completed 06-06-PLAN.md (Batch Orchestration Tools)
 
 ```
-Progress: [##################--] 94%
-Phase 6 of 7 IN PROGRESS | Plan 5 of 7 complete | 35/37 total plans
+Progress: [##################--] 97%
+Phase 6 of 7 IN PROGRESS | Plan 6 of 7 complete | 36/37 total plans
 ```
 
 ---
@@ -28,7 +28,7 @@ Phase 6 of 7 IN PROGRESS | Plan 5 of 7 complete | 35/37 total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 35 |
+| Plans Completed | 36 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 5 / 7 |
@@ -128,6 +128,9 @@ Phase 6 of 7 IN PROGRESS | Plan 5 of 7 complete | 35/37 total plans
 | Callable pattern for BatchExecutor MCP calls | Decouples executor from MCP implementation, enables testing | 06-04 |
 | Event emission before re-raise on row failure | Observers notified of failure even when fail-fast halts execution | 06-04 |
 | Running state as crash indicator | Jobs in 'running' state indicate interrupted execution; normal completion transitions to completed/failed | 06-05 |
+| Callable injection for batch tool MCP calls | Pass data_mcp_call and ups_mcp_call as arguments to tools for decoupling and testing | 06-06 |
+| Mode manager singleton pattern | Module-level _mode_manager with getter function for session-level mode persistence | 06-06 |
+| SDK mock in conftest | Mock claude_agent_sdk at import time in tests/orchestrator/agent/conftest.py for testing without SDK | 06-06 |
 
 ### Discovered TODOs
 
@@ -264,12 +267,12 @@ Phase 5 delivered the Orchestration Agent with Claude Agent SDK:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 06-05-PLAN.md (Crash Recovery)
-**Outcome:** Created recovery module with check_interrupted_jobs, get_recovery_prompt, handle_recovery_choice, and RecoveryChoice enum. 14 unit tests pass, 81 total batch tests pass.
+**Action:** Completed 06-06-PLAN.md (Batch Orchestration Tools)
+**Outcome:** Added batch_preview_tool, batch_execute_tool, batch_set_mode_tool, batch_resume_tool to orchestrator. 30 unit tests pass, 111 total batch tests pass.
 
 ### Next Session
 
-**Resume with:** 06-06-PLAN.md (Batch Orchestration Tools)
+**Resume with:** 06-07-PLAN.md (Integration Tests)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -284,4 +287,4 @@ Phase 5 delivered the Orchestration Agent with Claude Agent SDK:
 
 ---
 
-*Last updated: 2026-01-25 (06-05 complete, Phase 6 in progress)*
+*Last updated: 2026-01-25 (06-06 complete, Phase 6 in progress)*
