@@ -12,6 +12,7 @@ from src.orchestrator.batch.models import (
     InterruptedJobInfo,
     PreviewRow,
 )
+from src.orchestrator.batch.preview import PreviewGenerator
 
 __all__ = [
     "ExecutionMode",
@@ -22,4 +23,5 @@ __all__ = [
     "PreviewRow",
     "BatchPreview",
     "InterruptedJobInfo",
+    "PreviewGenerator",
 ]
