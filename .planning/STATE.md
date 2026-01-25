@@ -95,6 +95,7 @@ Phase 4 of 7 | Plan 4 of 7 complete | 22/24 total plans
 | Draft7Validator for JSON Schema | Widely supported, sufficient for UPS schema features | 04-04 |
 | Collect ALL errors via iter_errors() | Users need complete error list for efficient fixing | 04-04 |
 | ValidationError with full context | Per CONTEXT.md Decision 4: specific field, expected, actual, rule | 04-04 |
+| Default value before transformation | Apply default_value filter before transformation filters to handle None | 04-03 |
 
 ### Discovered TODOs
 
@@ -173,8 +174,8 @@ Phase 3 delivered the UPS Integration MCP with 6 MCP tools:
 ### Last Session
 
 **Date:** 2026-01-25
-**Action:** Completed 04-04-PLAN.md (Template Validation)
-**Outcome:** UPS JSON Schemas, validate_template_output with full error context, 50 unit tests passing.
+**Action:** Completed 04-03-PLAN.md (Mapping Template Generator)
+**Outcome:** Jinja2 logistics filter library (9 filters), mapping models, generate_mapping_template, 104 unit tests passing.
 
 ### Next Session
 
