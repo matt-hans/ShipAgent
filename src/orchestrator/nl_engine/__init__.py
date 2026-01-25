@@ -3,6 +3,9 @@
 This module provides intent parsing, filter generation, mapping
 template generation, template validation, self-correction, and
 elicitation using Claude's structured outputs.
+
+The main entry point is the NLMappingEngine class which orchestrates
+all components to process natural language shipping commands end-to-end.
 """
 
 # Import template_validator first to avoid circular imports
@@ -54,7 +57,18 @@ from src.orchestrator.nl_engine.self_correction import (
 from src.orchestrator.models.correction import MaxCorrectionsExceeded
 from src.orchestrator.models.mapping import MappingGenerationError
 
+# Import engine last to ensure all dependencies are loaded
+from src.orchestrator.nl_engine.engine import (
+    CommandResult,
+    NLMappingEngine,
+    process_command,
+)
+
 __all__ = [
+    # Engine (main entry point)
+    "NLMappingEngine",
+    "CommandResult",
+    "process_command",
     # Elicitation
     "ELICITATION_TEMPLATES",
     "create_elicitation_question",
