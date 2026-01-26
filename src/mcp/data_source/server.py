@@ -83,6 +83,7 @@ from src.mcp.data_source.tools.schema_tools import (
     override_column_type,
 )
 from src.mcp.data_source.tools.writeback_tools import write_back
+from src.mcp.data_source.tools.edi_tools import import_edi
 
 # Register as MCP tools using decorator pattern
 mcp.tool()(compute_checksums)
@@ -98,6 +99,7 @@ mcp.tool()(get_schema)
 mcp.tool()(override_column_type)
 mcp.tool()(verify_checksum)
 mcp.tool()(write_back)
+mcp.tool()(import_edi)
 
 
 if __name__ == "__main__":
