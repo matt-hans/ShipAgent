@@ -119,6 +119,14 @@ class OrchestrationAgent:
             "env": mcp_configs["ups"]["env"],
         }
 
+        # External Sources Gateway MCP config
+        external_config: McpStdioServerConfig = {
+            "type": "stdio",
+            "command": mcp_configs["external"]["command"],
+            "args": mcp_configs["external"]["args"],
+            "env": mcp_configs["external"]["env"],
+        }
+
         # Create orchestrator MCP server for in-process tools
         orchestrator_mcp = _create_orchestrator_mcp_server()
 
@@ -129,12 +137,14 @@ class OrchestrationAgent:
                 # External MCP servers (stdio child processes)
                 "data": data_config,
                 "ups": ups_config,
+                "external": external_config,
             },
             # Allow all tools from configured MCPs
             allowed_tools=[
                 "mcp__orchestrator__*",
                 "mcp__data__*",
                 "mcp__ups__*",
+                "mcp__external__*",
             ],
             # Hook configuration using HookMatcher dataclass
             hooks={

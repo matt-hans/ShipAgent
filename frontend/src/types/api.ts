@@ -332,3 +332,153 @@ export interface AuditLogEntry {
   details: Record<string, unknown> | null;
   row_number: number | null;
 }
+
+// === External Platform Types ===
+
+/** Supported external platform identifiers. */
+export type PlatformType = 'shopify' | 'woocommerce' | 'sap' | 'oracle';
+
+/** Platform connection status values. */
+export type ConnectionStatus = 'connected' | 'disconnected' | 'error' | 'authenticating';
+
+/** Platform connection state. */
+export interface PlatformConnection {
+  platform: PlatformType;
+  store_url: string | null;
+  status: ConnectionStatus;
+  last_connected: string | null;
+  error_message: string | null;
+}
+
+/** List connections response. */
+export interface ListConnectionsResponse {
+  connections: PlatformConnection[];
+  count: number;
+}
+
+/** Connect platform request - Shopify. */
+export interface ShopifyCredentials {
+  access_token: string;
+}
+
+/** Connect platform request - WooCommerce. */
+export interface WooCommerceCredentials {
+  consumer_key: string;
+  consumer_secret: string;
+}
+
+/** Connect platform request - SAP. */
+export interface SAPCredentials {
+  base_url: string;
+  username: string;
+  password: string;
+  client: string;
+}
+
+/** Connect platform request - Oracle (individual params). */
+export interface OracleCredentialsParams {
+  host: string;
+  port?: number;
+  service_name: string;
+  user: string;
+  password: string;
+}
+
+/** Connect platform request - Oracle (connection string). */
+export interface OracleCredentialsString {
+  connection_string: string;
+}
+
+/** Union type for Oracle credentials. */
+export type OracleCredentials = OracleCredentialsParams | OracleCredentialsString;
+
+/** All credential types union. */
+export type PlatformCredentials =
+  | { platform: 'shopify'; credentials: ShopifyCredentials; store_url: string }
+  | { platform: 'woocommerce'; credentials: WooCommerceCredentials; store_url: string }
+  | { platform: 'sap'; credentials: SAPCredentials; store_url?: string }
+  | { platform: 'oracle'; credentials: OracleCredentials; store_url?: string };
+
+/** Connect platform response. */
+export interface ConnectPlatformResponse {
+  success: boolean;
+  platform: PlatformType;
+  status: string;
+  message?: string;
+  error?: string;
+}
+
+/** Order filters for fetching from external platforms. */
+export interface OrderFilters {
+  status?: string;
+  date_from?: string;
+  date_to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** Line item in an external order. */
+export interface ExternalOrderItem {
+  id: string;
+  name: string;
+  quantity: number;
+  total: string;
+  sku: string;
+}
+
+/** Order from external platform (normalized). */
+export interface ExternalOrder {
+  platform: PlatformType;
+  order_id: string;
+  order_number: string | null;
+  status: string;
+  created_at: string;
+  customer_name: string;
+  customer_email: string | null;
+  ship_to_name: string;
+  ship_to_company: string | null;
+  ship_to_address1: string;
+  ship_to_address2: string | null;
+  ship_to_city: string;
+  ship_to_state: string;
+  ship_to_postal_code: string;
+  ship_to_country: string;
+  ship_to_phone: string | null;
+  items: ExternalOrderItem[];
+}
+
+/** List orders response. */
+export interface ListOrdersResponse {
+  success: boolean;
+  platform: PlatformType;
+  orders: ExternalOrder[];
+  count: number;
+  total?: number;
+  error?: string;
+}
+
+/** Get single order response. */
+export interface GetOrderResponse {
+  success: boolean;
+  platform: PlatformType;
+  order?: ExternalOrder;
+  error?: string;
+}
+
+/** Tracking update request. */
+export interface TrackingUpdateRequest {
+  platform: PlatformType;
+  order_id: string;
+  tracking_number: string;
+  carrier?: string;
+}
+
+/** Tracking update response. */
+export interface TrackingUpdateResponse {
+  success: boolean;
+  platform: PlatformType;
+  order_id: string;
+  tracking_number?: string;
+  carrier?: string;
+  error?: string;
+}

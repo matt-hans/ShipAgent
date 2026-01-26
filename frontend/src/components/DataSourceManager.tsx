@@ -1,975 +1,908 @@
 /**
- * DataSourceManager component for managing data source connections.
+ * DataSourceManager - Main component for managing all data sources.
  *
- * Industrial Terminal aesthetic - technical panel for connecting
- * file sources, databases, and external platforms via MCP Gateway.
+ * Provides a professional UI for connecting to and managing data sources:
  *
- * All operations flow through: Frontend → FastAPI → OrchestrationAgent → MCP Tools
+ * FILE SOURCES (via Data Source MCP):
+ * - CSV files
+ * - Excel files (.xlsx)
+ * - EDI files (X12, EDIFACT)
+ *
+ * DATABASE SOURCES (via Data Source MCP):
+ * - PostgreSQL
+ * - MySQL
+ *
+ * EXTERNAL PLATFORMS (via External Sources MCP):
+ * - Shopify
+ * - WooCommerce
+ * - SAP
+ * - Oracle
+ *
+ * All operations are routed through the OrchestrationAgent which
+ * invokes MCP tools via the Claude Agent SDK.
  */
 
 import * as React from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
+import { CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
-import type {
-  DataSourceInfo,
-  ColumnMetadata,
-  CsvImportConfig,
-  ExcelImportConfig,
-  DatabaseImportConfig,
-} from '@/types/api';
 
-/** Extended source types including future integrations. */
-type ExtendedSourceType =
-  | 'csv'
-  | 'excel'
-  | 'edi'
-  | 'postgresql'
-  | 'mysql'
-  | 'shopify'
-  | 'woocommerce'
-  | 'sap'
-  | 'oracle';
+// === Source Type Definitions ===
 
-/** Source category for grouping. */
-type SourceCategory = 'files' | 'databases' | 'platforms';
+type SourceCategory = 'file' | 'database' | 'platform';
 
-/** Source configuration metadata. */
-interface SourceConfig {
-  id: ExtendedSourceType;
-  name: string;
-  description: string;
-  category: SourceCategory;
-  icon: React.ReactNode;
-  implemented: boolean;
-}
-
-export interface DataSourceManagerProps {
-  /** Currently connected data source info. */
-  dataSource: DataSourceInfo | null;
-  /** Callback when data source is connected. */
-  onConnect: (config: CsvImportConfig | ExcelImportConfig | DatabaseImportConfig) => Promise<void>;
-  /** Callback when data source is disconnected. */
-  onDisconnect: () => void;
-  /** Optional additional class name. */
+interface IconProps {
   className?: string;
+  style?: React.CSSProperties;
 }
 
-/**
- * File icon for CSV/Excel sources.
- */
-function FileIcon({ className }: { className?: string }) {
+interface SourceInfo {
+  id: string;
+  name: string;
+  category: SourceCategory;
+  description: string;
+  icon: React.ComponentType<IconProps>;
+  color: string;
+  fields: FieldDefinition[];
+}
+
+interface FieldDefinition {
+  key: string;
+  label: string;
+  type: 'text' | 'password' | 'file';
+  placeholder: string;
+  required: boolean;
+  helpText?: string;
+}
+
+// === Icons ===
+
+function CSVIcon({ className, style }: IconProps) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
       <polyline points="14 2 14 8 20 8" />
+      <line x1="8" y1="13" x2="16" y2="13" />
+      <line x1="8" y1="17" x2="16" y2="17" />
     </svg>
   );
 }
 
-/**
- * EDI document icon.
- */
-function EdiIcon({ className }: { className?: string }) {
+function ExcelIcon({ className, style }: IconProps) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <path d="M8 13h2" />
+      <path d="M8 17h2" />
+      <path d="M14 13h2" />
+      <path d="M14 17h2" />
+    </svg>
+  );
+}
+
+function EDIIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
       <rect x="3" y="3" width="18" height="18" rx="2" />
-      <path d="M7 7h10M7 12h10M7 17h4" />
+      <path d="M7 8h10" />
+      <path d="M7 12h10" />
+      <path d="M7 16h6" />
     </svg>
   );
 }
 
-/**
- * Shopping cart icon for e-commerce platforms.
- */
-function CartIcon({ className }: { className?: string }) {
+function PostgreSQLIcon({ className, style }: IconProps) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <circle cx="8" cy="21" r="1" />
-      <circle cx="19" cy="21" r="1" />
-      <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <ellipse cx="12" cy="6" rx="8" ry="3" />
+      <path d="M4 6v6c0 1.657 3.582 3 8 3s8-1.343 8-3V6" />
+      <path d="M4 12v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6" />
     </svg>
   );
 }
 
-/**
- * Building icon for enterprise systems.
- */
-function EnterpriseIcon({ className }: { className?: string }) {
+function MySQLIcon({ className, style }: IconProps) {
   return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <rect x="4" y="2" width="16" height="20" rx="2" />
-      <path d="M9 22v-4h6v4M8 6h.01M16 6h.01M12 6h.01M8 10h.01M16 10h.01M12 10h.01M8 14h.01M16 14h.01M12 14h.01" />
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <ellipse cx="12" cy="6" rx="8" ry="3" />
+      <path d="M4 6v12c0 1.657 3.582 3 8 3s8-1.343 8-3V6" />
+      <path d="M4 12c0 1.657 3.582 3 8 3s8-1.343 8-3" />
     </svg>
   );
 }
 
-/**
- * Feature flags for MVP.
- * Set to true to show source type in UI.
- */
-const FEATURE_FLAGS: Record<ExtendedSourceType, boolean> = {
-  // Core file sources - always enabled
-  csv: true,
-  excel: true,
-  edi: false,        // Deferred to v2
-  // Database sources - always enabled
-  postgresql: true,
-  mysql: true,
-  // External platforms - only Shopify for MVP
-  shopify: true,
-  woocommerce: false, // Deferred to v2
-  sap: false,         // Deferred to v2
-  oracle: false,      // Deferred to v2
-};
+function ShopifyIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M15.337 3.415c-.022-.165-.183-.247-.304-.264-.121-.017-2.422-.175-2.422-.175s-1.612-1.595-1.79-1.772c-.178-.178-.524-.124-.659-.083-.019.005-.355.109-.925.284-.552-1.585-1.525-3.038-3.237-3.038h-.15C5.273-1.908 4.53-.88 4.03.293c-1.5.461-2.627.81-2.768.855C.637 1.335.609 1.362.553 1.925.513 2.343 0 16.757 0 16.757l11.237 2.108 6.097-1.319s-1.936-13.964-2-14.131zM9.165 2.93l-1.91.59c0-.025.005-.05.005-.075 0-1.165-.805-2.115-1.833-2.115-.023 0-.046.003-.07.004.433-.566.984-.847 1.436-.847 1.147 0 1.7 1.432 2.372 2.443zm-3.27 1.01c-1.002.309-2.097.648-3.196.988.309-1.186 1.126-2.363 2.136-2.833.395.461.707.99.942 1.572.039.091.079.182.118.273zm1.053-3.04c.063 0 .126.006.187.018-.794.374-1.645 1.317-2.004 3.205l-2.38.735C3.344 3.03 4.653 1.53 5.948 1.53c.334 0 .667.123 1 .37z"/>
+      <path d="M15.033 3.151c-.121-.017-2.422-.175-2.422-.175s-1.612-1.595-1.79-1.772c-.066-.066-.152-.1-.243-.117L9.165 18.865l6.097-1.319s-1.936-13.964-2-14.131c-.022-.165-.183-.247-.229-.264z" fillOpacity="0.3"/>
+    </svg>
+  );
+}
 
-/** All source configurations (filtered by feature flags in component). */
-const ALL_SOURCE_CONFIGS: SourceConfig[] = [
+function WooCommerceIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M2.227 4.857A3.228 3.228 0 0 0 0 7.988v6.914c0 1.809 1.418 3.228 3.227 3.228h5.009l2.382 2.857.762-.857L8.999 18.13h11.774c1.809 0 3.227-1.419 3.227-3.228V7.988c0-1.809-1.418-3.131-3.227-3.131zm4.152 2.952c.475 0 .856.19 1.142.476.381.476.572 1.142.476 2.094-.095 1.047-.476 1.904-1.047 2.475-.38.38-.857.571-1.333.571-.475 0-.856-.19-1.142-.476-.38-.475-.571-1.142-.475-2.094.095-1.047.475-1.903 1.047-2.475.38-.38.856-.571 1.332-.571zm6.057 0c.476 0 .857.19 1.143.476.38.476.571 1.142.475 2.094-.095 1.047-.475 1.904-1.047 2.475-.38.38-.857.571-1.333.571-.475 0-.856-.19-1.142-.476-.38-.475-.571-1.142-.476-2.094.096-1.047.476-1.903 1.048-2.475.38-.38.856-.571 1.332-.571zm5.485.095c.19 0 .38.095.476.285l1.618 4.95.571-4.093c.096-.571.476-.952.952-.952.571 0 .952.476.857 1.047l-1.143 5.617c-.095.476-.38.857-.856.952h-.095c-.476 0-.857-.286-1.048-.667l-1.618-4.474-.19 1.238-.381 2.951c-.095.571-.475.952-.951.952-.572 0-.953-.476-.857-1.047l1.047-5.617c.095-.476.38-.857.856-.952h.762z"/>
+    </svg>
+  );
+}
+
+function SAPIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M0 6.727V17.27h24V6.727zm6.545 8.182H5.18l-1.636-3.818-1.637 3.818H.545l2.182-4.91H1.09V8.727h2.182l1.637 3.818L6.545 8.73h2.182v1.272H7.09zm6.545 0h-1.363v-1.273h1.363c.377 0 .682-.305.682-.682a.682.682 0 0 0-.682-.681h-1.363a2.046 2.046 0 0 1-2.045-2.046c0-1.13.916-2.045 2.045-2.045h2.046v1.272h-2.046a.682.682 0 0 0-.681.682c0 .376.305.681.681.681h1.363a2.046 2.046 0 0 1 0 4.092zm8.181 0h-1.363v-2.727h-2.727v2.727h-1.363V8.727h1.363v2.727h2.727V8.727h1.363z"/>
+    </svg>
+  );
+}
+
+function OracleIcon({ className, style }: IconProps) {
+  return (
+    <svg className={className} style={style} viewBox="0 0 24 24" fill="currentColor">
+      <path d="M7.072 7.072C8.393 5.75 10.107 5 12 5s3.607.75 4.928 2.072S19 9.893 19 12s-.75 3.607-2.072 4.928S14.107 19 12 19s-3.607-.75-4.928-2.072S5 14.107 5 12s.75-3.607 2.072-4.928zM12 3C6.477 3 2 7.477 2 12s4.477 9 9 9h10v-2h-3.293A8.96 8.96 0 0 0 21 12c0-4.523-3.477-9-9-9z"/>
+    </svg>
+  );
+}
+
+// === Source Definitions ===
+
+const SOURCES: SourceInfo[] = [
   // File Sources
   {
     id: 'csv',
-    name: 'CSV',
-    description: 'Import comma-separated values via MCP Gateway',
-    category: 'files',
-    icon: <FileIcon className="h-5 w-5" />,
-    implemented: true,
+    name: 'CSV File',
+    category: 'file',
+    description: 'Import shipment data from comma-separated files via MCP Gateway',
+    icon: CSVIcon,
+    color: 'var(--color-info)',
+    fields: [
+      {
+        key: 'file_path',
+        label: 'File Path',
+        type: 'text',
+        placeholder: '/path/to/orders.csv',
+        required: true,
+        helpText: 'Absolute path to the CSV file on the server',
+      },
+      {
+        key: 'delimiter',
+        label: 'Delimiter',
+        type: 'text',
+        placeholder: ',',
+        required: false,
+        helpText: 'Column separator (default: comma)',
+      },
+    ],
   },
   {
     id: 'excel',
-    name: 'Excel',
-    description: 'Import .xlsx spreadsheets via MCP Gateway',
-    category: 'files',
-    icon: <FileIcon className="h-5 w-5" />,
-    implemented: true,
+    name: 'Excel File',
+    category: 'file',
+    description: 'Import shipment data from .xlsx spreadsheets via MCP Gateway',
+    icon: ExcelIcon,
+    color: 'var(--color-success)',
+    fields: [
+      {
+        key: 'file_path',
+        label: 'File Path',
+        type: 'text',
+        placeholder: '/path/to/orders.xlsx',
+        required: true,
+        helpText: 'Absolute path to the Excel file on the server',
+      },
+      {
+        key: 'sheet',
+        label: 'Sheet Name',
+        type: 'text',
+        placeholder: 'Sheet1',
+        required: false,
+        helpText: 'Leave empty to use the first sheet',
+      },
+    ],
   },
   {
     id: 'edi',
-    name: 'EDI',
-    description: 'EDI X12/EDIFACT documents via MCP Gateway',
-    category: 'files',
-    icon: <EdiIcon className="h-5 w-5" />,
-    implemented: false,
+    name: 'EDI File',
+    category: 'file',
+    description: 'Import orders from X12 or EDIFACT documents via MCP Gateway',
+    icon: EDIIcon,
+    color: 'var(--color-muted-foreground)',
+    fields: [
+      {
+        key: 'file_path',
+        label: 'File Path',
+        type: 'text',
+        placeholder: '/path/to/orders.edi',
+        required: true,
+        helpText: 'Absolute path to the EDI file',
+      },
+      {
+        key: 'format',
+        label: 'Format',
+        type: 'text',
+        placeholder: 'x12 or edifact',
+        required: false,
+        helpText: 'Auto-detected if not specified',
+      },
+    ],
   },
   // Database Sources
   {
     id: 'postgresql',
     name: 'PostgreSQL',
-    description: 'Connect to PostgreSQL via MCP Gateway',
-    category: 'databases',
-    icon: <DatabaseIcon className="h-5 w-5" />,
-    implemented: true,
+    category: 'database',
+    description: 'Connect to PostgreSQL databases via MCP Gateway',
+    icon: PostgreSQLIcon,
+    color: 'oklch(0.55 0.15 230)',
+    fields: [
+      {
+        key: 'host',
+        label: 'Host',
+        type: 'text',
+        placeholder: 'localhost',
+        required: true,
+      },
+      {
+        key: 'port',
+        label: 'Port',
+        type: 'text',
+        placeholder: '5432',
+        required: false,
+      },
+      {
+        key: 'database',
+        label: 'Database',
+        type: 'text',
+        placeholder: 'shipping',
+        required: true,
+      },
+      {
+        key: 'username',
+        label: 'Username',
+        type: 'text',
+        placeholder: 'postgres',
+        required: true,
+      },
+      {
+        key: 'password',
+        label: 'Password',
+        type: 'password',
+        placeholder: '••••••••',
+        required: true,
+      },
+    ],
   },
   {
     id: 'mysql',
     name: 'MySQL',
-    description: 'Connect to MySQL via MCP Gateway',
-    category: 'databases',
-    icon: <DatabaseIcon className="h-5 w-5" />,
-    implemented: true,
+    category: 'database',
+    description: 'Connect to MySQL databases via MCP Gateway',
+    icon: MySQLIcon,
+    color: 'oklch(0.55 0.15 40)',
+    fields: [
+      {
+        key: 'host',
+        label: 'Host',
+        type: 'text',
+        placeholder: 'localhost',
+        required: true,
+      },
+      {
+        key: 'port',
+        label: 'Port',
+        type: 'text',
+        placeholder: '3306',
+        required: false,
+      },
+      {
+        key: 'database',
+        label: 'Database',
+        type: 'text',
+        placeholder: 'shipping',
+        required: true,
+      },
+      {
+        key: 'username',
+        label: 'Username',
+        type: 'text',
+        placeholder: 'root',
+        required: true,
+      },
+      {
+        key: 'password',
+        label: 'Password',
+        type: 'password',
+        placeholder: '••••••••',
+        required: true,
+      },
+    ],
   },
-  // Platform Integrations
+  // External Platform Sources
   {
     id: 'shopify',
     name: 'Shopify',
-    description: 'Sync orders from Shopify via MCP Gateway',
-    category: 'platforms',
-    icon: <CartIcon className="h-5 w-5" />,
-    implemented: false,
+    category: 'platform',
+    description: 'Fetch orders from Shopify stores via MCP Gateway',
+    icon: ShopifyIcon,
+    color: 'var(--color-shopify)',
+    fields: [
+      {
+        key: 'store_url',
+        label: 'Store URL',
+        type: 'text',
+        placeholder: 'mystore.myshopify.com',
+        required: true,
+        helpText: 'Your Shopify store domain',
+      },
+      {
+        key: 'access_token',
+        label: 'Access Token',
+        type: 'password',
+        placeholder: 'shpat_xxxxxx',
+        required: true,
+        helpText: 'Admin API access token from your Shopify app',
+      },
+    ],
   },
   {
     id: 'woocommerce',
     name: 'WooCommerce',
-    description: 'Sync orders from WooCommerce via MCP Gateway',
-    category: 'platforms',
-    icon: <CartIcon className="h-5 w-5" />,
-    implemented: false,
+    category: 'platform',
+    description: 'Fetch orders from WooCommerce stores via MCP Gateway',
+    icon: WooCommerceIcon,
+    color: 'var(--color-woocommerce)',
+    fields: [
+      {
+        key: 'store_url',
+        label: 'Store URL',
+        type: 'text',
+        placeholder: 'https://mystore.com',
+        required: true,
+        helpText: 'Your WooCommerce site URL',
+      },
+      {
+        key: 'consumer_key',
+        label: 'Consumer Key',
+        type: 'text',
+        placeholder: 'ck_xxxxxx',
+        required: true,
+        helpText: 'REST API consumer key',
+      },
+      {
+        key: 'consumer_secret',
+        label: 'Consumer Secret',
+        type: 'password',
+        placeholder: 'cs_xxxxxx',
+        required: true,
+        helpText: 'REST API consumer secret',
+      },
+    ],
   },
   {
     id: 'sap',
     name: 'SAP',
-    description: 'Connect to SAP via MCP Gateway',
-    category: 'platforms',
-    icon: <EnterpriseIcon className="h-5 w-5" />,
-    implemented: false,
+    category: 'platform',
+    description: 'Fetch orders from SAP systems via MCP Gateway',
+    icon: SAPIcon,
+    color: 'var(--color-sap)',
+    fields: [
+      {
+        key: 'base_url',
+        label: 'SAP Gateway URL',
+        type: 'text',
+        placeholder: 'https://sap.company.com/sap/opu/odata/sap',
+        required: true,
+        helpText: 'OData service endpoint',
+      },
+      {
+        key: 'username',
+        label: 'Username',
+        type: 'text',
+        placeholder: 'SAP_USER',
+        required: true,
+      },
+      {
+        key: 'password',
+        label: 'Password',
+        type: 'password',
+        placeholder: '••••••••',
+        required: true,
+      },
+      {
+        key: 'client',
+        label: 'Client',
+        type: 'text',
+        placeholder: '100',
+        required: false,
+        helpText: 'SAP client number',
+      },
+    ],
   },
   {
     id: 'oracle',
     name: 'Oracle',
-    description: 'Connect to Oracle ERP via MCP Gateway',
-    category: 'platforms',
-    icon: <EnterpriseIcon className="h-5 w-5" />,
-    implemented: false,
+    category: 'platform',
+    description: 'Fetch orders from Oracle databases via MCP Gateway',
+    icon: OracleIcon,
+    color: 'var(--color-oracle)',
+    fields: [
+      {
+        key: 'host',
+        label: 'Host',
+        type: 'text',
+        placeholder: 'oracle.company.com',
+        required: true,
+      },
+      {
+        key: 'port',
+        label: 'Port',
+        type: 'text',
+        placeholder: '1521',
+        required: false,
+      },
+      {
+        key: 'service_name',
+        label: 'Service Name',
+        type: 'text',
+        placeholder: 'ORCL',
+        required: true,
+      },
+      {
+        key: 'username',
+        label: 'Username',
+        type: 'text',
+        placeholder: 'shipping_user',
+        required: true,
+      },
+      {
+        key: 'password',
+        label: 'Password',
+        type: 'password',
+        placeholder: '••••••••',
+        required: true,
+      },
+    ],
   },
 ];
 
-/** Source configs filtered by feature flags. */
-const SOURCE_CONFIGS = ALL_SOURCE_CONFIGS.filter(s => FEATURE_FLAGS[s.id]);
+// === Component State ===
 
-/**
- * Database icon.
- */
-function DatabaseIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <ellipse cx="12" cy="5" rx="9" ry="3" />
-      <path d="M3 5V19A9 3 0 0 0 21 19V5" />
-      <path d="M3 12A9 3 0 0 0 21 12" />
-    </svg>
-  );
+interface SourceState {
+  isConnected: boolean;
+  isConnecting: boolean;
+  lastImported?: string;
+  rowCount?: number;
+  error?: string | null;
 }
 
-/**
- * Disconnect icon.
- */
-function DisconnectIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4" />
-      <polyline points="9 9 15 9" />
-      <path d="M15 15h6" />
-    </svg>
-  );
+type SourceStates = Record<string, SourceState>;
+
+const initialSourceState: SourceState = {
+  isConnected: false,
+  isConnecting: false,
+  error: null,
+};
+
+// === Components ===
+
+interface SourceCardProps {
+  source: SourceInfo;
+  state: SourceState;
+  onConfigure: () => void;
+  onDisconnect: () => void;
 }
 
-/**
- * Column type badge color.
- */
-function getColumnTypeColor(type: string): string {
-  if (type.includes('INT')) return 'bg-route-500/20 text-route-400 border border-route-500/30';
-  if (type.includes('VARCHAR') || type.includes('TEXT')) return 'bg-signal-500/20 text-signal-400 border border-signal-500/30';
-  if (type.includes('DATE') || type.includes('TIMESTAMP')) return 'bg-status-hold/20 text-status-hold border border-status-hold/30';
-  if (type.includes('DECIMAL') || type.includes('DOUBLE')) return 'bg-status-go/20 text-status-go border border-status-go/30';
-  if (type.includes('BOOLEAN')) return 'bg-purple-500/20 text-purple-400 border border-purple-500/30';
-  return 'bg-steel-700 text-steel-300';
-}
-
-/**
- * CSV import form.
- */
-function CsvImportForm({
-  onSubmit,
-  isSubmitting,
-}: {
-  onSubmit: (config: CsvImportConfig) => Promise<void>;
-  isSubmitting: boolean;
-}) {
-  const [filePath, setFilePath] = React.useState('');
-  const [delimiter, setDelimiter] = React.useState(',');
-  const [header, setHeader] = React.useState(true);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!filePath.trim()) return;
-    await onSubmit({ filePath: filePath.trim(), delimiter, header });
-  };
+function SourceCard({ source, state, onConfigure, onDisconnect }: SourceCardProps) {
+  const Icon = source.icon;
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="space-y-2">
-        <label className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
-          File Path
-        </label>
-        <Input
-          value={filePath}
-          onChange={(e) => setFilePath(e.target.value)}
-          placeholder="/path/to/your/orders.csv"
-          className="font-mono-display text-sm"
-          disabled={isSubmitting}
-        />
-      </div>
-
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <label className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
-            Delimiter
-          </label>
-          <select
-            value={delimiter}
-            onChange={(e) => setDelimiter(e.target.value)}
-            className="w-full h-10 px-3 rounded-sm bg-warehouse-800 border border-steel-700 font-mono-display text-sm text-steel-100 focus:ring-2 focus:ring-signal-500/50"
-            disabled={isSubmitting}
-          >
-            <option value=",">Comma (,)</option>
-            <option value=";">Semicolon (;)</option>
-            <option value="\t">Tab</option>
-            <option value="|">Pipe (|)</option>
-          </select>
-        </div>
-
-        <div className="space-y-2">
-          <label className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
-            Header Row
-          </label>
-          <select
-            value={header ? 'true' : 'false'}
-            onChange={(e) => setHeader(e.target.value === 'true')}
-            className="w-full h-10 px-3 rounded-sm bg-warehouse-800 border border-steel-700 font-mono-display text-sm text-steel-100 focus:ring-2 focus:ring-signal-500/50"
-            disabled={isSubmitting}
-          >
-            <option value="true">Yes</option>
-            <option value="false">No</option>
-          </select>
-        </div>
-      </div>
-
-      <Button
-        type="submit"
-        disabled={!filePath.trim() || isSubmitting}
-        className="w-full btn-industrial font-mono-display text-sm uppercase tracking-wider"
-      >
-        {isSubmitting ? 'Connecting...' : 'Connect CSV Source'}
-      </Button>
-    </form>
-  );
-}
-
-/**
- * Excel import form.
- */
-function ExcelImportForm({
-  onSubmit,
-  isSubmitting,
-}: {
-  onSubmit: (config: ExcelImportConfig) => Promise<void>;
-  isSubmitting: boolean;
-}) {
-  const [filePath, setFilePath] = React.useState('');
-  const [sheet, setSheet] = React.useState('');
-  const [header, setHeader] = React.useState(true);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!filePath.trim()) return;
-    await onSubmit({
-      filePath: filePath.trim(),
-      sheet: sheet.trim() || undefined,
-      header
-    });
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="space-y-2">
-        <label className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
-          File Path
-        </label>
-        <Input
-          value={filePath}
-          onChange={(e) => setFilePath(e.target.value)}
-          placeholder="/path/to/your/orders.xlsx"
-          className="font-mono-display text-sm"
-          disabled={isSubmitting}
-        />
-      </div>
-
-      <div className="space-y-2">
-        <label className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
-          Sheet Name (optional)
-        </label>
-        <Input
-          value={sheet}
-          onChange={(e) => setSheet(e.target.value)}
-          placeholder="Leave empty for first sheet"
-          className="font-mono-display text-sm"
-          disabled={isSubmitting}
-        />
-        <p className="font-mono-display text-[10px] text-steel-600">
-          If specified, imports from this sheet. Otherwise uses the first sheet.
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <label className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
-          Header Row
-        </label>
-        <select
-          value={header ? 'true' : 'false'}
-          onChange={(e) => setHeader(e.target.value === 'true')}
-          className="w-full h-10 px-3 rounded-sm bg-warehouse-800 border border-steel-700 font-mono-display text-sm text-steel-100 focus:ring-2 focus:ring-signal-500/50"
-          disabled={isSubmitting}
-        >
-          <option value="true">Yes</option>
-          <option value="false">No</option>
-        </select>
-      </div>
-
-      <Button
-        type="submit"
-        disabled={!filePath.trim() || isSubmitting}
-        className="w-full btn-industrial font-mono-display text-sm uppercase tracking-wider"
-      >
-        {isSubmitting ? 'Connecting...' : 'Connect Excel Source'}
-      </Button>
-    </form>
-  );
-}
-
-/**
- * Database import form - supports PostgreSQL and MySQL.
- */
-function DatabaseImportForm({
-  onSubmit,
-  isSubmitting,
-  dbType = 'postgresql',
-}: {
-  onSubmit: (config: DatabaseImportConfig) => Promise<void>;
-  isSubmitting: boolean;
-  dbType?: 'postgresql' | 'mysql';
-}) {
-  const [connectionString, setConnectionString] = React.useState('');
-  const [query, setQuery] = React.useState('');
-  const [schema, setSchema] = React.useState(dbType === 'mysql' ? '' : 'public');
-
-  const placeholder = dbType === 'postgresql'
-    ? 'postgresql://user:pass@host:5432/database'
-    : 'mysql://user:pass@host:3306/database';
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!connectionString.trim() || !query.trim()) return;
-    await onSubmit({
-      connectionString: connectionString.trim(),
-      query: query.trim(),
-      schema: schema.trim() || (dbType === 'mysql' ? undefined : 'public')
-    });
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="space-y-2">
-        <label className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
-          Connection String
-        </label>
-        <Input
-          value={connectionString}
-          onChange={(e) => setConnectionString(e.target.value)}
-          placeholder={placeholder}
-          className="font-mono-display text-sm"
-          type="password"
-          disabled={isSubmitting}
-        />
-        <p className="font-mono-display text-[10px] text-steel-600">
-          {dbType === 'postgresql'
-            ? 'Format: postgresql://user:pass@host:5432/dbname'
-            : 'Format: mysql://user:pass@host:3306/dbname'
-          }
-        </p>
-      </div>
-
-      <div className="space-y-2">
-        <label className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
-          SQL Query
-        </label>
-        <textarea
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="SELECT * FROM orders WHERE status = 'pending'"
-          className="w-full h-24 px-3 py-2 rounded-sm bg-warehouse-800 border border-steel-700 font-mono-display text-sm text-steel-100 focus:ring-2 focus:ring-signal-500/50 resize-none"
-          disabled={isSubmitting}
-        />
-      </div>
-
-      {dbType === 'postgresql' && (
-        <div className="space-y-2">
-          <label className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
-            Schema
-          </label>
-          <Input
-            value={schema}
-            onChange={(e) => setSchema(e.target.value)}
-            placeholder="public"
-            className="font-mono-display text-sm"
-            disabled={isSubmitting}
-          />
-        </div>
+    <div
+      className={cn(
+        'platform-card group',
+        state.isConnected && 'platform-card--connected'
       )}
-
-      <Button
-        type="submit"
-        disabled={!connectionString.trim() || !query.trim() || isSubmitting}
-        className="w-full btn-industrial font-mono-display text-sm uppercase tracking-wider"
-      >
-        {isSubmitting ? 'Connecting...' : `Connect ${dbType === 'postgresql' ? 'PostgreSQL' : 'MySQL'}`}
-      </Button>
-    </form>
-  );
-}
-
-/**
- * Schema preview table.
- */
-function SchemaPreview({
-  columns,
-  rowCount,
-}: {
-  columns: ColumnMetadata[];
-  rowCount: number;
-}) {
-  const hasWarnings = columns.some(col => col.warnings.length > 0);
-
-  return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
-          Discovered Schema
-        </p>
-        <div className="flex items-center gap-3">
-          <span className="font-mono-display text-xs text-steel-400">
-            {columns.length} COLUMNS
-          </span>
-          <span className="font-mono-display text-xs text-status-go">
-            {rowCount.toLocaleString()} ROWS
-          </span>
+      style={{ '--platform-color': source.color } as React.CSSProperties}
+    >
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between">
+          <div
+            className="w-12 h-12 rounded-xl flex items-center justify-center"
+            style={{ backgroundColor: `color-mix(in oklch, ${source.color} 15%, transparent)` }}
+          >
+            <Icon
+              className="w-6 h-6"
+              style={{ color: source.color }}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                'status-dot',
+                state.isConnected ? 'status-dot--connected' : 'status-dot--disconnected'
+              )}
+            />
+            <span className="text-xs text-muted-foreground">
+              {state.isConnecting ? 'Connecting...' : state.isConnected ? 'Connected' : 'Not configured'}
+            </span>
+          </div>
         </div>
-      </div>
-
-      <div className="border border-steel-700 rounded-sm overflow-hidden">
-        <div className="max-h-48 overflow-y-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-warehouse-800 sticky top-0">
-              <tr className="text-left">
-                <th className="px-3 py-2 font-mono-display text-xs text-steel-500 uppercase">
-                  Column
-                </th>
-                <th className="px-3 py-2 font-mono-display text-xs text-steel-500 uppercase">
-                  Type
-                </th>
-                <th className="px-3 py-2 font-mono-display text-xs text-steel-500 uppercase text-center">
-                  Nullable
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-steel-700/50">
-              {columns.map((col, i) => (
-                <tr
-                  key={i}
-                  className={cn(
-                    'hover:bg-warehouse-800/50',
-                    col.warnings.length > 0 && 'bg-status-hold/5'
-                  )}
-                >
-                  <td className="px-3 py-2 font-mono-display text-xs text-steel-200">
-                    {col.name}
-                  </td>
-                  <td className="px-3 py-2">
-                    <span className={cn(
-                      'inline-flex px-2 py-0.5 rounded text-[10px] font-mono-display font-medium',
-                      getColumnTypeColor(col.type)
-                    )}>
-                      {col.type}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <span className={cn(
-                      'inline-flex items-center justify-center w-5 h-5 rounded text-[10px]',
-                      col.nullable
-                        ? 'bg-steel-700 text-steel-400'
-                        : 'bg-status-stop/20 text-status-stop'
-                    )}>
-                      {col.nullable ? 'Y' : 'N'}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      {hasWarnings && (
-        <div className="p-3 rounded-sm bg-status-hold/5 border border-status-hold/20">
-          <p className="font-mono-display text-xs text-status-hold mb-2">
-            ⚠ SCHEMA WARNINGS DETECTED
+        <CardTitle className="text-lg mt-3">{source.name}</CardTitle>
+        <CardDescription className="text-sm">
+          {source.description}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pt-0">
+        {state.error && (
+          <p className="text-xs text-destructive mb-3 p-2 rounded bg-destructive/10">
+            {state.error}
           </p>
-          <ul className="space-y-1">
-            {columns
-              .filter(col => col.warnings.length > 0)
-              .flatMap(col => col.warnings.map((w, i) => (
-                <li key={`${col.name}-${i}`} className="font-mono-display text-[10px] text-steel-400">
-                  • {col.name}: {w}
-                </li>
-              )))}
-          </ul>
+        )}
+        {state.isConnected && state.lastImported && (
+          <p className="text-xs text-muted-foreground mb-3">
+            Last import: {state.lastImported}
+            {state.rowCount !== undefined && ` (${state.rowCount} rows)`}
+          </p>
+        )}
+        <div className="flex gap-2">
+          {state.isConnected ? (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onConfigure}
+                className="flex-1"
+              >
+                Reimport
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onDisconnect}
+                className="text-muted-foreground hover:text-destructive"
+              >
+                Clear
+              </Button>
+            </>
+          ) : (
+            <Button
+              size="sm"
+              onClick={onConfigure}
+              disabled={state.isConnecting}
+              className="w-full"
+              style={{
+                backgroundColor: source.color,
+                color: 'white',
+              }}
+            >
+              {state.isConnecting ? 'Connecting...' : source.category === 'file' ? 'Import' : 'Connect'}
+            </Button>
+          )}
         </div>
-      )}
+      </CardContent>
     </div>
   );
 }
 
-/**
- * Source card component for individual data source selection.
- */
-function SourceCard({
-  config,
-  isSelected,
-  onClick,
-  disabled,
-}: {
-  config: SourceConfig;
-  isSelected: boolean;
-  onClick: () => void;
-  disabled?: boolean;
-}) {
+interface ConfigureDialogProps {
+  source: SourceInfo | null;
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (sourceId: string, values: Record<string, string>) => Promise<void>;
+  isSubmitting: boolean;
+}
+
+function ConfigureDialog({ source, isOpen, onClose, onSubmit, isSubmitting }: ConfigureDialogProps) {
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+
+  // Reset form when source changes
+  useEffect(() => {
+    if (source) {
+      const initial: Record<string, string> = {};
+      source.fields.forEach(field => {
+        initial[field.key] = '';
+      });
+      setValues(initial);
+      setError(null);
+    }
+  }, [source]);
+
+  if (!source) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    // Validate required fields
+    const missingFields = source.fields
+      .filter(f => f.required && !values[f.key]?.trim())
+      .map(f => f.label);
+
+    if (missingFields.length > 0) {
+      setError(`Required fields: ${missingFields.join(', ')}`);
+      return;
+    }
+
+    try {
+      await onSubmit(source.id, values);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Configuration failed');
+    }
+  };
+
+  const actionLabel = source.category === 'file' ? 'Import' : 'Connect';
+
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled || !config.implemented}
-      className={cn(
-        'relative p-3 rounded-sm border text-left transition-all',
-        config.implemented
-          ? isSelected
-            ? 'bg-signal-500/10 border-signal-500/50 ring-1 ring-signal-500/30'
-            : 'bg-warehouse-800 border-steel-700 hover:border-steel-600 hover:bg-warehouse-700'
-          : 'bg-warehouse-800/50 border-steel-800 opacity-60 cursor-not-allowed'
-      )}
-    >
-      <div className="flex items-start gap-3">
-        <div className={cn(
-          'p-2 rounded-sm',
-          config.implemented
-            ? isSelected
-              ? 'bg-signal-500/20 text-signal-400'
-              : 'bg-steel-700 text-steel-400'
-            : 'bg-steel-800 text-steel-600'
-        )}>
-          {config.icon}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className={cn(
-              'font-mono-display text-sm font-medium',
-              config.implemented ? 'text-steel-200' : 'text-steel-500'
-            )}>
-              {config.name}
-            </span>
-            {!config.implemented && (
-              <span className="px-1.5 py-0.5 rounded text-[9px] font-mono-display bg-steel-700 text-steel-400">
-                SOON
-              </span>
-            )}
-          </div>
-          <p className="font-mono-display text-[10px] text-steel-500 mt-0.5 truncate">
-            {config.description}
-          </p>
-        </div>
-      </div>
-      {isSelected && config.implemented && (
-        <div className="absolute top-2 right-2">
-          <svg className="h-4 w-4 text-signal-500" fill="currentColor" viewBox="0 0 20 20">
-            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-          </svg>
-        </div>
-      )}
-    </button>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-3">
+            <div
+              className="w-10 h-10 rounded-lg flex items-center justify-center"
+              style={{ backgroundColor: `color-mix(in oklch, ${source.color} 15%, transparent)` }}
+            >
+              <source.icon className="w-5 h-5" style={{ color: source.color }} />
+            </div>
+            {actionLabel} {source.name}
+          </DialogTitle>
+          <DialogDescription>
+            {source.category === 'file'
+              ? 'Enter the file path to import data via MCP Gateway.'
+              : 'Enter your credentials to connect via MCP Gateway.'}
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={handleSubmit} className="space-y-4 mt-4">
+          {source.fields.map((field) => (
+            <div key={field.key} className="space-y-2">
+              <label className="text-sm font-medium" htmlFor={field.key}>
+                {field.label}
+                {field.required && <span className="text-destructive ml-1">*</span>}
+              </label>
+              <Input
+                id={field.key}
+                type={field.type === 'password' ? 'password' : 'text'}
+                placeholder={field.placeholder}
+                value={values[field.key] || ''}
+                onChange={(e) => setValues(prev => ({ ...prev, [field.key]: e.target.value }))}
+                autoComplete={field.type === 'password' ? 'current-password' : 'off'}
+              />
+              {field.helpText && (
+                <p className="text-xs text-muted-foreground">{field.helpText}</p>
+              )}
+            </div>
+          ))}
+
+          {error && (
+            <p className="text-sm text-destructive p-2 rounded bg-destructive/10">
+              {error}
+            </p>
+          )}
+
+          <DialogFooter className="mt-6">
+            <Button type="button" variant="outline" onClick={onClose} disabled={isSubmitting}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={isSubmitting}
+              style={{ backgroundColor: source.color, color: 'white' }}
+            >
+              {isSubmitting ? `${actionLabel}ing...` : actionLabel}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-/**
- * DataSourceManager provides UI for connecting and managing data sources.
- *
- * Features:
- * - Grid of all supported source types (9 total)
- * - Forms for implemented types (CSV, Excel, PostgreSQL, MySQL)
- * - Coming soon indicators for future integrations
- * - Schema preview after connection
- * - All operations route through MCP Gateway
- */
-export function DataSourceManager({
-  dataSource,
-  onConnect,
+function CategorySection({
+  title,
+  description,
+  sources,
+  states,
+  onConfigure,
   onDisconnect,
-  className,
-}: DataSourceManagerProps) {
-  const [selectedSource, setSelectedSource] = React.useState<ExtendedSourceType>('csv');
-  const [isSubmitting, setIsSubmitting] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
+}: {
+  title: string;
+  description: string;
+  sources: SourceInfo[];
+  states: SourceStates;
+  onConfigure: (source: SourceInfo) => void;
+  onDisconnect: (sourceId: string) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-lg font-semibold">{title}</h3>
+        <p className="text-sm text-muted-foreground">{description}</p>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {sources.map((source) => (
+          <SourceCard
+            key={source.id}
+            source={source}
+            state={states[source.id] || initialSourceState}
+            onConfigure={() => onConfigure(source)}
+            onDisconnect={() => onDisconnect(source.id)}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
 
-  const handleConnect = async (config: CsvImportConfig | ExcelImportConfig | DatabaseImportConfig) => {
+// === Main Component ===
+
+export function DataSourceManager() {
+  const [states, setStates] = useState<SourceStates>(() => {
+    const initial: SourceStates = {};
+    SOURCES.forEach(s => {
+      initial[s.id] = { ...initialSourceState };
+    });
+    return initial;
+  });
+
+  const [configureSource, setConfigureSource] = useState<SourceInfo | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const fileSources = SOURCES.filter(s => s.category === 'file');
+  const databaseSources = SOURCES.filter(s => s.category === 'database');
+  const platformSources = SOURCES.filter(s => s.category === 'platform');
+
+  const handleConfigure = (source: SourceInfo) => {
+    setConfigureSource(source);
+  };
+
+  const handleCloseDialog = () => {
+    setConfigureSource(null);
+  };
+
+  const handleDisconnect = (sourceId: string) => {
+    setStates(prev => ({
+      ...prev,
+      [sourceId]: { ...initialSourceState },
+    }));
+  };
+
+  const handleSubmit = async (sourceId: string, values: Record<string, string>) => {
     setIsSubmitting(true);
-    setError(null);
+    setStates(prev => ({
+      ...prev,
+      [sourceId]: { ...prev[sourceId], isConnecting: true, error: null },
+    }));
+
     try {
-      await onConnect(config);
+      // Build the command for the orchestration agent
+      const source = SOURCES.find(s => s.id === sourceId);
+      if (!source) throw new Error('Unknown source');
+
+      let command = '';
+
+      if (source.category === 'file') {
+        // File import command
+        if (sourceId === 'csv') {
+          command = `Import CSV file from ${values.file_path}`;
+          if (values.delimiter && values.delimiter !== ',') {
+            command += ` with delimiter "${values.delimiter}"`;
+          }
+        } else if (sourceId === 'excel') {
+          command = `Import Excel file from ${values.file_path}`;
+          if (values.sheet) {
+            command += ` sheet "${values.sheet}"`;
+          }
+        } else if (sourceId === 'edi') {
+          command = `Import EDI file from ${values.file_path}`;
+          if (values.format) {
+            command += ` format ${values.format}`;
+          }
+        }
+      } else if (source.category === 'database') {
+        // Database connection - build connection string
+        const port = values.port || (sourceId === 'postgresql' ? '5432' : '3306');
+        command = `Connect to ${sourceId} database at ${values.host}:${port}/${values.database}`;
+      } else {
+        // External platform connection
+        command = `Connect to ${source.name}`;
+        if (values.store_url) {
+          command += ` store ${values.store_url}`;
+        }
+      }
+
+      // Send command to orchestration agent via API
+      const response = await fetch('/api/v1/commands', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Command failed');
+      }
+
+      const result = await response.json();
+
+      // Update state based on result
+      setStates(prev => ({
+        ...prev,
+        [sourceId]: {
+          isConnected: true,
+          isConnecting: false,
+          lastImported: new Date().toLocaleString(),
+          rowCount: result.row_count,
+          error: null,
+        },
+      }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to connect data source');
+      setStates(prev => ({
+        ...prev,
+        [sourceId]: {
+          ...prev[sourceId],
+          isConnecting: false,
+          error: err instanceof Error ? err.message : 'Operation failed',
+        },
+      }));
+      throw err;
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Group sources by category
-  const filesSources = SOURCE_CONFIGS.filter(s => s.category === 'files');
-  const databaseSources = SOURCE_CONFIGS.filter(s => s.category === 'databases');
-  const platformSources = SOURCE_CONFIGS.filter(s => s.category === 'platforms');
-
-  const selectedConfig = SOURCE_CONFIGS.find(s => s.id === selectedSource);
-
   return (
-    <Card className={cn('card-industrial', className)}>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className={cn(
-              'p-2 rounded-sm border',
-              dataSource?.status === 'connected'
-                ? 'bg-status-go/10 border-status-go/30'
-                : 'bg-steel-800 border-steel-700'
-            )}>
-              {dataSource?.status === 'connected' ? (
-                <svg className="h-4 w-4 text-status-go" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                  <path d="M20 6 9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              ) : (
-                <DatabaseIcon className="h-4 w-4 text-steel-400" />
-              )}
-            </div>
-            <div>
-              <CardTitle className="font-display text-lg">
-                Data Sources
-              </CardTitle>
-              <CardDescription className="font-mono-display text-xs">
-                {dataSource?.status === 'connected'
-                  ? `Connected: ${dataSource.type.toUpperCase()} • ${dataSource.row_count?.toLocaleString()} rows`
-                  : 'Select a source type to connect via MCP Gateway'
-                }
-              </CardDescription>
-            </div>
-          </div>
+    <div className="space-y-8 animate-reveal" style={{ animationFillMode: 'forwards' }}>
+      {/* File Sources */}
+      <CategorySection
+        title="File Sources"
+        description="Import shipment data from local files processed by the Data Source MCP"
+        sources={fileSources}
+        states={states}
+        onConfigure={handleConfigure}
+        onDisconnect={handleDisconnect}
+      />
 
-          {dataSource?.status === 'connected' && (
-            <Button
-              onClick={onDisconnect}
-              variant="ghost"
-              size="sm"
-              className="font-mono-display text-xs uppercase text-status-stop hover:text-status-stop hover:bg-status-stop/10"
-            >
-              <DisconnectIcon className="h-3 w-3 mr-1" />
-              Disconnect
-            </Button>
-          )}
-        </div>
-      </CardHeader>
+      {/* Database Sources */}
+      <CategorySection
+        title="Database Sources"
+        description="Connect to databases and import order data via the Data Source MCP"
+        sources={databaseSources}
+        states={states}
+        onConfigure={handleConfigure}
+        onDisconnect={handleDisconnect}
+      />
 
-      <CardContent className="space-y-4">
-        {/* Connection status indicator */}
-        {dataSource?.status === 'connected' ? (
-          <div className="space-y-4">
-            {/* Source details */}
-            <div className="p-3 rounded-sm bg-status-go/5 border border-status-go/20">
-              <div className="flex items-center gap-2 mb-2">
-                <div className="h-2 w-2 rounded-full bg-status-go animate-pulse" />
-                <span className="font-mono-display text-xs text-status-go uppercase tracking-wider">
-                  Connected via MCP Gateway
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-xs font-mono-display">
-                <div>
-                  <span className="text-steel-500">Type:</span>{' '}
-                  <span className="text-steel-300">{dataSource.type.toUpperCase()}</span>
-                </div>
-                <div>
-                  <span className="text-steel-500">Rows:</span>{' '}
-                  <span className="text-status-go">{dataSource.row_count?.toLocaleString()}</span>
-                </div>
-                {dataSource.csv_path && (
-                  <div className="col-span-2">
-                    <span className="text-steel-500">Path:</span>{' '}
-                    <span className="text-steel-300">{dataSource.csv_path}</span>
-                  </div>
-                )}
-                {dataSource.excel_path && (
-                  <div className="col-span-2">
-                    <span className="text-steel-500">Path:</span>{' '}
-                    <span className="text-steel-300">{dataSource.excel_path}</span>
-                  </div>
-                )}
-                {dataSource.excel_sheet && (
-                  <div className="col-span-2">
-                    <span className="text-steel-500">Sheet:</span>{' '}
-                    <span className="text-steel-300">{dataSource.excel_sheet}</span>
-                  </div>
-                )}
-              </div>
-            </div>
+      {/* External Platforms */}
+      <CategorySection
+        title="External Platforms"
+        description="Connect to e-commerce platforms and ERP systems via the External Sources MCP"
+        sources={platformSources}
+        states={states}
+        onConfigure={handleConfigure}
+        onDisconnect={handleDisconnect}
+      />
 
-            {/* Schema preview */}
-            {dataSource.columns && dataSource.row_count && (
-              <SchemaPreview columns={dataSource.columns} rowCount={dataSource.row_count} />
-            )}
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {/* Source type selection grid */}
-            <div className="space-y-3">
-              {/* File Sources */}
-              <div>
-                <p className="font-mono-display text-[10px] text-steel-500 uppercase tracking-wider mb-2">
-                  File Sources
-                </p>
-                <div className="grid grid-cols-3 gap-2">
-                  {filesSources.map((source) => (
-                    <SourceCard
-                      key={source.id}
-                      config={source}
-                      isSelected={selectedSource === source.id}
-                      onClick={() => setSelectedSource(source.id)}
-                      disabled={isSubmitting}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Database Sources */}
-              <div>
-                <p className="font-mono-display text-[10px] text-steel-500 uppercase tracking-wider mb-2">
-                  Databases
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  {databaseSources.map((source) => (
-                    <SourceCard
-                      key={source.id}
-                      config={source}
-                      isSelected={selectedSource === source.id}
-                      onClick={() => setSelectedSource(source.id)}
-                      disabled={isSubmitting}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Platform Sources */}
-              <div>
-                <p className="font-mono-display text-[10px] text-steel-500 uppercase tracking-wider mb-2">
-                  Platforms
-                </p>
-                <div className="grid grid-cols-2 gap-2">
-                  {platformSources.map((source) => (
-                    <SourceCard
-                      key={source.id}
-                      config={source}
-                      isSelected={selectedSource === source.id}
-                      onClick={() => setSelectedSource(source.id)}
-                      disabled={isSubmitting}
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Form for selected source */}
-            {selectedConfig?.implemented && (
-              <div className="pt-2 border-t border-steel-700">
-                <p className="font-mono-display text-xs text-steel-400 mb-3">
-                  Configure {selectedConfig.name} connection:
-                </p>
-                {selectedSource === 'csv' && (
-                  <CsvImportForm onSubmit={handleConnect} isSubmitting={isSubmitting} />
-                )}
-                {selectedSource === 'excel' && (
-                  <ExcelImportForm onSubmit={handleConnect} isSubmitting={isSubmitting} />
-                )}
-                {selectedSource === 'postgresql' && (
-                  <DatabaseImportForm onSubmit={handleConnect} isSubmitting={isSubmitting} dbType="postgresql" />
-                )}
-                {selectedSource === 'mysql' && (
-                  <DatabaseImportForm onSubmit={handleConnect} isSubmitting={isSubmitting} dbType="mysql" />
-                )}
-              </div>
-            )}
-
-            {/* Coming soon message for unimplemented sources */}
-            {selectedConfig && !selectedConfig.implemented && (
-              <div className="pt-2 border-t border-steel-700">
-                <div className="p-4 rounded-sm bg-warehouse-800/50 border border-steel-700/50 text-center">
-                  <p className="font-mono-display text-sm text-steel-400">
-                    {selectedConfig.name} integration coming soon
-                  </p>
-                  <p className="font-mono-display text-[10px] text-steel-600 mt-1">
-                    This source will be available via MCP Gateway in a future release
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Error display */}
-            {error && (
-              <div className="p-3 rounded-sm bg-status-stop/5 border border-status-stop/20">
-                <p className="font-mono-display text-xs text-status-stop">
-                  ERROR: {error}
-                </p>
-              </div>
-            )}
-
-            {/* Help text */}
-            <div className="p-3 rounded-sm bg-warehouse-800/50 border border-steel-700/50">
-              <p className="font-mono-display text-[10px] text-steel-500 uppercase tracking-wider mb-1">
-                MCP Gateway Architecture
-              </p>
-              <ul className="space-y-1 font-mono-display text-[10px] text-steel-400">
-                <li>• All connections route through OrchestrationAgent</li>
-                <li>• File paths should be absolute paths on the server</li>
-                <li>• Database credentials are used once and NOT stored</li>
-                <li>• Large datasets (&gt;10K rows) may require filters</li>
-              </ul>
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      {/* Configure Dialog */}
+      <ConfigureDialog
+        source={configureSource}
+        isOpen={configureSource !== null}
+        onClose={handleCloseDialog}
+        onSubmit={handleSubmit}
+        isSubmitting={isSubmitting}
+      />
+    </div>
   );
 }
 

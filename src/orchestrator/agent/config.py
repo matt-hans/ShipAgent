@@ -6,7 +6,8 @@ The configurations are used by ClaudeAgentOptions when initializing the agent.
 Configuration includes:
     - Data MCP: Python-based server for data source operations
     - UPS MCP: Node.js-based server for UPS shipping API integration
-    - Shopify MCP: Node.js-based server for Shopify order retrieval
+    - Shopify MCP: Node.js-based server for Shopify order retrieval (via npx)
+    - External Sources MCP: Python-based unified gateway for external platforms
 
 Environment Variables:
     UPS_CLIENT_ID: UPS API client ID (required for UPS MCP)
@@ -157,6 +158,28 @@ def get_shopify_mcp_config() -> MCPServerConfig:
     )
 
 
+def get_external_sources_mcp_config() -> MCPServerConfig:
+    """Get configuration for the External Sources Gateway MCP server.
+
+    The External Sources MCP runs as a Python module using FastMCP with stdio transport.
+    PYTHONPATH is set to PROJECT_ROOT to enable proper module imports.
+
+    This MCP provides unified access to external platforms:
+    - Shopify (Admin API)
+    - WooCommerce (REST API)
+    - SAP (OData)
+    - Oracle (Database)
+
+    Returns:
+        MCPServerConfig with Python command and module path
+    """
+    return MCPServerConfig(
+        command="python3",
+        args=["-m", "src.mcp.external_sources.server"],
+        env={"PYTHONPATH": str(PROJECT_ROOT)},
+    )
+
+
 def create_mcp_servers_config() -> dict[str, MCPServerConfig]:
     """Create MCP server configurations for ClaudeAgentOptions.
 
@@ -164,7 +187,7 @@ def create_mcp_servers_config() -> dict[str, MCPServerConfig]:
     suitable for passing to ClaudeAgentOptions.mcp_servers.
 
     Returns:
-        Dict with "data", "ups", and "shopify" server configurations
+        Dict with "data", "ups", "shopify", and "external" server configurations
 
     Example:
         >>> config = create_mcp_servers_config()
@@ -174,9 +197,12 @@ def create_mcp_servers_config() -> dict[str, MCPServerConfig]:
         "node"
         >>> print(config["shopify"]["command"])
         "npx"
+        >>> print(config["external"]["command"])
+        "python3"
     """
     return {
         "data": get_data_mcp_config(),
         "ups": get_ups_mcp_config(),
         "shopify": get_shopify_mcp_config(),
+        "external": get_external_sources_mcp_config(),
     }

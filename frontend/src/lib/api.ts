@@ -246,3 +246,148 @@ export async function downloadLabelsZip(jobId: string): Promise<Blob> {
 export function getProgressStreamUrl(jobId: string): string {
   return `${API_BASE}/jobs/${jobId}/progress/stream`;
 }
+
+// === External Platform API ===
+
+import type {
+  ListConnectionsResponse,
+  PlatformType,
+  ConnectPlatformResponse,
+  ListOrdersResponse,
+  GetOrderResponse,
+  TrackingUpdateRequest,
+  TrackingUpdateResponse,
+  OrderFilters,
+} from '@/types/api';
+
+/**
+ * List all configured platform connections.
+ *
+ * @returns Connection status for all platforms.
+ */
+export async function listConnections(): Promise<ListConnectionsResponse> {
+  const response = await fetch(`${API_BASE}/platforms/connections`);
+  return parseResponse<ListConnectionsResponse>(response);
+}
+
+/**
+ * Connect to an external platform.
+ *
+ * @param platform - Platform identifier.
+ * @param credentials - Platform-specific credentials.
+ * @param storeUrl - Store/instance URL (required for most platforms).
+ * @returns Connection result.
+ */
+export async function connectPlatform(
+  platform: PlatformType,
+  credentials: Record<string, unknown>,
+  storeUrl?: string
+): Promise<ConnectPlatformResponse> {
+  const response = await fetch(`${API_BASE}/platforms/${platform}/connect`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      credentials,
+      store_url: storeUrl,
+    }),
+  });
+  return parseResponse<ConnectPlatformResponse>(response);
+}
+
+/**
+ * Disconnect from an external platform.
+ *
+ * @param platform - Platform identifier.
+ */
+export async function disconnectPlatform(
+  platform: PlatformType
+): Promise<{ success: boolean }> {
+  const response = await fetch(`${API_BASE}/platforms/${platform}/disconnect`, {
+    method: 'POST',
+  });
+  return parseResponse<{ success: boolean }>(response);
+}
+
+/**
+ * Test connection to a platform.
+ *
+ * @param platform - Platform identifier.
+ * @returns Connection health status.
+ */
+export async function testConnection(
+  platform: PlatformType
+): Promise<{ success: boolean; status: string }> {
+  const response = await fetch(`${API_BASE}/platforms/${platform}/test`);
+  return parseResponse<{ success: boolean; status: string }>(response);
+}
+
+/**
+ * List orders from a connected platform.
+ *
+ * @param platform - Platform identifier.
+ * @param filters - Optional filters.
+ * @returns List of orders.
+ */
+export async function listPlatformOrders(
+  platform: PlatformType,
+  filters?: OrderFilters
+): Promise<ListOrdersResponse> {
+  const params = new URLSearchParams();
+  if (filters?.status) params.set('status', filters.status);
+  if (filters?.date_from) params.set('date_from', filters.date_from);
+  if (filters?.date_to) params.set('date_to', filters.date_to);
+  if (filters?.limit) params.set('limit', String(filters.limit));
+  if (filters?.offset) params.set('offset', String(filters.offset));
+
+  const queryString = params.toString();
+  const url = queryString
+    ? `${API_BASE}/platforms/${platform}/orders?${queryString}`
+    : `${API_BASE}/platforms/${platform}/orders`;
+
+  const response = await fetch(url);
+  return parseResponse<ListOrdersResponse>(response);
+}
+
+/**
+ * Get a single order from a connected platform.
+ *
+ * @param platform - Platform identifier.
+ * @param orderId - Platform-specific order ID.
+ * @returns Order details.
+ */
+export async function getPlatformOrder(
+  platform: PlatformType,
+  orderId: string
+): Promise<GetOrderResponse> {
+  const response = await fetch(
+    `${API_BASE}/platforms/${platform}/orders/${encodeURIComponent(orderId)}`
+  );
+  return parseResponse<GetOrderResponse>(response);
+}
+
+/**
+ * Update tracking information on a platform order.
+ *
+ * @param request - Tracking update details.
+ * @returns Update result.
+ */
+export async function updatePlatformTracking(
+  request: TrackingUpdateRequest
+): Promise<TrackingUpdateResponse> {
+  const response = await fetch(
+    `${API_BASE}/platforms/${request.platform}/orders/${encodeURIComponent(request.order_id)}/tracking`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        tracking_number: request.tracking_number,
+        carrier: request.carrier || 'UPS',
+      }),
+    }
+  );
+  return parseResponse<TrackingUpdateResponse>(response);
+}
