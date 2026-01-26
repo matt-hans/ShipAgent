@@ -70,3 +70,6 @@ Thumbs.db
 .claude/
 .planning/
 Claude.md
+
+# Worktrees
+.worktrees/
