@@ -12,7 +12,46 @@ import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
 import { getJobs } from '@/lib/api';
-import type { Job, JobSummary, DataSourceType, DataSourceInfo } from '@/types/api';
+import type { Job, JobSummary, DataSourceInfo } from '@/types/api';
+
+/** Extended source types for MVP. */
+type SourceType = 'csv' | 'excel' | 'database' | 'shopify';
+
+/** Feature flags - only enabled sources shown in UI. */
+const ENABLED_SOURCES: Record<SourceType, boolean> = {
+  csv: true,
+  excel: true,
+  database: true,
+  shopify: true, // MVP external platform
+};
+
+/** Source metadata. */
+const SOURCE_META: Record<SourceType, { label: string; placeholder: string; help: string; implemented: boolean }> = {
+  csv: {
+    label: 'CSV',
+    placeholder: 'Path to file...',
+    help: 'Upload a CSV file or enter the path on the server.',
+    implemented: true,
+  },
+  excel: {
+    label: 'EXCEL',
+    placeholder: 'Path to file...',
+    help: 'Upload an Excel file (.xlsx) to import data.',
+    implemented: true,
+  },
+  database: {
+    label: 'DATABASE',
+    placeholder: 'Connection string...',
+    help: 'postgresql://user:pass@host:5432/dbname',
+    implemented: true,
+  },
+  shopify: {
+    label: 'SHOPIFY',
+    placeholder: 'Store URL (mystore.myshopify.com)',
+    help: 'Connect your Shopify store to import orders.',
+    implemented: true,
+  },
+};
 
 interface SidebarProps {
   collapsed: boolean;
@@ -83,19 +122,26 @@ function StatusBadge({ status }: { status: string }) {
 // Data Source Section
 function DataSourceSection() {
   const { dataSource, setDataSource } = useAppState();
-  const [activeTab, setActiveTab] = React.useState<DataSourceType>('csv');
+  const [activeTab, setActiveTab] = React.useState<SourceType>('csv');
   const [filePath, setFilePath] = React.useState('');
   const [isConnecting, setIsConnecting] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
+  // Get enabled sources for tab display
+  const enabledSources = (Object.keys(ENABLED_SOURCES) as SourceType[]).filter(
+    (key) => ENABLED_SOURCES[key]
+  );
+
+  const currentMeta = SOURCE_META[activeTab];
+
   const handleConnect = async () => {
-    if (!filePath.trim()) return;
+    if (!filePath.trim() || !currentMeta.implemented) return;
 
     setIsConnecting(true);
     try {
-      // Simulated connection - in real app, call backend API
+      // Simulated connection - in real app, call backend API via MCP Gateway
       const mockSource: DataSourceInfo = {
-        type: activeTab,
+        type: activeTab === 'shopify' ? 'csv' : activeTab, // Map shopify to csv for now
         status: 'connected' as const,
         row_count: Math.floor(Math.random() * 5000) + 100,
         column_count: 8,
@@ -149,7 +195,7 @@ function DataSourceSection() {
         <div className="p-3 rounded-lg bg-success/5 border border-success/20">
           <div className="flex items-center gap-2 mb-2">
             <span className="w-2 h-2 rounded-full bg-success pulse-glow" />
-            <span className="text-xs font-mono text-success">Connected</span>
+            <span className="text-xs font-mono text-success">Connected via MCP Gateway</span>
           </div>
           <div className="space-y-1 text-xs font-mono">
             <div className="flex justify-between">
@@ -190,67 +236,83 @@ function DataSourceSection() {
     <div className="p-3 space-y-3">
       <span className="text-xs font-medium text-slate-300">Connect Data Source</span>
 
-      {/* Tab selector */}
-      <div className="flex rounded-md bg-slate-900 p-0.5 border border-slate-800">
-        {(['csv', 'excel', 'database'] as DataSourceType[]).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={cn(
-              'flex-1 px-2 py-1.5 text-xs font-mono rounded-sm transition-colors',
-              activeTab === tab
-                ? 'bg-amber-500 text-void-950'
-                : 'text-slate-400 hover:text-slate-200'
-            )}
-          >
-            {tab.toUpperCase()}
-          </button>
-        ))}
-      </div>
-
-      {/* File input */}
-      <div className="space-y-2">
-        <input
-          type="file"
-          ref={fileInputRef}
-          onChange={handleFileSelect}
-          accept={activeTab === 'csv' ? '.csv' : activeTab === 'excel' ? '.xlsx,.xls' : undefined}
-          className="hidden"
-        />
-
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={filePath}
-            onChange={(e) => setFilePath(e.target.value)}
-            placeholder={activeTab === 'database' ? 'Connection string...' : 'Path to file...'}
-            className="flex-1 px-3 py-2 text-xs font-mono rounded-md bg-void-900 border border-slate-800 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
-          />
-          {activeTab !== 'database' && (
+      {/* Tab selector - now with 4 tabs including Shopify */}
+      <div className="grid grid-cols-4 rounded-md bg-slate-900 p-0.5 border border-slate-800">
+        {enabledSources.map((tab) => {
+          const meta = SOURCE_META[tab];
+          return (
             <button
-              onClick={handleFileBrowse}
-              className="p-2 rounded-md bg-slate-800 border border-slate-700 hover:bg-slate-700 transition-colors"
-              title="Browse files"
+              key={tab}
+              onClick={() => setActiveTab(tab)}
+              className={cn(
+                'relative px-1.5 py-1.5 text-[10px] font-mono rounded-sm transition-colors',
+                activeTab === tab
+                  ? 'bg-amber-500 text-void-950'
+                  : 'text-slate-400 hover:text-slate-200',
+                !meta.implemented && 'opacity-70'
+              )}
             >
-              <FolderIcon className="w-4 h-4 text-slate-400" />
+              {meta.label}
+              {!meta.implemented && (
+                <span className="absolute -top-1 -right-1 w-1.5 h-1.5 bg-amber-400 rounded-full" />
+              )}
             </button>
-          )}
-        </div>
-
-        <button
-          onClick={handleConnect}
-          disabled={!filePath.trim() || isConnecting}
-          className="w-full btn-primary py-2 text-xs font-medium disabled:opacity-50"
-        >
-          {isConnecting ? 'Connecting...' : 'Connect'}
-        </button>
+          );
+        })}
       </div>
+
+      {/* Coming soon notice for Shopify */}
+      {!currentMeta.implemented && (
+        <div className="p-2.5 rounded-md bg-amber-500/10 border border-amber-500/20">
+          <p className="text-[10px] font-mono text-amber-400 text-center">
+            {currentMeta.label} integration coming soon
+          </p>
+        </div>
+      )}
+
+      {/* Input section - only show for implemented sources */}
+      {currentMeta.implemented && (
+        <div className="space-y-2">
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileSelect}
+            accept={activeTab === 'csv' ? '.csv' : activeTab === 'excel' ? '.xlsx,.xls' : undefined}
+            className="hidden"
+          />
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={filePath}
+              onChange={(e) => setFilePath(e.target.value)}
+              placeholder={currentMeta.placeholder}
+              className="flex-1 px-3 py-2 text-xs font-mono rounded-md bg-void-900 border border-slate-800 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+            />
+            {activeTab !== 'database' && (
+              <button
+                onClick={handleFileBrowse}
+                className="p-2 rounded-md bg-slate-800 border border-slate-700 hover:bg-slate-700 transition-colors"
+                title="Browse files"
+              >
+                <FolderIcon className="w-4 h-4 text-slate-400" />
+              </button>
+            )}
+          </div>
+
+          <button
+            onClick={handleConnect}
+            disabled={!filePath.trim() || isConnecting}
+            className="w-full btn-primary py-2 text-xs font-medium disabled:opacity-50"
+          >
+            {isConnecting ? 'Connecting...' : 'Connect'}
+          </button>
+        </div>
+      )}
 
       {/* Help text */}
       <p className="text-[10px] font-mono text-slate-500">
-        {activeTab === 'csv' && 'Upload a CSV file or enter the path on the server.'}
-        {activeTab === 'excel' && 'Upload an Excel file (.xlsx) to import data.'}
-        {activeTab === 'database' && 'postgresql://user:pass@host:5432/dbname'}
+        {currentMeta.help}
       </p>
     </div>
   );

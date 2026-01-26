@@ -118,31 +118,67 @@ export function Dashboard() {
   }, [phase, progress.status, disconnect]);
 
   // Data source connection handler
+  // Routes through /api/v1/commands → OrchestrationAgent → MCP Tools
   const handleDataSourceConnect = async (
     config: CsvImportConfig | ExcelImportConfig | DatabaseImportConfig
   ) => {
-    // This would call the backend to connect the data source
-    // For now, we'll simulate it since the backend API doesn't have
-    // explicit data source endpoints yet (it's handled through the orchestrator)
-    const mockDataSource: DataSourceInfo = {
-      type: 'filePath' in config ? ('delimiter' in config ? 'csv' : 'excel') : 'database',
-      status: 'connected',
-      row_count: Math.floor(Math.random() * 5000) + 100,
-      column_count: 12,
-      columns: [
-        { name: 'order_id', type: 'INTEGER', nullable: false, warnings: [] },
-        { name: 'recipient_name', type: 'VARCHAR', nullable: false, warnings: [] },
-        { name: 'address', type: 'VARCHAR', nullable: false, warnings: [] },
-        { name: 'city', type: 'VARCHAR', nullable: false, warnings: [] },
-        { name: 'state', type: 'VARCHAR', nullable: false, warnings: [] },
-        { name: 'zip', type: 'VARCHAR', nullable: false, warnings: [] },
-        { name: 'weight', type: 'DECIMAL', nullable: true, warnings: [] },
-        { name: 'service', type: 'VARCHAR', nullable: true, warnings: [] },
-      ],
-      connected_at: new Date().toISOString(),
-      ...(config as CsvImportConfig & ExcelImportConfig),
-    };
-    setDataSource(mockDataSource);
+    // Determine source type and build command
+    let command: string;
+    let sourceType: 'csv' | 'excel' | 'database';
+
+    if ('filePath' in config && 'delimiter' in config) {
+      // CSV config
+      sourceType = 'csv';
+      const csvConfig = config as CsvImportConfig;
+      command = `Import CSV file from "${csvConfig.filePath}"`;
+      if (csvConfig.delimiter && csvConfig.delimiter !== ',') {
+        command += ` with delimiter "${csvConfig.delimiter}"`;
+      }
+    } else if ('filePath' in config) {
+      // Excel config
+      sourceType = 'excel';
+      const excelConfig = config as ExcelImportConfig;
+      command = `Import Excel file from "${excelConfig.filePath}"`;
+      if (excelConfig.sheet) {
+        command += ` sheet "${excelConfig.sheet}"`;
+      }
+    } else {
+      // Database config
+      sourceType = 'database';
+      const dbConfig = config as DatabaseImportConfig;
+      // Don't include credentials in command - pass separately
+      command = `Import from database with query: ${dbConfig.query}`;
+    }
+
+    try {
+      // Submit command to backend
+      const result = await submitCommand(command);
+
+      // For now, create a placeholder data source info
+      // TODO: The backend should return schema info from MCP tool response
+      const connectedSource: DataSourceInfo = {
+        type: sourceType,
+        status: 'connected',
+        row_count: undefined, // Will be populated when backend returns actual data
+        column_count: undefined,
+        columns: undefined,
+        connected_at: new Date().toISOString(),
+        csv_path: 'filePath' in config && 'delimiter' in config ? (config as CsvImportConfig).filePath : undefined,
+        excel_path: 'filePath' in config && !('delimiter' in config) ? (config as ExcelImportConfig).filePath : undefined,
+        excel_sheet: 'sheet' in config ? (config as ExcelImportConfig).sheet : undefined,
+      };
+
+      setDataSource(connectedSource);
+      setSubmitError(null);
+
+      // The job was created - check its progress for actual data
+      // In a full implementation, we'd poll or use SSE for the schema info
+      console.log(`Data source import job created: ${result.job_id}`);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to connect data source';
+      setSubmitError(errorMessage);
+      throw err; // Re-throw so DataSourceManager can show error
+    }
   };
 
   const handleDataSourceDisconnect = () => {
