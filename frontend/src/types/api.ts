@@ -27,6 +27,86 @@ export type RowStatus =
   | 'failed'
   | 'skipped';
 
+// === Data Source Types ===
+
+/** Supported data source types. */
+export type DataSourceType = 'csv' | 'excel' | 'database';
+
+/** Status of a data source import. */
+export type DataSourceStatus = 'connected' | 'disconnected' | 'error';
+
+/** Column data types from schema discovery. */
+export type ColumnDataType =
+  | 'INTEGER'
+  | 'BIGINT'
+  | 'VARCHAR'
+  | 'TEXT'
+  | 'BOOLEAN'
+  | 'DATE'
+  | 'TIMESTAMP'
+  | 'DECIMAL'
+  | 'DOUBLE'
+  | 'UNKNOWN';
+
+/** Column metadata from schema discovery. */
+export interface ColumnMetadata {
+  name: string;
+  type: ColumnDataType;
+  nullable: boolean;
+  warnings: string[];
+}
+
+/** CSV import configuration. */
+export interface CsvImportConfig {
+  filePath: string;
+  delimiter?: string;
+  header?: boolean;
+}
+
+/** Excel import configuration. */
+export interface ExcelImportConfig {
+  filePath: string;
+  sheet?: string;
+  header?: boolean;
+}
+
+/** Database import configuration. */
+export interface DatabaseImportConfig {
+  connectionString: string;
+  query: string;
+  schema?: string;
+}
+
+/** Data source connection info. */
+export interface DataSourceInfo {
+  type: DataSourceType;
+  status: DataSourceStatus;
+  row_count?: number;
+  column_count?: number;
+  columns?: ColumnMetadata[];
+  connected_at?: string;
+  error?: string;
+  // Type-specific details
+  csv_path?: string;
+  excel_path?: string;
+  excel_sheet?: string;
+  database_query?: string;
+}
+
+/** Sheet info for Excel files. */
+export interface SheetInfo {
+  name: string;
+  index: number;
+  row_count?: number;
+}
+
+/** Table info for databases. */
+export interface TableInfo {
+  name: string;
+  row_count: number;
+  requires_filter: boolean;
+}
+
 // === Job Types ===
 
 /** Full job response with all details. */
@@ -57,6 +137,7 @@ export interface Job {
 export interface JobSummary {
   id: string;
   name: string;
+  original_command?: string;
   status: JobStatus;
   mode: JobMode;
   total_rows: number;

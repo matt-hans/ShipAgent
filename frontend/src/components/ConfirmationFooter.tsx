@@ -1,8 +1,8 @@
 /**
  * ConfirmationFooter component for batch confirmation.
  *
- * A sticky footer bar with confirm and cancel buttons that stays
- * visible while scrolling through the preview.
+ * Industrial Terminal aesthetic - technical status bar style
+ * confirmation footer with cost display and action buttons.
  */
 
 import { Button } from '@/components/ui/button';
@@ -45,7 +45,7 @@ function CheckIcon({ className }: { className?: string }) {
       strokeWidth={2}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={cn('h-4 w-4', className)}
+      className={className}
     >
       <polyline points="20 6 9 17 4 12" />
     </svg>
@@ -65,7 +65,7 @@ function XIcon({ className }: { className?: string }) {
       strokeWidth={2}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={cn('h-4 w-4', className)}
+      className={className}
     >
       <line x1="18" y1="6" x2="6" y2="18" />
       <line x1="6" y1="6" x2="18" y2="18" />
@@ -96,11 +96,12 @@ function LoadingSpinner({ className }: { className?: string }) {
  *
  * Features:
  * - Sticky positioning at bottom of viewport
+ * - Technical status bar aesthetic with barcode pattern
  * - Summary of shipment count and total cost
  * - Prominent confirm button with cost display
- * - Cancel button
+ * - Cancel button with industrial styling
  * - Loading state during confirmation
- * - Smooth slide-in/out animation
+ * - Smooth slide-in animation
  */
 export function ConfirmationFooter({
   totalCost,
@@ -119,27 +120,47 @@ export function ConfirmationFooter({
     <div
       className={cn(
         'fixed bottom-0 left-0 right-0 z-50',
-        'bg-card/95 backdrop-blur-sm',
-        'border-t border-border shadow-lg',
-        'transform transition-transform duration-300 ease-out',
-        visible ? 'translate-y-0' : 'translate-y-full',
+        'bg-gradient-to-r from-warehouse-900 via-warehouse-850 to-warehouse-900',
+        'border-t border-steel-700 shadow-lg',
+        'animate-slide-up',
         className
       )}
     >
+      {/* Top accent line */}
+      <div className="h-[1px] bg-gradient-to-r from-transparent via-signal-500 to-transparent" />
+
+      {/* Barcode pattern */}
+      <div className="h-1 barcode-pattern opacity-20" />
+
       <div className="container mx-auto px-4 py-4">
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-          {/* Summary section */}
+          {/* Summary section - Technical data display */}
           <div className="flex items-center gap-6">
-            <div>
-              <p className="text-sm text-muted-foreground">Shipments</p>
-              <p className="text-xl font-bold text-foreground">{rowCount}</p>
-            </div>
-            <div className="h-10 w-px bg-border" />
-            <div>
-              <p className="text-sm text-muted-foreground">Estimated Total</p>
-              <p className="text-xl font-bold text-foreground">
-                {formatCurrency(totalCost)}
+            <div className="space-y-0.5">
+              <p className="font-mono-display text-[10px] text-steel-500 uppercase tracking-widest">
+                Batch Size
               </p>
+              <div className="flex items-baseline gap-2">
+                <p className="font-display text-2xl font-bold text-steel-100">
+                  {rowCount}
+                </p>
+                <p className="font-mono-display text-sm text-steel-500">
+                  SHIPMENT{rowCount !== 1 ? 'S' : ''}
+                </p>
+              </div>
+            </div>
+
+            <div className="hidden sm:block h-12 w-px bg-gradient-to-b from-transparent via-steel-700 to-transparent" />
+
+            <div className="space-y-0.5">
+              <p className="font-mono-display text-[10px] text-steel-500 uppercase tracking-widest">
+                Estimated Cost
+              </p>
+              <div className="flex items-baseline gap-2">
+                <p className="font-mono-display text-2xl font-bold text-signal-500">
+                  {formatCurrency(totalCost)}
+                </p>
+              </div>
             </div>
           </div>
 
@@ -149,32 +170,38 @@ export function ConfirmationFooter({
               variant="outline"
               onClick={onCancel}
               disabled={isLoading}
-              className="gap-2"
+              className={cn(
+                'font-mono-display text-sm uppercase tracking-wider',
+                'border-steel-600 text-steel-300',
+                'hover:bg-warehouse-800 hover:text-steel-100',
+                'transition-all duration-200'
+              )}
             >
-              <XIcon />
+              <XIcon className="h-4 w-4" />
               Cancel
             </Button>
+
             <Button
               onClick={onConfirm}
               disabled={isLoading}
-              size="lg"
               className={cn(
-                'gap-2 px-6',
-                'bg-green-600 hover:bg-green-700',
-                'text-white',
-                'transition-all duration-200',
-                !isLoading && 'hover:scale-[1.02] active:scale-[0.98]'
+                'btn-industrial font-mono-display text-sm uppercase tracking-wider',
+                'gap-2 px-6 py-5',
+                'min-w-[240px]'
               )}
             >
               {isLoading ? (
                 <>
                   <LoadingSpinner />
-                  Confirming...
+                  CONFIRMING...
                 </>
               ) : (
                 <>
-                  <CheckIcon />
-                  Confirm {rowCount} Shipment{rowCount !== 1 ? 's' : ''} ({formatCurrency(totalCost)})
+                  <CheckIcon className="h-4 w-4" />
+                  EXECUTE BATCH
+                  <span className="text-signal-500/80">
+                    ({formatCurrency(totalCost)})
+                  </span>
                 </>
               )}
             </Button>

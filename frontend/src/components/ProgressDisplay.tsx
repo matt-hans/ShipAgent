@@ -1,14 +1,12 @@
 /**
  * ProgressDisplay component for real-time batch execution progress.
  *
- * Displays a progress bar with row counter, percentage, and status
- * information during batch execution. Connects to SSE stream via
- * the useJobProgress hook.
+ * Industrial Logistics Terminal aesthetic - data-dense progress display
+ * with routing line animations and technical indicators.
  */
 
 import * as React from 'react';
 import { useJobProgress } from '@/hooks/useJobProgress';
-import { Progress } from '@/components/ui/progress';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
@@ -53,11 +51,12 @@ function formatTimeRemaining(
  * ProgressDisplay shows real-time batch execution progress.
  *
  * Features:
- * - Visual progress bar with percentage
+ * - Visual progress bar with routing line animation
  * - Text counter showing "X of Y shipments"
  * - Estimated time remaining
- * - Connection status indicator
+ * - Connection status indicator with pulse
  * - Different visual states for running/completed/failed
+ * - Industrial aesthetic with technical details
  */
 export function ProgressDisplay({ jobId, className }: ProgressDisplayProps) {
   const { progress, isConnected, connectionError } = useJobProgress(jobId);
@@ -69,7 +68,6 @@ export function ProgressDisplay({ jobId, className }: ProgressDisplayProps) {
       : 0;
 
   // Track start time for ETA calculation
-  // We use a simple approach - assume batch started when component mounts with running status
   const startTimeRef = React.useRef<number | null>(null);
   if (progress.status === 'running' && !startTimeRef.current) {
     startTimeRef.current = Date.now();
@@ -88,191 +86,245 @@ export function ProgressDisplay({ jobId, className }: ProgressDisplayProps) {
   const isPending = progress.status === 'pending';
 
   return (
-    <Card className={cn('w-full', className)}>
-      <CardHeader className="pb-2">
+    <Card className={cn(
+      'card-industrial overflow-hidden',
+      className
+    )}>
+      <CardHeader className="pb-3 border-b border-steel-700/50">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-lg font-semibold">
-            Batch Progress
-          </CardTitle>
-          {/* Connection indicator */}
-          <div className="flex items-center gap-2 text-sm">
-            <span
-              className={cn(
-                'inline-block h-2 w-2 rounded-full',
-                isConnected ? 'bg-green-500' : 'bg-yellow-500'
+          <div className="flex items-center gap-3">
+            {/* Status icon */}
+            <div className={cn(
+              'p-2 rounded-sm border',
+              isCompleted && 'bg-status-go/10 border-status-go/30',
+              isFailed && 'bg-status-stop/10 border-status-stop/30',
+              isRunning && 'bg-status-go/10 border-status-go/30 animate-pulse',
+              isPending && 'bg-steel-800 border-steel-700'
+            )}>
+              {isCompleted ? (
+                <svg className="h-4 w-4 text-status-go" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path d="M20 6 9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              ) : isFailed ? (
+                <svg className="h-4 w-4 text-status-stop" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <circle cx="12" cy="12" r="10" />
+                  <line x1="15" y1="9" x2="9" y2="15" />
+                  <line x1="9" y1="9" x2="15" y2="15" strokeLinecap="round" />
+                </svg>
+              ) : (
+                <svg className={cn(
+                  'h-4 w-4',
+                  isRunning ? 'text-status-go' : 'text-steel-500'
+                )} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                  <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+                </svg>
               )}
-            />
-            <span className="text-muted-foreground">
-              {isConnected ? 'Live' : 'Connecting...'}
+            </div>
+
+            <div>
+              <CardTitle className="font-display text-lg">
+                BATCH PROGRESS
+              </CardTitle>
+              <p className="font-mono-display text-[10px] text-steel-500 uppercase tracking-widest">
+                Job ID: {jobId.slice(0, 8)}
+              </p>
+            </div>
+          </div>
+
+          {/* Connection indicator */}
+          <div className="flex items-center gap-2">
+            <div className={cn(
+              'h-2 w-2 rounded-full',
+              isConnected ? 'bg-status-go animate-pulse' : 'bg-status-hold'
+            )} />
+            <span className="font-mono-display text-xs text-steel-400">
+              {isConnected ? 'LIVE' : 'CONNECTING...'}
             </span>
           </div>
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-4">
+      <CardContent className="p-5 space-y-5">
         {/* Pending/Connecting state */}
         {isPending && (
-          <div className="text-center py-4">
-            <p className="text-muted-foreground">
-              Waiting for batch to start...
+          <div className="text-center py-6">
+            <div className="inline-flex">
+              <svg className="h-8 w-8 text-steel-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+            </div>
+            <p className="mt-3 font-mono-display text-sm text-steel-400">
+              [ INITIALIZING BATCH ]
             </p>
           </div>
         )}
 
         {/* Running state */}
         {isRunning && (
-          <>
-            {/* Counter text */}
+          <div className="space-y-4">
+            {/* Counter display */}
             <div className="flex items-baseline justify-between">
-              <p className="text-2xl font-bold tracking-tight">
-                Processing{' '}
-                <span className="text-primary">{progress.processed}</span>
-                {' of '}
-                <span className="text-primary">{progress.total}</span>
-                {' shipments'}
-              </p>
-              <span className="text-3xl font-bold text-primary">
-                {percentage}%
-              </span>
-            </div>
-
-            {/* Progress bar */}
-            <Progress
-              value={percentage}
-              className="h-3"
-            />
-
-            {/* Additional info row */}
-            <div className="flex items-center justify-between text-sm text-muted-foreground">
-              <div className="flex gap-4">
-                <span>
-                  <span className="text-green-600 font-medium">
-                    {progress.successful}
-                  </span>{' '}
-                  successful
-                </span>
-                {progress.failed > 0 && (
-                  <span>
-                    <span className="text-red-600 font-medium">
-                      {progress.failed}
-                    </span>{' '}
-                    failed
-                  </span>
-                )}
+              <div>
+                <p className="font-mono-display text-xs text-steel-500 uppercase tracking-widest mb-1">
+                  Processing Status
+                </p>
+                <p className="font-display text-2xl font-bold text-steel-100">
+                  <span className="text-signal-500">{progress.processed}</span>
+                  <span className="text-steel-500 mx-1">/</span>
+                  <span>{progress.total}</span>
+                  <span className="text-sm font-normal text-steel-400 ml-2">shipments</span>
+                </p>
               </div>
-              {timeRemaining && <span>{timeRemaining}</span>}
+              <div className="text-right">
+                <div className={cn(
+                  'inline-flex items-center justify-center px-4 py-2 rounded-sm',
+                  'bg-signal-500/10 border border-signal-500/30'
+                )}>
+                  <span className="font-mono-display text-3xl font-bold text-signal-500">
+                    {percentage}%
+                  </span>
+                </div>
+              </div>
             </div>
 
-            {/* Current row indicator */}
-            {progress.currentRow !== null && (
-              <p className="text-sm text-muted-foreground animate-pulse">
-                Processing row {progress.currentRow}...
-              </p>
-            )}
+            {/* Progress bar with routing animation */}
+            <div className="relative">
+              <div className="h-3 progress-routing">
+                <div
+                  className="h-full bg-gradient-to-r from-signal-600 via-signal-500 to-signal-600"
+                  style={{ width: `${percentage}%` }}
+                />
+              </div>
+              {/* Percentage markers */}
+              <div className="flex justify-between mt-1 font-mono-display text-[9px] text-steel-600">
+                <span>0%</span>
+                <span>25%</span>
+                <span>50%</span>
+                <span>75%</span>
+                <span>100%</span>
+              </div>
+            </div>
 
-            {/* Running cost */}
-            {progress.totalCostCents > 0 && (
-              <p className="text-sm text-muted-foreground">
-                Cost so far: {formatCurrency(progress.totalCostCents)}
-              </p>
-            )}
-          </>
+            {/* Stats row */}
+            <div className="grid grid-cols-3 gap-3">
+              <div className="p-3 rounded-sm bg-warehouse-800/50 border border-steel-700/50 text-center">
+                <p className="font-mono-display text-lg font-bold text-status-go">
+                  {progress.successful}
+                </p>
+                <p className="font-mono-display text-[10px] text-steel-500 uppercase">
+                  Success
+                </p>
+              </div>
+              {progress.failed > 0 && (
+                <div className="p-3 rounded-sm bg-status-stop/5 border border-status-stop/20 text-center">
+                  <p className="font-mono-display text-lg font-bold text-status-stop">
+                    {progress.failed}
+                  </p>
+                  <p className="font-mono-display text-[10px] text-steel-500 uppercase">
+                    Failed
+                  </p>
+                </div>
+              )}
+              {progress.totalCostCents > 0 && (
+                <div className="p-3 rounded-sm bg-warehouse-800/50 border border-steel-700/50 text-center">
+                  <p className="font-mono-display text-lg font-bold text-steel-100">
+                    {formatCurrency(progress.totalCostCents)}
+                  </p>
+                  <p className="font-mono-display text-[10px] text-steel-500 uppercase">
+                    Cost
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Current row & ETA */}
+            <div className="flex items-center justify-between font-mono-display text-xs">
+              {progress.currentRow !== null ? (
+                <div className="flex items-center gap-2 text-signal-500 animate-pulse">
+                  <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="12 6 12 12 16 14" />
+                  </svg>
+                  <span>PROCESSING ROW {progress.currentRow}</span>
+                </div>
+              ) : (
+                <span className="text-steel-600">AWAITING NEXT ROW</span>
+              )}
+              {timeRemaining && (
+                <span className="text-steel-400">ETA: {timeRemaining}</span>
+              )}
+            </div>
+          </div>
         )}
 
         {/* Completed state */}
         {isCompleted && (
-          <div className="text-center py-4 space-y-3">
-            <div className="inline-flex items-center justify-center h-12 w-12 rounded-full bg-green-100 dark:bg-green-900/30">
-              <CheckCircleIcon className="h-6 w-6 text-green-600 dark:text-green-400" />
+          <div className="text-center py-6 space-y-4">
+            <div className="inline-flex items-center justify-center h-16 w-16 rounded-full bg-status-go/10 border border-status-go/30">
+              <svg className="h-8 w-8 text-status-go" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                <path d="M20 6 9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
             </div>
             <div>
-              <p className="text-xl font-semibold text-green-700 dark:text-green-400">
-                Batch Complete!
+              <p className="font-display text-xl font-semibold text-status-go">
+                BATCH COMPLETE
               </p>
-              <p className="text-muted-foreground mt-1">
-                {progress.successful} shipment{progress.successful !== 1 ? 's' : ''}{' '}
-                processed successfully
+              <p className="font-mono-display text-sm text-steel-400 mt-1">
+                {progress.successful} SHIPMENT{progress.successful !== 1 ? 'S' : ''} PROCESSED
               </p>
             </div>
             {progress.totalCostCents > 0 && (
-              <p className="text-lg font-medium">
-                Total: {formatCurrency(progress.totalCostCents)}
-              </p>
+              <div className="inline-flex items-center gap-3 px-6 py-3 rounded-sm bg-warehouse-800/50 border border-steel-700">
+                <span className="font-mono-display text-xs text-steel-500 uppercase tracking-wider">
+                  Total Cost
+                </span>
+                <span className="font-mono-display text-2xl font-bold text-signal-500">
+                  {formatCurrency(progress.totalCostCents)}
+                </span>
+              </div>
             )}
-            {/* Full progress bar for completed */}
-            <Progress value={100} className="h-2 mt-4" />
           </div>
         )}
 
         {/* Failed state */}
         {isFailed && (
-          <div className="text-center py-4 space-y-3">
-            <div className="inline-flex items-center justify-center h-12 w-12 rounded-full bg-red-100 dark:bg-red-900/30">
-              <XCircleIcon className="h-6 w-6 text-red-600 dark:text-red-400" />
+          <div className="text-center py-6 space-y-4">
+            <div className="inline-flex items-center justify-center h-16 w-16 rounded-full bg-status-stop/10 border border-status-stop/30">
+              <svg className="h-8 w-8 text-status-stop" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={3}>
+                <circle cx="12" cy="12" r="10" />
+                <line x1="15" y1="9" x2="9" y2="15" strokeLinecap="round" />
+                <line x1="9" y1="9" x2="15" y2="15" strokeLinecap="round" />
+              </svg>
             </div>
             <div>
-              <p className="text-xl font-semibold text-red-700 dark:text-red-400">
-                Batch Failed
+              <p className="font-display text-xl font-semibold text-status-stop">
+                BATCH FAILED
               </p>
-              <p className="text-muted-foreground mt-1">
-                Processed {progress.processed} of {progress.total} shipments
-                before failure
+              <p className="font-mono-display text-sm text-steel-400 mt-1">
+                PROCESSED {progress.processed} OF {progress.total} SHIPMENTS
               </p>
             </div>
-            {/* Progress bar showing where it stopped */}
-            <Progress
-              value={percentage}
-              className="h-2 mt-4 [&>div]:bg-red-500"
-            />
+            {progress.error && (
+              <div className="max-w-md mx-auto p-3 rounded-sm bg-status-stop/5 border border-status-stop/20">
+                <p className="font-mono-display text-xs text-status-stop">
+                  [{progress.error.code}] {progress.error.message}
+                </p>
+              </div>
+            )}
           </div>
         )}
 
         {/* Connection error */}
         {connectionError && (
-          <p className="text-sm text-yellow-600 dark:text-yellow-400 mt-2">
-            Connection issue: {connectionError.message}
-          </p>
+          <div className="p-3 rounded-sm bg-status-hold/5 border border-status-hold/20">
+            <p className="font-mono-display text-xs text-status-hold">
+              ⚠ CONNECTION ISSUE: {connectionError.message}
+            </p>
+          </div>
         )}
       </CardContent>
     </Card>
-  );
-}
-
-// Simple SVG icons to avoid external dependency
-function CheckCircleIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-      <polyline points="22 4 12 14.01 9 11.01" />
-    </svg>
-  );
-}
-
-function XCircleIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <circle cx="12" cy="12" r="10" />
-      <line x1="15" y1="9" x2="9" y2="15" />
-      <line x1="9" y1="9" x2="15" y2="15" />
-    </svg>
   );
 }
 

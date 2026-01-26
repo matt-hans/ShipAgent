@@ -1,12 +1,44 @@
 /**
- * ShipAgent Web Interface
+ * ShipAgent v2.0 - Refined Industrial Command Center
  *
- * Root application component that renders the Dashboard.
+ * A sophisticated hybrid interface combining conversational AI fluidity
+ * with precision engineering controls.
  */
-import { Dashboard } from '@/pages/Dashboard';
 
-function App() {
-  return <Dashboard />;
+import { CommandCenter } from '@/components/CommandCenter';
+import { Sidebar } from '@/components/layout/Sidebar';
+import { Header } from '@/components/layout/Header';
+import { useAppState, AppStateProvider } from '@/hooks/useAppState';
+
+function AppContent() {
+  const { activeJob, setActiveJob, sidebarCollapsed, setSidebarCollapsed } = useAppState();
+
+  return (
+    <div className="app-layout">
+      <Header />
+
+      <div className="app-main">
+        {/* Sidebar - Data sources, job history, quick actions */}
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+          onSelectJob={setActiveJob}
+          activeJobId={activeJob?.id}
+        />
+
+        {/* Main content - Conversational command interface */}
+        <main className="app-content">
+          <CommandCenter activeJob={activeJob} />
+        </main>
+      </div>
+    </div>
+  );
 }
 
-export default App;
+export default function App() {
+  return (
+    <AppStateProvider>
+      <AppContent />
+    </AppStateProvider>
+  );
+}

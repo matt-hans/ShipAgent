@@ -1,8 +1,8 @@
 /**
  * PreviewGrid component for displaying shipment preview cards.
  *
- * Shows a grid of shipment cards with recipient info, service type,
- * and cost estimates before batch execution.
+ * Industrial Logistics Terminal aesthetic - shipping manifest inspired
+ * grid layout with distinctive visual treatments.
  */
 
 import { Card, CardContent } from '@/components/ui/card';
@@ -38,7 +38,7 @@ function WarningIcon({ className }: { className?: string }) {
       strokeWidth={2}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={cn('h-4 w-4', className)}
+      className={className}
     >
       <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
       <line x1="12" y1="9" x2="12" y2="13" />
@@ -60,7 +60,7 @@ function PackageIcon({ className }: { className?: string }) {
       strokeWidth={2}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={cn('h-5 w-5', className)}
+      className={className}
     >
       <path d="m16.5 9.4-9-5.19" />
       <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
@@ -83,7 +83,7 @@ function TruckIcon({ className }: { className?: string }) {
       strokeWidth={2}
       strokeLinecap="round"
       strokeLinejoin="round"
-      className={cn('h-4 w-4', className)}
+      className={className}
     >
       <path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" />
       <path d="M15 18H9" />
@@ -95,59 +95,69 @@ function TruckIcon({ className }: { className?: string }) {
 }
 
 /**
- * Single shipment preview card.
+ * Single shipment preview card with industrial styling.
  */
-function PreviewCard({ row }: { row: PreviewRow }) {
+function PreviewCard({ row, index }: { row: PreviewRow; index: number }) {
   const hasWarnings = row.warnings.length > 0;
 
   return (
     <Card className={cn(
-      'relative overflow-hidden transition-all duration-200',
-      'hover:shadow-md hover:border-primary/30',
-      hasWarnings && 'border-yellow-500/50'
+      'relative overflow-hidden transition-all duration-300',
+      'bg-warehouse-900/50 border-steel-700 hover:border-signal-500/50',
+      'hover:shadow-lg hover:shadow-signal-500/10',
+      'animate-fade-in',
+      `delay-${Math.min(index * 100, 500)}`,
+      hasWarnings && 'border-status-hold/50'
     )}>
+      {/* Technical corner markers */}
+      <div className="absolute top-0 left-0 w-3 h-3 border-t-2 border-l-2 border-steel-600" />
+      <div className="absolute top-0 right-0 w-3 h-3 border-t-2 border-r-2 border-steel-600" />
+      <div className="absolute bottom-0 left-0 w-3 h-3 border-b-2 border-l-2 border-steel-600" />
+      <div className="absolute bottom-0 right-0 w-3 h-3 border-b-2 border-r-2 border-steel-600" />
+
       {/* Row number badge */}
-      <div className="absolute top-3 right-3 text-xs font-mono text-muted-foreground bg-muted/50 px-2 py-0.5 rounded">
-        #{row.row_number}
+      <div className="absolute top-3 right-3 font-mono-display text-[10px] text-steel-400 bg-warehouse-800 px-2 py-1 rounded-sm border border-steel-700">
+        #{String(row.row_number).padStart(3, '0')}
       </div>
 
       <CardContent className="p-4 space-y-3">
         {/* Recipient info */}
         <div className="flex items-start gap-3">
-          <div className="p-2 rounded-lg bg-primary/10 shrink-0">
-            <PackageIcon className="text-primary" />
+          <div className="p-2.5 rounded-sm bg-signal-500/10 border border-signal-500/30 shrink-0">
+            <PackageIcon className="h-5 w-5 text-signal-500" />
           </div>
-          <div className="min-w-0">
-            <h3 className="font-medium text-foreground truncate">
+          <div className="min-w-0 flex-1">
+            <h3 className="font-display font-semibold text-steel-100 truncate">
               {row.recipient_name}
             </h3>
-            <p className="text-sm text-muted-foreground truncate">
+            <p className="font-mono-display text-xs text-steel-400 truncate">
               {row.city_state}
             </p>
           </div>
         </div>
 
         {/* Service and cost row */}
-        <div className="flex items-center justify-between pt-2 border-t border-border/50">
-          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-            <TruckIcon />
-            <span>{row.service}</span>
+        <div className="flex items-center justify-between pt-3 border-t border-steel-700/50">
+          <div className="flex items-center gap-2 text-xs text-steel-400">
+            <TruckIcon className="h-4 w-4" />
+            <span className="font-mono-display">{row.service}</span>
           </div>
-          <span className="text-lg font-semibold text-foreground">
+          <span className="font-mono-display text-lg font-semibold text-signal-500">
             {formatCurrency(row.estimated_cost_cents)}
           </span>
         </div>
 
         {/* Warnings */}
         {hasWarnings && (
-          <div className="pt-2 border-t border-yellow-500/30">
+          <div className="pt-2 border-t border-status-hold/30">
             {row.warnings.map((warning, i) => (
               <div
                 key={i}
-                className="flex items-start gap-2 text-sm text-yellow-700 dark:text-yellow-400"
+                className="flex items-start gap-2 text-xs text-status-hold animate-slide-up"
+                style={{ animationDelay: `${i * 50}ms` }}
               >
-                <WarningIcon className="shrink-0 mt-0.5" />
-                <span>{warning}</span>
+                <WarningIcon className="shrink-0 mt-0.5 h-3.5 w-3.5" />
+                <span className="font-mono-display">{warning}</span>
               </div>
             ))}
           </div>
@@ -160,20 +170,20 @@ function PreviewCard({ row }: { row: PreviewRow }) {
 /**
  * Loading skeleton for preview cards.
  */
-function PreviewCardSkeleton() {
+function PreviewCardSkeleton({ index: _index }: { index: number }) {
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden bg-warehouse-900/50 border-steel-700 animate-pulse">
       <CardContent className="p-4 space-y-3">
         <div className="flex items-start gap-3">
-          <div className="h-10 w-10 rounded-lg bg-muted animate-pulse" />
+          <div className="h-11 w-11 rounded-sm bg-steel-800" />
           <div className="flex-1 space-y-2">
-            <div className="h-4 w-3/4 bg-muted rounded animate-pulse" />
-            <div className="h-3 w-1/2 bg-muted rounded animate-pulse" />
+            <div className="h-4 w-3/4 bg-steel-800 rounded" />
+            <div className="h-3 w-1/2 bg-steel-800 rounded" />
           </div>
         </div>
-        <div className="flex items-center justify-between pt-2 border-t border-border/50">
-          <div className="h-4 w-24 bg-muted rounded animate-pulse" />
-          <div className="h-6 w-16 bg-muted rounded animate-pulse" />
+        <div className="flex items-center justify-between pt-3 border-t border-steel-700/50">
+          <div className="h-4 w-24 bg-steel-800 rounded" />
+          <div className="h-6 w-16 bg-steel-800 rounded" />
         </div>
       </CardContent>
     </Card>
@@ -195,16 +205,22 @@ function PreviewCardSkeleton() {
 export function PreviewGrid({ preview, isLoading = false, className }: PreviewGridProps) {
   if (isLoading) {
     return (
-      <div className={cn('space-y-4', className)}>
+      <div className={cn('space-y-6', className)}>
         {/* Summary skeleton */}
         <div className="flex items-center justify-between">
-          <div className="h-5 w-32 bg-muted rounded animate-pulse" />
-          <div className="h-8 w-28 bg-muted rounded animate-pulse" />
+          <div className="space-y-2">
+            <div className="h-6 w-40 bg-steel-800 rounded animate-pulse" />
+            <div className="h-4 w-60 bg-steel-800 rounded animate-pulse" />
+          </div>
+          <div className="space-y-1 text-right">
+            <div className="h-3 w-24 bg-steel-800 rounded animate-pulse ml-auto" />
+            <div className="h-8 w-28 bg-steel-800 rounded animate-pulse ml-auto" />
+          </div>
         </div>
         {/* Grid skeleton */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[1, 2, 3, 4, 5, 6].map((i) => (
-            <PreviewCardSkeleton key={i} />
+            <PreviewCardSkeleton key={i} index={i} />
           ))}
         </div>
       </div>
@@ -213,10 +229,15 @@ export function PreviewGrid({ preview, isLoading = false, className }: PreviewGr
 
   if (!preview) {
     return (
-      <div className={cn('text-center py-12', className)}>
-        <PackageIcon className="h-12 w-12 mx-auto text-muted-foreground/50" />
-        <p className="mt-3 text-muted-foreground">
-          No preview available. Enter a command to see shipment details.
+      <div className={cn('text-center py-16', className)}>
+        <div className="inline-flex p-4 rounded-full bg-steel-800/50 mb-4">
+          <PackageIcon className="h-12 w-12 text-steel-500" />
+        </div>
+        <p className="font-mono-display text-sm text-steel-400">
+          [ NO PREVIEW DATA ]
+        </p>
+        <p className="mt-2 text-steel-500">
+          Enter a command to see shipment details.
         </p>
       </div>
     );
@@ -225,33 +246,34 @@ export function PreviewGrid({ preview, isLoading = false, className }: PreviewGr
   const { preview_rows, total_rows, additional_rows, total_estimated_cost_cents, rows_with_warnings } = preview;
 
   return (
-    <div className={cn('space-y-4', className)}>
+    <div className={cn('space-y-6', className)}>
       {/* Summary header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-sm bg-warehouse-800/50 border border-steel-700">
         <div className="space-y-1">
-          <h2 className="text-lg font-semibold text-foreground">
-            Shipment Preview
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Showing {preview_rows.length} of {total_rows} shipment{total_rows !== 1 ? 's' : ''}
-            {additional_rows > 0 && (
-              <span className="ml-1">
-                ({additional_rows} more not shown)
+          <div className="flex items-center gap-2">
+            <h2 className="font-display text-lg font-semibold text-steel-100">
+              SHIPMENT PREVIEW
+            </h2>
+            {rows_with_warnings > 0 && (
+              <span className="badge-status hold">
+                {rows_with_warnings} WARNINGS
               </span>
             )}
-            {rows_with_warnings > 0 && (
-              <span className="ml-2 text-yellow-600 dark:text-yellow-400">
-                <WarningIcon className="inline h-3.5 w-3.5 mr-1" />
-                {rows_with_warnings} with warnings
+          </div>
+          <p className="font-mono-display text-xs text-steel-400">
+            DISPLAYING {preview_rows.length} OF {total_rows} SHIPMENT{total_rows !== 1 ? 'S' : ''}
+            {additional_rows > 0 && (
+              <span className="ml-2 text-status-hold">
+                [+{additional_rows} HIDDEN]
               </span>
             )}
           </p>
         </div>
-        <div className="text-right">
-          <p className="text-xs text-muted-foreground uppercase tracking-wide">
+        <div className="text-right space-y-1">
+          <p className="font-mono-display text-[10px] text-steel-500 uppercase tracking-widest">
             Estimated Total
           </p>
-          <p className="text-2xl font-bold text-foreground">
+          <p className="font-mono-display text-2xl font-bold text-signal-500">
             {formatCurrency(total_estimated_cost_cents)}
           </p>
         </div>
@@ -259,16 +281,16 @@ export function PreviewGrid({ preview, isLoading = false, className }: PreviewGr
 
       {/* Preview cards grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {preview_rows.map((row) => (
-          <PreviewCard key={row.row_number} row={row} />
+        {preview_rows.map((row, index) => (
+          <PreviewCard key={row.row_number} row={row} index={index} />
         ))}
       </div>
 
       {/* Additional rows indicator */}
       {additional_rows > 0 && (
-        <div className="text-center py-4 border-t border-border/50">
-          <p className="text-sm text-muted-foreground">
-            <span className="font-medium">+{additional_rows}</span> additional shipment{additional_rows !== 1 ? 's' : ''} not shown in preview
+        <div className="text-center py-4 border-t border-steel-700/50 border-dashed">
+          <p className="font-mono-display text-xs text-steel-500">
+            [+{additional_rows} ADDITIONAL SHIPMENT{additional_rows !== 1 ? 'S' : ''} NOT SHOWN]
           </p>
         </div>
       )}
