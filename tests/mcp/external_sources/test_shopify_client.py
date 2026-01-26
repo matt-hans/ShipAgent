@@ -1,11 +1,12 @@
 """Test Shopify platform client implementation."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
-import httpx
 
-from src.mcp.external_sources.clients.shopify import ShopifyClient
+import httpx
+import pytest
+
 from src.mcp.external_sources.clients.base import PlatformClient
+from src.mcp.external_sources.clients.shopify import ShopifyClient
 from src.mcp.external_sources.models import (
     ExternalOrder,
     OrderFilters,

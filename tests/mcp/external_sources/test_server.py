@@ -1,9 +1,8 @@
 """Test External Sources Gateway MCP server."""
 
-import pytest
 
+from src.mcp.external_sources.models import OrderFilters, PlatformConnection
 from src.mcp.external_sources.server import mcp
-from src.mcp.external_sources.models import PlatformConnection, OrderFilters
 
 
 def test_mcp_server_exists():

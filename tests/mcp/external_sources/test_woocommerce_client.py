@@ -8,22 +8,20 @@ Tests WooCommerceClient for:
 - Tracking update (requires Shipment Tracking plugin)
 """
 
-from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.mcp.external_sources.clients.woocommerce import (
-    WooCommerceClient,
-    WooCommerceAuthError,
     WooCommerceAPIError,
+    WooCommerceAuthError,
+    WooCommerceClient,
 )
 from src.mcp.external_sources.models import (
     ExternalOrder,
     OrderFilters,
     TrackingUpdate,
 )
-
 
 # Sample WooCommerce API responses for mocking
 SAMPLE_WC_ORDER = {
@@ -571,7 +569,6 @@ class TestWooCommerceHTTPClient:
     @pytest.mark.asyncio
     async def test_make_request_uses_basic_auth(self, wc_client, wc_credentials):
         """Test that requests use HTTP Basic Auth."""
-        import httpx
 
         # Create a mock response
         mock_response = MagicMock()

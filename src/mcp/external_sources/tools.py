@@ -7,13 +7,29 @@ data from external platforms (Shopify, WooCommerce, SAP, Oracle).
 from fastmcp import Context
 
 from src.mcp.external_sources.models import (
+    OrderFilters,
     PlatformConnection,
     PlatformType,
-    OrderFilters,
 )
 
-
 SUPPORTED_PLATFORMS = {p.value for p in PlatformType}
+
+
+def _get_lifespan_context(ctx: Context) -> dict:
+    """Get the lifespan context from the request context.
+
+    Args:
+        ctx: FastMCP context
+
+    Returns:
+        Lifespan context dictionary
+
+    Raises:
+        RuntimeError: If request context not available
+    """
+    if ctx.request_context is None:
+        raise RuntimeError("Request context not available")
+    return ctx.request_context.lifespan_context
 
 
 async def list_connections(ctx: Context) -> dict:
@@ -32,7 +48,8 @@ async def list_connections(ctx: Context) -> dict:
         >>> print(result["connections"])
         [{"platform": "shopify", "status": "connected", ...}]
     """
-    connections = ctx.request_context.lifespan_context.get("connections", {})
+    lifespan_ctx = _get_lifespan_context(ctx)
+    connections = lifespan_ctx.get("connections", {})
 
     await ctx.info(f"Listing {len(connections)} platform connections")
 
@@ -94,16 +111,19 @@ async def connect_platform(
         platform=platform,
         store_url=store_url,
         status="pending",  # Will be "connected" when client is implemented
+        last_connected=None,
+        error_message=None,
     )
 
-    connections = ctx.request_context.lifespan_context.get("connections", {})
+    lifespan_ctx = _get_lifespan_context(ctx)
+    connections = lifespan_ctx.get("connections", {})
     connections[platform] = connection
-    ctx.request_context.lifespan_context["connections"] = connections
+    lifespan_ctx["connections"] = connections
 
     # Store credentials securely (not logged!)
-    creds = ctx.request_context.lifespan_context.get("credentials", {})
+    creds = lifespan_ctx.get("credentials", {})
     creds[platform] = credentials
-    ctx.request_context.lifespan_context["credentials"] = creds
+    lifespan_ctx["credentials"] = creds
 
     await ctx.info(f"Platform {platform} connection stored (pending client implementation)")
 
@@ -147,8 +167,9 @@ async def list_orders(
     """
     await ctx.info(f"Fetching orders from {platform}")
 
-    connections = ctx.request_context.lifespan_context.get("connections", {})
-    clients = ctx.request_context.lifespan_context.get("clients", {})
+    lifespan_ctx = _get_lifespan_context(ctx)
+    connections = lifespan_ctx.get("connections", {})
+    clients = lifespan_ctx.get("clients", {})
 
     # Check if platform is connected
     if platform not in connections:
@@ -170,6 +191,8 @@ async def list_orders(
     # Build filters
     filters = OrderFilters(
         status=status,
+        date_from=None,
+        date_to=None,
         limit=limit,
         offset=offset,
     )
@@ -217,8 +240,9 @@ async def get_order(
     """
     await ctx.info(f"Getting order {order_id} from {platform}")
 
-    connections = ctx.request_context.lifespan_context.get("connections", {})
-    clients = ctx.request_context.lifespan_context.get("clients", {})
+    lifespan_ctx = _get_lifespan_context(ctx)
+    connections = lifespan_ctx.get("connections", {})
+    clients = lifespan_ctx.get("clients", {})
 
     # Check if platform is connected
     if platform not in connections:
@@ -299,8 +323,9 @@ async def update_tracking(
     """
     await ctx.info(f"Updating tracking for order {order_id} on {platform}")
 
-    connections = ctx.request_context.lifespan_context.get("connections", {})
-    clients = ctx.request_context.lifespan_context.get("clients", {})
+    lifespan_ctx = _get_lifespan_context(ctx)
+    connections = lifespan_ctx.get("connections", {})
+    clients = lifespan_ctx.get("clients", {})
 
     # Check if platform is connected
     if platform not in connections:
@@ -328,6 +353,7 @@ async def update_tracking(
         order_id=order_id,
         tracking_number=tracking_number,
         carrier=carrier,
+        tracking_url=None,
     )
 
     # Update through client

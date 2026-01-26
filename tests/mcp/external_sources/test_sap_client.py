@@ -1,9 +1,9 @@
 """Test SAP platform client implementation."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 
 from src.mcp.external_sources.clients.sap import SAPClient
 from src.mcp.external_sources.models import (
@@ -294,8 +294,8 @@ class TestSAPClientFetchOrders:
 
         assert "/SalesOrderSet" in url
         assert params.get("$format") == "json"
-        assert params.get("$top") == 50
-        assert params.get("$skip") == 10
+        assert params.get("$top") == "50"
+        assert params.get("$skip") == "10"
         # Filter should include status and date conditions
         assert "$filter" in params
 

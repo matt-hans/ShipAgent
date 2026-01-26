@@ -4,16 +4,16 @@ Tests use unittest.mock to mock oracledb connection and cursor
 since oracledb may not be installed in the test environment.
 """
 
-import pytest
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from src.mcp.external_sources.clients.base import PlatformClient
 from src.mcp.external_sources.clients.oracle import (
-    OracleClient,
     DEFAULT_TABLE_CONFIG,
+    OracleClient,
     OracleDependencyError,
 )
-from src.mcp.external_sources.clients.base import PlatformClient
 from src.mcp.external_sources.models import (
     ExternalOrder,
     OrderFilters,

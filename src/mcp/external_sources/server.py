@@ -38,10 +38,10 @@ mcp = FastMCP(name="ExternalSources", lifespan=lifespan)
 
 # Import and register tools
 from src.mcp.external_sources.tools import (
-    list_connections,
     connect_platform,
-    list_orders,
     get_order,
+    list_connections,
+    list_orders,
     update_tracking,
 )
 

@@ -235,7 +235,7 @@ class OracleClient(PlatformClient):
 
             orders = []
             for row in rows:
-                row_dict = dict(zip(column_names, row))
+                row_dict = dict(zip(column_names, row, strict=False))
                 orders.append(self._map_row_to_order(row_dict))
 
             return orders
@@ -268,7 +268,7 @@ class OracleClient(PlatformClient):
                 return None
 
             column_names = [desc[0] for desc in cursor.description]
-            row_dict = dict(zip(column_names, row))
+            row_dict = dict(zip(column_names, row, strict=False))
             return self._map_row_to_order(row_dict)
 
     async def update_tracking(self, update: TrackingUpdate) -> bool:
@@ -321,7 +321,7 @@ class OracleClient(PlatformClient):
             await self._connection.close()
             self._connection = None
 
-    async def __aenter__(self) -> "OracleClient":
+    async def __aenter__(self) -> OracleClient:
         """Enter async context manager.
 
         Returns:

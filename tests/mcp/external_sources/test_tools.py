@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.mcp.external_sources.tools import (
-    list_connections,
     connect_platform,
+    list_connections,
     list_orders,
 )
 
@@ -96,8 +96,8 @@ async def test_list_orders_no_connection(mock_context):
 @pytest.mark.asyncio
 async def test_list_orders_with_filters(mock_context):
     """Test list_orders with filter parameters."""
-    from src.mcp.external_sources.models import PlatformConnection
     from src.mcp.external_sources.clients.base import PlatformClient
+    from src.mcp.external_sources.models import PlatformConnection
 
     # Create a mock client
     mock_client = MagicMock(spec=PlatformClient)

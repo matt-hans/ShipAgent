@@ -6,7 +6,7 @@ using OData services for sales order access and delivery updates.
 
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 
@@ -117,6 +117,8 @@ class SAPClient(PlatformClient):
         Returns:
             Configured httpx.AsyncClient
         """
+        if not self._base_url:
+            raise RuntimeError("Base URL not configured")
         return httpx.AsyncClient(
             base_url=self._base_url,
             auth=(username, password),
@@ -159,10 +161,10 @@ class SAPClient(PlatformClient):
             raise RuntimeError("Not authenticated with SAP")
 
         # Build OData query parameters
-        params = {
+        params: dict[str, str] = {
             "$format": "json",
-            "$top": filters.limit,
-            "$skip": filters.offset,
+            "$top": str(filters.limit),
+            "$skip": str(filters.offset),
             "$expand": "to_Item",
         }
 
@@ -306,6 +308,8 @@ class SAPClient(PlatformClient):
         Returns:
             CSRF token string or None if fetch failed
         """
+        if not self._client:
+            return None
         try:
             response = await self._client.get(
                 "/$metadata",
@@ -366,7 +370,7 @@ class SAPClient(PlatformClient):
 
         try:
             milliseconds = int(match.group(1))
-            dt = datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
+            dt = datetime.fromtimestamp(milliseconds / 1000, tz=UTC)
             return dt.isoformat()
         except (ValueError, OSError):
             return ""

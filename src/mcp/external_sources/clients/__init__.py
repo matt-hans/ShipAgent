@@ -2,16 +2,16 @@
 
 from src.mcp.external_sources.clients.base import PlatformClient
 from src.mcp.external_sources.clients.oracle import (
+    DEFAULT_TABLE_CONFIG,
     OracleClient,
     OracleDependencyError,
-    DEFAULT_TABLE_CONFIG,
 )
 from src.mcp.external_sources.clients.sap import SAPClient
 from src.mcp.external_sources.clients.shopify import ShopifyClient
 from src.mcp.external_sources.clients.woocommerce import (
-    WooCommerceClient,
-    WooCommerceAuthError,
     WooCommerceAPIError,
+    WooCommerceAuthError,
+    WooCommerceClient,
 )
 
 __all__ = [

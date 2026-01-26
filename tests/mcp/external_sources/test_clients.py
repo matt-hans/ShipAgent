@@ -1,10 +1,11 @@
 """Test platform client interface."""
 
-import pytest
 from abc import ABC
 
+import pytest
+
 from src.mcp.external_sources.clients.base import PlatformClient
-from src.mcp.external_sources.models import OrderFilters, ExternalOrder, TrackingUpdate
+from src.mcp.external_sources.models import ExternalOrder, OrderFilters, TrackingUpdate
 
 
 def test_platform_client_is_abstract():

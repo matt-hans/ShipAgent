@@ -120,7 +120,7 @@ class WooCommerceClient(PlatformClient):
             self._consumer_key = None
             self._consumer_secret = None
             self._authenticated = False
-            raise WooCommerceAuthError(f"Failed to authenticate with WooCommerce: {e}")
+            raise WooCommerceAuthError(f"Failed to authenticate with WooCommerce: {e}") from e
 
     async def test_connection(self) -> bool:
         """Test that the connection to WooCommerce is valid.
@@ -294,6 +294,9 @@ class WooCommerceClient(PlatformClient):
         """
         url = f"{self._site_url}/wp-json/{self.API_VERSION}/{endpoint}"
 
+        if not self._consumer_key or not self._consumer_secret:
+            raise WooCommerceAPIError("Not authenticated")
+
         async with httpx.AsyncClient(
             auth=(self._consumer_key, self._consumer_secret),
             timeout=30.0,
@@ -311,9 +314,9 @@ class WooCommerceClient(PlatformClient):
             except httpx.HTTPStatusError as e:
                 raise WooCommerceAPIError(
                     f"{e.response.status_code} {e.response.reason_phrase}"
-                )
+                ) from e
             except httpx.RequestError as e:
-                raise WooCommerceAPIError(f"Request failed: {e}")
+                raise WooCommerceAPIError(f"Request failed: {e}") from e
 
     def _normalize_order(self, order_data: dict[str, Any]) -> ExternalOrder:
         """Convert WooCommerce order to normalized ExternalOrder.
