@@ -151,7 +151,7 @@ class TestAllToolsRegistered:
     """Verify all expected tools are registered."""
 
     def test_tool_count(self):
-        """Verify exactly 12 tools are registered."""
+        """Verify exactly 14 tools are registered."""
         from src.mcp.data_source import mcp
 
         async def get_tool_count():
@@ -159,7 +159,7 @@ class TestAllToolsRegistered:
             return len(tools)
 
         count = asyncio.run(get_tool_count())
-        assert count == 13, f"Expected 13 tools, got {count}"
+        assert count == 14, f"Expected 14 tools, got {count}"
 
     def test_tool_names(self):
         """Verify all expected tool names are present."""
@@ -174,6 +174,7 @@ class TestAllToolsRegistered:
         expected = [
             "import_csv",
             "import_excel",
+            "import_edi",
             "list_sheets",
             "import_database",
             "list_tables",
