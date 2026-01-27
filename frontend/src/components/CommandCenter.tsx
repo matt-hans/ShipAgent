@@ -352,23 +352,23 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
   // Not connected - show getting started workflow
   if (!dataSource) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-center px-4 animate-fade-in">
-        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-500/20 to-amber-600/20 border border-amber-500/30 flex items-center justify-center mb-6">
-          <PackageIcon className="w-8 h-8 text-amber-400" />
+      <div className="flex flex-col items-center pt-12 text-center px-4 animate-fade-in">
+        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-500/20 to-amber-600/20 border border-amber-500/30 flex items-center justify-center mb-4">
+          <PackageIcon className="w-7 h-7 text-amber-400" />
         </div>
 
         <h2 className="text-xl font-semibold text-slate-100 mb-2">
           Welcome to ShipAgent
         </h2>
 
-        <p className="text-sm text-slate-400 max-w-md mb-8">
+        <p className="text-sm text-slate-400 max-w-md mb-6">
           Natural language batch shipment processing powered by AI.
           <br />
           Connect a data source from the sidebar to get started.
         </p>
 
         {/* Workflow steps */}
-        <div className="grid grid-cols-3 gap-4 w-full max-w-lg mb-8">
+        <div className="grid grid-cols-3 gap-4 w-full max-w-lg mb-6">
           {[
             { step: '1', title: 'Connect', desc: 'CSV, Excel, or Database' },
             { step: '2', title: 'Describe', desc: 'Natural language command' },
@@ -404,9 +404,9 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
 
   // Connected - ready to ship
   return (
-    <div className="flex flex-col items-center justify-center h-full text-center px-4 animate-fade-in">
-      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-success/20 to-success/10 border border-success/30 flex items-center justify-center mb-6">
-        <PackageIcon className="w-8 h-8 text-success" />
+    <div className="flex flex-col items-center pt-12 text-center px-4 animate-fade-in">
+      <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-success/20 to-success/10 border border-success/30 flex items-center justify-center mb-4">
+        <PackageIcon className="w-7 h-7 text-success" />
       </div>
 
       <h2 className="text-xl font-semibold text-slate-100 mb-2">
@@ -420,7 +420,7 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
         )}
       </p>
 
-      <p className="text-xs text-slate-500 max-w-md mb-8">
+      <p className="text-xs text-slate-500 max-w-md mb-6">
         Describe what you want to ship in natural language. ShipAgent will parse your intent,
         filter your data, and generate a preview for your approval.
       </p>
@@ -615,9 +615,9 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
       </div>
 
       {/* Input area */}
-      <div className="border-t border-slate-800 p-4 bg-void-900/50 backdrop-blur">
+      <div className="border-t border-slate-800 px-4 py-3 bg-void-900/50 backdrop-blur">
         <div className="max-w-3xl mx-auto">
-          <div className="flex gap-3">
+          <div className="flex gap-2">
             <div className="relative flex-1">
               <input
                 ref={inputRef}
@@ -649,31 +649,26 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
               onClick={handleSubmit}
               disabled={!inputValue.trim() || !dataSource || isProcessing || !!preview}
               className={cn(
-                'btn-primary px-5',
+                'btn-primary px-4',
                 (!inputValue.trim() || !dataSource || isProcessing || !!preview) && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isProcessing ? (
-                <span className="w-5 h-5 border-2 border-void-950/30 border-t-void-950 rounded-full animate-spin" />
+                <span className="w-4 h-4 border-2 border-void-950/30 border-t-void-950 rounded-full animate-spin" />
               ) : executingJobId ? (
-                <StopIcon className="w-5 h-5" />
+                <StopIcon className="w-4 h-4" />
               ) : (
-                <SendIcon className="w-5 h-5" />
+                <SendIcon className="w-4 h-4" />
               )}
             </button>
           </div>
 
-          {/* Help text */}
-          <div className="flex items-center justify-between mt-2">
-            <p className="text-[10px] font-mono text-slate-500">
-              {dataSource
-                ? 'Describe what you want to ship in natural language'
-                : 'Connect a data source from the sidebar'}
-            </p>
-            <p className="text-[10px] font-mono text-slate-600">
-              Press <kbd className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700">Enter</kbd> to send
-            </p>
-          </div>
+          {/* Help text - single line */}
+          <p className="text-[10px] font-mono text-slate-500 mt-1.5">
+            {dataSource
+              ? 'Describe what you want to ship in natural language'
+              : 'Connect a data source from the sidebar'} · Press <kbd className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700">Enter</kbd> to send
+          </p>
         </div>
       </div>
     </div>

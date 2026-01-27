@@ -47,24 +47,24 @@ export function Header() {
       {/* Gradient accent line */}
       <div className="h-[1px] bg-gradient-to-r from-transparent via-amber-500/50 to-transparent" />
 
-      <div className="container-wide h-14 flex items-center justify-between">
+      <div className="container-wide h-12 flex items-center justify-between">
         {/* Left: Logo and branding */}
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-3">
             <div className="relative">
-              <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center shadow-lg">
-                <ShipIcon className="w-5 h-5 text-void-950" />
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center shadow-lg">
+                <ShipIcon className="w-4 h-4 text-void-950" />
               </div>
               {/* Live indicator */}
               {(dataSource || isProcessing) && (
-                <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-success rounded-full border-2 border-void-950 pulse-glow" />
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-success rounded-full border-2 border-void-950 pulse-glow" />
               )}
             </div>
-            <div>
-              <h1 className="text-base font-semibold tracking-tight text-slate-100">
+            <div className="flex items-baseline gap-2">
+              <h1 className="text-sm font-semibold tracking-tight text-slate-100">
                 ShipAgent
               </h1>
-              <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">
+              <p className="text-[9px] font-mono text-slate-500 uppercase tracking-wider">
                 Command Center
               </p>
             </div>

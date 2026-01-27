@@ -11,47 +11,38 @@
 import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
-import { getJobs } from '@/lib/api';
-import type { Job, JobSummary, DataSourceInfo } from '@/types/api';
+import { getJobs, connectPlatform, disconnectPlatform } from '@/lib/api';
+import type { Job, JobSummary, DataSourceInfo, PlatformType } from '@/types/api';
 
-/** Extended source types for MVP. */
-type SourceType = 'csv' | 'excel' | 'database' | 'shopify';
+/** Source category - Local files or External platforms. */
+type SourceCategory = 'local' | 'external';
 
-/** Feature flags - only enabled sources shown in UI. */
-const ENABLED_SOURCES: Record<SourceType, boolean> = {
-  csv: true,
-  excel: true,
-  database: true,
-  shopify: true, // MVP external platform
-};
+/** Local source types. */
+type LocalSourceType = 'csv' | 'excel' | 'database';
 
-/** Source metadata. */
-const SOURCE_META: Record<SourceType, { label: string; placeholder: string; help: string; implemented: boolean }> = {
+/** Local source metadata. */
+const LOCAL_SOURCES: Record<LocalSourceType, { label: string; placeholder: string; help: string; hasFileBrowser: boolean }> = {
   csv: {
     label: 'CSV',
     placeholder: 'Path to file...',
     help: 'Upload a CSV file or enter the path on the server.',
-    implemented: true,
+    hasFileBrowser: true,
   },
   excel: {
     label: 'EXCEL',
     placeholder: 'Path to file...',
     help: 'Upload an Excel file (.xlsx) to import data.',
-    implemented: true,
+    hasFileBrowser: true,
   },
   database: {
     label: 'DATABASE',
     placeholder: 'Connection string...',
     help: 'postgresql://user:pass@host:5432/dbname',
-    implemented: true,
-  },
-  shopify: {
-    label: 'SHOPIFY',
-    placeholder: 'Store URL (mystore.myshopify.com)',
-    help: 'Connect your Shopify store to import orders.',
-    implemented: true,
+    hasFileBrowser: false,
   },
 };
+
+/* Future: more external platforms like WooCommerce, SAP, Oracle */
 
 interface SidebarProps {
   collapsed: boolean;
@@ -91,6 +82,52 @@ function SearchIcon({ className }: { className?: string }) {
   );
 }
 
+function HardDriveIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <path d="M22 12H2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="6" y1="16" x2="6.01" y2="16" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="10" y1="16" x2="10.01" y2="16" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function CloudIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <path d="M18 10h-1.26A8 8 0 109 20h9a5 5 0 000-10z" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ShopifyIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M15.337 3.415c-.022-.165-.122-.247-.247-.255-.124-.008-2.794-.206-2.794-.206l-1.874-1.874c-.206-.206-.618-.144-.782-.082-.008 0-.412.124-.824.247-.082-.247-.247-.577-.454-.907C7.96.082 7.136 0 6.52 0 4.853.04 3.226 1.38 2.567 3.54c-.866 2.834-1.38 5.08-1.38 5.08l5.41 1.134s.866-5.08 1.133-6.627c.082-.515.577-.824 1.05-.865.495-.041 1.009-.082 1.503-.123.495-.041.99-.082 1.483-.123.537-.041 1.05-.082 1.503-.082-.041-.33-.082-.66-.124-.99zm-3.62 1.174c-.412.123-.866.247-1.38.412l.082-.577c.165-1.174.618-1.916 1.298-2.39-.041.865-.041 1.73 0 2.555zm-1.957-1.38c.082-.577.206-1.133.371-1.627.66.33 1.215.988 1.462 1.874-.577.165-1.215.371-1.833.536.041-.288.082-.536.082-.783h-.082zM9.01 2.546c.247 0 .495.041.701.123-.288.824-.495 1.833-.577 2.834-.66.206-1.298.371-1.916.577C7.588 4.34 8.163 2.628 9.01 2.546z"/>
+      <path d="M15.09 3.16c-.124 0-.33.082-.495.082-1.421 3.374-3.49 6.955-5.863 10.328.66.165 1.298.33 1.916.495.618.165 1.174.288 1.586.371-.165.742-.33 1.421-.495 2.06-.165.66-.288 1.257-.371 1.792h4.028c.33-2.555.783-5.71 1.339-9.414.33-2.184.618-3.95.824-5.287-.825-.206-1.586-.371-2.47-.427z"/>
+    </svg>
+  );
+}
+
+function EyeIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function EyeOffIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="1" y1="1" x2="23" y2="23" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 
 
 // Status badge component
@@ -122,26 +159,29 @@ function StatusBadge({ status }: { status: string }) {
 // Data Source Section
 function DataSourceSection() {
   const { dataSource, setDataSource } = useAppState();
-  const [activeTab, setActiveTab] = React.useState<SourceType>('csv');
+  const [category, setCategory] = React.useState<SourceCategory>('local');
+  const [localTab, setLocalTab] = React.useState<LocalSourceType>('csv');
   const [filePath, setFilePath] = React.useState('');
   const [isConnecting, setIsConnecting] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  // Get enabled sources for tab display
-  const enabledSources = (Object.keys(ENABLED_SOURCES) as SourceType[]).filter(
-    (key) => ENABLED_SOURCES[key]
-  );
+  // Shopify-specific state
+  const [shopifyStoreUrl, setShopifyStoreUrl] = React.useState('');
+  const [shopifyAccessToken, setShopifyAccessToken] = React.useState('');
+  const [showToken, setShowToken] = React.useState(false);
+  const [shopifyError, setShopifyError] = React.useState<string | null>(null);
 
-  const currentMeta = SOURCE_META[activeTab];
+  const currentLocalMeta = LOCAL_SOURCES[localTab];
 
-  const handleConnect = async () => {
-    if (!filePath.trim() || !currentMeta.implemented) return;
+  // Local source connection
+  const handleLocalConnect = async () => {
+    if (!filePath.trim()) return;
 
     setIsConnecting(true);
     try {
       // Simulated connection - in real app, call backend API via MCP Gateway
       const mockSource: DataSourceInfo = {
-        type: activeTab === 'shopify' ? 'csv' : activeTab, // Map shopify to csv for now
+        type: localTab,
         status: 'connected' as const,
         row_count: Math.floor(Math.random() * 5000) + 100,
         column_count: 8,
@@ -154,8 +194,8 @@ function DataSourceSection() {
           { name: 'zip', type: 'VARCHAR' as const, nullable: false, warnings: [] },
         ],
         connected_at: new Date().toISOString(),
-        csv_path: activeTab === 'csv' ? filePath : undefined,
-        excel_path: activeTab === 'excel' ? filePath : undefined,
+        csv_path: localTab === 'csv' ? filePath : undefined,
+        excel_path: localTab === 'excel' ? filePath : undefined,
       };
       setDataSource(mockSource);
       setFilePath('');
@@ -164,7 +204,69 @@ function DataSourceSection() {
     }
   };
 
-  const handleDisconnect = () => {
+  // Shopify connection
+  const handleShopifyConnect = async () => {
+    if (!shopifyStoreUrl.trim() || !shopifyAccessToken.trim()) return;
+
+    setIsConnecting(true);
+    setShopifyError(null);
+
+    try {
+      // Format store URL (ensure it's just the domain)
+      let storeUrl = shopifyStoreUrl.trim();
+      if (!storeUrl.includes('.myshopify.com')) {
+        storeUrl = `${storeUrl}.myshopify.com`;
+      }
+      storeUrl = storeUrl.replace(/^https?:\/\//, '');
+
+      // Call the backend API to connect to Shopify
+      const result = await connectPlatform(
+        'shopify' as PlatformType,
+        { access_token: shopifyAccessToken.trim() },
+        storeUrl
+      );
+
+      if (result.success) {
+        // Set as connected data source (mock for now - backend will handle actual data)
+        const mockSource: DataSourceInfo = {
+          type: 'csv', // Backend will expose Shopify as a data source
+          status: 'connected' as const,
+          row_count: 0, // Will be populated after fetching orders
+          column_count: 12,
+          columns: [
+            { name: 'order_id', type: 'VARCHAR' as const, nullable: false, warnings: [] },
+            { name: 'order_number', type: 'VARCHAR' as const, nullable: true, warnings: [] },
+            { name: 'customer_name', type: 'VARCHAR' as const, nullable: false, warnings: [] },
+            { name: 'ship_to_name', type: 'VARCHAR' as const, nullable: false, warnings: [] },
+            { name: 'ship_to_address1', type: 'VARCHAR' as const, nullable: false, warnings: [] },
+            { name: 'ship_to_city', type: 'VARCHAR' as const, nullable: false, warnings: [] },
+            { name: 'ship_to_state', type: 'VARCHAR' as const, nullable: false, warnings: [] },
+            { name: 'ship_to_postal_code', type: 'VARCHAR' as const, nullable: false, warnings: [] },
+            { name: 'ship_to_country', type: 'VARCHAR' as const, nullable: false, warnings: [] },
+          ],
+          connected_at: new Date().toISOString(),
+        };
+        setDataSource(mockSource);
+        // Clear form
+        setShopifyStoreUrl('');
+        setShopifyAccessToken('');
+      } else {
+        setShopifyError(result.error || 'Failed to connect to Shopify');
+      }
+    } catch (err) {
+      setShopifyError(err instanceof Error ? err.message : 'Connection failed');
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    try {
+      // If it was a Shopify connection, disconnect via API
+      await disconnectPlatform('shopify' as PlatformType);
+    } catch {
+      // Ignore errors - clear local state anyway
+    }
     setDataSource(null);
   };
 
@@ -179,6 +281,7 @@ function DataSourceSection() {
     }
   };
 
+  // Connected state view
   if (dataSource?.status === 'connected') {
     return (
       <div className="p-3 space-y-3">
@@ -204,7 +307,7 @@ function DataSourceSection() {
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">Rows</span>
-              <span className="text-success">{dataSource.row_count?.toLocaleString()}</span>
+              <span className="text-success">{dataSource.row_count?.toLocaleString() || 'Loading...'}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">Columns</span>
@@ -236,84 +339,179 @@ function DataSourceSection() {
     <div className="p-3 space-y-3">
       <span className="text-xs font-medium text-slate-300">Connect Data Source</span>
 
-      {/* Tab selector - now with 4 tabs including Shopify */}
-      <div className="grid grid-cols-4 rounded-md bg-slate-900 p-0.5 border border-slate-800">
-        {enabledSources.map((tab) => {
-          const meta = SOURCE_META[tab];
-          return (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={cn(
-                'relative px-1.5 py-1.5 text-[10px] font-mono rounded-sm transition-colors',
-                activeTab === tab
-                  ? 'bg-amber-500 text-void-950'
-                  : 'text-slate-400 hover:text-slate-200',
-                !meta.implemented && 'opacity-70'
-              )}
-            >
-              {meta.label}
-              {!meta.implemented && (
-                <span className="absolute -top-1 -right-1 w-1.5 h-1.5 bg-amber-400 rounded-full" />
-              )}
-            </button>
-          );
-        })}
+      {/* Category toggle - Local vs External */}
+      <div className="grid grid-cols-2 rounded-md bg-slate-900 p-0.5 border border-slate-800">
+        <button
+          onClick={() => setCategory('local')}
+          className={cn(
+            'flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-medium rounded-sm transition-colors',
+            category === 'local'
+              ? 'bg-slate-700 text-slate-100'
+              : 'text-slate-400 hover:text-slate-200'
+          )}
+        >
+          <HardDriveIcon className="w-3.5 h-3.5" />
+          Local
+        </button>
+        <button
+          onClick={() => setCategory('external')}
+          className={cn(
+            'flex items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-medium rounded-sm transition-colors',
+            category === 'external'
+              ? 'bg-slate-700 text-slate-100'
+              : 'text-slate-400 hover:text-slate-200'
+          )}
+        >
+          <CloudIcon className="w-3.5 h-3.5" />
+          External
+        </button>
       </div>
 
-      {/* Coming soon notice for Shopify */}
-      {!currentMeta.implemented && (
-        <div className="p-2.5 rounded-md bg-amber-500/10 border border-amber-500/20">
-          <p className="text-[10px] font-mono text-amber-400 text-center">
-            {currentMeta.label} integration coming soon
-          </p>
-        </div>
-      )}
-
-      {/* Input section - only show for implemented sources */}
-      {currentMeta.implemented && (
-        <div className="space-y-2">
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileSelect}
-            accept={activeTab === 'csv' ? '.csv' : activeTab === 'excel' ? '.xlsx,.xls' : undefined}
-            className="hidden"
-          />
-
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={filePath}
-              onChange={(e) => setFilePath(e.target.value)}
-              placeholder={currentMeta.placeholder}
-              className="flex-1 px-3 py-2 text-xs font-mono rounded-md bg-void-900 border border-slate-800 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
-            />
-            {activeTab !== 'database' && (
-              <button
-                onClick={handleFileBrowse}
-                className="p-2 rounded-md bg-slate-800 border border-slate-700 hover:bg-slate-700 transition-colors"
-                title="Browse files"
-              >
-                <FolderIcon className="w-4 h-4 text-slate-400" />
-              </button>
-            )}
+      {/* Local source tabs and form */}
+      {category === 'local' && (
+        <>
+          {/* Local source tabs */}
+          <div className="grid grid-cols-3 rounded-md bg-slate-900 p-0.5 border border-slate-800">
+            {(Object.keys(LOCAL_SOURCES) as LocalSourceType[]).map((tab) => {
+              const meta = LOCAL_SOURCES[tab];
+              return (
+                <button
+                  key={tab}
+                  onClick={() => setLocalTab(tab)}
+                  className={cn(
+                    'px-2 py-1.5 text-[10px] font-mono rounded-sm transition-colors',
+                    localTab === tab
+                      ? 'bg-amber-500 text-void-950'
+                      : 'text-slate-400 hover:text-slate-200'
+                  )}
+                >
+                  {meta.label}
+                </button>
+              );
+            })}
           </div>
 
-          <button
-            onClick={handleConnect}
-            disabled={!filePath.trim() || isConnecting}
-            className="w-full btn-primary py-2 text-xs font-medium disabled:opacity-50"
-          >
-            {isConnecting ? 'Connecting...' : 'Connect'}
-          </button>
-        </div>
+          {/* Local source input */}
+          <div className="space-y-2">
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileSelect}
+              accept={localTab === 'csv' ? '.csv' : localTab === 'excel' ? '.xlsx,.xls' : undefined}
+              className="hidden"
+            />
+
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={filePath}
+                onChange={(e) => setFilePath(e.target.value)}
+                placeholder={currentLocalMeta.placeholder}
+                className="flex-1 px-3 py-2 text-xs font-mono rounded-md bg-void-900 border border-slate-800 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+              />
+              {currentLocalMeta.hasFileBrowser && (
+                <button
+                  onClick={handleFileBrowse}
+                  className="p-2 rounded-md bg-slate-800 border border-slate-700 hover:bg-slate-700 transition-colors"
+                  title="Browse files"
+                >
+                  <FolderIcon className="w-4 h-4 text-slate-400" />
+                </button>
+              )}
+            </div>
+
+            <button
+              onClick={handleLocalConnect}
+              disabled={!filePath.trim() || isConnecting}
+              className="w-full btn-primary py-2 text-xs font-medium disabled:opacity-50"
+            >
+              {isConnecting ? 'Connecting...' : 'Connect'}
+            </button>
+          </div>
+
+          {/* Help text */}
+          <p className="text-[10px] font-mono text-slate-500">
+            {currentLocalMeta.help}
+          </p>
+        </>
       )}
 
-      {/* Help text */}
-      <p className="text-[10px] font-mono text-slate-500">
-        {currentMeta.help}
-      </p>
+      {/* External platforms (Shopify) */}
+      {category === 'external' && (
+        <>
+          {/* Shopify header */}
+          <div className="flex items-center gap-2 p-2 rounded-md bg-[#96BF48]/10 border border-[#96BF48]/20">
+            <ShopifyIcon className="w-5 h-5 text-[#96BF48]" />
+            <span className="text-xs font-medium text-[#96BF48]">Shopify</span>
+          </div>
+
+          {/* Shopify credentials form */}
+          <div className="space-y-2">
+            {/* Store URL */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">
+                Store URL
+              </label>
+              <input
+                type="text"
+                value={shopifyStoreUrl}
+                onChange={(e) => setShopifyStoreUrl(e.target.value)}
+                placeholder="mystore.myshopify.com"
+                className="w-full px-3 py-2 text-xs font-mono rounded-md bg-void-900 border border-slate-800 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#96BF48]"
+              />
+            </div>
+
+            {/* Access Token */}
+            <div className="space-y-1">
+              <label className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">
+                Admin API Access Token
+              </label>
+              <div className="relative">
+                <input
+                  type={showToken ? 'text' : 'password'}
+                  value={shopifyAccessToken}
+                  onChange={(e) => setShopifyAccessToken(e.target.value)}
+                  placeholder="shpat_xxxxxxxxxxxxxxxxxxxxx"
+                  className="w-full px-3 py-2 pr-10 text-xs font-mono rounded-md bg-void-900 border border-slate-800 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#96BF48]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowToken(!showToken)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-slate-300"
+                  title={showToken ? 'Hide token' : 'Show token'}
+                >
+                  {showToken ? (
+                    <EyeOffIcon className="w-4 h-4" />
+                  ) : (
+                    <EyeIcon className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            {/* Error message */}
+            {shopifyError && (
+              <div className="p-2 rounded-md bg-error/10 border border-error/20">
+                <p className="text-[10px] font-mono text-error">{shopifyError}</p>
+              </div>
+            )}
+
+            <button
+              onClick={handleShopifyConnect}
+              disabled={!shopifyStoreUrl.trim() || !shopifyAccessToken.trim() || isConnecting}
+              className="w-full btn-primary py-2 text-xs font-medium disabled:opacity-50"
+              style={{ backgroundColor: '#96BF48' }}
+            >
+              {isConnecting ? 'Connecting...' : 'Connect to Shopify'}
+            </button>
+          </div>
+
+          {/* Help text */}
+          <p className="text-[10px] font-mono text-slate-500">
+            Get your Admin API access token from Shopify Admin → Settings → Apps → Develop apps.
+          </p>
+        </>
+      )}
     </div>
   );
 }

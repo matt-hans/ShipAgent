@@ -14,10 +14,10 @@ function AppContent() {
   const { activeJob, setActiveJob, sidebarCollapsed, setSidebarCollapsed } = useAppState();
 
   return (
-    <div className="app-layout">
+    <div className="h-screen flex flex-col bg-background overflow-hidden">
       <Header />
 
-      <div className="app-main">
+      <div className="flex-1 flex overflow-hidden">
         {/* Sidebar - Data sources, job history, quick actions */}
         <Sidebar
           collapsed={sidebarCollapsed}
@@ -27,7 +27,7 @@ function AppContent() {
         />
 
         {/* Main content - Conversational command interface */}
-        <main className="app-content">
+        <main className="flex-1 flex flex-col overflow-hidden">
           <CommandCenter activeJob={activeJob} />
         </main>
       </div>
