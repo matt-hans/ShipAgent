@@ -12,15 +12,24 @@
     "generate:schemas": "openapi-zod-client ../../docs/shipping.yaml -o src/generated/shipping.ts --export-schemas && openapi-zod-client ../../docs/rating.yaml -o src/generated/rating.ts --export-schemas",
     "test": "vitest run",
     "test:unit": "vitest run --exclude '**/integration.test.ts'",
-    "test:integration": "vitest run integration.test.ts"
+    "test:integration": "vitest run integration.test.ts",
+    "shopify:generate": "npx tsx scripts/shopify-test-orders.ts generate",
+    "shopify:cleanup": "npx tsx scripts/shopify-test-orders.ts cleanup",
+    "shopify:status": "npx tsx scripts/shopify-test-orders.ts status",
+    "shopify:verify": "npx tsx scripts/shopify-test-orders.ts verify"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@faker-js/faker": "^9.0.0",
     "@types/node": "^20.0.0",
+    "commander": "^12.0.0",
     "openapi-zod-client": "^1.18.0",
+    "ora": "^8.0.0",
+    "p-limit": "^6.0.0",
+    "tsx": "^4.0.0",
     "typescript": "^5.4.0",
     "vitest": "^2.0.0"
   },

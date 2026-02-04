@@ -1,0 +1,184 @@
+{
+  "version": 1,
+  "sessionId": "3246d7b0-206f-41e4-b2a3-79426282e890",
+  "targetCount": 1000,
+  "createdOrderIds": [
+    11785319448942,
+    11785319481710,
+    11785319547246,
+    11785319514478,
+    11785320366446,
+    11785320333678,
+    11785320399214,
+    11785320431982,
+    11785321611630,
+    11785321644398,
+    11785321709934,
+    11785321742702,
+    11785322692974,
+    11785322725742,
+    11785322758510,
+    11785322824046,
+    11785324167534,
+    11785324200302,
+    11785324233070,
+    11785324265838
+  ],
+  "nextIndex": 49,
+  "errors": [
+    {
+      "index": 4,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:10:13.026Z"
+    },
+    {
+      "index": 5,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:10:13.699Z"
+    },
+    {
+      "index": 6,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:10:28.915Z"
+    },
+    {
+      "index": 7,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:10:29.438Z"
+    },
+    {
+      "index": 8,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:10:44.868Z"
+    },
+    {
+      "index": 9,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:10:45.221Z"
+    },
+    {
+      "index": 14,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:11:18.304Z"
+    },
+    {
+      "index": 15,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:11:19.195Z"
+    },
+    {
+      "index": 16,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:11:34.340Z"
+    },
+    {
+      "index": 17,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:11:34.894Z"
+    },
+    {
+      "index": 18,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:11:50.295Z"
+    },
+    {
+      "index": 19,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:11:50.653Z"
+    },
+    {
+      "index": 24,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:12:23.748Z"
+    },
+    {
+      "index": 25,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:12:24.028Z"
+    },
+    {
+      "index": 26,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:12:39.568Z"
+    },
+    {
+      "index": 27,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:12:39.712Z"
+    },
+    {
+      "index": 28,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:12:55.436Z"
+    },
+    {
+      "index": 29,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:12:55.449Z"
+    },
+    {
+      "index": 34,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:13:28.928Z"
+    },
+    {
+      "index": 35,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:13:28.930Z"
+    },
+    {
+      "index": 36,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:13:44.845Z"
+    },
+    {
+      "index": 37,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:13:45.095Z"
+    },
+    {
+      "index": 38,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:14:00.574Z"
+    },
+    {
+      "index": 39,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:14:00.809Z"
+    },
+    {
+      "index": 45,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:14:34.225Z"
+    },
+    {
+      "index": 44,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:14:34.300Z"
+    },
+    {
+      "index": 47,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:14:50.021Z"
+    },
+    {
+      "index": 46,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:14:50.111Z"
+    },
+    {
+      "index": 49,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:15:05.901Z"
+    },
+    {
+      "index": 48,
+      "message": "API Error 429: Exceeded order API rate limit, please try again in a minute. Upgrade to a paid account to remove this limit.",
+      "timestamp": "2026-02-04T23:15:06.070Z"
+    }
+  ],
+  "startedAt": "2026-02-04T23:09:54.945Z",
+  "updatedAt": "2026-02-04T23:15:06.070Z",
+  "completed": false,
+  "seed": 42
+}
