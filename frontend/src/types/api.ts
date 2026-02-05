@@ -196,6 +196,24 @@ export interface CommandHistoryItem {
 
 // === Preview Types ===
 
+/** Full order data for expanded shipment view. */
+export interface OrderData {
+  order_id: string;
+  order_number?: string | null;
+  customer_name: string;
+  customer_email?: string | null;
+  ship_to_name: string;
+  ship_to_company?: string | null;
+  ship_to_address1: string;
+  ship_to_address2?: string | null;
+  ship_to_city: string;
+  ship_to_state: string;
+  ship_to_postal_code: string;
+  ship_to_country: string;
+  ship_to_phone?: string | null;
+  service_code: string;
+}
+
 /** Single row in preview display. */
 export interface PreviewRow {
   row_number: number;
@@ -204,6 +222,7 @@ export interface PreviewRow {
   service: string;
   estimated_cost_cents: number;
   warnings: string[];
+  order_data?: OrderData | null;
 }
 
 /** Batch preview before execution. */
@@ -481,4 +500,18 @@ export interface TrackingUpdateResponse {
   tracking_number?: string;
   carrier?: string;
   error?: string;
+}
+
+/** Shopify environment status response. */
+export interface ShopifyEnvStatus {
+  /** True if both SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN are set */
+  configured: boolean;
+  /** True if credentials validated against Shopify API */
+  valid: boolean;
+  /** Store URL from environment */
+  store_url: string | null;
+  /** Shop name from Shopify API */
+  store_name: string | null;
+  /** Error message if validation failed */
+  error: string | null;
 }

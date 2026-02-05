@@ -12,12 +12,14 @@ import {
   disconnectPlatform,
   testConnection,
   listPlatformOrders,
+  getShopifyEnvStatus,
 } from '@/lib/api';
 import type {
   PlatformConnection,
   PlatformType,
   ExternalOrder,
   ConnectionStatus,
+  ShopifyEnvStatus,
 } from '@/types/api';
 
 /** State for a single platform. */
@@ -49,6 +51,10 @@ export interface ExternalSourcesState {
   platforms: Record<PlatformType, PlatformState>;
   isLoading: boolean;
   error: string | null;
+  /** Shopify environment status (auto-detected credentials). */
+  shopifyEnvStatus: ShopifyEnvStatus | null;
+  /** True while checking Shopify environment status. */
+  isCheckingEnv: boolean;
 }
 
 /** Hook return type. */
@@ -87,6 +93,9 @@ export interface UseExternalSourcesReturn {
 
   /** Check if a platform is connected. */
   isConnected: (platform: PlatformType) => boolean;
+
+  /** Check Shopify environment status. */
+  checkShopifyEnv: () => Promise<ShopifyEnvStatus | null>;
 }
 
 /** All supported platforms. */
@@ -142,6 +151,8 @@ export function useExternalSources(): UseExternalSourcesReturn {
     platforms: INITIAL_PLATFORMS,
     isLoading: true,
     error: null,
+    shopifyEnvStatus: null,
+    isCheckingEnv: false,
   });
 
   // Helper to update a single platform's state
@@ -187,11 +198,12 @@ export function useExternalSources(): UseExternalSourcesReturn {
         }
       }
 
-      setState({
+      setState((prev) => ({
+        ...prev,
         platforms: newPlatforms,
         isLoading: false,
         error: null,
-      });
+      }));
     } catch (err) {
       setState((prev) => ({
         ...prev,
@@ -340,6 +352,53 @@ export function useExternalSources(): UseExternalSourcesReturn {
     [getConnectionStatus]
   );
 
+  // Check Shopify environment status
+  const checkShopifyEnv = useCallback(async (): Promise<ShopifyEnvStatus | null> => {
+    setState((prev) => ({ ...prev, isCheckingEnv: true }));
+
+    try {
+      const status = await getShopifyEnvStatus();
+      setState((prev) => ({
+        ...prev,
+        shopifyEnvStatus: status,
+        isCheckingEnv: false,
+      }));
+
+      // If valid, update Shopify platform state
+      if (status.valid) {
+        updatePlatformState('shopify', {
+          connection: {
+            platform: 'shopify',
+            store_url: status.store_url,
+            status: 'connected',
+            last_connected: new Date().toISOString(),
+            error_message: null,
+          },
+        });
+      }
+
+      return status;
+    } catch (err) {
+      setState((prev) => ({
+        ...prev,
+        shopifyEnvStatus: {
+          configured: false,
+          valid: false,
+          store_url: null,
+          store_name: null,
+          error: err instanceof Error ? err.message : 'Failed to check Shopify env',
+        },
+        isCheckingEnv: false,
+      }));
+      return null;
+    }
+  }, [updatePlatformState]);
+
+  // Check Shopify environment status on mount
+  useEffect(() => {
+    checkShopifyEnv();
+  }, [checkShopifyEnv]);
+
   return {
     state,
     connect,
@@ -349,6 +408,7 @@ export function useExternalSources(): UseExternalSourcesReturn {
     refresh,
     getConnectionStatus,
     isConnected,
+    checkShopifyEnv,
   };
 }
 

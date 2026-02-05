@@ -542,6 +542,96 @@ class TestShopifyUpdateTracking:
         assert result is False
 
 
+class TestShopifyGetShopInfo:
+    """Test Shopify shop info retrieval functionality."""
+
+    @pytest.fixture
+    def authenticated_client(self):
+        """Create an authenticated client for testing."""
+        client = ShopifyClient()
+        client._store_url = "mystore.myshopify.com"
+        client._access_token = "shpat_test_token"
+        client._authenticated = True
+        return client
+
+    @pytest.fixture
+    def sample_shop_response(self):
+        """Sample Shopify shop response data."""
+        return {
+            "shop": {
+                "id": 123456789,
+                "name": "My Test Store",
+                "email": "owner@mystore.com",
+                "phone": "555-123-4567",
+                "address1": "123 Main St",
+                "address2": "Suite 100",
+                "city": "Los Angeles",
+                "province": "California",
+                "province_code": "CA",
+                "zip": "90001",
+                "country": "United States",
+                "country_code": "US",
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_shop_info_success(
+        self, authenticated_client, sample_shop_response
+    ):
+        """Test successful shop info retrieval."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = sample_shop_response
+
+        with patch.object(
+            httpx.AsyncClient, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = mock_response
+            shop = await authenticated_client.get_shop_info()
+
+        assert shop is not None
+        assert shop["name"] == "My Test Store"
+        assert shop["phone"] == "555-123-4567"
+        assert shop["address1"] == "123 Main St"
+        assert shop["city"] == "Los Angeles"
+        assert shop["province_code"] == "CA"
+        assert shop["zip"] == "90001"
+        assert shop["country_code"] == "US"
+
+    @pytest.mark.asyncio
+    async def test_get_shop_info_not_authenticated(self):
+        """Test get_shop_info returns None when not authenticated."""
+        client = ShopifyClient()
+        shop = await client.get_shop_info()
+        assert shop is None
+
+    @pytest.mark.asyncio
+    async def test_get_shop_info_api_error(self, authenticated_client):
+        """Test get_shop_info returns None on API error."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.json.return_value = {"errors": "Internal Server Error"}
+
+        with patch.object(
+            httpx.AsyncClient, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = mock_response
+            shop = await authenticated_client.get_shop_info()
+
+        assert shop is None
+
+    @pytest.mark.asyncio
+    async def test_get_shop_info_request_error(self, authenticated_client):
+        """Test get_shop_info returns None on request error."""
+        with patch.object(
+            httpx.AsyncClient, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.side_effect = httpx.RequestError("Connection failed")
+            shop = await authenticated_client.get_shop_info()
+
+        assert shop is None
+
+
 class TestShopifyApiUrl:
     """Test Shopify API URL construction."""
 

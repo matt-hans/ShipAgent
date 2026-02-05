@@ -12,9 +12,11 @@
 import * as React from 'react';
 import { useAppState, type ConversationMessage } from '@/hooks/useAppState';
 import { useJobProgress } from '@/hooks/useJobProgress';
+import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
-import { submitCommand, getJobPreview, confirmJob, cancelJob, getJob } from '@/lib/api';
-import type { Job, BatchPreview } from '@/types/api';
+import { submitCommand, waitForPreview, confirmJob, cancelJob, getJob } from '@/lib/api';
+import type { Job, BatchPreview, PreviewRow, OrderData } from '@/types/api';
+import { ShipAgentLogo } from '@/components/ui/ShipAgentLogo';
 
 interface CommandCenterProps {
   activeJob: Job | null;
@@ -72,6 +74,32 @@ function PackageIcon({ className }: { className?: string }) {
       <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" strokeLinecap="round" strokeLinejoin="round" />
       <polyline points="3.27 6.96 12 12.01 20.73 6.96" strokeLinecap="round" strokeLinejoin="round" />
       <line x1="12" y1="22.08" x2="12" y2="12" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ChevronDownIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
+      <polyline points="6 9 12 15 18 9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function MapPinIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="12" cy="10" r="3" />
+    </svg>
+  );
+}
+
+function UserIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="12" cy="7" r="4" />
     </svg>
   );
 }
@@ -151,6 +179,169 @@ function TypingIndicator() {
   );
 }
 
+// Shopping cart icon for customer
+function ShoppingCartIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <circle cx="9" cy="21" r="1" />
+      <circle cx="20" cy="21" r="1" />
+      <path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+// Expanded shipment details component
+function ShipmentDetails({ orderData }: { orderData: OrderData }) {
+  // Check if customer is different from recipient (e.g., gift order)
+  const isDifferentRecipient = orderData.customer_name !== orderData.ship_to_name;
+
+  return (
+    <div className="px-4 py-3 bg-slate-800/30 border-t border-slate-800 animate-fade-in">
+      <div className="grid grid-cols-2 gap-4">
+        {/* Customer Info (Order Placer) */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500 uppercase tracking-wider">
+            <ShoppingCartIcon className="w-3 h-3" />
+            <span>Customer (Ordered By)</span>
+          </div>
+          <div className="space-y-0.5">
+            <p className="text-sm text-slate-200">{orderData.customer_name}</p>
+            {orderData.customer_email && (
+              <p className="text-[10px] font-mono text-slate-500">{orderData.customer_email}</p>
+            )}
+          </div>
+        </div>
+
+        {/* Recipient Info (Ship To) */}
+        <div className="space-y-2">
+          <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500 uppercase tracking-wider">
+            <UserIcon className="w-3 h-3" />
+            <span>Recipient (Ship To)</span>
+            {isDifferentRecipient && (
+              <span className="ml-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[8px] font-medium">
+                GIFT
+              </span>
+            )}
+          </div>
+          <div className="space-y-0.5">
+            <p className="text-sm text-slate-200">{orderData.ship_to_name}</p>
+            {orderData.ship_to_company && (
+              <p className="text-xs text-slate-400">{orderData.ship_to_company}</p>
+            )}
+            {orderData.ship_to_phone && (
+              <p className="text-[10px] font-mono text-slate-500">{orderData.ship_to_phone}</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Address Info */}
+      <div className="mt-3 pt-3 border-t border-slate-800/50">
+        <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-2">
+          <MapPinIcon className="w-3 h-3" />
+          <span>Shipping Address</span>
+        </div>
+        <div className="space-y-0.5">
+          <p className="text-sm text-slate-200">{orderData.ship_to_address1}</p>
+          {orderData.ship_to_address2 && (
+            <p className="text-sm text-slate-300">{orderData.ship_to_address2}</p>
+          )}
+          <p className="text-sm text-slate-300">
+            {orderData.ship_to_city}, {orderData.ship_to_state} {orderData.ship_to_postal_code}
+          </p>
+          <p className="text-[10px] font-mono text-slate-500">{orderData.ship_to_country}</p>
+        </div>
+      </div>
+
+      {/* Order Reference */}
+      <div className="mt-3 pt-3 border-t border-slate-800/50 flex items-center gap-4">
+        {orderData.order_number && (
+          <span className="text-[10px] font-mono text-slate-500">
+            Order #<span className="text-slate-400">{orderData.order_number}</span>
+          </span>
+        )}
+        <span className="text-[10px] font-mono text-slate-500">
+          ID: <span className="text-slate-400">{orderData.order_id}</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Shipment row component with expand/collapse
+function ShipmentRow({
+  row,
+  isExpanded,
+  onToggle,
+}: {
+  row: PreviewRow;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const hasDetails = !!row.order_data;
+  const customerName = row.order_data?.customer_name;
+  const recipientName = row.recipient_name;
+  const isDifferentRecipient = customerName && customerName !== recipientName;
+
+  return (
+    <div className="border-b border-slate-800 last:border-0">
+      <button
+        onClick={hasDetails ? onToggle : undefined}
+        className={cn(
+          'w-full flex items-center justify-between px-3 py-2.5 text-xs transition-colors',
+          hasDetails && 'hover:bg-slate-800/30 cursor-pointer',
+          !hasDetails && 'cursor-default',
+          isExpanded && 'bg-slate-800/20'
+        )}
+      >
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          {hasDetails && (
+            <ChevronDownIcon
+              className={cn(
+                'w-3.5 h-3.5 text-slate-500 transition-transform flex-shrink-0',
+                isExpanded && 'rotate-180'
+              )}
+            />
+          )}
+          <div className="flex-1 min-w-0 text-left">
+            {/* Show customer name first if different from recipient */}
+            {isDifferentRecipient ? (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-400 text-[10px]">Customer:</span>
+                  <span className="text-slate-300 font-medium truncate">{customerName}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-500 text-[10px]">Ship to:</span>
+                  <span className="text-slate-200 font-medium truncate">{recipientName}</span>
+                  <span className="px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[8px] font-medium">
+                    GIFT
+                  </span>
+                </div>
+                <span className="text-slate-500 text-[10px]">{row.city_state}</span>
+              </>
+            ) : (
+              <>
+                <span className="text-slate-200 font-medium truncate block">{recipientName}</span>
+                <span className="text-slate-500 text-[10px]">{row.city_state}</span>
+              </>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <span className="font-mono text-slate-400 text-[10px]">{row.service}</span>
+          <span className="font-mono text-amber-400 font-medium">{formatCurrency(row.estimated_cost_cents)}</span>
+        </div>
+      </button>
+
+      {/* Expanded details */}
+      {isExpanded && row.order_data && (
+        <ShipmentDetails orderData={row.order_data} />
+      )}
+    </div>
+  );
+}
+
 // Preview card component
 function PreviewCard({
   preview,
@@ -163,6 +354,20 @@ function PreviewCard({
   onCancel: () => void;
   isConfirming: boolean;
 }) {
+  const [expandedRows, setExpandedRows] = React.useState<Set<number>>(new Set());
+
+  const toggleRow = (rowNumber: number) => {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowNumber)) {
+        next.delete(rowNumber);
+      } else {
+        next.add(rowNumber);
+      }
+      return next;
+    });
+  };
+
   return (
     <div className="card-premium p-4 space-y-4 animate-scale-in border-gradient">
       {/* Header */}
@@ -192,22 +397,20 @@ function PreviewCard({
       {/* Sample rows */}
       {preview.preview_rows.length > 0 && (
         <div className="space-y-2">
-          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Sample Shipments</p>
-          <div className="max-h-40 overflow-y-auto rounded-md border border-slate-800">
-            {preview.preview_rows.slice(0, 5).map((row, i) => (
-              <div
-                key={i}
-                className="flex items-center justify-between px-3 py-2 border-b border-slate-800 last:border-0 text-xs"
-              >
-                <div className="flex-1">
-                  <span className="text-slate-300">{row.recipient_name}</span>
-                  <span className="text-slate-500 ml-2">{row.city_state}</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="font-mono text-slate-400">{row.service}</span>
-                  <span className="font-mono text-amber-400">{formatCurrency(row.estimated_cost_cents)}</span>
-                </div>
-              </div>
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Sample Shipments</p>
+            {preview.preview_rows.some(r => r.order_data) && (
+              <p className="text-[10px] text-slate-600">Click to expand</p>
+            )}
+          </div>
+          <div className="max-h-80 overflow-y-auto rounded-md border border-slate-800 scrollable">
+            {preview.preview_rows.slice(0, 10).map((row) => (
+              <ShipmentRow
+                key={row.row_number}
+                row={row}
+                isExpanded={expandedRows.has(row.row_number)}
+                onToggle={() => toggleRow(row.row_number)}
+              />
             ))}
           </div>
           {preview.additional_rows > 0 && (
@@ -342,6 +545,14 @@ function ProgressDisplay({ jobId }: { jobId: string }) {
 // Welcome message with workflow steps
 function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) => void }) {
   const { dataSource } = useAppState();
+  const { state: externalState } = useExternalSources();
+
+  // Check if Shopify is connected via environment
+  const shopifyEnvConnected = externalState.shopifyEnvStatus?.valid === true;
+  const shopifyStoreName = externalState.shopifyEnvStatus?.store_name || externalState.shopifyEnvStatus?.store_url;
+
+  // Consider connected if either local dataSource OR Shopify env is connected
+  const isConnected = dataSource || shopifyEnvConnected;
 
   const examples = [
     { text: 'Ship all California orders using UPS Ground', desc: 'Filter by state' },
@@ -350,11 +561,11 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
   ];
 
   // Not connected - show getting started workflow
-  if (!dataSource) {
+  if (!isConnected) {
     return (
       <div className="flex flex-col items-center pt-12 text-center px-4 animate-fade-in">
-        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-500/20 to-amber-600/20 border border-amber-500/30 flex items-center justify-center mb-4">
-          <PackageIcon className="w-7 h-7 text-amber-400" />
+        <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-4">
+          <ShipAgentLogo className="w-12 h-12" primaryColor="#f59e0b"  />
         </div>
 
         <h2 className="text-xl font-semibold text-slate-100 mb-2">
@@ -370,7 +581,7 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
         {/* Workflow steps */}
         <div className="grid grid-cols-3 gap-4 w-full max-w-lg mb-6">
           {[
-            { step: '1', title: 'Connect', desc: 'CSV, Excel, or Database' },
+            { step: '1', title: 'Connect', desc: 'File, database, or platform' },
             { step: '2', title: 'Describe', desc: 'Natural language command' },
             { step: '3', title: 'Ship', desc: 'Preview, approve, execute' },
           ].map((item) => (
@@ -403,10 +614,17 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
   }
 
   // Connected - ready to ship
+  // Determine what data source to display
+  const sourceDisplay = dataSource
+    ? { name: dataSource.type.toUpperCase(), detail: dataSource.row_count ? `${dataSource.row_count.toLocaleString()} rows` : null }
+    : shopifyEnvConnected
+    ? { name: 'SHOPIFY', detail: shopifyStoreName || null }
+    : { name: 'Unknown', detail: null };
+
   return (
     <div className="flex flex-col items-center pt-12 text-center px-4 animate-fade-in">
-      <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-success/20 to-success/10 border border-success/30 flex items-center justify-center mb-4">
-        <PackageIcon className="w-7 h-7 text-success" />
+      <div className="w-16 h-16 rounded-2xl bg-success/10 border border-success/30 flex items-center justify-center mb-4">
+        <ShipAgentLogo className="w-12 h-12" primaryColor="#22c55e"  />
       </div>
 
       <h2 className="text-xl font-semibold text-slate-100 mb-2">
@@ -414,9 +632,9 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
       </h2>
 
       <p className="text-sm text-slate-400 max-w-md mb-2">
-        Connected to <span className="text-amber-400 font-medium">{dataSource.type.toUpperCase()}</span>
-        {dataSource.row_count && (
-          <> with <span className="text-amber-400 font-medium">{dataSource.row_count.toLocaleString()}</span> rows</>
+        Connected to <span className="text-amber-400 font-medium">{sourceDisplay.name}</span>
+        {sourceDisplay.detail && (
+          <> · <span className="text-slate-500">{sourceDisplay.detail}</span></>
         )}
       </p>
 
@@ -456,6 +674,14 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
     setActiveJob,
   } = useAppState();
 
+  const { state: externalState } = useExternalSources();
+
+  // Check if Shopify is connected via environment
+  const shopifyEnvConnected = externalState.shopifyEnvStatus?.valid === true;
+
+  // Consider connected if either local dataSource OR Shopify env is connected
+  const hasDataSource = !!dataSource || shopifyEnvConnected;
+
   const [inputValue, setInputValue] = React.useState('');
   const [preview, setPreview] = React.useState<BatchPreview | null>(null);
   const [currentJobId, setCurrentJobId] = React.useState<string | null>(null);
@@ -473,7 +699,7 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
   // Handle command submit
   const handleSubmit = async () => {
     const command = inputValue.trim();
-    if (!command || isProcessing || !dataSource) return;
+    if (!command || isProcessing || !hasDataSource) return;
 
     setInputValue('');
     setIsProcessing(true);
@@ -486,8 +712,9 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
       const result = await submitCommand(command);
       setCurrentJobId(result.job_id);
 
-      // Fetch preview
-      const previewData = await getJobPreview(result.job_id);
+      // Wait for processing and fetch preview
+      // This polls until rows are ready (background task completes)
+      const previewData = await waitForPreview(result.job_id);
       setPreview(previewData);
 
       // Add system response
@@ -626,14 +853,14 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={
-                  !dataSource
+                  !hasDataSource
                     ? 'Connect a data source to begin...'
                     : 'Enter a shipping command...'
                 }
-                disabled={!dataSource || isProcessing || !!preview}
+                disabled={!hasDataSource || isProcessing || !!preview}
                 className={cn(
                   'input-command pr-12',
-                  (!dataSource || isProcessing || !!preview) && 'opacity-50 cursor-not-allowed'
+                  (!hasDataSource || isProcessing || !!preview) && 'opacity-50 cursor-not-allowed'
                 )}
               />
 
@@ -647,10 +874,10 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
 
             <button
               onClick={handleSubmit}
-              disabled={!inputValue.trim() || !dataSource || isProcessing || !!preview}
+              disabled={!inputValue.trim() || !hasDataSource || isProcessing || !!preview}
               className={cn(
                 'btn-primary px-4',
-                (!inputValue.trim() || !dataSource || isProcessing || !!preview) && 'opacity-50 cursor-not-allowed'
+                (!inputValue.trim() || !hasDataSource || isProcessing || !!preview) && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isProcessing ? (
@@ -665,7 +892,7 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
 
           {/* Help text - single line */}
           <p className="text-[10px] font-mono text-slate-500 mt-1.5">
-            {dataSource
+            {hasDataSource
               ? 'Describe what you want to ship in natural language'
               : 'Connect a data source from the sidebar'} · Press <kbd className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700">Enter</kbd> to send
           </p>

@@ -36,6 +36,8 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { useExternalSources } from '@/hooks/useExternalSources';
+import type { ShopifyEnvStatus } from '@/types/api';
 
 // === Source Type Definitions ===
 
@@ -594,6 +596,139 @@ function SourceCard({ source, state, onConfigure, onDisconnect }: SourceCardProp
   );
 }
 
+// === Shopify Status Card ===
+
+interface ShopifyStatusCardProps {
+  source: SourceInfo;
+  envStatus: ShopifyEnvStatus | null;
+  isCheckingEnv: boolean;
+  onRefresh: () => void;
+}
+
+function ShopifyStatusCard({ source, envStatus, isCheckingEnv, onRefresh }: ShopifyStatusCardProps) {
+  const Icon = source.icon;
+
+  // Determine status
+  const isConnected = envStatus?.valid === true;
+  const isConfigured = envStatus?.configured === true;
+  const hasError = isConfigured && !isConnected;
+
+  // Status display
+  let statusText = 'Checking...';
+  let statusDotClass = 'status-dot--disconnected';
+
+  if (!isCheckingEnv) {
+    if (isConnected) {
+      statusText = 'Connected';
+      statusDotClass = 'status-dot--connected';
+    } else if (hasError) {
+      statusText = 'Invalid credentials';
+      statusDotClass = 'status-dot--error';
+    } else {
+      statusText = 'Not configured';
+      statusDotClass = 'status-dot--disconnected';
+    }
+  }
+
+  return (
+    <div
+      className={cn(
+        'platform-card group',
+        isConnected && 'platform-card--connected'
+      )}
+      style={{ '--platform-color': source.color } as React.CSSProperties}
+    >
+      <CardHeader className="pb-3">
+        <div className="flex items-start justify-between">
+          <div
+            className="w-12 h-12 rounded-xl flex items-center justify-center"
+            style={{ backgroundColor: `color-mix(in oklch, ${source.color} 15%, transparent)` }}
+          >
+            <Icon
+              className="w-6 h-6"
+              style={{ color: source.color }}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                'status-dot',
+                statusDotClass
+              )}
+            />
+            <span className="text-xs text-muted-foreground">
+              {statusText}
+            </span>
+          </div>
+        </div>
+        <CardTitle className="text-lg mt-3">{source.name}</CardTitle>
+        <CardDescription className="text-sm">
+          {source.description}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="pt-0">
+        {/* Connection info based on status */}
+        {isCheckingEnv && (
+          <p className="text-xs text-muted-foreground mb-3 p-2 rounded bg-muted/50">
+            Checking environment credentials...
+          </p>
+        )}
+
+        {!isCheckingEnv && isConnected && envStatus && (
+          <div className="space-y-2 mb-3">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="inline-block w-2 h-2 rounded-full bg-green-500" />
+              <span className="font-medium text-foreground">
+                {envStatus.store_name || envStatus.store_url}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Configured via environment variables
+            </p>
+          </div>
+        )}
+
+        {!isCheckingEnv && hasError && envStatus?.error && (
+          <div className="space-y-2 mb-3">
+            <p className="text-xs text-destructive p-2 rounded bg-destructive/10">
+              {envStatus.error}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Check SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN in .env
+            </p>
+          </div>
+        )}
+
+        {!isCheckingEnv && !isConfigured && (
+          <div className="space-y-2 mb-3">
+            <p className="text-xs text-muted-foreground p-2 rounded bg-muted/50">
+              Add credentials to .env file:
+            </p>
+            <code className="block text-xs p-2 rounded bg-muted font-mono">
+              SHOPIFY_ACCESS_TOKEN=shpat_xxx<br />
+              SHOPIFY_STORE_DOMAIN=store.myshopify.com
+            </code>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex gap-2">
+          <Button
+            variant={isConnected ? 'outline' : 'default'}
+            size="sm"
+            onClick={onRefresh}
+            disabled={isCheckingEnv}
+            className="w-full"
+            style={!isConnected ? { backgroundColor: source.color, color: 'white' } : undefined}
+          >
+            {isCheckingEnv ? 'Checking...' : 'Refresh Status'}
+          </Button>
+        </div>
+      </CardContent>
+    </div>
+  );
+}
+
 interface ConfigureDialogProps {
   source: SourceInfo | null;
   isOpen: boolean;
@@ -716,6 +851,9 @@ function CategorySection({
   states,
   onConfigure,
   onDisconnect,
+  shopifyEnvStatus,
+  isCheckingShopifyEnv,
+  onRefreshShopify,
 }: {
   title: string;
   description: string;
@@ -723,6 +861,9 @@ function CategorySection({
   states: SourceStates;
   onConfigure: (source: SourceInfo) => void;
   onDisconnect: (sourceId: string) => void;
+  shopifyEnvStatus?: ShopifyEnvStatus | null;
+  isCheckingShopifyEnv?: boolean;
+  onRefreshShopify?: () => void;
 }) {
   return (
     <div className="space-y-4">
@@ -731,15 +872,30 @@ function CategorySection({
         <p className="text-sm text-muted-foreground">{description}</p>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {sources.map((source) => (
-          <SourceCard
-            key={source.id}
-            source={source}
-            state={states[source.id] || initialSourceState}
-            onConfigure={() => onConfigure(source)}
-            onDisconnect={() => onDisconnect(source.id)}
-          />
-        ))}
+        {sources.map((source) => {
+          // Use ShopifyStatusCard for Shopify
+          if (source.id === 'shopify' && onRefreshShopify) {
+            return (
+              <ShopifyStatusCard
+                key={source.id}
+                source={source}
+                envStatus={shopifyEnvStatus ?? null}
+                isCheckingEnv={isCheckingShopifyEnv ?? false}
+                onRefresh={onRefreshShopify}
+              />
+            );
+          }
+
+          return (
+            <SourceCard
+              key={source.id}
+              source={source}
+              state={states[source.id] || initialSourceState}
+              onConfigure={() => onConfigure(source)}
+              onDisconnect={() => onDisconnect(source.id)}
+            />
+          );
+        })}
       </div>
     </div>
   );
@@ -758,6 +914,9 @@ export function DataSourceManager() {
 
   const [configureSource, setConfigureSource] = useState<SourceInfo | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Use external sources hook for Shopify env detection
+  const { state: externalState, checkShopifyEnv } = useExternalSources();
 
   const fileSources = SOURCES.filter(s => s.category === 'file');
   const databaseSources = SOURCES.filter(s => s.category === 'database');
@@ -892,6 +1051,9 @@ export function DataSourceManager() {
         states={states}
         onConfigure={handleConfigure}
         onDisconnect={handleDisconnect}
+        shopifyEnvStatus={externalState.shopifyEnvStatus}
+        isCheckingShopifyEnv={externalState.isCheckingEnv}
+        onRefreshShopify={checkShopifyEnv}
       />
 
       {/* Configure Dialog */}

@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from anthropic import Anthropic
 
+from src.orchestrator.nl_engine.config import get_model
 from src.orchestrator.models.correction import (
     CorrectionAttempt,
     CorrectionOptions,
@@ -254,7 +255,7 @@ Original template:
 Return the corrected template:"""
 
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=get_model(),
         max_tokens=2048,
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],

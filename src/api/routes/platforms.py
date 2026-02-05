@@ -11,6 +11,7 @@ Architecture:
 """
 
 import asyncio
+import os
 from datetime import datetime
 from typing import Any
 
@@ -99,6 +100,22 @@ class TestConnectionResponse(BaseModel):
     success: bool
     platform: str
     status: str
+
+
+class ShopifyEnvStatusResponse(BaseModel):
+    """Response from Shopify environment status check.
+
+    Indicates whether Shopify credentials are configured in environment
+    variables and whether they are valid against the Shopify API.
+    """
+
+    configured: bool = Field(
+        ..., description="True if both SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN are set"
+    )
+    valid: bool = Field(..., description="True if credentials validated against Shopify API")
+    store_url: str | None = Field(None, description="Store URL from environment")
+    store_name: str | None = Field(None, description="Shop name from Shopify API")
+    error: str | None = Field(None, description="Error message if validation failed")
 
 
 # === Platform State Manager ===
@@ -357,6 +374,91 @@ async def test_connection(platform: str) -> TestConnectionResponse:
         platform=platform,
         status="connected" if is_healthy else "error",
     )
+
+
+@router.get("/shopify/env-status", response_model=ShopifyEnvStatusResponse)
+async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
+    """Check Shopify credentials from environment variables.
+
+    Reads SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN from environment,
+    validates them against the Shopify API, and auto-connects if valid.
+
+    Returns:
+        Status indicating whether credentials are configured and valid.
+    """
+    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+    store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+
+    # Check if both are configured
+    if not access_token or not store_domain:
+        return ShopifyEnvStatusResponse(
+            configured=False,
+            valid=False,
+            store_url=None,
+            store_name=None,
+            error="SHOPIFY_ACCESS_TOKEN and/or SHOPIFY_STORE_DOMAIN not set in environment",
+        )
+
+    # Credentials are configured, validate against Shopify API
+    import httpx
+
+    from src.mcp.external_sources.clients.shopify import ShopifyClient
+
+    client = ShopifyClient()
+    credentials = {"access_token": access_token, "store_url": store_domain}
+
+    try:
+        is_valid = await client.authenticate(credentials)
+
+        if not is_valid:
+            return ShopifyEnvStatusResponse(
+                configured=True,
+                valid=False,
+                store_url=store_domain,
+                store_name=None,
+                error="Authentication failed - check credentials",
+            )
+
+        # Get shop name from Shopify API
+        store_name = None
+        try:
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.get(
+                    f"https://{store_domain}/admin/api/{ShopifyClient.API_VERSION}/shop.json",
+                    headers={
+                        "X-Shopify-Access-Token": access_token,
+                        "Content-Type": "application/json",
+                    },
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    store_name = data.get("shop", {}).get("name")
+        except httpx.RequestError:
+            pass
+
+        # Auto-connect to PlatformStateManager
+        await _state_manager.connect(
+            platform="shopify",
+            credentials={"access_token": access_token},
+            store_url=store_domain,
+        )
+
+        return ShopifyEnvStatusResponse(
+            configured=True,
+            valid=True,
+            store_url=store_domain,
+            store_name=store_name,
+            error=None,
+        )
+
+    except Exception as e:
+        return ShopifyEnvStatusResponse(
+            configured=True,
+            valid=False,
+            store_url=store_domain,
+            store_name=None,
+            error=str(e),
+        )
 
 
 @router.get("/{platform}/orders", response_model=ListOrdersResponse)

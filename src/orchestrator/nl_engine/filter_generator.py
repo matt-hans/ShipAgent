@@ -15,6 +15,7 @@ from datetime import datetime
 import sqlglot
 from anthropic import Anthropic
 
+from src.orchestrator.nl_engine.config import get_model
 from src.orchestrator.models.filter import ColumnInfo, SQLFilterResult
 
 # Re-export FilterGenerationError from models for convenience
@@ -238,7 +239,7 @@ Remember:
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5-20250514",
+            model=get_model(),
             max_tokens=1024,
             messages=[
                 {"role": "user", "content": user_prompt},

@@ -152,6 +152,64 @@ export async function getJobPreview(jobId: string): Promise<BatchPreview> {
 }
 
 /**
+ * Wait for job processing to complete and then return preview.
+ *
+ * Polls the job endpoint until total_rows > 0 or error_code is set,
+ * then fetches and returns the preview.
+ *
+ * @param jobId - The job UUID.
+ * @param maxWaitMs - Maximum time to wait in milliseconds (default: 30000).
+ * @param pollIntervalMs - Polling interval in milliseconds (default: 1000).
+ * @returns Batch preview with sample rows and cost estimate.
+ * @throws ApiError if job processing fails or times out.
+ */
+export async function waitForPreview(
+  jobId: string,
+  maxWaitMs = 30000,
+  pollIntervalMs = 1000
+): Promise<BatchPreview> {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWaitMs) {
+    const job = await getJob(jobId);
+
+    // Check if processing completed with error
+    if (job.error_code) {
+      throw new ApiError(
+        400,
+        {
+          error_code: job.error_code,
+          message: job.error_message || 'Command processing failed',
+          remediation: null,
+          details: null,
+        },
+        job.error_message || 'Command processing failed'
+      );
+    }
+
+    // Check if rows are ready
+    if (job.total_rows > 0) {
+      return getJobPreview(jobId);
+    }
+
+    // Wait before next poll
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  // Timeout - processing took too long
+  throw new ApiError(
+    408,
+    {
+      error_code: 'E-4005',
+      message: 'Command processing timed out. Please try again.',
+      remediation: null,
+      details: null,
+    },
+    'Command processing timed out. Please try again.'
+  );
+}
+
+/**
  * Response from confirm endpoint.
  */
 export interface ConfirmResponse {
@@ -247,6 +305,20 @@ export function getProgressStreamUrl(jobId: string): string {
   return `${API_BASE}/jobs/${jobId}/progress/stream`;
 }
 
+/**
+ * Delete a job.
+ *
+ * @param jobId - The job UUID.
+ */
+export async function deleteJob(jobId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    await parseResponse(response); // Will throw ApiError
+  }
+}
+
 // === External Platform API ===
 
 import type {
@@ -258,6 +330,7 @@ import type {
   TrackingUpdateRequest,
   TrackingUpdateResponse,
   OrderFilters,
+  ShopifyEnvStatus,
 } from '@/types/api';
 
 /**
@@ -390,4 +463,17 @@ export async function updatePlatformTracking(
     }
   );
   return parseResponse<TrackingUpdateResponse>(response);
+}
+
+/**
+ * Check Shopify credentials from environment variables.
+ *
+ * Reads SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN from server environment,
+ * validates them against Shopify API, and auto-connects if valid.
+ *
+ * @returns Status indicating whether credentials are configured and valid.
+ */
+export async function getShopifyEnvStatus(): Promise<ShopifyEnvStatus> {
+  const response = await fetch(`${API_BASE}/platforms/shopify/env-status`);
+  return parseResponse<ShopifyEnvStatus>(response);
 }

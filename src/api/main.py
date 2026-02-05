@@ -5,9 +5,20 @@ and exception handlers configured. Serves the React frontend build
 when available.
 """
 
+import logging
+import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+
+# Configure logging to stdout for uvicorn to capture
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:%(name)s:%(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+# Ensure our application loggers are captured
+logging.getLogger("src").setLevel(logging.INFO)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles

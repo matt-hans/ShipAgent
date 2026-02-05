@@ -20,10 +20,16 @@ import type {
 } from "./types.js";
 
 /**
- * Exponential backoff delays in milliseconds
- * [1s, 2s, 4s, 8s] for up to 4 retries
+ * Exponential backoff delays in milliseconds for server errors
+ * [2s, 4s, 8s, 16s] for up to 4 retries
  */
-const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
+const RETRY_DELAYS_MS = [2000, 4000, 8000, 16000];
+
+/**
+ * Longer delays for rate limit (429) errors
+ * [15s, 30s, 60s, 120s] - Shopify dev stores have strict limits
+ */
+const RATE_LIMIT_DELAYS_MS = [15000, 30000, 60000, 120000];
 
 /**
  * Maximum number of retry attempts
@@ -31,9 +37,11 @@ const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000];
 const MAX_RETRIES = 4;
 
 /**
- * Default rate limit (requests per second) for standard Shopify stores
+ * Default rate limit (requests per second) for development Shopify stores
+ * Dev stores are limited to ~4 orders per minute, so use 0.066 (1 per 15s)
+ * For paid stores, set SHOPIFY_RATE_LIMIT=2
  */
-const DEFAULT_RATE_LIMIT = 2;
+const DEFAULT_RATE_LIMIT = 0.066;
 
 /**
  * Error thrown when Shopify API returns an error
@@ -138,9 +146,10 @@ export class ShopifyClient {
       "Content-Type": "application/json",
       "X-Shopify-Access-Token": config.accessToken,
     };
-    this.rateLimiter = new TokenBucket(config.rateLimit || DEFAULT_RATE_LIMIT);
-    // Allow up to 2 concurrent requests (within rate limit)
-    this.concurrencyLimiter = pLimit(2);
+    const rateLimit = config.rateLimit || DEFAULT_RATE_LIMIT;
+    this.rateLimiter = new TokenBucket(rateLimit);
+    // Use single concurrency for dev stores (rate < 1), otherwise allow 2
+    this.concurrencyLimiter = pLimit(rateLimit < 1 ? 1 : 2);
   }
 
   /**
@@ -283,13 +292,15 @@ export class ShopifyClient {
       try {
         const response = await fetch(url, options);
 
-        // 429 rate limit - honor Retry-After header
+        // 429 rate limit - use longer delays for dev stores
         if (response.status === 429) {
           if (attempt < MAX_RETRIES) {
             const retryAfter = response.headers.get("Retry-After");
+            // Use Retry-After header if present, otherwise use our rate limit delays
             const waitMs = retryAfter
               ? parseInt(retryAfter, 10) * 1000
-              : RETRY_DELAYS_MS[attempt];
+              : RATE_LIMIT_DELAYS_MS[attempt];
+            console.log(`Rate limited, waiting ${waitMs / 1000}s before retry ${attempt + 1}/${MAX_RETRIES}...`);
             await this.sleep(waitMs);
             continue;
           }

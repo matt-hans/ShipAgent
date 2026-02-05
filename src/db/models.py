@@ -209,6 +209,9 @@ class JobRow(Base):
         String(20), nullable=False, default=RowStatus.pending.value
     )
 
+    # Order data (JSON blob with shipment details for preview)
+    order_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Result data
     tracking_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     label_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)

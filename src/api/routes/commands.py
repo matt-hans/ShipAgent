@@ -2,9 +2,13 @@
 
 Provides REST API endpoints for submitting natural language shipping
 commands and retrieving command history.
+
+The command submission endpoint creates a job and triggers background
+processing via CommandProcessor to parse intent, filter orders, and
+create job rows with cost estimates.
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.orm import Session
 
 from src.api.schemas import (
@@ -12,29 +16,44 @@ from src.api.schemas import (
     CommandSubmit,
     CommandSubmitResponse,
 )
-from src.db.connection import get_db
+from src.db.connection import SessionLocal, get_db
 from src.db.models import Job, JobStatus
+from src.services.command_processor import CommandProcessor
 
 router = APIRouter(prefix="/commands", tags=["commands"])
 
 
+def _get_db_session() -> Session:
+    """Create a new database session for background tasks.
+
+    Returns:
+        A new SQLAlchemy session.
+    """
+    return SessionLocal()
+
+
 @router.post("", response_model=CommandSubmitResponse, status_code=201)
-def submit_command(
+async def submit_command(
     payload: CommandSubmit,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> CommandSubmitResponse:
     """Submit a natural language command for processing.
 
-    Creates a new job with the provided command and returns the job ID
-    for tracking. The job will be processed asynchronously by the
-    orchestration agent.
+    Creates a new job with the provided command and triggers background
+    processing via CommandProcessor. The processor will:
+    1. Parse the intent from the natural language command
+    2. Generate a SQL filter for order selection
+    3. Fetch matching orders from connected platforms (Shopify)
+    4. Create JobRows with cost estimates
 
     Args:
         payload: Command submission data containing the natural language command.
+        background_tasks: FastAPI background tasks for async processing.
         db: Database session dependency.
 
     Returns:
-        Response with job_id and initial status.
+        Response with job_id and initial status (pending).
     """
     # Create job with command
     job = Job(
@@ -45,6 +64,10 @@ def submit_command(
     db.add(job)
     db.commit()
     db.refresh(job)
+
+    # Trigger background processing via CommandProcessor
+    processor = CommandProcessor(db_session_factory=_get_db_session)
+    background_tasks.add_task(processor.process, str(job.id), payload.command)
 
     return CommandSubmitResponse(
         job_id=str(job.id),

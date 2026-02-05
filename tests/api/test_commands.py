@@ -42,8 +42,8 @@ class TestSubmitCommand:
 
         assert response.status_code == 201
         job = test_db.query(Job).filter(Job.id == response.json()["job_id"]).first()
-        # Name should be truncated with ellipsis
-        assert len(job.name) <= 60
+        # Name format: "Command: " (9 chars) + first 50 chars + "..." (3 chars) = 62 max
+        assert len(job.name) <= 62
         assert "..." in job.name
 
     def test_submit_command_validates_empty_input(self, client: TestClient):

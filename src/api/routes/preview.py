@@ -1,10 +1,15 @@
 """Preview and confirmation API routes.
 
 Provides endpoints for fetching batch preview data and confirming
-batches for execution.
+batches for execution. Integrates with UPS MCP for real shipment creation.
 """
 
-from fastapi import APIRouter, Depends, HTTPException
+import json
+import logging
+import os
+from datetime import datetime
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from src.api.schemas import (
@@ -13,9 +18,28 @@ from src.api.schemas import (
     PreviewRowResponse,
 )
 from src.db.connection import get_db
-from src.db.models import Job, JobRow
+from src.db.models import Job, JobRow, RowStatus
+from src.mcp.ups_client import UpsMcpClient, UpsMcpError
+from src.services.ups_payload_builder import (
+    build_shipment_request,
+    build_shipper_from_env,
+    build_shipper_from_shop,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["preview"])
+
+# UPS service code to name mapping
+SERVICE_CODE_NAMES = {
+    "01": "UPS Next Day Air",
+    "02": "UPS 2nd Day Air",
+    "03": "UPS Ground",
+    "12": "UPS 3 Day Select",
+    "13": "UPS Ground Saver",
+    "14": "UPS Next Day Air Early",
+    "59": "UPS 2nd Day Air A.M.",
+}
 
 # Maximum number of rows to include in preview
 MAX_PREVIEW_ROWS = 10
@@ -63,20 +87,29 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
 
     for row in rows[:MAX_PREVIEW_ROWS]:
         # Extract preview data from row
-        # The row may have metadata stored in a JSON field or we derive from available data
         warnings: list[str] = []
 
         # Check for common warning conditions
         if row.error_message:
             warnings.append(row.error_message)
 
-        # Build recipient name and city/state from available data
-        # In MVP, this comes from the job metadata or we use placeholder values
-        # Since job rows store processed results, we'll use generic placeholders
-        # Real implementation would parse mapping_template output
+        # Parse order data if available
         recipient_name = f"Shipment #{row.row_number}"
         city_state = "Pending"
         service = "UPS Ground"
+        order_data_dict: dict | None = None
+
+        if row.order_data:
+            try:
+                order_data_dict = json.loads(row.order_data)
+                recipient_name = order_data_dict.get("ship_to_name", recipient_name)
+                city = order_data_dict.get("ship_to_city", "")
+                state = order_data_dict.get("ship_to_state", "")
+                city_state = f"{city}, {state}" if city and state else "Pending"
+                service_code = order_data_dict.get("service_code", "03")
+                service = SERVICE_CODE_NAMES.get(service_code, "UPS Ground")
+            except json.JSONDecodeError:
+                pass  # Fall back to defaults
 
         # Cost is stored in cents
         estimated_cost = row.cost_cents or 0
@@ -93,6 +126,7 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
                 service=service,
                 estimated_cost_cents=estimated_cost,
                 warnings=warnings,
+                order_data=order_data_dict,
             )
         )
 
@@ -112,14 +146,211 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
     )
 
 
+async def _get_shipper_info() -> dict[str, str]:
+    """Get shipper information from Shopify or environment.
+
+    Attempts to fetch shop details from Shopify if credentials are configured.
+    Falls back to environment variables if Shopify is unavailable.
+
+    Returns:
+        Dict containing shipper address details
+    """
+    # Check if Shopify credentials are configured
+    shopify_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+    shopify_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+
+    if shopify_token and shopify_domain:
+        try:
+            from src.mcp.external_sources.clients.shopify import ShopifyClient
+
+            client = ShopifyClient()
+            authenticated = await client.authenticate({
+                "store_url": shopify_domain,
+                "access_token": shopify_token,
+            })
+
+            if authenticated:
+                shop_info = await client.get_shop_info()
+                if shop_info:
+                    logger.info("Using shipper info from Shopify store: %s", shop_info.get("name"))
+                    return build_shipper_from_shop(shop_info)
+        except Exception as e:
+            logger.warning("Failed to get shop info from Shopify: %s", e)
+
+    # Fall back to environment variables
+    logger.info("Using shipper info from environment variables")
+    return build_shipper_from_env()
+
+
+async def _execute_batch(job_id: str) -> None:
+    """Execute batch shipment processing in the background.
+
+    Processes each JobRow by calling the UPS MCP shipping_create tool
+    and updates row status with real tracking numbers and label paths.
+
+    Args:
+        job_id: The job UUID to process.
+    """
+    from src.db.connection import get_db as get_db_session
+
+    db = next(get_db_session())
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            logger.error("Job not found for execution: %s", job_id)
+            return
+
+        # Get all pending rows
+        rows = (
+            db.query(JobRow)
+            .filter(JobRow.job_id == job_id, JobRow.status == RowStatus.pending.value)
+            .order_by(JobRow.row_number)
+            .all()
+        )
+
+        logger.info("Starting batch execution for job %s with %d rows", job_id, len(rows))
+
+        # Get shipper info once for all shipments
+        shipper = await _get_shipper_info()
+
+        total_cost = 0
+        successful = 0
+        failed = 0
+
+        # Use UPS MCP client for real shipments
+        try:
+            async with UpsMcpClient() as ups_client:
+                for row in rows:
+                    try:
+                        # Mark row as processing
+                        row.status = RowStatus.processing.value
+                        db.commit()
+
+                        # Parse order data
+                        order_data = {}
+                        if row.order_data:
+                            try:
+                                order_data = json.loads(row.order_data)
+                            except json.JSONDecodeError:
+                                raise ValueError("Invalid order_data JSON")
+
+                        # Build shipment request
+                        shipment_request = build_shipment_request(
+                            order_data=order_data,
+                            shipper=shipper,
+                        )
+
+                        # Call UPS MCP shipping_create
+                        result = await ups_client.call_tool("shipping_create", shipment_request)
+
+                        # Extract results
+                        if not result.get("success"):
+                            raise ValueError(f"UPS shipping failed: {result}")
+
+                        tracking_numbers = result.get("trackingNumbers", [])
+                        label_paths = result.get("labelPaths", [])
+                        total_charges = result.get("totalCharges", {})
+
+                        tracking_number = tracking_numbers[0] if tracking_numbers else ""
+                        label_path = label_paths[0] if label_paths else ""
+
+                        # Convert cost to cents
+                        cost_value = total_charges.get("monetaryValue", "0")
+                        try:
+                            cost_cents = int(float(cost_value) * 100)
+                        except (ValueError, TypeError):
+                            cost_cents = row.cost_cents or 0
+
+                        # Update row with shipping result
+                        row.tracking_number = tracking_number
+                        row.label_path = label_path
+                        row.cost_cents = cost_cents
+                        row.status = RowStatus.completed.value
+                        row.processed_at = datetime.utcnow().isoformat()
+                        db.commit()
+
+                        total_cost += cost_cents
+                        successful += 1
+
+                        logger.info(
+                            "Row %d completed: tracking=%s, cost=%d cents, label=%s",
+                            row.row_number,
+                            tracking_number,
+                            cost_cents,
+                            label_path,
+                        )
+
+                    except UpsMcpError as e:
+                        logger.error("Row %d UPS error: %s", row.row_number, e)
+                        row.status = RowStatus.failed.value
+                        row.error_code = e.code
+                        row.error_message = str(e)
+                        db.commit()
+                        failed += 1
+
+                    except Exception as e:
+                        logger.exception("Row %d failed: %s", row.row_number, e)
+                        row.status = RowStatus.failed.value
+                        row.error_code = "E-3005"
+                        row.error_message = str(e)
+                        db.commit()
+                        failed += 1
+
+        except UpsMcpError as e:
+            # UPS MCP connection/startup failure - fail all remaining rows
+            logger.error("UPS MCP connection failed: %s", e)
+            for row in rows:
+                if row.status == RowStatus.pending.value:
+                    row.status = RowStatus.failed.value
+                    row.error_code = e.code
+                    row.error_message = str(e)
+                    failed += 1
+            db.commit()
+
+        # Update job with final totals
+        job.processed_rows = successful + failed
+        job.successful_rows = successful
+        job.failed_rows = failed
+        job.total_cost_cents = total_cost
+        job.status = "completed" if failed == 0 else "failed"
+        job.completed_at = datetime.utcnow().isoformat()
+        db.commit()
+
+        logger.info(
+            "Batch execution complete for job %s: %d successful, %d failed, $%.2f total",
+            job_id,
+            successful,
+            failed,
+            total_cost / 100,
+        )
+
+    except Exception as e:
+        logger.exception("Batch execution failed for job %s: %s", job_id, e)
+        # Update job to failed status
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job:
+            job.status = "failed"
+            job.error_code = "E-4001"
+            job.error_message = str(e)
+            db.commit()
+    finally:
+        db.close()
+
+
 @router.post("/jobs/{job_id}/confirm", response_model=ConfirmResponse)
-def confirm_job(job_id: str, db: Session = Depends(get_db)) -> ConfirmResponse:
+async def confirm_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> ConfirmResponse:
     """Confirm a job for execution.
 
-    Updates the job status to 'running' to trigger batch execution.
+    Updates the job status to 'running' and triggers batch execution
+    in the background.
 
     Args:
         job_id: The job UUID.
+        background_tasks: FastAPI background tasks.
         db: Database session.
 
     Returns:
@@ -141,7 +372,11 @@ def confirm_job(job_id: str, db: Session = Depends(get_db)) -> ConfirmResponse:
 
     # Update job status to running
     job.status = "running"
+    job.started_at = datetime.utcnow().isoformat()
     db.commit()
+
+    # Trigger batch execution in background
+    background_tasks.add_task(_execute_batch, job_id)
 
     return ConfirmResponse(
         status="confirmed",

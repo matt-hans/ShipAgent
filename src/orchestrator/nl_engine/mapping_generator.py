@@ -357,6 +357,8 @@ async def suggest_mappings(
 
     from anthropic import Anthropic
 
+    from src.orchestrator.nl_engine.config import get_model
+
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         return []
@@ -435,7 +437,7 @@ Also suggest appropriate transformations:
     ]
 
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model=get_model(),
         max_tokens=1024,
         system=system_prompt,
         tools=tools,

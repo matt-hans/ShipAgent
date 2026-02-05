@@ -14,6 +14,7 @@ from typing import Optional
 
 from anthropic import Anthropic
 
+from src.orchestrator.nl_engine.config import get_model
 from src.orchestrator.models.intent import (
     CODE_TO_SERVICE,
     SERVICE_ALIASES,
@@ -207,7 +208,7 @@ Extract all relevant fields. If ambiguous, mark needs_clarification=True."""
 
     try:
         response = client.messages.create(
-            model="claude-sonnet-4-5-20250514",
+            model=get_model(),
             max_tokens=1024,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
@@ -340,6 +341,11 @@ Extract all relevant fields. If ambiguous, mark needs_clarification=True."""
             # This shouldn't happen with the enum constraint, but handle gracefully
             pass
 
+    # Handle package_defaults - LLM sometimes returns "null" string instead of None
+    package_defaults = result_data.get("package_defaults")
+    if package_defaults == "null" or package_defaults == "None":
+        package_defaults = None
+
     # Build ShippingIntent
     intent = ShippingIntent(
         action=result_data.get("action", "ship"),
@@ -347,7 +353,7 @@ Extract all relevant fields. If ambiguous, mark needs_clarification=True."""
         service_code=service_code,
         filter_criteria=filter_criteria,
         row_qualifier=row_qualifier,
-        package_defaults=result_data.get("package_defaults"),
+        package_defaults=package_defaults,
     )
 
     return intent

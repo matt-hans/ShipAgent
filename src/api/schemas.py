@@ -225,6 +225,10 @@ class PreviewRowResponse(BaseModel):
     service: str
     estimated_cost_cents: int
     warnings: list[str] = Field(default_factory=list)
+    order_data: dict | None = Field(
+        default=None,
+        description="Full order details for expanded view",
+    )
 
 
 class BatchPreviewResponse(BaseModel):

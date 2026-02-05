@@ -128,6 +128,49 @@ class ShopifyClient(PlatformClient):
         except httpx.RequestError:
             return False
 
+    async def get_shop_info(self) -> dict | None:
+        """Fetch shop details for shipper information.
+
+        Retrieves store details from Shopify's shop.json endpoint.
+        Used to populate shipper information for shipments.
+
+        Returns:
+            Dict containing shop details if successful:
+                - name: Store name
+                - email: Store email
+                - phone: Store phone number
+                - address1: Street address
+                - address2: Optional second address line
+                - city: City
+                - province: Full province/state name
+                - province_code: Province/state code (e.g., "CA")
+                - zip: Postal code
+                - country: Full country name
+                - country_code: Country code (e.g., "US")
+            None if request fails or not authenticated.
+
+        Example:
+            shop = await client.get_shop_info()
+            if shop:
+                shipper = build_shipper_from_shop(shop)
+        """
+        if not self._authenticated:
+            return None
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self._get_base_url()}/shop.json",
+                    headers=self._get_headers(),
+                )
+                if response.status_code != 200:
+                    return None
+
+                data = response.json()
+                return data.get("shop")
+        except httpx.RequestError:
+            return None
+
     async def fetch_orders(self, filters: OrderFilters) -> list[ExternalOrder]:
         """Fetch orders from Shopify with filters.
 
