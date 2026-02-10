@@ -14,7 +14,7 @@ MCP passthrough for operations that need access to orchestrator state.
 """
 
 import json
-from dataclasses import asdict
+import os
 from typing import Any
 
 from src.orchestrator.nl_engine.engine import NLMappingEngine
@@ -22,11 +22,10 @@ from src.orchestrator.models.filter import ColumnInfo
 from src.orchestrator.batch import (
     ExecutionMode,
     SessionModeManager,
-    PreviewGenerator,
-    BatchExecutor,
-    BatchPreview,
-    BatchResult,
 )
+from src.services.batch_engine import BatchEngine
+from src.services.ups_service import UPSService
+from src.services.ups_payload_builder import build_shipper_from_env
 
 
 # Singleton engine instance (created on first use)
@@ -283,28 +282,20 @@ async def batch_preview_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     Creates a preview of the batch job showing the first 20 rows with
     individual rate quotes, and aggregate statistics for remaining rows.
-    Per CONTEXT.md Decision 1.
+    Uses BatchEngine + UPSService for rate quoting.
 
     Args:
         args: Dict with:
             - job_id (str): UUID of the job
-            - filter_clause (str): SQL WHERE clause for row selection
-            - mapping_template (str): Jinja2 template for UPS payload
-            - shipper_info (dict): Shipper address and account info
-            - data_mcp_call (callable, optional): Function to call Data MCP tools
-            - ups_mcp_call (callable, optional): Function to call UPS MCP tools
+            - shipper_info (dict, optional): Shipper address info
+            - service_code (str, optional): UPS service code override
 
     Returns:
-        MCP response with BatchPreview as JSON.
+        MCP response with preview data as JSON.
     """
     job_id = args.get("job_id")
-    filter_clause = args.get("filter_clause", "")
-    mapping_template = args.get("mapping_template", "")
     shipper_info = args.get("shipper_info", {})
-
-    # MCP call functions are injected for testing; in production they come from agent
-    data_mcp_call = args.get("data_mcp_call")
-    ups_mcp_call = args.get("ups_mcp_call")
+    service_code = args.get("service_code")
 
     if not job_id:
         return {
@@ -312,37 +303,41 @@ async def batch_preview_tool(args: dict[str, Any]) -> dict[str, Any]:
             "isError": True,
         }
 
-    if not mapping_template:
-        return {
-            "content": [{"type": "text", "text": json.dumps({"error": "mapping_template is required"})}],
-            "isError": True,
-        }
-
-    if data_mcp_call is None or ups_mcp_call is None:
-        return {
-            "content": [{"type": "text", "text": json.dumps({"error": "MCP call functions not provided"})}],
-            "isError": True,
-        }
-
     try:
-        generator = PreviewGenerator(
-            data_mcp_call=data_mcp_call,
-            ups_mcp_call=ups_mcp_call,
-        )
+        with get_db_context() as session:
+            from src.db.models import JobRow
+            rows = (
+                session.query(JobRow)
+                .filter(JobRow.job_id == job_id)
+                .order_by(JobRow.row_number)
+                .all()
+            )
 
-        preview = await generator.generate_preview(
-            job_id=job_id,
-            filter_clause=filter_clause,
-            mapping_template=mapping_template,
-            shipper_info=shipper_info,
-        )
+            shipper = shipper_info or build_shipper_from_env()
 
-        # Convert dataclass to dict for JSON serialization
-        preview_dict = asdict(preview)
+            ups_service = UPSService(
+                base_url=os.environ.get("UPS_BASE_URL", "https://onlinetools.ups.com"),
+                client_id=os.environ.get("UPS_CLIENT_ID", ""),
+                client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
+            )
+            account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
 
-        return {
-            "content": [{"type": "text", "text": json.dumps(preview_dict, indent=2)}]
-        }
+            engine = BatchEngine(
+                ups_service=ups_service,
+                db_session=session,
+                account_number=account_number,
+            )
+
+            preview = await engine.preview(
+                job_id=job_id,
+                rows=rows,
+                shipper=shipper,
+                service_code=service_code,
+            )
+
+            return {
+                "content": [{"type": "text", "text": json.dumps(preview, indent=2)}]
+            }
 
     except Exception as e:
         return {
@@ -353,61 +348,35 @@ async def batch_preview_tool(args: dict[str, Any]) -> dict[str, Any]:
 
 BATCH_PREVIEW_SCHEMA = {
     "job_id": {"type": "string", "description": "UUID of the job"},
-    "filter_clause": {"type": "string", "description": "SQL WHERE clause for row selection"},
-    "mapping_template": {"type": "string", "description": "Jinja2 template for UPS payload"},
-    "shipper_info": {"type": "object", "description": "Shipper address and account info"},
+    "shipper_info": {"type": "object", "description": "Optional shipper address info"},
+    "service_code": {"type": "string", "description": "Optional UPS service code override"},
 }
-
-
-# Import AuditService for batch_execute_tool
-from src.services.audit_service import AuditService
 
 
 async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
     """Execute batch shipments.
 
-    Runs the batch executor with fail-fast behavior and per-row state
-    checkpoints for crash recovery. In CONFIRM mode, requires prior
-    preview approval. In AUTO mode, executes immediately.
+    Uses BatchEngine + UPSService for shipment creation. In CONFIRM mode,
+    requires prior preview approval. In AUTO mode, executes immediately.
 
     Args:
         args: Dict with:
             - job_id (str): UUID of the job
-            - mapping_template (str): Jinja2 template for UPS payload
-            - shipper_info (dict): Shipper address and account info
+            - shipper_info (dict, optional): Shipper address info
+            - service_code (str, optional): UPS service code override
             - approved (bool, optional): True if preview was approved (required for CONFIRM mode)
-            - source_name (str, optional): Data source name (default "default")
-            - data_mcp_call (callable, optional): Function to call Data MCP tools
-            - ups_mcp_call (callable, optional): Function to call UPS MCP tools
 
     Returns:
-        MCP response with BatchResult as JSON.
+        MCP response with batch result as JSON.
     """
     job_id = args.get("job_id")
-    mapping_template = args.get("mapping_template", "")
     shipper_info = args.get("shipper_info", {})
+    service_code = args.get("service_code")
     approved = args.get("approved", False)
-    source_name = args.get("source_name", "default")
-
-    # MCP call functions are injected for testing; in production they come from agent
-    data_mcp_call = args.get("data_mcp_call")
-    ups_mcp_call = args.get("ups_mcp_call")
 
     if not job_id:
         return {
             "content": [{"type": "text", "text": json.dumps({"error": "job_id is required"})}],
-            "isError": True,
-        }
-
-    if not mapping_template:
-        return {
-            "content": [{"type": "text", "text": json.dumps({"error": "mapping_template is required"})}],
-            "isError": True,
-        }
-
-    if data_mcp_call is None or ups_mcp_call is None:
-        return {
-            "content": [{"type": "text", "text": json.dumps({"error": "MCP call functions not provided"})}],
             "isError": True,
         }
 
@@ -428,29 +397,42 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
         mode_manager.lock()
 
         with get_db_context() as session:
-            job_service = JobService(session)
-            audit_service = AuditService(session)
-
-            executor = BatchExecutor(
-                job_service=job_service,
-                audit_service=audit_service,
-                data_mcp_call=data_mcp_call,
-                ups_mcp_call=ups_mcp_call,
+            from src.db.models import JobRow, RowStatus
+            rows = (
+                session.query(JobRow)
+                .filter(
+                    JobRow.job_id == job_id,
+                    JobRow.status == RowStatus.pending.value,
+                )
+                .order_by(JobRow.row_number)
+                .all()
             )
 
-            result = await executor.execute(
+            shipper = shipper_info or build_shipper_from_env()
+
+            ups_service = UPSService(
+                base_url=os.environ.get("UPS_BASE_URL", "https://onlinetools.ups.com"),
+                client_id=os.environ.get("UPS_CLIENT_ID", ""),
+                client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
+            )
+            account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
+
+            engine = BatchEngine(
+                ups_service=ups_service,
+                db_session=session,
+                account_number=account_number,
+            )
+
+            result = await engine.execute(
                 job_id=job_id,
-                mapping_template=mapping_template,
-                shipper_info=shipper_info,
-                source_name=source_name,
+                rows=rows,
+                shipper=shipper,
+                service_code=service_code,
             )
 
-        # Convert dataclass to dict for JSON serialization
-        result_dict = asdict(result)
-
-        return {
-            "content": [{"type": "text", "text": json.dumps(result_dict, indent=2)}]
-        }
+            return {
+                "content": [{"type": "text", "text": json.dumps(result, indent=2)}]
+            }
 
     except Exception as e:
         return {
@@ -464,10 +446,9 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
 
 BATCH_EXECUTE_SCHEMA = {
     "job_id": {"type": "string", "description": "UUID of the job"},
-    "mapping_template": {"type": "string", "description": "Jinja2 template for UPS payload"},
-    "shipper_info": {"type": "object", "description": "Shipper address and account info"},
+    "shipper_info": {"type": "object", "description": "Optional shipper address info"},
+    "service_code": {"type": "string", "description": "Optional UPS service code override"},
     "approved": {"type": "boolean", "description": "True if preview was approved (required for CONFIRM mode)"},
-    "source_name": {"type": "string", "description": "Data source name (default 'default')"},
 }
 
 

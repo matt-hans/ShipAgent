@@ -92,9 +92,9 @@ async def validate_shipping_input(
             return _deny_with_reason(
                 "Missing shipper name. The 'shipper.name' field is required."
             )
-        if not shipper.get("address"):
+        if not shipper.get("addressLine1"):
             return _deny_with_reason(
-                "Missing shipper address. The 'shipper.address' field is required."
+                "Missing shipper address. The 'shipper.addressLine1' field is required."
             )
 
         # Validate shipTo has minimum required fields
@@ -103,9 +103,9 @@ async def validate_shipping_input(
             return _deny_with_reason(
                 "Missing recipient name. The 'shipTo.name' field is required."
             )
-        if not ship_to.get("address"):
+        if not ship_to.get("addressLine1"):
             return _deny_with_reason(
-                "Missing recipient address. The 'shipTo.address' field is required."
+                "Missing recipient address. The 'shipTo.addressLine1' field is required."
             )
 
     return {}  # Allow operation

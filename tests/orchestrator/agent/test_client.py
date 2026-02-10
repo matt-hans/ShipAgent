@@ -109,11 +109,11 @@ class TestAgentOptions:
         mcp_servers = agent._options.mcp_servers
         assert "data" in mcp_servers
 
-    def test_has_ups_mcp(self):
-        """Options should include UPS MCP."""
+    def test_has_external_mcp(self):
+        """Options should include External Sources MCP."""
         agent = OrchestrationAgent()
         mcp_servers = agent._options.mcp_servers
-        assert "ups" in mcp_servers
+        assert "external" in mcp_servers
 
     def test_has_orchestrator_mcp(self):
         """Options should include orchestrator MCP for native tools."""
@@ -128,10 +128,10 @@ class TestAgentOptions:
         # Should have wildcards for each MCP namespace
         has_orchestrator = any("orchestrator" in t for t in allowed)
         has_data = any("data" in t for t in allowed)
-        has_ups = any("ups" in t for t in allowed)
+        has_external = any("external" in t for t in allowed)
         assert has_orchestrator
         assert has_data
-        assert has_ups
+        assert has_external
 
 
 class TestAgentHooksConfiguration:

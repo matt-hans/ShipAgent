@@ -30,7 +30,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 
 def pytest_configure(config):
-    """Register custom markers."""
+    """Register custom markers and set required env vars."""
     config.addinivalue_line(
         "markers", "integration: marks tests requiring external services"
     )
@@ -40,6 +40,14 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "slow: marks tests that take a long time to run"
     )
+
+    # Set UPS_MCP_SPECS_DIR so ups_mcp module can find OpenAPI spec YAMLs
+    # when imported (even when ToolManager is mocked, the module import
+    # still needs to load the registry).
+    if not os.environ.get("UPS_MCP_SPECS_DIR"):
+        specs_dir = str(PROJECT_ROOT / "src" / "mcp" / "ups" / "specs")
+        if Path(specs_dir).is_dir():
+            os.environ["UPS_MCP_SPECS_DIR"] = specs_dir
 
 
 # ============================================================================
