@@ -29,6 +29,7 @@ dependencies = [
     # Web interface dependencies
     "sse-starlette>=2.0.0",
     "zipstream-ng>=1.7.0",
+    "pypdf>=4.0.0",
 ]
 
 [project.optional-dependencies]

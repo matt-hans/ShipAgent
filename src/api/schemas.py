@@ -56,6 +56,7 @@ class JobRowResponse(BaseModel):
     row_number: int
     status: str
     row_checksum: str
+    order_data: str | None = None
     tracking_number: str | None
     label_path: str | None
     cost_cents: int | None
@@ -105,6 +106,7 @@ class JobSummaryResponse(BaseModel):
 
     id: str
     name: str
+    original_command: str
     status: str
     mode: str
     total_rows: int

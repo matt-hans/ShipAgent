@@ -250,63 +250,82 @@ export function registerShippingTools(
     "shipping_create",
     ShipmentRequestInputSchema.shape,
     { title: "Create a UPS shipment and get PDF label" },
-    async (args): Promise<{ content: Array<{ type: "text"; text: string }> }> => {
-      // Parse and validate input
-      const input = ShipmentRequestInputSchema.parse(args);
+    async (args) => {
+      try {
+        // Parse and validate input
+        const input = ShipmentRequestInputSchema.parse(args);
 
-      // Build UPS request
-      const requestBody = buildShipmentRequest(input, accountNumber);
+        // Build UPS request
+        const requestBody = buildShipmentRequest(input, accountNumber);
 
-      // Call UPS Shipping API
-      const response = await apiClient.post<ShipResponseWrapper>(
-        "/shipments/v2409/ship",
-        requestBody
-      );
-
-      // Extract labels
-      const labels = extractLabelFromResponse(response);
-
-      // Save labels to filesystem
-      const labelPaths: string[] = [];
-      for (const label of labels) {
-        const path = await saveLabel(
-          label.trackingNumber,
-          label.base64Data,
-          labelsOutputDir
+        // Call UPS Shipping API
+        const response = await apiClient.post<ShipResponseWrapper>(
+          "/shipments/v2409/ship",
+          requestBody
         );
-        labelPaths.push(path);
-      }
 
-      // Extract tracking numbers
-      const trackingNumbers = labels.map((l) => l.trackingNumber);
+        // Extract labels
+        const labels = extractLabelFromResponse(response);
 
-      // Extract charges
-      const charges = response.ShipmentResponse.ShipmentResults.ShipmentCharges;
-      const totalCharges = charges?.TotalCharges || {
-        CurrencyCode: "USD",
-        MonetaryValue: "0.00",
-      };
+        // Save labels to filesystem
+        const labelPaths: string[] = [];
+        for (const label of labels) {
+          const path = await saveLabel(
+            label.trackingNumber,
+            label.base64Data,
+            labelsOutputDir
+          );
+          labelPaths.push(path);
+        }
 
-      const result: ShipmentCreateResult = {
-        success: true,
-        trackingNumbers,
-        labelPaths,
-        totalCharges: {
-          currencyCode: totalCharges.CurrencyCode,
-          monetaryValue: totalCharges.MonetaryValue,
-        },
-        shipmentIdentificationNumber:
-          response.ShipmentResponse.ShipmentResults.ShipmentIdentificationNumber,
-      };
+        // Extract tracking numbers
+        const trackingNumbers = labels.map((l) => l.trackingNumber);
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result, null, 2),
+        // Extract charges
+        const charges =
+          response.ShipmentResponse.ShipmentResults.ShipmentCharges;
+        const totalCharges = charges?.TotalCharges || {
+          CurrencyCode: "USD",
+          MonetaryValue: "0.00",
+        };
+
+        const result: ShipmentCreateResult = {
+          success: true,
+          trackingNumbers,
+          labelPaths,
+          totalCharges: {
+            currencyCode: totalCharges.CurrencyCode,
+            monetaryValue: totalCharges.MonetaryValue,
           },
-        ],
-      };
+          shipmentIdentificationNumber:
+            response.ShipmentResponse.ShipmentResults
+              .ShipmentIdentificationNumber,
+        };
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: "UPS API error",
+                message: errorMessage,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
     }
   );
 
@@ -317,40 +336,59 @@ export function registerShippingTools(
     "shipping_void",
     VoidRequestSchema.shape,
     { title: "Void/cancel an existing UPS shipment" },
-    async (args): Promise<{ content: Array<{ type: "text"; text: string }> }> => {
-      // Parse and validate input
-      const input = VoidRequestSchema.parse(args);
+    async (args) => {
+      try {
+        // Parse and validate input
+        const input = VoidRequestSchema.parse(args);
 
-      // Call UPS Void API
-      // DELETE /shipments/v2409/void/cancel/{trackingNumber}
-      const response = await apiClient.delete<{
-        VoidShipmentResponse: {
-          Response: { ResponseStatus: { Code: string; Description: string } };
-          SummaryResult: {
-            Status: { Code: string; Description: string };
+        // Call UPS Void API
+        // DELETE /shipments/v2409/void/cancel/{trackingNumber}
+        const response = await apiClient.delete<{
+          VoidShipmentResponse: {
+            Response: {
+              ResponseStatus: { Code: string; Description: string };
+            };
+            SummaryResult: {
+              Status: { Code: string; Description: string };
+            };
           };
-        };
-      }>(`/shipments/v2409/void/cancel/${input.trackingNumber}`);
+        }>(`/shipments/v2409/void/cancel/${input.trackingNumber}`);
 
-      const status = response.VoidShipmentResponse.SummaryResult.Status;
+        const status = response.VoidShipmentResponse.SummaryResult.Status;
 
-      const result: ShipmentVoidResult = {
-        success: status.Code === "1", // Code "1" means successfully voided
-        trackingNumber: input.trackingNumber,
-        status: {
-          code: status.Code,
-          description: status.Description,
-        },
-      };
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result, null, 2),
+        const result: ShipmentVoidResult = {
+          success: status.Code === "1", // Code "1" means successfully voided
+          trackingNumber: input.trackingNumber,
+          status: {
+            code: status.Code,
+            description: status.Description,
           },
-        ],
-      };
+        };
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: "UPS API error",
+                message: errorMessage,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
     }
   );
 
@@ -361,57 +399,74 @@ export function registerShippingTools(
     "shipping_get_label",
     GetLabelRequestSchema.shape,
     { title: "Retrieve and save label for existing tracking number" },
-    async (args): Promise<{ content: Array<{ type: "text"; text: string }> }> => {
-      // Parse and validate input
-      const input = GetLabelRequestSchema.parse(args);
+    async (args) => {
+      try {
+        // Parse and validate input
+        const input = GetLabelRequestSchema.parse(args);
 
-      // Call UPS Label Recovery API
-      // POST /labels/v2409/recovery with tracking number in body
-      const response = await apiClient.post<{
-        LabelRecoveryResponse: {
-          LabelResults: {
-            TrackingNumber: string;
-            LabelImage: {
-              LabelImageFormat: { Code: string };
-              GraphicImage: string;
+        // Call UPS Label Recovery API
+        // POST /labels/v2409/recovery with tracking number in body
+        const response = await apiClient.post<{
+          LabelRecoveryResponse: {
+            LabelResults: {
+              TrackingNumber: string;
+              LabelImage: {
+                LabelImageFormat: { Code: string };
+                GraphicImage: string;
+              };
             };
           };
-        };
-      }>("/labels/v2409/recovery", {
-        LabelRecoveryRequest: {
-          LabelSpecification: {
-            LabelImageFormat: {
-              Code: "PDF",
+        }>("/labels/v2409/recovery", {
+          LabelRecoveryRequest: {
+            LabelSpecification: {
+              LabelImageFormat: {
+                Code: "PDF",
+              },
             },
+            TrackingNumber: input.trackingNumber,
           },
-          TrackingNumber: input.trackingNumber,
-        },
-      });
+        });
 
-      const labelResults = response.LabelRecoveryResponse.LabelResults;
-      const base64Data = labelResults.LabelImage.GraphicImage;
+        const labelResults = response.LabelRecoveryResponse.LabelResults;
+        const base64Data = labelResults.LabelImage.GraphicImage;
 
-      // Save label (overwrites existing if present per CONTEXT.md)
-      const labelPath = await saveLabel(
-        input.trackingNumber,
-        base64Data,
-        labelsOutputDir
-      );
+        // Save label (overwrites existing if present per CONTEXT.md)
+        const labelPath = await saveLabel(
+          input.trackingNumber,
+          base64Data,
+          labelsOutputDir
+        );
 
-      const result: GetLabelResult = {
-        success: true,
-        trackingNumber: input.trackingNumber,
-        labelPath,
-      };
+        const result: GetLabelResult = {
+          success: true,
+          trackingNumber: input.trackingNumber,
+          labelPath,
+        };
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: "UPS API error",
+                message: errorMessage,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
     }
   );
 }

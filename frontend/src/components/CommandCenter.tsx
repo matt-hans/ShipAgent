@@ -14,9 +14,11 @@ import { useAppState, type ConversationMessage } from '@/hooks/useAppState';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
-import { submitCommand, waitForPreview, confirmJob, cancelJob, getJob } from '@/lib/api';
+import { submitCommand, waitForPreview, confirmJob, cancelJob, getJob, getMergedLabelsUrl } from '@/lib/api';
 import type { Job, BatchPreview, PreviewRow, OrderData } from '@/types/api';
 import { ShipAgentLogo } from '@/components/ui/ShipAgentLogo';
+import { LabelPreview } from '@/components/LabelPreview';
+import { JobDetailPanel } from '@/components/JobDetailPanel';
 
 interface CommandCenterProps {
   activeJob: Job | null;
@@ -454,13 +456,22 @@ function PreviewCard({
 }
 
 // Progress display component
-function ProgressDisplay({ jobId }: { jobId: string }) {
+function ProgressDisplay({ jobId, onComplete }: { jobId: string; onComplete?: () => void }) {
   const { progress } = useJobProgress(jobId);
+  const completeFiredRef = React.useRef(false);
 
   const percentage = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0;
   const isRunning = progress.status === 'running';
   const isComplete = progress.status === 'completed';
   const isFailed = progress.status === 'failed';
+
+  // Fire onComplete callback once when status transitions to completed
+  React.useEffect(() => {
+    if (isComplete && !completeFiredRef.current && onComplete) {
+      completeFiredRef.current = true;
+      onComplete();
+    }
+  }, [isComplete, onComplete]);
 
   return (
     <div className={cn(
@@ -533,9 +544,12 @@ function ProgressDisplay({ jobId }: { jobId: string }) {
 
       {/* Download button if complete */}
       {isComplete && (
-        <button className="w-full btn-primary py-2.5 flex items-center justify-center gap-2">
+        <button
+          onClick={() => window.open(getMergedLabelsUrl(jobId), '_blank')}
+          className="w-full btn-primary py-2.5 flex items-center justify-center gap-2"
+        >
           <DownloadIcon className="w-4 h-4" />
-          <span>Download All Labels (ZIP)</span>
+          <span>Download All Labels (PDF)</span>
         </button>
       )}
     </div>
@@ -664,7 +678,7 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
 }
 
 // Main CommandCenter component
-export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
+export function CommandCenter({ activeJob }: CommandCenterProps) {
   const {
     dataSource,
     conversation,
@@ -672,6 +686,7 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
     isProcessing,
     setIsProcessing,
     setActiveJob,
+    refreshJobList,
   } = useAppState();
 
   const { state: externalState } = useExternalSources();
@@ -687,6 +702,7 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
   const [currentJobId, setCurrentJobId] = React.useState<string | null>(null);
   const [isConfirming, setIsConfirming] = React.useState(false);
   const [executingJobId, setExecutingJobId] = React.useState<string | null>(null);
+  const [showLabelPreview, setShowLabelPreview] = React.useState(false);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -798,6 +814,18 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
     }
   };
 
+  // Show job detail panel when a sidebar job is selected and no active conversation
+  const showJobDetail = activeJob && conversation.length === 0 && !preview && !executingJobId;
+
+  if (showJobDetail) {
+    return (
+      <JobDetailPanel
+        job={activeJob}
+        onBack={() => setActiveJob(null)}
+      />
+    );
+  }
+
   return (
     <div className="flex flex-col h-full">
       {/* Messages area */}
@@ -829,7 +857,13 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
             {/* Progress display */}
             {executingJobId && (
               <div className="pl-11">
-                <ProgressDisplay jobId={executingJobId} />
+                <ProgressDisplay
+                  jobId={executingJobId}
+                  onComplete={() => {
+                    setShowLabelPreview(true);
+                    refreshJobList();
+                  }}
+                />
               </div>
             )}
 
@@ -898,6 +932,16 @@ export function CommandCenter({ activeJob: _activeJob }: CommandCenterProps) {
           </p>
         </div>
       </div>
+
+      {/* Label preview modal - shown on batch completion */}
+      {executingJobId && (
+        <LabelPreview
+          pdfUrl={getMergedLabelsUrl(executingJobId)}
+          title="Batch Labels"
+          isOpen={showLabelPreview}
+          onClose={() => setShowLabelPreview(false)}
+        />
+      )}
     </div>
   );
 }

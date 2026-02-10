@@ -143,6 +143,12 @@ class TestUpsMcpClientStartServer:
         mock_process.stdin = MagicMock()
         mock_process.stdout = MagicMock()
         mock_process.stderr = MagicMock()
+        mock_process.returncode = None
+
+        # Mock stderr readline to simulate server ready message
+        mock_process.stderr.readline = AsyncMock(
+            return_value=b"UPS MCP server started successfully\n"
+        )
 
         with patch("pathlib.Path.exists", return_value=True):
             with patch(
@@ -328,6 +334,50 @@ class TestUpsMcpClientCallTool:
         assert exc_info.value.code == "E-3005"
         assert "Empty response" in exc_info.value.message
 
+    @pytest.mark.asyncio
+    async def test_call_tool_raises_on_mcp_tool_error(self):
+        """Test error is raised when MCP returns isError flag with plain text."""
+        client = UpsMcpClient()
+        client._initialized = True
+
+        mock_stdin = MagicMock()
+        mock_stdin.write = MagicMock()
+        mock_stdin.drain = AsyncMock()
+
+        # Simulate MCP SDK createToolError response (plain text, NOT JSON)
+        response = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Input validation error: Invalid arguments for tool shipping_create",
+                    }
+                ],
+                "isError": True,
+            },
+        }
+
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(
+            return_value=(json.dumps(response) + "\n").encode()
+        )
+
+        mock_process = MagicMock()
+        mock_process.stdin = mock_stdin
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+
+        client._process = mock_process
+
+        with pytest.raises(UpsMcpError) as exc_info:
+            await client.call_tool("shipping_create", {})
+
+        assert exc_info.value.code == "E-3005"
+        assert "tool error" in exc_info.value.message
+        assert "validation error" in exc_info.value.message.lower()
+
 
 class TestUpsMcpClientShutdown:
     """Test client shutdown functionality."""
@@ -405,6 +455,77 @@ class TestUpsMcpClientContextManager:
                 pass
 
             mock_shutdown.assert_called_once()
+
+
+class TestUpsMcpClientTimeout:
+    """Test timeout functionality for readline operations."""
+
+    @pytest.mark.asyncio
+    async def test_send_request_raises_on_timeout(self):
+        """Test timeout error is raised if server doesn't respond in time."""
+        client = UpsMcpClient()
+
+        mock_stdin = MagicMock()
+        mock_stdin.write = MagicMock()
+        mock_stdin.drain = AsyncMock()
+
+        # Mock readline to raise TimeoutError (simulating no response)
+        mock_stdout = AsyncMock()
+        mock_stdout.readline = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        mock_process = MagicMock()
+        mock_process.stdin = mock_stdin
+        mock_process.stdout = mock_stdout
+        mock_process.stderr = None
+
+        client._process = mock_process
+
+        with pytest.raises(UpsMcpError) as exc_info:
+            await client._send_request("test_method")
+
+        assert exc_info.value.code == "E-4001"
+        assert "did not respond" in exc_info.value.message
+        assert "30" in exc_info.value.message  # timeout value
+
+    @pytest.mark.asyncio
+    async def test_wait_for_server_ready_detects_ready_message(self):
+        """Test server ready detection from stderr."""
+        client = UpsMcpClient()
+
+        mock_stderr = MagicMock()
+        mock_stderr.readline = AsyncMock(
+            return_value=b"Server is ready to accept connections\n"
+        )
+
+        mock_process = MagicMock()
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = None
+
+        client._process = mock_process
+
+        # Should complete without error
+        await client._wait_for_server_ready()
+
+    @pytest.mark.asyncio
+    async def test_wait_for_server_ready_exits_on_process_crash(self):
+        """Test error raised if server exits during startup."""
+        client = UpsMcpClient()
+
+        mock_stderr = MagicMock()
+        # Simulate timeout (no output) then process exit
+        mock_stderr.readline = AsyncMock(side_effect=asyncio.TimeoutError())
+
+        mock_process = MagicMock()
+        mock_process.stderr = mock_stderr
+        mock_process.returncode = 1  # Process exited
+
+        client._process = mock_process
+
+        with pytest.raises(UpsMcpError) as exc_info:
+            await client._wait_for_server_ready()
+
+        assert exc_info.value.code == "E-4001"
+        assert "exited unexpectedly" in exc_info.value.message
 
 
 class TestUpsMcpClientListTools:

@@ -18,15 +18,22 @@ import {
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
-// Configure PDF.js worker per 07-RESEARCH.md Pitfall 2
+// Configure PDF.js worker - resolves the local pdfjs-dist worker file via Vite.
+// IMPORTANT: pdfjs-dist in package.json must be pinned to the exact version that
+// react-pdf depends on (check react-pdf's package.json). A version mismatch causes
+// "API version X does not match Worker version Y" errors at runtime.
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
   import.meta.url
 ).toString();
 
 export interface LabelPreviewProps {
-  /** The UPS tracking number for the label. */
-  trackingNumber: string;
+  /** The UPS tracking number for the label (used for single-label view). */
+  trackingNumber?: string;
+  /** Direct PDF URL (used for merged labels or custom sources). */
+  pdfUrl?: string;
+  /** Title displayed in the modal header. */
+  title?: string;
   /** Whether the modal is open. */
   isOpen: boolean;
   /** Callback when modal closes. */
@@ -67,6 +74,8 @@ function ErrorState({ message }: { message: string }) {
  */
 export function LabelPreview({
   trackingNumber,
+  pdfUrl: pdfUrlProp,
+  title,
   isOpen,
   onClose,
 }: LabelPreviewProps) {
@@ -75,6 +84,9 @@ export function LabelPreview({
   const [error, setError] = React.useState<string | null>(null);
   const [containerWidth, setContainerWidth] = React.useState<number>(500);
   const containerRef = React.useRef<HTMLDivElement>(null);
+
+  // Resolve PDF URL: explicit pdfUrl prop takes priority over trackingNumber
+  const resolvedPdfUrl = pdfUrlProp || (trackingNumber ? `/api/v1/labels/${trackingNumber}` : '');
 
   // Observe container width for responsive PDF scaling
   React.useEffect(() => {
@@ -98,7 +110,7 @@ export function LabelPreview({
       setError(null);
       setNumPages(0);
     }
-  }, [isOpen, trackingNumber]);
+  }, [isOpen, trackingNumber, pdfUrlProp]);
 
   const handleLoadSuccess = ({ numPages }: { numPages: number }) => {
     setNumPages(numPages);
@@ -112,24 +124,21 @@ export function LabelPreview({
   };
 
   const handleDownload = () => {
-    // Create a hidden anchor and trigger download
     const link = document.createElement('a');
-    link.href = `/api/v1/labels/${trackingNumber}`;
-    link.download = `${trackingNumber}.pdf`;
+    link.href = resolvedPdfUrl;
+    link.download = trackingNumber ? `${trackingNumber}.pdf` : 'labels.pdf';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
-  const pdfUrl = `/api/v1/labels/${trackingNumber}`;
-
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Label Preview</DialogTitle>
+          <DialogTitle>{title || 'Label Preview'}</DialogTitle>
           <DialogDescription className="font-mono text-xs">
-            {trackingNumber}
+            {trackingNumber || (pdfUrlProp ? 'Merged labels' : '')}
           </DialogDescription>
         </DialogHeader>
 
@@ -141,7 +150,7 @@ export function LabelPreview({
           {error && <ErrorState message={error} />}
 
           <Document
-            file={pdfUrl}
+            file={resolvedPdfUrl}
             onLoadSuccess={handleLoadSuccess}
             onLoadError={handleLoadError}
             loading={<LoadingState />}

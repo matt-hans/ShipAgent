@@ -51,15 +51,22 @@ async def _event_generator(
             try:
                 # Wait for event with timeout
                 event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                # Send as unnamed SSE event (type "message") with event type
+                # embedded in the data payload. The frontend useSSE hook parses
+                # the data as JSON and extracts the "event" field from it.
+                # Using named SSE events (event: batch_started) would require
+                # addEventListener() on the frontend, but the hook uses the
+                # generic onmessage handler instead.
                 yield {
-                    "event": event["event"],
-                    "data": json.dumps(event["data"]),
+                    "data": json.dumps({
+                        "event": event["event"],
+                        "data": event["data"],
+                    }),
                 }
             except asyncio.TimeoutError:
                 # Send ping to keep connection alive
                 yield {
-                    "event": "ping",
-                    "data": "",
+                    "data": json.dumps({"event": "ping"}),
                 }
     finally:
         # Always unsubscribe when generator exits

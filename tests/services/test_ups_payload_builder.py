@@ -127,7 +127,7 @@ class TestBuildShipperFromShop:
         assert shipper["countryCode"] == "US"
 
     def test_handles_missing_fields(self):
-        """Test shipper handles missing optional fields."""
+        """Test shipper falls back to env vars for missing required fields."""
         shop_info = {
             "name": "My Store",
             "city": "Los Angeles",
@@ -137,7 +137,9 @@ class TestBuildShipperFromShop:
 
         assert shipper["name"] == "My Store"
         assert shipper["phone"] == "5555555555"  # Default
-        assert shipper["addressLine1"] == ""
+        # Missing addressLine1 falls back to env var (SHIPPER_ADDRESS1 or default)
+        assert shipper["addressLine1"] != ""
+        assert shipper["city"] == "Los Angeles"  # Provided
         assert shipper["countryCode"] == "US"  # Default
 
     def test_truncates_long_names(self):

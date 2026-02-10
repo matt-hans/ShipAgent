@@ -306,6 +306,16 @@ export function getProgressStreamUrl(jobId: string): string {
 }
 
 /**
+ * Get the URL for the merged labels PDF.
+ *
+ * @param jobId - The job UUID.
+ * @returns The full URL for the merged PDF endpoint.
+ */
+export function getMergedLabelsUrl(jobId: string): string {
+  return `${API_BASE}/jobs/${jobId}/labels/merged`;
+}
+
+/**
  * Delete a job.
  *
  * @param jobId - The job UUID.

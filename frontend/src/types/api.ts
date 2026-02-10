@@ -164,6 +164,7 @@ export interface JobRow {
   row_number: number;
   status: RowStatus;
   row_checksum: string;
+  order_data: string | null;
   tracking_number: string | null;
   label_path: string | null;
   cost_cents: number | null;

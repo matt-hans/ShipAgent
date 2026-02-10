@@ -2,14 +2,16 @@
 
 Provides endpoints for fetching batch preview data and confirming
 batches for execution. Integrates with UPS MCP for real shipment creation.
+Emits SSE progress events for real-time frontend updates.
 """
 
+import asyncio
 import json
 import logging
 import os
 from datetime import datetime
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from src.api.schemas import (
@@ -182,18 +184,37 @@ async def _get_shipper_info() -> dict[str, str]:
     return build_shipper_from_env()
 
 
+def _get_sse_observer():
+    """Get the shared SSE observer from the progress module.
+
+    Lazily imports to avoid circular imports between route modules.
+
+    Returns:
+        SSEProgressObserver instance from progress.py.
+    """
+    from src.api.routes.progress import sse_observer
+
+    return sse_observer
+
+
 async def _execute_batch(job_id: str) -> None:
     """Execute batch shipment processing in the background.
 
     Processes each JobRow by calling the UPS MCP shipping_create tool
     and updates row status with real tracking numbers and label paths.
+    Emits SSE progress events and updates job counters incrementally
+    after each row for real-time frontend progress tracking.
 
     Args:
         job_id: The job UUID to process.
     """
     from src.db.connection import get_db as get_db_session
 
+    observer = _get_sse_observer()
     db = next(get_db_session())
+    total_cost = 0
+    successful = 0
+    failed = 0
     try:
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
@@ -210,17 +231,19 @@ async def _execute_batch(job_id: str) -> None:
 
         logger.info("Starting batch execution for job %s with %d rows", job_id, len(rows))
 
+        # Emit batch_started SSE event
+        await observer.on_batch_started(job_id, len(rows))
+
         # Get shipper info once for all shipments
         shipper = await _get_shipper_info()
-
-        total_cost = 0
-        successful = 0
-        failed = 0
 
         # Use UPS MCP client for real shipments
         try:
             async with UpsMcpClient() as ups_client:
                 for row in rows:
+                    # Emit row_started SSE event
+                    await observer.on_row_started(job_id, row.row_number)
+
                     try:
                         # Mark row as processing
                         row.status = RowStatus.processing.value
@@ -267,10 +290,21 @@ async def _execute_batch(job_id: str) -> None:
                         row.cost_cents = cost_cents
                         row.status = RowStatus.completed.value
                         row.processed_at = datetime.utcnow().isoformat()
-                        db.commit()
 
                         total_cost += cost_cents
                         successful += 1
+
+                        # Update job counters incrementally for progress polling
+                        job.processed_rows = successful + failed
+                        job.successful_rows = successful
+                        job.failed_rows = failed
+                        job.total_cost_cents = total_cost
+                        db.commit()
+
+                        # Emit row_completed SSE event
+                        await observer.on_row_completed(
+                            job_id, row.row_number, tracking_number, cost_cents
+                        )
 
                         logger.info(
                             "Row %d completed: tracking=%s, cost=%d cents, label=%s",
@@ -285,16 +319,38 @@ async def _execute_batch(job_id: str) -> None:
                         row.status = RowStatus.failed.value
                         row.error_code = e.code
                         row.error_message = str(e)
-                        db.commit()
                         failed += 1
+
+                        # Update job counters incrementally
+                        job.processed_rows = successful + failed
+                        job.successful_rows = successful
+                        job.failed_rows = failed
+                        job.total_cost_cents = total_cost
+                        db.commit()
+
+                        # Emit row_failed SSE event
+                        await observer.on_row_failed(
+                            job_id, row.row_number, e.code, str(e)
+                        )
 
                     except Exception as e:
                         logger.exception("Row %d failed: %s", row.row_number, e)
                         row.status = RowStatus.failed.value
                         row.error_code = "E-3005"
                         row.error_message = str(e)
-                        db.commit()
                         failed += 1
+
+                        # Update job counters incrementally
+                        job.processed_rows = successful + failed
+                        job.successful_rows = successful
+                        job.failed_rows = failed
+                        job.total_cost_cents = total_cost
+                        db.commit()
+
+                        # Emit row_failed SSE event
+                        await observer.on_row_failed(
+                            job_id, row.row_number, "E-3005", str(e)
+                        )
 
         except UpsMcpError as e:
             # UPS MCP connection/startup failure - fail all remaining rows
@@ -305,9 +361,18 @@ async def _execute_batch(job_id: str) -> None:
                     row.error_code = e.code
                     row.error_message = str(e)
                     failed += 1
+            job.processed_rows = successful + failed
+            job.successful_rows = successful
+            job.failed_rows = failed
+            job.total_cost_cents = total_cost
             db.commit()
 
-        # Update job with final totals
+            # Emit batch_failed SSE event for connection failure
+            await observer.on_batch_failed(
+                job_id, e.code, str(e), successful + failed
+            )
+
+        # Update job with final status
         job.processed_rows = successful + failed
         job.successful_rows = successful
         job.failed_rows = failed
@@ -315,6 +380,17 @@ async def _execute_batch(job_id: str) -> None:
         job.status = "completed" if failed == 0 else "failed"
         job.completed_at = datetime.utcnow().isoformat()
         db.commit()
+
+        # Emit final batch event
+        if failed == 0:
+            await observer.on_batch_completed(
+                job_id, len(rows), successful, total_cost
+            )
+        else:
+            await observer.on_batch_failed(
+                job_id, "E-3005", f"{failed} row(s) failed during execution",
+                successful + failed,
+            )
 
         logger.info(
             "Batch execution complete for job %s: %d successful, %d failed, $%.2f total",
@@ -333,24 +409,56 @@ async def _execute_batch(job_id: str) -> None:
             job.error_code = "E-4001"
             job.error_message = str(e)
             db.commit()
+
+        # Emit batch_failed SSE event
+        await observer.on_batch_failed(
+            job_id, "E-4001", str(e), successful + failed
+        )
     finally:
         db.close()
+
+
+async def _execute_batch_safe(job_id: str) -> None:
+    """Wrapper that catches and logs errors from batch execution.
+
+    Ensures background task failures are logged and job status is updated
+    appropriately even if unexpected errors occur.
+
+    Args:
+        job_id: The job UUID to process.
+    """
+    try:
+        await _execute_batch(job_id)
+    except Exception as e:
+        logger.exception("Background batch execution failed for job %s: %s", job_id, e)
+        # Update job to failed status
+        from src.db.connection import get_db as get_db_session
+
+        db = next(get_db_session())
+        try:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job and job.status == "running":
+                job.status = "failed"
+                job.error_code = "E-4001"
+                job.error_message = f"Background task error: {e}"
+                db.commit()
+        finally:
+            db.close()
 
 
 @router.post("/jobs/{job_id}/confirm", response_model=ConfirmResponse)
 async def confirm_job(
     job_id: str,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> ConfirmResponse:
     """Confirm a job for execution.
 
     Updates the job status to 'running' and triggers batch execution
-    in the background.
+    in the background using asyncio.create_task() to properly schedule
+    the async coroutine on the event loop.
 
     Args:
         job_id: The job UUID.
-        background_tasks: FastAPI background tasks.
         db: Database session.
 
     Returns:
@@ -375,8 +483,10 @@ async def confirm_job(
     job.started_at = datetime.utcnow().isoformat()
     db.commit()
 
-    # Trigger batch execution in background
-    background_tasks.add_task(_execute_batch, job_id)
+    # Schedule async batch execution on the event loop
+    # Note: BackgroundTasks.add_task() does NOT properly await async functions,
+    # so we use asyncio.create_task() which correctly schedules the coroutine.
+    asyncio.create_task(_execute_batch_safe(job_id))
 
     return ConfirmResponse(
         status="confirmed",

@@ -111,6 +111,9 @@ def build_shipper_from_shop(shop_info: dict[str, Any]) -> dict[str, str]:
     """Build UPS shipper from Shopify shop.json response.
 
     Transforms Shopify shop details into UPS-compatible shipper format.
+    Falls back to environment variables for any missing required fields
+    (addressLine1, city, stateProvinceCode, postalCode) since Shopify
+    stores may not always have complete address information.
 
     Args:
         shop_info: Shopify shop data containing:
@@ -123,17 +126,30 @@ def build_shipper_from_shop(shop_info: dict[str, Any]) -> dict[str, str]:
             - country_code: Country code (e.g., "US")
 
     Returns:
-        Dict matching UPS shipper schema
+        Dict matching UPS shipper schema with all required fields populated
     """
+    import os
+
+    # Get env var fallbacks for required address fields
+    env_fallbacks = {
+        "addressLine1": os.environ.get("SHIPPER_ADDRESS1", "123 Main St"),
+        "city": os.environ.get("SHIPPER_CITY", "Los Angeles"),
+        "stateProvinceCode": os.environ.get("SHIPPER_STATE", "CA"),
+        "postalCode": normalize_zip(os.environ.get("SHIPPER_ZIP", "90001")),
+    }
+
     return {
-        "name": truncate_address(shop_info.get("name", ""), 35),
+        "name": truncate_address(shop_info.get("name", ""), 35) or "ShipAgent",
         "phone": normalize_phone(shop_info.get("phone")),
-        "addressLine1": truncate_address(shop_info.get("address1", "")),
+        "addressLine1": truncate_address(shop_info.get("address1", ""))
+        or env_fallbacks["addressLine1"],
         "addressLine2": truncate_address(shop_info.get("address2")),
-        "city": shop_info.get("city", ""),
-        "stateProvinceCode": shop_info.get("province_code", ""),
-        "postalCode": normalize_zip(shop_info.get("zip")),
-        "countryCode": shop_info.get("country_code", "US"),
+        "city": shop_info.get("city") or env_fallbacks["city"],
+        "stateProvinceCode": shop_info.get("province_code")
+        or env_fallbacks["stateProvinceCode"],
+        "postalCode": normalize_zip(shop_info.get("zip"))
+        or env_fallbacks["postalCode"],
+        "countryCode": shop_info.get("country_code") or "US",
     }
 
 

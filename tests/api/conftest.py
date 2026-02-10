@@ -6,9 +6,11 @@ for testing FastAPI endpoints.
 
 import tempfile
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -170,3 +172,32 @@ def sample_label_file(temp_label_dir):
     # Create a minimal PDF-like content (not a real PDF but enough for testing)
     label_path.write_bytes(b"%PDF-1.4\nTest PDF content\n%%EOF")
     return label_path
+
+
+def create_valid_pdf(path: Path) -> Path:
+    """Create a valid PDF file that pypdf can read.
+
+    Args:
+        path: Where to write the PDF file.
+
+    Returns:
+        The path to the created file.
+    """
+    writer = PdfWriter()
+    writer.add_blank_page(width=288, height=432)
+    with open(path, "wb") as f:
+        writer.write(f)
+    return path
+
+
+@pytest.fixture
+def valid_label_dir(tmp_path: Path) -> Path:
+    """Create a temporary directory for valid PDF label files.
+
+    Args:
+        tmp_path: pytest built-in fixture for temp directory.
+
+    Returns:
+        Path to temporary directory.
+    """
+    return tmp_path

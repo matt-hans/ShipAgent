@@ -1,14 +1,16 @@
 """FastAPI routes for label downloads.
 
-Provides REST API endpoints for downloading individual shipping labels
-and bulk ZIP downloads of all labels for a job.
+Provides REST API endpoints for downloading individual shipping labels,
+bulk ZIP downloads, and merged PDF downloads of all labels for a job.
 """
 
+import io
 from pathlib import Path
 
 import zipstream
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
+from pypdf import PdfWriter
 from sqlalchemy.orm import Session
 
 from src.db.connection import get_db
@@ -144,5 +146,80 @@ def download_labels_zip(
         media_type="application/zip",
         headers={
             "Content-Disposition": f'attachment; filename="labels-{job_name_slug}-{job_id[:8]}.zip"'
+        },
+    )
+
+
+@router.get("/jobs/{job_id}/labels/merged")
+def download_labels_merged(
+    job_id: str,
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """Download all labels for a job as a single merged PDF.
+
+    Concatenates all per-row label PDFs into one combined document
+    using pypdf.PdfWriter, streamed via an in-memory buffer.
+
+    Args:
+        job_id: The job UUID.
+        db: Database session dependency.
+
+    Returns:
+        StreamingResponse with the merged PDF.
+
+    Raises:
+        HTTPException: If job not found (404) or no labels available (404).
+    """
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    rows = (
+        db.query(JobRow)
+        .filter(
+            JobRow.job_id == job_id,
+            JobRow.label_path.isnot(None),
+        )
+        .order_by(JobRow.row_number)
+        .all()
+    )
+
+    if not rows:
+        raise HTTPException(
+            status_code=404,
+            detail="No labels available for this job",
+        )
+
+    writer = PdfWriter()
+    pages_added = 0
+
+    for row in rows:
+        if not row.label_path:
+            continue
+        path = Path(row.label_path)
+        if not path.exists():
+            continue
+        try:
+            writer.append(str(path))
+            pages_added += 1
+        except Exception:
+            # Skip corrupt or unreadable PDFs
+            continue
+
+    if pages_added == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="No valid label files found for this job",
+        )
+
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="labels-{job_id[:8]}.pdf"'
         },
     )

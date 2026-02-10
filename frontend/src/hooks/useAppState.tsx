@@ -61,6 +61,10 @@ interface AppState {
   // Processing state
   isProcessing: boolean;
   setIsProcessing: (processing: boolean) => void;
+
+  // Job list refresh trigger
+  jobListVersion: number;
+  refreshJobList: () => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -71,6 +75,11 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [dataSource, setDataSource] = React.useState<DataSourceInfo | null>(null);
   const [conversation, setConversation] = React.useState<ConversationMessage[]>([]);
   const [isProcessing, setIsProcessing] = React.useState(false);
+  const [jobListVersion, setJobListVersion] = React.useState(0);
+
+  const refreshJobList = React.useCallback(() => {
+    setJobListVersion((v) => v + 1);
+  }, []);
 
   const addMessage = React.useCallback(
     (message: Omit<ConversationMessage, 'id' | 'timestamp'>) => {
@@ -100,6 +109,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     clearConversation,
     isProcessing,
     setIsProcessing,
+    jobListVersion,
+    refreshJobList,
   };
 
   return (

@@ -12,7 +12,7 @@ import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
-import { getJobs, deleteJob, connectPlatform, disconnectPlatform } from '@/lib/api';
+import { getJobs, deleteJob, connectPlatform, disconnectPlatform, getMergedLabelsUrl } from '@/lib/api';
 import type { Job, JobSummary, DataSourceInfo, PlatformType } from '@/types/api';
 
 /* Future: more external platforms like WooCommerce, SAP, Oracle */
@@ -99,6 +99,16 @@ function TrashIcon({ className }: { className?: string }) {
       <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" strokeLinecap="round" strokeLinejoin="round" />
       <line x1="10" y1="11" x2="10" y2="17" strokeLinecap="round" strokeLinejoin="round" />
       <line x1="14" y1="11" x2="14" y2="17" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function PrinterIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <polyline points="6 9 6 2 18 2 18 9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2" strokeLinecap="round" strokeLinejoin="round" />
+      <rect x="6" y="14" width="12" height="8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -533,6 +543,7 @@ function JobHistorySection({
   onSelectJob: (job: Job | null) => void;
   activeJobId?: string;
 }) {
+  const { jobListVersion } = useAppState();
   const [jobs, setJobs] = React.useState<JobSummary[]>([]);
   const [search, setSearch] = React.useState('');
   const [filter, setFilter] = React.useState<string>('all');
@@ -551,9 +562,10 @@ function JobHistorySection({
     }
   }, []);
 
+  // Re-fetch when jobListVersion changes (triggered by batch completion)
   React.useEffect(() => {
     loadJobs();
-  }, [loadJobs]);
+  }, [loadJobs, jobListVersion]);
 
   // Delete job handler
   const handleDeleteJob = async (e: React.MouseEvent, jobId: string) => {
@@ -666,6 +678,18 @@ function JobHistorySection({
                 </p>
                 <div className="flex items-center gap-1.5">
                   <StatusBadge status={job.status} />
+                  {job.status === 'completed' && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        window.open(getMergedLabelsUrl(job.id), '_blank');
+                      }}
+                      className="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:bg-cyan-500/20 text-slate-500 hover:text-cyan-400"
+                      title="Reprint labels"
+                    >
+                      <PrinterIcon className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                   <button
                     onClick={(e) => handleDeleteJob(e, job.id)}
                     disabled={deletingJobId === job.id}
