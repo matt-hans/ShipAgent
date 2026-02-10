@@ -39,7 +39,7 @@ def _get_engine() -> NLMappingEngine:
     """Get or create the NLMappingEngine singleton."""
     global _engine
     if _engine is None:
-        _engine = NLMappingEngine(max_correction_attempts=3)
+        _engine = NLMappingEngine()
     return _engine
 
 
@@ -62,23 +62,19 @@ def reset_mode_manager() -> None:
 async def process_command_tool(args: dict[str, Any]) -> dict[str, Any]:
     """Process a natural language shipping command.
 
-    This tool wraps the Phase 4 NLMappingEngine to parse user commands
-    and generate structured outputs (intent, filters, templates).
+    This tool wraps the NLMappingEngine to parse user commands
+    and generate structured outputs (intent, filters).
 
     Args:
         args: Dict with:
             - command (str): Natural language command like "Ship California orders via Ground"
             - source_schema (list): List of column info dicts with 'name' and 'type' keys
-            - example_row (dict, optional): Example row data for template validation
-            - user_mappings (list, optional): User-confirmed field mappings
 
     Returns:
         MCP tool response with command processing results.
     """
     command = args.get("command", "")
     schema_dicts = args.get("source_schema", [])
-    example_row = args.get("example_row")
-    user_mappings = args.get("user_mappings")
 
     # Convert schema dicts to ColumnInfo objects
     source_schema = [
@@ -90,8 +86,6 @@ async def process_command_tool(args: dict[str, Any]) -> dict[str, Any]:
     result = await engine.process_command(
         command=command,
         source_schema=source_schema,
-        example_row=example_row,
-        user_mappings=user_mappings,
     )
 
     # Convert to MCP response format
@@ -106,8 +100,6 @@ async def process_command_tool(args: dict[str, Any]) -> dict[str, Any]:
 PROCESS_COMMAND_SCHEMA = {
     "command": {"type": "string", "description": "Natural language shipping command"},
     "source_schema": {"type": "array", "description": "List of column info dicts with 'name' and 'type'"},
-    "example_row": {"type": "object", "description": "Optional example row for validation"},
-    "user_mappings": {"type": "array", "description": "Optional user-confirmed field mappings"},
 }
 
 
