@@ -1,15 +1,16 @@
 """Preview and confirmation API routes.
 
 Provides endpoints for fetching batch preview data and confirming
-batches for execution. Integrates with UPS MCP for real shipment creation.
-Emits SSE progress events for real-time frontend updates.
+batches for execution. Integrates with UPSService + BatchEngine for
+real shipment creation. Emits SSE progress events for real-time
+frontend updates.
 """
 
 import asyncio
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -21,7 +22,8 @@ from src.api.schemas import (
 )
 from src.db.connection import get_db
 from src.db.models import Job, JobRow, RowStatus
-from src.mcp.ups_client import UpsMcpClient, UpsMcpError
+from src.services.batch_engine import BatchEngine
+from src.services.ups_service import UPSService, UPSServiceError
 from src.services.ups_payload_builder import (
     build_shipment_request,
     build_shipper_from_env,
@@ -200,10 +202,9 @@ def _get_sse_observer():
 async def _execute_batch(job_id: str) -> None:
     """Execute batch shipment processing in the background.
 
-    Processes each JobRow by calling the UPS MCP shipping_create tool
-    and updates row status with real tracking numbers and label paths.
-    Emits SSE progress events and updates job counters incrementally
-    after each row for real-time frontend progress tracking.
+    Creates a UPSService and BatchEngine, then delegates row processing
+    to the engine. Updates job counters and emits SSE progress events
+    via a progress callback adapter.
 
     Args:
         job_id: The job UUID to process.
@@ -212,9 +213,6 @@ async def _execute_batch(job_id: str) -> None:
 
     observer = _get_sse_observer()
     db = next(get_db_session())
-    total_cost = 0
-    successful = 0
-    failed = 0
     try:
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
@@ -237,140 +235,69 @@ async def _execute_batch(job_id: str) -> None:
         # Get shipper info once for all shipments
         shipper = await _get_shipper_info()
 
-        # Use UPS MCP client for real shipments
-        try:
-            async with UpsMcpClient() as ups_client:
-                for row in rows:
-                    # Emit row_started SSE event
-                    await observer.on_row_started(job_id, row.row_number)
+        # Create UPSService from environment
+        ups_service = UPSService(
+            base_url=os.environ.get("UPS_BASE_URL", "https://onlinetools.ups.com"),
+            client_id=os.environ.get("UPS_CLIENT_ID", ""),
+            client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
+        )
 
-                    try:
-                        # Mark row as processing
-                        row.status = RowStatus.processing.value
-                        db.commit()
+        account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
 
-                        # Parse order data
-                        order_data = {}
-                        if row.order_data:
-                            try:
-                                order_data = json.loads(row.order_data)
-                            except json.JSONDecodeError:
-                                raise ValueError("Invalid order_data JSON")
+        # Create BatchEngine
+        engine = BatchEngine(
+            ups_service=ups_service,
+            db_session=db,
+            account_number=account_number,
+        )
 
-                        # Build shipment request
-                        shipment_request = build_shipment_request(
-                            order_data=order_data,
-                            shipper=shipper,
-                        )
+        # SSE progress adapter — bridges BatchEngine callbacks to SSE observer
+        successful = 0
+        failed = 0
+        total_cost = 0
 
-                        # Call UPS MCP shipping_create
-                        result = await ups_client.call_tool("shipping_create", shipment_request)
+        async def on_progress(event_type: str, **kwargs) -> None:
+            """Adapt BatchEngine progress events to SSE observer calls."""
+            nonlocal successful, failed, total_cost
 
-                        # Extract results
-                        if not result.get("success"):
-                            raise ValueError(f"UPS shipping failed: {result}")
+            if event_type == "row_completed":
+                successful += 1
+                total_cost += kwargs.get("cost_cents", 0)
+                # Update job counters incrementally
+                job.processed_rows = successful + failed
+                job.successful_rows = successful
+                job.failed_rows = failed
+                job.total_cost_cents = total_cost
+                db.commit()
+                await observer.on_row_completed(
+                    job_id, kwargs["row_number"],
+                    kwargs.get("tracking_number", ""),
+                    kwargs.get("cost_cents", 0),
+                )
+            elif event_type == "row_failed":
+                failed += 1
+                job.processed_rows = successful + failed
+                job.successful_rows = successful
+                job.failed_rows = failed
+                job.total_cost_cents = total_cost
+                db.commit()
+                await observer.on_row_failed(
+                    job_id, kwargs["row_number"],
+                    kwargs.get("error_code", "E-3005"),
+                    kwargs.get("error_message", "Unknown error"),
+                )
 
-                        tracking_numbers = result.get("trackingNumbers", [])
-                        label_paths = result.get("labelPaths", [])
-                        total_charges = result.get("totalCharges", {})
+        # Execute batch
+        result = await engine.execute(
+            job_id=job_id,
+            rows=rows,
+            shipper=shipper,
+            on_progress=on_progress,
+        )
 
-                        tracking_number = tracking_numbers[0] if tracking_numbers else ""
-                        label_path = label_paths[0] if label_paths else ""
-
-                        # Convert cost to cents
-                        cost_value = total_charges.get("monetaryValue", "0")
-                        try:
-                            cost_cents = int(float(cost_value) * 100)
-                        except (ValueError, TypeError):
-                            cost_cents = row.cost_cents or 0
-
-                        # Update row with shipping result
-                        row.tracking_number = tracking_number
-                        row.label_path = label_path
-                        row.cost_cents = cost_cents
-                        row.status = RowStatus.completed.value
-                        row.processed_at = datetime.utcnow().isoformat()
-
-                        total_cost += cost_cents
-                        successful += 1
-
-                        # Update job counters incrementally for progress polling
-                        job.processed_rows = successful + failed
-                        job.successful_rows = successful
-                        job.failed_rows = failed
-                        job.total_cost_cents = total_cost
-                        db.commit()
-
-                        # Emit row_completed SSE event
-                        await observer.on_row_completed(
-                            job_id, row.row_number, tracking_number, cost_cents
-                        )
-
-                        logger.info(
-                            "Row %d completed: tracking=%s, cost=%d cents, label=%s",
-                            row.row_number,
-                            tracking_number,
-                            cost_cents,
-                            label_path,
-                        )
-
-                    except UpsMcpError as e:
-                        logger.error("Row %d UPS error: %s", row.row_number, e)
-                        row.status = RowStatus.failed.value
-                        row.error_code = e.code
-                        row.error_message = str(e)
-                        failed += 1
-
-                        # Update job counters incrementally
-                        job.processed_rows = successful + failed
-                        job.successful_rows = successful
-                        job.failed_rows = failed
-                        job.total_cost_cents = total_cost
-                        db.commit()
-
-                        # Emit row_failed SSE event
-                        await observer.on_row_failed(
-                            job_id, row.row_number, e.code, str(e)
-                        )
-
-                    except Exception as e:
-                        logger.exception("Row %d failed: %s", row.row_number, e)
-                        row.status = RowStatus.failed.value
-                        row.error_code = "E-3005"
-                        row.error_message = str(e)
-                        failed += 1
-
-                        # Update job counters incrementally
-                        job.processed_rows = successful + failed
-                        job.successful_rows = successful
-                        job.failed_rows = failed
-                        job.total_cost_cents = total_cost
-                        db.commit()
-
-                        # Emit row_failed SSE event
-                        await observer.on_row_failed(
-                            job_id, row.row_number, "E-3005", str(e)
-                        )
-
-        except UpsMcpError as e:
-            # UPS MCP connection/startup failure - fail all remaining rows
-            logger.error("UPS MCP connection failed: %s", e)
-            for row in rows:
-                if row.status == RowStatus.pending.value:
-                    row.status = RowStatus.failed.value
-                    row.error_code = e.code
-                    row.error_message = str(e)
-                    failed += 1
-            job.processed_rows = successful + failed
-            job.successful_rows = successful
-            job.failed_rows = failed
-            job.total_cost_cents = total_cost
-            db.commit()
-
-            # Emit batch_failed SSE event for connection failure
-            await observer.on_batch_failed(
-                job_id, e.code, str(e), successful + failed
-            )
+        successful = result["successful"]
+        failed = result["failed"]
+        total_cost = result["total_cost_cents"]
 
         # Update job with final status
         job.processed_rows = successful + failed
@@ -378,7 +305,7 @@ async def _execute_batch(job_id: str) -> None:
         job.failed_rows = failed
         job.total_cost_cents = total_cost
         job.status = "completed" if failed == 0 else "failed"
-        job.completed_at = datetime.utcnow().isoformat()
+        job.completed_at = datetime.now(UTC).isoformat()
         db.commit()
 
         # Emit final batch event
@@ -412,7 +339,7 @@ async def _execute_batch(job_id: str) -> None:
 
         # Emit batch_failed SSE event
         await observer.on_batch_failed(
-            job_id, "E-4001", str(e), successful + failed
+            job_id, "E-4001", str(e), 0
         )
     finally:
         db.close()
@@ -480,7 +407,7 @@ async def confirm_job(
 
     # Update job status to running
     job.status = "running"
-    job.started_at = datetime.utcnow().isoformat()
+    job.started_at = datetime.now(UTC).isoformat()
     db.commit()
 
     # Schedule async batch execution on the event loop
