@@ -434,3 +434,142 @@ class TestBuildShipmentRequest:
         request = build_shipment_request(order_data)
 
         assert request["description"] == "Shipment"
+
+
+# ── Tests for UPS API payload transformation ──────────────────────
+
+
+from src.services.ups_payload_builder import build_ups_api_payload, build_ups_rate_payload
+
+
+class TestBuildUpsApiPayload:
+    """Test simplified → UPS API format transformation."""
+
+    def test_produces_shipment_request_wrapper(self):
+        """Test output has ShipmentRequest at top level."""
+        simplified = {
+            "shipper": {
+                "name": "Test Store",
+                "phone": "5559998888",
+                "addressLine1": "456 Oak Ave",
+                "city": "San Francisco",
+                "stateProvinceCode": "CA",
+                "postalCode": "94102",
+                "countryCode": "US",
+            },
+            "shipTo": {
+                "name": "John Doe",
+                "addressLine1": "123 Main St",
+                "city": "Los Angeles",
+                "stateProvinceCode": "CA",
+                "postalCode": "90001",
+                "countryCode": "US",
+            },
+            "packages": [{"weight": 2.0}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_api_payload(simplified, account_number="ABC123")
+
+        assert "ShipmentRequest" in result
+        shipment = result["ShipmentRequest"]["Shipment"]
+        assert shipment["Shipper"]["Name"] == "Test Store"
+        assert shipment["Shipper"]["ShipperNumber"] == "ABC123"
+        assert shipment["ShipTo"]["Name"] == "John Doe"
+        assert shipment["ShipTo"]["Address"]["City"] == "Los Angeles"
+        assert shipment["Service"]["Code"] == "03"
+        assert shipment["Package"][0]["PackageWeight"]["Weight"] == "2.0"
+
+    def test_includes_label_specification(self):
+        """Test PDF label specification is included."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_api_payload(simplified, account_number="X")
+        label_spec = result["ShipmentRequest"]["LabelSpecification"]
+        assert label_spec["LabelImageFormat"]["Code"] == "PDF"
+
+    def test_fails_without_account_number(self):
+        """Test raises ValueError when account_number missing."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+
+        with pytest.raises(ValueError, match="account_number"):
+            build_ups_api_payload(simplified, account_number="")
+
+    def test_includes_dimensions_when_present(self):
+        """Test package dimensions are included when provided."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 5.0, "length": 12, "width": 8, "height": 6}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_api_payload(simplified, account_number="X")
+        pkg = result["ShipmentRequest"]["Shipment"]["Package"][0]
+        assert pkg["Dimensions"]["Length"] == "12"
+        assert pkg["Dimensions"]["Width"] == "8"
+        assert pkg["Dimensions"]["Height"] == "6"
+
+    def test_includes_reference_when_present(self):
+        """Test ReferenceNumber is included when reference provided."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+            "reference": "ORD-1001",
+        }
+
+        result = build_ups_api_payload(simplified, account_number="X")
+        shipment = result["ShipmentRequest"]["Shipment"]
+        assert shipment["ReferenceNumber"]["Value"] == "ORD-1001"
+
+
+class TestBuildUpsRatePayload:
+    """Test simplified → UPS Rate API format."""
+
+    def test_produces_rate_request_wrapper(self):
+        """Test output has RateRequest at top level."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_rate_payload(simplified, account_number="X")
+
+        assert "RateRequest" in result
+        shipment = result["RateRequest"]["Shipment"]
+        assert shipment["Service"]["Code"] == "03"
+        assert shipment["Shipper"]["ShipperNumber"] == "X"
