@@ -4,8 +4,7 @@
 
 ShipAgent is an AI-powered shipping automation platform that lets you describe shipments in plain English and handles the rest. Simply say *"Ship all California orders from today's spreadsheet using UPS Ground"* and ShipAgent parses your intent, extracts data, validates against carrier schemas, and executes shipments with full audit trails.
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![TypeScript](https://img.shields.io/badge/typescript-5.x-blue.svg)](https://www.typescriptlang.org/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![React 19](https://img.shields.io/badge/react-19-blue.svg)](https://react.dev/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -17,7 +16,7 @@ ShipAgent is an AI-powered shipping automation platform that lets you describe s
 - **Multiple Data Sources** - Import from CSV, Excel (.xlsx), PostgreSQL/MySQL databases, or Shopify
 - **UPS Integration** - Full API coverage for shipping, rating, and address validation
 - **Batch Processing** - Process hundreds of shipments with per-row audit logging
-- **Self-Correction** - LLM automatically fixes validation errors in mapping templates
+- **Column Mapping** - LLM generates source-to-payload field mappings automatically
 - **Preview Mode** - Review cost estimates and shipment details before execution
 - **Crash Recovery** - Resume interrupted batches from exactly where they stopped
 - **Write-Back** - Automatically update tracking numbers in your source data
@@ -37,16 +36,16 @@ ShipAgent uses the **Model Context Protocol (MCP)** to separate concerns into in
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         Orchestration Agent                                  │
-│              (Python + Claude Agent SDK + FastAPI + Jinja2)                 │
+│                   (Python + Claude Agent SDK + FastAPI)                     │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
-│  │ NL Parser   │  │ Filter Gen  │  │ Mapping Gen │  │ Validator   │        │
+│  │ NL Parser   │  │ Filter Gen  │  │ Col Mapping │  │ BatchEngine │        │
 │  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘        │
 └─────────────────────────────────────────────────────────────────────────────┘
           │                                │                        │
           ▼                                ▼                        ▼
 ┌──────────────────┐         ┌──────────────────┐        ┌──────────────────┐
-│  Data Source MCP │         │   UPS MCP        │        │  State Database  │
-│  (Python/FastMCP)│         │  (TypeScript)    │        │    (SQLite)      │
+│  Data Source MCP │         │   UPS Service    │        │  State Database  │
+│  (Python/FastMCP)│         │   (Python)       │        │    (SQLite)      │
 │                  │         │                  │        │                  │
 │  • CSV/Excel     │         │  • Shipping      │        │  • Job state     │
 │  • Database      │         │  • Rating        │        │  • Audit logs    │
@@ -62,7 +61,7 @@ ShipAgent uses the **Model Context Protocol (MCP)** to separate concerns into in
 
 ### Core Design Principle
 
-The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets user intent and generates transformation rules (SQL filters, Jinja2 templates), but deterministic code executes those rules on actual shipping data. The LLM never touches row data directly.
+The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets user intent and generates transformation rules (SQL filters, column mappings), but deterministic code executes those rules on actual shipping data. The LLM never touches row data directly.
 
 ---
 
@@ -70,10 +69,10 @@ The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets u
 
 | Component | Technology |
 |-----------|------------|
-| **Orchestration Agent** | Python 3.11+, Claude Agent SDK, FastAPI |
+| **Orchestration Agent** | Python 3.12+, Claude Agent SDK, FastAPI |
 | **Data Processing** | DuckDB, Pandas, openpyxl |
+| **UPS Integration** | Python ups-mcp (ToolManager, OpenAPI-validated) |
 | **Template Engine** | Jinja2 with custom logistics filters |
-| **UPS MCP** | TypeScript 5.x, Zod (schema validation) |
 | **State Database** | SQLite + SQLAlchemy |
 | **Frontend** | React 19, Vite, Tailwind CSS 4, shadcn/ui |
 
@@ -83,9 +82,8 @@ The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets u
 
 ### Prerequisites
 
-- Python 3.11 or higher
-- Node.js 18 or higher
-- pnpm (for UPS MCP package)
+- Python 3.12 or higher
+- Node.js 18 or higher (for frontend only)
 - UPS Developer Account (for API credentials)
 
 ### Installation
@@ -103,15 +101,7 @@ The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets u
    pip install -e ".[dev]"
    ```
 
-3. **Build the UPS MCP server**
-   ```bash
-   cd packages/ups-mcp
-   pnpm install
-   pnpm build
-   cd ../..
-   ```
-
-4. **Install frontend dependencies**
+3. **Install frontend dependencies**
    ```bash
    cd frontend
    npm install
@@ -231,16 +221,16 @@ DATABASE_URL=sqlite:///./shipagent.db
 | `verify_checksum` | Verify row hasn't changed |
 | `write_back` | Update source with tracking |
 
-#### UPS MCP (6 tools)
+#### UPS Service (via UPSService + ToolManager)
 
-| Tool | Description |
-|------|-------------|
-| `rating_quote` | Get shipping rate quote |
-| `rating_shop` | Compare rates across services |
-| `shipping_create` | Create shipment and label |
-| `shipping_void` | Void a shipment |
-| `shipping_get_label` | Retrieve label image |
-| `address_validate` | Validate shipping address |
+UPS operations are handled via direct Python import, not a subprocess MCP server.
+
+| Method | Description |
+|--------|-------------|
+| `UPSService.rate_shipment()` | Get shipping rate quote |
+| `UPSService.create_shipment()` | Create shipment and label |
+| `UPSService.void_shipment()` | Void a shipment |
+| `UPSService.validate_address()` | Validate shipping address |
 
 ---
 
@@ -264,21 +254,6 @@ mypy src/
 # Linting and formatting
 ruff check src/ tests/
 ruff format src/ tests/
-```
-
-### UPS MCP Development
-
-```bash
-cd packages/ups-mcp
-
-# Build TypeScript
-pnpm build
-
-# Run tests
-pnpm test
-
-# Watch mode
-pnpm dev
 ```
 
 ### Frontend Development
@@ -315,24 +290,23 @@ shipagent/
 │   │   └── ups_translator.py   # UPS error mapping
 │   ├── services/               # Business logic
 │   │   ├── job_service.py      # Job state machine
-│   │   └── audit_service.py    # Audit logging
+│   │   ├── audit_service.py    # Audit logging
+│   │   ├── ups_service.py      # UPS API wrapper (ToolManager)
+│   │   ├── column_mapping.py   # Column mapping service
+│   │   └── payload_builder.py  # UPS payload construction
 │   ├── mcp/
 │   │   ├── data_source/        # Data Source MCP server
 │   │   │   ├── server.py       # FastMCP server
 │   │   │   ├── adapters/       # CSV, Excel, DB adapters
 │   │   │   └── tools/          # MCP tool implementations
-│   │   └── external_sources/   # External platform clients
+│   │   ├── external_sources/   # External platform clients
+│   │   └── ups/                # UPS OpenAPI specs + config
+│   │       └── specs/          # OpenAPI YAML specs
 │   └── orchestrator/           # AI orchestration
-│       ├── nl_engine/          # NL parsing & generation
+│       ├── nl_engine/          # NL parsing & filter generation
 │       ├── filters/            # Jinja2 logistics filters
 │       ├── agent/              # Claude Agent SDK
 │       └── batch/              # Batch execution engine
-├── packages/
-│   └── ups-mcp/                # UPS MCP server (TypeScript)
-│       └── src/
-│           ├── tools/          # Rating, shipping, address
-│           ├── auth.ts         # OAuth management
-│           └── client.ts       # UPS API client
 ├── frontend/                   # React web interface
 │   └── src/
 │       ├── components/         # UI components
@@ -384,25 +358,13 @@ class MyAdapter(BaseSourceAdapter):
     async def get_metadata(self) -> SourceMetadata: ...
 ```
 
-### Adding a Carrier MCP
+### Adding a Carrier Service
 
-Follow the UPS MCP pattern:
-1. Define Zod schemas from OpenAPI specs
-2. Implement tools with namespaced names
+Follow the UPSService pattern:
+1. Create a service class wrapping the carrier's SDK/API client
+2. Implement `rate_shipment()`, `create_shipment()`, `void_shipment()`, `validate_address()`
 3. Handle OAuth/authentication
-4. Return standardized response format
-
-### Adding Template Filters
-
-Register custom Jinja2 filters:
-
-```python
-from src.orchestrator.filters import register_filter
-
-@register_filter
-def my_filter(value: str) -> str:
-    return value.upper()
-```
+4. Return standardized response format with error translation
 
 ---
 

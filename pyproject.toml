@@ -3,7 +3,7 @@ name = "shipagent"
 version = "0.1.0"
 description = "Natural language interface for batch shipment processing"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "ShipAgent Team"}
@@ -30,6 +30,8 @@ dependencies = [
     "sse-starlette>=2.0.0",
     "zipstream-ng>=1.7.0",
     "pypdf>=4.0.0",
+    # UPS MCP Python fork (pinned to specific commit for stability)
+    "ups-mcp @ git+https://github.com/UPS-API/ups-mcp.git@41fb64f71c5f9afe0fb8764e9dd29a71e3c773e1",
 ]
 
 [project.optional-dependencies]
@@ -48,7 +50,7 @@ where = ["."]
 include = ["src*"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 88
 select = [
     "E",   # pycodestyle errors
