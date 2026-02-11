@@ -24,9 +24,11 @@ Environment Variables:
     UPS_BASE_URL: UPS API base URL — used to derive environment (test vs production)
 """
 
+import logging
 import os
-import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from typing import TypedDict
 
 # Project root is parent of src/
@@ -90,10 +92,9 @@ def get_shopify_mcp_config() -> MCPServerConfig:
         missing_vars.append("SHOPIFY_STORE_DOMAIN")
 
     if missing_vars:
-        print(
-            f"[config] WARNING: Missing Shopify credentials: {', '.join(missing_vars)}. "
-            "Shopify MCP will fail on startup.",
-            file=sys.stderr,
+        logger.warning(
+            "Missing Shopify credentials: %s. Shopify MCP will fail on startup.",
+            ", ".join(missing_vars),
         )
 
     return MCPServerConfig(
@@ -147,10 +148,9 @@ def get_ups_mcp_config() -> MCPServerConfig:
         missing_vars.append("UPS_CLIENT_SECRET")
 
     if missing_vars:
-        print(
-            f"[config] WARNING: Missing UPS credentials: {', '.join(missing_vars)}. "
-            "UPS MCP will fail on startup.",
-            file=sys.stderr,
+        logger.warning(
+            "Missing UPS credentials: %s. UPS MCP will fail on startup.",
+            ", ".join(missing_vars),
         )
 
     return MCPServerConfig(

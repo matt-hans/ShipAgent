@@ -41,6 +41,7 @@ from src.orchestrator.agent.hooks import (
     log_post_tool,
     validate_pre_tool,
     validate_shipping_input,
+    validate_void_shipment,
 )
 from src.orchestrator.agent.tools import get_orchestrator_tools
 
@@ -164,6 +165,10 @@ class OrchestrationAgent:
                     HookMatcher(
                         matcher="mcp__ups__create_shipment",
                         hooks=[validate_shipping_input],
+                    ),
+                    HookMatcher(
+                        matcher="mcp__ups__void_shipment",
+                        hooks=[validate_void_shipment],
                     ),
                     HookMatcher(
                         matcher=None,  # All tools
