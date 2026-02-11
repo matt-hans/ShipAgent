@@ -308,7 +308,7 @@ async def batch_preview_tool(args: dict[str, Any]) -> dict[str, Any]:
             shipper = shipper_info or build_shipper_from_env()
 
             ups_service = UPSService(
-                base_url=os.environ.get("UPS_BASE_URL", "https://onlinetools.ups.com"),
+                base_url=os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com"),
                 client_id=os.environ.get("UPS_CLIENT_ID", ""),
                 client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
             )
@@ -403,7 +403,7 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
             shipper = shipper_info or build_shipper_from_env()
 
             ups_service = UPSService(
-                base_url=os.environ.get("UPS_BASE_URL", "https://onlinetools.ups.com"),
+                base_url=os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com"),
                 client_id=os.environ.get("UPS_CLIENT_ID", ""),
                 client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
             )

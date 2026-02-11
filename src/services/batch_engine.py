@@ -149,10 +149,10 @@ class BatchEngine:
         service_code: str | None = None,
         on_progress: ProgressCallback | None = None,
     ) -> dict[str, Any]:
-        """Execute batch shipment processing.
+        """Execute batch shipment processing with concurrent UPS API calls.
 
-        Processes each row: build payload -> create shipment -> save results.
-        Per-row state writes enable crash recovery.
+        Processes rows concurrently (up to MAX_CONCURRENT) for speed, while
+        serializing DB writes and SSE progress events via a lock.
 
         Args:
             job_id: Job UUID
@@ -164,95 +164,105 @@ class BatchEngine:
         Returns:
             Dict with successful, failed, total_cost_cents counts
         """
+        max_concurrent = int(os.environ.get("BATCH_CONCURRENCY", "5"))
+        semaphore = asyncio.Semaphore(max_concurrent)
+        db_lock = asyncio.Lock()
+
         successful = 0
         failed = 0
         total_cost_cents = 0
 
-        for row in rows:
-            if row.status != "pending":
-                continue
+        pending_rows = [r for r in rows if r.status == "pending"]
 
-            try:
-                # Parse order data
-                order_data = self._parse_order_data(row)
+        async def _process_row(row: Any) -> None:
+            """Process a single row with concurrency control."""
+            nonlocal successful, failed, total_cost_cents
 
-                # Build simplified payload
-                simplified = build_shipment_request(
-                    order_data=order_data,
-                    shipper=shipper,
-                    service_code=service_code,
-                )
+            async with semaphore:
+                try:
+                    # Parse and build payload (CPU-bound, fast)
+                    order_data = self._parse_order_data(row)
 
-                # Transform to UPS API format
-                api_payload = build_ups_api_payload(
-                    simplified, account_number=self._account_number,
-                )
-
-                # Call UPS (in thread to avoid blocking)
-                result = await asyncio.to_thread(
-                    self._ups.create_shipment, request_body=api_payload,
-                )
-
-                # Extract results
-                tracking_numbers = result.get("trackingNumbers", [])
-                tracking_number = tracking_numbers[0] if tracking_numbers else ""
-
-                # Save label
-                label_path = ""
-                label_data_list = result.get("labelData", [])
-                if label_data_list and label_data_list[0]:
-                    label_path = self._save_label(
-                        tracking_number, label_data_list[0],
+                    simplified = build_shipment_request(
+                        order_data=order_data,
+                        shipper=shipper,
+                        service_code=service_code,
                     )
 
-                # Cost in cents
-                charges = result.get("totalCharges", {})
-                cost_cents = int(float(charges.get("monetaryValue", "0")) * 100)
-
-                # Update row state
-                row.tracking_number = tracking_number
-                row.label_path = label_path
-                row.cost_cents = cost_cents
-                row.status = "completed"
-                row.processed_at = datetime.now(UTC).isoformat()
-                self._db.commit()
-
-                successful += 1
-                total_cost_cents += cost_cents
-
-                if on_progress:
-                    await on_progress(
-                        "row_completed", job_id=job_id,
-                        row_number=row.row_number,
-                        tracking_number=tracking_number,
-                        cost_cents=cost_cents,
+                    api_payload = build_ups_api_payload(
+                        simplified, account_number=self._account_number,
                     )
 
-                logger.info(
-                    "Row %d completed: tracking=%s, cost=%d cents",
-                    row.row_number, tracking_number, cost_cents,
-                )
-
-            except (UPSServiceError, ValueError, Exception) as e:
-                error_code = getattr(e, "code", "E-3005")
-                error_message = str(e)
-
-                row.status = "failed"
-                row.error_code = error_code
-                row.error_message = error_message
-                self._db.commit()
-
-                failed += 1
-
-                if on_progress:
-                    await on_progress(
-                        "row_failed", job_id=job_id,
-                        row_number=row.row_number,
-                        error_code=error_code,
-                        error_message=error_message,
+                    # Call UPS (in thread — this is the slow part)
+                    result = await asyncio.to_thread(
+                        self._ups.create_shipment, request_body=api_payload,
                     )
 
-                logger.error("Row %d failed: %s", row.row_number, e)
+                    # Extract results
+                    tracking_numbers = result.get("trackingNumbers", [])
+                    tracking_number = tracking_numbers[0] if tracking_numbers else ""
+
+                    # Save label
+                    label_path = ""
+                    label_data_list = result.get("labelData", [])
+                    if label_data_list and label_data_list[0]:
+                        label_path = self._save_label(
+                            tracking_number, label_data_list[0],
+                        )
+
+                    # Cost in cents
+                    charges = result.get("totalCharges", {})
+                    cost_cents = int(float(charges.get("monetaryValue", "0")) * 100)
+
+                    # Serialize DB writes and progress events
+                    async with db_lock:
+                        row.tracking_number = tracking_number
+                        row.label_path = label_path
+                        row.cost_cents = cost_cents
+                        row.status = "completed"
+                        row.processed_at = datetime.now(UTC).isoformat()
+                        self._db.commit()
+
+                        successful += 1
+                        total_cost_cents += cost_cents
+
+                        if on_progress:
+                            await on_progress(
+                                "row_completed", job_id=job_id,
+                                row_number=row.row_number,
+                                tracking_number=tracking_number,
+                                cost_cents=cost_cents,
+                            )
+
+                    logger.info(
+                        "Row %d completed: tracking=%s, cost=%d cents",
+                        row.row_number, tracking_number, cost_cents,
+                    )
+
+                except (UPSServiceError, ValueError, Exception) as e:
+                    error_code = getattr(e, "code", "E-3005")
+                    error_message = str(e)
+
+                    async with db_lock:
+                        row.status = "failed"
+                        row.error_code = error_code
+                        row.error_message = error_message
+                        self._db.commit()
+
+                        failed += 1
+
+                        if on_progress:
+                            await on_progress(
+                                "row_failed", job_id=job_id,
+                                row_number=row.row_number,
+                                error_code=error_code,
+                                error_message=error_message,
+                            )
+
+                    logger.error("Row %d failed: %s", row.row_number, e)
+
+        # Process all rows concurrently (bounded by semaphore)
+        await asyncio.gather(*[_process_row(row) for row in pending_rows])
 
         return {
             "job_id": job_id,

@@ -236,7 +236,7 @@ export async function confirmJob(jobId: string): Promise<ConfirmResponse> {
  * @param jobId - The job UUID.
  */
 export async function cancelJob(jobId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
+  const response = await fetch(`${API_BASE}/jobs/${jobId}/status`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',

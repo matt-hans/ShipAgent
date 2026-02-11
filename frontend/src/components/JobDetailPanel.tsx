@@ -6,8 +6,10 @@
  */
 
 import * as React from 'react';
-import { getJob, getJobRows, getMergedLabelsUrl } from '@/lib/api';
+import { getJob, getJobRows, getMergedLabelsUrl, confirmJob, cancelJob } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { useJobProgress } from '@/hooks/useJobProgress';
+import { useAppState } from '@/hooks/useAppState';
 import { LabelPreview } from '@/components/LabelPreview';
 import type { Job, JobRow, OrderData } from '@/types/api';
 
@@ -79,6 +81,33 @@ function ChevronDownIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
       <polyline points="6 9 12 15 18 9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
+      <polygon points="5 3 19 12 5 21 5 3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function XIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
+      <line x1="18" y1="6" x2="6" y2="18" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="6" y1="6" x2="18" y2="18" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function DownloadIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
+      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" strokeLinecap="round" strokeLinejoin="round" />
+      <polyline points="7 10 12 15 17 10" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="12" y1="15" x2="12" y2="3" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -237,10 +266,19 @@ function RowDetailItem({ row }: { row: JobRow }) {
  * from the sidebar history.
  */
 export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
+  const { refreshJobList } = useAppState();
   const [fullJob, setFullJob] = React.useState<Job>(job);
   const [rows, setRows] = React.useState<JobRow[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
   const [showLabelPreview, setShowLabelPreview] = React.useState(false);
+  const [isConfirming, setIsConfirming] = React.useState(false);
+  const [isCancelling, setIsCancelling] = React.useState(false);
+  const [executingJobId, setExecutingJobId] = React.useState<string | null>(null);
+  const [actionError, setActionError] = React.useState<string | null>(null);
+
+  // Track progress via SSE when executing
+  const { progress } = useJobProgress(executingJobId);
+  const completeFiredRef = React.useRef(false);
 
   // Fetch full job data and rows
   React.useEffect(() => {
@@ -252,6 +290,11 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
         if (cancelled) return;
         setFullJob(jobData);
         setRows(rowData);
+
+        // If the job is already running, start tracking progress
+        if (jobData.status === 'running') {
+          setExecutingJobId(jobData.id);
+        }
       })
       .catch((err) => {
         console.error('Failed to load job details:', err);
@@ -265,7 +308,68 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
     };
   }, [job.id]);
 
+  // Handle execution completion — re-fetch job data and rows
+  React.useEffect(() => {
+    if (
+      executingJobId &&
+      (progress.status === 'completed' || progress.status === 'failed') &&
+      !completeFiredRef.current
+    ) {
+      completeFiredRef.current = true;
+
+      // Re-fetch updated job and rows
+      Promise.all([getJob(executingJobId), getJobRows(executingJobId)])
+        .then(([jobData, rowData]) => {
+          setFullJob(jobData);
+          setRows(rowData);
+          setExecutingJobId(null);
+          refreshJobList();
+        })
+        .catch((err) => {
+          console.error('Failed to refresh job after completion:', err);
+          setExecutingJobId(null);
+          refreshJobList();
+        });
+    }
+  }, [executingJobId, progress.status, refreshJobList]);
+
+  /** Confirm and begin executing the pending batch. */
+  const handleConfirm = async () => {
+    setIsConfirming(true);
+    setActionError(null);
+    completeFiredRef.current = false;
+
+    try {
+      await confirmJob(fullJob.id);
+      setExecutingJobId(fullJob.id);
+      setFullJob((prev) => ({ ...prev, status: 'running' }));
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to confirm batch');
+    } finally {
+      setIsConfirming(false);
+    }
+  };
+
+  /** Cancel the pending batch. */
+  const handleCancel = async () => {
+    setIsCancelling(true);
+    setActionError(null);
+
+    try {
+      await cancelJob(fullJob.id);
+      setFullJob((prev) => ({ ...prev, status: 'cancelled' }));
+      refreshJobList();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to cancel batch');
+    } finally {
+      setIsCancelling(false);
+    }
+  };
+
+  const isPending = fullJob.status === 'pending';
+  const isRunning = fullJob.status === 'running' || !!executingJobId;
   const isCompleted = fullJob.status === 'completed';
+  const isCancelled = fullJob.status === 'cancelled';
 
   return (
     <div className="flex flex-col h-full">
@@ -328,24 +432,150 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
             </div>
           )}
 
+          {/* Action error */}
+          {actionError && (
+            <div className="p-3 rounded-lg bg-error/10 border border-error/30">
+              <p className="text-xs text-error">{actionError}</p>
+            </div>
+          )}
+
+          {/* Execution progress (shown while running) */}
+          {executingJobId && (
+            <div className={cn(
+              'card-premium p-4 space-y-4 scan-line',
+              progress.status === 'completed' && 'border-success/30',
+              progress.status === 'failed' && 'border-error/30'
+            )}>
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-slate-200">Processing Shipments</h3>
+                <span className="badge badge-info">{progress.status}</span>
+              </div>
+
+              <div className="space-y-2">
+                <div className="progress-bar">
+                  <div
+                    className={cn('progress-bar-fill', progress.status === 'running' && 'animated')}
+                    style={{ width: `${progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-xs font-mono">
+                  <span className="text-slate-400">
+                    {progress.processed} / {progress.total} rows
+                  </span>
+                  <span className="text-slate-400">
+                    {progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0}%
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2">
+                <div className="p-2 rounded bg-slate-800/50 text-center">
+                  <p className="text-lg font-semibold text-slate-100">{progress.total}</p>
+                  <p className="text-[10px] font-mono text-slate-500">Total</p>
+                </div>
+                <div className="p-2 rounded bg-slate-800/50 text-center">
+                  <p className="text-lg font-semibold text-success">{progress.successful}</p>
+                  <p className="text-[10px] font-mono text-slate-500">Success</p>
+                </div>
+                <div className="p-2 rounded bg-slate-800/50 text-center">
+                  <p className="text-lg font-semibold text-error">{progress.failed}</p>
+                  <p className="text-[10px] font-mono text-slate-500">Failed</p>
+                </div>
+                <div className="p-2 rounded bg-slate-800/50 text-center">
+                  <p className="text-lg font-semibold text-primary">
+                    {formatCurrency(progress.totalCostCents)}
+                  </p>
+                  <p className="text-[10px] font-mono text-slate-500">Cost</p>
+                </div>
+              </div>
+
+              {progress.error && (
+                <div className="p-3 rounded-lg bg-error/10 border border-error/30">
+                  <p className="text-xs font-mono text-error">
+                    {progress.error.code}: {progress.error.message}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Action buttons */}
           <div className="flex gap-3">
+            {/* Pending: Confirm & Cancel */}
+            {isPending && !executingJobId && (
+              <>
+                <button
+                  onClick={handleConfirm}
+                  disabled={isConfirming}
+                  className="btn-primary py-2.5 px-4 flex items-center gap-2"
+                >
+                  {isConfirming ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-void-950/30 border-t-void-950 rounded-full animate-spin" />
+                      <span>Confirming...</span>
+                    </>
+                  ) : (
+                    <>
+                      <PlayIcon className="w-4 h-4" />
+                      <span>Confirm & Execute</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={handleCancel}
+                  disabled={isConfirming || isCancelling}
+                  className="btn-secondary py-2.5 px-4 flex items-center gap-2"
+                >
+                  {isCancelling ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-slate-500/30 border-t-slate-500 rounded-full animate-spin" />
+                      <span>Cancelling...</span>
+                    </>
+                  ) : (
+                    <>
+                      <XIcon className="w-4 h-4" />
+                      <span>Cancel</span>
+                    </>
+                  )}
+                </button>
+              </>
+            )}
+
+            {/* Completed: View Labels + Download */}
             {isCompleted && (
+              <>
+                <button
+                  onClick={() => setShowLabelPreview(true)}
+                  className="btn-primary py-2.5 px-4 flex items-center gap-2"
+                >
+                  <PrinterIcon className="w-4 h-4" />
+                  <span>View Labels</span>
+                </button>
+                <button
+                  onClick={() => window.open(getMergedLabelsUrl(fullJob.id), '_blank')}
+                  className="btn-secondary py-2.5 px-4 flex items-center gap-2"
+                >
+                  <DownloadIcon className="w-4 h-4" />
+                  <span>Download PDF</span>
+                </button>
+              </>
+            )}
+
+            {/* Cancelled info */}
+            {isCancelled && (
+              <p className="text-xs text-slate-500 py-2.5">This batch was cancelled.</p>
+            )}
+
+            {/* Always show New Batch unless executing */}
+            {!executingJobId && (
               <button
-                onClick={() => setShowLabelPreview(true)}
-                className="btn-primary py-2.5 px-4 flex items-center gap-2"
+                onClick={onBack}
+                className="btn-secondary py-2.5 px-4 flex items-center gap-2"
               >
-                <PrinterIcon className="w-4 h-4" />
-                <span>View Labels</span>
+                <PlusIcon className="w-4 h-4" />
+                <span>New Batch</span>
               </button>
             )}
-            <button
-              onClick={onBack}
-              className="btn-secondary py-2.5 px-4 flex items-center gap-2"
-            >
-              <PlusIcon className="w-4 h-4" />
-              <span>New Batch</span>
-            </button>
           </div>
 
           {/* Row details */}

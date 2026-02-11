@@ -67,9 +67,18 @@ function CloudIcon({ className }: { className?: string }) {
 
 function ShopifyIcon({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
-      <path d="M15.337 3.415c-.022-.165-.122-.247-.247-.255-.124-.008-2.794-.206-2.794-.206l-1.874-1.874c-.206-.206-.618-.144-.782-.082-.008 0-.412.124-.824.247-.082-.247-.247-.577-.454-.907C7.96.082 7.136 0 6.52 0 4.853.04 3.226 1.38 2.567 3.54c-.866 2.834-1.38 5.08-1.38 5.08l5.41 1.134s.866-5.08 1.133-6.627c.082-.515.577-.824 1.05-.865.495-.041 1.009-.082 1.503-.123.495-.041.99-.082 1.483-.123.537-.041 1.05-.082 1.503-.082-.041-.33-.082-.66-.124-.99zm-3.62 1.174c-.412.123-.866.247-1.38.412l.082-.577c.165-1.174.618-1.916 1.298-2.39-.041.865-.041 1.73 0 2.555zm-1.957-1.38c.082-.577.206-1.133.371-1.627.66.33 1.215.988 1.462 1.874-.577.165-1.215.371-1.833.536.041-.288.082-.536.082-.783h-.082zM9.01 2.546c.247 0 .495.041.701.123-.288.824-.495 1.833-.577 2.834-.66.206-1.298.371-1.916.577C7.588 4.34 8.163 2.628 9.01 2.546z"/>
-      <path d="M15.09 3.16c-.124 0-.33.082-.495.082-1.421 3.374-3.49 6.955-5.863 10.328.66.165 1.298.33 1.916.495.618.165 1.174.288 1.586.371-.165.742-.33 1.421-.495 2.06-.165.66-.288 1.257-.371 1.792h4.028c.33-2.555.783-5.71 1.339-9.414.33-2.184.618-3.95.824-5.287-.825-.206-1.586-.371-2.47-.427z"/>
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <text
+        x="12"
+        y="17"
+        textAnchor="middle"
+        fontFamily="system-ui, -apple-system, sans-serif"
+        fontSize="18"
+        fontWeight="700"
+        fill="currentColor"
+      >
+        S
+      </text>
     </svg>
   );
 }
@@ -308,7 +317,7 @@ function DataSourceSection() {
         <div className="rounded-lg border border-slate-800 overflow-hidden">
           <div className="flex items-center justify-between p-2.5 bg-slate-800/30">
             <div className="flex items-center gap-2">
-              <ShopifyIcon className="w-4 h-4 text-[#96BF48]" />
+              <ShopifyIcon className="w-5 h-5 text-[#5BBF3D]" />
               <span className="text-xs font-medium text-slate-200">Shopify</span>
             </div>
             {isCheckingShopifyEnv ? (
@@ -497,7 +506,7 @@ function DataSourceSection() {
                 className={cn(
                   'flex-1 py-2 px-3 rounded-lg border transition-colors text-xs font-medium disabled:opacity-50',
                   showDbForm
-                    ? 'border-amber-500/50 bg-amber-500/10 text-amber-400'
+                    ? 'border-primary/50 bg-primary/10 text-primary'
                     : 'border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300'
                 )}
               >
@@ -513,7 +522,7 @@ function DataSourceSection() {
                   value={dbConnectionString}
                   onChange={(e) => setDbConnectionString(e.target.value)}
                   placeholder="postgresql://user:pass@host:5432/db"
-                  className="w-full px-2.5 py-1.5 text-xs font-mono rounded bg-void-900 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+                  className="w-full px-2.5 py-1.5 text-xs font-mono rounded bg-void-900 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-primary"
                 />
                 <button
                   onClick={handleDbConnect}
@@ -621,7 +630,7 @@ function JobHistorySection({
   return (
     <div className="p-3 space-y-3">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-slate-300">Job History</span>
+        <span className="text-xs font-medium text-slate-300">Shipment History</span>
         <span className="text-[10px] font-mono text-slate-500">{jobs.length} jobs</span>
       </div>
 
@@ -633,7 +642,7 @@ function JobHistorySection({
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search commands..."
-          className="w-full pl-8 pr-3 py-2 text-xs font-mono rounded-md bg-void-900 border border-slate-800 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-amber-500"
+          className="w-full pl-8 pr-3 py-2 text-xs font-mono rounded-md bg-void-900 border border-slate-800 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-primary"
         />
       </div>
 
@@ -667,7 +676,7 @@ function JobHistorySection({
                 'group relative w-full text-left p-2.5 rounded-md transition-colors cursor-pointer',
                 'border border-transparent',
                 activeJobId === job.id
-                  ? 'bg-amber-500/10 border-amber-500/30'
+                  ? 'bg-primary/10 border-primary/30'
                   : 'hover:bg-slate-800/50'
               )}
               onClick={() => onSelectJob(job as Job)}
@@ -779,7 +788,7 @@ export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId }: Sideb
             onClick={onToggle}
             className={cn(
               'w-10 h-10 flex items-center justify-center rounded-lg transition-colors',
-              hasDataSource ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-800 text-slate-500 hover:text-slate-300'
+              hasDataSource ? 'bg-primary/20 text-primary' : 'bg-slate-800 text-slate-500 hover:text-slate-300'
             )}
             title={connectionLabel}
           >

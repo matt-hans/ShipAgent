@@ -246,8 +246,8 @@
   .btn-primary {
     @apply inline-flex items-center justify-center;
     @apply px-4 py-2.5 rounded-lg font-medium text-sm;
-    @apply bg-accent text-accent-foreground;
-    @apply hover:opacity-90 active:opacity-80;
+    @apply bg-primary text-primary-foreground;
+    @apply hover:bg-primary/90 active:bg-primary/80;
     @apply transition-all duration-200;
     @apply disabled:opacity-50 disabled:cursor-not-allowed;
   }

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none">
+  <!-- Rounded square background matching bg-primary -->
+  <rect width="32" height="32" rx="6" fill="#1a1a2e"/>
+  <!-- Package icon (Lucide Package paths scaled to fit) -->
+  <g stroke="#f5f5f5" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M7.5 11.5L16 7L24.5 11.5V20.5L16 25L7.5 20.5V11.5Z"/>
+    <path d="M7.5 11.5L16 16"/>
+    <path d="M16 25V16"/>
+    <path d="M24.5 11.5L16 16"/>
+    <path d="M20.25 9.25L11.75 14"/>
+  </g>
+</svg>

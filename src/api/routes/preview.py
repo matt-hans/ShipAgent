@@ -237,7 +237,7 @@ async def _execute_batch(job_id: str) -> None:
 
         # Create UPSService from environment
         ups_service = UPSService(
-            base_url=os.environ.get("UPS_BASE_URL", "https://onlinetools.ups.com"),
+            base_url=os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com"),
             client_id=os.environ.get("UPS_CLIENT_ID", ""),
             client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
         )

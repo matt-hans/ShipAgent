@@ -330,12 +330,14 @@ class UPSService:
 
     def _translate_error(self, error: ToolError) -> UPSServiceError:
         """Translate fork ToolError to UPSServiceError with ShipAgent E-code."""
+        raw_str = str(error)
+
         try:
-            error_data = json.loads(str(error))
+            error_data = json.loads(raw_str)
         except (json.JSONDecodeError, TypeError):
             return UPSServiceError(
                 code="E-3005",
-                message=f"UPS error: {error}",
+                message=f"UPS error: {raw_str}",
             )
 
         ups_code = error_data.get("code")
@@ -349,6 +351,10 @@ class UPSService:
             if errors and isinstance(errors[0], dict):
                 ups_code = errors[0].get("code", ups_code)
                 ups_message = errors[0].get("message", ups_message)
+
+        # Ensure we never lose the actual error text
+        if not ups_message or ups_message == "Unknown error":
+            ups_message = raw_str[:500]
 
         sa_code, sa_message, remediation = translate_ups_error(
             ups_code, ups_message

@@ -132,14 +132,22 @@ export function LabelPreview({
     document.body.removeChild(link);
   };
 
+  const handlePrint = () => {
+    const printWindow = window.open(resolvedPdfUrl, '_blank');
+    if (printWindow) {
+      printWindow.addEventListener('load', () => {
+        printWindow.print();
+      });
+    }
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col">
-        <DialogHeader>
-          <DialogTitle>{title || 'Label Preview'}</DialogTitle>
-          <DialogDescription className="font-mono text-xs">
-            {trackingNumber || (pdfUrlProp ? 'Merged labels' : '')}
-          </DialogDescription>
+        {/* Visually hidden header for accessibility */}
+        <DialogHeader className="sr-only">
+          <DialogTitle>Label Preview</DialogTitle>
+          <DialogDescription>Shipping label preview</DialogDescription>
         </DialogHeader>
 
         <div
@@ -173,6 +181,10 @@ export function LabelPreview({
         <DialogFooter className="border-t pt-4 gap-2 sm:gap-0">
           <Button variant="outline" onClick={onClose}>
             Close
+          </Button>
+          <Button variant="outline" onClick={handlePrint} disabled={isLoading || !!error}>
+            <PrinterIcon className="h-4 w-4 mr-2" />
+            Print
           </Button>
           <Button onClick={handleDownload} disabled={isLoading || !!error}>
             <DownloadIcon className="h-4 w-4 mr-2" />
@@ -217,6 +229,25 @@ function AlertIcon({ className }: { className?: string }) {
       <circle cx="12" cy="12" r="10" />
       <line x1="12" y1="8" x2="12" y2="12" />
       <line x1="12" y1="16" x2="12.01" y2="16" />
+    </svg>
+  );
+}
+
+function PrinterIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <polyline points="6 9 6 2 18 2 18 9" />
+      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
+      <rect x="6" y="14" width="12" height="8" />
     </svg>
   );
 }

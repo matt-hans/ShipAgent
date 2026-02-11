@@ -14,9 +14,9 @@ import { useAppState, type ConversationMessage } from '@/hooks/useAppState';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
-import { submitCommand, waitForPreview, confirmJob, cancelJob, getJob, getMergedLabelsUrl } from '@/lib/api';
+import { submitCommand, waitForPreview, confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl } from '@/lib/api';
 import type { Job, BatchPreview, PreviewRow, OrderData } from '@/types/api';
-import { ShipAgentLogo } from '@/components/ui/ShipAgentLogo';
+import { Package } from 'lucide-react';
 import { LabelPreview } from '@/components/LabelPreview';
 import { JobDetailPanel } from '@/components/JobDetailPanel';
 
@@ -84,6 +84,15 @@ function ChevronDownIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
       <polyline points="6 9 12 15 18 9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function EditIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
+      <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -220,7 +229,7 @@ function ShipmentDetails({ orderData }: { orderData: OrderData }) {
             <UserIcon className="w-3 h-3" />
             <span>Recipient (Ship To)</span>
             {isDifferentRecipient && (
-              <span className="ml-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[8px] font-medium">
+              <span className="ml-1 px-1.5 py-0.5 rounded bg-primary/20 text-primary text-[8px] font-medium">
                 GIFT
               </span>
             )}
@@ -316,7 +325,7 @@ function ShipmentRow({
                 <div className="flex items-center gap-2">
                   <span className="text-slate-500 text-[10px]">Ship to:</span>
                   <span className="text-slate-200 font-medium truncate">{recipientName}</span>
-                  <span className="px-1 py-0.5 rounded bg-amber-500/20 text-amber-400 text-[8px] font-medium">
+                  <span className="px-1 py-0.5 rounded bg-primary/20 text-primary text-[8px] font-medium">
                     GIFT
                   </span>
                 </div>
@@ -332,7 +341,7 @@ function ShipmentRow({
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
           <span className="font-mono text-slate-400 text-[10px]">{row.service}</span>
-          <span className="font-mono text-amber-400 font-medium">{formatCurrency(row.estimated_cost_cents)}</span>
+          <span className="font-mono text-primary font-medium">{formatCurrency(row.estimated_cost_cents)}</span>
         </div>
       </button>
 
@@ -350,13 +359,20 @@ function PreviewCard({
   onConfirm,
   onCancel,
   isConfirming,
+  onRefine,
+  isRefining,
 }: {
   preview: BatchPreview;
   onConfirm: () => void;
   onCancel: () => void;
   isConfirming: boolean;
+  onRefine: (text: string) => void;
+  isRefining: boolean;
 }) {
   const [expandedRows, setExpandedRows] = React.useState<Set<number>>(new Set());
+  const [showRefinement, setShowRefinement] = React.useState(false);
+  const [refinementInput, setRefinementInput] = React.useState('');
+  const refinementInputRef = React.useRef<HTMLInputElement>(null);
 
   const toggleRow = (rowNumber: number) => {
     setExpandedRows((prev) => {
@@ -370,8 +386,35 @@ function PreviewCard({
     });
   };
 
+  // Auto-focus the refinement input when it becomes visible
+  React.useEffect(() => {
+    if (showRefinement && refinementInputRef.current) {
+      refinementInputRef.current.focus();
+    }
+  }, [showRefinement]);
+
+  const handleRefinementSubmit = () => {
+    if (!refinementInput.trim() || isRefining) return;
+    onRefine(refinementInput.trim());
+    setRefinementInput('');
+    setShowRefinement(false);
+  };
+
+  const handleRefinementKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleRefinementSubmit();
+    } else if (e.key === 'Escape') {
+      setShowRefinement(false);
+      setRefinementInput('');
+    }
+  };
+
   return (
-    <div className="card-premium p-4 space-y-4 animate-scale-in border-gradient">
+    <div className={cn(
+      'card-premium p-4 space-y-4 animate-scale-in border-gradient transition-opacity',
+      isRefining && 'opacity-70'
+    )}>
       {/* Header */}
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-slate-200">Shipment Preview</h3>
@@ -385,7 +428,7 @@ function PreviewCard({
           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Total Rows</p>
         </div>
         <div className="p-3 rounded-lg bg-slate-800/50 text-center">
-          <p className="text-2xl font-semibold text-amber-400">
+          <p className="text-2xl font-semibold text-primary">
             {formatCurrency(preview.total_estimated_cost_cents)}
           </p>
           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Est. Cost</p>
@@ -423,11 +466,56 @@ function PreviewCard({
         </div>
       )}
 
+      {/* Refinement section */}
+      <div className="space-y-2">
+        {!showRefinement ? (
+          <button
+            onClick={() => setShowRefinement(true)}
+            disabled={isRefining || isConfirming}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <EditIcon className="w-3.5 h-3.5" />
+            <span>Refine this shipment</span>
+          </button>
+        ) : (
+          <div className="flex gap-2">
+            <input
+              ref={refinementInputRef}
+              type="text"
+              value={refinementInput}
+              onChange={(e) => setRefinementInput(e.target.value)}
+              onKeyDown={handleRefinementKeyDown}
+              placeholder='e.g. "change to 2nd Day Air"'
+              disabled={isRefining}
+              className="flex-1 px-3 py-2 text-xs bg-slate-800/70 border border-slate-700 rounded-md text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/25 disabled:opacity-50"
+            />
+            <button
+              onClick={handleRefinementSubmit}
+              disabled={!refinementInput.trim() || isRefining}
+              className="px-3 py-2 text-xs btn-primary flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isRefining ? (
+                <span className="w-3.5 h-3.5 border-2 border-void-950/30 border-t-void-950 rounded-full animate-spin" />
+              ) : (
+                <span>Apply</span>
+              )}
+            </button>
+            <button
+              onClick={() => { setShowRefinement(false); setRefinementInput(''); }}
+              disabled={isRefining}
+              className="px-2 py-2 text-xs text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-50"
+            >
+              <XIcon className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Actions */}
       <div className="flex gap-3 pt-2">
         <button
           onClick={onCancel}
-          disabled={isConfirming}
+          disabled={isConfirming || isRefining}
           className="flex-1 btn-secondary py-2.5 flex items-center justify-center gap-2"
         >
           <XIcon className="w-4 h-4" />
@@ -435,7 +523,7 @@ function PreviewCard({
         </button>
         <button
           onClick={onConfirm}
-          disabled={isConfirming}
+          disabled={isConfirming || isRefining}
           className="flex-1 btn-primary py-2.5 flex items-center justify-center gap-2"
         >
           {isConfirming ? (
@@ -557,7 +645,7 @@ function ProgressDisplay({ jobId, onComplete, onFailed }: {
           <p className="text-[10px] font-mono text-slate-500">Failed</p>
         </div>
         <div className="p-2 rounded bg-slate-800/50 text-center">
-          <p className="text-lg font-semibold text-amber-400">
+          <p className="text-lg font-semibold text-primary">
             {formatCurrency(progress.totalCostCents)}
           </p>
           <p className="text-[10px] font-mono text-slate-500">Cost</p>
@@ -598,7 +686,7 @@ function CompletionArtifact({ message, onViewLabels }: {
 
   const allFailed = meta.successful === 0 && meta.failed > 0;
   const hasFailures = meta.failed > 0;
-  const borderColor = allFailed ? 'border-l-error' : hasFailures ? 'border-l-amber-500' : 'border-l-success';
+  const borderColor = allFailed ? 'border-l-error' : hasFailures ? 'border-l-warning' : 'border-l-success';
   const badgeClass = allFailed ? 'badge-error' : hasFailures ? 'badge-warning' : 'badge-success';
   const badgeText = allFailed ? 'FAILED' : hasFailures ? 'PARTIAL' : 'COMPLETED';
 
@@ -630,7 +718,7 @@ function CompletionArtifact({ message, onViewLabels }: {
       <div className="flex items-center gap-3 text-xs font-mono text-slate-400">
         <span>{meta.successful} shipment{meta.successful !== 1 ? 's' : ''}</span>
         <span className="text-slate-600">&middot;</span>
-        <span className="text-amber-400">{formatCurrency(meta.totalCostCents)}</span>
+        <span className="text-primary">{formatCurrency(meta.totalCostCents)}</span>
         {meta.failed > 0 && (
           <>
             <span className="text-slate-600">&middot;</span>
@@ -674,11 +762,11 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
   if (!isConnected) {
     return (
       <div className="flex flex-col items-center pt-12 text-center px-4 animate-fade-in">
-        <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mb-4">
-          <ShipAgentLogo className="w-12 h-12" primaryColor="#f59e0b"  />
+        <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary mb-4">
+          <Package className="h-6 w-6 text-primary-foreground" />
         </div>
 
-        <h2 className="text-xl font-semibold text-slate-100 mb-2">
+        <h2 className="text-xl font-semibold text-foreground mb-2">
           Welcome to ShipAgent
         </h2>
 
@@ -697,7 +785,7 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
           ].map((item) => (
             <div key={item.step} className="text-center">
               <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center mx-auto mb-2">
-                <span className="text-xs font-mono text-amber-400">{item.step}</span>
+                <span className="text-xs font-mono text-primary">{item.step}</span>
               </div>
               <p className="text-xs font-medium text-slate-200">{item.title}</p>
               <p className="text-[10px] text-slate-500">{item.desc}</p>
@@ -733,16 +821,16 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
 
   return (
     <div className="flex flex-col items-center pt-12 text-center px-4 animate-fade-in">
-      <div className="w-16 h-16 rounded-2xl bg-success/10 border border-success/30 flex items-center justify-center mb-4">
-        <ShipAgentLogo className="w-12 h-12" primaryColor="#22c55e"  />
+      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary mb-4">
+        <Package className="h-6 w-6 text-primary-foreground" />
       </div>
 
-      <h2 className="text-xl font-semibold text-slate-100 mb-2">
+      <h2 className="text-xl font-semibold text-foreground mb-2">
         Ready to Ship
       </h2>
 
       <p className="text-sm text-slate-400 max-w-md mb-2">
-        Connected to <span className="text-amber-400 font-medium">{sourceDisplay.name}</span>
+        Connected to <span className="text-primary font-medium">{sourceDisplay.name}</span>
         {sourceDisplay.detail && (
           <> · <span className="text-slate-500">{sourceDisplay.detail}</span></>
         )}
@@ -800,6 +888,8 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const [executingJobId, setExecutingJobId] = React.useState<string | null>(null);
   const [showLabelPreview, setShowLabelPreview] = React.useState(false);
   const [labelPreviewJobId, setLabelPreviewJobId] = React.useState<string | null>(null);
+  const [isRefining, setIsRefining] = React.useState(false);
+  const [refinementHistory, setRefinementHistory] = React.useState<string[]>([]);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -862,6 +952,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     if (!currentJobId) return;
 
     setIsConfirming(true);
+    setRefinementHistory([]);
     try {
       await confirmJob(currentJobId);
       setExecutingJobId(currentJobId);
@@ -891,6 +982,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const handleCancel = async () => {
     if (!currentJobId) return;
 
+    setRefinementHistory([]);
     try {
       await cancelJob(currentJobId);
       setPreview(null);
@@ -903,6 +995,70 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       });
     } catch (err) {
       console.error('Failed to cancel:', err);
+    }
+  };
+
+  // Handle refinement
+  const handleRefine = async (refinementText: string) => {
+    if (!currentJobId || !refinementText.trim() || isRefining) return;
+
+    setIsRefining(true);
+
+    try {
+      // Delete the old preview job so it doesn't clutter sidebar history
+      try {
+        await deleteJob(currentJobId);
+        refreshJobList();
+      } catch {
+        // Delete may fail if job already processed; proceed with refinement regardless
+      }
+
+      // Build refined command by chaining refinements
+      const newHistory = [...refinementHistory, refinementText.trim()];
+      const baseCommand = lastCommandRef.current;
+      const refinedCommand = newHistory.reduce(
+        (cmd, refinement, i) => `${cmd}${i === 0 ? ', but ' : ', and '}${refinement}`,
+        baseCommand
+      );
+
+      setRefinementHistory(newHistory);
+
+      // Add user message showing the refinement
+      addMessage({ role: 'user', content: `Refine: ${refinementText.trim()}` });
+
+      // Submit the refined command
+      const result = await submitCommand(refinedCommand);
+      setCurrentJobId(result.job_id);
+
+      // Wait for new preview
+      const previewData = await waitForPreview(result.job_id);
+      setPreview(previewData);
+
+      // Add system message with updated stats
+      addMessage({
+        role: 'system',
+        content: `Updated preview: ${previewData.total_rows} rows. Estimated cost: ${formatCurrency(previewData.total_estimated_cost_cents)}.`,
+        metadata: {
+          jobId: result.job_id,
+          action: 'preview',
+          preview: {
+            rowCount: previewData.total_rows,
+            estimatedCost: previewData.total_estimated_cost_cents,
+            warnings: previewData.rows_with_warnings,
+          },
+        },
+      });
+    } catch (err) {
+      // On error, pop the last refinement from history
+      setRefinementHistory((prev) => prev.slice(0, -1));
+
+      addMessage({
+        role: 'system',
+        content: `Refinement failed: ${err instanceof Error ? err.message : 'Unknown error'}. Previous preview is still active.`,
+        metadata: { action: 'error' },
+      });
+    } finally {
+      setIsRefining(false);
     }
   };
 
@@ -960,6 +1116,8 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                   onConfirm={handleConfirm}
                   onCancel={handleCancel}
                   isConfirming={isConfirming}
+                  onRefine={handleRefine}
+                  isRefining={isRefining}
                 />
               </div>
             )}
