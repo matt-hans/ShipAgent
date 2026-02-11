@@ -224,6 +224,21 @@ class TestUPSMCPConfig:
             assert config["env"]["CLIENT_ID"] == ""
             assert config["env"]["CLIENT_SECRET"] == ""
 
+    def test_missing_credentials_logs_warning(self, caplog):
+        """Should log a warning when UPS credentials are missing."""
+        import logging
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.delenv("UPS_CLIENT_ID", raising=False)
+            mp.delenv("UPS_CLIENT_SECRET", raising=False)
+
+            with caplog.at_level(logging.WARNING, logger="src.orchestrator.agent.config"):
+                get_ups_mcp_config()
+
+            assert "Missing UPS credentials" in caplog.text
+            assert "UPS_CLIENT_ID" in caplog.text
+            assert "UPS_CLIENT_SECRET" in caplog.text
+
     def test_args_is_list(self):
         """Args should be a list."""
         config = get_ups_mcp_config()

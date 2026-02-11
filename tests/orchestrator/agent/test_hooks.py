@@ -11,6 +11,7 @@ import pytest
 from src.orchestrator.agent.hooks import (
     validate_pre_tool,
     validate_shipping_input,
+    validate_void_shipment,
     validate_data_query,
     log_post_tool,
     detect_error_response,
@@ -177,6 +178,68 @@ class TestValidateShippingInput:
         assert result == {}
 
 
+class TestValidateVoidShipment:
+    """Tests for UPS void_shipment input validation hook."""
+
+    @pytest.mark.asyncio
+    async def test_denies_missing_tracking_number(self):
+        """Should deny void_shipment without tracking number."""
+        result = await validate_void_shipment(
+            {
+                "tool_name": "mcp__ups__void_shipment",
+                "tool_input": {}
+            },
+            "test-id",
+            None
+        )
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "shipment" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+    @pytest.mark.asyncio
+    async def test_allows_with_tracking_number(self):
+        """Should allow void_shipment with trackingNumber."""
+        result = await validate_void_shipment(
+            {
+                "tool_name": "mcp__ups__void_shipment",
+                "tool_input": {"trackingNumber": "1Z999AA10123456784"}
+            },
+            "test-id",
+            None
+        )
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_allows_with_shipment_id(self):
+        """Should allow void_shipment with ShipmentIdentificationNumber."""
+        result = await validate_void_shipment(
+            {
+                "tool_name": "mcp__ups__void_shipment",
+                "tool_input": {"ShipmentIdentificationNumber": "1Z999AA10123456784"}
+            },
+            "test-id",
+            None
+        )
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_allows_non_void_tools(self):
+        """Should allow tools that aren't void_shipment."""
+        result = await validate_void_shipment(
+            {
+                "tool_name": "mcp__ups__rate_shipment",
+                "tool_input": {}
+            },
+            "test-id",
+            None
+        )
+
+        assert result == {}
+
+
 class TestValidateDataQuery:
     """Tests for data query validation hook."""
 
@@ -255,6 +318,22 @@ class TestValidatePreTool:
         )
 
         # Should deny (missing shipper)
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.asyncio
+    async def test_routes_to_void_shipment_validator(self):
+        """Should route void_shipment to validate_void_shipment."""
+        result = await validate_pre_tool(
+            {
+                "tool_name": "mcp__ups__void_shipment",
+                "tool_input": {}
+            },
+            "test-id",
+            None
+        )
+
+        # Should deny (missing tracking number)
         assert "hookSpecificOutput" in result
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
 
@@ -474,6 +553,15 @@ class TestCreateHookMatchers:
             if m.get("matcher") and "create_shipment" in m["matcher"]
         ]
         assert len(shipment_matchers) >= 1
+
+    def test_pretooluse_has_void_shipment_matcher(self):
+        """PreToolUse should have matcher for UPS void_shipment tool."""
+        matchers = create_hook_matchers()
+        void_matchers = [
+            m for m in matchers["PreToolUse"]
+            if m.get("matcher") and "void_shipment" in m["matcher"]
+        ]
+        assert len(void_matchers) >= 1
 
     def test_pretooluse_has_query_matcher(self):
         """PreToolUse should have matcher for data query tools."""
