@@ -55,9 +55,22 @@ async def submit_command(
     Returns:
         Response with job_id and initial status (pending).
     """
+    # Generate clean display name
+    if payload.refinement and payload.base_command:
+        # Refined job: show base summary → refinement
+        base_summary = payload.base_command[:40].rstrip()
+        if len(payload.base_command) > 40:
+            base_summary += "..."
+        refinement_summary = payload.refinement[:40].rstrip()
+        if len(payload.refinement) > 40:
+            refinement_summary += "..."
+        job_name = f"{base_summary} → {refinement_summary}"
+    else:
+        job_name = f"Command: {payload.command[:50]}{'...' if len(payload.command) > 50 else ''}"
+
     # Create job with command
     job = Job(
-        name=f"Command: {payload.command[:50]}{'...' if len(payload.command) > 50 else ''}",
+        name=job_name,
         original_command=payload.command,
         status=JobStatus.pending.value,
     )

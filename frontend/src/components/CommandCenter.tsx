@@ -929,10 +929,10 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const lastCommandRef = React.useRef<string>('');
 
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom (includes activeJob so returning from job detail scrolls down)
   React.useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [conversation, preview, executingJobId]);
+  }, [conversation, preview, executingJobId, activeJob]);
 
   // Handle command submit
   const handleSubmit = async () => {
@@ -1095,8 +1095,16 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     }
   };
 
-  // Show job detail panel when a sidebar job is selected and no active conversation
-  const showJobDetail = activeJob && conversation.length === 0 && !preview && !executingJobId;
+  // Clear stale label preview when navigating away from a job detail view
+  React.useEffect(() => {
+    if (!activeJob && showLabelPreview) {
+      setShowLabelPreview(false);
+      setLabelPreviewJobId(null);
+    }
+  }, [activeJob, showLabelPreview]);
+
+  // Show job detail panel when a sidebar job is selected (takes priority over conversation)
+  const showJobDetail = activeJob && !preview && !executingJobId;
 
   if (showJobDetail) {
     return (
@@ -1202,8 +1210,21 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
               </div>
             )}
 
-            {/* Typing indicator */}
+            {/* Typing indicator — shown during initial processing or refinement */}
             {isProcessing && <TypingIndicator />}
+            {isRefining && (
+              <div className="flex gap-3 animate-fade-in">
+                <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-primary/20 to-primary/30 border border-primary/30 flex items-center justify-center">
+                  <EditIcon className="w-4 h-4 text-primary animate-pulse" />
+                </div>
+                <div className="message-system py-3">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3.5 h-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                    <span className="text-xs text-slate-400">Recalculating rates...</span>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div ref={messagesEndRef} />
           </div>
