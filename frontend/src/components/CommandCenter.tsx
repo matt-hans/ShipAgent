@@ -14,7 +14,7 @@ import { useAppState, type ConversationMessage } from '@/hooks/useAppState';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
-import { submitCommand, waitForPreview, confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl } from '@/lib/api';
+import { submitCommand, waitForPreview, confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, refineJob } from '@/lib/api';
 import type { Job, BatchPreview, PreviewRow, OrderData } from '@/types/api';
 import { Package } from 'lucide-react';
 import { LabelPreview } from '@/components/LabelPreview';
@@ -353,6 +353,58 @@ function ShipmentRow({
   );
 }
 
+// Number of rows visible before expanding
+const COLLAPSED_ROW_COUNT = 6;
+
+// Shipment list with expand/collapse for viewing all rows
+function ShipmentList({
+  rows,
+  expandedRows,
+  onToggleRow,
+}: {
+  rows: PreviewRow[];
+  expandedRows: Set<number>;
+  onToggleRow: (rowNumber: number) => void;
+}) {
+  const [isListExpanded, setIsListExpanded] = React.useState(false);
+  const visibleRows = isListExpanded ? rows : rows.slice(0, COLLAPSED_ROW_COUNT);
+  const canExpand = rows.length > COLLAPSED_ROW_COUNT;
+
+  return (
+    <div className="space-y-0">
+      <div className={cn(
+        'overflow-y-auto rounded-md border border-slate-800 scrollable',
+        isListExpanded ? 'max-h-[60vh]' : 'max-h-none'
+      )}>
+        {visibleRows.map((row) => (
+          <ShipmentRow
+            key={row.row_number}
+            row={row}
+            isExpanded={expandedRows.has(row.row_number)}
+            onToggle={() => onToggleRow(row.row_number)}
+          />
+        ))}
+      </div>
+      {canExpand && (
+        <button
+          onClick={() => setIsListExpanded(!isListExpanded)}
+          className="w-full py-2 text-[11px] font-medium text-slate-400 hover:text-primary transition-colors flex items-center justify-center gap-1.5"
+        >
+          <ChevronDownIcon className={cn(
+            'w-3.5 h-3.5 transition-transform',
+            isListExpanded && 'rotate-180'
+          )} />
+          <span>
+            {isListExpanded
+              ? 'Show less'
+              : `Show all ${rows.length} shipments`}
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Preview card component
 function PreviewCard({
   preview,
@@ -439,31 +491,13 @@ function PreviewCard({
         </div>
       </div>
 
-      {/* Sample rows */}
+      {/* Shipment rows */}
       {preview.preview_rows.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Sample Shipments</p>
-            {preview.preview_rows.some(r => r.order_data) && (
-              <p className="text-[10px] text-slate-600">Click to expand</p>
-            )}
-          </div>
-          <div className="max-h-80 overflow-y-auto rounded-md border border-slate-800 scrollable">
-            {preview.preview_rows.slice(0, 10).map((row) => (
-              <ShipmentRow
-                key={row.row_number}
-                row={row}
-                isExpanded={expandedRows.has(row.row_number)}
-                onToggle={() => toggleRow(row.row_number)}
-              />
-            ))}
-          </div>
-          {preview.additional_rows > 0 && (
-            <p className="text-[10px] text-center text-slate-500">
-              +{preview.additional_rows} more rows
-            </p>
-          )}
-        </div>
+        <ShipmentList
+          rows={preview.preview_rows}
+          expandedRows={expandedRows}
+          onToggleRow={toggleRow}
+        />
       )}
 
       {/* Refinement section */}
@@ -1003,43 +1037,33 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     if (!currentJobId || !refinementText.trim() || isRefining) return;
 
     setIsRefining(true);
+    const previousJobId = currentJobId;
 
     try {
-      // Delete the old preview job so it doesn't clutter sidebar history
-      try {
-        await deleteJob(currentJobId);
-        refreshJobList();
-      } catch {
-        // Delete may fail if job already processed; proceed with refinement regardless
-      }
-
-      // Build refined command by chaining refinements
       const newHistory = [...refinementHistory, refinementText.trim()];
-      const baseCommand = lastCommandRef.current;
-      const refinedCommand = newHistory.reduce(
-        (cmd, refinement, i) => `${cmd}${i === 0 ? ', but ' : ', and '}${refinement}`,
-        baseCommand
-      );
-
       setRefinementHistory(newHistory);
 
       // Add user message showing the refinement
       addMessage({ role: 'user', content: `Refine: ${refinementText.trim()}` });
 
-      // Submit the refined command
-      const result = await submitCommand(refinedCommand);
-      setCurrentJobId(result.job_id);
+      // Use shared refineJob utility (submits, waits, deletes old job)
+      const { jobId, preview: previewData } = await refineJob(
+        lastCommandRef.current,
+        refinementHistory,
+        refinementText.trim(),
+        previousJobId,
+      );
 
-      // Wait for new preview
-      const previewData = await waitForPreview(result.job_id);
+      setCurrentJobId(jobId);
       setPreview(previewData);
+      refreshJobList();
 
       // Add system message with updated stats
       addMessage({
         role: 'system',
         content: `Updated preview: ${previewData.total_rows} rows. Estimated cost: ${formatCurrency(previewData.total_estimated_cost_cents)}.`,
         metadata: {
-          jobId: result.job_id,
+          jobId,
           action: 'preview',
           preview: {
             rowCount: previewData.total_rows,
@@ -1049,8 +1073,9 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         },
       });
     } catch (err) {
-      // On error, pop the last refinement from history
+      // On error, pop the last refinement from history and restore previous job
       setRefinementHistory((prev) => prev.slice(0, -1));
+      setCurrentJobId(previousJobId);
 
       addMessage({
         role: 'system',

@@ -68,6 +68,25 @@ class ExternalOrder(BaseModel):
     ship_to_country: str = Field(default="US", description="Country code")
     ship_to_phone: str | None = Field(None, description="Phone number")
 
+    # Financials
+    total_price: str | None = Field(None, description="Order total price as decimal string (e.g. '149.99')")
+
+    # Status breakdown (standalone, in addition to composite 'status' field)
+    financial_status: str | None = Field(None, description="Financial status (e.g. 'paid', 'pending', 'refunded')")
+    fulfillment_status: str | None = Field(None, description="Fulfillment status (e.g. 'unfulfilled', 'fulfilled', 'partial')")
+
+    # Tags
+    tags: str | None = Field(None, description="Comma-separated tags (e.g. 'VIP, wholesale, priority')")
+
+    # Weight & dimensions
+    total_weight_grams: float | None = Field(None, description="Total order weight in grams (sum of line item weights)")
+
+    # Shipping
+    shipping_method: str | None = Field(None, description="Selected shipping method (e.g. 'Standard Shipping', 'Express')")
+
+    # Item count
+    item_count: int | None = Field(None, description="Total number of items (sum of line item quantities)")
+
     # Items
     items: list[dict[str, Any]] = Field(default_factory=list, description="Order line items")
 

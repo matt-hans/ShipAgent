@@ -334,8 +334,9 @@ class ShopifyClient(PlatformClient):
         status = f"{financial_status}/{fulfillment_status}"
 
         # Normalize line items
+        raw_line_items = shopify_order.get("line_items", [])
         line_items = []
-        for item in shopify_order.get("line_items", []):
+        for item in raw_line_items:
             line_items.append({
                 "id": str(item.get("id", "")),
                 "title": item.get("title", ""),
@@ -343,6 +344,25 @@ class ShopifyClient(PlatformClient):
                 "price": item.get("price", "0.00"),
                 "sku": item.get("sku", ""),
             })
+
+        # Extract tags (Shopify returns comma-separated string)
+        tags = shopify_order.get("tags") or None
+
+        # Compute total weight from line items (Shopify stores grams per item)
+        total_weight_grams = sum(
+            (item.get("grams", 0) or 0) * item.get("quantity", 1)
+            for item in raw_line_items
+        ) or None
+
+        # Extract shipping method from first shipping line
+        shipping_lines = shopify_order.get("shipping_lines", [])
+        shipping_method = shipping_lines[0].get("title") if shipping_lines else None
+
+        # Compute item count
+        item_count = sum(
+            item.get("quantity", 1)
+            for item in raw_line_items
+        ) or None
 
         return ExternalOrder(
             platform="shopify",
@@ -361,6 +381,13 @@ class ShopifyClient(PlatformClient):
             ship_to_postal_code=shipping_address.get("zip", ""),
             ship_to_country=shipping_address.get("country_code", "US"),
             ship_to_phone=shipping_address.get("phone"),
+            total_price=shopify_order.get("total_price"),
+            financial_status=financial_status,
+            fulfillment_status=fulfillment_status,
+            tags=tags,
+            total_weight_grams=total_weight_grams,
+            shipping_method=shipping_method,
+            item_count=item_count,
             items=line_items,
             raw_data=shopify_order,
         )

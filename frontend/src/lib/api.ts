@@ -329,6 +329,47 @@ export async function deleteJob(jobId: string): Promise<void> {
   }
 }
 
+/**
+ * Refine a job by chaining a natural language refinement onto the original command.
+ *
+ * Submits the refined command, waits for preview, then deletes the old job.
+ * Returns the new job ID and preview data.
+ *
+ * @param originalCommand - The base command before any refinements.
+ * @param refinementHistory - Previous refinements already applied.
+ * @param newRefinement - The new refinement to append.
+ * @param previousJobId - The job ID to clean up after successful refinement.
+ * @returns New job ID and preview data.
+ */
+export async function refineJob(
+  originalCommand: string,
+  refinementHistory: string[],
+  newRefinement: string,
+  previousJobId: string,
+): Promise<{ jobId: string; preview: BatchPreview }> {
+  // Build refined command by chaining refinements
+  const allRefinements = [...refinementHistory, newRefinement];
+  const refinedCommand = allRefinements.reduce(
+    (cmd, refinement, i) => `${cmd}${i === 0 ? ', but ' : ', and '}${refinement}`,
+    originalCommand
+  );
+
+  // Submit refined command
+  const result = await submitCommand(refinedCommand);
+
+  // Wait for new preview
+  const preview = await waitForPreview(result.job_id);
+
+  // Clean up old job (best-effort)
+  try {
+    await deleteJob(previousJobId);
+  } catch {
+    // Delete may fail if job already processed; non-critical
+  }
+
+  return { jobId: result.job_id, preview };
+}
+
 // === External Platform API ===
 
 import type {

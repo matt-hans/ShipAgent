@@ -2,15 +2,15 @@
 
 This module bridges the FastAPI command endpoint to the NL pipeline,
 processing natural language commands into ready-to-preview jobs with
-JobRows and cost estimates.
+JobRows and real UPS rate quotes.
 
 The CommandProcessor:
 1. Parses intent via parse_intent()
 2. Generates SQL filter via generate_filter()
 3. Fetches orders from connected platforms matching the filter
-4. Gets UPS rate quotes for each order
-5. Creates JobRows with cost estimates
-6. Updates Job total_rows count
+4. Creates JobRows with placeholder costs
+5. Calls BatchEngine.preview() for real UPS rate quotes (via MCP)
+6. Updates row costs and sets Job total_rows count
 
 Per CONTEXT.md Decision 1:
 - LLM acts as Configuration Engine, not Data Pipe
@@ -21,12 +21,16 @@ Per CONTEXT.md Decision 1:
 import hashlib
 import json
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from src.db.models import Job, JobRow, RowStatus
+from src.services.batch_engine import BatchEngine
+from src.services.ups_payload_builder import build_shipper_from_env
+from src.services.ups_service import UPSService
 from src.mcp.external_sources.models import ExternalOrder, OrderFilters
 from src.orchestrator.models.filter import ColumnInfo, SQLFilterResult
 from src.orchestrator.nl_engine.filter_generator import (
@@ -134,7 +138,65 @@ SHOPIFY_ORDER_SCHEMA = [
         nullable=True,
         sample_values=["555-123-4567", "(212) 555-1234"],
     ),
+    # Financial
+    ColumnInfo(
+        name="total_price",
+        type="numeric",
+        nullable=True,
+        sample_values=["49.99", "149.50", "250.00"],
+    ),
+    # Status breakdown (standalone)
+    ColumnInfo(
+        name="financial_status",
+        type="string",
+        nullable=True,
+        sample_values=["paid", "pending", "refunded", "authorized"],
+    ),
+    ColumnInfo(
+        name="fulfillment_status",
+        type="string",
+        nullable=True,
+        sample_values=["unfulfilled", "fulfilled", "partial"],
+    ),
+    # Tags
+    ColumnInfo(
+        name="tags",
+        type="string",
+        nullable=True,
+        sample_values=["VIP", "wholesale", "priority", "fragile"],
+    ),
+    # Weight
+    ColumnInfo(
+        name="total_weight_grams",
+        type="numeric",
+        nullable=True,
+        sample_values=[100, 500, 2000, 5000],
+    ),
+    # Shipping method
+    ColumnInfo(
+        name="shipping_method",
+        type="string",
+        nullable=True,
+        sample_values=["Standard Shipping", "Express", "Economy"],
+    ),
+    # Item count
+    ColumnInfo(
+        name="item_count",
+        type="integer",
+        nullable=True,
+        sample_values=[1, 3, 5, 10],
+    ),
 ]
+
+
+# Build column type registry from schema for evaluator dispatch
+_COLUMN_TYPES: dict[str, str] = {col.name: col.type for col in SHOPIFY_ORDER_SCHEMA}
+
+# Columns requiring uppercase normalization for comparison
+_UPPER_COLUMNS = frozenset({"ship_to_state", "ship_to_country"})
+
+# Columns requiring phone-digit normalization
+_PHONE_COLUMNS = frozenset({"ship_to_phone"})
 
 
 def compute_order_checksum(order: ExternalOrder) -> str:
@@ -264,22 +326,205 @@ def _split_on_operator(clause: str, operator: str) -> list[str]:
     return parts
 
 
+def _eval_null_clause(clause_lower: str, col_name: str, order_value: Any) -> bool | None:
+    """Handle IS NULL / IS NOT NULL checks.
+
+    Args:
+        clause_lower: Lowercased WHERE clause.
+        col_name: Column name to check.
+        order_value: The order's value for the column.
+
+    Returns:
+        True/False if it's a null check, None if not a null check.
+    """
+    col_null_pattern = f"{col_name} is not null"
+    if col_null_pattern in clause_lower:
+        return order_value is not None and order_value != ""
+    col_null_pattern = f"{col_name} is null"
+    if col_null_pattern in clause_lower:
+        return order_value is None or order_value == ""
+    return None
+
+
+def _eval_string_clause(
+    where_clause: str,
+    col_name: str,
+    order_value: str | None,
+) -> bool:
+    """Evaluate string column: exact match (=) and LIKE patterns.
+
+    Handles case normalization based on column type:
+    - UPPER_COLUMNS: uppercase comparison (state codes, country codes)
+    - PHONE_COLUMNS: digit-only comparison
+    - Default: case-insensitive lowercase comparison
+
+    Args:
+        where_clause: Original WHERE clause (preserves case for regex).
+        col_name: Column name being evaluated.
+        order_value: The order's string value for this column.
+
+    Returns:
+        True if the clause matches.
+    """
+    import re
+
+    value = order_value or ""
+
+    # Determine normalization strategy
+    if col_name in _PHONE_COLUMNS:
+        # Phone: try exact then LIKE with digit normalization
+        match = re.search(
+            rf"{col_name}\s*=\s*['\"]([^'\"]+)['\"]",
+            where_clause, re.IGNORECASE,
+        )
+        if match:
+            target = match.group(1)
+            target_digits = re.sub(r"\D", "", target)
+            value_digits = re.sub(r"\D", "", value)
+            return value_digits == target_digits or value == target
+
+        like_match = re.search(
+            rf"{col_name}\s+like\s+['\"]%?([^%'\"]+)%?['\"]",
+            where_clause, re.IGNORECASE,
+        )
+        if like_match:
+            target = like_match.group(1)
+            target_digits = re.sub(r"\D", "", target)
+            value_digits = re.sub(r"\D", "", value)
+            return target_digits in value_digits or target in value
+        return True  # Fallthrough
+
+    # Standard string: try LIKE first (check presence of LIKE keyword)
+    clause_lower = where_clause.lower()
+    if "like" in clause_lower:
+        like_match = re.search(
+            rf"{col_name}\s+like\s+['\"]%?([^%'\"]+)%?['\"]",
+            where_clause, re.IGNORECASE,
+        )
+        if like_match:
+            target = like_match.group(1)
+            if col_name in _UPPER_COLUMNS:
+                return target.upper() in value.upper()
+            return target.lower() in value.lower()
+
+    # Exact match — try quoted value first, then unquoted
+    match = re.search(
+        rf"{col_name}\s*=\s*['\"]([^'\"]+)['\"]",
+        where_clause, re.IGNORECASE,
+    )
+    if not match:
+        # Unquoted value (e.g. column = value)
+        match = re.search(
+            rf"{col_name}\s*=\s*(\S+)",
+            where_clause, re.IGNORECASE,
+        )
+    if match:
+        target = match.group(1).strip()
+        if col_name in _UPPER_COLUMNS:
+            return value.upper() == target.upper()
+        return value.lower() == target.lower()
+
+    return True  # Fallthrough
+
+
+def _eval_numeric_clause(
+    where_clause: str,
+    col_name: str,
+    order_value: Any,
+) -> bool:
+    """Evaluate numeric column: >, >=, <, <=, =, !=.
+
+    Args:
+        where_clause: Original WHERE clause.
+        col_name: Column name being evaluated.
+        order_value: The order's value for this column.
+
+    Returns:
+        True if the clause matches.
+    """
+    import re
+
+    numeric_match = re.search(
+        rf"{col_name}\s*([><=!]+)\s*['\"]?([0-9.]+)['\"]?",
+        where_clause, re.IGNORECASE,
+    )
+    if not numeric_match:
+        return True  # Fallthrough
+
+    operator = numeric_match.group(1)
+    target_value = float(numeric_match.group(2))
+    try:
+        val = float(order_value) if order_value is not None else 0.0
+        if operator == ">":
+            return val > target_value
+        elif operator == ">=":
+            return val >= target_value
+        elif operator == "<":
+            return val < target_value
+        elif operator == "<=":
+            return val <= target_value
+        elif operator in ("=", "=="):
+            return val == target_value
+        elif operator in ("!=", "<>"):
+            return val != target_value
+    except (ValueError, TypeError):
+        pass
+    return True  # Fallthrough
+
+
+def _eval_date_clause(
+    where_clause: str,
+    col_name: str,
+    order_value: str | None,
+) -> bool:
+    """Evaluate date/datetime column comparisons.
+
+    Args:
+        where_clause: Original WHERE clause.
+        col_name: Column name being evaluated.
+        order_value: The order's date string value.
+
+    Returns:
+        True if the clause matches.
+    """
+    import re
+    from datetime import datetime
+
+    date_match = re.search(
+        rf"{col_name}\s*([><=]+)\s*['\"]?(\d{{4}}-\d{{2}}-\d{{2}})['\"]?",
+        where_clause, re.IGNORECASE,
+    )
+    if not date_match:
+        return True  # Fallthrough
+
+    operator = date_match.group(1)
+    target_date_str = date_match.group(2)
+    try:
+        target_date = datetime.fromisoformat(target_date_str)
+        order_date_str = (order_value or "").split("T")[0]
+        order_date = datetime.fromisoformat(order_date_str)
+
+        if operator == ">=":
+            return order_date >= target_date
+        elif operator == ">":
+            return order_date > target_date
+        elif operator == "<=":
+            return order_date <= target_date
+        elif operator == "<":
+            return order_date < target_date
+        elif operator == "=":
+            return order_date.date() == target_date.date()
+    except ValueError:
+        pass
+    return True  # Fallthrough
+
+
 def _order_matches_filter(order: ExternalOrder, where_clause: str) -> bool:
     """Check if a single order matches the WHERE clause.
 
-    Supports compound AND/OR clauses by splitting into sub-clauses and
-    evaluating each atomically. Also handles common single-column patterns:
-    - String equality: column = 'value'
-    - String LIKE: column LIKE '%value%'
-    - Date comparisons: created_at >= 'YYYY-MM-DD'
-
-    Supported columns:
-    - order_id, order_number (exact match)
-    - status (exact and LIKE)
-    - created_at (date comparisons)
-    - customer_name, customer_email (exact and LIKE)
-    - ship_to_name, ship_to_company, ship_to_city, ship_to_state
-    - ship_to_postal_code, ship_to_country
+    Uses data-driven dispatch: identifies the referenced column from the
+    schema registry, gets the order value via getattr, and delegates to
+    type-specific evaluator functions.
 
     Args:
         order: The order to check.
@@ -288,9 +533,6 @@ def _order_matches_filter(order: ExternalOrder, where_clause: str) -> bool:
     Returns:
         True if order matches the filter.
     """
-    import re
-    from datetime import datetime, timedelta
-
     # Handle compound AND/OR clauses
     op, sub_clauses = _split_compound_clause(where_clause)
     if op == "OR" and len(sub_clauses) > 1:
@@ -300,315 +542,40 @@ def _order_matches_filter(order: ExternalOrder, where_clause: str) -> bool:
 
     clause_lower = where_clause.lower().strip()
 
-    # Log the filter and order being evaluated for debugging
-    logger.debug(
-        "Evaluating filter '%s' for order %s (customer=%s, ship_to=%s)",
-        where_clause,
-        order.order_id,
-        order.customer_name,
-        order.ship_to_name,
-    )
+    # Find which column this clause references (longest match first)
+    matched_col = None
+    for col_name in _COLUMN_TYPES:
+        if col_name in clause_lower:
+            if matched_col is None or len(col_name) > len(matched_col):
+                matched_col = col_name
 
-    # Try to evaluate common patterns
-
-    # Pattern: order_id = 'XXX' or order_number = 'XXX'
-    if "order_id" in clause_lower:
-        match = re.search(
-            r"order_id\s*=\s*['\"]?([^'\"]+)['\"]?",
-            where_clause,
-            re.IGNORECASE,
+    if matched_col is None:
+        logger.warning(
+            "FILTER FALLTHROUGH: No known column in '%s' for order %s. Including by default.",
+            where_clause, order.order_id,
         )
-        if match:
-            target = match.group(1).strip()
-            return order.order_id == target
+        return True
 
-    if "order_number" in clause_lower:
-        match = re.search(
-            r"order_number\s*=\s*['\"]?([^'\"]+)['\"]?",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if match:
-            target = match.group(1).strip()
-            return order.order_number == target
+    # Get the order's value for this column
+    order_value = getattr(order, matched_col, None)
+    col_type = _COLUMN_TYPES[matched_col]
 
-    # Pattern: ship_to_state = 'XX'
-    if "ship_to_state" in clause_lower:
-        state_match = re.search(
-            r"ship_to_state\s*=\s*['\"]?([A-Za-z]{2})['\"]?",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if state_match:
-            target_state = state_match.group(1).upper()
-            return order.ship_to_state.upper() == target_state
+    # Try IS NULL / IS NOT NULL first
+    null_result = _eval_null_clause(clause_lower, matched_col, order_value)
+    if null_result is not None:
+        return null_result
 
-    # Pattern: status LIKE '%unfulfilled%'
-    if "status" in clause_lower and "like" in clause_lower:
-        like_match = re.search(
-            r"status\s+like\s+['\"]%?([^%'\"]+)%?['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if like_match:
-            target = like_match.group(1).lower()
-            return target in order.status.lower()
+    # Dispatch by column type
+    if col_type in ("string",):
+        return _eval_string_clause(where_clause, matched_col, order_value)
+    elif col_type in ("numeric", "integer", "float", "number", "decimal"):
+        return _eval_numeric_clause(where_clause, matched_col, order_value)
+    elif col_type in ("datetime", "date", "timestamp"):
+        return _eval_date_clause(where_clause, matched_col, order_value)
 
-    # Pattern: status = 'xxx/unfulfilled'
-    if "status" in clause_lower and "=" in clause_lower:
-        status_match = re.search(
-            r"status\s*=\s*['\"]([^'\"]+)['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if status_match:
-            target_status = status_match.group(1).lower()
-            return order.status.lower() == target_status
-
-    # Pattern: ship_to_city = 'XXX'
-    if "ship_to_city" in clause_lower:
-        city_match = re.search(
-            r"ship_to_city\s*=\s*['\"]([^'\"]+)['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if city_match:
-            target_city = city_match.group(1).lower()
-            return order.ship_to_city.lower() == target_city
-
-    # Pattern: customer_name = 'XXX' or customer_name LIKE '%XXX%'
-    if "customer_name" in clause_lower:
-        # Try exact match first
-        name_match = re.search(
-            r"customer_name\s*=\s*['\"]([^'\"]+)['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if name_match:
-            target_name = name_match.group(1).lower()
-            return order.customer_name.lower() == target_name
-
-        # Try LIKE pattern
-        like_match = re.search(
-            r"customer_name\s+like\s+['\"]%?([^%'\"]+)%?['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if like_match:
-            target_name = like_match.group(1).lower()
-            return target_name in order.customer_name.lower()
-
-    # Pattern: ship_to_name = 'XXX' or ship_to_name LIKE '%XXX%'
-    if "ship_to_name" in clause_lower:
-        # Try exact match first
-        name_match = re.search(
-            r"ship_to_name\s*=\s*['\"]([^'\"]+)['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if name_match:
-            target_name = name_match.group(1).lower()
-            return order.ship_to_name.lower() == target_name
-
-        # Try LIKE pattern
-        like_match = re.search(
-            r"ship_to_name\s+like\s+['\"]%?([^%'\"]+)%?['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if like_match:
-            target_name = like_match.group(1).lower()
-            return target_name in order.ship_to_name.lower()
-
-    # Pattern: ship_to_company = 'XXX' or ship_to_company LIKE '%XXX%'
-    if "ship_to_company" in clause_lower:
-        # Try exact match first
-        match = re.search(
-            r"ship_to_company\s*=\s*['\"]([^'\"]+)['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if match:
-            target = match.group(1).lower()
-            company = order.ship_to_company or ""
-            return company.lower() == target
-
-        # Try LIKE pattern
-        like_match = re.search(
-            r"ship_to_company\s+like\s+['\"]%?([^%'\"]+)%?['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if like_match:
-            target = like_match.group(1).lower()
-            company = order.ship_to_company or ""
-            return target in company.lower()
-
-    # Pattern: customer_email = 'XXX' or customer_email LIKE '%XXX%'
-    if "customer_email" in clause_lower:
-        # Try exact match first
-        match = re.search(
-            r"customer_email\s*=\s*['\"]([^'\"]+)['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if match:
-            target = match.group(1).lower()
-            email = order.customer_email or ""
-            return email.lower() == target
-
-        # Try LIKE pattern
-        like_match = re.search(
-            r"customer_email\s+like\s+['\"]%?([^%'\"]+)%?['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if like_match:
-            target = like_match.group(1).lower()
-            email = order.customer_email or ""
-            return target in email.lower()
-
-    # Pattern: ship_to_postal_code = 'XXXXX'
-    if "ship_to_postal_code" in clause_lower:
-        match = re.search(
-            r"ship_to_postal_code\s*=\s*['\"]?([^'\"]+)['\"]?",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if match:
-            target = match.group(1).strip()
-            return order.ship_to_postal_code == target
-
-    # Pattern: ship_to_country = 'XX'
-    if "ship_to_country" in clause_lower:
-        match = re.search(
-            r"ship_to_country\s*=\s*['\"]?([A-Za-z]{2})['\"]?",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if match:
-            target = match.group(1).upper()
-            return order.ship_to_country.upper() == target
-
-    # Pattern: ship_to_address1 = 'XXX' or ship_to_address1 LIKE '%XXX%'
-    if "ship_to_address1" in clause_lower:
-        # Try exact match first
-        match = re.search(
-            r"ship_to_address1\s*=\s*['\"]([^'\"]+)['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if match:
-            target = match.group(1).lower()
-            return order.ship_to_address1.lower() == target
-
-        # Try LIKE pattern
-        like_match = re.search(
-            r"ship_to_address1\s+like\s+['\"]%?([^%'\"]+)%?['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if like_match:
-            target = like_match.group(1).lower()
-            return target in order.ship_to_address1.lower()
-
-    # Pattern: ship_to_address2 = 'XXX' or ship_to_address2 LIKE '%XXX%'
-    if "ship_to_address2" in clause_lower:
-        addr2 = order.ship_to_address2 or ""
-        # Try exact match first
-        match = re.search(
-            r"ship_to_address2\s*=\s*['\"]([^'\"]+)['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if match:
-            target = match.group(1).lower()
-            return addr2.lower() == target
-
-        # Try LIKE pattern
-        like_match = re.search(
-            r"ship_to_address2\s+like\s+['\"]%?([^%'\"]+)%?['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if like_match:
-            target = like_match.group(1).lower()
-            return target in addr2.lower()
-
-        # Handle NULL check
-        if "is null" in clause_lower:
-            return addr2 == "" or addr2 is None
-        if "is not null" in clause_lower:
-            return addr2 != "" and addr2 is not None
-
-    # Pattern: ship_to_phone = 'XXX' or ship_to_phone LIKE '%XXX%'
-    if "ship_to_phone" in clause_lower:
-        phone = order.ship_to_phone or ""
-        # Try exact match first
-        match = re.search(
-            r"ship_to_phone\s*=\s*['\"]([^'\"]+)['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if match:
-            target = match.group(1)
-            # Normalize phone numbers for comparison (remove non-digits)
-            target_digits = re.sub(r"\D", "", target)
-            phone_digits = re.sub(r"\D", "", phone)
-            return phone_digits == target_digits or phone == target
-
-        # Try LIKE pattern
-        like_match = re.search(
-            r"ship_to_phone\s+like\s+['\"]%?([^%'\"]+)%?['\"]",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if like_match:
-            target = like_match.group(1)
-            target_digits = re.sub(r"\D", "", target)
-            phone_digits = re.sub(r"\D", "", phone)
-            return target_digits in phone_digits or target in phone
-
-    # Pattern: created_at date comparisons
-    if "created_at" in clause_lower:
-        # Parse date from filter
-        date_match = re.search(
-            r"created_at\s*([><=]+)\s*['\"]?(\d{4}-\d{2}-\d{2})['\"]?",
-            where_clause,
-            re.IGNORECASE,
-        )
-        if date_match:
-            operator = date_match.group(1)
-            target_date_str = date_match.group(2)
-            try:
-                target_date = datetime.fromisoformat(target_date_str)
-                # Parse order date (handle ISO format with timezone)
-                order_date_str = order.created_at.split("T")[0]
-                order_date = datetime.fromisoformat(order_date_str)
-
-                if operator == ">=":
-                    return order_date >= target_date
-                elif operator == ">":
-                    return order_date > target_date
-                elif operator == "<=":
-                    return order_date <= target_date
-                elif operator == "<":
-                    return order_date < target_date
-                elif operator == "=":
-                    return order_date.date() == target_date.date()
-            except ValueError:
-                pass  # Fall through to default
-
-    # Default: if we can't parse the filter, log detailed info
-    # This indicates a bug - we should handle all filter patterns
     logger.warning(
-        "FILTER FALLTHROUGH: Could not evaluate filter '%s' for order %s "
-        "(customer_name='%s', ship_to_name='%s'). Including by default. "
-        "This indicates a missing filter pattern handler!",
-        where_clause,
-        order.order_id,
-        order.customer_name,
-        order.ship_to_name,
+        "FILTER FALLTHROUGH: Unknown type '%s' for column '%s'. Including by default.",
+        col_type, matched_col,
     )
     return True
 
@@ -793,50 +760,78 @@ class CommandProcessor:
             db.commit()
             return
 
-        # Step 5: Create JobRows with cost estimates
+        # Step 5: Create JobRows (cost_cents=0 placeholder, rated below)
         logger.info("Creating %d job rows for job %s", len(filtered_orders), job_id)
 
-        # Get service code from intent for cost estimation
         service_code = intent.service_code.value if intent.service_code else "03"
 
         for i, order in enumerate(filtered_orders, start=1):
-            # Compute checksum for data integrity
             checksum = compute_order_checksum(order)
 
-            # Estimate cost (in cents) - simplified for now
-            # In production, this would call UPS rating API
-            estimated_cost_cents = self._estimate_shipping_cost(order, service_code)
-
-            # Serialize order data for preview (exclude raw_data to save space)
             order_data_dict = {
-                "order_id": order.order_id,
-                "order_number": order.order_number,
-                "customer_name": order.customer_name,
-                "customer_email": order.customer_email,
-                "ship_to_name": order.ship_to_name,
-                "ship_to_company": order.ship_to_company,
-                "ship_to_address1": order.ship_to_address1,
-                "ship_to_address2": order.ship_to_address2,
-                "ship_to_city": order.ship_to_city,
-                "ship_to_state": order.ship_to_state,
-                "ship_to_postal_code": order.ship_to_postal_code,
-                "ship_to_country": order.ship_to_country,
-                "ship_to_phone": order.ship_to_phone,
-                "service_code": service_code,
+                col.name: getattr(order, col.name, None)
+                for col in SHOPIFY_ORDER_SCHEMA
             }
+            order_data_dict["service_code"] = service_code
 
-            # Store order data in row for later use
             row = JobRow(
                 job_id=job_id,
                 row_number=i,
                 row_checksum=checksum,
                 status=RowStatus.pending.value,
-                cost_cents=estimated_cost_cents,
+                cost_cents=0,
                 order_data=json.dumps(order_data_dict),
             )
             db.add(row)
 
-        # Step 6: Update job with total rows
+        # Step 5b: Flush rows (assigns IDs) then rate via UPS MCP
+        db.flush()
+
+        try:
+            ups_service = UPSService(
+                base_url=os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com"),
+                client_id=os.environ.get("UPS_CLIENT_ID", ""),
+                client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
+            )
+            account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
+            engine = BatchEngine(
+                ups_service=ups_service,
+                db_session=db,
+                account_number=account_number,
+            )
+            shipper = build_shipper_from_env()
+            flushed_rows = (
+                db.query(JobRow)
+                .filter(JobRow.job_id == job_id)
+                .order_by(JobRow.row_number)
+                .all()
+            )
+            preview_result = await engine.preview(
+                job_id, flushed_rows, shipper, service_code
+            )
+
+            # Map rated costs from preview result
+            rated_costs = {
+                pr["row_number"]: pr["estimated_cost_cents"]
+                for pr in preview_result["preview_rows"]
+            }
+            # Compute average for rows beyond MAX_PREVIEW_ROWS
+            if rated_costs:
+                avg_cost = sum(rated_costs.values()) // len(rated_costs)
+            else:
+                avg_cost = 0
+
+            for row in flushed_rows:
+                row.cost_cents = rated_costs.get(row.row_number, avg_cost)
+
+        except Exception as e:
+            logger.warning(
+                "UPS rating failed for job %s, preview will show $0 estimates: %s",
+                job_id,
+                e,
+            )
+
+        # Step 6: Set total_rows and commit (frontend sees preview is ready)
         job.total_rows = len(filtered_orders)
         db.commit()
 
@@ -845,52 +840,6 @@ class CommandProcessor:
             job_id,
             len(filtered_orders),
         )
-
-    def _estimate_shipping_cost(
-        self,
-        order: ExternalOrder,
-        service_code: str,
-    ) -> int:
-        """Estimate shipping cost for an order.
-
-        This is a placeholder that provides reasonable estimates.
-        In production, this would call the UPS rating API.
-
-        Args:
-            order: The order to estimate cost for.
-            service_code: UPS service code (03=Ground, 01=Next Day, etc.).
-
-        Returns:
-            Estimated cost in cents.
-        """
-        # Base costs by service (simplified)
-        base_costs = {
-            "03": 899,  # Ground: $8.99 base
-            "01": 2499,  # Next Day Air: $24.99 base
-            "02": 1799,  # 2nd Day Air: $17.99 base
-            "12": 999,  # 3 Day Select: $9.99 base
-            "13": 699,  # Ground Saver: $6.99 base
-        }
-
-        base_cost = base_costs.get(service_code, 899)
-
-        # Adjust for distance (very simplified - west coast vs east coast)
-        west_coast_states = {"CA", "OR", "WA", "NV", "AZ"}
-        east_coast_states = {"NY", "NJ", "MA", "PA", "FL", "GA", "NC", "VA"}
-
-        state = order.ship_to_state.upper()
-        if state in west_coast_states:
-            # Assuming shipping from CA, west coast is cheaper
-            distance_multiplier = 1.0
-        elif state in east_coast_states:
-            distance_multiplier = 1.3
-        else:
-            distance_multiplier = 1.15
-
-        estimated_cost = int(base_cost * distance_multiplier)
-
-        return estimated_cost
-
 
 __all__ = [
     "CommandProcessor",

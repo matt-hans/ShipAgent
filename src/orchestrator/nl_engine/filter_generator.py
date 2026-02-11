@@ -10,6 +10,7 @@ Per CONTEXT.md Decision 3:
 - Never guess - use elicitation for unclear cases
 """
 
+import re
 from datetime import datetime
 
 import sqlglot
@@ -47,7 +48,9 @@ def validate_sql_syntax(where_clause: str) -> bool:
         sqlglot.parse(f"SELECT * FROM t WHERE {where_clause}")
         return True
     except (sqlglot.errors.ParseError, sqlglot.errors.TokenError) as e:
-        raise ValueError(f"Invalid SQL syntax: {e}") from e
+        # Strip ANSI escape codes from sqlglot error formatting
+        clean_msg = re.sub(r"\x1b\[[0-9;]*m", "", str(e))
+        raise ValueError(f"Invalid SQL syntax: {clean_msg}") from e
 
 
 def _identify_column_types(schema: list[ColumnInfo]) -> tuple[list[str], list[str]]:
@@ -205,6 +208,14 @@ AVAILABLE COLUMNS (USE ONLY THESE):
 DATE COLUMNS: {date_columns if date_columns else 'None'}
 NUMERIC COLUMNS: {numeric_columns if numeric_columns else 'None'}
 
+DATA SOURCE CONTEXT:
+- All data comes from the user's connected platform (e.g., Shopify store)
+- References to "Shopify orders", "my orders", "store orders", etc. simply mean "all orders in the dataset"
+- Do NOT flag "Shopify" as ambiguous or request a platform/source column — there is no such column
+- "unfulfilled orders" means: status LIKE '%unfulfilled%'
+- "paid orders" means: status LIKE '%paid%'
+- "fulfilled orders" means: status LIKE '%fulfilled%' (but NOT '%unfulfilled%')
+
 CRITICAL RULES:
 1. ONLY use column names from the AVAILABLE COLUMNS list above
 2. For date filters like "today", use: column = '{current_date}'
@@ -222,6 +233,27 @@ PERSON NAME HANDLING:
 - When the user explicitly says "placed by" or "bought by", use only customer_name
 - When the user explicitly says "shipping to" or "deliver to", use only ship_to_name
 - For name matching, use exact match (=) by default. Use LIKE only if the user implies partial match (e.g. "last name Smith")
+
+STATUS HANDLING:
+- "status" is a composite field like "paid/unfulfilled" - use LIKE for substring matching
+- "financial_status" is standalone: 'paid', 'pending', 'refunded', 'authorized', 'partially_refunded'
+- "fulfillment_status" is standalone: 'unfulfilled', 'fulfilled', 'partial'
+- For "paid orders" prefer: financial_status = 'paid'
+- For "unfulfilled orders" prefer: fulfillment_status = 'unfulfilled'
+
+TAG HANDLING:
+- "tags" is a comma-separated string (e.g. "VIP, wholesale, priority")
+- To match a tag, use: tags LIKE '%VIP%'
+- For "tagged VIP" or "VIP orders": tags LIKE '%VIP%'
+
+WEIGHT HANDLING:
+- "total_weight_grams" is in grams. 1 lb = 453.592 grams, 1 kg = 1000 grams
+- For "orders over 5 lbs": total_weight_grams > 2268
+- For "orders over 2 kg": total_weight_grams > 2000
+
+ITEM COUNT HANDLING:
+- "item_count" = total number of items across all line items
+- For "orders with more than 3 items": item_count > 3
 
 AMBIGUITY HANDLING:
 - If filter is temporal AND there are multiple date columns, set needs_clarification=True

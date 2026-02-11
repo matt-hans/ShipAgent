@@ -127,6 +127,14 @@ class TestSQLValidation:
         with pytest.raises(ValueError, match="Invalid SQL syntax"):
             validate_sql_syntax("state = 'CA' AND")
 
+    def test_error_message_has_no_ansi_codes(self) -> None:
+        """Error messages from sqlglot should not contain ANSI escape codes."""
+        with pytest.raises(ValueError, match="Invalid SQL syntax") as exc_info:
+            validate_sql_syntax("state = ")
+        error_msg = str(exc_info.value)
+        # ANSI escape codes look like \x1b[...m
+        assert "\x1b" not in error_msg, f"ANSI codes found in error: {error_msg!r}"
+
 
 # ============================================================================
 # TestColumnInfo - Model construction tests

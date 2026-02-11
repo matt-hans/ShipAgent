@@ -46,10 +46,10 @@ class TestGetPreview:
         assert "total_estimated_cost_cents" in data
         assert "rows_with_warnings" in data
 
-    def test_preview_limits_rows(
+    def test_preview_returns_all_rows(
         self, client: TestClient, test_db: Session
     ):
-        """Preview limits to MAX_PREVIEW_ROWS (10) rows."""
+        """Preview returns all rows for full scrollable display."""
         job = Job(
             name="Large Job",
             original_command="Test command",
@@ -76,8 +76,8 @@ class TestGetPreview:
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data["preview_rows"]) == 10
-        assert data["additional_rows"] == 10
+        assert len(data["preview_rows"]) == 20
+        assert data["additional_rows"] == 0
 
     def test_preview_row_structure(
         self, client: TestClient, job_with_rows: Job

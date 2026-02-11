@@ -45,10 +45,6 @@ SERVICE_CODE_NAMES = {
     "59": "UPS 2nd Day Air A.M.",
 }
 
-# Maximum number of rows to include in preview
-MAX_PREVIEW_ROWS = 10
-
-
 @router.get("/jobs/{job_id}/preview", response_model=BatchPreviewResponse)
 def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewResponse:
     """Get batch preview for a job.
@@ -84,20 +80,17 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
             detail="Job has no rows for preview. Command may not have been processed yet.",
         )
 
-    # Build preview rows from job rows
+    # Build preview rows from ALL job rows
     preview_rows: list[PreviewRowResponse] = []
     total_estimated_cost = 0
     rows_with_warnings = 0
 
-    for row in rows[:MAX_PREVIEW_ROWS]:
-        # Extract preview data from row
+    for row in rows:
         warnings: list[str] = []
 
-        # Check for common warning conditions
         if row.error_message:
             warnings.append(row.error_message)
 
-        # Parse order data if available
         recipient_name = f"Shipment #{row.row_number}"
         city_state = "Pending"
         service = "UPS Ground"
@@ -113,9 +106,8 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
                 service_code = order_data_dict.get("service_code", "03")
                 service = SERVICE_CODE_NAMES.get(service_code, "UPS Ground")
             except json.JSONDecodeError:
-                pass  # Fall back to defaults
+                pass
 
-        # Cost is stored in cents
         estimated_cost = row.cost_cents or 0
         total_estimated_cost += estimated_cost
 
@@ -134,17 +126,11 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
             )
         )
 
-    # Calculate totals for all rows (not just preview)
-    for row in rows[MAX_PREVIEW_ROWS:]:
-        total_estimated_cost += row.cost_cents or 0
-        if row.error_message:
-            rows_with_warnings += 1
-
     return BatchPreviewResponse(
         job_id=job_id,
         total_rows=len(rows),
         preview_rows=preview_rows,
-        additional_rows=max(0, len(rows) - MAX_PREVIEW_ROWS),
+        additional_rows=0,
         total_estimated_cost_cents=total_estimated_cost,
         rows_with_warnings=rows_with_warnings,
     )
