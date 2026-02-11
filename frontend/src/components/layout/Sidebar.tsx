@@ -682,10 +682,23 @@ function JobHistorySection({
               onClick={() => onSelectJob(job as Job)}
             >
               <div className="flex items-start justify-between gap-2">
-                <p className="text-xs text-slate-200 line-clamp-2 flex-1">
-                  {job.original_command || job.name || 'Untitled job'}
-                </p>
-                <div className="flex items-center gap-1.5">
+                <div className="flex-1 min-w-0">
+                  {job.name?.includes(' → ') ? (
+                    <>
+                      <p className="text-xs text-slate-200 line-clamp-1">
+                        {job.name.split(' → ')[0]}
+                      </p>
+                      <p className="text-[10px] text-primary/80 line-clamp-1 mt-0.5">
+                        → {job.name.split(' → ').slice(1).join(' → ')}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs text-slate-200 line-clamp-2">
+                      {job.name?.startsWith('Command: ') ? job.name.slice(9) : job.original_command || job.name || 'Untitled job'}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
                   <StatusBadge status={job.status} />
                   {job.status === 'completed' && (
                     <button

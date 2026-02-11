@@ -198,9 +198,12 @@ class BatchEngine:
                         self._ups.create_shipment, request_body=api_payload,
                     )
 
-                    # Extract results
+                    # Extract results — prefer package tracking number,
+                    # fall back to shipment ID (UPS test env masks package-level numbers)
                     tracking_numbers = result.get("trackingNumbers", [])
                     tracking_number = tracking_numbers[0] if tracking_numbers else ""
+                    if not tracking_number or "XXXX" in tracking_number:
+                        tracking_number = result.get("shipmentIdentificationNumber", tracking_number)
 
                     # Save label
                     label_path = ""

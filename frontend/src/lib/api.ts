@@ -61,17 +61,23 @@ async function parseResponse<T>(response: Response): Promise<T> {
  * Submit a natural language command for processing.
  *
  * @param command - The natural language shipping command.
+ * @param options - Optional refinement metadata for clean job naming.
  * @returns The job ID and initial status.
  */
 export async function submitCommand(
-  command: string
+  command: string,
+  options?: { baseCommand?: string; refinement?: string }
 ): Promise<CommandSubmitResponse> {
+  const body: Record<string, string> = { command };
+  if (options?.baseCommand) body.base_command = options.baseCommand;
+  if (options?.refinement) body.refinement = options.refinement;
+
   const response = await fetch(`${API_BASE}/commands`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ command }),
+    body: JSON.stringify(body),
   });
   return parseResponse<CommandSubmitResponse>(response);
 }
@@ -354,8 +360,11 @@ export async function refineJob(
     originalCommand
   );
 
-  // Submit refined command
-  const result = await submitCommand(refinedCommand);
+  // Submit refined command with refinement metadata for clean job naming
+  const result = await submitCommand(refinedCommand, {
+    baseCommand: originalCommand,
+    refinement: newRefinement,
+  });
 
   // Wait for new preview
   const preview = await waitForPreview(result.job_id);

@@ -192,6 +192,8 @@ class CommandSubmit(BaseModel):
     """Request schema for submitting a natural language command."""
 
     command: str = Field(..., min_length=1, description="Natural language shipping command")
+    base_command: str | None = Field(None, description="Original command before refinement (if this is a refinement)")
+    refinement: str | None = Field(None, description="The refinement instruction applied (if this is a refinement)")
 
 
 class CommandSubmitResponse(BaseModel):
