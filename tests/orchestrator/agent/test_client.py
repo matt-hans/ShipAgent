@@ -5,6 +5,7 @@ Tests verify:
 - Agent lifecycle (start/stop) works correctly
 - Context manager interface works
 - Agent maintains conversation context
+- UPS MCP is registered alongside other MCP servers
 
 Note: Full integration tests require ANTHROPIC_API_KEY and MCP servers.
 These tests are marked with @pytest.mark.integration for selective running.
@@ -88,7 +89,7 @@ class TestAgentOptions:
         agent = OrchestrationAgent()
         options = agent._options
         assert options.mcp_servers is not None
-        assert len(options.mcp_servers) >= 2  # At least data and ups
+        assert len(options.mcp_servers) >= 4  # orchestrator, data, external, ups
 
     def test_options_has_allowed_tools(self):
         """Options should configure allowed tools."""
@@ -121,6 +122,12 @@ class TestAgentOptions:
         mcp_servers = agent._options.mcp_servers
         assert "orchestrator" in mcp_servers
 
+    def test_has_ups_mcp(self):
+        """Options should include UPS MCP for interactive UPS operations."""
+        agent = OrchestrationAgent()
+        mcp_servers = agent._options.mcp_servers
+        assert "ups" in mcp_servers
+
     def test_allowed_tools_includes_wildcards(self):
         """Allowed tools should include MCP wildcards."""
         agent = OrchestrationAgent()
@@ -129,9 +136,11 @@ class TestAgentOptions:
         has_orchestrator = any("orchestrator" in t for t in allowed)
         has_data = any("data" in t for t in allowed)
         has_external = any("external" in t for t in allowed)
+        has_ups = any("ups" in t for t in allowed)
         assert has_orchestrator
         assert has_data
         assert has_external
+        assert has_ups
 
 
 class TestAgentHooksConfiguration:
