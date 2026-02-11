@@ -556,6 +556,71 @@ function ProgressDisplay({ jobId, onComplete }: { jobId: string; onComplete?: ()
   );
 }
 
+// Completion artifact - compact inline card for completed batches
+function CompletionArtifact({ message, onViewLabels }: {
+  message: ConversationMessage;
+  onViewLabels: (jobId: string) => void;
+}) {
+  const meta = message.metadata?.completion;
+  const jobId = message.metadata?.jobId;
+  if (!meta || !jobId) return null;
+
+  const allFailed = meta.successful === 0 && meta.failed > 0;
+  const hasFailures = meta.failed > 0;
+  const borderColor = allFailed ? 'border-l-error' : hasFailures ? 'border-l-amber-500' : 'border-l-success';
+  const badgeClass = allFailed ? 'badge-error' : hasFailures ? 'badge-warning' : 'badge-success';
+  const badgeText = allFailed ? 'FAILED' : hasFailures ? 'PARTIAL' : 'COMPLETED';
+
+  const commandPreview = meta.command.length > 60
+    ? meta.command.slice(0, 57) + '...'
+    : meta.command;
+
+  return (
+    <div className={cn(
+      'card-premium p-4 space-y-3 border-l-4',
+      borderColor
+    )}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {allFailed ? (
+            <XIcon className="w-4 h-4 text-error" />
+          ) : (
+            <CheckIcon className="w-4 h-4 text-success" />
+          )}
+          <h3 className="text-sm font-medium text-slate-200">
+            {allFailed ? 'Batch Failed' : 'Shipment Complete'}
+          </h3>
+        </div>
+        <span className={cn('badge', badgeClass)}>{badgeText}</span>
+      </div>
+
+      <p className="text-xs text-slate-400 italic">&ldquo;{commandPreview}&rdquo;</p>
+
+      <div className="flex items-center gap-3 text-xs font-mono text-slate-400">
+        <span>{meta.successful} shipment{meta.successful !== 1 ? 's' : ''}</span>
+        <span className="text-slate-600">&middot;</span>
+        <span className="text-amber-400">{formatCurrency(meta.totalCostCents)}</span>
+        {meta.failed > 0 && (
+          <>
+            <span className="text-slate-600">&middot;</span>
+            <span className="text-error">{meta.failed} failed</span>
+          </>
+        )}
+      </div>
+
+      {!allFailed && (
+        <button
+          onClick={() => onViewLabels(jobId)}
+          className="w-full btn-primary py-2 flex items-center justify-center gap-2 text-sm"
+        >
+          <DownloadIcon className="w-3.5 h-3.5" />
+          <span>View Labels (PDF)</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Welcome message with workflow steps
 function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) => void }) {
   const { dataSource } = useAppState();
