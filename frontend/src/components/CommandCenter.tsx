@@ -455,10 +455,23 @@ function PreviewCard({
   );
 }
 
+// Progress data passed to completion callbacks
+interface ProgressData {
+  total: number;
+  successful: number;
+  failed: number;
+  totalCostCents: number;
+}
+
 // Progress display component
-function ProgressDisplay({ jobId, onComplete }: { jobId: string; onComplete?: () => void }) {
+function ProgressDisplay({ jobId, onComplete, onFailed }: {
+  jobId: string;
+  onComplete?: (data: ProgressData) => void;
+  onFailed?: (data: ProgressData) => void;
+}) {
   const { progress } = useJobProgress(jobId);
   const completeFiredRef = React.useRef(false);
+  const failFiredRef = React.useRef(false);
 
   const percentage = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0;
   const isRunning = progress.status === 'running';
@@ -469,9 +482,27 @@ function ProgressDisplay({ jobId, onComplete }: { jobId: string; onComplete?: ()
   React.useEffect(() => {
     if (isComplete && !completeFiredRef.current && onComplete) {
       completeFiredRef.current = true;
-      onComplete();
+      onComplete({
+        total: progress.total,
+        successful: progress.successful,
+        failed: progress.failed,
+        totalCostCents: progress.totalCostCents,
+      });
     }
-  }, [isComplete, onComplete]);
+  }, [isComplete, onComplete, progress]);
+
+  // Fire onFailed callback once when status transitions to failed
+  React.useEffect(() => {
+    if (isFailed && !failFiredRef.current && onFailed) {
+      failFiredRef.current = true;
+      onFailed({
+        total: progress.total,
+        successful: progress.successful,
+        failed: progress.failed,
+        totalCostCents: progress.totalCostCents,
+      });
+    }
+  }, [isFailed, onFailed, progress]);
 
   return (
     <div className={cn(
@@ -550,6 +581,71 @@ function ProgressDisplay({ jobId, onComplete }: { jobId: string; onComplete?: ()
         >
           <DownloadIcon className="w-4 h-4" />
           <span>Download All Labels (PDF)</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Completion artifact - compact inline card for completed batches
+function CompletionArtifact({ message, onViewLabels }: {
+  message: ConversationMessage;
+  onViewLabels: (jobId: string) => void;
+}) {
+  const meta = message.metadata?.completion;
+  const jobId = message.metadata?.jobId;
+  if (!meta || !jobId) return null;
+
+  const allFailed = meta.successful === 0 && meta.failed > 0;
+  const hasFailures = meta.failed > 0;
+  const borderColor = allFailed ? 'border-l-error' : hasFailures ? 'border-l-amber-500' : 'border-l-success';
+  const badgeClass = allFailed ? 'badge-error' : hasFailures ? 'badge-warning' : 'badge-success';
+  const badgeText = allFailed ? 'FAILED' : hasFailures ? 'PARTIAL' : 'COMPLETED';
+
+  const commandPreview = meta.command.length > 60
+    ? meta.command.slice(0, 57) + '...'
+    : meta.command;
+
+  return (
+    <div className={cn(
+      'card-premium p-4 space-y-3 border-l-4',
+      borderColor
+    )}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {allFailed ? (
+            <XIcon className="w-4 h-4 text-error" />
+          ) : (
+            <CheckIcon className="w-4 h-4 text-success" />
+          )}
+          <h3 className="text-sm font-medium text-slate-200">
+            {allFailed ? 'Batch Failed' : 'Shipment Complete'}
+          </h3>
+        </div>
+        <span className={cn('badge', badgeClass)}>{badgeText}</span>
+      </div>
+
+      <p className="text-xs text-slate-400 italic">&ldquo;{commandPreview}&rdquo;</p>
+
+      <div className="flex items-center gap-3 text-xs font-mono text-slate-400">
+        <span>{meta.successful} shipment{meta.successful !== 1 ? 's' : ''}</span>
+        <span className="text-slate-600">&middot;</span>
+        <span className="text-amber-400">{formatCurrency(meta.totalCostCents)}</span>
+        {meta.failed > 0 && (
+          <>
+            <span className="text-slate-600">&middot;</span>
+            <span className="text-error">{meta.failed} failed</span>
+          </>
+        )}
+      </div>
+
+      {!allFailed && (
+        <button
+          onClick={() => onViewLabels(jobId)}
+          className="w-full btn-primary py-2 flex items-center justify-center gap-2 text-sm"
+        >
+          <DownloadIcon className="w-3.5 h-3.5" />
+          <span>View Labels (PDF)</span>
         </button>
       )}
     </div>
@@ -703,9 +799,11 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const [isConfirming, setIsConfirming] = React.useState(false);
   const [executingJobId, setExecutingJobId] = React.useState<string | null>(null);
   const [showLabelPreview, setShowLabelPreview] = React.useState(false);
+  const [labelPreviewJobId, setLabelPreviewJobId] = React.useState<string | null>(null);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const lastCommandRef = React.useRef<string>('');
 
   // Auto-scroll to bottom
   React.useEffect(() => {
@@ -717,6 +815,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     const command = inputValue.trim();
     if (!command || isProcessing || !hasDataSource) return;
 
+    lastCommandRef.current = command;
     setInputValue('');
     setIsProcessing(true);
 
@@ -796,6 +895,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       await cancelJob(currentJobId);
       setPreview(null);
       setCurrentJobId(null);
+      refreshJobList();
 
       addMessage({
         role: 'system',
@@ -835,7 +935,17 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         ) : (
           <div className="max-w-3xl mx-auto space-y-6">
             {conversation.map((message) => (
-              message.role === 'user' ? (
+              message.metadata?.action === 'complete' ? (
+                <div key={message.id} className="pl-11">
+                  <CompletionArtifact
+                    message={message}
+                    onViewLabels={(jobId) => {
+                      setLabelPreviewJobId(jobId);
+                      setShowLabelPreview(true);
+                    }}
+                  />
+                </div>
+              ) : message.role === 'user' ? (
                 <UserMessage key={message.id} message={message} />
               ) : (
                 <SystemMessage key={message.id} message={message} />
@@ -859,8 +969,50 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
               <div className="pl-11">
                 <ProgressDisplay
                   jobId={executingJobId}
-                  onComplete={() => {
+                  onComplete={(data) => {
+                    addMessage({
+                      role: 'system',
+                      content: '',
+                      metadata: {
+                        jobId: executingJobId,
+                        action: 'complete' as const,
+                        completion: {
+                          command: lastCommandRef.current,
+                          totalRows: data.total,
+                          successful: data.successful,
+                          failed: data.failed,
+                          totalCostCents: data.totalCostCents,
+                        },
+                      },
+                    });
+                    setLabelPreviewJobId(executingJobId);
                     setShowLabelPreview(true);
+                    setExecutingJobId(null);
+                    setCurrentJobId(null);
+                    refreshJobList();
+                  }}
+                  onFailed={(data) => {
+                    addMessage({
+                      role: 'system',
+                      content: '',
+                      metadata: {
+                        jobId: executingJobId,
+                        action: 'complete' as const,
+                        completion: {
+                          command: lastCommandRef.current,
+                          totalRows: data.total,
+                          successful: data.successful,
+                          failed: data.failed,
+                          totalCostCents: data.totalCostCents,
+                        },
+                      },
+                    });
+                    if (data.successful > 0) {
+                      setLabelPreviewJobId(executingJobId);
+                      setShowLabelPreview(true);
+                    }
+                    setExecutingJobId(null);
+                    setCurrentJobId(null);
                     refreshJobList();
                   }}
                 />
@@ -891,10 +1043,10 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                     ? 'Connect a data source to begin...'
                     : 'Enter a shipping command...'
                 }
-                disabled={!hasDataSource || isProcessing || !!preview}
+                disabled={!hasDataSource || isProcessing || !!preview || !!executingJobId}
                 className={cn(
                   'input-command pr-12',
-                  (!hasDataSource || isProcessing || !!preview) && 'opacity-50 cursor-not-allowed'
+                  (!hasDataSource || isProcessing || !!preview || !!executingJobId) && 'opacity-50 cursor-not-allowed'
                 )}
               />
 
@@ -908,10 +1060,10 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
 
             <button
               onClick={handleSubmit}
-              disabled={!inputValue.trim() || !hasDataSource || isProcessing || !!preview}
+              disabled={!inputValue.trim() || !hasDataSource || isProcessing || !!preview || !!executingJobId}
               className={cn(
                 'btn-primary px-4',
-                (!inputValue.trim() || !hasDataSource || isProcessing || !!preview) && 'opacity-50 cursor-not-allowed'
+                (!inputValue.trim() || !hasDataSource || isProcessing || !!preview || !!executingJobId) && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isProcessing ? (
@@ -933,13 +1085,16 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         </div>
       </div>
 
-      {/* Label preview modal - shown on batch completion */}
-      {executingJobId && (
+      {/* Label preview modal - shown on batch completion or artifact click */}
+      {labelPreviewJobId && (
         <LabelPreview
-          pdfUrl={getMergedLabelsUrl(executingJobId)}
+          pdfUrl={getMergedLabelsUrl(labelPreviewJobId)}
           title="Batch Labels"
           isOpen={showLabelPreview}
-          onClose={() => setShowLabelPreview(false)}
+          onClose={() => {
+            setShowLabelPreview(false);
+            setLabelPreviewJobId(null);
+          }}
         />
       )}
     </div>

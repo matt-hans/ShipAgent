@@ -1,8 +1,9 @@
 """Orchestration Agent using Claude Agent SDK.
 
-The OrchestrationAgent coordinates multiple MCP servers (Data Source, UPS)
+The OrchestrationAgent coordinates MCP servers (Data Source, External Sources)
 via stdio transport, providing a unified interface for natural language
-shipping commands.
+shipping commands. UPS integration is handled via direct Python import
+(UPSService) rather than a subprocess MCP server.
 
 Per CONTEXT.md:
 - MCPs spawn eagerly at startup
@@ -64,8 +65,9 @@ def _create_orchestrator_mcp_server() -> Any:
 class OrchestrationAgent:
     """Main orchestration agent coordinating MCPs via Claude Agent SDK.
 
-    Manages the lifecycle of Data Source MCP and UPS MCP as child processes,
-    routes tool calls through hooks, and maintains conversation context.
+    Manages the lifecycle of Data Source and External Sources MCPs as child
+    processes, routes tool calls through hooks, and maintains conversation
+    context. UPS operations are handled via direct Python import (UPSService).
 
     Usage:
         agent = OrchestrationAgent()
@@ -112,13 +114,6 @@ class OrchestrationAgent:
             "env": mcp_configs["data"]["env"],
         }
 
-        ups_config: McpStdioServerConfig = {
-            "type": "stdio",
-            "command": mcp_configs["ups"]["command"],
-            "args": mcp_configs["ups"]["args"],
-            "env": mcp_configs["ups"]["env"],
-        }
-
         # External Sources Gateway MCP config
         external_config: McpStdioServerConfig = {
             "type": "stdio",
@@ -130,20 +125,20 @@ class OrchestrationAgent:
         # Create orchestrator MCP server for in-process tools
         orchestrator_mcp = _create_orchestrator_mcp_server()
 
+        # Note: UPS is now a direct Python import (UPSService),
+        # not a subprocess MCP server.
         return ClaudeAgentOptions(
             mcp_servers={
                 # In-process orchestrator tools
                 "orchestrator": orchestrator_mcp,
                 # External MCP servers (stdio child processes)
                 "data": data_config,
-                "ups": ups_config,
                 "external": external_config,
             },
             # Allow all tools from configured MCPs
             allowed_tools=[
                 "mcp__orchestrator__*",
                 "mcp__data__*",
-                "mcp__ups__*",
                 "mcp__external__*",
             ],
             # Hook configuration using HookMatcher dataclass

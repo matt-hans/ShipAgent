@@ -73,3 +73,6 @@ Claude.md
 
 # Worktrees
 .worktrees/
+*.png
+
+*.pdf

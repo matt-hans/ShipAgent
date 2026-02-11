@@ -13,7 +13,7 @@ Example:
         shipper=shipper_info,
         service_code="03"
     )
-    result = await ups_client.call_tool("shipping_create", request)
+    result = await ups_service.create_shipment(request)
 """
 
 import re
@@ -340,3 +340,228 @@ def build_shipment_request(
         "description": description or "Shipment",
         "reference": str(reference) if reference else None,
     }
+
+
+def build_ups_api_payload(
+    simplified: dict[str, Any],
+    account_number: str,
+) -> dict[str, Any]:
+    """Transform simplified format to full UPS ShipmentRequest.
+
+    Args:
+        simplified: Simplified payload from build_shipment_request().
+            Keys: shipper, shipTo, packages, serviceCode, description,
+            reference, reference2, saturdayDelivery, signatureRequired.
+        account_number: UPS account number for billing.
+
+    Returns:
+        Full UPS API ShipmentRequest wrapper.
+
+    Raises:
+        ValueError: If account_number is empty.
+    """
+    if not account_number:
+        raise ValueError("account_number is required for UPS shipment creation")
+
+    shipper = simplified.get("shipper", {})
+    ship_to = simplified.get("shipTo", {})
+    packages = simplified.get("packages", [])
+    service_code = simplified.get("serviceCode", "03")
+
+    # Build Shipper
+    ups_shipper: dict[str, Any] = {
+        "Name": shipper.get("name", ""),
+        "ShipperNumber": account_number,
+        "Address": {
+            "AddressLine": _build_address_lines(shipper),
+            "City": shipper.get("city", ""),
+            "StateProvinceCode": shipper.get("stateProvinceCode", ""),
+            "PostalCode": shipper.get("postalCode", ""),
+            "CountryCode": shipper.get("countryCode", "US"),
+        },
+    }
+    if shipper.get("phone"):
+        ups_shipper["Phone"] = {"Number": shipper["phone"]}
+
+    # Build ShipTo
+    ups_ship_to: dict[str, Any] = {
+        "Name": ship_to.get("name", ""),
+        "Address": {
+            "AddressLine": _build_address_lines(ship_to),
+            "City": ship_to.get("city", ""),
+            "StateProvinceCode": ship_to.get("stateProvinceCode", ""),
+            "PostalCode": ship_to.get("postalCode", ""),
+            "CountryCode": ship_to.get("countryCode", "US"),
+        },
+    }
+    if ship_to.get("attentionName"):
+        ups_ship_to["AttentionName"] = ship_to["attentionName"]
+    if ship_to.get("phone"):
+        ups_ship_to["Phone"] = {"Number": ship_to["phone"]}
+
+    # Build Packages
+    ups_packages = []
+    for pkg in packages:
+        ups_pkg: dict[str, Any] = {
+            "Packaging": {
+                "Code": pkg.get("packagingType", "02"),
+            },
+            "PackageWeight": {
+                "UnitOfMeasurement": {"Code": "LBS"},
+                "Weight": str(float(pkg.get("weight", 1.0))),
+            },
+        }
+        # Dimensions (all three required if any present)
+        if all(pkg.get(d) for d in ("length", "width", "height")):
+            ups_pkg["Dimensions"] = {
+                "UnitOfMeasurement": {"Code": "IN"},
+                "Length": str(pkg["length"]),
+                "Width": str(pkg["width"]),
+                "Height": str(pkg["height"]),
+            }
+        if pkg.get("description"):
+            ups_pkg["Description"] = pkg["description"]
+        ups_packages.append(ups_pkg)
+
+    # Build Shipment
+    shipment: dict[str, Any] = {
+        "Shipper": ups_shipper,
+        "ShipTo": ups_ship_to,
+        "ShipFrom": ups_shipper,  # ShipFrom = Shipper for standard shipments
+        "Service": {"Code": service_code},
+        "Package": ups_packages,
+        "PaymentInformation": {
+            "ShipmentCharge": [
+                {
+                    "Type": "01",
+                    "BillShipper": {"AccountNumber": account_number},
+                }
+            ]
+        },
+    }
+
+    # Optional fields
+    if simplified.get("description"):
+        shipment["Description"] = simplified["description"]
+    # Note: ReferenceNumber at shipment level is not allowed for all UPS
+    # services (e.g. Ground domestic rejects it). Reference numbers can be
+    # added at the package level if needed in the future.
+    # See: UPS error "Shipment/ReferenceNumber is not allowed for this shipment"
+
+    # Shipment-level options
+    options = {}
+    if simplified.get("saturdayDelivery"):
+        options["SaturdayDeliveryIndicator"] = ""
+    if options:
+        shipment["ShipmentServiceOptions"] = options
+
+    return {
+        "ShipmentRequest": {
+            "Request": {"RequestOption": "nonvalidate"},
+            "Shipment": shipment,
+            "LabelSpecification": {
+                "LabelImageFormat": {"Code": "PDF"},
+                "LabelStockSize": {"Height": "6", "Width": "4"},
+            },
+        }
+    }
+
+
+def build_ups_rate_payload(
+    simplified: dict[str, Any],
+    account_number: str,
+) -> dict[str, Any]:
+    """Transform simplified format to full UPS RateRequest.
+
+    Args:
+        simplified: Simplified payload from build_shipment_request().
+        account_number: UPS account number.
+
+    Returns:
+        Full UPS API RateRequest wrapper.
+
+    Raises:
+        ValueError: If account_number is empty.
+    """
+    if not account_number:
+        raise ValueError("account_number is required for UPS rate quotes")
+
+    shipper = simplified.get("shipper", {})
+    ship_to = simplified.get("shipTo", {})
+    packages = simplified.get("packages", [])
+    service_code = simplified.get("serviceCode", "03")
+
+    ups_shipper: dict[str, Any] = {
+        "Name": shipper.get("name", ""),
+        "ShipperNumber": account_number,
+        "Address": {
+            "AddressLine": _build_address_lines(shipper),
+            "City": shipper.get("city", ""),
+            "StateProvinceCode": shipper.get("stateProvinceCode", ""),
+            "PostalCode": shipper.get("postalCode", ""),
+            "CountryCode": shipper.get("countryCode", "US"),
+        },
+    }
+
+    ups_ship_to: dict[str, Any] = {
+        "Name": ship_to.get("name", ""),
+        "Address": {
+            "AddressLine": _build_address_lines(ship_to),
+            "City": ship_to.get("city", ""),
+            "StateProvinceCode": ship_to.get("stateProvinceCode", ""),
+            "PostalCode": ship_to.get("postalCode", ""),
+            "CountryCode": ship_to.get("countryCode", "US"),
+        },
+    }
+
+    ups_packages = []
+    for pkg in packages:
+        ups_pkg: dict[str, Any] = {
+            "PackagingType": {"Code": pkg.get("packagingType", "02")},
+            "PackageWeight": {
+                "UnitOfMeasurement": {"Code": "LBS"},
+                "Weight": str(float(pkg.get("weight", 1.0))),
+            },
+        }
+        if all(pkg.get(d) for d in ("length", "width", "height")):
+            ups_pkg["Dimensions"] = {
+                "UnitOfMeasurement": {"Code": "IN"},
+                "Length": str(pkg["length"]),
+                "Width": str(pkg["width"]),
+                "Height": str(pkg["height"]),
+            }
+        ups_packages.append(ups_pkg)
+
+    shipment: dict[str, Any] = {
+        "Shipper": ups_shipper,
+        "ShipTo": ups_ship_to,
+        "ShipFrom": ups_shipper,
+        "Package": ups_packages,
+    }
+
+    if service_code:
+        shipment["Service"] = {"Code": service_code}
+
+    return {
+        "RateRequest": {
+            "Request": {"RequestOption": "Rate"},
+            "Shipment": shipment,
+        }
+    }
+
+
+def _build_address_lines(addr: dict[str, str]) -> list[str]:
+    """Build UPS AddressLine array from simplified address dict.
+
+    Args:
+        addr: Dict with addressLine1, addressLine2, addressLine3 keys.
+
+    Returns:
+        List of non-empty address lines.
+    """
+    lines = []
+    for key in ("addressLine1", "addressLine2", "addressLine3"):
+        value = addr.get(key, "")
+        if value:
+            lines.append(value)
+    return lines or [""]

@@ -3,8 +3,11 @@
 Tests verify:
 - MCP server configurations are correctly structured
 - Data MCP config points to correct Python module
-- UPS MCP config points to correct Node.js entry point
+- Shopify MCP config uses npx with correct credentials
 - Environment variables are properly passed through
+
+Note: UPS integration is now a direct Python import (UPSService),
+not a subprocess MCP server. See src/services/ups_service.py.
 """
 
 from pathlib import Path
@@ -16,7 +19,6 @@ from src.orchestrator.agent.config import (
     create_mcp_servers_config,
     get_data_mcp_config,
     get_shopify_mcp_config,
-    get_ups_mcp_config,
 )
 
 
@@ -73,78 +75,6 @@ class TestDataMCPConfig:
         """Env should be a dict."""
         config = get_data_mcp_config()
         assert isinstance(config["env"], dict)
-
-
-class TestUPSMCPConfig:
-    """Tests for UPS MCP configuration."""
-
-    def test_command_is_node(self):
-        """UPS MCP should use Node.js."""
-        config = get_ups_mcp_config()
-        assert config["command"] == "node"
-
-    def test_args_specify_dist_path(self):
-        """Args should specify the dist/index.js path."""
-        config = get_ups_mcp_config()
-        assert len(config["args"]) >= 1
-        assert "ups-mcp" in config["args"][0]
-        assert "dist" in config["args"][0]
-        assert "index.js" in config["args"][0]
-
-    def test_env_passes_ups_credentials(self):
-        """Environment should pass UPS credential env vars."""
-        # Set test env vars
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setenv("UPS_CLIENT_ID", "test-client-id")
-            mp.setenv("UPS_CLIENT_SECRET", "test-secret")
-            mp.setenv("UPS_ACCOUNT_NUMBER", "123456")
-
-            config = get_ups_mcp_config()
-
-            assert "UPS_CLIENT_ID" in config["env"]
-            assert "UPS_CLIENT_SECRET" in config["env"]
-            assert "UPS_ACCOUNT_NUMBER" in config["env"]
-            assert config["env"]["UPS_CLIENT_ID"] == "test-client-id"
-            assert config["env"]["UPS_CLIENT_SECRET"] == "test-secret"
-            assert config["env"]["UPS_ACCOUNT_NUMBER"] == "123456"
-
-    def test_env_has_labels_output_dir(self):
-        """Environment should include labels output directory."""
-        config = get_ups_mcp_config()
-        assert "UPS_LABELS_OUTPUT_DIR" in config["env"]
-
-    def test_missing_credentials_still_returns_config(self):
-        """Config should still be returned even if credentials are missing."""
-        with pytest.MonkeyPatch.context() as mp:
-            mp.delenv("UPS_CLIENT_ID", raising=False)
-            mp.delenv("UPS_CLIENT_SECRET", raising=False)
-            mp.delenv("UPS_ACCOUNT_NUMBER", raising=False)
-
-            config = get_ups_mcp_config()
-
-            # Should still return a valid config structure
-            assert "command" in config
-            assert "args" in config
-            assert "env" in config
-
-    def test_labels_dir_default(self):
-        """Labels dir should default to PROJECT_ROOT/labels."""
-        with pytest.MonkeyPatch.context() as mp:
-            mp.delenv("UPS_LABELS_OUTPUT_DIR", raising=False)
-
-            config = get_ups_mcp_config()
-
-            expected_path = str(PROJECT_ROOT / "labels")
-            assert config["env"]["UPS_LABELS_OUTPUT_DIR"] == expected_path
-
-    def test_labels_dir_override(self):
-        """Labels dir should use UPS_LABELS_OUTPUT_DIR env var if set."""
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setenv("UPS_LABELS_OUTPUT_DIR", "/custom/labels/path")
-
-            config = get_ups_mcp_config()
-
-            assert config["env"]["UPS_LABELS_OUTPUT_DIR"] == "/custom/labels/path"
 
 
 class TestShopifyMCPConfig:
@@ -214,12 +144,12 @@ class TestCreateMCPServersConfig:
     """Tests for the combined MCP servers configuration."""
 
     def test_returns_dict_with_all_servers(self):
-        """Should return config for data, ups, and shopify servers."""
+        """Should return config for data, shopify, and external servers."""
         config = create_mcp_servers_config()
         assert isinstance(config, dict)
         assert "data" in config
-        assert "ups" in config
         assert "shopify" in config
+        assert "external" in config
 
     def test_data_config_is_valid(self):
         """Data config should have required keys."""
@@ -229,23 +159,23 @@ class TestCreateMCPServersConfig:
         assert "args" in data_config
         assert "env" in data_config
 
-    def test_ups_config_is_valid(self):
-        """UPS config should have required keys."""
+    def test_external_config_is_valid(self):
+        """External Sources config should have required keys."""
         config = create_mcp_servers_config()
-        ups_config = config["ups"]
-        assert "command" in ups_config
-        assert "args" in ups_config
-        assert "env" in ups_config
+        external_config = config["external"]
+        assert "command" in external_config
+        assert "args" in external_config
+        assert "env" in external_config
 
     def test_data_uses_python3(self):
         """Data server should use python3 command."""
         config = create_mcp_servers_config()
         assert config["data"]["command"] == "python3"
 
-    def test_ups_uses_node(self):
-        """UPS server should use node command."""
+    def test_external_uses_python3(self):
+        """External Sources server should use python3 command."""
         config = create_mcp_servers_config()
-        assert config["ups"]["command"] == "node"
+        assert config["external"]["command"] == "python3"
 
     def test_shopify_uses_npx(self):
         """Shopify server should use npx command."""

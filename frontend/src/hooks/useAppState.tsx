@@ -37,6 +37,13 @@ interface ConversationMessage {
         options: string[];
       }>;
     };
+    completion?: {
+      command: string;
+      totalRows: number;
+      successful: number;
+      failed: number;
+      totalCostCents: number;
+    };
   };
 }
 

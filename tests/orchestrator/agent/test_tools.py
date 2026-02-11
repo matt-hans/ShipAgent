@@ -101,10 +101,11 @@ class TestProcessCommandTool:
         assert "command" in PROCESS_COMMAND_SCHEMA
         assert "source_schema" in PROCESS_COMMAND_SCHEMA
 
-    def test_schema_has_optional_fields(self):
-        """Schema should define optional fields."""
-        assert "example_row" in PROCESS_COMMAND_SCHEMA
-        assert "user_mappings" in PROCESS_COMMAND_SCHEMA
+    def test_schema_has_only_required_fields(self):
+        """Schema should only define command and source_schema."""
+        assert len(PROCESS_COMMAND_SCHEMA) == 2
+        assert "command" in PROCESS_COMMAND_SCHEMA
+        assert "source_schema" in PROCESS_COMMAND_SCHEMA
 
 
 class TestGetJobStatusTool:

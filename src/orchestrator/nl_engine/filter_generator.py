@@ -213,6 +213,16 @@ CRITICAL RULES:
 5. For string comparisons, use single quotes: column = 'value'
 6. State abbreviations: California='CA', Texas='TX', etc.
 
+PERSON NAME HANDLING:
+- "customer_name" = the person who PLACED the order (the buyer)
+- "ship_to_name" = the person who RECEIVES the package (the recipient)
+- When the user references a person by name (e.g. "customer Noah Bode", "for Noah Bode",
+  "orders for John Smith"), ALWAYS check BOTH fields using OR logic:
+  customer_name = 'Noah Bode' OR ship_to_name = 'Noah Bode'
+- When the user explicitly says "placed by" or "bought by", use only customer_name
+- When the user explicitly says "shipping to" or "deliver to", use only ship_to_name
+- For name matching, use exact match (=) by default. Use LIKE only if the user implies partial match (e.g. "last name Smith")
+
 AMBIGUITY HANDLING:
 - If filter is temporal AND there are multiple date columns, set needs_clarification=True
 - If filter involves numeric comparison AND there are multiple similar numeric columns, set needs_clarification=True

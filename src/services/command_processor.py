@@ -190,10 +190,85 @@ def apply_filter_to_orders(
     return filtered
 
 
+def _split_compound_clause(where_clause: str) -> tuple[str, list[str]]:
+    """Split a WHERE clause on top-level AND/OR operators.
+
+    Handles parenthesized sub-expressions by stripping outer parens first.
+    Returns the operator ('AND', 'OR', or 'SINGLE') and a list of sub-clauses.
+
+    Args:
+        where_clause: SQL WHERE clause (without 'WHERE' keyword).
+
+    Returns:
+        Tuple of (operator, sub_clauses).
+    """
+    clause = where_clause.strip()
+
+    # Strip outer parentheses if the entire clause is wrapped
+    if clause.startswith("(") and clause.endswith(")"):
+        depth = 0
+        all_wrapped = True
+        for i, ch in enumerate(clause):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            if depth == 0 and i < len(clause) - 1:
+                all_wrapped = False
+                break
+        if all_wrapped:
+            clause = clause[1:-1].strip()
+
+    # Split on top-level OR first (lower precedence), then AND
+    for operator in ("OR", "AND"):
+        parts = _split_on_operator(clause, operator)
+        if len(parts) > 1:
+            return (operator, [p.strip() for p in parts])
+
+    return ("SINGLE", [clause])
+
+
+def _split_on_operator(clause: str, operator: str) -> list[str]:
+    """Split clause on a SQL boolean operator, respecting parentheses.
+
+    Only splits on the operator when it appears at the top level (not inside
+    parentheses) and is surrounded by whitespace.
+
+    Args:
+        clause: SQL expression to split.
+        operator: 'AND' or 'OR'.
+
+    Returns:
+        List of sub-expressions. Length 1 if operator not found at top level.
+    """
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    tokens = clause.split()
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        # Track parenthesis depth
+        depth += token.count("(") - token.count(")")
+
+        if depth == 0 and token.upper() == operator:
+            parts.append(" ".join(current))
+            current = []
+        else:
+            current.append(token)
+        i += 1
+
+    if current:
+        parts.append(" ".join(current))
+
+    return parts
+
+
 def _order_matches_filter(order: ExternalOrder, where_clause: str) -> bool:
     """Check if a single order matches the WHERE clause.
 
-    This is a simplified filter evaluator that handles common patterns:
+    Supports compound AND/OR clauses by splitting into sub-clauses and
+    evaluating each atomically. Also handles common single-column patterns:
     - String equality: column = 'value'
     - String LIKE: column LIKE '%value%'
     - Date comparisons: created_at >= 'YYYY-MM-DD'
@@ -216,7 +291,14 @@ def _order_matches_filter(order: ExternalOrder, where_clause: str) -> bool:
     import re
     from datetime import datetime, timedelta
 
-    clause_lower = where_clause.lower()
+    # Handle compound AND/OR clauses
+    op, sub_clauses = _split_compound_clause(where_clause)
+    if op == "OR" and len(sub_clauses) > 1:
+        return any(_order_matches_filter(order, sc) for sc in sub_clauses)
+    if op == "AND" and len(sub_clauses) > 1:
+        return all(_order_matches_filter(order, sc) for sc in sub_clauses)
+
+    clause_lower = where_clause.lower().strip()
 
     # Log the filter and order being evaluated for debugging
     logger.debug(

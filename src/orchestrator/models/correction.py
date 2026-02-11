@@ -7,12 +7,9 @@ attempts up to 3 corrections before escalating to the user with options.
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
-
-if TYPE_CHECKING:
-    from src.orchestrator.nl_engine.template_validator import ValidationError
 
 
 class CorrectionOptions(str, Enum):

@@ -20,6 +20,8 @@ from src.orchestrator.nl_engine.intent_parser import IntentParseError
 from src.services.command_processor import (
     SHOPIFY_ORDER_SCHEMA,
     CommandProcessor,
+    _order_matches_filter,
+    _split_compound_clause,
     apply_filter_to_orders,
     compute_order_checksum,
 )
@@ -249,6 +251,120 @@ class TestApplyFilterToOrders:
         result = apply_filter_to_orders(sample_orders, filter_result)
         assert len(result) == 1
         assert result[0].ship_to_city == "Los Angeles"
+
+
+# === Tests for compound filter parsing (AND/OR) ===
+
+
+class TestSplitCompoundClause:
+    """Tests for _split_compound_clause helper."""
+
+    def test_single_clause_returns_single(self):
+        """A simple clause with no AND/OR returns as-is."""
+        op, parts = _split_compound_clause("ship_to_state = 'CA'")
+        assert op == "SINGLE"
+        assert parts == ["ship_to_state = 'CA'"]
+
+    def test_or_splits_two_clauses(self):
+        """OR splits into two sub-clauses."""
+        op, parts = _split_compound_clause(
+            "customer_name = 'Noah Bode' OR ship_to_name = 'Noah Bode'"
+        )
+        assert op == "OR"
+        assert len(parts) == 2
+        assert "customer_name = 'Noah Bode'" in parts
+        assert "ship_to_name = 'Noah Bode'" in parts
+
+    def test_and_splits_two_clauses(self):
+        """AND splits into two sub-clauses."""
+        op, parts = _split_compound_clause(
+            "ship_to_state = 'CA' AND status LIKE '%unfulfilled%'"
+        )
+        assert op == "AND"
+        assert len(parts) == 2
+
+    def test_strips_outer_parens(self):
+        """Outer parentheses are stripped before splitting."""
+        op, parts = _split_compound_clause(
+            "(customer_name = 'X' OR ship_to_name = 'X')"
+        )
+        assert op == "OR"
+        assert len(parts) == 2
+
+
+class TestCompoundFilterEvaluation:
+    """Tests for AND/OR compound filter evaluation."""
+
+    @pytest.fixture
+    def order_different_names(self) -> ExternalOrder:
+        """Order where buyer and recipient differ."""
+        return ExternalOrder(
+            platform="shopify",
+            order_id="999",
+            order_number="2001",
+            status="paid/unfulfilled",
+            created_at="2025-01-20T10:00:00Z",
+            customer_name="Alice Buyer",
+            customer_email="alice@example.com",
+            ship_to_name="Bob Recipient",
+            ship_to_address1="100 Ship St",
+            ship_to_city="Buffalo",
+            ship_to_state="NY",
+            ship_to_postal_code="14201",
+            ship_to_country="US",
+            items=[],
+        )
+
+    def test_or_matches_customer_name(self, order_different_names):
+        """OR filter matches when customer_name matches."""
+        clause = "customer_name = 'Alice Buyer' OR ship_to_name = 'Alice Buyer'"
+        assert _order_matches_filter(order_different_names, clause) is True
+
+    def test_or_matches_ship_to_name(self, order_different_names):
+        """OR filter matches when ship_to_name matches."""
+        clause = "customer_name = 'Bob Recipient' OR ship_to_name = 'Bob Recipient'"
+        assert _order_matches_filter(order_different_names, clause) is True
+
+    def test_or_no_match(self, order_different_names):
+        """OR filter rejects when neither side matches."""
+        clause = "customer_name = 'Nobody' OR ship_to_name = 'Nobody'"
+        assert _order_matches_filter(order_different_names, clause) is False
+
+    def test_and_both_match(self, sample_orders):
+        """AND filter matches when both conditions hold."""
+        clause = "ship_to_state = 'CA' AND ship_to_city = 'Los Angeles'"
+        # John Smith is in Los Angeles, CA
+        assert _order_matches_filter(sample_orders[0], clause) is True
+
+    def test_and_one_fails(self, sample_orders):
+        """AND filter rejects when one condition fails."""
+        clause = "ship_to_state = 'CA' AND ship_to_city = 'New York'"
+        # John Smith is in CA but city is Los Angeles, not New York
+        assert _order_matches_filter(sample_orders[0], clause) is False
+
+    def test_customer_name_exact_match(self, sample_orders):
+        """Exact customer_name filter matches."""
+        clause = "customer_name = 'John Smith'"
+        assert _order_matches_filter(sample_orders[0], clause) is True
+        assert _order_matches_filter(sample_orders[1], clause) is False
+
+    def test_customer_name_like_match(self, sample_orders):
+        """LIKE customer_name filter matches substring."""
+        clause = "customer_name LIKE '%Smith%'"
+        assert _order_matches_filter(sample_orders[0], clause) is True
+        assert _order_matches_filter(sample_orders[1], clause) is False
+
+    def test_apply_or_filter_to_orders(self, sample_orders):
+        """apply_filter_to_orders works with OR compound clause."""
+        filter_result = SQLFilterResult(
+            where_clause="customer_name = 'John Smith' OR customer_name = 'Jane Doe'",
+            columns_used=["customer_name"],
+            original_expression="orders for John Smith or Jane Doe",
+        )
+        result = apply_filter_to_orders(sample_orders, filter_result)
+        assert len(result) == 2
+        names = {o.customer_name for o in result}
+        assert names == {"John Smith", "Jane Doe"}
 
 
 # === Tests for SHOPIFY_ORDER_SCHEMA ===

@@ -27,7 +27,7 @@ class TestValidateShippingInput:
         result = await validate_shipping_input(
             {
                 "tool_name": "mcp__ups__shipping_create",
-                "tool_input": {"shipTo": {"name": "Test", "address": {"city": "LA"}}}
+                "tool_input": {"shipTo": {"name": "Test", "addressLine1": "123 Main St"}}
             },
             "test-id",
             None
@@ -43,7 +43,7 @@ class TestValidateShippingInput:
         result = await validate_shipping_input(
             {
                 "tool_name": "mcp__ups__shipping_create",
-                "tool_input": {"shipper": {"name": "Test", "address": {"city": "LA"}}}
+                "tool_input": {"shipper": {"name": "Test", "addressLine1": "123 Main St"}}
             },
             "test-id",
             None
@@ -59,8 +59,8 @@ class TestValidateShippingInput:
             {
                 "tool_name": "mcp__ups__shipping_create",
                 "tool_input": {
-                    "shipper": {"address": {"city": "LA"}},
-                    "shipTo": {"name": "Receiver", "address": {"city": "NY"}}
+                    "shipper": {"addressLine1": "123 Main St"},
+                    "shipTo": {"name": "Receiver", "addressLine1": "456 Oak Ave"}
                 }
             },
             "test-id",
@@ -80,7 +80,7 @@ class TestValidateShippingInput:
                 "tool_name": "mcp__ups__shipping_create",
                 "tool_input": {
                     "shipper": {"name": "Sender"},
-                    "shipTo": {"name": "Receiver", "address": {"city": "NY"}}
+                    "shipTo": {"name": "Receiver", "addressLine1": "456 Oak Ave"}
                 }
             },
             "test-id",
@@ -98,8 +98,8 @@ class TestValidateShippingInput:
             {
                 "tool_name": "mcp__ups__shipping_create",
                 "tool_input": {
-                    "shipper": {"name": "Sender", "address": {"city": "LA"}},
-                    "shipTo": {"address": {"city": "NY"}}
+                    "shipper": {"name": "Sender", "addressLine1": "123 Main St"},
+                    "shipTo": {"addressLine1": "456 Oak Ave"}
                 }
             },
             "test-id",
@@ -118,7 +118,7 @@ class TestValidateShippingInput:
             {
                 "tool_name": "mcp__ups__shipping_create",
                 "tool_input": {
-                    "shipper": {"name": "Sender", "address": {"city": "LA"}},
+                    "shipper": {"name": "Sender", "addressLine1": "123 Main St"},
                     "shipTo": {"name": "Receiver"}
                 }
             },
@@ -137,8 +137,8 @@ class TestValidateShippingInput:
             {
                 "tool_name": "mcp__ups__shipping_create",
                 "tool_input": {
-                    "shipper": {"name": "Sender", "address": {"city": "LA"}},
-                    "shipTo": {"name": "Receiver", "address": {"city": "NY"}}
+                    "shipper": {"name": "Sender", "addressLine1": "123 Main St"},
+                    "shipTo": {"name": "Receiver", "addressLine1": "456 Oak Ave"}
                 }
             },
             "test-id",
