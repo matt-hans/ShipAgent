@@ -532,8 +532,11 @@ class TestBuildUpsApiPayload:
         assert pkg["Dimensions"]["Width"] == "8"
         assert pkg["Dimensions"]["Height"] == "6"
 
-    def test_includes_reference_when_present(self):
-        """Test ReferenceNumber is included when reference provided."""
+    def test_reference_not_included_at_shipment_level(self):
+        """Test ReferenceNumber is NOT included at shipment level.
+
+        UPS Ground domestic rejects shipment-level reference numbers.
+        """
         simplified = {
             "shipper": {"name": "S", "addressLine1": "A", "city": "C",
                         "stateProvinceCode": "CA", "postalCode": "90001",
@@ -548,7 +551,70 @@ class TestBuildUpsApiPayload:
 
         result = build_ups_api_payload(simplified, account_number="X")
         shipment = result["ShipmentRequest"]["Shipment"]
-        assert shipment["ReferenceNumber"]["Value"] == "ORD-1001"
+        assert "ReferenceNumber" not in shipment
+
+
+    def test_packaging_key_name(self):
+        """Test package uses 'Packaging' key (not 'PackagingType')."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_api_payload(simplified, account_number="X")
+        pkg = result["ShipmentRequest"]["Shipment"]["Package"][0]
+        assert "Packaging" in pkg
+        assert "PackagingType" not in pkg
+        assert pkg["Packaging"]["Code"] == "02"
+
+    def test_shipment_charge_is_array(self):
+        """Test ShipmentCharge is wrapped in an array per UPS schema."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_api_payload(simplified, account_number="ABC")
+        payment = result["ShipmentRequest"]["Shipment"]["PaymentInformation"]
+        assert isinstance(payment["ShipmentCharge"], list)
+        assert len(payment["ShipmentCharge"]) == 1
+        assert payment["ShipmentCharge"][0]["Type"] == "01"
+        assert payment["ShipmentCharge"][0]["BillShipper"]["AccountNumber"] == "ABC"
+
+    def test_reference_numbers_omitted(self):
+        """Test reference numbers are not included at shipment level.
+
+        UPS rejects shipment-level ReferenceNumber for certain services.
+        """
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+            "reference": "REF-001",
+            "reference2": "REF-002",
+        }
+
+        result = build_ups_api_payload(simplified, account_number="X")
+        shipment = result["ShipmentRequest"]["Shipment"]
+        assert "ReferenceNumber" not in shipment
+        assert "ReferenceNumber2" not in shipment
 
 
 class TestBuildUpsRatePayload:

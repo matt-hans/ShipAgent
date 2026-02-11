@@ -403,7 +403,7 @@ def build_ups_api_payload(
     ups_packages = []
     for pkg in packages:
         ups_pkg: dict[str, Any] = {
-            "PackagingType": {
+            "Packaging": {
                 "Code": pkg.get("packagingType", "02"),
             },
             "PackageWeight": {
@@ -431,26 +431,22 @@ def build_ups_api_payload(
         "Service": {"Code": service_code},
         "Package": ups_packages,
         "PaymentInformation": {
-            "ShipmentCharge": {
-                "Type": "01",
-                "BillShipper": {"AccountNumber": account_number},
-            }
+            "ShipmentCharge": [
+                {
+                    "Type": "01",
+                    "BillShipper": {"AccountNumber": account_number},
+                }
+            ]
         },
     }
 
     # Optional fields
     if simplified.get("description"):
         shipment["Description"] = simplified["description"]
-    if simplified.get("reference"):
-        shipment["ReferenceNumber"] = {
-            "Code": "00",
-            "Value": simplified["reference"],
-        }
-    if simplified.get("reference2"):
-        shipment["ReferenceNumber2"] = {
-            "Code": "00",
-            "Value": simplified["reference2"],
-        }
+    # Note: ReferenceNumber at shipment level is not allowed for all UPS
+    # services (e.g. Ground domestic rejects it). Reference numbers can be
+    # added at the package level if needed in the future.
+    # See: UPS error "Shipment/ReferenceNumber is not allowed for this shipment"
 
     # Shipment-level options
     options = {}
