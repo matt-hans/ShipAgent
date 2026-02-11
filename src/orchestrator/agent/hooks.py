@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 __all__ = [
     "validate_pre_tool",
     "validate_shipping_input",
+    "validate_void_shipment",
     "validate_data_query",
     "log_post_tool",
     "detect_error_response",
@@ -52,7 +53,7 @@ async def validate_shipping_input(
     """Validate UPS shipping tool inputs before execution.
 
     Validates:
-    - For `shipping_create`: Require shipper and shipTo fields
+    - For `create_shipment`: Require shipper and shipTo fields
     - Return denial with clear reason if missing required fields
     - Return empty dict `{}` to allow operation
 
@@ -70,8 +71,8 @@ async def validate_shipping_input(
     # Log validation attempt to stderr
     _log_to_stderr(f"[VALIDATION] Pre-hook checking: {tool_name} | ID: {tool_use_id}")
 
-    # Validate shipping_create tool
-    if "shipping_create" in tool_name:
+    # Validate create_shipment tool (mcp__ups__create_shipment)
+    if "create_shipment" in tool_name:
         # Check for required shipper information
         if not tool_input.get("shipper"):
             return _deny_with_reason(
@@ -106,6 +107,47 @@ async def validate_shipping_input(
         if not ship_to.get("addressLine1"):
             return _deny_with_reason(
                 "Missing recipient address. The 'shipTo.addressLine1' field is required."
+            )
+
+    return {}  # Allow operation
+
+
+async def validate_void_shipment(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """Validate UPS void_shipment tool inputs before execution.
+
+    Validates:
+    - For `void_shipment`: Require a tracking number or shipment ID
+    - Return denial with clear reason if missing
+    - Return empty dict `{}` to allow operation
+
+    Args:
+        input_data: Contains 'tool_name' and 'tool_input' keys
+        tool_use_id: Unique identifier for this tool use
+        context: Hook context from Claude Agent SDK
+
+    Returns:
+        Empty dict to allow, or hookSpecificOutput with denial to block
+    """
+    tool_name = input_data.get("tool_name", "")
+    tool_input = input_data.get("tool_input", {})
+
+    _log_to_stderr(f"[VALIDATION] Pre-hook checking: {tool_name} | ID: {tool_use_id}")
+
+    if "void_shipment" in tool_name:
+        # Check for tracking number / shipment identification number
+        tracking = (
+            tool_input.get("trackingNumber")
+            or tool_input.get("ShipmentIdentificationNumber")
+            or tool_input.get("shipmentIdentificationNumber")
+        )
+        if not tracking:
+            return _deny_with_reason(
+                "Missing required shipment identifier. "
+                "The 'trackingNumber' or 'ShipmentIdentificationNumber' field is required to void a shipment."
             )
 
     return {}  # Allow operation
@@ -165,9 +207,10 @@ async def validate_pre_tool(
 ) -> dict[str, Any]:
     """Generic pre-validation entry point for all tool calls.
 
-    Routes to specific validators based on tool_name prefix:
-    - mcp__ups__shipping_* -> validate_shipping_input
-    - mcp__data__query_* -> validate_data_query
+    Routes to specific validators based on tool_name substring:
+    - mcp__ups__create_shipment -> validate_shipping_input
+    - mcp__ups__void_shipment -> validate_void_shipment
+    - mcp__data__query_data -> validate_data_query
 
     This is the default pre-hook for all tools when specific
     matchers are not provided.
@@ -186,8 +229,10 @@ async def validate_pre_tool(
     _log_to_stderr(f"[VALIDATION] Pre-hook (generic): {tool_name} | ID: {tool_use_id}")
 
     # Route to specific validators based on tool name
-    if "shipping_create" in tool_name:
+    if "create_shipment" in tool_name:
         return await validate_shipping_input(input_data, tool_use_id, context)
+    elif "void_shipment" in tool_name:
+        return await validate_void_shipment(input_data, tool_use_id, context)
     elif "query_data" in tool_name:
         return await validate_data_query(input_data, tool_use_id, context)
 
@@ -387,7 +432,8 @@ def create_hook_matchers() -> dict[str, list[dict[str, Any]]]:
     Structure:
         {
             "PreToolUse": [
-                {"matcher": "mcp__ups__shipping", "hooks": [validate_shipping_input]},
+                {"matcher": "mcp__ups__create_shipment", "hooks": [validate_shipping_input]},
+                {"matcher": "mcp__ups__void_shipment", "hooks": [validate_void_shipment]},
                 {"matcher": None, "hooks": [validate_pre_tool]}  # All tools
             ],
             "PostToolUse": [
@@ -397,18 +443,24 @@ def create_hook_matchers() -> dict[str, list[dict[str, Any]]]:
 
     Matchers:
         - matcher=None means "all tools"
-        - matcher="mcp__ups__shipping" means "tools starting with that prefix"
+        - matcher="mcp__ups__create_shipment" means "tools matching that name"
 
     Returns:
         Dict with PreToolUse and PostToolUse hook configurations
     """
     return {
         "PreToolUse": [
-            # Specific validation for UPS shipping tools
+            # Specific validation for UPS create_shipment tool
             {
-                "matcher": "mcp__ups__shipping",
+                "matcher": "mcp__ups__create_shipment",
                 "hooks": [validate_shipping_input],
                 "description": "Validates shipper and shipTo fields for shipping operations",
+            },
+            # Specific validation for UPS void_shipment tool
+            {
+                "matcher": "mcp__ups__void_shipment",
+                "hooks": [validate_void_shipment],
+                "description": "Validates tracking number before voiding a shipment",
             },
             # Specific validation for data query tools
             {

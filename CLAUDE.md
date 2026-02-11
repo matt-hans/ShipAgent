@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Current Phase:** 7 - Web Interface (in progress, core chat UI operational)
 **Phases 1-6:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent Integration, Batch Execution)
 **Test Count:** 777 tests (746 unit + 31 integration)
-**UPS MCP Pivot:** COMPLETE — direct Python import replaces subprocess MCP model
+**UPS MCP Hybrid:** COMPLETE — agent uses ups-mcp as stdio MCP server for interactive tools; BatchEngine uses UPSService (direct Python import) for deterministic batch execution
 
 ## Project Overview
 
@@ -19,7 +19,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - Natural language commands for shipment creation
 - Data source support: CSV, Excel (.xlsx), PostgreSQL/MySQL databases, Shopify (via env auto-detect)
-- UPS API coverage: shipping, rating, address validation (via direct `ups-mcp` ToolManager import)
+- UPS API coverage: shipping, rating, address validation, tracking, label recovery, time-in-transit (via `ups-mcp` MCP server + direct ToolManager import for batch path)
 - Deterministic batch execution with per-row audit logging and SSE real-time progress
 - Column mapping with LLM-generated source-to-payload field mappings
 - Preview mode with cost estimates before execution
@@ -31,7 +31,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-Uses a hybrid architecture: **Model Context Protocol (MCP)** for data source abstraction, **direct Python import** for UPS operations, and **FastAPI + React** for the web interface.
+Uses a hybrid architecture: **Model Context Protocol (MCP)** for data source abstraction and UPS interactive operations, **direct Python import** for deterministic batch UPS execution, and **FastAPI + React** for the web interface.
 
 ### System Components
 
@@ -46,7 +46,8 @@ User → Browser UI (React) → FastAPI REST API → Orchestration Agent → Ser
 | **FastAPI Backend** | Python + FastAPI + SQLAlchemy | REST API, job management, SSE progress streaming |
 | **Orchestration Agent** | Python + Claude Agent SDK | Interprets intent, coordinates services, runs batch execution |
 | **Data Source MCP** | Python + FastMCP + DuckDB | Abstracts data sources (CSV, Excel, DB) behind SQL interface |
-| **UPS Service** | Python + `ups-mcp` ToolManager | Direct Python import for UPS shipping, rating, address validation |
+| **UPS MCP** | `ups-mcp` via uvx (stdio) | Agent-accessible UPS tools: shipping, rating, tracking, address validation, label recovery, time-in-transit |
+| **UPS Service** | Python + `ups-mcp` ToolManager | Direct Python import for deterministic batch execution (shipping, rating) |
 | **Batch Engine** | Python | Unified preview + execution with per-row state tracking |
 | **State Database** | SQLite | Job state, transaction journal, audit logs for crash recovery |
 | **Browser UI** | React + Vite + TypeScript + shadcn/ui | Chat interface, job history, label preview |
@@ -55,9 +56,10 @@ User → Browser UI (React) → FastAPI REST API → Orchestration Agent → Ser
 
 - **Browser ↔ Backend**: REST API (`/api/v1/`) + SSE for real-time progress
 - **Agent ↔ Data Source MCP**: stdio transport (child process)
+- **Agent ↔ UPS MCP**: stdio transport (child process via uvx, interactive UPS operations)
 - **Agent ↔ Anthropic API**: HTTPS via Claude Agent SDK
 - **Backend ↔ State DB**: SQLite via SQLAlchemy
-- **UPSService ↔ UPS API**: Direct Python import (`ups-mcp` ToolManager) with OAuth 2.0
+- **BatchEngine ↔ UPS API**: Direct Python import (`ups-mcp` ToolManager) for batch execution
 
 ### Data Flow (Batch Processing)
 
@@ -155,14 +157,28 @@ frontend/
 
 ## Key Services
 
+### UPS MCP Server (external: `github.com/UPS-API/ups-mcp`)
+
+Runs as a stdio child process (via uvx), providing the agent with interactive access to 7 UPS tools. The agent can call these directly for ad-hoc operations during conversation.
+
+| MCP Tool | Purpose |
+|----------|---------|
+| `rate_shipment` | Get shipping rate or compare rates across services |
+| `create_shipment` | Create shipment with label generation |
+| `void_shipment` | Cancel an existing shipment |
+| `validate_address` | Validate U.S. and Puerto Rico addresses |
+| `track_package` | Track shipment status and delivery estimates |
+| `recover_label` | Recover previously generated shipping labels |
+| `get_time_in_transit` | Estimate delivery timeframes |
+
 ### UPSService (`src/services/ups_service.py`)
 
-Wraps `ups-mcp` ToolManager for direct Python calls to UPS APIs. Handles OAuth 2.0 authentication, response normalization, and error translation.
+Wraps `ups-mcp` ToolManager for direct Python calls — used exclusively by BatchEngine for deterministic batch execution. Handles response normalization and error translation.
 
 | Method | Purpose |
 |--------|---------|
-| `rate_shipment()` | Get shipping cost estimate |
-| `create_shipment()` | Create shipment, returns tracking number + label |
+| `rate_shipment()` | Get shipping cost estimate (batch preview) |
+| `create_shipment()` | Create shipment, returns tracking number + label (batch execute) |
 | `void_shipment()` | Cancel a shipment |
 | `validate_address()` | Validate/correct addresses |
 

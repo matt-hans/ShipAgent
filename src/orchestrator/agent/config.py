@@ -7,18 +7,28 @@ Configuration includes:
     - Data MCP: Python-based server for data source operations
     - Shopify MCP: Node.js-based server for Shopify order retrieval (via npx)
     - External Sources MCP: Python-based unified gateway for external platforms
+    - UPS MCP: UPS API server for shipping, rating, tracking, address validation
+      (via uvx from github.com/UPS-API/ups-mcp)
 
-Note: UPS integration is now a direct Python import (UPSService) rather than
-a subprocess MCP server. See src/services/ups_service.py.
+Hybrid UPS architecture:
+    - Interactive path: Agent calls UPS MCP tools directly for ad-hoc operations
+      (rate checks, address validation, tracking, label recovery, transit times)
+    - Batch path: BatchEngine uses UPSService (direct Python import) for
+      deterministic high-volume execution with per-row state tracking
 
 Environment Variables:
     SHOPIFY_ACCESS_TOKEN: Admin API access token from custom app (required for Shopify MCP)
     SHOPIFY_STORE_DOMAIN: Store domain e.g. mystore.myshopify.com (required for Shopify MCP)
+    UPS_CLIENT_ID: UPS OAuth client ID (required for UPS MCP)
+    UPS_CLIENT_SECRET: UPS OAuth client secret (required for UPS MCP)
+    UPS_BASE_URL: UPS API base URL — used to derive environment (test vs production)
 """
 
+import logging
 import os
-import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 from typing import TypedDict
 
 # Project root is parent of src/
@@ -82,10 +92,9 @@ def get_shopify_mcp_config() -> MCPServerConfig:
         missing_vars.append("SHOPIFY_STORE_DOMAIN")
 
     if missing_vars:
-        print(
-            f"[config] WARNING: Missing Shopify credentials: {', '.join(missing_vars)}. "
-            "Shopify MCP will fail on startup.",
-            file=sys.stderr,
+        logger.warning(
+            "Missing Shopify credentials: %s. Shopify MCP will fail on startup.",
+            ", ".join(missing_vars),
         )
 
     return MCPServerConfig(
@@ -98,6 +107,63 @@ def get_shopify_mcp_config() -> MCPServerConfig:
             store_domain or "",
         ],
         env={
+            "PATH": os.environ.get("PATH", ""),
+        },
+    )
+
+
+def get_ups_mcp_config() -> MCPServerConfig:
+    """Get configuration for the UPS MCP server.
+
+    The UPS MCP runs via uvx from the UPS-API/ups-mcp GitHub repository
+    with stdio transport. It provides 7 tools: track_package, validate_address,
+    rate_shipment, create_shipment, void_shipment, recover_label,
+    get_time_in_transit.
+
+    This gives the agent interactive access to UPS operations. The deterministic
+    batch path (BatchEngine + UPSService) remains separate for high-volume
+    execution with per-row state tracking.
+
+    Returns:
+        MCPServerConfig with uvx command to run ups-mcp
+
+    Environment Variables:
+        UPS_CLIENT_ID: Required - UPS OAuth client ID
+        UPS_CLIENT_SECRET: Required - UPS OAuth client secret
+        UPS_BASE_URL: Optional - determines test vs production environment
+            (defaults to test if URL contains 'wwwcie', otherwise production)
+    """
+    client_id = os.environ.get("UPS_CLIENT_ID")
+    client_secret = os.environ.get("UPS_CLIENT_SECRET")
+    base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
+
+    # Derive environment from base URL
+    environment = "test" if "wwwcie" in base_url else "production"
+
+    # Check for required credentials and warn if missing
+    missing_vars = []
+    if not client_id:
+        missing_vars.append("UPS_CLIENT_ID")
+    if not client_secret:
+        missing_vars.append("UPS_CLIENT_SECRET")
+
+    if missing_vars:
+        logger.warning(
+            "Missing UPS credentials: %s. UPS MCP will fail on startup.",
+            ", ".join(missing_vars),
+        )
+
+    return MCPServerConfig(
+        command="uvx",
+        args=[
+            "--from",
+            "git+https://github.com/UPS-API/ups-mcp.git@41fb64f71c5f9afe0fb8764e9dd29a71e3c773e1",
+            "ups-mcp",
+        ],
+        env={
+            "CLIENT_ID": client_id or "",
+            "CLIENT_SECRET": client_secret or "",
+            "ENVIRONMENT": environment,
             "PATH": os.environ.get("PATH", ""),
         },
     )
@@ -132,8 +198,7 @@ def create_mcp_servers_config() -> dict[str, MCPServerConfig]:
     suitable for passing to ClaudeAgentOptions.mcp_servers.
 
     Returns:
-        Dict with "data", "shopify", and "external" server configurations.
-        Note: UPS is now a direct Python import, not a subprocess MCP.
+        Dict with "data", "shopify", "external", and "ups" server configurations.
 
     Example:
         >>> config = create_mcp_servers_config()
@@ -141,11 +206,12 @@ def create_mcp_servers_config() -> dict[str, MCPServerConfig]:
         "python3"
         >>> print(config["shopify"]["command"])
         "npx"
-        >>> print(config["external"]["command"])
-        "python3"
+        >>> print(config["ups"]["command"])
+        "uvx"
     """
     return {
         "data": get_data_mcp_config(),
         "shopify": get_shopify_mcp_config(),
         "external": get_external_sources_mcp_config(),
+        "ups": get_ups_mcp_config(),
     }
