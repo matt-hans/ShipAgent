@@ -455,10 +455,23 @@ function PreviewCard({
   );
 }
 
+// Progress data passed to completion callbacks
+interface ProgressData {
+  total: number;
+  successful: number;
+  failed: number;
+  totalCostCents: number;
+}
+
 // Progress display component
-function ProgressDisplay({ jobId, onComplete }: { jobId: string; onComplete?: () => void }) {
+function ProgressDisplay({ jobId, onComplete, onFailed }: {
+  jobId: string;
+  onComplete?: (data: ProgressData) => void;
+  onFailed?: (data: ProgressData) => void;
+}) {
   const { progress } = useJobProgress(jobId);
   const completeFiredRef = React.useRef(false);
+  const failFiredRef = React.useRef(false);
 
   const percentage = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0;
   const isRunning = progress.status === 'running';
@@ -469,9 +482,27 @@ function ProgressDisplay({ jobId, onComplete }: { jobId: string; onComplete?: ()
   React.useEffect(() => {
     if (isComplete && !completeFiredRef.current && onComplete) {
       completeFiredRef.current = true;
-      onComplete();
+      onComplete({
+        total: progress.total,
+        successful: progress.successful,
+        failed: progress.failed,
+        totalCostCents: progress.totalCostCents,
+      });
     }
-  }, [isComplete, onComplete]);
+  }, [isComplete, onComplete, progress]);
+
+  // Fire onFailed callback once when status transitions to failed
+  React.useEffect(() => {
+    if (isFailed && !failFiredRef.current && onFailed) {
+      failFiredRef.current = true;
+      onFailed({
+        total: progress.total,
+        successful: progress.successful,
+        failed: progress.failed,
+        totalCostCents: progress.totalCostCents,
+      });
+    }
+  }, [isFailed, onFailed, progress]);
 
   return (
     <div className={cn(
@@ -768,9 +799,11 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const [isConfirming, setIsConfirming] = React.useState(false);
   const [executingJobId, setExecutingJobId] = React.useState<string | null>(null);
   const [showLabelPreview, setShowLabelPreview] = React.useState(false);
+  const [labelPreviewJobId, setLabelPreviewJobId] = React.useState<string | null>(null);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  const lastCommandRef = React.useRef<string>('');
 
   // Auto-scroll to bottom
   React.useEffect(() => {
@@ -782,6 +815,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     const command = inputValue.trim();
     if (!command || isProcessing || !hasDataSource) return;
 
+    lastCommandRef.current = command;
     setInputValue('');
     setIsProcessing(true);
 
@@ -861,6 +895,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       await cancelJob(currentJobId);
       setPreview(null);
       setCurrentJobId(null);
+      refreshJobList();
 
       addMessage({
         role: 'system',
@@ -900,7 +935,17 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         ) : (
           <div className="max-w-3xl mx-auto space-y-6">
             {conversation.map((message) => (
-              message.role === 'user' ? (
+              message.metadata?.action === 'complete' ? (
+                <div key={message.id} className="pl-11">
+                  <CompletionArtifact
+                    message={message}
+                    onViewLabels={(jobId) => {
+                      setLabelPreviewJobId(jobId);
+                      setShowLabelPreview(true);
+                    }}
+                  />
+                </div>
+              ) : message.role === 'user' ? (
                 <UserMessage key={message.id} message={message} />
               ) : (
                 <SystemMessage key={message.id} message={message} />
@@ -924,8 +969,50 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
               <div className="pl-11">
                 <ProgressDisplay
                   jobId={executingJobId}
-                  onComplete={() => {
+                  onComplete={(data) => {
+                    addMessage({
+                      role: 'system',
+                      content: '',
+                      metadata: {
+                        jobId: executingJobId,
+                        action: 'complete' as const,
+                        completion: {
+                          command: lastCommandRef.current,
+                          totalRows: data.total,
+                          successful: data.successful,
+                          failed: data.failed,
+                          totalCostCents: data.totalCostCents,
+                        },
+                      },
+                    });
+                    setLabelPreviewJobId(executingJobId);
                     setShowLabelPreview(true);
+                    setExecutingJobId(null);
+                    setCurrentJobId(null);
+                    refreshJobList();
+                  }}
+                  onFailed={(data) => {
+                    addMessage({
+                      role: 'system',
+                      content: '',
+                      metadata: {
+                        jobId: executingJobId,
+                        action: 'complete' as const,
+                        completion: {
+                          command: lastCommandRef.current,
+                          totalRows: data.total,
+                          successful: data.successful,
+                          failed: data.failed,
+                          totalCostCents: data.totalCostCents,
+                        },
+                      },
+                    });
+                    if (data.successful > 0) {
+                      setLabelPreviewJobId(executingJobId);
+                      setShowLabelPreview(true);
+                    }
+                    setExecutingJobId(null);
+                    setCurrentJobId(null);
                     refreshJobList();
                   }}
                 />
@@ -956,10 +1043,10 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                     ? 'Connect a data source to begin...'
                     : 'Enter a shipping command...'
                 }
-                disabled={!hasDataSource || isProcessing || !!preview}
+                disabled={!hasDataSource || isProcessing || !!preview || !!executingJobId}
                 className={cn(
                   'input-command pr-12',
-                  (!hasDataSource || isProcessing || !!preview) && 'opacity-50 cursor-not-allowed'
+                  (!hasDataSource || isProcessing || !!preview || !!executingJobId) && 'opacity-50 cursor-not-allowed'
                 )}
               />
 
@@ -973,10 +1060,10 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
 
             <button
               onClick={handleSubmit}
-              disabled={!inputValue.trim() || !hasDataSource || isProcessing || !!preview}
+              disabled={!inputValue.trim() || !hasDataSource || isProcessing || !!preview || !!executingJobId}
               className={cn(
                 'btn-primary px-4',
-                (!inputValue.trim() || !hasDataSource || isProcessing || !!preview) && 'opacity-50 cursor-not-allowed'
+                (!inputValue.trim() || !hasDataSource || isProcessing || !!preview || !!executingJobId) && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isProcessing ? (
@@ -998,13 +1085,16 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         </div>
       </div>
 
-      {/* Label preview modal - shown on batch completion */}
-      {executingJobId && (
+      {/* Label preview modal - shown on batch completion or artifact click */}
+      {labelPreviewJobId && (
         <LabelPreview
-          pdfUrl={getMergedLabelsUrl(executingJobId)}
+          pdfUrl={getMergedLabelsUrl(labelPreviewJobId)}
           title="Batch Labels"
           isOpen={showLabelPreview}
-          onClose={() => setShowLabelPreview(false)}
+          onClose={() => {
+            setShowLabelPreview(false);
+            setLabelPreviewJobId(null);
+          }}
         />
       )}
     </div>
