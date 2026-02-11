@@ -226,11 +226,13 @@ class TestListToolsTool:
         tools = json.loads(text)
         tool_names = [t["name"] for t in tools["ups"]]
 
-        assert "rating_quote" in tool_names
-        assert "rating_shop" in tool_names
-        assert "shipping_create" in tool_names
-        assert "shipping_void" in tool_names
-        assert "address_validate" in tool_names
+        assert "rate_shipment" in tool_names
+        assert "create_shipment" in tool_names
+        assert "void_shipment" in tool_names
+        assert "validate_address" in tool_names
+        assert "track_package" in tool_names
+        assert "recover_label" in tool_names
+        assert "get_time_in_transit" in tool_names
 
     @pytest.mark.asyncio
     async def test_each_tool_has_description(self):
