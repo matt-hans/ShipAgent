@@ -228,12 +228,13 @@ async def list_tools_tool(args: dict[str, Any]) -> dict[str, Any]:
             {"name": "verify_checksum", "description": "Verify row checksum"},
         ],
         "ups": [
-            {"name": "rating_quote", "description": "Get shipping rate quote"},
-            {"name": "rating_shop", "description": "Compare shipping rates"},
-            {"name": "shipping_create", "description": "Create shipment"},
-            {"name": "shipping_void", "description": "Void shipment"},
-            {"name": "shipping_get_label", "description": "Get shipping label"},
-            {"name": "address_validate", "description": "Validate address"},
+            {"name": "rate_shipment", "description": "Get shipping rate or compare rates across services"},
+            {"name": "create_shipment", "description": "Create shipment with label generation"},
+            {"name": "void_shipment", "description": "Cancel an existing shipment"},
+            {"name": "validate_address", "description": "Validate U.S. and Puerto Rico addresses"},
+            {"name": "track_package", "description": "Track shipment status and delivery estimates"},
+            {"name": "recover_label", "description": "Recover previously generated shipping labels"},
+            {"name": "get_time_in_transit", "description": "Estimate delivery timeframes"},
         ],
     }
 

@@ -52,7 +52,7 @@ async def validate_shipping_input(
     """Validate UPS shipping tool inputs before execution.
 
     Validates:
-    - For `shipping_create`: Require shipper and shipTo fields
+    - For `create_shipment`: Require shipper and shipTo fields
     - Return denial with clear reason if missing required fields
     - Return empty dict `{}` to allow operation
 
@@ -70,8 +70,8 @@ async def validate_shipping_input(
     # Log validation attempt to stderr
     _log_to_stderr(f"[VALIDATION] Pre-hook checking: {tool_name} | ID: {tool_use_id}")
 
-    # Validate shipping_create tool
-    if "shipping_create" in tool_name:
+    # Validate create_shipment tool (mcp__ups__create_shipment)
+    if "create_shipment" in tool_name:
         # Check for required shipper information
         if not tool_input.get("shipper"):
             return _deny_with_reason(
@@ -165,9 +165,9 @@ async def validate_pre_tool(
 ) -> dict[str, Any]:
     """Generic pre-validation entry point for all tool calls.
 
-    Routes to specific validators based on tool_name prefix:
-    - mcp__ups__shipping_* -> validate_shipping_input
-    - mcp__data__query_* -> validate_data_query
+    Routes to specific validators based on tool_name substring:
+    - mcp__ups__create_shipment -> validate_shipping_input
+    - mcp__data__query_data -> validate_data_query
 
     This is the default pre-hook for all tools when specific
     matchers are not provided.
@@ -186,7 +186,7 @@ async def validate_pre_tool(
     _log_to_stderr(f"[VALIDATION] Pre-hook (generic): {tool_name} | ID: {tool_use_id}")
 
     # Route to specific validators based on tool name
-    if "shipping_create" in tool_name:
+    if "create_shipment" in tool_name:
         return await validate_shipping_input(input_data, tool_use_id, context)
     elif "query_data" in tool_name:
         return await validate_data_query(input_data, tool_use_id, context)
@@ -404,9 +404,9 @@ def create_hook_matchers() -> dict[str, list[dict[str, Any]]]:
     """
     return {
         "PreToolUse": [
-            # Specific validation for UPS shipping tools
+            # Specific validation for UPS create_shipment tool
             {
-                "matcher": "mcp__ups__shipping",
+                "matcher": "mcp__ups__create_shipment",
                 "hooks": [validate_shipping_input],
                 "description": "Validates shipper and shipTo fields for shipping operations",
             },

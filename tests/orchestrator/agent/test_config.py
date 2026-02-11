@@ -4,10 +4,8 @@ Tests verify:
 - MCP server configurations are correctly structured
 - Data MCP config points to correct Python module
 - Shopify MCP config uses npx with correct credentials
+- UPS MCP config uses uvx with correct credentials and environment derivation
 - Environment variables are properly passed through
-
-Note: UPS integration is now a direct Python import (UPSService),
-not a subprocess MCP server. See src/services/ups_service.py.
 """
 
 from pathlib import Path
@@ -19,6 +17,7 @@ from src.orchestrator.agent.config import (
     create_mcp_servers_config,
     get_data_mcp_config,
     get_shopify_mcp_config,
+    get_ups_mcp_config,
 )
 
 
@@ -140,16 +139,113 @@ class TestShopifyMCPConfig:
         assert isinstance(config["env"], dict)
 
 
+class TestUPSMCPConfig:
+    """Tests for UPS MCP configuration."""
+
+    def test_command_is_uvx(self):
+        """UPS MCP should use uvx to run ups-mcp."""
+        config = get_ups_mcp_config()
+        assert config["command"] == "uvx"
+
+    def test_args_specify_ups_mcp(self):
+        """Args should specify ups-mcp package from GitHub."""
+        config = get_ups_mcp_config()
+        assert "--from" in config["args"]
+        assert "ups-mcp" in config["args"]
+        # Should reference the UPS-API/ups-mcp repo
+        from_arg = config["args"][config["args"].index("--from") + 1]
+        assert "UPS-API/ups-mcp" in from_arg
+
+    def test_args_pin_commit(self):
+        """Args should pin to specific commit for stability."""
+        config = get_ups_mcp_config()
+        from_arg = config["args"][config["args"].index("--from") + 1]
+        assert "41fb64f" in from_arg
+
+    def test_config_has_required_keys(self):
+        """Config should have command, args, and env keys."""
+        config = get_ups_mcp_config()
+        assert "command" in config
+        assert "args" in config
+        assert "env" in config
+
+    def test_env_has_ups_credentials(self):
+        """Environment should include CLIENT_ID and CLIENT_SECRET."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("UPS_CLIENT_ID", "test_client_id")
+            mp.setenv("UPS_CLIENT_SECRET", "test_client_secret")
+
+            config = get_ups_mcp_config()
+
+            assert config["env"]["CLIENT_ID"] == "test_client_id"
+            assert config["env"]["CLIENT_SECRET"] == "test_client_secret"
+
+    def test_env_derives_test_environment(self):
+        """Should derive 'test' environment from wwwcie base URL."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("UPS_BASE_URL", "https://wwwcie.ups.com")
+
+            config = get_ups_mcp_config()
+            assert config["env"]["ENVIRONMENT"] == "test"
+
+    def test_env_derives_production_environment(self):
+        """Should derive 'production' environment from production base URL."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("UPS_BASE_URL", "https://onlinetools.ups.com")
+
+            config = get_ups_mcp_config()
+            assert config["env"]["ENVIRONMENT"] == "production"
+
+    def test_env_defaults_to_test(self):
+        """Should default to test environment when UPS_BASE_URL is not set."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.delenv("UPS_BASE_URL", raising=False)
+
+            config = get_ups_mcp_config()
+            assert config["env"]["ENVIRONMENT"] == "test"
+
+    def test_env_has_path(self):
+        """Environment should include PATH for uvx to work."""
+        config = get_ups_mcp_config()
+        assert "PATH" in config["env"]
+
+    def test_missing_credentials_still_returns_config(self):
+        """Config should still be returned even if credentials are missing."""
+        with pytest.MonkeyPatch.context() as mp:
+            mp.delenv("UPS_CLIENT_ID", raising=False)
+            mp.delenv("UPS_CLIENT_SECRET", raising=False)
+
+            config = get_ups_mcp_config()
+
+            assert "command" in config
+            assert "args" in config
+            assert "env" in config
+            # Should have empty strings for missing credentials
+            assert config["env"]["CLIENT_ID"] == ""
+            assert config["env"]["CLIENT_SECRET"] == ""
+
+    def test_args_is_list(self):
+        """Args should be a list."""
+        config = get_ups_mcp_config()
+        assert isinstance(config["args"], list)
+
+    def test_env_is_dict(self):
+        """Env should be a dict."""
+        config = get_ups_mcp_config()
+        assert isinstance(config["env"], dict)
+
+
 class TestCreateMCPServersConfig:
     """Tests for the combined MCP servers configuration."""
 
     def test_returns_dict_with_all_servers(self):
-        """Should return config for data, shopify, and external servers."""
+        """Should return config for data, shopify, external, and ups servers."""
         config = create_mcp_servers_config()
         assert isinstance(config, dict)
         assert "data" in config
         assert "shopify" in config
         assert "external" in config
+        assert "ups" in config
 
     def test_data_config_is_valid(self):
         """Data config should have required keys."""
@@ -181,6 +277,19 @@ class TestCreateMCPServersConfig:
         """Shopify server should use npx command."""
         config = create_mcp_servers_config()
         assert config["shopify"]["command"] == "npx"
+
+    def test_ups_uses_uvx(self):
+        """UPS server should use uvx command."""
+        config = create_mcp_servers_config()
+        assert config["ups"]["command"] == "uvx"
+
+    def test_ups_config_is_valid(self):
+        """UPS config should have required keys."""
+        config = create_mcp_servers_config()
+        ups_config = config["ups"]
+        assert "command" in ups_config
+        assert "args" in ups_config
+        assert "env" in ups_config
 
     def test_shopify_config_is_valid(self):
         """Shopify config should have required keys."""

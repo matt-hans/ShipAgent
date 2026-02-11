@@ -1,9 +1,16 @@
 """Orchestration Agent using Claude Agent SDK.
 
-The OrchestrationAgent coordinates MCP servers (Data Source, External Sources)
-via stdio transport, providing a unified interface for natural language
-shipping commands. UPS integration is handled via direct Python import
-(UPSService) rather than a subprocess MCP server.
+The OrchestrationAgent coordinates MCP servers (Data Source, External Sources,
+UPS) via stdio transport, providing a unified interface for natural language
+shipping commands.
+
+Hybrid UPS architecture:
+- Interactive path: Agent calls UPS MCP tools directly (rate_shipment,
+  validate_address, track_package, create_shipment, void_shipment,
+  recover_label, get_time_in_transit)
+- Batch path: BatchEngine uses UPSService (direct Python import of ups-mcp
+  ToolManager) for deterministic high-volume execution with per-row state
+  tracking and crash recovery
 
 Per CONTEXT.md:
 - MCPs spawn eagerly at startup
@@ -65,9 +72,11 @@ def _create_orchestrator_mcp_server() -> Any:
 class OrchestrationAgent:
     """Main orchestration agent coordinating MCPs via Claude Agent SDK.
 
-    Manages the lifecycle of Data Source and External Sources MCPs as child
-    processes, routes tool calls through hooks, and maintains conversation
-    context. UPS operations are handled via direct Python import (UPSService).
+    Manages the lifecycle of Data Source, External Sources, and UPS MCPs as
+    child processes, routes tool calls through hooks, and maintains conversation
+    context. The agent has direct access to all 7 UPS MCP tools for interactive
+    operations. BatchEngine uses UPSService separately for deterministic batch
+    execution.
 
     Usage:
         agent = OrchestrationAgent()
@@ -122,11 +131,17 @@ class OrchestrationAgent:
             "env": mcp_configs["external"]["env"],
         }
 
+        # UPS MCP config (stdio via uvx)
+        ups_config: McpStdioServerConfig = {
+            "type": "stdio",
+            "command": mcp_configs["ups"]["command"],
+            "args": mcp_configs["ups"]["args"],
+            "env": mcp_configs["ups"]["env"],
+        }
+
         # Create orchestrator MCP server for in-process tools
         orchestrator_mcp = _create_orchestrator_mcp_server()
 
-        # Note: UPS is now a direct Python import (UPSService),
-        # not a subprocess MCP server.
         return ClaudeAgentOptions(
             mcp_servers={
                 # In-process orchestrator tools
@@ -134,18 +149,20 @@ class OrchestrationAgent:
                 # External MCP servers (stdio child processes)
                 "data": data_config,
                 "external": external_config,
+                "ups": ups_config,
             },
             # Allow all tools from configured MCPs
             allowed_tools=[
                 "mcp__orchestrator__*",
                 "mcp__data__*",
                 "mcp__external__*",
+                "mcp__ups__*",
             ],
             # Hook configuration using HookMatcher dataclass
             hooks={
                 "PreToolUse": [
                     HookMatcher(
-                        matcher="mcp__ups__shipping",
+                        matcher="mcp__ups__create_shipment",
                         hooks=[validate_shipping_input],
                     ),
                     HookMatcher(
