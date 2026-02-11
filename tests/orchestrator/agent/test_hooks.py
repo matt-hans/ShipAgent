@@ -11,6 +11,7 @@ import pytest
 from src.orchestrator.agent.hooks import (
     validate_pre_tool,
     validate_shipping_input,
+    validate_void_shipment,
     validate_data_query,
     log_post_tool,
     detect_error_response,
@@ -26,7 +27,7 @@ class TestValidateShippingInput:
         """Should deny shipping_create without shipper."""
         result = await validate_shipping_input(
             {
-                "tool_name": "mcp__ups__shipping_create",
+                "tool_name": "mcp__ups__create_shipment",
                 "tool_input": {"shipTo": {"name": "Test", "addressLine1": "123 Main St"}}
             },
             "test-id",
@@ -42,7 +43,7 @@ class TestValidateShippingInput:
         """Should deny shipping_create without shipTo."""
         result = await validate_shipping_input(
             {
-                "tool_name": "mcp__ups__shipping_create",
+                "tool_name": "mcp__ups__create_shipment",
                 "tool_input": {"shipper": {"name": "Test", "addressLine1": "123 Main St"}}
             },
             "test-id",
@@ -57,7 +58,7 @@ class TestValidateShippingInput:
         """Should deny shipping_create without shipper name."""
         result = await validate_shipping_input(
             {
-                "tool_name": "mcp__ups__shipping_create",
+                "tool_name": "mcp__ups__create_shipment",
                 "tool_input": {
                     "shipper": {"addressLine1": "123 Main St"},
                     "shipTo": {"name": "Receiver", "addressLine1": "456 Oak Ave"}
@@ -77,7 +78,7 @@ class TestValidateShippingInput:
         """Should deny shipping_create without shipper address."""
         result = await validate_shipping_input(
             {
-                "tool_name": "mcp__ups__shipping_create",
+                "tool_name": "mcp__ups__create_shipment",
                 "tool_input": {
                     "shipper": {"name": "Sender"},
                     "shipTo": {"name": "Receiver", "addressLine1": "456 Oak Ave"}
@@ -96,7 +97,7 @@ class TestValidateShippingInput:
         """Should deny shipping_create without shipTo name."""
         result = await validate_shipping_input(
             {
-                "tool_name": "mcp__ups__shipping_create",
+                "tool_name": "mcp__ups__create_shipment",
                 "tool_input": {
                     "shipper": {"name": "Sender", "addressLine1": "123 Main St"},
                     "shipTo": {"addressLine1": "456 Oak Ave"}
@@ -116,7 +117,7 @@ class TestValidateShippingInput:
         """Should deny shipping_create without shipTo address."""
         result = await validate_shipping_input(
             {
-                "tool_name": "mcp__ups__shipping_create",
+                "tool_name": "mcp__ups__create_shipment",
                 "tool_input": {
                     "shipper": {"name": "Sender", "addressLine1": "123 Main St"},
                     "shipTo": {"name": "Receiver"}
@@ -135,7 +136,7 @@ class TestValidateShippingInput:
         """Should allow shipping_create with all required fields."""
         result = await validate_shipping_input(
             {
-                "tool_name": "mcp__ups__shipping_create",
+                "tool_name": "mcp__ups__create_shipment",
                 "tool_input": {
                     "shipper": {"name": "Sender", "addressLine1": "123 Main St"},
                     "shipTo": {"name": "Receiver", "addressLine1": "456 Oak Ave"}
@@ -150,10 +151,10 @@ class TestValidateShippingInput:
 
     @pytest.mark.asyncio
     async def test_allows_non_shipping_tools(self):
-        """Should allow tools that aren't shipping_create."""
+        """Should allow tools that aren't create_shipment."""
         result = await validate_shipping_input(
             {
-                "tool_name": "mcp__ups__rating_quote",
+                "tool_name": "mcp__ups__rate_shipment",
                 "tool_input": {}
             },
             "test-id",
@@ -169,6 +170,68 @@ class TestValidateShippingInput:
             {
                 "tool_name": "mcp__data__import_csv",
                 "tool_input": {"path": "orders.csv"}
+            },
+            "test-id",
+            None
+        )
+
+        assert result == {}
+
+
+class TestValidateVoidShipment:
+    """Tests for UPS void_shipment input validation hook."""
+
+    @pytest.mark.asyncio
+    async def test_denies_missing_tracking_number(self):
+        """Should deny void_shipment without tracking number."""
+        result = await validate_void_shipment(
+            {
+                "tool_name": "mcp__ups__void_shipment",
+                "tool_input": {}
+            },
+            "test-id",
+            None
+        )
+
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "shipment" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+    @pytest.mark.asyncio
+    async def test_allows_with_tracking_number(self):
+        """Should allow void_shipment with trackingNumber."""
+        result = await validate_void_shipment(
+            {
+                "tool_name": "mcp__ups__void_shipment",
+                "tool_input": {"trackingNumber": "1Z999AA10123456784"}
+            },
+            "test-id",
+            None
+        )
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_allows_with_shipment_id(self):
+        """Should allow void_shipment with ShipmentIdentificationNumber."""
+        result = await validate_void_shipment(
+            {
+                "tool_name": "mcp__ups__void_shipment",
+                "tool_input": {"ShipmentIdentificationNumber": "1Z999AA10123456784"}
+            },
+            "test-id",
+            None
+        )
+
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_allows_non_void_tools(self):
+        """Should allow tools that aren't void_shipment."""
+        result = await validate_void_shipment(
+            {
+                "tool_name": "mcp__ups__rate_shipment",
+                "tool_input": {}
             },
             "test-id",
             None
@@ -247,7 +310,7 @@ class TestValidatePreTool:
         """Should route shipping_create to validate_shipping_input."""
         result = await validate_pre_tool(
             {
-                "tool_name": "mcp__ups__shipping_create",
+                "tool_name": "mcp__ups__create_shipment",
                 "tool_input": {"shipTo": {"name": "Test"}}
             },
             "test-id",
@@ -255,6 +318,22 @@ class TestValidatePreTool:
         )
 
         # Should deny (missing shipper)
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.asyncio
+    async def test_routes_to_void_shipment_validator(self):
+        """Should route void_shipment to validate_void_shipment."""
+        result = await validate_pre_tool(
+            {
+                "tool_name": "mcp__ups__void_shipment",
+                "tool_input": {}
+            },
+            "test-id",
+            None
+        )
+
+        # Should deny (missing tracking number)
         assert "hookSpecificOutput" in result
         assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
 
@@ -307,7 +386,7 @@ class TestLogPostTool:
         """Should handle error responses without crashing."""
         result = await log_post_tool(
             {
-                "tool_name": "mcp__ups__shipping_create",
+                "tool_name": "mcp__ups__create_shipment",
                 "tool_response": {"error": "API error"}
             },
             "test-id",
@@ -335,7 +414,7 @@ class TestLogPostTool:
         """Should handle successful responses."""
         result = await log_post_tool(
             {
-                "tool_name": "mcp__ups__shipping_create",
+                "tool_name": "mcp__ups__create_shipment",
                 "tool_response": {
                     "trackingNumber": "1Z999AA10123456784",
                     "status": "success"
@@ -466,14 +545,23 @@ class TestCreateHookMatchers:
         assert "PostToolUse" in matchers
         assert len(matchers["PostToolUse"]) >= 1
 
-    def test_pretooluse_has_shipping_matcher(self):
-        """PreToolUse should have matcher for UPS shipping tools."""
+    def test_pretooluse_has_create_shipment_matcher(self):
+        """PreToolUse should have matcher for UPS create_shipment tool."""
         matchers = create_hook_matchers()
-        shipping_matchers = [
+        shipment_matchers = [
             m for m in matchers["PreToolUse"]
-            if m.get("matcher") and "shipping" in m["matcher"]
+            if m.get("matcher") and "create_shipment" in m["matcher"]
         ]
-        assert len(shipping_matchers) >= 1
+        assert len(shipment_matchers) >= 1
+
+    def test_pretooluse_has_void_shipment_matcher(self):
+        """PreToolUse should have matcher for UPS void_shipment tool."""
+        matchers = create_hook_matchers()
+        void_matchers = [
+            m for m in matchers["PreToolUse"]
+            if m.get("matcher") and "void_shipment" in m["matcher"]
+        ]
+        assert len(void_matchers) >= 1
 
     def test_pretooluse_has_query_matcher(self):
         """PreToolUse should have matcher for data query tools."""
