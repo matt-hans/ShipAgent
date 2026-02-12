@@ -261,10 +261,13 @@ Plans:
 6. Token usage for interactive flow is <500 tokens (schema generation is code-driven, not LLM)
 7. Form supports accept/cancel actions per MCP Response Action model
 
-**Plans:** 0 plans
+**Plans:** 4 plans
 
 Plans:
-- [ ] TBD (run /gsd:plan-phase 8 to break down)
+- [ ] 08-01-PLAN.md — Backend core: interactive shipping service, schema generator, intent model extension, API schemas
+- [ ] 08-02-PLAN.md — Backend routing: interactive API endpoints, field extraction, CommandProcessor update
+- [ ] 08-03-PLAN.md — Frontend: DynamicFormRenderer, CommandCenter integration, Interactive Ship button
+- [ ] 08-04-PLAN.md — Testing: unit tests for schema/extraction/job creation, API integration tests
 
 ---
 
@@ -327,4 +330,4 @@ Phase 1: Foundation
 
 ---
 
-*Last updated: 2026-01-25*
+*Last updated: 2026-02-12*
