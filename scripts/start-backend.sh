@@ -26,4 +26,4 @@ echo "  Model: ${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}"
 echo "  Shopify: ${SHOPIFY_STORE_DOMAIN:-not configured}"
 echo ""
 
-exec uvicorn src.api.main:app --reload --port 8000
+exec uvicorn src.api.main:app --reload --reload-dir src --port 8000

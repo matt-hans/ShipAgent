@@ -10,10 +10,10 @@
  */
 
 import * as React from 'react';
-import { useAppState, type ConversationMessage } from '@/hooks/useAppState';
+import { useAppState, type ConversationMessage, type WarningPreference } from '@/hooks/useAppState';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import { cn } from '@/lib/utils';
-import { submitCommand, waitForPreview, confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, refineJob } from '@/lib/api';
+import { submitCommand, waitForPreview, confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, refineJob, skipRows } from '@/lib/api';
 import type { Job, BatchPreview, PreviewRow, OrderData } from '@/types/api';
 import { Package } from 'lucide-react';
 import { LabelPreview } from '@/components/LabelPreview';
@@ -92,6 +92,15 @@ function EditIcon({ className }: { className?: string }) {
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
       <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function GearIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -197,6 +206,63 @@ function ShoppingCartIcon({ className }: { className?: string }) {
       <circle cx="20" cy="21" r="1" />
       <path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  );
+}
+
+// Settings popover for warning row preference
+function SettingsPopover() {
+  const { warningPreference, setWarningPreference } = useAppState();
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef<HTMLDivElement>(null);
+
+  // Close on outside click
+  React.useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const options: { value: WarningPreference; label: string; desc: string }[] = [
+    { value: 'ask', label: 'Ask me each time', desc: 'Show options when rows have warnings' },
+    { value: 'ship-all', label: 'Always try all rows', desc: 'Ship everything, failures handled per-row' },
+    { value: 'skip-warnings', label: 'Skip warning rows', desc: 'Auto-exclude rows that failed rate validation' },
+  ];
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="p-1.5 rounded hover:bg-slate-800 transition-colors"
+        title="Shipment settings"
+      >
+        <GearIcon className="w-4 h-4 text-slate-400" />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-72 card-premium p-2 z-50 shadow-xl">
+          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider px-2 py-1">
+            Warning Rows
+          </p>
+          {options.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => { setWarningPreference(opt.value); setOpen(false); }}
+              className={cn(
+                'w-full text-left px-3 py-2 rounded text-xs transition-colors',
+                warningPreference === opt.value
+                  ? 'bg-primary/10 text-primary'
+                  : 'text-slate-300 hover:bg-slate-800'
+              )}
+            >
+              <span className="font-medium">{opt.label}</span>
+              <p className="text-[10px] text-slate-500 mt-0.5">{opt.desc}</p>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -340,9 +406,25 @@ function ShipmentRow({
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
           <span className="font-mono text-slate-400 text-[10px]">{row.service}</span>
-          <span className="font-mono text-primary font-medium">{formatCurrency(row.estimated_cost_cents)}</span>
+          {row.warnings?.length > 0 ? (
+            <span className="font-mono text-amber-400 font-medium">$0.00</span>
+          ) : (
+            <span className="font-mono text-primary font-medium">{formatCurrency(row.estimated_cost_cents)}</span>
+          )}
         </div>
       </button>
+
+      {/* Rate error / warning */}
+      {row.warnings?.length > 0 && (
+        <div className="px-3 pb-2 ml-6">
+          {row.warnings.map((w, i) => (
+            <div key={i} className="flex items-start gap-2 text-[10px] text-amber-400/90 bg-amber-400/5 rounded px-2 py-1.5">
+              <span className="flex-shrink-0 mt-px">&#9888;</span>
+              <span>{w}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Expanded details */}
       {isExpanded && row.order_data && (
@@ -404,6 +486,12 @@ function ShipmentList({
   );
 }
 
+/** Options passed from the warning gate to handleConfirm. */
+interface ConfirmOptions {
+  skipWarningRows?: boolean;
+  warningRowNumbers?: number[];
+}
+
 // Preview card component
 function PreviewCard({
   preview,
@@ -412,18 +500,26 @@ function PreviewCard({
   isConfirming,
   onRefine,
   isRefining,
+  warningPreference,
 }: {
   preview: BatchPreview;
-  onConfirm: () => void;
+  onConfirm: (opts?: ConfirmOptions) => void;
   onCancel: () => void;
   isConfirming: boolean;
   onRefine: (text: string) => void;
   isRefining: boolean;
+  warningPreference: WarningPreference;
 }) {
   const [expandedRows, setExpandedRows] = React.useState<Set<number>>(new Set());
   const [showRefinement, setShowRefinement] = React.useState(false);
   const [refinementInput, setRefinementInput] = React.useState('');
+  const [showWarningGate, setShowWarningGate] = React.useState(false);
   const refinementInputRef = React.useRef<HTMLInputElement>(null);
+
+  const warningRows = preview.preview_rows.filter(
+    (r) => r.warnings && r.warnings.length > 0
+  );
+  const hasWarnings = warningRows.length > 0;
 
   const toggleRow = (rowNumber: number) => {
     setExpandedRows((prev) => {
@@ -544,36 +640,96 @@ function PreviewCard({
         )}
       </div>
 
-      {/* Actions */}
-      <div className="flex gap-3 pt-2">
-        <button
-          onClick={onCancel}
-          disabled={isConfirming || isRefining}
-          className="flex-1 btn-secondary py-2.5 flex items-center justify-center gap-2"
-        >
-          <XIcon className="w-4 h-4" />
-          <span>Cancel</span>
-        </button>
-        <button
-          onClick={onConfirm}
-          disabled={isConfirming || isRefining}
-          className="flex-1 btn-primary py-2.5 flex items-center justify-center gap-2"
-        >
-          {isConfirming ? (
-            <>
-              <span className="w-4 h-4 border-2 border-void-950/30 border-t-void-950 rounded-full animate-spin" />
-              <span>Confirming...</span>
-            </>
-          ) : (
-            <>
-              <CheckIcon className="w-4 h-4" />
-              <span>Confirm & Execute</span>
-            </>
-          )}
-        </button>
-      </div>
+      {/* Actions — warning gate or standard buttons */}
+      {showWarningGate ? (
+        <div className="space-y-3 pt-2">
+          <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
+            <p className="text-xs font-medium text-amber-400 mb-2">
+              {warningRows.length} row{warningRows.length !== 1 ? 's have' : ' has'} warnings:
+            </p>
+            <div className="space-y-1 max-h-[80px] overflow-y-auto scrollable">
+              {warningRows.map((r) => (
+                <div key={r.row_number} className="text-[10px] font-mono text-amber-400/80">
+                  Row {r.row_number}: {r.warnings?.[0]}
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <button
+              onClick={() => setShowWarningGate(false)}
+              className="flex-1 btn-secondary py-2.5 text-sm"
+            >
+              Back
+            </button>
+            <button
+              onClick={() => onConfirm({
+                skipWarningRows: true,
+                warningRowNumbers: warningRows.map((r) => r.row_number),
+              })}
+              disabled={isConfirming}
+              className="flex-1 btn-secondary py-2.5 text-sm border-amber-500/30 text-amber-400 hover:bg-amber-500/10"
+            >
+              Skip {warningRows.length} Row{warningRows.length !== 1 ? 's' : ''}
+            </button>
+            <button
+              onClick={() => onConfirm({ skipWarningRows: false })}
+              disabled={isConfirming}
+              className="flex-1 btn-primary py-2.5 text-sm"
+            >
+              Ship All
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-500 text-center">
+            Set a default in the <span className="text-primary">settings gear</span> above
+          </p>
+        </div>
+      ) : (
+        <div className="flex gap-3 pt-2">
+          <button
+            onClick={onCancel}
+            disabled={isConfirming || isRefining}
+            className="flex-1 btn-secondary py-2.5 flex items-center justify-center gap-2"
+          >
+            <XIcon className="w-4 h-4" />
+            <span>Cancel</span>
+          </button>
+          <button
+            onClick={() => {
+              // If warnings exist and preference is 'ask', show warning gate
+              if (hasWarnings && warningPreference === 'ask') {
+                setShowWarningGate(true);
+              } else {
+                // 'ship-all' or 'skip-warnings' or no warnings — pass through
+                onConfirm();
+              }
+            }}
+            disabled={isConfirming || isRefining}
+            className="flex-1 btn-primary py-2.5 flex items-center justify-center gap-2"
+          >
+            {isConfirming ? (
+              <>
+                <span className="w-4 h-4 border-2 border-void-950/30 border-t-void-950 rounded-full animate-spin" />
+                <span>Confirming...</span>
+              </>
+            ) : (
+              <>
+                <CheckIcon className="w-4 h-4" />
+                <span>Confirm & Execute</span>
+              </>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
+}
+
+// Per-row failure detail for callbacks
+interface RowFailureInfo {
+  rowNumber: number;
+  errorCode: string;
+  errorMessage: string;
 }
 
 // Progress data passed to completion callbacks
@@ -582,6 +738,7 @@ interface ProgressData {
   successful: number;
   failed: number;
   totalCostCents: number;
+  rowFailures: RowFailureInfo[];
 }
 
 // Progress display component
@@ -608,6 +765,7 @@ function ProgressDisplay({ jobId, onComplete, onFailed }: {
         successful: progress.successful,
         failed: progress.failed,
         totalCostCents: progress.totalCostCents,
+        rowFailures: progress.rowFailures,
       });
     }
   }, [isComplete, onComplete, progress]);
@@ -621,6 +779,7 @@ function ProgressDisplay({ jobId, onComplete, onFailed }: {
         successful: progress.successful,
         failed: progress.failed,
         totalCostCents: progress.totalCostCents,
+        rowFailures: progress.rowFailures,
       });
     }
   }, [isFailed, onFailed, progress]);
@@ -685,8 +844,29 @@ function ProgressDisplay({ jobId, onComplete, onFailed }: {
         </div>
       </div>
 
-      {/* Error message if failed */}
-      {isFailed && progress.error && (
+      {/* Per-row failure details */}
+      {(progress.rowFailures?.length ?? 0) > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] font-medium text-error/90">
+            {progress.rowFailures.length} row{progress.rowFailures.length !== 1 ? 's' : ''} failed:
+          </p>
+          <div className="max-h-[120px] overflow-y-auto scrollable space-y-1">
+            {progress.rowFailures.map((f) => (
+              <div key={f.rowNumber} className="p-2 rounded bg-error/10 border border-error/20 flex items-start gap-2">
+                <span className="text-[10px] font-mono text-error/70 flex-shrink-0 mt-px">
+                  Row {f.rowNumber}
+                </span>
+                <span className="text-[10px] font-mono text-error/90 break-all">
+                  {f.errorMessage}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Batch-level error (when no per-row details available) */}
+      {isFailed && progress.error && (progress.rowFailures?.length ?? 0) === 0 && (
         <div className="p-3 rounded-lg bg-error/10 border border-error/30">
           <p className="text-xs font-mono text-error">
             {progress.error.code}: {progress.error.message}
@@ -780,6 +960,22 @@ function CompletionArtifact({ message, onViewLabels }: {
         )}
       </div>
 
+      {/* Per-row failure details */}
+      {meta.rowFailures && meta.rowFailures.length > 0 && (
+        <div className="space-y-1 max-h-[100px] overflow-y-auto scrollable">
+          {meta.rowFailures.map((f) => (
+            <div key={f.rowNumber} className="flex items-start gap-2 px-2 py-1.5 rounded bg-error/10 border border-error/20">
+              <span className="text-[10px] font-mono text-error/70 flex-shrink-0 mt-px">
+                Row {f.rowNumber}
+              </span>
+              <span className="text-[10px] font-mono text-error/90 break-all">
+                {f.errorMessage}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
       {!allFailed && (
         <button
           onClick={() => onViewLabels(jobId)}
@@ -826,23 +1022,30 @@ function BannerHardDriveIcon({ className }: { className?: string }) {
 /** Compact banner showing the currently active data source at the top of the chat area. */
 function ActiveSourceBanner() {
   const { activeSourceInfo } = useAppState();
-  if (!activeSourceInfo) return null;
 
+  // Always show the banner for the settings gear, even without a data source
   return (
     <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/50 bg-card/30">
-      <span className="w-1.5 h-1.5 rounded-full bg-success flex-shrink-0" />
-      {activeSourceInfo.sourceKind === 'shopify' ? (
-        <BannerShopifyIcon className="w-3.5 h-3.5 text-[#5BBF3D]" />
-      ) : (
-        <BannerHardDriveIcon className="w-3.5 h-3.5 text-slate-400" />
+      {activeSourceInfo && (
+        <>
+          <span className="w-1.5 h-1.5 rounded-full bg-success flex-shrink-0" />
+          {activeSourceInfo.sourceKind === 'shopify' ? (
+            <BannerShopifyIcon className="w-3.5 h-3.5 text-[#5BBF3D]" />
+          ) : (
+            <BannerHardDriveIcon className="w-3.5 h-3.5 text-slate-400" />
+          )}
+          <span className="text-xs font-medium text-slate-300">
+            {activeSourceInfo.label}
+          </span>
+          <span className="text-slate-600">&middot;</span>
+          <span className="text-[10px] font-mono text-slate-500">
+            {activeSourceInfo.detail}
+          </span>
+        </>
       )}
-      <span className="text-xs font-medium text-slate-300">
-        {activeSourceInfo.label}
-      </span>
-      <span className="text-slate-600">&middot;</span>
-      <span className="text-[10px] font-mono text-slate-500">
-        {activeSourceInfo.detail}
-      </span>
+      <div className="ml-auto">
+        <SettingsPopover />
+      </div>
     </div>
   );
 }
@@ -962,6 +1165,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     setActiveJob,
     refreshJobList,
     activeSourceType,
+    warningPreference,
   } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
@@ -1033,20 +1237,27 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     }
   };
 
-  // Handle confirm
-  const handleConfirm = async () => {
+  // Handle confirm with optional row skipping
+  const handleConfirm = async (opts?: ConfirmOptions) => {
     if (!currentJobId) return;
 
     setIsConfirming(true);
     setRefinementHistory([]);
     try {
+      // Skip warning rows if explicitly requested or if preference is 'skip-warnings'
+      if (opts?.skipWarningRows && opts.warningRowNumbers?.length) {
+        await skipRows(currentJobId, opts.warningRowNumbers);
+      }
+
       await confirmJob(currentJobId);
       setExecutingJobId(currentJobId);
       setPreview(null);
 
       addMessage({
         role: 'system',
-        content: 'Batch confirmed. Processing shipments...',
+        content: opts?.skipWarningRows
+          ? `Batch confirmed. Skipped ${opts.warningRowNumbers?.length ?? 0} warning row(s). Processing remaining shipments...`
+          : 'Batch confirmed. Processing shipments...',
         metadata: { jobId: currentJobId, action: 'execute' },
       });
 
@@ -1197,11 +1408,32 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
               <div className="pl-11">
                 <PreviewCard
                   preview={preview}
-                  onConfirm={handleConfirm}
+                  onConfirm={(opts) => {
+                    // Apply preference-based auto-behavior for non-'ask' modes
+                    if (warningPreference === 'ship-all') {
+                      handleConfirm();
+                    } else if (warningPreference === 'skip-warnings') {
+                      const warnRows = preview.preview_rows.filter(
+                        (r) => r.warnings?.length
+                      );
+                      if (warnRows.length > 0) {
+                        handleConfirm({
+                          skipWarningRows: true,
+                          warningRowNumbers: warnRows.map((r) => r.row_number),
+                        });
+                      } else {
+                        handleConfirm();
+                      }
+                    } else {
+                      // 'ask' mode — pass through from gate
+                      handleConfirm(opts);
+                    }
+                  }}
                   onCancel={handleCancel}
                   isConfirming={isConfirming}
                   onRefine={handleRefine}
                   isRefining={isRefining}
+                  warningPreference={warningPreference}
                 />
               </div>
             )}
@@ -1225,6 +1457,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                           successful: data.successful,
                           failed: data.failed,
                           totalCostCents: data.totalCostCents,
+                          rowFailures: data.rowFailures.length > 0 ? data.rowFailures : undefined,
                         },
                       },
                     });
@@ -1249,6 +1482,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                           successful: data.successful,
                           failed: data.failed,
                           totalCostCents: data.totalCostCents,
+                          rowFailures: data.rowFailures.length > 0 ? data.rowFailures : undefined,
                         },
                       },
                     });

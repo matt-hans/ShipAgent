@@ -16,9 +16,10 @@ from src.api.schemas import (
     JobRowResponse,
     JobSummaryResponse,
     JobUpdate,
+    SkipRowsRequest,
 )
 from src.db.connection import get_db
-from src.db.models import Job, JobStatus, RowStatus
+from src.db.models import Job, JobRow, JobStatus, RowStatus
 from src.services import AuditService, InvalidStateTransition, JobService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -251,3 +252,47 @@ def get_job_summary(
         raise HTTPException(status_code=404, detail="Job not found")
 
     return job_svc.get_job_summary(job_id)
+
+
+@router.patch("/{job_id}/rows/skip")
+def skip_rows(
+    job_id: str,
+    body: SkipRowsRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Mark specific rows as skipped before execution.
+
+    Only allowed on jobs in 'pending' status. Rows must currently be 'pending'
+    to be skipped.
+
+    Args:
+        job_id: The job UUID.
+        body: Request body with row numbers to skip.
+        db: Database session dependency.
+
+    Returns:
+        Dictionary with the count of rows successfully skipped.
+
+    Raises:
+        HTTPException: If job not found (404) or job not pending (400).
+    """
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    if job.status != JobStatus.pending.value:
+        raise HTTPException(
+            status_code=400,
+            detail="Can only skip rows on pending jobs",
+        )
+
+    updated = (
+        db.query(JobRow)
+        .filter(
+            JobRow.job_id == job_id,
+            JobRow.row_number.in_(body.row_numbers),
+            JobRow.status == RowStatus.pending.value,
+        )
+        .update({JobRow.status: RowStatus.skipped.value}, synchronize_session="fetch")
+    )
+    db.commit()
+    return {"skipped": updated}

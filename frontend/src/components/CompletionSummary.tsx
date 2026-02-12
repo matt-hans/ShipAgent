@@ -62,19 +62,24 @@ export function CompletionSummary({
   className,
 }: CompletionSummaryProps) {
   const [rows, setRows] = React.useState<JobRow[]>([]);
+  const [failedRowsList, setFailedRowsList] = React.useState<JobRow[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
+  const [showFailedDetails, setShowFailedDetails] = React.useState(false);
 
-  // Fetch completed rows with tracking numbers
+  // Fetch all rows — completed for labels, failed for error display
   React.useEffect(() => {
     const fetchRows = async () => {
       try {
         const data = await getJobRows(jobId);
-        // Filter to only show rows with tracking numbers
         const completedRows = data.filter(
           (row) => row.status === 'completed' && row.tracking_number
         );
+        const failed = data.filter(
+          (row) => row.status === 'failed'
+        );
         setRows(completedRows);
+        setFailedRowsList(failed);
         setError(null);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to fetch labels');
@@ -135,6 +140,49 @@ export function CompletionSummary({
             variant="default"
           />
         </div>
+
+        {/* Failed rows section */}
+        {failedRowsList.length > 0 && (
+          <div className="border border-red-200 dark:border-red-900/50 rounded-lg overflow-hidden">
+            <button
+              onClick={() => setShowFailedDetails(!showFailedDetails)}
+              className="w-full p-3 flex items-center justify-between bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/30 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <AlertIcon className="h-4 w-4 text-red-600 dark:text-red-400" />
+                <span className="text-sm font-medium text-red-700 dark:text-red-300">
+                  {failedRowsList.length} shipment{failedRowsList.length !== 1 ? 's' : ''} failed
+                </span>
+              </div>
+              <ChevronIcon className={cn('h-4 w-4 text-red-500 transition-transform', showFailedDetails && 'rotate-180')} />
+            </button>
+            {showFailedDetails && (
+              <ScrollArea className="max-h-[200px]">
+                <div className="divide-y divide-red-100 dark:divide-red-900/30">
+                  {failedRowsList.map((row) => (
+                    <div key={row.id} className="p-3 space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono text-muted-foreground">
+                          Row #{row.row_number}
+                        </span>
+                        {row.error_code && (
+                          <span className="text-xs font-mono text-red-500">
+                            {row.error_code}
+                          </span>
+                        )}
+                      </div>
+                      {row.error_message && (
+                        <p className="text-xs text-red-600 dark:text-red-400 break-all">
+                          {row.error_message}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            )}
+          </div>
+        )}
 
         {/* Download section */}
         <div className="border rounded-lg divide-y">
@@ -289,6 +337,42 @@ function DownloadIcon({ className }: { className?: string }) {
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <polyline points="7 10 12 15 17 10" />
       <line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+  );
+}
+
+function AlertIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+      <line x1="12" y1="9" x2="12" y2="13" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  );
+}
+
+function ChevronIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <polyline points="6 9 12 15 18 9" />
     </svg>
   );
 }

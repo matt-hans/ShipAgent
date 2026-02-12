@@ -223,10 +223,16 @@ class UPSService:
             for p in pkg_results
         ]
 
-        charges = (
+        # Prefer negotiated charges over published charges
+        negotiated = (
+            results.get("NegotiatedRateCharges", {})
+            .get("TotalCharge", {})
+        )
+        published = (
             results.get("ShipmentCharges", {})
             .get("TotalCharges", {})
         )
+        charges = negotiated if negotiated.get("MonetaryValue") else published
 
         return {
             "success": True,
@@ -240,13 +246,23 @@ class UPSService:
         }
 
     def _normalize_rate_response(self, raw: dict) -> dict[str, Any]:
-        """Extract rate from raw UPS rate response."""
+        """Extract rate from raw UPS rate response.
+
+        Prefers negotiated rate over published rate when available.
+        """
         rated = (
             raw.get("RateResponse", {})
             .get("RatedShipment", [{}])
         )
         first = rated[0] if rated else {}
-        charges = first.get("TotalCharges", {})
+
+        # Prefer negotiated rate over published rate
+        negotiated = (
+            first.get("NegotiatedRateCharges", {})
+            .get("TotalCharge", {})
+        )
+        published = first.get("TotalCharges", {})
+        charges = negotiated if negotiated.get("MonetaryValue") else published
         value = charges.get("MonetaryValue", "0")
 
         return {

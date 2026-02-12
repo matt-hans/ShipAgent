@@ -148,22 +148,29 @@ class TestExcelWorkflow:
 
 
 class TestAllToolsRegistered:
-    """Verify all expected tools are registered."""
+    """Verify all expected tools are registered.
+
+    The EDI tool (import_edi) is optional — it requires pydifact which
+    may not be installed. Core tool count is 13; 14 with EDI support.
+    """
 
     def test_tool_count(self):
-        """Verify exactly 14 tools are registered."""
+        """Verify core tools are registered (EDI tool is optional)."""
         from src.mcp.data_source import mcp
+        from src.mcp.data_source.server import _edi_available
 
         async def get_tool_count():
             tools = await mcp.get_tools()
             return len(tools)
 
         count = asyncio.run(get_tool_count())
-        assert count == 14, f"Expected 14 tools, got {count}"
+        expected_count = 14 if _edi_available else 13
+        assert count == expected_count, f"Expected {expected_count} tools, got {count}"
 
     def test_tool_names(self):
-        """Verify all expected tool names are present."""
+        """Verify all expected tool names are present (EDI optional)."""
         from src.mcp.data_source import mcp
+        from src.mcp.data_source.server import _edi_available
 
         async def get_tool_names():
             tools = await mcp.get_tools()
@@ -174,7 +181,6 @@ class TestAllToolsRegistered:
         expected = [
             "import_csv",
             "import_excel",
-            "import_edi",
             "list_sheets",
             "import_database",
             "list_tables",
@@ -187,6 +193,9 @@ class TestAllToolsRegistered:
             "verify_checksum",
             "write_back",
         ]
+
+        if _edi_available:
+            expected.append("import_edi")
 
         for name in expected:
             assert name in tool_names, f"Tool '{name}' not found"

@@ -7,8 +7,11 @@ All endpoints use /api/v1/data-sources prefix.
 """
 
 import logging
+import os
+import shutil
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from src.api.schemas import (
     DataSourceColumnInfo,
@@ -21,6 +24,9 @@ from src.services.data_source_service import DataSourceService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/data-sources", tags=["data-sources"])
+
+# Directory for uploaded files — resolved relative to project root
+UPLOAD_DIR = Path(__file__).resolve().parents[3] / "uploads"
 
 
 @router.post("/import", response_model=DataSourceImportResponse)
@@ -119,6 +125,92 @@ async def import_data_source(
         return DataSourceImportResponse(
             status="error",
             source_type=payload.type,
+            row_count=0,
+            columns=[],
+            error=f"Import failed: {e}",
+        )
+
+
+@router.post("/upload", response_model=DataSourceImportResponse)
+async def upload_data_source(
+    file: UploadFile = File(...),
+) -> DataSourceImportResponse:
+    """Upload a CSV or Excel file and import it as the active data source.
+
+    Saves the file to the uploads/ directory, then delegates to the
+    existing import logic. Replaces any previously connected source.
+
+    Args:
+        file: The uploaded CSV or Excel file.
+
+    Returns:
+        Import result with schema, row count, and status.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    # Determine file type from extension
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext == ".csv":
+        source_type = "csv"
+    elif ext in (".xlsx", ".xls"):
+        source_type = "excel"
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {ext}. Use .csv or .xlsx",
+        )
+
+    # Save uploaded file to disk
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    dest = UPLOAD_DIR / file.filename
+    try:
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except OSError as e:
+        logger.exception("Failed to save uploaded file: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    finally:
+        await file.close()
+
+    file_path = str(dest)
+    svc = DataSourceService.get_instance()
+
+    try:
+        if source_type == "csv":
+            result = await svc.import_csv(file_path=file_path)
+        else:
+            result = await svc.import_excel(file_path=file_path)
+
+        columns = [
+            DataSourceColumnInfo(
+                name=col.name,
+                type=col.type,
+                nullable=col.nullable,
+            )
+            for col in result.columns
+        ]
+
+        return DataSourceImportResponse(
+            status="connected",
+            source_type=result.source_type,
+            row_count=result.row_count,
+            columns=columns,
+        )
+    except (FileNotFoundError, ValueError) as e:
+        logger.warning("Upload import error: %s", e)
+        return DataSourceImportResponse(
+            status="error",
+            source_type=source_type,
+            row_count=0,
+            columns=[],
+            error=str(e),
+        )
+    except Exception as e:
+        logger.exception("Upload import failed: %s", e)
+        return DataSourceImportResponse(
+            status="error",
+            source_type=source_type,
             row_count=0,
             columns=[],
             error=f"Import failed: {e}",
