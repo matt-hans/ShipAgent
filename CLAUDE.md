@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Current Phase:** 7 - Web Interface (in progress, core chat UI operational)
 **Phases 1-6:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent Integration, Batch Execution)
-**Test Count:** 777 tests (746 unit + 31 integration)
+**SDK Orchestration Redesign:** COMPLETE — Claude SDK is now the primary orchestration path via `/api/v1/conversations/` endpoints; legacy `/commands/` path deprecated
+**Test Count:** 777+ tests (746 unit + 31 integration + new conversation tests)
 **UPS MCP Hybrid:** COMPLETE — agent uses ups-mcp as stdio MCP server for interactive tools; BatchEngine uses UPSService (direct Python import) for deterministic batch execution
 
 ## Project Overview
@@ -32,20 +33,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-Uses a hybrid architecture: **Model Context Protocol (MCP)** for data source abstraction and UPS interactive operations, **direct Python import** for deterministic batch UPS execution, and **FastAPI + React** for the web interface.
+Uses a hybrid architecture: **Claude Agent SDK** as the primary orchestration engine, **Model Context Protocol (MCP)** for data source abstraction and UPS interactive operations, **direct Python import** for deterministic batch UPS execution, and **FastAPI + React** for the web interface. The agent drives the entire command lifecycle through its SDK agent loop — intent parsing, filter generation, and tool orchestration are all handled within the agent's system prompt and deterministic tools.
 
 ### System Components
 
 ```
-User → Browser UI (React) → FastAPI REST API → Orchestration Agent → Services → External APIs
-                                    ↓                                    ↓
-                              State Database                    Data Source MCP (stdio)
+User → Browser UI (React) → FastAPI REST API → Conversation SSE Route → AgentSessionManager → OrchestrationAgent → Services
+                                    ↓                    ↓                                          ↓
+                              State Database        SSE Event Stream                       Data Source MCP (stdio)
 ```
 
 | Container | Technology | Purpose |
 |-----------|------------|---------|
-| **FastAPI Backend** | Python + FastAPI + SQLAlchemy | REST API, job management, SSE progress streaming |
-| **Orchestration Agent** | Python + Claude Agent SDK | Interprets intent, coordinates services, runs batch execution |
+| **FastAPI Backend** | Python + FastAPI + SQLAlchemy | REST API, job management, SSE conversation streaming |
+| **Orchestration Agent** | Python + Claude Agent SDK | Primary orchestration — interprets intent, coordinates services via deterministic tools |
+| **Agent Session Manager** | Python | Per-conversation agent session lifecycle, history isolation |
 | **Data Source MCP** | Python + FastMCP + DuckDB | Abstracts data sources (CSV, Excel, DB) behind SQL interface |
 | **UPS MCP** | `ups-mcp` via uvx (stdio) | Agent-accessible UPS tools: shipping, rating, tracking, address validation, label recovery, time-in-transit |
 | **UPS Service** | Python + `ups-mcp` ToolManager | Direct Python import for deterministic batch execution (shipping, rating) |
@@ -55,23 +57,25 @@ User → Browser UI (React) → FastAPI REST API → Orchestration Agent → Ser
 
 ### Communication Patterns
 
-- **Browser ↔ Backend**: REST API (`/api/v1/`) + SSE for real-time progress
+- **Browser ↔ Backend**: REST API (`/api/v1/conversations/`) + SSE for agent event streaming
+- **Conversation Route ↔ Agent**: `AgentSessionManager` manages per-session agent instances
 - **Agent ↔ Data Source MCP**: stdio transport (child process)
 - **Agent ↔ UPS MCP**: stdio transport (child process via uvx, interactive UPS operations)
 - **Agent ↔ Anthropic API**: HTTPS via Claude Agent SDK
 - **Backend ↔ State DB**: SQLite via SQLAlchemy
 - **BatchEngine ↔ UPS API**: Direct Python import (`ups-mcp` ToolManager) for batch execution
 
-### Data Flow (Batch Processing)
+### Data Flow (Agent-Driven Conversation)
 
-1. **Command**: User types NL command in chat → FastAPI → Orchestration Agent
-2. **Intent Parsing**: LLM generates SQL filter + column mapping from natural language
-3. **Data Extraction**: Filtered data loaded via Data Source MCP or Shopify client, checksums computed
-4. **Preview**: BatchEngine rates each row via UPSService, cost estimates shown in PreviewCard
-5. **Approval Gate**: User reviews preview (row count, cost, shipment samples) and confirms
-6. **Execution**: Each row processed via BatchEngine with per-row state writes + SSE progress streaming
-7. **Completion**: CompletionArtifact card appears in chat with label access, job saved to history
-8. **Write-Back**: Tracking numbers written back to source, job marked complete
+1. **Session**: Frontend creates conversation session via `POST /conversations/` → `AgentSessionManager` allocates session
+2. **Message**: User sends message via `POST /conversations/{id}/messages` → stored in history, triggers agent processing
+3. **Agent Loop**: `OrchestrationAgent.process_message_stream()` runs SDK agent loop with unified system prompt
+4. **Tool Calls**: Agent calls deterministic tools (`query_orders`, `preview_batch`, `execute_batch`, etc.) — events streamed via SSE
+5. **Preview**: Agent calls `preview_batch` tool → `BatchEngine` rates rows → preview data sent as SSE event
+6. **Approval Gate**: Agent asks for confirmation → user responds in conversation → agent proceeds
+7. **Execution**: Agent calls `execute_batch` tool → per-row processing with SSE progress events
+8. **Completion**: CompletionArtifact card appears in chat with label access, job saved to history
+9. **Write-Back**: Tracking numbers written back to source, job marked complete
 
 ## Source Structure
 
@@ -79,16 +83,17 @@ User → Browser UI (React) → FastAPI REST API → Orchestration Agent → Ser
 src/
 ├── api/                        # FastAPI REST API
 │   ├── routes/                 # Endpoint modules
+│   │   ├── conversations.py    # Agent-driven SSE conversation (primary path)
 │   │   ├── jobs.py             # Job CRUD
 │   │   ├── preview.py          # Batch preview (rewritten for BatchEngine)
 │   │   ├── progress.py         # Real-time SSE streaming
-│   │   ├── commands.py         # NL command processing
 │   │   ├── labels.py           # Label generation/download/merge
 │   │   ├── logs.py             # Audit log endpoints
 │   │   ├── platforms.py        # Shopify, SAP, Oracle, WooCommerce
 │   │   └── saved_data_sources.py # Saved source CRUD + reconnect
 │   ├── main.py                 # App factory with lifespan events
-│   └── schemas.py              # Pydantic request/response models
+│   ├── schemas.py              # Pydantic request/response models
+│   └── schemas_conversations.py # Conversation endpoint schemas
 ├── db/                         # Database layer
 │   ├── models.py               # SQLAlchemy models (Job, JobRow, AuditLog, SavedDataSource)
 │   └── connection.py           # Session management
@@ -101,7 +106,7 @@ src/
 │   ├── batch_engine.py         # BatchEngine — unified preview + execution
 │   ├── column_mapping.py       # ColumnMappingService — source → UPS field mapping
 │   ├── ups_payload_builder.py  # Builds UPS API payloads from mapped data
-│   ├── command_processor.py    # Command routing, filter evaluation, Shopify integration
+│   ├── agent_session_manager.py # Per-conversation agent session lifecycle
 │   ├── job_service.py          # Job state machine, row tracking
 │   ├── audit_service.py        # Audit logging with redaction
 │   ├── data_source_service.py  # Data source import + auto-save hooks
@@ -116,19 +121,14 @@ src/
 │   └── external_sources/       # External platform MCP
 │       └── clients/            # Shopify, SAP, Oracle, WooCommerce clients
 └── orchestrator/               # Orchestration layer
-    ├── nl_engine/              # NL parsing, filter generation, elicitation
-    │   ├── engine.py           # Main NL processing engine
-    │   ├── intent_parser.py    # NL → ShippingIntent
-    │   ├── filter_generator.py # NL → SQL WHERE clause (schema-grounded)
-    │   ├── elicitation.py      # User clarification flows
-    │   └── config.py           # Model configuration
     ├── filters/                # Jinja2 logistics filter library
     │   └── logistics.py        # truncate_address, format_us_zip, convert_weight, etc.
     ├── models/                 # Data models (intent, filter, mapping, elicitation)
-    ├── agent/                  # Claude Agent SDK integration
-    │   ├── client.py           # Agent client
+    ├── agent/                  # Claude Agent SDK integration (primary orchestration)
+    │   ├── client.py           # OrchestrationAgent — SDK agent with streaming
+    │   ├── system_prompt.py    # Unified system prompt builder (domain knowledge + tools)
+    │   ├── tools_v2.py         # Deterministic SDK tools (query, preview, execute, etc.)
     │   ├── config.py           # Agent configuration
-    │   ├── tools.py            # Tool definitions
     │   └── hooks.py            # Lifecycle hooks
     └── batch/                  # Batch orchestration
         ├── events.py           # Batch execution events
@@ -150,6 +150,7 @@ frontend/
 │   │       └── Header.tsx          # App header
 │   ├── hooks/
 │   │   ├── useAppState.tsx         # Global state context (conversation, jobs, data source)
+│   │   ├── useConversation.ts      # Agent SSE conversation lifecycle (session + events)
 │   │   ├── useJobProgress.ts       # Real-time SSE progress tracking
 │   │   ├── useSSE.ts              # Generic EventSource hook
 │   │   └── useExternalSources.ts   # Shopify/platform connection management
@@ -202,9 +203,9 @@ Builds OpenAPI-validated UPS API payloads from column-mapped data. Key details:
 - `ShipmentCharge` must be an array, not a single object
 - ReferenceNumber at shipment level is omitted (UPS Ground rejects it)
 
-### CommandProcessor (`src/services/command_processor.py`)
+### AgentSessionManager (`src/services/agent_session_manager.py`)
 
-Routes NL commands, evaluates SQL WHERE clause filters against in-memory order data, handles Shopify order integration. Supports compound AND/OR clause parsing with parenthesis-depth-aware splitting.
+Manages per-conversation agent sessions. Each conversation gets an isolated `AgentSession` with its own message history. Sessions are created lazily on first message and cleaned up on delete.
 
 ### SavedDataSourceService (`src/services/saved_data_source_service.py`)
 
@@ -223,14 +224,15 @@ Persists data source connection metadata for one-click reconnection. Auto-saved 
 
 ### Chat Flow (CommandCenter.tsx)
 
-The main UI is a conversational chat interface:
+The main UI is an agent-driven conversational chat interface powered by `useConversation` hook:
 
-1. **User types command** → UserMessage appears right-aligned
-2. **Processing** → TypingIndicator shown, input disabled
-3. **Preview** → PreviewCard with shipment samples, cost estimate, Confirm/Cancel buttons
-4. **Execution** → ProgressDisplay with live progress bar, stats via SSE
-5. **Completion** → ProgressDisplay replaced by CompletionArtifact (compact card with "View Labels" button)
-6. **Ready for next** → Input re-enables, user can type another command immediately
+1. **User types command** → `useConversation.sendMessage()` creates session (first time) + sends to agent
+2. **Agent Processing** → SSE events stream in: `agent_thinking`, `tool_call`, `tool_result`, `agent_message`
+3. **Tool Call Chips** → Active tool calls shown as collapsible chips in the message area
+4. **Preview** → PreviewCard with shipment samples, cost estimate, Confirm/Cancel buttons
+5. **Execution** → ProgressDisplay with live progress bar, stats via SSE
+6. **Completion** → CompletionArtifact card appears in chat with label access
+7. **Ready for next** → Input re-enables, user can type another command in same session
 
 ### Key Components
 
@@ -247,7 +249,8 @@ The main UI is a conversational chat interface:
 
 ### State Management
 
-- `useAppState` context: conversation history, active job, data source, processing state
+- `useAppState` context: conversation history, active job, data source, processing state, `conversationSessionId`
+- `useConversation` hook: manages agent session lifecycle, SSE event streaming, session creation/deletion
 - `ConversationMessage` metadata: `action` field routes to different renderers (`preview`, `execute`, `complete`, `error`, `elicit`)
 - `useJobProgress` + `useSSE`: real-time SSE events for batch progress
 - `jobListVersion` counter triggers sidebar job list refresh
@@ -258,7 +261,11 @@ All endpoints use `/api/v1/` prefix.
 
 | Route | Method | Purpose |
 |-------|--------|---------|
-| `/commands/` | POST | Process NL shipping command |
+| `/conversations/` | POST | Create agent conversation session |
+| `/conversations/{id}/messages` | POST | Send message to agent (202 accepted) |
+| `/conversations/{id}/stream` | GET | SSE stream of agent events |
+| `/conversations/{id}/history` | GET | Get conversation message history |
+| `/conversations/{id}` | DELETE | Delete conversation session |
 | `/jobs/` | GET | List all jobs |
 | `/jobs/{id}` | GET | Get job details |
 | `/jobs/{id}/preview` | GET | Get batch preview data |

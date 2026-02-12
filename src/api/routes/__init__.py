@@ -3,10 +3,10 @@
 Exports all route modules for inclusion in the main application.
 """
 
-from src.api.routes import commands, jobs, labels, logs, preview, progress
+from src.api.routes import conversations, jobs, labels, logs, preview, progress
 
 __all__ = [
-    "commands",
+    "conversations",
     "jobs",
     "labels",
     "logs",

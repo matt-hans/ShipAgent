@@ -186,38 +186,6 @@ class JobFilters(BaseModel):
     created_before: date | None = None
 
 
-# Command submission schemas
-
-
-class CommandSubmit(BaseModel):
-    """Request schema for submitting a natural language command."""
-
-    command: str = Field(..., min_length=1, description="Natural language shipping command")
-    base_command: str | None = Field(None, description="Original command before refinement (if this is a refinement)")
-    refinements: list[str] | None = Field(None, description="Ordered list of refinement instructions applied")
-
-
-class CommandSubmitResponse(BaseModel):
-    """Response schema for command submission."""
-
-    job_id: str
-    status: str
-
-
-class CommandHistoryItem(BaseModel):
-    """Response schema for a command history entry."""
-
-    id: str
-    command: str
-    status: str
-    created_at: str
-
-    class Config:
-        """Pydantic config for ORM model conversion."""
-
-        from_attributes = True
-
-
 # Preview schemas
 
 
