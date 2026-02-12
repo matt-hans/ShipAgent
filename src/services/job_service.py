@@ -323,6 +323,7 @@ class JobService:
                 job_id=job_id,
                 row_number=data["row_number"],
                 row_checksum=data["row_checksum"],
+                order_data=data.get("order_data"),
                 status=RowStatus.pending.value,
             )
             rows.append(row)

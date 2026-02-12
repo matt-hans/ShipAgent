@@ -13,7 +13,7 @@ Example:
         shipper=shipper_info,
         service_code="03"
     )
-    result = await ups_service.create_shipment(request)
+    result = await ups_client.create_shipment(request)
 """
 
 import re

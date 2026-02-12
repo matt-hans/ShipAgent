@@ -550,7 +550,7 @@ class TestCreateHookMatchers:
         matchers = create_hook_matchers()
         shipment_matchers = [
             m for m in matchers["PreToolUse"]
-            if m.get("matcher") and "create_shipment" in m["matcher"]
+            if m.matcher and "create_shipment" in m.matcher
         ]
         assert len(shipment_matchers) >= 1
 
@@ -559,7 +559,7 @@ class TestCreateHookMatchers:
         matchers = create_hook_matchers()
         void_matchers = [
             m for m in matchers["PreToolUse"]
-            if m.get("matcher") and "void_shipment" in m["matcher"]
+            if m.matcher and "void_shipment" in m.matcher
         ]
         assert len(void_matchers) >= 1
 
@@ -568,7 +568,7 @@ class TestCreateHookMatchers:
         matchers = create_hook_matchers()
         query_matchers = [
             m for m in matchers["PreToolUse"]
-            if m.get("matcher") and "query" in m["matcher"]
+            if m.matcher and "query" in m.matcher
         ]
         assert len(query_matchers) >= 1
 
@@ -577,7 +577,7 @@ class TestCreateHookMatchers:
         matchers = create_hook_matchers()
         all_tool_matchers = [
             m for m in matchers["PostToolUse"]
-            if m.get("matcher") is None
+            if m.matcher is None
         ]
         assert len(all_tool_matchers) >= 1
 
@@ -586,7 +586,7 @@ class TestCreateHookMatchers:
         matchers = create_hook_matchers()
         fallback_matchers = [
             m for m in matchers["PreToolUse"]
-            if m.get("matcher") is None
+            if m.matcher is None
         ]
         assert len(fallback_matchers) >= 1
 
@@ -595,14 +595,13 @@ class TestCreateHookMatchers:
         matchers = create_hook_matchers()
         for event_type in ["PreToolUse", "PostToolUse"]:
             for matcher in matchers[event_type]:
-                assert "hooks" in matcher
-                assert isinstance(matcher["hooks"], list)
-                assert len(matcher["hooks"]) >= 1
+                assert isinstance(matcher.hooks, list)
+                assert len(matcher.hooks) >= 1
 
     def test_hooks_are_callable(self):
         """All hooks should be callable functions."""
         matchers = create_hook_matchers()
         for event_type in ["PreToolUse", "PostToolUse"]:
             for matcher in matchers[event_type]:
-                for hook in matcher["hooks"]:
+                for hook in matcher.hooks:
                     assert callable(hook)

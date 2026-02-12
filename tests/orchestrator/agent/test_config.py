@@ -142,25 +142,16 @@ class TestShopifyMCPConfig:
 class TestUPSMCPConfig:
     """Tests for UPS MCP configuration."""
 
-    def test_command_is_uvx(self):
-        """UPS MCP should use uvx to run ups-mcp."""
+    def test_command_is_venv_python(self):
+        """UPS MCP should use venv Python to run local fork."""
         config = get_ups_mcp_config()
-        assert config["command"] == "uvx"
+        assert config["command"].endswith("python3")
+        assert ".venv/bin/python3" in config["command"]
 
-    def test_args_specify_ups_mcp(self):
-        """Args should specify ups-mcp package from GitHub."""
+    def test_args_run_as_module(self):
+        """Args should run ups_mcp as a Python module."""
         config = get_ups_mcp_config()
-        assert "--from" in config["args"]
-        assert "ups-mcp" in config["args"]
-        # Should reference the UPS-API/ups-mcp repo
-        from_arg = config["args"][config["args"].index("--from") + 1]
-        assert "UPS-API/ups-mcp" in from_arg
-
-    def test_args_pin_commit(self):
-        """Args should pin to specific commit for stability."""
-        config = get_ups_mcp_config()
-        from_arg = config["args"][config["args"].index("--from") + 1]
-        assert "41fb64f" in from_arg
+        assert config["args"] == ["-m", "ups_mcp"]
 
     def test_config_has_required_keys(self):
         """Config should have command, args, and env keys."""
@@ -293,10 +284,10 @@ class TestCreateMCPServersConfig:
         config = create_mcp_servers_config()
         assert config["shopify"]["command"] == "npx"
 
-    def test_ups_uses_uvx(self):
-        """UPS server should use uvx command."""
+    def test_ups_uses_venv_python(self):
+        """UPS server should use venv Python command."""
         config = create_mcp_servers_config()
-        assert config["ups"]["command"] == "uvx"
+        assert config["ups"]["command"].endswith("python3")
 
     def test_ups_config_is_valid(self):
         """UPS config should have required keys."""

@@ -1,5 +1,7 @@
 """Tests for UPS payload builder."""
 
+from typing import Any
+
 import pytest
 
 from src.services.ups_payload_builder import (

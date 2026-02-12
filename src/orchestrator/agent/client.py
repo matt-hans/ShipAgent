@@ -8,24 +8,25 @@ Hybrid UPS architecture:
 - Interactive path: Agent calls UPS MCP tools directly (rate_shipment,
   validate_address, track_package, create_shipment, void_shipment,
   recover_label, get_time_in_transit)
-- Batch path: BatchEngine uses UPSService (direct Python import of ups-mcp
-  ToolManager) for deterministic high-volume execution with per-row state
-  tracking and crash recovery
+- Batch path: BatchEngine uses UPSMCPClient (programmatic MCP over stdio)
+  for deterministic high-volume execution with per-row state tracking
+
+SDK features leveraged:
+- include_partial_messages: Real-time StreamEvent token streaming
+- Persistent sessions: Agent stays alive across messages, SDK maintains
+  internal conversation history
+- Hooks: PreToolUse/PostToolUse for validation and logging
+- Interrupt: Graceful cancellation of in-progress responses
 
 Per CONTEXT.md:
 - MCPs spawn eagerly at startup
 - Session persists for process lifetime
 - Graceful shutdown with 5s timeout
-
-Enhanced with:
-- system_prompt parameter for unified domain knowledge injection
-- tools_v2 deterministic tools replacing legacy tools
-- process_message() with conversation history support
-- process_message_stream() async generator for SSE event streaming
 """
 
 import asyncio
 import logging
+import os
 import sys
 from collections.abc import AsyncGenerator
 from typing import Any, Optional
@@ -38,20 +39,26 @@ from claude_agent_sdk import (
     ResultMessage,
     SdkMcpTool,
     TextBlock,
+    ToolUseBlock,
     create_sdk_mcp_server,
     tool,
 )
 from claude_agent_sdk.types import McpStdioServerConfig
 
+# StreamEvent is available when include_partial_messages=True
+try:
+    from claude_agent_sdk.types import StreamEvent
+
+    _HAS_STREAM_EVENT = True
+except ImportError:
+    _HAS_STREAM_EVENT = False
+
 from src.orchestrator.agent.config import create_mcp_servers_config
-from src.orchestrator.agent.hooks import (
-    detect_error_response,
-    log_post_tool,
-    validate_pre_tool,
-    validate_shipping_input,
-    validate_void_shipment,
-)
+from src.orchestrator.agent.hooks import create_hook_matchers
 from src.orchestrator.agent.tools_v2 import get_all_tool_definitions
+
+# Default model — configurable via AGENT_MODEL env var
+DEFAULT_MODEL = os.environ.get("AGENT_MODEL", "claude-sonnet-4-5-20250929")
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +119,7 @@ class OrchestrationAgent:
         system_prompt: str | None = None,
         max_turns: int = 50,
         permission_mode: str = "acceptEdits",
+        model: str | None = None,
     ) -> None:
         """Initialize the Orchestration Agent.
 
@@ -119,8 +127,10 @@ class OrchestrationAgent:
             system_prompt: System prompt with domain knowledge. None for default.
             max_turns: Maximum conversation turns before requiring reset.
             permission_mode: SDK permission mode for file operations.
+            model: Claude model ID. Defaults to AGENT_MODEL env var or Sonnet 4.5.
         """
         self._system_prompt = system_prompt
+        self._model = model or DEFAULT_MODEL
         self._options = self._create_options(max_turns, permission_mode)
         self._client: Optional[ClaudeSDKClient] = None
         self._started = False
@@ -128,7 +138,7 @@ class OrchestrationAgent:
     def _create_options(
         self, max_turns: int, permission_mode: str
     ) -> ClaudeAgentOptions:
-        """Create ClaudeAgentOptions with MCP servers and hooks."""
+        """Create ClaudeAgentOptions with MCP servers, hooks, and streaming."""
         # Get MCP server configs for external servers
         mcp_configs = create_mcp_servers_config()
 
@@ -148,7 +158,7 @@ class OrchestrationAgent:
             "env": mcp_configs["external"]["env"],
         }
 
-        # UPS MCP config (stdio via uvx)
+        # UPS MCP config (stdio via venv python)
         ups_config: McpStdioServerConfig = {
             "type": "stdio",
             "command": mcp_configs["ups"]["command"],
@@ -161,6 +171,7 @@ class OrchestrationAgent:
 
         return ClaudeAgentOptions(
             system_prompt=self._system_prompt,
+            model=self._model,
             mcp_servers={
                 # In-process orchestrator tools (deterministic, no LLM calls)
                 "orchestrator": orchestrator_mcp,
@@ -178,10 +189,9 @@ class OrchestrationAgent:
                 "mcp__external__*",
                 "mcp__ups__*",
             ],
-            # Hooks temporarily disabled — known SDK issue #265 causes
-            # synthetic 400 errors when hooks interact with tool calls.
-            # TODO: Re-enable once SDK fix is available.
-            # hooks={...},
+            hooks=create_hook_matchers(),
+            # Enable real-time token streaming via StreamEvent
+            include_partial_messages=_HAS_STREAM_EVENT,
             # Session settings
             permission_mode=permission_mode,  # type: ignore[arg-type]
             max_turns=max_turns,

@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Phases 1-6:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent Integration, Batch Execution)
 **SDK Orchestration Redesign:** COMPLETE — Claude SDK is now the primary orchestration path via `/api/v1/conversations/` endpoints; legacy `/commands/` path deprecated
 **Test Count:** 777+ tests (746 unit + 31 integration + new conversation tests)
-**UPS MCP Hybrid:** COMPLETE — agent uses ups-mcp as stdio MCP server for interactive tools; BatchEngine uses UPSService (direct Python import) for deterministic batch execution
+**UPS MCP Hybrid:** COMPLETE — agent uses ups-mcp as stdio MCP server for interactive tools; BatchEngine uses UPSMCPClient (programmatic MCP over stdio) for deterministic batch execution
 
 ## Project Overview
 
@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - Natural language commands for shipment creation
 - Data source support: CSV, Excel (.xlsx), PostgreSQL/MySQL databases, Shopify (via env auto-detect)
-- UPS API coverage: shipping, rating, address validation, tracking, label recovery, time-in-transit (via `ups-mcp` MCP server + direct ToolManager import for batch path)
+- UPS API coverage: shipping, rating, address validation, tracking, label recovery, time-in-transit (via `ups-mcp` MCP server for both interactive agent and batch paths)
 - Deterministic batch execution with per-row audit logging and SSE real-time progress
 - Column mapping with LLM-generated source-to-payload field mappings
 - Preview mode with cost estimates before execution
@@ -33,7 +33,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-Uses a hybrid architecture: **Claude Agent SDK** as the primary orchestration engine, **Model Context Protocol (MCP)** for data source abstraction and UPS interactive operations, **direct Python import** for deterministic batch UPS execution, and **FastAPI + React** for the web interface. The agent drives the entire command lifecycle through its SDK agent loop — intent parsing, filter generation, and tool orchestration are all handled within the agent's system prompt and deterministic tools.
+Uses a hybrid architecture: **Claude Agent SDK** as the primary orchestration engine, **Model Context Protocol (MCP)** for data source abstraction and all UPS operations (both interactive and batch), and **FastAPI + React** for the web interface. The agent drives the entire command lifecycle through its SDK agent loop — intent parsing, filter generation, and tool orchestration are all handled within the agent's system prompt and deterministic tools.
 
 ### System Components
 
@@ -50,7 +50,7 @@ User → Browser UI (React) → FastAPI REST API → Conversation SSE Route → 
 | **Agent Session Manager** | Python | Per-conversation agent session lifecycle, history isolation |
 | **Data Source MCP** | Python + FastMCP + DuckDB | Abstracts data sources (CSV, Excel, DB) behind SQL interface |
 | **UPS MCP** | `ups-mcp` via uvx (stdio) | Agent-accessible UPS tools: shipping, rating, tracking, address validation, label recovery, time-in-transit |
-| **UPS Service** | Python + `ups-mcp` ToolManager | Direct Python import for deterministic batch execution (shipping, rating) |
+| **UPS MCP Client** | Python + `MCPClient` | Async programmatic MCP client for deterministic batch execution (shipping, rating) via stdio |
 | **Batch Engine** | Python | Unified preview + execution with per-row state tracking |
 | **State Database** | SQLite | Job state, transaction journal, audit logs for crash recovery |
 | **Browser UI** | React + Vite + TypeScript + shadcn/ui | Chat interface, job history, label preview |
@@ -63,7 +63,7 @@ User → Browser UI (React) → FastAPI REST API → Conversation SSE Route → 
 - **Agent ↔ UPS MCP**: stdio transport (child process via uvx, interactive UPS operations)
 - **Agent ↔ Anthropic API**: HTTPS via Claude Agent SDK
 - **Backend ↔ State DB**: SQLite via SQLAlchemy
-- **BatchEngine ↔ UPS API**: Direct Python import (`ups-mcp` ToolManager) for batch execution
+- **BatchEngine ↔ UPS MCP**: Programmatic MCP over stdio via `UPSMCPClient` → `MCPClient` for batch execution
 
 ### Data Flow (Agent-Driven Conversation)
 
@@ -102,7 +102,9 @@ src/
 │   ├── ups_translation.py      # UPS error → ShipAgent error mapping
 │   └── formatter.py            # Error message formatting
 ├── services/                   # Business logic (core services)
-│   ├── ups_service.py          # UPSService — wraps ups-mcp ToolManager
+│   ├── errors.py               # Shared error types (UPSServiceError)
+│   ├── mcp_client.py           # Generic async MCP client with retry
+│   ├── ups_mcp_client.py       # UPSMCPClient — async UPS via MCP stdio
 │   ├── batch_engine.py         # BatchEngine — unified preview + execution
 │   ├── column_mapping.py       # ColumnMappingService — source → UPS field mapping
 │   ├── ups_payload_builder.py  # Builds UPS API payloads from mapped data
@@ -116,8 +118,6 @@ src/
 │   │   ├── server.py           # FastMCP server
 │   │   ├── adapters/           # CSV, Excel, Database, EDI adapters
 │   │   └── tools/              # Import, schema, query, checksum, writeback tools
-│   ├── ups/                    # UPS OpenAPI specifications
-│   │   └── specs/              # Rating.yaml, Shipping.yaml, TimeInTransit.yaml
 │   └── external_sources/       # External platform MCP
 │       └── clients/            # Shopify, SAP, Oracle, WooCommerce clients
 └── orchestrator/               # Orchestration layer
@@ -177,16 +177,20 @@ Runs as a stdio child process (via uvx), providing the agent with interactive ac
 | `recover_label` | Recover previously generated shipping labels |
 | `get_time_in_transit` | Estimate delivery timeframes |
 
-### UPSService (`src/services/ups_service.py`)
+### UPSMCPClient (`src/services/ups_mcp_client.py`)
 
-Wraps `ups-mcp` ToolManager for direct Python calls — used exclusively by BatchEngine for deterministic batch execution. Handles response normalization and error translation.
+Async UPS client communicating via MCP stdio protocol. Replaces the deprecated `UPSService` for batch execution. Built on the generic `MCPClient` with UPS-specific response normalization and error translation. Includes retry with exponential backoff for transient UPS errors.
 
 | Method | Purpose |
 |--------|---------|
-| `rate_shipment()` | Get shipping cost estimate (batch preview) |
+| `get_rate()` | Get shipping cost estimate (batch preview) |
 | `create_shipment()` | Create shipment, returns tracking number + label (batch execute) |
 | `void_shipment()` | Cancel a shipment |
 | `validate_address()` | Validate/correct addresses |
+
+### MCPClient (`src/services/mcp_client.py`)
+
+Generic reusable async MCP client with connection lifecycle management, JSON response parsing, and configurable retry with exponential backoff. Used by `UPSMCPClient` and designed for future carrier integrations (FedEx, USPS).
 
 ### BatchEngine (`src/services/batch_engine.py`)
 
