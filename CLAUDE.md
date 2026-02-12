@@ -87,7 +87,6 @@ src/
 │   │   ├── jobs.py             # Job CRUD
 │   │   ├── preview.py          # Batch preview (rewritten for BatchEngine)
 │   │   ├── progress.py         # Real-time SSE streaming
-│   │   ├── commands.py         # NL command processing (DEPRECATED — use conversations)
 │   │   ├── labels.py           # Label generation/download/merge
 │   │   ├── logs.py             # Audit log endpoints
 │   │   ├── platforms.py        # Shopify, SAP, Oracle, WooCommerce
@@ -108,7 +107,6 @@ src/
 │   ├── column_mapping.py       # ColumnMappingService — source → UPS field mapping
 │   ├── ups_payload_builder.py  # Builds UPS API payloads from mapped data
 │   ├── agent_session_manager.py # Per-conversation agent session lifecycle
-│   ├── command_processor.py    # Command routing (DEPRECATED — use conversations)
 │   ├── job_service.py          # Job state machine, row tracking
 │   ├── audit_service.py        # Audit logging with redaction
 │   ├── data_source_service.py  # Data source import + auto-save hooks
@@ -123,12 +121,6 @@ src/
 │   └── external_sources/       # External platform MCP
 │       └── clients/            # Shopify, SAP, Oracle, WooCommerce clients
 └── orchestrator/               # Orchestration layer
-    ├── nl_engine/              # NL parsing (DEPRECATED — agent system prompt handles this)
-    │   ├── engine.py           # Main NL processing engine
-    │   ├── intent_parser.py    # NL → ShippingIntent (DEPRECATED)
-    │   ├── filter_generator.py # NL → SQL WHERE clause (DEPRECATED)
-    │   ├── elicitation.py      # User clarification flows
-    │   └── config.py           # Model configuration
     ├── filters/                # Jinja2 logistics filter library
     │   └── logistics.py        # truncate_address, format_us_zip, convert_weight, etc.
     ├── models/                 # Data models (intent, filter, mapping, elicitation)
@@ -137,7 +129,6 @@ src/
     │   ├── system_prompt.py    # Unified system prompt builder (domain knowledge + tools)
     │   ├── tools_v2.py         # Deterministic SDK tools (query, preview, execute, etc.)
     │   ├── config.py           # Agent configuration
-    │   ├── tools.py            # Legacy tool definitions (DEPRECATED)
     │   └── hooks.py            # Lifecycle hooks
     └── batch/                  # Batch orchestration
         ├── events.py           # Batch execution events
@@ -216,12 +207,6 @@ Builds OpenAPI-validated UPS API payloads from column-mapped data. Key details:
 
 Manages per-conversation agent sessions. Each conversation gets an isolated `AgentSession` with its own message history. Sessions are created lazily on first message and cleaned up on delete.
 
-### CommandProcessor (`src/services/command_processor.py`) — DEPRECATED
-
-> Use the Claude SDK conversation path instead. The agent's system prompt and deterministic tools handle intent parsing, filter generation, and batch orchestration within the SDK agent loop.
-
-Routes NL commands, evaluates SQL WHERE clause filters against in-memory order data, handles Shopify order integration. Supports compound AND/OR clause parsing with parenthesis-depth-aware splitting.
-
 ### SavedDataSourceService (`src/services/saved_data_source_service.py`)
 
 Persists data source connection metadata for one-click reconnection. Auto-saved on every successful import (best-effort). Database credentials are NEVER stored — only display metadata (host, port, db_name). Upsert logic keyed by natural keys (file_path for CSV, file_path+sheet_name for Excel, host+db_name+query for databases).
@@ -281,7 +266,6 @@ All endpoints use `/api/v1/` prefix.
 | `/conversations/{id}/stream` | GET | SSE stream of agent events |
 | `/conversations/{id}/history` | GET | Get conversation message history |
 | `/conversations/{id}` | DELETE | Delete conversation session |
-| `/commands/` | POST | ~~Process NL shipping command~~ (DEPRECATED) |
 | `/jobs/` | GET | List all jobs |
 | `/jobs/{id}` | GET | Get job details |
 | `/jobs/{id}/preview` | GET | Get batch preview data |
