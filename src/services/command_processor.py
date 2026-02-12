@@ -902,8 +902,11 @@ class CommandProcessor:
             db.add(row)
 
         # Step 8: Rate via UPS
+        # Pass the intent-level service_code (may be None).
+        # When None, BatchEngine.preview() reads each row's own service_code
+        # from order_data, ensuring the rate quote matches the actual service.
         db.flush()
-        await self._rate_job_rows(db, job_id, service_code or "03")
+        await self._rate_job_rows(db, job_id, service_code)
 
         # Step 9: Set total_rows and commit
         job.total_rows = len(filtered_rows)
@@ -1068,14 +1071,14 @@ class CommandProcessor:
         self,
         db: Session,
         job_id: str,
-        service_code: str,
+        service_code: str | None,
     ) -> None:
         """Rate all rows in a job via UPS BatchEngine.preview().
 
         Args:
             db: Database session.
             job_id: The job UUID.
-            service_code: UPS service code for rating.
+            service_code: UPS service code override, or None to use per-row codes.
         """
         try:
             ups_service = UPSService(

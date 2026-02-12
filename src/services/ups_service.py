@@ -254,6 +254,9 @@ class UPSService:
             raw.get("RateResponse", {})
             .get("RatedShipment", [{}])
         )
+        # RatedShipment may be a dict (single) or list (multi)
+        if isinstance(rated, dict):
+            rated = [rated]
         first = rated[0] if rated else {}
 
         # Prefer negotiated rate over published rate
@@ -264,6 +267,7 @@ class UPSService:
         published = first.get("TotalCharges", {})
         charges = negotiated if negotiated.get("MonetaryValue") else published
         value = charges.get("MonetaryValue", "0")
+
 
         return {
             "success": True,
