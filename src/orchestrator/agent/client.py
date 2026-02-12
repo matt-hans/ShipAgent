@@ -162,43 +162,26 @@ class OrchestrationAgent:
         return ClaudeAgentOptions(
             system_prompt=self._system_prompt,
             mcp_servers={
-                # In-process orchestrator tools
+                # In-process orchestrator tools (deterministic, no LLM calls)
                 "orchestrator": orchestrator_mcp,
                 # External MCP servers (stdio child processes)
                 "data": data_config,
                 "external": external_config,
                 "ups": ups_config,
             },
-            # Allow all tools from configured MCPs
+            # Disable all built-in Claude Code tools — we only use MCP tools
+            tools=[],
+            # Allow all MCP tools without permission prompts
             allowed_tools=[
                 "mcp__orchestrator__*",
                 "mcp__data__*",
                 "mcp__external__*",
                 "mcp__ups__*",
             ],
-            # Hook configuration using HookMatcher dataclass
-            hooks={
-                "PreToolUse": [
-                    HookMatcher(
-                        matcher="mcp__ups__create_shipment",
-                        hooks=[validate_shipping_input],
-                    ),
-                    HookMatcher(
-                        matcher="mcp__ups__void_shipment",
-                        hooks=[validate_void_shipment],
-                    ),
-                    HookMatcher(
-                        matcher=None,  # All tools
-                        hooks=[validate_pre_tool],
-                    ),
-                ],
-                "PostToolUse": [
-                    HookMatcher(
-                        matcher=None,  # All tools
-                        hooks=[log_post_tool, detect_error_response],
-                    ),
-                ],
-            },
+            # Hooks temporarily disabled — known SDK issue #265 causes
+            # synthetic 400 errors when hooks interact with tool calls.
+            # TODO: Re-enable once SDK fix is available.
+            # hooks={...},
             # Session settings
             permission_mode=permission_mode,  # type: ignore[arg-type]
             max_turns=max_turns,

@@ -267,6 +267,70 @@ class DataSourceService:
 
         return result
 
+    def import_from_records(
+        self,
+        records: list[dict[str, Any]],
+        source_type: str = "platform",
+        source_label: str | None = None,
+    ) -> DataSourceInfo:
+        """Import data from a list of dicts into the active DuckDB connection.
+
+        Used for platform sources (e.g. Shopify orders) where data arrives
+        as structured records rather than files.
+
+        Args:
+            records: List of row dictionaries.
+            source_type: Source type label (e.g. 'shopify').
+            source_label: Human-readable label (e.g. store name).
+
+        Returns:
+            DataSourceInfo for the imported data.
+
+        Raises:
+            ValueError: If records list is empty.
+        """
+        if not records:
+            raise ValueError("No records to import")
+
+        conn = self._ensure_connection()
+
+        # Get column names from the first record
+        col_names = list(records[0].keys())
+
+        # Build CREATE TABLE with all VARCHAR columns (DuckDB will auto-cast)
+        col_defs = ", ".join(f'"{c}" VARCHAR' for c in col_names)
+        conn.execute(f"CREATE TABLE imported_data ({col_defs})")
+
+        # Insert rows using parameterized queries
+        placeholders = ", ".join("?" for _ in col_names)
+        insert_sql = f"INSERT INTO imported_data VALUES ({placeholders})"
+        for record in records:
+            values = [str(record.get(c, "")) if record.get(c) is not None else None for c in col_names]
+            conn.execute(insert_sql, values)
+
+        # Build schema info from DuckDB table metadata
+        result = conn.execute("DESCRIBE imported_data")
+        columns: list[SchemaColumnInfo] = []
+        for row in result.fetchall():
+            columns.append(SchemaColumnInfo(name=row[0], type=row[1], nullable=True))
+
+        self._source_info = DataSourceInfo(
+            source_type=source_type,
+            file_path=source_label,
+            columns=columns,
+            row_count=len(records),
+        )
+
+        logger.info(
+            "Imported %d records from %s (%s): %d columns",
+            len(records),
+            source_type,
+            source_label or "unknown",
+            len(columns),
+        )
+
+        return self._source_info
+
     async def get_schema(self) -> list[SchemaColumnInfo]:
         """Get the schema of the currently imported data.
 

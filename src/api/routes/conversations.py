@@ -56,6 +56,75 @@ def _get_event_queue(session_id: str) -> asyncio.Queue:
     return _event_queues[session_id]
 
 
+async def _try_auto_import_shopify(svc: "DataSourceService") -> "DataSourceInfo | None":
+    """Auto-import Shopify orders if Shopify is configured and connected.
+
+    Checks environment for Shopify credentials, validates them,
+    fetches orders, and imports them into the DataSourceService.
+
+    Args:
+        svc: The DataSourceService singleton to import into.
+
+    Returns:
+        DataSourceInfo if import succeeded, None otherwise.
+    """
+    import os
+
+    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+    store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+
+    if not access_token or not store_domain:
+        return None
+
+    try:
+        from src.mcp.external_sources.clients.shopify import ShopifyClient
+        from src.mcp.external_sources.models import OrderFilters
+
+        client = ShopifyClient()
+        credentials = {"access_token": access_token, "store_url": store_domain}
+        is_valid = await client.authenticate(credentials)
+
+        if not is_valid:
+            logger.warning("Shopify auto-import: authentication failed")
+            return None
+
+        # Fetch orders
+        filters = OrderFilters(limit=250)
+        orders = await client.fetch_orders(filters)
+
+        if not orders:
+            logger.info("Shopify auto-import: no orders found")
+            return None
+
+        # Convert ExternalOrder objects to flat dicts for DuckDB.
+        # Exclude nested fields (items, raw_data) that don't flatten into columns.
+        exclude_fields = {"items", "raw_data"}
+        records = [
+            {k: v for k, v in (o.model_dump() if hasattr(o, "model_dump") else dict(o)).items()
+             if k not in exclude_fields}
+            for o in orders
+        ]
+
+        # Import into DataSourceService
+        store_name = store_domain.replace(".myshopify.com", "")
+        source_info = svc.import_from_records(
+            records,
+            source_type="shopify",
+            source_label=store_name,
+        )
+
+        logger.info(
+            "Shopify auto-import: %d orders from %s",
+            len(records),
+            store_name,
+        )
+        return source_info
+
+    except Exception as e:
+        logger.warning("Shopify auto-import failed (non-critical): %s", e)
+        return None
+
+
 async def _process_agent_message(session_id: str, content: str) -> None:
     """Process a user message through the agent and push events to the queue.
 
@@ -74,7 +143,13 @@ async def _process_agent_message(session_id: str, content: str) -> None:
         from src.orchestrator.agent.system_prompt import build_system_prompt
         from src.services.data_source_service import DataSourceService
 
-        source_info = DataSourceService.get_instance().get_source_info()
+        svc = DataSourceService.get_instance()
+        source_info = svc.get_source_info()
+
+        # Auto-import Shopify orders if no file/DB source is loaded
+        if source_info is None:
+            source_info = await _try_auto_import_shopify(svc)
+
         system_prompt = build_system_prompt(source_info=source_info)
 
         # Get conversation history

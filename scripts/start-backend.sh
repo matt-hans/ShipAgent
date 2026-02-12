@@ -26,4 +26,9 @@ echo "  Model: ${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}"
 echo "  Shopify: ${SHOPIFY_STORE_DOMAIN:-not configured}"
 echo ""
 
-exec uvicorn src.api.main:app --reload --reload-dir src --port 8000
+# Use .venv if available (has all dependencies including claude-agent-sdk)
+if [ -f .venv/bin/uvicorn ]; then
+    exec .venv/bin/uvicorn src.api.main:app --reload --reload-dir src --port 8000
+else
+    exec uvicorn src.api.main:app --reload --reload-dir src --port 8000
+fi
