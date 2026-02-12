@@ -13,7 +13,7 @@ import * as React from 'react';
 import { useAppState, type ConversationMessage, type WarningPreference } from '@/hooks/useAppState';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import { cn } from '@/lib/utils';
-import { confirmJob, cancelJob, getJob, getMergedLabelsUrl, refineJob, skipRows } from '@/lib/api';
+import { confirmJob, cancelJob, getJob, getMergedLabelsUrl, skipRows } from '@/lib/api';
 import { useConversation, type ConversationEvent } from '@/hooks/useConversation';
 import type { Job, BatchPreview, PreviewRow, OrderData } from '@/types/api';
 import { Package } from 'lucide-react';
@@ -1205,7 +1205,6 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const [showLabelPreview, setShowLabelPreview] = React.useState(false);
   const [labelPreviewJobId, setLabelPreviewJobId] = React.useState<string | null>(null);
   const [isRefining, setIsRefining] = React.useState(false);
-  const [refinementHistory, setRefinementHistory] = React.useState<string[]>([]);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -1271,7 +1270,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     if (!currentJobId) return;
 
     setIsConfirming(true);
-    setRefinementHistory([]);
+    // refinement state cleared
     try {
       // Skip warning rows if explicitly requested or if preference is 'skip-warnings'
       if (opts?.skipWarningRows && opts.warningRowNumbers?.length) {
@@ -1308,7 +1307,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const handleCancel = async () => {
     if (!currentJobId) return;
 
-    setRefinementHistory([]);
+    // refinement state cleared
     try {
       await cancelJob(currentJobId);
       setPreview(null);
@@ -1324,54 +1323,18 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     }
   };
 
-  // Handle refinement
+  // Handle refinement — send as a follow-up conversation message
   const handleRefine = async (refinementText: string) => {
-    if (!currentJobId || !refinementText.trim() || isRefining) return;
+    if (!refinementText.trim() || isRefining) return;
 
     setIsRefining(true);
-    const previousJobId = currentJobId;
-
     try {
-      const newHistory = [...refinementHistory, refinementText.trim()];
-      setRefinementHistory(newHistory);
-
-      // Add user message showing the refinement
-      addMessage({ role: 'user', content: `Refine: ${refinementText.trim()}` });
-
-      // Use shared refineJob utility (submits, waits, deletes old job)
-      const { jobId, preview: previewData } = await refineJob(
-        lastCommandRef.current,
-        refinementHistory,
-        refinementText.trim(),
-        previousJobId,
-      );
-
-      setCurrentJobId(jobId);
-      setPreview(previewData);
-      refreshJobList();
-
-      // Add system message with updated stats
-      addMessage({
-        role: 'system',
-        content: `Updated preview: ${previewData.total_rows} rows. Estimated cost: ${formatCurrency(previewData.total_estimated_cost_cents)}.`,
-        metadata: {
-          jobId,
-          action: 'preview',
-          preview: {
-            rowCount: previewData.total_rows,
-            estimatedCost: previewData.total_estimated_cost_cents,
-            warnings: previewData.rows_with_warnings,
-          },
-        },
-      });
+      // Send refinement through the agent conversation
+      await conv.sendMessage(refinementText.trim());
     } catch (err) {
-      // On error, pop the last refinement from history and restore previous job
-      setRefinementHistory((prev) => prev.slice(0, -1));
-      setCurrentJobId(previousJobId);
-
       addMessage({
         role: 'system',
-        content: `Refinement failed: ${err instanceof Error ? err.message : 'Unknown error'}. Previous preview is still active.`,
+        content: `Refinement failed: ${err instanceof Error ? err.message : 'Unknown error'}.`,
         metadata: { action: 'error' },
       });
     } finally {

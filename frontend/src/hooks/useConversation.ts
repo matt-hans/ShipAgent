@@ -2,8 +2,7 @@
  * Hook for managing agent-driven SSE conversation lifecycle.
  *
  * Creates a conversation session, sends messages via the REST API,
- * and listens for agent events via SSE. Replaces the old submitCommand
- * + polling flow with a unified streaming approach.
+ * and listens for agent events via SSE.
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react';

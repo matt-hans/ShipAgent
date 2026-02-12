@@ -1040,35 +1040,8 @@ export function DataSourceManager() {
           },
         }));
       } else {
-        // External platform connection — keep existing behavior via commands
-        let command = `Connect to ${source.name}`;
-        if (values.store_url) {
-          command += ` store ${values.store_url}`;
-        }
-
-        const response = await fetch('/api/v1/commands', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command }),
-        });
-
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.detail || 'Command failed');
-        }
-
-        const result = await response.json();
-
-        setStates(prev => ({
-          ...prev,
-          [sourceId]: {
-            isConnected: true,
-            isConnecting: false,
-            lastImported: new Date().toLocaleString(),
-            rowCount: result.row_count,
-            error: null,
-          },
-        }));
+        // External platform connections are managed via the Sidebar platform panel
+        throw new Error('External platform connections should be managed via the Sidebar platform panel.');
       }
     } catch (err) {
       setStates(prev => ({

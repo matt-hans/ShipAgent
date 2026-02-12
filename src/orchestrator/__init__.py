@@ -1,11 +1,9 @@
-"""Orchestration Agent for ShipAgent.
+"""Orchestration layer for ShipAgent.
 
-This module contains the natural language engine that powers the
-ShipAgent orchestration layer.
-
-Main Entry Points:
-    NLMappingEngine: Unified engine for processing NL shipping commands.
-    process_command: Convenience function for single command processing.
+The orchestration layer uses the Claude Agent SDK as its primary
+orchestration engine. The agent's system prompt and deterministic
+tools handle intent parsing, filter generation, and batch execution
+within the SDK agent loop.
 
 Supporting Models:
     ShippingIntent: Parsed intent from NL command.
@@ -36,18 +34,7 @@ from src.orchestrator.models.elicitation import (
     ElicitationResponse,
 )
 
-# Main engine
-from src.orchestrator.nl_engine.engine import (
-    CommandResult,
-    NLMappingEngine,
-    process_command,
-)
-
 __all__ = [
-    # Main engine (primary entry points)
-    "NLMappingEngine",
-    "CommandResult",
-    "process_command",
     # Intent models
     "ShippingIntent",
     "FilterCriteria",
