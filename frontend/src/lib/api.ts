@@ -66,11 +66,11 @@ async function parseResponse<T>(response: Response): Promise<T> {
  */
 export async function submitCommand(
   command: string,
-  options?: { baseCommand?: string; refinement?: string }
+  options?: { baseCommand?: string; refinements?: string[] }
 ): Promise<CommandSubmitResponse> {
-  const body: Record<string, string> = { command };
+  const body: Record<string, unknown> = { command };
   if (options?.baseCommand) body.base_command = options.baseCommand;
-  if (options?.refinement) body.refinement = options.refinement;
+  if (options?.refinements?.length) body.refinements = options.refinements;
 
   const response = await fetch(`${API_BASE}/commands`, {
     method: 'POST',
@@ -363,7 +363,7 @@ export async function refineJob(
   // Submit refined command with refinement metadata for clean job naming
   const result = await submitCommand(refinedCommand, {
     baseCommand: originalCommand,
-    refinement: newRefinement,
+    refinements: allRefinements,
   });
 
   // Wait for new preview
@@ -377,6 +377,53 @@ export async function refineJob(
   }
 
   return { jobId: result.job_id, preview };
+}
+
+// === Local Data Source API ===
+
+import type {
+  DataSourceImportRequest,
+  DataSourceImportResponse,
+  DataSourceStatusResponse,
+} from '@/types/api';
+
+/**
+ * Import a local data source (CSV, Excel, or Database).
+ *
+ * @param config - Import configuration with type, file path, and options.
+ * @returns Import result with schema, row count, and status.
+ */
+export async function importDataSource(
+  config: DataSourceImportRequest
+): Promise<DataSourceImportResponse> {
+  const response = await fetch(`${API_BASE}/data-sources/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  });
+  return parseResponse<DataSourceImportResponse>(response);
+}
+
+/**
+ * Get the status of the currently connected data source.
+ *
+ * @returns Connection status with source type, row count, and schema.
+ */
+export async function getDataSourceStatus(): Promise<DataSourceStatusResponse> {
+  const response = await fetch(`${API_BASE}/data-sources/status`);
+  return parseResponse<DataSourceStatusResponse>(response);
+}
+
+/**
+ * Disconnect the currently connected data source.
+ */
+export async function disconnectDataSource(): Promise<void> {
+  const response = await fetch(`${API_BASE}/data-sources/disconnect`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    await parseResponse(response); // Will throw ApiError
+  }
 }
 
 // === External Platform API ===

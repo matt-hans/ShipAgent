@@ -12,7 +12,6 @@
 import * as React from 'react';
 import { useAppState, type ConversationMessage } from '@/hooks/useAppState';
 import { useJobProgress } from '@/hooks/useJobProgress';
-import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
 import { submitCommand, waitForPreview, confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, refineJob } from '@/lib/api';
 import type { Job, BatchPreview, PreviewRow, OrderData } from '@/types/api';
@@ -710,6 +709,23 @@ function ProgressDisplay({ jobId, onComplete, onFailed }: {
 }
 
 // Completion artifact - compact inline card for completed batches
+/**
+ * Parse a job name that may contain → delimiters into base command and refinements.
+ * Returns { base, refinements } where refinements is capped at MAX_VISIBLE_REFINEMENTS.
+ * If more refinements exist, the last visible entry is replaced with "+N more".
+ */
+const MAX_VISIBLE_REFINEMENTS = 3;
+
+function parseRefinedName(name: string | undefined): { base: string; refinements: string[]; overflow: number } {
+  if (!name || !name.includes(' → ')) return { base: name || '', refinements: [], overflow: 0 };
+  const parts = name.split(' → ');
+  const base = parts[0];
+  const allRefinements = parts.slice(1);
+  const overflow = Math.max(0, allRefinements.length - MAX_VISIBLE_REFINEMENTS);
+  const refinements = allRefinements.slice(0, MAX_VISIBLE_REFINEMENTS);
+  return { base, refinements, overflow };
+}
+
 function CompletionArtifact({ message, onViewLabels }: {
   message: ConversationMessage;
   onViewLabels: (jobId: string) => void;
@@ -724,30 +740,33 @@ function CompletionArtifact({ message, onViewLabels }: {
   const badgeClass = allFailed ? 'badge-error' : hasFailures ? 'badge-warning' : 'badge-success';
   const badgeText = allFailed ? 'FAILED' : hasFailures ? 'PARTIAL' : 'COMPLETED';
 
-  const commandPreview = meta.command.length > 60
-    ? meta.command.slice(0, 57) + '...'
-    : meta.command;
+  // Use job name (→ format) when available, fall back to raw command
+  const displayName = meta.jobName || `Command: ${meta.command}`;
+  const { base, refinements, overflow } = parseRefinedName(displayName);
+  const baseDisplay = base.startsWith('Command: ') ? base.slice(9) : base;
 
   return (
     <div className={cn(
       'card-premium p-4 space-y-3 border-l-4',
       borderColor
     )}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {allFailed ? (
-            <XIcon className="w-4 h-4 text-error" />
-          ) : (
-            <CheckIcon className="w-4 h-4 text-success" />
-          )}
-          <h3 className="text-sm font-medium text-slate-200">
-            {allFailed ? 'Batch Failed' : 'Shipment Complete'}
-          </h3>
-        </div>
+      <div className="flex justify-end">
         <span className={cn('badge', badgeClass)}>{badgeText}</span>
       </div>
 
-      <p className="text-xs text-slate-400 italic">&ldquo;{commandPreview}&rdquo;</p>
+      <div className="space-y-1">
+        <p className="text-xs text-slate-400 italic truncate">&ldquo;{baseDisplay}&rdquo;</p>
+        {refinements.map((ref, i) => (
+          <p key={i} className="text-[11px] text-primary/80 truncate">
+            &rarr; {ref}
+          </p>
+        ))}
+        {overflow > 0 && (
+          <p className="text-[10px] text-slate-500 italic">
+            +{overflow} more refinement{overflow !== 1 ? 's' : ''}
+          </p>
+        )}
+      </div>
 
       <div className="flex items-center gap-3 text-xs font-mono text-slate-400">
         <span>{meta.successful} shipment{meta.successful !== 1 ? 's' : ''}</span>
@@ -774,17 +793,64 @@ function CompletionArtifact({ message, onViewLabels }: {
   );
 }
 
+// Icons for the active source banner
+function BannerShopifyIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <text
+        x="12"
+        y="17"
+        textAnchor="middle"
+        fontFamily="system-ui, -apple-system, sans-serif"
+        fontSize="18"
+        fontWeight="700"
+        fill="currentColor"
+      >
+        S
+      </text>
+    </svg>
+  );
+}
+
+function BannerHardDriveIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <path d="M22 12H2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="6" y1="16" x2="6.01" y2="16" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="10" y1="16" x2="10.01" y2="16" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/** Compact banner showing the currently active data source at the top of the chat area. */
+function ActiveSourceBanner() {
+  const { activeSourceInfo } = useAppState();
+  if (!activeSourceInfo) return null;
+
+  return (
+    <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/50 bg-card/30">
+      <span className="w-1.5 h-1.5 rounded-full bg-success flex-shrink-0" />
+      {activeSourceInfo.sourceKind === 'shopify' ? (
+        <BannerShopifyIcon className="w-3.5 h-3.5 text-[#5BBF3D]" />
+      ) : (
+        <BannerHardDriveIcon className="w-3.5 h-3.5 text-slate-400" />
+      )}
+      <span className="text-xs font-medium text-slate-300">
+        {activeSourceInfo.label}
+      </span>
+      <span className="text-slate-600">&middot;</span>
+      <span className="text-[10px] font-mono text-slate-500">
+        {activeSourceInfo.detail}
+      </span>
+    </div>
+  );
+}
+
 // Welcome message with workflow steps
 function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) => void }) {
-  const { dataSource } = useAppState();
-  const { state: externalState } = useExternalSources();
-
-  // Check if Shopify is connected via environment
-  const shopifyEnvConnected = externalState.shopifyEnvStatus?.valid === true;
-  const shopifyStoreName = externalState.shopifyEnvStatus?.store_name || externalState.shopifyEnvStatus?.store_url;
-
-  // Consider connected if either local dataSource OR Shopify env is connected
-  const isConnected = dataSource || shopifyEnvConnected;
+  const { activeSourceInfo } = useAppState();
+  const isConnected = !!activeSourceInfo;
 
   const examples = [
     { text: 'Ship all California orders using UPS Ground', desc: 'Filter by state' },
@@ -846,13 +912,6 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
   }
 
   // Connected - ready to ship
-  // Determine what data source to display
-  const sourceDisplay = dataSource
-    ? { name: dataSource.type.toUpperCase(), detail: dataSource.row_count ? `${dataSource.row_count.toLocaleString()} rows` : null }
-    : shopifyEnvConnected
-    ? { name: 'SHOPIFY', detail: shopifyStoreName || null }
-    : { name: 'Unknown', detail: null };
-
   return (
     <div className="flex flex-col items-center pt-12 text-center px-4 animate-fade-in">
       <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary mb-4">
@@ -864,10 +923,8 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
       </h2>
 
       <p className="text-sm text-slate-400 max-w-md mb-2">
-        Connected to <span className="text-primary font-medium">{sourceDisplay.name}</span>
-        {sourceDisplay.detail && (
-          <> · <span className="text-slate-500">{sourceDisplay.detail}</span></>
-        )}
+        Connected to <span className="text-primary font-medium">{activeSourceInfo!.label}</span>
+        <> · <span className="text-slate-500">{activeSourceInfo!.detail}</span></>
       </p>
 
       <p className="text-xs text-slate-500 max-w-md mb-6">
@@ -898,22 +955,16 @@ function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) =>
 // Main CommandCenter component
 export function CommandCenter({ activeJob }: CommandCenterProps) {
   const {
-    dataSource,
     conversation,
     addMessage,
     isProcessing,
     setIsProcessing,
     setActiveJob,
     refreshJobList,
+    activeSourceType,
   } = useAppState();
 
-  const { state: externalState } = useExternalSources();
-
-  // Check if Shopify is connected via environment
-  const shopifyEnvConnected = externalState.shopifyEnvStatus?.valid === true;
-
-  // Consider connected if either local dataSource OR Shopify env is connected
-  const hasDataSource = !!dataSource || shopifyEnvConnected;
+  const hasDataSource = activeSourceType !== null;
 
   const [inputValue, setInputValue] = React.useState('');
   const [preview, setPreview] = React.useState<BatchPreview | null>(null);
@@ -928,6 +979,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const lastCommandRef = React.useRef<string>('');
+  const lastJobNameRef = React.useRef<string>('');
 
   // Auto-scroll to bottom (includes activeJob so returning from job detail scrolls down)
   React.useEffect(() => {
@@ -998,9 +1050,9 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         metadata: { jobId: currentJobId, action: 'execute' },
       });
 
-      // Fetch job and set as active
+      // Fetch job to capture its display name (includes → refinements)
       const job = await getJob(currentJobId);
-      setActiveJob(job);
+      lastJobNameRef.current = job.name || '';
     } catch (err) {
       addMessage({
         role: 'system',
@@ -1095,14 +1147,6 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     }
   };
 
-  // Clear stale label preview when navigating away from a job detail view
-  React.useEffect(() => {
-    if (!activeJob && showLabelPreview) {
-      setShowLabelPreview(false);
-      setLabelPreviewJobId(null);
-    }
-  }, [activeJob, showLabelPreview]);
-
   // Show job detail panel when a sidebar job is selected (takes priority over conversation)
   const showJobDetail = activeJob && !preview && !executingJobId;
 
@@ -1110,13 +1154,20 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     return (
       <JobDetailPanel
         job={activeJob}
-        onBack={() => setActiveJob(null)}
+        onBack={() => {
+          // Clear any lingering label preview state before returning to chat
+          // so the modal doesn't flash open on re-render
+          setShowLabelPreview(false);
+          setLabelPreviewJobId(null);
+          setActiveJob(null);
+        }}
       />
     );
   }
 
   return (
     <div className="flex flex-col h-full">
+      <ActiveSourceBanner />
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto scrollable p-6">
         {conversation.length === 0 && !preview && !executingJobId ? (
@@ -1169,6 +1220,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                         action: 'complete' as const,
                         completion: {
                           command: lastCommandRef.current,
+                          jobName: lastJobNameRef.current || undefined,
                           totalRows: data.total,
                           successful: data.successful,
                           failed: data.failed,
@@ -1180,6 +1232,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                     setShowLabelPreview(true);
                     setExecutingJobId(null);
                     setCurrentJobId(null);
+                    setActiveJob(null);
                     refreshJobList();
                   }}
                   onFailed={(data) => {
@@ -1191,6 +1244,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                         action: 'complete' as const,
                         completion: {
                           command: lastCommandRef.current,
+                          jobName: lastJobNameRef.current || undefined,
                           totalRows: data.total,
                           successful: data.successful,
                           failed: data.failed,
@@ -1204,6 +1258,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                     }
                     setExecutingJobId(null);
                     setCurrentJobId(null);
+                    setActiveJob(null);
                     refreshJobList();
                   }}
                 />

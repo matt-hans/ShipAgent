@@ -598,7 +598,7 @@ class TestCommandProcessorProcess:
 
         job = self._get_job(db_session_factory, job_id)
         assert job.error_code == "E-5002"
-        assert "Shopify not connected" in job.error_message
+        assert "No data source connected" in job.error_message
 
     @pytest.mark.asyncio
     async def test_process_sets_error_when_no_orders(

@@ -25,8 +25,8 @@ export interface RowStatusTableProps {
   autoRefresh?: boolean;
   /** Refresh interval in milliseconds. Default: 2000. */
   refreshInterval?: number;
-  /** Callback to open label preview for a tracking number. */
-  onPreviewLabel?: (trackingNumber: string) => void;
+  /** Callback to open label preview for a tracking number (with optional row context). */
+  onPreviewLabel?: (trackingNumber: string, jobId?: string, rowNumber?: number) => void;
   /** Optional additional class name. */
   className?: string;
 }
@@ -270,7 +270,7 @@ export function RowStatusTable({
                                 variant="ghost"
                                 size="sm"
                                 className="h-8 w-8 p-0"
-                                onClick={() => onPreviewLabel(row.tracking_number!)}
+                                onClick={() => onPreviewLabel(row.tracking_number!, jobId, row.row_number)}
                                 title="Preview label"
                               >
                                 <EyeIcon className="h-4 w-4" />
@@ -279,6 +279,8 @@ export function RowStatusTable({
                             )}
                             <LabelDownloadButton
                               trackingNumber={row.tracking_number}
+                              jobId={jobId}
+                              rowNumber={row.row_number}
                               variant="icon"
                             />
                           </div>

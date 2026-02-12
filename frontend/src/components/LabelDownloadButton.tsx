@@ -11,6 +11,10 @@ import { cn } from '@/lib/utils';
 export interface LabelDownloadButtonProps {
   /** The UPS tracking number for the label. */
   trackingNumber: string;
+  /** Job ID for per-row label access (handles non-unique tracking numbers). */
+  jobId?: string;
+  /** Row number within the job for per-row label access. */
+  rowNumber?: number;
   /** Button variant: 'icon' for compact tables, 'text' for detail views. */
   variant?: 'icon' | 'text';
   /** Optional callback to open preview modal instead of direct download. */
@@ -32,13 +36,19 @@ export interface LabelDownloadButtonProps {
  */
 export function LabelDownloadButton({
   trackingNumber,
+  jobId,
+  rowNumber,
   variant = 'icon',
   onPreview,
   showPreviewOnClick = false,
   className,
 }: LabelDownloadButtonProps) {
-  const downloadUrl = `/api/v1/labels/${trackingNumber}`;
-  const filename = `${trackingNumber}.pdf`;
+  // Prefer per-row endpoint for unambiguous label access (handles
+  // non-unique tracking numbers from UPS sandbox)
+  const downloadUrl = jobId && rowNumber != null
+    ? `/api/v1/jobs/${jobId}/labels/${rowNumber}`
+    : `/api/v1/labels/${trackingNumber}`;
+  const filename = `${trackingNumber}_row${rowNumber ?? 0}.pdf`;
 
   const handleClick = (e: React.MouseEvent) => {
     // If preview handler provided and showPreviewOnClick is true, open preview
