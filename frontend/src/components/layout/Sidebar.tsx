@@ -12,7 +12,7 @@ import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
-import { getJobs, deleteJob, connectPlatform, disconnectPlatform, getMergedLabelsUrl } from '@/lib/api';
+import { getJobs, deleteJob, connectPlatform, disconnectPlatform, disconnectDataSource, importDataSource, getMergedLabelsUrl } from '@/lib/api';
 import type { Job, JobSummary, DataSourceInfo, PlatformType } from '@/types/api';
 
 /* Future: more external platforms like WooCommerce, SAP, Oracle */
@@ -148,16 +148,27 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-// Data Source Section - Unified view with sections
+/** Extracts a display filename from a DataSourceInfo. */
+function extractFileName(ds: DataSourceInfo): string | null {
+  const path = ds.csv_path || ds.excel_path;
+  if (!path) return null;
+  const segments = path.split('/');
+  return segments[segments.length - 1] || null;
+}
+
+// Data Source Section - Unified view with radio-card active/inactive pattern
 function DataSourceSection() {
-  const { dataSource, setDataSource } = useAppState();
+  const {
+    dataSource, setDataSource,
+    activeSourceType, setActiveSourceType,
+    activeSourceInfo, setActiveSourceInfo,
+    cachedLocalConfig, setCachedLocalConfig,
+  } = useAppState();
   const { state: externalState } = useExternalSources();
   const [isConnecting, setIsConnecting] = React.useState(false);
   const [showShopifyForm, setShowShopifyForm] = React.useState(false);
   const [showDbForm, setShowDbForm] = React.useState(false);
   const [dbConnectionString, setDbConnectionString] = React.useState('');
-  const csvInputRef = React.useRef<HTMLInputElement>(null);
-  const excelInputRef = React.useRef<HTMLInputElement>(null);
 
   // Shopify-specific state (for manual entry fallback)
   const [shopifyStoreUrl, setShopifyStoreUrl] = React.useState('');
@@ -171,71 +182,178 @@ function DataSourceSection() {
 
   // Check if Shopify is connected via environment
   const shopifyEnvConnected = shopifyEnvStatus?.valid === true;
+  const shopifyStoreName = shopifyEnvStatus?.store_name || shopifyEnvStatus?.store_url;
 
-  // File selection handler - connects immediately after file selection
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>, fileType: 'csv' | 'excel') => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // File path state for CSV/Excel input
+  const [showFileInput, setShowFileInput] = React.useState<'csv' | 'excel' | null>(null);
+  const [filePath, setFilePath] = React.useState('');
+  const [importError, setImportError] = React.useState<string | null>(null);
+
+  // --- Derive active source from existing state ---
+  React.useEffect(() => {
+    if (dataSource?.status === 'connected') {
+      setActiveSourceType('local');
+      setActiveSourceInfo({
+        type: 'local',
+        label: extractFileName(dataSource) || dataSource.type.toUpperCase(),
+        detail: `${dataSource.row_count?.toLocaleString() ?? '?'} rows`,
+        sourceKind: dataSource.type === 'database' ? 'database' : 'file',
+      });
+    } else if (shopifyEnvConnected) {
+      setActiveSourceType('shopify');
+      setActiveSourceInfo({
+        type: 'shopify',
+        label: 'Shopify',
+        detail: shopifyStoreName || 'Connected',
+        sourceKind: 'shopify',
+      });
+    } else {
+      setActiveSourceType(null);
+      setActiveSourceInfo(null);
+    }
+  }, [dataSource, shopifyEnvConnected, shopifyStoreName, setActiveSourceType, setActiveSourceInfo]);
+
+  // --- Source switching handlers ---
+
+  /** Switch to Shopify: disconnect local source so backend routes to Shopify. */
+  const handleSwitchToShopify = async () => {
+    if (dataSource) {
+      setCachedLocalConfig({
+        type: dataSource.type as 'csv' | 'excel' | 'database',
+        file_path: dataSource.csv_path || dataSource.excel_path,
+      });
+    }
+    try { await disconnectDataSource(); } catch { /* best-effort */ }
+    setDataSource(null);
+    // useEffect will set Shopify as active
+  };
+
+  // File import handler — calls backend import API with server-side file path
+  const handleFileImport = async (fileType: 'csv' | 'excel') => {
+    if (!filePath.trim()) return;
 
     setIsConnecting(true);
+    setImportError(null);
     try {
-      // Simulated connection - in real app, call backend API via MCP Gateway
-      const mockSource: DataSourceInfo = {
+      const result = await importDataSource({
+        type: fileType,
+        file_path: filePath.trim(),
+      });
+
+      if (result.status === 'error') {
+        setImportError(result.error || 'Import failed');
+        return;
+      }
+
+      const source: DataSourceInfo = {
         type: fileType,
         status: 'connected' as const,
-        row_count: Math.floor(Math.random() * 5000) + 100,
-        column_count: 8,
-        columns: [
-          { name: 'order_id', type: 'INTEGER' as const, nullable: false, warnings: [] },
-          { name: 'recipient_name', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-          { name: 'address', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-          { name: 'city', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-          { name: 'state', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-          { name: 'zip', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-        ],
+        row_count: result.row_count,
+        column_count: result.columns.length,
+        columns: result.columns.map(c => ({
+          name: c.name,
+          type: c.type as any,
+          nullable: c.nullable,
+          warnings: [],
+        })),
         connected_at: new Date().toISOString(),
-        csv_path: fileType === 'csv' ? file.name : undefined,
-        excel_path: fileType === 'excel' ? file.name : undefined,
+        csv_path: fileType === 'csv' ? filePath.trim() : undefined,
+        excel_path: fileType === 'excel' ? filePath.trim() : undefined,
       };
-      setDataSource(mockSource);
+      setDataSource(source);
+      setCachedLocalConfig({ type: fileType, file_path: filePath.trim() });
+      setFilePath('');
+      setShowFileInput(null);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Import failed');
     } finally {
       setIsConnecting(false);
-      // Reset input so same file can be selected again
-      e.target.value = '';
     }
   };
 
-  // Database connection handler
+  /** Re-import a cached local source for one-click reconnect. */
+  const handleReconnectLocal = async () => {
+    if (!cachedLocalConfig?.file_path) return;
+    setFilePath(cachedLocalConfig.file_path);
+    // Trigger import directly
+    setIsConnecting(true);
+    setImportError(null);
+    try {
+      const result = await importDataSource({
+        type: cachedLocalConfig.type,
+        file_path: cachedLocalConfig.file_path,
+      });
+      if (result.status === 'error') {
+        setImportError(result.error || 'Reconnect failed');
+        return;
+      }
+      const source: DataSourceInfo = {
+        type: cachedLocalConfig.type,
+        status: 'connected' as const,
+        row_count: result.row_count,
+        column_count: result.columns.length,
+        columns: result.columns.map(c => ({
+          name: c.name,
+          type: c.type as any,
+          nullable: c.nullable,
+          warnings: [],
+        })),
+        connected_at: new Date().toISOString(),
+        csv_path: cachedLocalConfig.type === 'csv' ? cachedLocalConfig.file_path : undefined,
+        excel_path: cachedLocalConfig.type === 'excel' ? cachedLocalConfig.file_path : undefined,
+      };
+      setDataSource(source);
+      setFilePath('');
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Reconnect failed');
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  // Database connection handler — calls backend import API
   const handleDbConnect = async () => {
     if (!dbConnectionString.trim()) return;
 
     setIsConnecting(true);
+    setImportError(null);
     try {
-      // Simulated connection - in real app, call backend API via MCP Gateway
-      const mockSource: DataSourceInfo = {
+      const result = await importDataSource({
+        type: 'database',
+        connection_string: dbConnectionString.trim(),
+        query: 'SELECT * FROM shipments',
+      });
+
+      if (result.status === 'error') {
+        setImportError(result.error || 'Connection failed');
+        return;
+      }
+
+      const source: DataSourceInfo = {
         type: 'database',
         status: 'connected' as const,
-        row_count: Math.floor(Math.random() * 5000) + 100,
-        column_count: 8,
-        columns: [
-          { name: 'order_id', type: 'INTEGER' as const, nullable: false, warnings: [] },
-          { name: 'recipient_name', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-          { name: 'address', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-          { name: 'city', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-          { name: 'state', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-          { name: 'zip', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-        ],
+        row_count: result.row_count,
+        column_count: result.columns.length,
+        columns: result.columns.map(c => ({
+          name: c.name,
+          type: c.type as any,
+          nullable: c.nullable,
+          warnings: [],
+        })),
         connected_at: new Date().toISOString(),
       };
-      setDataSource(mockSource);
+      setDataSource(source);
+      setCachedLocalConfig({ type: 'database' });
       setDbConnectionString('');
       setShowDbForm(false);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Connection failed');
     } finally {
       setIsConnecting(false);
     }
   };
 
-  // Shopify connection
+  // Shopify connection (manual form)
   const handleShopifyConnect = async () => {
     if (!shopifyStoreUrl.trim() || !shopifyAccessToken.trim()) return;
 
@@ -243,14 +361,12 @@ function DataSourceSection() {
     setShopifyError(null);
 
     try {
-      // Format store URL (ensure it's just the domain)
       let storeUrl = shopifyStoreUrl.trim();
       if (!storeUrl.includes('.myshopify.com')) {
         storeUrl = `${storeUrl}.myshopify.com`;
       }
       storeUrl = storeUrl.replace(/^https?:\/\//, '');
 
-      // Call the backend API to connect to Shopify
       const result = await connectPlatform(
         'shopify' as PlatformType,
         { access_token: shopifyAccessToken.trim() },
@@ -258,11 +374,10 @@ function DataSourceSection() {
       );
 
       if (result.success) {
-        // Set as connected data source (mock for now - backend will handle actual data)
         const mockSource: DataSourceInfo = {
-          type: 'csv', // Backend will expose Shopify as a data source
+          type: 'csv',
           status: 'connected' as const,
-          row_count: 0, // Will be populated after fetching orders
+          row_count: 0,
           column_count: 12,
           columns: [
             { name: 'order_id', type: 'VARCHAR' as const, nullable: false, warnings: [] },
@@ -278,7 +393,6 @@ function DataSourceSection() {
           connected_at: new Date().toISOString(),
         };
         setDataSource(mockSource);
-        // Clear form
         setShopifyStoreUrl('');
         setShopifyAccessToken('');
         setShowShopifyForm(false);
@@ -294,61 +408,87 @@ function DataSourceSection() {
 
   const handleDisconnect = async () => {
     try {
-      // If it was a Shopify connection, disconnect via API
-      await disconnectPlatform('shopify' as PlatformType);
+      await disconnectDataSource();
     } catch {
       // Ignore errors - clear local state anyway
     }
     setDataSource(null);
+    setCachedLocalConfig(null);
+    setShowFileInput(null);
+    setFilePath('');
+    setImportError(null);
   };
 
+  // Derived state for card rendering
+  const isLocalActive = activeSourceType === 'local';
+  const isShopifyActive = activeSourceType === 'shopify';
+  const localFileName = dataSource ? (extractFileName(dataSource) || dataSource.type.toUpperCase()) : null;
+
   return (
-    <div className="p-3 space-y-4">
+    <div className="p-3 space-y-3">
       <span className="text-xs font-medium text-slate-300">Data Sources</span>
 
-      {/* === EXTERNAL PLATFORMS SECTION === */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <CloudIcon className="w-3.5 h-3.5 text-slate-500" />
-          <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">External Platforms</span>
-        </div>
-
-        {/* Shopify Status Card */}
-        <div className="rounded-lg border border-slate-800 overflow-hidden">
+      {/* === SHOPIFY CARD === */}
+      {(shopifyEnvConnected || shopifyEnvStatus?.configured || showShopifyForm) && (
+        <div className={cn(
+          'rounded-lg border overflow-hidden transition-colors',
+          isShopifyActive
+            ? 'border-l-4 border-l-[#5BBF3D] border-[#5BBF3D]/30 bg-[#5BBF3D]/5'
+            : 'border-slate-800'
+        )}>
           <div className="flex items-center justify-between p-2.5 bg-slate-800/30">
             <div className="flex items-center gap-2">
               <ShopifyIcon className="w-5 h-5 text-[#5BBF3D]" />
               <span className="text-xs font-medium text-slate-200">Shopify</span>
             </div>
-            {isCheckingShopifyEnv ? (
-              <span className="text-[10px] font-mono text-slate-500">Checking...</span>
-            ) : shopifyEnvConnected ? (
-              <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-success" />
-                <span className="text-[10px] font-mono text-success">Connected</span>
-              </span>
-            ) : shopifyEnvStatus?.configured ? (
-              <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-error" />
-                <span className="text-[10px] font-mono text-error">Invalid</span>
-              </span>
-            ) : (
-              <span className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
-                <span className="text-[10px] font-mono text-slate-500">Not configured</span>
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {isCheckingShopifyEnv ? (
+                <span className="text-[10px] font-mono text-slate-500">Checking...</span>
+              ) : shopifyEnvConnected && isShopifyActive ? (
+                <span className="badge badge-success text-[9px]">ACTIVE</span>
+              ) : shopifyEnvConnected ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                  <span className="text-[10px] font-mono text-slate-500">Available</span>
+                </span>
+              ) : shopifyEnvStatus?.configured ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-error" />
+                  <span className="text-[10px] font-mono text-error">Invalid</span>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                  <span className="text-[10px] font-mono text-slate-500">Not configured</span>
+                </span>
+              )}
+            </div>
           </div>
 
-          {/* Connected state */}
-          {shopifyEnvConnected && (
-            <div className="p-2.5 border-t border-slate-800">
+          {/* Active Shopify info */}
+          {shopifyEnvConnected && isShopifyActive && (
+            <div className="p-2.5 border-t border-[#5BBF3D]/20">
               <p className="text-xs text-slate-300">
-                {shopifyEnvStatus?.store_name || shopifyEnvStatus?.store_url}
+                {shopifyStoreName}
               </p>
               <p className="text-[10px] font-mono text-slate-500 mt-0.5">
                 Auto-detected from environment
               </p>
+            </div>
+          )}
+
+          {/* Shopify available but not active — show "Use Shopify" button */}
+          {shopifyEnvConnected && !isShopifyActive && (
+            <div className="p-2.5 border-t border-slate-800">
+              <p className="text-[10px] text-slate-500 mb-2">
+                {shopifyStoreName}
+              </p>
+              <button
+                onClick={handleSwitchToShopify}
+                className="w-full py-1.5 text-xs font-medium rounded border border-[#5BBF3D]/40 text-[#5BBF3D] hover:bg-[#5BBF3D]/10 transition-colors"
+              >
+                Use Shopify
+              </button>
             </div>
           )}
 
@@ -381,7 +521,6 @@ function DataSourceSection() {
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {/* Store URL */}
                   <input
                     type="text"
                     value={shopifyStoreUrl}
@@ -389,7 +528,6 @@ function DataSourceSection() {
                     placeholder="mystore.myshopify.com"
                     className="w-full px-2.5 py-1.5 text-xs font-mono rounded bg-void-900 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#96BF48]"
                   />
-                  {/* Access Token */}
                   <div className="relative">
                     <input
                       type={showToken ? 'text' : 'password'}
@@ -430,116 +568,167 @@ function DataSourceSection() {
             </div>
           )}
         </div>
-      </div>
+      )}
 
-      {/* === LOCAL FILES SECTION === */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <HardDriveIcon className="w-3.5 h-3.5 text-slate-500" />
-          <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Local Files</span>
-        </div>
-
-        {/* Connected local data source */}
-        {dataSource?.status === 'connected' && (
-          <div className="rounded-lg border border-success/30 bg-success/5 p-2.5">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-success" />
-                <span className="text-xs font-medium text-slate-200">{dataSource.type.toUpperCase()}</span>
-              </div>
-              <button
-                onClick={handleDisconnect}
-                className="text-[10px] font-mono text-error hover:underline"
-              >
-                Disconnect
-              </button>
+      {/* === LOCAL DATA SOURCE CARD === */}
+      {dataSource?.status === 'connected' && (
+        <div className={cn(
+          'rounded-lg border overflow-hidden transition-colors',
+          isLocalActive
+            ? 'border-l-4 border-l-primary border-primary/30 bg-primary/5'
+            : 'border-slate-800'
+        )}>
+          <div className="flex items-center justify-between p-2.5">
+            <div className="flex items-center gap-2">
+              <HardDriveIcon className="w-4 h-4 text-slate-400" />
+              <span className="text-xs font-medium text-slate-200">{localFileName}</span>
             </div>
+            <div className="flex items-center gap-2">
+              {isLocalActive ? (
+                <span className="badge badge-success text-[9px]">ACTIVE</span>
+              ) : (
+                <span className="text-[10px] font-mono text-slate-500">Available</span>
+              )}
+            </div>
+          </div>
+          <div className="px-2.5 pb-2.5 flex items-center justify-between">
             <div className="flex gap-4 text-[10px] font-mono">
               <span className="text-slate-500">
-                Rows: <span className="text-success">{dataSource.row_count?.toLocaleString() || '...'}</span>
+                Rows: <span className={isLocalActive ? 'text-success' : 'text-slate-400'}>{dataSource.row_count?.toLocaleString() || '...'}</span>
               </span>
               <span className="text-slate-500">
                 Cols: <span className="text-slate-300">{dataSource.column_count}</span>
               </span>
             </div>
+            <button
+              onClick={handleDisconnect}
+              className="text-[10px] font-mono text-error hover:underline"
+            >
+              Disconnect
+            </button>
           </div>
-        )}
+        </div>
+      )}
 
-        {/* File picker buttons - minimalist design */}
-        {!dataSource?.status && (
-          <>
-            {/* Hidden file inputs */}
-            <input
-              type="file"
-              ref={csvInputRef}
-              onChange={(e) => handleFileSelect(e, 'csv')}
-              accept=".csv"
-              className="hidden"
-            />
-            <input
-              type="file"
-              ref={excelInputRef}
-              onChange={(e) => handleFileSelect(e, 'excel')}
-              accept=".xlsx,.xls"
-              className="hidden"
-            />
+      {/* === CACHED RECONNECT CARD === */}
+      {!dataSource && cachedLocalConfig?.file_path && (
+        <div className="rounded-lg border border-dashed border-slate-700 p-2.5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <HardDriveIcon className="w-4 h-4 text-slate-500" />
+              <span className="text-xs text-slate-400 truncate">
+                {cachedLocalConfig.file_path.split('/').pop()}
+              </span>
+            </div>
+            <button
+              onClick={handleReconnectLocal}
+              disabled={isConnecting}
+              className="text-[10px] font-medium text-primary hover:underline disabled:opacity-50"
+            >
+              {isConnecting ? 'Reconnecting...' : 'Reconnect'}
+            </button>
+          </div>
+        </div>
+      )}
 
-            {/* File type buttons */}
-            <div className="flex gap-2">
+      {/* === IMPORT BUTTONS === */}
+      {!dataSource?.status && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <HardDriveIcon className="w-3.5 h-3.5 text-slate-500" />
+            <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Import Local File</span>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setShowFileInput(showFileInput === 'csv' ? null : 'csv'); setShowDbForm(false); setImportError(null); }}
+              disabled={isConnecting}
+              className={cn(
+                'flex-1 py-2 px-3 rounded-lg border transition-colors text-xs font-medium disabled:opacity-50',
+                showFileInput === 'csv'
+                  ? 'border-primary/50 bg-primary/10 text-primary'
+                  : 'border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300'
+              )}
+            >
+              CSV
+            </button>
+            <button
+              onClick={() => { setShowFileInput(showFileInput === 'excel' ? null : 'excel'); setShowDbForm(false); setImportError(null); }}
+              disabled={isConnecting}
+              className={cn(
+                'flex-1 py-2 px-3 rounded-lg border transition-colors text-xs font-medium disabled:opacity-50',
+                showFileInput === 'excel'
+                  ? 'border-primary/50 bg-primary/10 text-primary'
+                  : 'border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300'
+              )}
+            >
+              Excel
+            </button>
+            <button
+              onClick={() => { setShowDbForm(!showDbForm); setShowFileInput(null); setImportError(null); }}
+              disabled={isConnecting}
+              className={cn(
+                'flex-1 py-2 px-3 rounded-lg border transition-colors text-xs font-medium disabled:opacity-50',
+                showDbForm
+                  ? 'border-primary/50 bg-primary/10 text-primary'
+                  : 'border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300'
+              )}
+            >
+              Database
+            </button>
+          </div>
+
+          {/* File path input (CSV or Excel) */}
+          {showFileInput && (
+            <div className="space-y-2 pt-1">
+              <input
+                type="text"
+                value={filePath}
+                onChange={(e) => setFilePath(e.target.value)}
+                placeholder={showFileInput === 'csv' ? '/path/to/orders.csv' : '/path/to/orders.xlsx'}
+                className="w-full px-2.5 py-1.5 text-xs font-mono rounded bg-void-900 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-primary"
+                onKeyDown={(e) => { if (e.key === 'Enter') handleFileImport(showFileInput); }}
+              />
               <button
-                onClick={() => csvInputRef.current?.click()}
-                disabled={isConnecting}
-                className="flex-1 py-2 px-3 rounded-lg border border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 transition-colors text-xs font-medium text-slate-300 disabled:opacity-50"
+                onClick={() => handleFileImport(showFileInput)}
+                disabled={!filePath.trim() || isConnecting}
+                className="w-full btn-primary py-1.5 text-xs font-medium disabled:opacity-50"
               >
-                CSV
-              </button>
-              <button
-                onClick={() => excelInputRef.current?.click()}
-                disabled={isConnecting}
-                className="flex-1 py-2 px-3 rounded-lg border border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 transition-colors text-xs font-medium text-slate-300 disabled:opacity-50"
-              >
-                Excel
-              </button>
-              <button
-                onClick={() => setShowDbForm(!showDbForm)}
-                disabled={isConnecting}
-                className={cn(
-                  'flex-1 py-2 px-3 rounded-lg border transition-colors text-xs font-medium disabled:opacity-50',
-                  showDbForm
-                    ? 'border-primary/50 bg-primary/10 text-primary'
-                    : 'border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300'
-                )}
-              >
-                Database
+                {isConnecting ? 'Importing...' : 'Import'}
               </button>
             </div>
+          )}
 
-            {/* Database connection form (only shows when DB selected) */}
-            {showDbForm && (
-              <div className="space-y-2 pt-1">
-                <input
-                  type="text"
-                  value={dbConnectionString}
-                  onChange={(e) => setDbConnectionString(e.target.value)}
-                  placeholder="postgresql://user:pass@host:5432/db"
-                  className="w-full px-2.5 py-1.5 text-xs font-mono rounded bg-void-900 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-primary"
-                />
-                <button
-                  onClick={handleDbConnect}
-                  disabled={!dbConnectionString.trim() || isConnecting}
-                  className="w-full btn-primary py-1.5 text-xs font-medium disabled:opacity-50"
-                >
-                  {isConnecting ? 'Connecting...' : 'Connect'}
-                </button>
-              </div>
-            )}
+          {/* Database connection form */}
+          {showDbForm && (
+            <div className="space-y-2 pt-1">
+              <input
+                type="text"
+                value={dbConnectionString}
+                onChange={(e) => setDbConnectionString(e.target.value)}
+                placeholder="postgresql://user:pass@host:5432/db"
+                className="w-full px-2.5 py-1.5 text-xs font-mono rounded bg-void-900 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-primary"
+              />
+              <button
+                onClick={handleDbConnect}
+                disabled={!dbConnectionString.trim() || isConnecting}
+                className="w-full btn-primary py-1.5 text-xs font-medium disabled:opacity-50"
+              >
+                {isConnecting ? 'Connecting...' : 'Connect'}
+              </button>
+            </div>
+          )}
 
-            {isConnecting && (
-              <p className="text-[10px] font-mono text-slate-500 text-center">Connecting...</p>
-            )}
-          </>
-        )}
-      </div>
+          {/* Error display */}
+          {importError && (
+            <p className="text-[10px] font-mono text-error p-2 rounded bg-error/10">{importError}</p>
+          )}
+
+          {isConnecting && !importError && (
+            <p className="text-[10px] font-mono text-slate-500 text-center">Connecting...</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -683,20 +872,36 @@ function JobHistorySection({
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
-                  {job.name?.includes(' → ') ? (
-                    <>
-                      <p className="text-xs text-slate-200 line-clamp-1">
-                        {job.name.split(' → ')[0]}
-                      </p>
-                      <p className="text-[10px] text-primary/80 line-clamp-1 mt-0.5">
-                        → {job.name.split(' → ').slice(1).join(' → ')}
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-xs text-slate-200 line-clamp-2">
-                      {job.name?.startsWith('Command: ') ? job.name.slice(9) : job.original_command || job.name || 'Untitled job'}
-                    </p>
-                  )}
+                  {(() => {
+                    if (!job.name?.includes(' → ')) {
+                      return (
+                        <p className="text-xs text-slate-200 line-clamp-2">
+                          {job.name?.startsWith('Command: ') ? job.name.slice(9) : job.original_command || job.name || 'Untitled job'}
+                        </p>
+                      );
+                    }
+                    const parts = job.name.split(' → ');
+                    const base = parts[0];
+                    const refs = parts.slice(1);
+                    const maxVisible = 2;
+                    const visible = refs.slice(0, maxVisible);
+                    const overflow = refs.length - maxVisible;
+                    return (
+                      <>
+                        <p className="text-xs text-slate-200 line-clamp-1">{base}</p>
+                        {visible.map((r, i) => (
+                          <p key={i} className="text-[10px] text-primary/80 line-clamp-1 mt-0.5">
+                            &rarr; {r}
+                          </p>
+                        ))}
+                        {overflow > 0 && (
+                          <p className="text-[9px] text-slate-500 italic mt-0.5">
+                            +{overflow} more
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
                 <div className="flex items-center gap-1.5 flex-shrink-0">
                   <StatusBadge status={job.status} />
@@ -773,18 +978,13 @@ function HistoryIcon({ className }: { className?: string }) {
 }
 
 export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId }: SidebarProps) {
-  const { dataSource } = useAppState();
-  const { state: externalState } = useExternalSources();
+  const { activeSourceType, activeSourceInfo } = useAppState();
 
-  // Check if any data source is connected (local or Shopify env)
-  const shopifyEnvConnected = externalState.shopifyEnvStatus?.valid === true;
-  const hasDataSource = !!dataSource || shopifyEnvConnected;
+  const hasDataSource = activeSourceType !== null;
 
   // Determine connection label for tooltip
-  const connectionLabel = dataSource
-    ? `Connected: ${dataSource.type.toUpperCase()}`
-    : shopifyEnvConnected
-    ? `Connected: Shopify`
+  const connectionLabel = activeSourceInfo
+    ? `Active: ${activeSourceInfo.label}`
     : 'Connect data source';
 
   return (
@@ -805,7 +1005,19 @@ export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId }: Sideb
             )}
             title={connectionLabel}
           >
-            <DataSourceIcon className="w-5 h-5" connected={hasDataSource} />
+            {activeSourceType === 'shopify' ? (
+              <div className="relative">
+                <ShopifyIcon className="w-5 h-5 text-[#5BBF3D]" />
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-success rounded-full" />
+              </div>
+            ) : activeSourceType === 'local' ? (
+              <div className="relative">
+                <HardDriveIcon className="w-5 h-5 text-primary" />
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-success rounded-full" />
+              </div>
+            ) : (
+              <DataSourceIcon className="w-5 h-5" connected={false} />
+            )}
           </button>
           <button
             onClick={onToggle}

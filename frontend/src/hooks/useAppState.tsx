@@ -11,6 +11,23 @@
 import * as React from 'react';
 import type { Job, DataSourceInfo } from '@/types/api';
 
+/** Identifies which data source type is currently active for command routing. */
+type ActiveSourceType = 'local' | 'shopify' | null;
+
+/** Descriptive info about the currently active data source. */
+interface ActiveSourceInfo {
+  type: ActiveSourceType;
+  label: string;
+  detail: string;
+  sourceKind: 'file' | 'database' | 'shopify';
+}
+
+/** Cached local source config for one-click reconnect after switching to Shopify. */
+interface CachedLocalConfig {
+  type: 'csv' | 'excel' | 'database';
+  file_path?: string;
+}
+
 interface ConversationMessage {
   id: string;
   role: 'user' | 'system';
@@ -39,6 +56,7 @@ interface ConversationMessage {
     };
     completion?: {
       command: string;
+      jobName?: string;
       totalRows: number;
       successful: number;
       failed: number;
@@ -72,6 +90,16 @@ interface AppState {
   // Job list refresh trigger
   jobListVersion: number;
   refreshJobList: () => void;
+
+  // Active data source tracking
+  activeSourceType: ActiveSourceType;
+  activeSourceInfo: ActiveSourceInfo | null;
+  setActiveSourceType: (type: ActiveSourceType) => void;
+  setActiveSourceInfo: (info: ActiveSourceInfo | null) => void;
+
+  // Cached local config for reconnect after switching to Shopify
+  cachedLocalConfig: CachedLocalConfig | null;
+  setCachedLocalConfig: (config: CachedLocalConfig | null) => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -83,6 +111,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [conversation, setConversation] = React.useState<ConversationMessage[]>([]);
   const [isProcessing, setIsProcessing] = React.useState(false);
   const [jobListVersion, setJobListVersion] = React.useState(0);
+  const [activeSourceType, setActiveSourceType] = React.useState<ActiveSourceType>(null);
+  const [activeSourceInfo, setActiveSourceInfo] = React.useState<ActiveSourceInfo | null>(null);
+  const [cachedLocalConfig, setCachedLocalConfig] = React.useState<CachedLocalConfig | null>(null);
 
   const refreshJobList = React.useCallback(() => {
     setJobListVersion((v) => v + 1);
@@ -118,6 +149,12 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setIsProcessing,
     jobListVersion,
     refreshJobList,
+    activeSourceType,
+    activeSourceInfo,
+    setActiveSourceType,
+    setActiveSourceInfo,
+    cachedLocalConfig,
+    setCachedLocalConfig,
   };
 
   return (
@@ -135,4 +172,4 @@ export function useAppState() {
   return context;
 }
 
-export type { ConversationMessage, AppState };
+export type { ConversationMessage, AppState, ActiveSourceType, ActiveSourceInfo, CachedLocalConfig };

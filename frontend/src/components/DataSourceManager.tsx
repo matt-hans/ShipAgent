@@ -37,7 +37,9 @@ import {
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { useExternalSources } from '@/hooks/useExternalSources';
-import type { ShopifyEnvStatus } from '@/types/api';
+import { importDataSource } from '@/lib/api';
+import { useAppState } from '@/hooks/useAppState';
+import type { ShopifyEnvStatus, DataSourceImportRequest } from '@/types/api';
 
 // === Source Type Definitions ===
 
@@ -937,6 +939,9 @@ export function DataSourceManager() {
     }));
   };
 
+  // Access global state for data source tracking
+  const { setDataSource } = useAppState();
+
   const handleSubmit = async (sourceId: string, values: Record<string, string>) => {
     setIsSubmitting(true);
     setStates(prev => ({
@@ -945,67 +950,126 @@ export function DataSourceManager() {
     }));
 
     try {
-      // Build the command for the orchestration agent
       const source = SOURCES.find(s => s.id === sourceId);
       if (!source) throw new Error('Unknown source');
 
-      let command = '';
-
-      if (source.category === 'file') {
-        // File import command
-        if (sourceId === 'csv') {
-          command = `Import CSV file from ${values.file_path}`;
-          if (values.delimiter && values.delimiter !== ',') {
-            command += ` with delimiter "${values.delimiter}"`;
-          }
-        } else if (sourceId === 'excel') {
-          command = `Import Excel file from ${values.file_path}`;
-          if (values.sheet) {
-            command += ` sheet "${values.sheet}"`;
-          }
-        } else if (sourceId === 'edi') {
-          command = `Import EDI file from ${values.file_path}`;
-          if (values.format) {
-            command += ` format ${values.format}`;
-          }
+      if (source.category === 'file' && (sourceId === 'csv' || sourceId === 'excel')) {
+        // Use the new data source import API for CSV/Excel
+        const importConfig: DataSourceImportRequest = {
+          type: sourceId as 'csv' | 'excel',
+          file_path: values.file_path,
+        };
+        if (sourceId === 'csv' && values.delimiter && values.delimiter !== ',') {
+          importConfig.delimiter = values.delimiter;
         }
+        if (sourceId === 'excel' && values.sheet) {
+          importConfig.sheet = values.sheet;
+        }
+
+        const result = await importDataSource(importConfig);
+
+        if (result.status === 'error') {
+          throw new Error(result.error || 'Import failed');
+        }
+
+        // Update global data source state
+        setDataSource({
+          type: sourceId,
+          status: 'connected',
+          row_count: result.row_count,
+          column_count: result.columns.length,
+          columns: result.columns.map(c => ({
+            name: c.name,
+            type: c.type as any,
+            nullable: c.nullable,
+            warnings: [],
+          })),
+          connected_at: new Date().toISOString(),
+          csv_path: sourceId === 'csv' ? values.file_path : undefined,
+          excel_path: sourceId === 'excel' ? values.file_path : undefined,
+        });
+
+        // Update local card state
+        setStates(prev => ({
+          ...prev,
+          [sourceId]: {
+            isConnected: true,
+            isConnecting: false,
+            lastImported: new Date().toLocaleString(),
+            rowCount: result.row_count,
+            error: null,
+          },
+        }));
       } else if (source.category === 'database') {
-        // Database connection - build connection string
+        // Database import via data source API
         const port = values.port || (sourceId === 'postgresql' ? '5432' : '3306');
-        command = `Connect to ${sourceId} database at ${values.host}:${port}/${values.database}`;
+        const connStr = `${sourceId === 'postgresql' ? 'postgresql' : 'mysql'}://${values.username}:${values.password}@${values.host}:${port}/${values.database}`;
+
+        const result = await importDataSource({
+          type: 'database',
+          connection_string: connStr,
+          query: `SELECT * FROM shipments`, // Default query — user can refine via NL
+        });
+
+        if (result.status === 'error') {
+          throw new Error(result.error || 'Import failed');
+        }
+
+        setDataSource({
+          type: 'database',
+          status: 'connected',
+          row_count: result.row_count,
+          column_count: result.columns.length,
+          columns: result.columns.map(c => ({
+            name: c.name,
+            type: c.type as any,
+            nullable: c.nullable,
+            warnings: [],
+          })),
+          connected_at: new Date().toISOString(),
+        });
+
+        setStates(prev => ({
+          ...prev,
+          [sourceId]: {
+            isConnected: true,
+            isConnecting: false,
+            lastImported: new Date().toLocaleString(),
+            rowCount: result.row_count,
+            error: null,
+          },
+        }));
       } else {
-        // External platform connection
-        command = `Connect to ${source.name}`;
+        // External platform connection — keep existing behavior via commands
+        let command = `Connect to ${source.name}`;
         if (values.store_url) {
           command += ` store ${values.store_url}`;
         }
+
+        const response = await fetch('/api/v1/commands', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || 'Command failed');
+        }
+
+        const result = await response.json();
+
+        setStates(prev => ({
+          ...prev,
+          [sourceId]: {
+            isConnected: true,
+            isConnecting: false,
+            lastImported: new Date().toLocaleString(),
+            rowCount: result.row_count,
+            error: null,
+          },
+        }));
       }
-
-      // Send command to orchestration agent via API
-      const response = await fetch('/api/v1/commands', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command }),
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail || 'Command failed');
-      }
-
-      const result = await response.json();
-
-      // Update state based on result
-      setStates(prev => ({
-        ...prev,
-        [sourceId]: {
-          isConnected: true,
-          isConnecting: false,
-          lastImported: new Date().toLocaleString(),
-          rowCount: result.row_count,
-          error: null,
-        },
-      }));
     } catch (err) {
       setStates(prev => ({
         ...prev,

@@ -29,6 +29,13 @@ from sqlalchemy.orm import Session
 
 from src.db.models import Job, JobRow, RowStatus
 from src.services.batch_engine import BatchEngine
+from src.services.column_mapping import (
+    apply_mapping,
+    auto_map_columns,
+    translate_service_name,
+    validate_mapping,
+)
+from src.services.data_source_service import DataSourceService
 from src.services.ups_payload_builder import build_shipper_from_env
 from src.services.ups_service import UPSService
 from src.mcp.external_sources.models import ExternalOrder, OrderFilters
@@ -187,6 +194,31 @@ SHOPIFY_ORDER_SCHEMA = [
         sample_values=[1, 3, 5, 10],
     ),
 ]
+
+
+def _duckdb_type_to_column_type(duckdb_type: str) -> str:
+    """Map DuckDB column types to ColumnInfo type strings.
+
+    Args:
+        duckdb_type: DuckDB type string (e.g., 'VARCHAR', 'BIGINT', 'DOUBLE').
+
+    Returns:
+        ColumnInfo-compatible type string (e.g., 'string', 'integer', 'numeric').
+    """
+    upper = duckdb_type.upper()
+    if upper in ("VARCHAR", "TEXT", "CHAR"):
+        return "string"
+    elif upper in ("BIGINT", "INTEGER", "SMALLINT", "TINYINT", "HUGEINT"):
+        return "integer"
+    elif upper in ("DOUBLE", "FLOAT", "REAL", "DECIMAL", "NUMERIC"):
+        return "numeric"
+    elif upper in ("DATE",):
+        return "date"
+    elif upper in ("TIMESTAMP", "TIMESTAMPTZ", "TIMESTAMP WITH TIME ZONE"):
+        return "datetime"
+    elif upper in ("BOOLEAN",):
+        return "boolean"
+    return "string"
 
 
 # Build column type registry from schema for evaluator dispatch
@@ -655,6 +687,9 @@ class CommandProcessor:
     ) -> None:
         """Internal processing logic.
 
+        Routes to local data source path or Shopify path based on
+        what data source is currently connected.
+
         Args:
             db: Database session.
             job_id: The job UUID.
@@ -664,6 +699,236 @@ class CommandProcessor:
         if not job:
             logger.error("Job not found: %s", job_id)
             return
+
+        # Check if a local data source is active
+        ds_service = DataSourceService.get_instance()
+        source_info = ds_service.get_source_info()
+
+        if source_info is not None:
+            logger.info(
+                "Local data source active (%s, %d rows) — using local path",
+                source_info.source_type,
+                source_info.row_count,
+            )
+            await self._process_local_source(db, job, command, ds_service, source_info)
+            return
+
+        # Fall back to Shopify path
+        await self._process_shopify_source(db, job, command)
+
+    async def _process_local_source(
+        self,
+        db: Session,
+        job: Any,
+        command: str,
+        ds_service: DataSourceService,
+        source_info: Any,
+    ) -> None:
+        """Process command against a local data source (CSV/Excel/DB).
+
+        Steps:
+        1. Parse intent from NL command
+        2. Build schema from source columns
+        3. Generate SQL filter
+        4. Fetch filtered rows from DuckDB
+        5. Auto-map columns to UPS fields
+        6. Create JobRows with mapped order_data
+        7. Rate via BatchEngine.preview()
+
+        Args:
+            db: Database session.
+            job: The Job ORM object.
+            command: The NL command.
+            ds_service: The DataSourceService instance.
+            source_info: DataSourceInfo with schema and metadata.
+        """
+        job_id = job.id
+
+        # Step 1: Parse intent
+        logger.info("Parsing intent for job %s: %s", job_id, command[:50])
+        try:
+            intent = parse_intent(command)
+            logger.info(
+                "Parsed intent: action=%s, service=%s, filter=%s",
+                intent.action,
+                intent.service_code,
+                intent.filter_criteria,
+            )
+        except IntentParseError as e:
+            logger.warning("Intent parse error for job %s: %s", job_id, e.message)
+            job.error_code = "E-4002"
+            job.error_message = f"Could not understand command: {e.message}"
+            if e.suggestions:
+                job.error_message += f"\nTry: {', '.join(e.suggestions)}"
+            db.commit()
+            return
+
+        # Step 2: Build dynamic schema from source columns
+        # Get sample rows for context (helps LLM ground the filter)
+        sample_rows = await ds_service.get_rows_by_filter(where_clause=None, limit=5)
+        local_schema: list[ColumnInfo] = []
+        for col in source_info.columns:
+            # Map DuckDB types to ColumnInfo types
+            col_type = _duckdb_type_to_column_type(col.type)
+            # Get sample values from sample rows
+            samples = [
+                row.get(col.name)
+                for row in sample_rows
+                if row.get(col.name) is not None
+            ][:3]
+            local_schema.append(
+                ColumnInfo(
+                    name=col.name,
+                    type=col_type,
+                    nullable=col.nullable,
+                    sample_values=samples if samples else None,
+                )
+            )
+
+        # Step 3: Generate SQL filter if filter criteria present
+        filter_result: SQLFilterResult | None = None
+        if intent.filter_criteria and intent.filter_criteria.raw_expression:
+            logger.info(
+                "Generating filter for local source: %s",
+                intent.filter_criteria.raw_expression,
+            )
+            try:
+                filter_result = generate_filter(
+                    intent.filter_criteria.raw_expression,
+                    local_schema,
+                )
+                logger.info("Generated filter: %s", filter_result.where_clause)
+
+                if filter_result.needs_clarification:
+                    questions = filter_result.clarification_questions
+                    job.error_code = "E-4003"
+                    job.error_message = (
+                        "Filter is ambiguous. Please clarify:\n"
+                        + "\n".join(f"- {q}" for q in questions)
+                    )
+                    db.commit()
+                    return
+
+            except FilterGenerationError as e:
+                logger.warning("Filter generation error for job %s: %s", job_id, e)
+                job.error_code = "E-4004"
+                job.error_message = f"Could not create filter: {e.message}"
+                db.commit()
+                return
+
+        # Step 4: Fetch filtered rows from DuckDB
+        where_clause = filter_result.where_clause if filter_result else None
+        try:
+            filtered_rows = await ds_service.get_rows_by_filter(
+                where_clause=where_clause, limit=10000
+            )
+        except Exception as e:
+            logger.error("Filter query failed for job %s: %s", job_id, e)
+            job.error_code = "E-4004"
+            job.error_message = f"Filter query failed: {e}"
+            db.commit()
+            return
+
+        logger.info(
+            "Filtered to %d rows (from %d total)",
+            len(filtered_rows),
+            source_info.row_count,
+        )
+
+        if not filtered_rows:
+            job.error_code = "E-1002"
+            job.error_message = (
+                f"No rows match the filter criteria. "
+                f"Filter: {where_clause or 'none'}"
+            )
+            db.commit()
+            return
+
+        # Step 5: Auto-map columns
+        column_names = [col.name for col in source_info.columns]
+        col_mapping = auto_map_columns(column_names)
+        logger.info("Auto-mapped %d columns: %s", len(col_mapping), col_mapping)
+
+        # Validate mapping has required fields
+        mapping_errors = validate_mapping(col_mapping)
+        if mapping_errors:
+            logger.warning(
+                "Column mapping validation warnings for job %s: %s",
+                job_id,
+                mapping_errors,
+            )
+            # Continue anyway — some fields may not be mappable but we'll
+            # let the payload builder handle missing fields downstream
+
+        # Step 6: Determine service code
+        service_code = intent.service_code.value if intent.service_code else None
+
+        # Step 7: Create JobRows with mapped order_data
+        logger.info("Creating %d job rows for job %s", len(filtered_rows), job_id)
+
+        for i, raw_row in enumerate(filtered_rows, start=1):
+            # Apply column mapping to get canonical order_data
+            order_data = apply_mapping(col_mapping, raw_row)
+
+            # Handle service code: from intent or from row data
+            if service_code:
+                order_data["service_code"] = service_code
+            elif "service_code" in order_data:
+                # Translate service name to code (e.g., "Ground" → "03")
+                order_data["service_code"] = translate_service_name(
+                    str(order_data["service_code"])
+                )
+            else:
+                order_data["service_code"] = "03"  # Default to Ground
+
+            # Use row number from source if available
+            row_number = raw_row.get("_row_number", i)
+
+            # Compute checksum from raw row data (excluding _row_number)
+            checksum_data = {
+                k: v for k, v in raw_row.items() if k != "_row_number"
+            }
+            checksum_json = json.dumps(checksum_data, sort_keys=True, default=str)
+            checksum = hashlib.sha256(checksum_json.encode("utf-8")).hexdigest()
+
+            row = JobRow(
+                job_id=job_id,
+                row_number=int(row_number),
+                row_checksum=checksum,
+                status=RowStatus.pending.value,
+                cost_cents=0,
+                order_data=json.dumps(order_data, default=str),
+            )
+            db.add(row)
+
+        # Step 8: Rate via UPS
+        db.flush()
+        await self._rate_job_rows(db, job_id, service_code or "03")
+
+        # Step 9: Set total_rows and commit
+        job.total_rows = len(filtered_rows)
+        db.commit()
+
+        logger.info(
+            "Successfully processed local source command for job %s: %d rows created",
+            job_id,
+            len(filtered_rows),
+        )
+
+    async def _process_shopify_source(
+        self,
+        db: Session,
+        job: Any,
+        command: str,
+    ) -> None:
+        """Process command against Shopify (original path).
+
+        Args:
+            db: Database session.
+            job: The Job ORM object.
+            command: The NL command.
+        """
+        job_id = job.id
 
         # Step 1: Parse intent
         logger.info("Parsing intent for job %s: %s", job_id, command[:50])
@@ -723,7 +988,8 @@ class CommandProcessor:
             logger.warning("Shopify not connected for job %s", job_id)
             job.error_code = "E-5002"
             job.error_message = (
-                "Shopify not connected. Please connect Shopify first in Data Sources."
+                "No data source connected. Please import a CSV/Excel file "
+                "or connect Shopify in Data Sources."
             )
             db.commit()
             return
@@ -784,9 +1050,33 @@ class CommandProcessor:
             )
             db.add(row)
 
-        # Step 5b: Flush rows (assigns IDs) then rate via UPS MCP
+        # Step 5b: Rate via UPS
         db.flush()
+        await self._rate_job_rows(db, job_id, service_code)
 
+        # Step 6: Set total_rows and commit (frontend sees preview is ready)
+        job.total_rows = len(filtered_orders)
+        db.commit()
+
+        logger.info(
+            "Successfully processed command for job %s: %d rows created",
+            job_id,
+            len(filtered_orders),
+        )
+
+    async def _rate_job_rows(
+        self,
+        db: Session,
+        job_id: str,
+        service_code: str,
+    ) -> None:
+        """Rate all rows in a job via UPS BatchEngine.preview().
+
+        Args:
+            db: Database session.
+            job_id: The job UUID.
+            service_code: UPS service code for rating.
+        """
         try:
             ups_service = UPSService(
                 base_url=os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com"),
@@ -831,19 +1121,10 @@ class CommandProcessor:
                 e,
             )
 
-        # Step 6: Set total_rows and commit (frontend sees preview is ready)
-        job.total_rows = len(filtered_orders)
-        db.commit()
-
-        logger.info(
-            "Successfully processed command for job %s: %d rows created",
-            job_id,
-            len(filtered_orders),
-        )
-
 __all__ = [
     "CommandProcessor",
     "SHOPIFY_ORDER_SCHEMA",
     "compute_order_checksum",
     "apply_filter_to_orders",
+    "_duckdb_type_to_column_type",
 ]

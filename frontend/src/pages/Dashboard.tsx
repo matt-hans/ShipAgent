@@ -69,6 +69,8 @@ function ShipmentsView() {
 
   // Label preview modal state
   const [previewTrackingNumber, setPreviewTrackingNumber] = React.useState<string | null>(null);
+  const [previewJobId, setPreviewJobId] = React.useState<string | undefined>(undefined);
+  const [previewRowNumber, setPreviewRowNumber] = React.useState<number | undefined>(undefined);
 
   // Load command history on mount
   React.useEffect(() => {
@@ -166,14 +168,18 @@ function ShipmentsView() {
     setPreviewTrackingNumber(null);
   };
 
-  // Open label preview modal
-  const handlePreviewLabel = (trackingNumber: string) => {
+  // Open label preview modal (with optional per-row context for non-unique tracking)
+  const handlePreviewLabel = (trackingNumber: string, jobId?: string, rowNumber?: number) => {
     setPreviewTrackingNumber(trackingNumber);
+    setPreviewJobId(jobId);
+    setPreviewRowNumber(rowNumber);
   };
 
   // Close label preview modal
   const handleClosePreview = () => {
     setPreviewTrackingNumber(null);
+    setPreviewJobId(undefined);
+    setPreviewRowNumber(undefined);
   };
 
   // Cancel handler
@@ -323,6 +329,8 @@ function ShipmentsView() {
       {previewTrackingNumber && (
         <LabelPreview
           trackingNumber={previewTrackingNumber}
+          jobId={previewJobId}
+          rowNumber={previewRowNumber}
           isOpen={true}
           onClose={handleClosePreview}
         />

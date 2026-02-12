@@ -439,20 +439,36 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
 
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1 min-w-0">
-              {fullJob.name?.includes(' → ') ? (
-                <>
-                  <h2 className="text-lg font-medium text-slate-100 truncate">
-                    {fullJob.name.split(' → ')[0]}
-                  </h2>
-                  <p className="text-sm text-primary/80 truncate mt-0.5">
-                    → {fullJob.name.split(' → ').slice(1).join(' → ')}
-                  </p>
-                </>
-              ) : (
-                <h2 className="text-lg font-medium text-slate-100 truncate">
-                  {fullJob.name?.startsWith('Command: ') ? fullJob.name.slice(9) : fullJob.original_command || fullJob.name}
-                </h2>
-              )}
+              {(() => {
+                if (!fullJob.name?.includes(' → ')) {
+                  return (
+                    <h2 className="text-lg font-medium text-slate-100 truncate">
+                      {fullJob.name?.startsWith('Command: ') ? fullJob.name.slice(9) : fullJob.original_command || fullJob.name}
+                    </h2>
+                  );
+                }
+                const parts = fullJob.name.split(' → ');
+                const base = parts[0];
+                const refs = parts.slice(1);
+                const maxVisible = 3;
+                const visible = refs.slice(0, maxVisible);
+                const overflow = refs.length - maxVisible;
+                return (
+                  <>
+                    <h2 className="text-lg font-medium text-slate-100 truncate">{base}</h2>
+                    {visible.map((r, i) => (
+                      <p key={i} className="text-sm text-primary/80 truncate mt-0.5">
+                        &rarr; {r}
+                      </p>
+                    ))}
+                    {overflow > 0 && (
+                      <p className="text-xs text-slate-500 italic mt-0.5">
+                        +{overflow} more refinement{overflow !== 1 ? 's' : ''}
+                      </p>
+                    )}
+                  </>
+                );
+              })()}
               <p className="text-[10px] font-mono text-slate-500 mt-1">
                 {formatDate(fullJob.created_at)} · Job {fullJob.id.slice(0, 8)}
               </p>

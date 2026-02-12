@@ -30,6 +30,10 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 export interface LabelPreviewProps {
   /** The UPS tracking number for the label (used for single-label view). */
   trackingNumber?: string;
+  /** Job ID for per-row label access (handles non-unique tracking numbers). */
+  jobId?: string;
+  /** Row number within the job for per-row label access. */
+  rowNumber?: number;
   /** Direct PDF URL (used for merged labels or custom sources). */
   pdfUrl?: string;
   /** Title displayed in the modal header. */
@@ -74,6 +78,8 @@ function ErrorState({ message }: { message: string }) {
  */
 export function LabelPreview({
   trackingNumber,
+  jobId,
+  rowNumber,
   pdfUrl: pdfUrlProp,
   title,
   isOpen,
@@ -85,8 +91,11 @@ export function LabelPreview({
   const [containerWidth, setContainerWidth] = React.useState<number>(500);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
-  // Resolve PDF URL: explicit pdfUrl prop takes priority over trackingNumber
-  const resolvedPdfUrl = pdfUrlProp || (trackingNumber ? `/api/v1/labels/${trackingNumber}` : '');
+  // Resolve PDF URL: explicit pdfUrl > per-row endpoint > tracking number fallback
+  // Per-row endpoint handles non-unique tracking numbers (UPS sandbox)
+  const resolvedPdfUrl = pdfUrlProp
+    || (jobId && rowNumber != null ? `/api/v1/jobs/${jobId}/labels/${rowNumber}` : '')
+    || (trackingNumber ? `/api/v1/labels/${trackingNumber}` : '');
 
   // Observe container width for responsive PDF scaling
   React.useEffect(() => {

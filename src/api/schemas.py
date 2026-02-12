@@ -6,6 +6,7 @@ including job management and audit log export endpoints.
 
 from datetime import date
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -193,7 +194,7 @@ class CommandSubmit(BaseModel):
 
     command: str = Field(..., min_length=1, description="Natural language shipping command")
     base_command: str | None = Field(None, description="Original command before refinement (if this is a refinement)")
-    refinement: str | None = Field(None, description="The refinement instruction applied (if this is a refinement)")
+    refinements: list[str] | None = Field(None, description="Ordered list of refinement instructions applied")
 
 
 class CommandSubmitResponse(BaseModel):
@@ -261,3 +262,51 @@ class ConfirmResponse(BaseModel):
 
     status: str
     message: str
+
+
+# Data source schemas
+
+
+class DataSourceImportRequest(BaseModel):
+    """Request schema for importing a local data source."""
+
+    type: Literal["csv", "excel", "database"] = Field(
+        ..., description="Data source type"
+    )
+    file_path: str | None = Field(
+        None, description="Path to CSV or Excel file on server"
+    )
+    delimiter: str = Field(",", description="CSV delimiter character")
+    sheet: str | None = Field(None, description="Excel sheet name (default: first)")
+    connection_string: str | None = Field(
+        None, description="Database connection URL"
+    )
+    query: str | None = Field(None, description="SQL query for database import")
+
+
+class DataSourceColumnInfo(BaseModel):
+    """Column metadata from schema discovery."""
+
+    name: str
+    type: str
+    nullable: bool
+
+
+class DataSourceImportResponse(BaseModel):
+    """Response schema for a successful data source import."""
+
+    status: str = Field(..., description="'connected' or 'error'")
+    source_type: str
+    row_count: int
+    columns: list[DataSourceColumnInfo]
+    error: str | None = None
+
+
+class DataSourceStatusResponse(BaseModel):
+    """Response schema for data source connection status."""
+
+    connected: bool
+    source_type: str | None = None
+    file_path: str | None = None
+    row_count: int | None = None
+    columns: list[DataSourceColumnInfo] | None = None

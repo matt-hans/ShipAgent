@@ -503,6 +503,36 @@ export interface TrackingUpdateResponse {
   error?: string;
 }
 
+// === Data Source Import/Status API Types ===
+
+/** Request for importing a local data source. */
+export interface DataSourceImportRequest {
+  type: 'csv' | 'excel' | 'database';
+  file_path?: string;
+  delimiter?: string;
+  sheet?: string;
+  connection_string?: string;
+  query?: string;
+}
+
+/** Response from a data source import operation. */
+export interface DataSourceImportResponse {
+  status: 'connected' | 'error';
+  source_type: string;
+  row_count: number;
+  columns: { name: string; type: string; nullable: boolean }[];
+  error?: string;
+}
+
+/** Status of the currently connected data source. */
+export interface DataSourceStatusResponse {
+  connected: boolean;
+  source_type?: string;
+  file_path?: string;
+  row_count?: number;
+  columns?: { name: string; type: string; nullable: boolean }[];
+}
+
 /** Shopify environment status response. */
 export interface ShopifyEnvStatus {
   /** True if both SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN are set */

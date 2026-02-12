@@ -115,14 +115,21 @@ def download_labels_zip(
             detail="No labels available for this job",
         )
 
-    # Collect valid label paths
+    # Collect valid label paths with unique archive names
     label_paths: list[tuple[str, str]] = []  # (file_path, archive_name)
+    seen_names: set[str] = set()
     for row in rows:
         if row.label_path:
             path = Path(row.label_path)
             if path.exists():
-                # Use tracking number or row number for archive name
-                name = f"{row.tracking_number}.pdf" if row.tracking_number else f"row_{row.row_number}.pdf"
+                # Build archive name with row number prefix for uniqueness
+                # (tracking numbers may collide in UPS sandbox)
+                tracking = row.tracking_number or "unknown"
+                name = f"row{row.row_number:03d}_{tracking}.pdf"
+                # Ensure uniqueness even in unexpected edge cases
+                if name in seen_names:
+                    name = f"row{row.row_number:03d}_{tracking}_{row.id[:8]}.pdf"
+                seen_names.add(name)
                 label_paths.append((str(path), name))
 
     if not label_paths:
@@ -222,4 +229,59 @@ def download_labels_merged(
         headers={
             "Content-Disposition": f'inline; filename="labels-{job_id[:8]}.pdf"'
         },
+    )
+
+
+@router.get("/jobs/{job_id}/labels/{row_number}")
+def get_label_by_row(
+    job_id: str,
+    row_number: int,
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Download an individual label by job ID and row number.
+
+    Provides unambiguous label access when tracking numbers are non-unique
+    (e.g. UPS sandbox returns the same masked tracking number for all rows).
+
+    Args:
+        job_id: The job UUID.
+        row_number: 1-based row number within the job.
+        db: Database session dependency.
+
+    Returns:
+        FileResponse with the PDF label file.
+
+    Raises:
+        HTTPException: If job/row not found (404) or label file missing (404).
+    """
+    row = (
+        db.query(JobRow)
+        .filter(JobRow.job_id == job_id, JobRow.row_number == row_number)
+        .first()
+    )
+
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Row {row_number} not found in job {job_id}",
+        )
+
+    if not row.label_path:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No label available for row {row_number} in job {job_id}",
+        )
+
+    label_path = Path(row.label_path)
+    if not label_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Label file not found for row {row_number} in job {job_id}",
+        )
+
+    tracking = row.tracking_number or f"row_{row_number}"
+    return FileResponse(
+        path=str(label_path),
+        media_type="application/pdf",
+        filename=f"{tracking}_row{row_number}.pdf",
     )

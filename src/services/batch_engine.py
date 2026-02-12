@@ -205,12 +205,15 @@ class BatchEngine:
                     if not tracking_number or "XXXX" in tracking_number:
                         tracking_number = result.get("shipmentIdentificationNumber", tracking_number)
 
-                    # Save label
+                    # Save label with unique filename per row
                     label_path = ""
                     label_data_list = result.get("labelData", [])
                     if label_data_list and label_data_list[0]:
                         label_path = self._save_label(
-                            tracking_number, label_data_list[0],
+                            tracking_number,
+                            label_data_list[0],
+                            job_id=job_id,
+                            row_number=row.row_number,
                         )
 
                     # Cost in cents
@@ -236,6 +239,20 @@ class BatchEngine:
                                 tracking_number=tracking_number,
                                 cost_cents=cost_cents,
                             )
+
+                    # Write-back tracking number to source file (best-effort)
+                    try:
+                        from src.services.data_source_service import DataSourceService
+
+                        ds_svc = DataSourceService.get_instance()
+                        if ds_svc.get_source_info() is not None and tracking_number:
+                            await ds_svc.write_back(row.row_number, tracking_number)
+                    except Exception as wb_err:
+                        logger.debug(
+                            "Write-back skipped for row %d: %s",
+                            row.row_number,
+                            wb_err,
+                        )
 
                     logger.info(
                         "Row %d completed: tracking=%s, cost=%d cents",
@@ -294,12 +311,24 @@ class BatchEngine:
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid order_data JSON on row {row.row_number}: {e}")
 
-    def _save_label(self, tracking_number: str, base64_data: str) -> str:
-        """Save base64-encoded label to disk.
+    def _save_label(
+        self,
+        tracking_number: str,
+        base64_data: str,
+        job_id: str = "",
+        row_number: int = 0,
+    ) -> str:
+        """Save base64-encoded label to disk with unique filename per row.
+
+        Uses job_id prefix and row_number to guarantee unique filenames even
+        when the UPS sandbox returns identical tracking numbers for all
+        shipments (e.g. "1ZXXXXXXXXXXXXXXXX").
 
         Args:
-            tracking_number: Used for filename
+            tracking_number: UPS tracking number (may not be unique in sandbox)
             base64_data: Base64-encoded PDF label
+            job_id: Job UUID for filename uniqueness
+            row_number: 1-based row number within the job
 
         Returns:
             Absolute path to saved label file
@@ -307,7 +336,10 @@ class BatchEngine:
         labels_dir = Path(self._labels_dir)
         labels_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"{tracking_number}.pdf"
+        # Use job_id prefix + row_number to guarantee unique filenames
+        # even when UPS sandbox returns the same tracking number for all rows
+        job_prefix = job_id[:8] if job_id else "unknown"
+        filename = f"{job_prefix}_row{row_number:03d}_{tracking_number}.pdf"
         filepath = labels_dir / filename
 
         pdf_bytes = base64.b64decode(base64_data)
