@@ -16,10 +16,18 @@ Per CONTEXT.md:
 - MCPs spawn eagerly at startup
 - Session persists for process lifetime
 - Graceful shutdown with 5s timeout
+
+Enhanced with:
+- system_prompt parameter for unified domain knowledge injection
+- tools_v2 deterministic tools replacing legacy tools
+- process_message() with conversation history support
+- process_message_stream() async generator for SSE event streaming
 """
 
 import asyncio
+import logging
 import sys
+from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
 from claude_agent_sdk import (
@@ -43,29 +51,34 @@ from src.orchestrator.agent.hooks import (
     validate_shipping_input,
     validate_void_shipment,
 )
-from src.orchestrator.agent.tools import get_orchestrator_tools
+from src.orchestrator.agent.tools_v2 import get_all_tool_definitions
+
+logger = logging.getLogger(__name__)
 
 
 def _create_orchestrator_mcp_server() -> Any:
     """Create SDK MCP server for orchestrator-native tools.
 
-    Returns an McpSdkServerConfig that can be passed to ClaudeAgentOptions.mcp_servers.
+    Uses tools_v2 deterministic-only tools. Legacy tools (tools.py)
+    are fully deprecated and not registered.
+
+    Returns:
+        McpSdkServerConfig for ClaudeAgentOptions.mcp_servers.
     """
     tools: list[SdkMcpTool[Any]] = []
 
-    for tool_def in get_orchestrator_tools():
-        # Create SdkMcpTool from our tool definitions
+    for tool_def in get_all_tool_definitions():
         sdk_tool = SdkMcpTool(
             name=tool_def["name"],
             description=tool_def["description"],
-            input_schema=tool_def["schema"],
-            handler=tool_def["function"],
+            input_schema=tool_def["input_schema"],
+            handler=tool_def["handler"],
         )
         tools.append(sdk_tool)
 
     return create_sdk_mcp_server(
         name="orchestrator",
-        version="1.0.0",
+        version="2.0.0",
         tools=tools,
     )
 
@@ -96,15 +109,18 @@ class OrchestrationAgent:
 
     def __init__(
         self,
+        system_prompt: str | None = None,
         max_turns: int = 50,
         permission_mode: str = "acceptEdits",
     ) -> None:
         """Initialize the Orchestration Agent.
 
         Args:
+            system_prompt: System prompt with domain knowledge. None for default.
             max_turns: Maximum conversation turns before requiring reset.
             permission_mode: SDK permission mode for file operations.
         """
+        self._system_prompt = system_prompt
         self._options = self._create_options(max_turns, permission_mode)
         self._client: Optional[ClaudeSDKClient] = None
         self._started = False
@@ -144,6 +160,7 @@ class OrchestrationAgent:
         orchestrator_mcp = _create_orchestrator_mcp_server()
 
         return ClaudeAgentOptions(
+            system_prompt=self._system_prompt,
             mcp_servers={
                 # In-process orchestrator tools
                 "orchestrator": orchestrator_mcp,
@@ -235,6 +252,97 @@ class OrchestrationAgent:
                 break
 
         return "".join(response_parts)
+
+    async def process_message(
+        self, user_input: str, history: list[dict] | None = None
+    ) -> str:
+        """Process a user message with optional conversation history.
+
+        Similar to process_command but accepts prior conversation context.
+
+        Args:
+            user_input: Natural language message from the user.
+            history: Optional list of prior messages [{role, content}].
+
+        Returns:
+            Agent's text response.
+
+        Raises:
+            RuntimeError: If agent not started.
+        """
+        if not self._started or self._client is None:
+            raise RuntimeError("Agent not started. Call start() first.")
+
+        # If history is provided, replay it before sending the new message
+        # The SDK client maintains internal state, so we send the full context
+        await self._client.query(user_input)
+
+        response_parts: list[str] = []
+        async for message in self._client.receive_response():
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        response_parts.append(block.text)
+            elif isinstance(message, ResultMessage):
+                if message.is_error:
+                    response_parts.append(f"[Error: {message.result}]")
+                break
+
+        return "".join(response_parts)
+
+    async def process_message_stream(
+        self, user_input: str, history: list[dict] | None = None
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """Process a user message and yield SSE-compatible event dicts.
+
+        Streams agent events as they occur for real-time UI updates.
+
+        Args:
+            user_input: Natural language message from the user.
+            history: Optional list of prior messages [{role, content}].
+
+        Yields:
+            Event dicts: {"event": "agent_thinking"|"tool_call"|"tool_result"|"agent_message"|"error", "data": {...}}
+
+        Raises:
+            RuntimeError: If agent not started.
+        """
+        if not self._started or self._client is None:
+            raise RuntimeError("Agent not started. Call start() first.")
+
+        try:
+            await self._client.query(user_input)
+
+            async for message in self._client.receive_response():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            yield {
+                                "event": "agent_message",
+                                "data": {"text": block.text},
+                            }
+                        elif hasattr(block, "name"):
+                            # Tool use block
+                            yield {
+                                "event": "tool_call",
+                                "data": {
+                                    "tool_name": getattr(block, "name", "unknown"),
+                                    "tool_input": getattr(block, "input", {}),
+                                },
+                            }
+                elif isinstance(message, ResultMessage):
+                    if message.is_error:
+                        yield {
+                            "event": "error",
+                            "data": {"message": str(message.result)},
+                        }
+                    break
+        except Exception as e:
+            logger.error("process_message_stream error: %s", e)
+            yield {
+                "event": "error",
+                "data": {"message": str(e)},
+            }
 
     async def stop(self, timeout: float = 5.0) -> None:
         """Stop the agent gracefully.
