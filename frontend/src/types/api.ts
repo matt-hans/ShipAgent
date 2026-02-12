@@ -174,27 +174,6 @@ export interface JobRow {
   processed_at: string | null;
 }
 
-// === Command Types ===
-
-/** Request schema for submitting a command. */
-export interface CommandSubmit {
-  command: string;
-}
-
-/** Response from command submission. */
-export interface CommandSubmitResponse {
-  job_id: string;
-  status: string;
-}
-
-/** Command history entry. */
-export interface CommandHistoryItem {
-  id: string;
-  command: string;
-  status: JobStatus;
-  created_at: string;
-}
-
 // === Preview Types ===
 
 /** Full order data for expanded shipment view. */

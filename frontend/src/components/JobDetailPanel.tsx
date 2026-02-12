@@ -6,7 +6,7 @@
  */
 
 import * as React from 'react';
-import { getJob, getJobRows, getMergedLabelsUrl, confirmJob, cancelJob, refineJob } from '@/lib/api';
+import { getJob, getJobRows, getMergedLabelsUrl, confirmJob, cancelJob } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import { useAppState } from '@/hooks/useAppState';
@@ -275,7 +275,7 @@ function RowDetailItem({ row }: { row: JobRow }) {
  * from the sidebar history.
  */
 export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
-  const { refreshJobList, setActiveJob } = useAppState();
+  const { refreshJobList } = useAppState();
   const [fullJob, setFullJob] = React.useState<Job>(job);
   const [rows, setRows] = React.useState<JobRow[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
@@ -286,8 +286,7 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [showRefinement, setShowRefinement] = React.useState(false);
   const [refinementInput, setRefinementInput] = React.useState('');
-  const [isRefining, setIsRefining] = React.useState(false);
-  const [refinementHistory, setRefinementHistory] = React.useState<string[]>([]);
+  const isRefining = false;
 
   // Track progress via SSE when executing
   const { progress } = useJobProgress(executingJobId);
@@ -379,44 +378,14 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
     }
   };
 
-  /** Refine the pending batch with a natural language modification. */
+  /** Refine the pending batch — refinement is now handled via the conversation flow. */
   const handleRefine = async () => {
     if (!refinementInput.trim() || isRefining) return;
 
-    setIsRefining(true);
-    setActionError(null);
-    const previousJobId = fullJob.id;
-
-    try {
-      const { jobId, preview } = await refineJob(
-        fullJob.original_command || fullJob.name,
-        refinementHistory,
-        refinementInput.trim(),
-        previousJobId,
-      );
-
-      // Track refinement history
-      setRefinementHistory((prev) => [...prev, refinementInput.trim()]);
-      setRefinementInput('');
-      setShowRefinement(false);
-
-      // Refresh with new job data
-      const [newJob, newRows] = await Promise.all([getJob(jobId), getJobRows(jobId)]);
-      setFullJob(newJob);
-      setRows(newRows);
-
-      // Update parent state so sidebar reflects the new job
-      setActiveJob(newJob);
-      refreshJobList();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : 'Refinement failed');
-    } finally {
-      setIsRefining(false);
-    }
+    setActionError('Refinement is handled via the chat conversation. Type your refinement in the command center.');
   };
 
   const isPending = fullJob.status === 'pending';
-  const isRunning = fullJob.status === 'running' || !!executingJobId;
   const isCompleted = fullJob.status === 'completed';
   const isCancelled = fullJob.status === 'cancelled';
 
@@ -699,15 +668,6 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
                   )}
                 </button>
               </div>
-              {refinementHistory.length > 0 && (
-                <div className="flex flex-wrap gap-1.5">
-                  {refinementHistory.map((r, i) => (
-                    <span key={i} className="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20">
-                      {r}
-                    </span>
-                  ))}
-                </div>
-              )}
             </div>
           )}
 

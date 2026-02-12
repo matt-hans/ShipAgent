@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import commands, conversations, data_sources, jobs, labels, logs, platforms, preview, progress, saved_data_sources
+from src.api.routes import conversations, data_sources, jobs, labels, logs, platforms, preview, progress, saved_data_sources
 from src.db.connection import init_db
 from src.errors import ShipAgentError
 
@@ -80,7 +80,6 @@ async def shipagent_error_handler(
 # Include routers
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(logs.router, prefix="/api/v1")
-app.include_router(commands.router, prefix="/api/v1")
 app.include_router(data_sources.router, prefix="/api/v1")
 app.include_router(labels.router, prefix="/api/v1")
 app.include_router(preview.router, prefix="/api/v1")
