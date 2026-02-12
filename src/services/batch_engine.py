@@ -106,6 +106,7 @@ class BatchEngine:
                 simplified, account_number=self._account_number,
             )
 
+            rate_error: str | None = None
             try:
                 rate_result = await asyncio.to_thread(
                     self._ups.get_rate, request_body=rate_payload,
@@ -115,15 +116,19 @@ class BatchEngine:
             except UPSServiceError as e:
                 logger.warning("Rate quote failed for row %s: %s", row.row_number, e)
                 cost_cents = 0
+                rate_error = str(e)
 
             total_cost_cents += cost_cents
 
-            preview_rows.append({
+            row_info: dict[str, Any] = {
                 "row_number": row.row_number,
                 "recipient_name": order_data.get("ship_to_name", f"Row {row.row_number}"),
                 "city_state": f"{order_data.get('ship_to_city', '')}, {order_data.get('ship_to_state', '')}",
                 "estimated_cost_cents": cost_cents,
-            })
+            }
+            if rate_error:
+                row_info["rate_error"] = rate_error
+            preview_rows.append(row_info)
 
         # Estimate remaining rows from average
         additional_rows = max(0, len(rows) - len(preview_rows))

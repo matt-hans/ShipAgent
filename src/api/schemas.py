@@ -251,6 +251,12 @@ class BatchPreviewResponse(BaseModel):
     )
 
 
+class SkipRowsRequest(BaseModel):
+    """Request schema for marking specific rows as skipped before execution."""
+
+    row_numbers: list[int] = Field(..., min_length=1, description="Row numbers to skip")
+
+
 class ConfirmRequest(BaseModel):
     """Request schema for confirming a batch for execution."""
 

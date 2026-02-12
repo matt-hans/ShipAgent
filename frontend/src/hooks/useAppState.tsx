@@ -11,6 +11,9 @@
 import * as React from 'react';
 import type { Job, DataSourceInfo } from '@/types/api';
 
+/** Warning row handling preference, persisted in localStorage. */
+type WarningPreference = 'ask' | 'ship-all' | 'skip-warnings';
+
 /** Identifies which data source type is currently active for command routing. */
 type ActiveSourceType = 'local' | 'shopify' | null;
 
@@ -61,6 +64,11 @@ interface ConversationMessage {
       successful: number;
       failed: number;
       totalCostCents: number;
+      rowFailures?: Array<{
+        rowNumber: number;
+        errorCode: string;
+        errorMessage: string;
+      }>;
     };
   };
 }
@@ -100,6 +108,10 @@ interface AppState {
   // Cached local config for reconnect after switching to Shopify
   cachedLocalConfig: CachedLocalConfig | null;
   setCachedLocalConfig: (config: CachedLocalConfig | null) => void;
+
+  // Warning row handling preference
+  warningPreference: WarningPreference;
+  setWarningPreference: (pref: WarningPreference) => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -114,6 +126,15 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [activeSourceType, setActiveSourceType] = React.useState<ActiveSourceType>(null);
   const [activeSourceInfo, setActiveSourceInfo] = React.useState<ActiveSourceInfo | null>(null);
   const [cachedLocalConfig, setCachedLocalConfig] = React.useState<CachedLocalConfig | null>(null);
+  const [warningPreference, setWarningPreferenceState] = React.useState<WarningPreference>(() => {
+    const stored = localStorage.getItem('shipagent_warning_preference');
+    return (stored === 'ship-all' || stored === 'skip-warnings') ? stored : 'ask';
+  });
+
+  const setWarningPreference = React.useCallback((pref: WarningPreference) => {
+    setWarningPreferenceState(pref);
+    localStorage.setItem('shipagent_warning_preference', pref);
+  }, []);
 
   const refreshJobList = React.useCallback(() => {
     setJobListVersion((v) => v + 1);
@@ -155,6 +176,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setActiveSourceInfo,
     cachedLocalConfig,
     setCachedLocalConfig,
+    warningPreference,
+    setWarningPreference,
   };
 
   return (
@@ -172,4 +195,4 @@ export function useAppState() {
   return context;
 }
 
-export type { ConversationMessage, AppState, ActiveSourceType, ActiveSourceInfo, CachedLocalConfig };
+export type { ConversationMessage, AppState, ActiveSourceType, ActiveSourceInfo, CachedLocalConfig, WarningPreference };

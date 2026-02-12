@@ -78,3 +78,6 @@ Claude.md
 *.pdf
 
 test_data/
+uploads/
+
+repomix-output.xml

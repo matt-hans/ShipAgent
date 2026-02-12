@@ -10,6 +10,13 @@ import { useSSE } from './useSSE';
 import { getProgressStreamUrl, getJobProgress } from '@/lib/api';
 import type { JobStatus, ProgressEvent } from '@/types/api';
 
+/** Per-row failure detail. */
+export interface RowFailure {
+  rowNumber: number;
+  errorCode: string;
+  errorMessage: string;
+}
+
 /** Progress state for a job. */
 export interface JobProgressState {
   /** Total number of rows in the batch. */
@@ -29,6 +36,8 @@ export interface JobProgressState {
     code: string;
     message: string;
   } | null;
+  /** All per-row failures accumulated during execution. */
+  rowFailures: RowFailure[];
   /** Row that is currently being processed. */
   currentRow: number | null;
   /** Most recent tracking number from a completed row. */
@@ -55,6 +64,7 @@ const initialState: JobProgressState = {
   totalCostCents: 0,
   status: 'pending',
   error: null,
+  rowFailures: [],
   currentRow: null,
   lastTrackingNumber: null,
 };
@@ -114,6 +124,7 @@ export function useJobProgress(
           totalCostCents: data.total_cost_cents ?? 0,
           status: data.status,
           error: null,
+          rowFailures: [],
           currentRow: null,
           lastTrackingNumber: null,
         });
@@ -148,6 +159,7 @@ export function useJobProgress(
             failed: 0,
             totalCostCents: 0,
             error: null,
+            rowFailures: [],
           }));
           break;
 
@@ -179,6 +191,14 @@ export function useJobProgress(
               code: typedEvent.data.error_code,
               message: typedEvent.data.error_message,
             },
+            rowFailures: [
+              ...prev.rowFailures,
+              {
+                rowNumber: typedEvent.data.row_number,
+                errorCode: typedEvent.data.error_code,
+                errorMessage: typedEvent.data.error_message,
+              },
+            ],
           }));
           break;
 

@@ -206,6 +206,68 @@ def build_ship_to(order_data: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def resolve_packaging_code(raw_value: str | None) -> str:
+    """Resolve a packaging type value to a UPS numeric code.
+
+    Accepts either a numeric code directly (e.g. "02") or a
+    human-readable name (e.g. "Customer Supplied", "PAK").
+
+    Args:
+        raw_value: Packaging type string from order data.
+
+    Returns:
+        UPS packaging type code string. Defaults to "02" (Customer Supplied Package).
+    """
+    if not raw_value:
+        return "02"
+
+    stripped = raw_value.strip()
+
+    # Already a valid numeric code — return as-is
+    if stripped.isdigit() and len(stripped) <= 3:
+        return stripped.zfill(2)
+
+    # Map human-readable names to UPS codes (case-insensitive)
+    packaging_name_map: dict[str, str] = {
+        "ups letter": "01",
+        "letter": "01",
+        "customer supplied package": "02",
+        "customer supplied": "02",
+        "custom": "02",
+        "tube": "03",
+        "ups tube": "03",
+        "pak": "04",
+        "ups pak": "04",
+        "ups express box": "21",
+        "express box": "21",
+        "25kg box": "24",
+        "ups 25kg box": "24",
+        "10kg box": "25",
+        "ups 10kg box": "25",
+        "pallet": "30",
+        "small express box": "2a",
+        "ups small express box": "2a",
+        "medium express box": "2b",
+        "ups medium express box": "2b",
+        "large express box": "2c",
+        "ups large express box": "2c",
+        "flats": "56",
+        "parcels": "57",
+        "bpm": "58",
+        "first class": "59",
+        "priority": "60",
+        "machineables": "61",
+        "irregulars": "62",
+        "parcel post": "63",
+        "bpm parcel": "64",
+        "media mail": "65",
+        "bpm flat": "66",
+        "standard flat": "67",
+    }
+
+    return packaging_name_map.get(stripped.lower(), "02")
+
+
 def build_packages(order_data: dict[str, Any]) -> list[dict[str, Any]]:
     """Build UPS packages from order data.
 
@@ -220,24 +282,39 @@ def build_packages(order_data: dict[str, Any]) -> list[dict[str, Any]]:
     # Check for explicit packages array
     packages = order_data.get("packages", [])
     if packages:
-        return [
-            {
+        result = []
+        for pkg in packages:
+            p: dict[str, Any] = {
                 "weight": float(pkg.get("weight", 1.0)),
                 "length": pkg.get("length"),
                 "width": pkg.get("width"),
                 "height": pkg.get("height"),
-                "packagingType": pkg.get("packaging_type", "02"),
+                "packagingType": resolve_packaging_code(
+                    pkg.get("packaging_type")
+                ),
                 "description": pkg.get("description"),
             }
-            for pkg in packages
-        ]
+            dv = pkg.get("declared_value")
+            if dv is not None:
+                p["declaredValue"] = float(dv)
+            result.append(p)
+        return result
 
     # Single package from order-level fields
-    weight = order_data.get("weight") or order_data.get("total_weight") or 1.0
+    # Check weight keys in priority order, including Shopify's grams field
+    weight = order_data.get("weight") or order_data.get("total_weight")
+    if not weight:
+        weight_grams = order_data.get("total_weight_grams")
+        if weight_grams:
+            weight = float(weight_grams) / 453.592  # Convert grams to lbs
+        else:
+            weight = 1.0
 
     package: dict[str, Any] = {
         "weight": float(weight),
-        "packagingType": order_data.get("packaging_type", "02"),
+        "packagingType": resolve_packaging_code(
+            order_data.get("packaging_type")
+        ),
     }
 
     # Add dimensions if present
@@ -250,13 +327,87 @@ def build_packages(order_data: dict[str, Any]) -> list[dict[str, Any]]:
         package["width"] = float(width)
         package["height"] = float(height)
 
+    # Add declared value if present
+    declared_value = order_data.get("declared_value")
+    if declared_value is not None:
+        package["declaredValue"] = float(declared_value)
+
     return [package]
+
+
+def resolve_service_code(raw_value: str | None, default: str = "03") -> str:
+    """Resolve a service value to a UPS numeric service code.
+
+    Accepts either a numeric code directly (e.g. "03") or a
+    human-readable name (e.g. "Ground", "Next Day Air").
+
+    Args:
+        raw_value: Service code or name string.
+        default: Default service code ("03" = Ground).
+
+    Returns:
+        UPS service code string.
+    """
+    if not raw_value:
+        return default
+
+    stripped = raw_value.strip()
+
+    # Already a valid numeric code
+    if stripped.isdigit():
+        return stripped
+
+    # Map human-readable names to UPS codes (case-insensitive)
+    service_name_map: dict[str, str] = {
+        # Ground
+        "ground": "03",
+        "ups ground": "03",
+        # Next Day Air
+        "next day air": "01",
+        "ups next day air": "01",
+        "next day": "01",
+        "overnight": "01",
+        "express": "01",
+        "nda": "01",
+        # 2nd Day Air
+        "2nd day air": "02",
+        "ups 2nd day air": "02",
+        "2 day": "02",
+        "two day": "02",
+        "second day air": "02",
+        # 3 Day Select
+        "3 day select": "12",
+        "ups 3 day select": "12",
+        "3 day": "12",
+        "three day": "12",
+        # Next Day Air Saver
+        "next day air saver": "13",
+        "ups next day air saver": "13",
+        "nda saver": "13",
+        "saver": "13",
+        # Next Day Air Early
+        "next day air early": "14",
+        "ups next day air early": "14",
+        "next day air early am": "14",
+        "early am": "14",
+        # 2nd Day Air A.M.
+        "2nd day air am": "59",
+        "ups 2nd day air am": "59",
+        "2 day am": "59",
+        "second day air am": "59",
+        # UPS Standard (primarily Canada/Mexico)
+        "standard": "11",
+        "ups standard": "11",
+    }
+
+    return service_name_map.get(stripped.lower(), default)
 
 
 def get_service_code(order_data: dict[str, Any], default: str = "03") -> str:
     """Get UPS service code from order data.
 
-    Maps service names to UPS codes if needed.
+    Checks service_code first, then falls back to service name.
+    Both values are resolved through the name-to-code map.
 
     Args:
         order_data: Order data containing service info
@@ -265,27 +416,17 @@ def get_service_code(order_data: dict[str, Any], default: str = "03") -> str:
     Returns:
         UPS service code string
     """
-    # Check for explicit service code
+    # Check for explicit service code (may be a name or a code)
     service_code = order_data.get("service_code")
     if service_code:
-        return str(service_code)
+        return resolve_service_code(str(service_code), default)
 
-    # Map service names to codes
-    service_name_map = {
-        "ground": "03",
-        "ups ground": "03",
-        "ground saver": "13",
-        "2nd day air": "02",
-        "2 day": "02",
-        "next day air": "01",
-        "next day": "01",
-        "overnight": "01",
-        "3 day select": "12",
-        "3 day": "12",
-    }
+    # Fall back to service name field
+    service_name = order_data.get("service")
+    if service_name:
+        return resolve_service_code(str(service_name), default)
 
-    service_name = order_data.get("service", "").lower().strip()
-    return service_name_map.get(service_name, default)
+    return default
 
 
 def build_shipment_request(
@@ -332,14 +473,102 @@ def build_shipment_request(
     if not description and reference:
         description = f"Order #{reference}"
 
-    return {
+    # Build simplified payload
+    result: dict[str, Any] = {
         "shipper": shipper,
         "shipTo": ship_to,
         "packages": packages,
         "serviceCode": service_code,
         "description": description or "Shipment",
         "reference": str(reference) if reference else None,
+        "reference2": order_data.get("reference2"),
     }
+
+    # Delivery confirmation: 1=Signature Required, 2=Adult Signature Required
+    dc = _resolve_delivery_confirmation(order_data)
+    if dc:
+        result["deliveryConfirmation"] = dc
+
+    # Residential indicator
+    if _is_residential(order_data):
+        result["residential"] = True
+
+    # Saturday delivery
+    if _is_truthy(order_data.get("saturday_delivery")):
+        result["saturdayDelivery"] = True
+
+    return result
+
+
+def _resolve_delivery_confirmation(order_data: dict[str, Any]) -> str | None:
+    """Resolve delivery confirmation type from order data.
+
+    Checks both 'delivery_confirmation' and 'signature_required' fields.
+
+    Args:
+        order_data: Order data dict.
+
+    Returns:
+        DCISType string ("1" or "2") or None if not requested.
+    """
+    # Explicit delivery_confirmation code
+    dc = order_data.get("delivery_confirmation")
+    if dc is not None:
+        val = str(dc).strip().lower()
+        if val in ("1", "2"):
+            return val
+        dc_map = {
+            "signature": "1",
+            "signature required": "1",
+            "sig": "1",
+            "adult": "2",
+            "adult signature": "2",
+            "adult signature required": "2",
+        }
+        return dc_map.get(val)
+
+    # Boolean signature_required field
+    if _is_truthy(order_data.get("signature_required")):
+        return "1"
+
+    # Boolean adult_signature_required field
+    if _is_truthy(order_data.get("adult_signature_required")):
+        return "2"
+
+    return None
+
+
+def _is_residential(order_data: dict[str, Any]) -> bool:
+    """Check if destination is residential from order data.
+
+    Args:
+        order_data: Order data dict.
+
+    Returns:
+        True if residential indicator is set.
+    """
+    return _is_truthy(order_data.get("ship_to_residential")) or _is_truthy(
+        order_data.get("residential")
+    )
+
+
+def _is_truthy(value: Any) -> bool:
+    """Check if a value is truthy, handling string representations.
+
+    Args:
+        value: Value to check.
+
+    Returns:
+        True if value represents a truthy/affirmative value.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    return s in ("true", "yes", "1", "y", "x")
 
 
 def build_ups_api_payload(
@@ -421,6 +650,15 @@ def build_ups_api_payload(
             }
         if pkg.get("description"):
             ups_pkg["Description"] = pkg["description"]
+        # Declared value (insurance)
+        if pkg.get("declaredValue"):
+            ups_pkg.setdefault("PackageServiceOptions", {})[
+                "DeclaredValue"
+            ] = {
+                "Type": {"Code": "01"},  # EVS (Enhanced Value Shipment)
+                "CurrencyCode": "USD",
+                "MonetaryValue": str(pkg["declaredValue"]),
+            }
         ups_packages.append(ups_pkg)
 
     # Build Shipment
@@ -438,20 +676,42 @@ def build_ups_api_payload(
                 }
             ]
         },
+        "ShipmentRatingOptions": {
+            "NegotiatedRatesIndicator": "",
+        },
     }
 
     # Optional fields
     if simplified.get("description"):
         shipment["Description"] = simplified["description"]
-    # Note: ReferenceNumber at shipment level is not allowed for all UPS
-    # services (e.g. Ground domestic rejects it). Reference numbers can be
-    # added at the package level if needed in the future.
-    # See: UPS error "Shipment/ReferenceNumber is not allowed for this shipment"
+
+    # Reference numbers at package level (shipment-level rejected by Ground).
+    # Add to first package only; UPS allows up to 2 per package.
+    reference = simplified.get("reference")
+    if reference and ups_packages:
+        refs = []
+        refs.append({
+            "Value": str(reference)[:35],  # UPS max 35 chars
+        })
+        ref2 = simplified.get("reference2")
+        if ref2:
+            refs.append({
+                "Value": str(ref2)[:35],
+            })
+        ups_packages[0]["ReferenceNumber"] = refs
+
+    # Residential indicator on ShipTo address
+    if simplified.get("residential"):
+        ups_ship_to["Address"]["ResidentialAddressIndicator"] = ""
 
     # Shipment-level options
-    options = {}
+    options: dict[str, Any] = {}
     if simplified.get("saturdayDelivery"):
         options["SaturdayDeliveryIndicator"] = ""
+    # Delivery confirmation (signature required)
+    dc = simplified.get("deliveryConfirmation")
+    if dc:
+        options["DeliveryConfirmation"] = {"DCISType": str(dc)}
     if options:
         shipment["ShipmentServiceOptions"] = options
 
@@ -503,15 +763,20 @@ def build_ups_rate_payload(
         },
     }
 
+    ups_ship_to_addr: dict[str, Any] = {
+        "AddressLine": _build_address_lines(ship_to),
+        "City": ship_to.get("city", ""),
+        "StateProvinceCode": ship_to.get("stateProvinceCode", ""),
+        "PostalCode": ship_to.get("postalCode", ""),
+        "CountryCode": ship_to.get("countryCode", "US"),
+    }
+    # Residential indicator affects rate (residential surcharge)
+    if simplified.get("residential"):
+        ups_ship_to_addr["ResidentialAddressIndicator"] = ""
+
     ups_ship_to: dict[str, Any] = {
         "Name": ship_to.get("name", ""),
-        "Address": {
-            "AddressLine": _build_address_lines(ship_to),
-            "City": ship_to.get("city", ""),
-            "StateProvinceCode": ship_to.get("stateProvinceCode", ""),
-            "PostalCode": ship_to.get("postalCode", ""),
-            "CountryCode": ship_to.get("countryCode", "US"),
-        },
+        "Address": ups_ship_to_addr,
     }
 
     ups_packages = []
@@ -530,6 +795,15 @@ def build_ups_rate_payload(
                 "Width": str(pkg["width"]),
                 "Height": str(pkg["height"]),
             }
+        # Declared value affects insurance cost in rate quote
+        if pkg.get("declaredValue"):
+            ups_pkg.setdefault("PackageServiceOptions", {})[
+                "DeclaredValue"
+            ] = {
+                "Type": {"Code": "01"},
+                "CurrencyCode": "USD",
+                "MonetaryValue": str(pkg["declaredValue"]),
+            }
         ups_packages.append(ups_pkg)
 
     shipment: dict[str, Any] = {
@@ -537,10 +811,35 @@ def build_ups_rate_payload(
         "ShipTo": ups_ship_to,
         "ShipFrom": ups_shipper,
         "Package": ups_packages,
+        # Payment + negotiated rates — ensures rate quote matches actual billing
+        "PaymentInformation": {
+            "ShipmentCharge": [
+                {
+                    "Type": "01",
+                    "BillShipper": {"AccountNumber": account_number},
+                }
+            ]
+        },
+        "ShipmentRatingOptions": {
+            "NegotiatedRatesIndicator": "",
+        },
     }
 
     if service_code:
         shipment["Service"] = {"Code": service_code}
+
+    # Delivery confirmation affects rate
+    dc = simplified.get("deliveryConfirmation")
+    if dc:
+        shipment.setdefault("ShipmentServiceOptions", {})[
+            "DeliveryConfirmation"
+        ] = {"DCISType": str(dc)}
+
+    # Saturday delivery affects rate
+    if simplified.get("saturdayDelivery"):
+        shipment.setdefault("ShipmentServiceOptions", {})[
+            "SaturdayDeliveryIndicator"
+        ] = ""
 
     return {
         "RateRequest": {

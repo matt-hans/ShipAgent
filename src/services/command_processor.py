@@ -1100,19 +1100,23 @@ class CommandProcessor:
                 job_id, flushed_rows, shipper, service_code
             )
 
-            # Map rated costs from preview result
-            rated_costs = {
-                pr["row_number"]: pr["estimated_cost_cents"]
-                for pr in preview_result["preview_rows"]
-            }
+            # Map rated costs and errors from preview result
+            rated_costs: dict[int, int] = {}
+            rate_errors: dict[int, str] = {}
+            for pr in preview_result["preview_rows"]:
+                rated_costs[pr["row_number"]] = pr["estimated_cost_cents"]
+                if pr.get("rate_error"):
+                    rate_errors[pr["row_number"]] = pr["rate_error"]
+
             # Compute average for rows beyond MAX_PREVIEW_ROWS
-            if rated_costs:
-                avg_cost = sum(rated_costs.values()) // len(rated_costs)
-            else:
-                avg_cost = 0
+            # (only from successfully rated rows)
+            successful_costs = [c for rn, c in rated_costs.items() if rn not in rate_errors]
+            avg_cost = sum(successful_costs) // len(successful_costs) if successful_costs else 0
 
             for row in flushed_rows:
                 row.cost_cents = rated_costs.get(row.row_number, avg_cost)
+                if row.row_number in rate_errors:
+                    row.error_message = rate_errors[row.row_number]
 
         except Exception as e:
             logger.warning(

@@ -12,7 +12,7 @@ import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
-import { getJobs, deleteJob, connectPlatform, disconnectPlatform, disconnectDataSource, importDataSource, getMergedLabelsUrl } from '@/lib/api';
+import { getJobs, deleteJob, connectPlatform, disconnectDataSource, importDataSource, uploadDataSource, getMergedLabelsUrl } from '@/lib/api';
 import type { Job, JobSummary, DataSourceInfo, PlatformType } from '@/types/api';
 
 /* Future: more external platforms like WooCommerce, SAP, Oracle */
@@ -184,9 +184,8 @@ function DataSourceSection() {
   const shopifyEnvConnected = shopifyEnvStatus?.valid === true;
   const shopifyStoreName = shopifyEnvStatus?.store_name || shopifyEnvStatus?.store_url;
 
-  // File path state for CSV/Excel input
-  const [showFileInput, setShowFileInput] = React.useState<'csv' | 'excel' | null>(null);
-  const [filePath, setFilePath] = React.useState('');
+  // File picker ref and state
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [importError, setImportError] = React.useState<string | null>(null);
 
   // --- Derive active source from existing state ---
@@ -228,17 +227,28 @@ function DataSourceSection() {
     // useEffect will set Shopify as active
   };
 
-  // File import handler — calls backend import API with server-side file path
-  const handleFileImport = async (fileType: 'csv' | 'excel') => {
-    if (!filePath.trim()) return;
+  /** Open native file picker for CSV or Excel. */
+  const openFilePicker = (accept: string) => {
+    setImportError(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.accept = accept;
+      fileInputRef.current.value = '';
+      fileInputRef.current.click();
+    }
+  };
+
+  /** Handle file selection from native file picker — uploads to backend. */
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    const fileType: 'csv' | 'excel' = ext === 'csv' ? 'csv' : 'excel';
 
     setIsConnecting(true);
     setImportError(null);
     try {
-      const result = await importDataSource({
-        type: fileType,
-        file_path: filePath.trim(),
-      });
+      const result = await uploadDataSource(file);
 
       if (result.status === 'error') {
         setImportError(result.error || 'Import failed');
@@ -257,13 +267,11 @@ function DataSourceSection() {
           warnings: [],
         })),
         connected_at: new Date().toISOString(),
-        csv_path: fileType === 'csv' ? filePath.trim() : undefined,
-        excel_path: fileType === 'excel' ? filePath.trim() : undefined,
+        csv_path: fileType === 'csv' ? file.name : undefined,
+        excel_path: fileType === 'excel' ? file.name : undefined,
       };
       setDataSource(source);
-      setCachedLocalConfig({ type: fileType, file_path: filePath.trim() });
-      setFilePath('');
-      setShowFileInput(null);
+      setCachedLocalConfig({ type: fileType, file_path: file.name });
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Import failed');
     } finally {
@@ -271,44 +279,11 @@ function DataSourceSection() {
     }
   };
 
-  /** Re-import a cached local source for one-click reconnect. */
-  const handleReconnectLocal = async () => {
-    if (!cachedLocalConfig?.file_path) return;
-    setFilePath(cachedLocalConfig.file_path);
-    // Trigger import directly
-    setIsConnecting(true);
-    setImportError(null);
-    try {
-      const result = await importDataSource({
-        type: cachedLocalConfig.type,
-        file_path: cachedLocalConfig.file_path,
-      });
-      if (result.status === 'error') {
-        setImportError(result.error || 'Reconnect failed');
-        return;
-      }
-      const source: DataSourceInfo = {
-        type: cachedLocalConfig.type,
-        status: 'connected' as const,
-        row_count: result.row_count,
-        column_count: result.columns.length,
-        columns: result.columns.map(c => ({
-          name: c.name,
-          type: c.type as any,
-          nullable: c.nullable,
-          warnings: [],
-        })),
-        connected_at: new Date().toISOString(),
-        csv_path: cachedLocalConfig.type === 'csv' ? cachedLocalConfig.file_path : undefined,
-        excel_path: cachedLocalConfig.type === 'excel' ? cachedLocalConfig.file_path : undefined,
-      };
-      setDataSource(source);
-      setFilePath('');
-    } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'Reconnect failed');
-    } finally {
-      setIsConnecting(false);
-    }
+  /** Re-open file picker to reconnect a previously used local source. */
+  const handleReconnectLocal = () => {
+    if (!cachedLocalConfig) return;
+    const accept = cachedLocalConfig.type === 'csv' ? '.csv' : '.xlsx,.xls';
+    openFilePicker(accept);
   };
 
   // Database connection handler — calls backend import API
@@ -414,8 +389,6 @@ function DataSourceSection() {
     }
     setDataSource(null);
     setCachedLocalConfig(null);
-    setShowFileInput(null);
-    setFilePath('');
     setImportError(null);
   };
 
@@ -631,41 +604,39 @@ function DataSourceSection() {
         </div>
       )}
 
+      {/* Hidden file input for native file picker */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        onChange={handleFileSelected}
+      />
+
       {/* === IMPORT BUTTONS === */}
       {!dataSource?.status && (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <HardDriveIcon className="w-3.5 h-3.5 text-slate-500" />
-            <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Import Local File</span>
+            <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Import Data Source</span>
           </div>
 
           <div className="flex gap-2">
             <button
-              onClick={() => { setShowFileInput(showFileInput === 'csv' ? null : 'csv'); setShowDbForm(false); setImportError(null); }}
+              onClick={() => { setShowDbForm(false); openFilePicker('.csv'); }}
               disabled={isConnecting}
-              className={cn(
-                'flex-1 py-2 px-3 rounded-lg border transition-colors text-xs font-medium disabled:opacity-50',
-                showFileInput === 'csv'
-                  ? 'border-primary/50 bg-primary/10 text-primary'
-                  : 'border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300'
-              )}
+              className="flex-1 py-2 px-3 rounded-lg border border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300 transition-colors text-xs font-medium disabled:opacity-50"
             >
               CSV
             </button>
             <button
-              onClick={() => { setShowFileInput(showFileInput === 'excel' ? null : 'excel'); setShowDbForm(false); setImportError(null); }}
+              onClick={() => { setShowDbForm(false); openFilePicker('.xlsx,.xls'); }}
               disabled={isConnecting}
-              className={cn(
-                'flex-1 py-2 px-3 rounded-lg border transition-colors text-xs font-medium disabled:opacity-50',
-                showFileInput === 'excel'
-                  ? 'border-primary/50 bg-primary/10 text-primary'
-                  : 'border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300'
-              )}
+              className="flex-1 py-2 px-3 rounded-lg border border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300 transition-colors text-xs font-medium disabled:opacity-50"
             >
               Excel
             </button>
             <button
-              onClick={() => { setShowDbForm(!showDbForm); setShowFileInput(null); setImportError(null); }}
+              onClick={() => setShowDbForm(!showDbForm)}
               disabled={isConnecting}
               className={cn(
                 'flex-1 py-2 px-3 rounded-lg border transition-colors text-xs font-medium disabled:opacity-50',
@@ -677,27 +648,6 @@ function DataSourceSection() {
               Database
             </button>
           </div>
-
-          {/* File path input (CSV or Excel) */}
-          {showFileInput && (
-            <div className="space-y-2 pt-1">
-              <input
-                type="text"
-                value={filePath}
-                onChange={(e) => setFilePath(e.target.value)}
-                placeholder={showFileInput === 'csv' ? '/path/to/orders.csv' : '/path/to/orders.xlsx'}
-                className="w-full px-2.5 py-1.5 text-xs font-mono rounded bg-void-900 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-primary"
-                onKeyDown={(e) => { if (e.key === 'Enter') handleFileImport(showFileInput); }}
-              />
-              <button
-                onClick={() => handleFileImport(showFileInput)}
-                disabled={!filePath.trim() || isConnecting}
-                className="w-full btn-primary py-1.5 text-xs font-medium disabled:opacity-50"
-              >
-                {isConnecting ? 'Importing...' : 'Import'}
-              </button>
-            </div>
-          )}
 
           {/* Database connection form */}
           {showDbForm && (
@@ -725,7 +675,7 @@ function DataSourceSection() {
           )}
 
           {isConnecting && !importError && (
-            <p className="text-[10px] font-mono text-slate-500 text-center">Connecting...</p>
+            <p className="text-[10px] font-mono text-slate-500 text-center">Importing...</p>
           )}
         </div>
       )}

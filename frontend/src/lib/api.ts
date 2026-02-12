@@ -336,6 +336,26 @@ export async function deleteJob(jobId: string): Promise<void> {
 }
 
 /**
+ * Mark specific rows as skipped before execution.
+ *
+ * @param jobId - The job UUID.
+ * @param rowNumbers - Array of row numbers to skip.
+ */
+export async function skipRows(
+  jobId: string,
+  rowNumbers: number[]
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/jobs/${jobId}/rows/skip`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ row_numbers: rowNumbers }),
+  });
+  if (!response.ok) {
+    await parseResponse(response); // Will throw ApiError
+  }
+}
+
+/**
  * Refine a job by chaining a natural language refinement onto the original command.
  *
  * Submits the refined command, waits for preview, then deletes the old job.
@@ -400,6 +420,24 @@ export async function importDataSource(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
+  });
+  return parseResponse<DataSourceImportResponse>(response);
+}
+
+/**
+ * Upload a CSV or Excel file and import it as the active data source.
+ *
+ * @param file - The file selected via a file picker.
+ * @returns Import result with schema, row count, and status.
+ */
+export async function uploadDataSource(
+  file: File
+): Promise<DataSourceImportResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  const response = await fetch(`${API_BASE}/data-sources/upload`, {
+    method: 'POST',
+    body: formData,
   });
   return parseResponse<DataSourceImportResponse>(response);
 }

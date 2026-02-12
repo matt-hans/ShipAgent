@@ -39,8 +39,9 @@ SERVICE_CODE_NAMES = {
     "01": "UPS Next Day Air",
     "02": "UPS 2nd Day Air",
     "03": "UPS Ground",
+    "11": "UPS Standard",
     "12": "UPS 3 Day Select",
-    "13": "UPS Ground Saver",
+    "13": "UPS Next Day Air Saver",
     "14": "UPS Next Day Air Early",
     "59": "UPS 2nd Day Air A.M.",
 }
@@ -218,8 +219,19 @@ async def _execute_batch(job_id: str) -> None:
         # Emit batch_started SSE event
         await observer.on_batch_started(job_id, len(rows))
 
-        # Get shipper info once for all shipments
-        shipper = await _get_shipper_info()
+        # Get shipper info once for all shipments.
+        # Use env-based shipper for local data sources (CSV/Excel) to match
+        # the preview path in CommandProcessor._rate_job_rows(), which always
+        # calls build_shipper_from_env(). Only use Shopify shop address when
+        # no local data source is active (i.e., Shopify-sourced jobs).
+        from src.services.data_source_service import DataSourceService
+
+        ds_service = DataSourceService.get_instance()
+        if ds_service.get_source_info() is not None:
+            shipper = build_shipper_from_env()
+            logger.info("Using env shipper for local data source job %s", job_id)
+        else:
+            shipper = await _get_shipper_info()
 
         # Create UPSService from environment
         ups_service = UPSService(

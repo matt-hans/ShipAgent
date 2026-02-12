@@ -48,6 +48,11 @@ _FIELD_TO_ORDER_DATA: dict[str, str] = {
     "description": "description",
     "reference": "order_number",
     "reference2": "reference2",
+    "deliveryConfirmation": "delivery_confirmation",
+    "signatureRequired": "signature_required",
+    "adultSignatureRequired": "adult_signature_required",
+    "shipTo.residential": "ship_to_residential",
+    "saturdayDelivery": "saturday_delivery",
     "shipper.name": "shipper_name",
     "shipper.addressLine1": "shipper_address1",
     "shipper.city": "shipper_city",
@@ -153,6 +158,14 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["reference"], [], "reference"),
     # Service
     (["service"], [], "serviceCode"),
+    # Delivery confirmation / signature
+    (["signature", "required"], [], "signatureRequired"),
+    (["adult", "signature"], [], "adultSignatureRequired"),
+    (["delivery", "confirmation"], [], "deliveryConfirmation"),
+    # Residential indicator
+    (["residential"], [], "shipTo.residential"),
+    # Saturday delivery
+    (["saturday"], [], "saturdayDelivery"),
 ]
 
 
