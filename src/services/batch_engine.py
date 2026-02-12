@@ -81,8 +81,8 @@ class BatchEngine:
     ) -> dict[str, Any]:
         """Generate preview with cost estimates.
 
-        Rates up to MAX_PREVIEW_ROWS individually, estimates the rest
-        from the average cost.
+        Rates up to MAX_PREVIEW_ROWS concurrently (bounded by semaphore),
+        estimates the rest from the average cost.
 
         Args:
             job_id: Job UUID for tracking
@@ -93,41 +93,60 @@ class BatchEngine:
         Returns:
             Dict with total_estimated_cost_cents, preview_rows, etc.
         """
-        preview_rows = []
+        # Use same concurrency setting as execute for consistent performance
+        max_concurrent = int(os.environ.get("BATCH_CONCURRENCY", "5"))
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        preview_rows: list[dict[str, Any]] = []
         total_cost_cents = 0
+        rows_lock = asyncio.Lock()
 
-        for row in rows[: self.MAX_PREVIEW_ROWS]:
-            order_data = self._parse_order_data(row)
-            simplified = build_shipment_request(
-                order_data=order_data,
-                shipper=shipper,
-                service_code=service_code,
-            )
-            rate_payload = build_ups_rate_payload(
-                simplified, account_number=self._account_number,
-            )
+        async def _rate_row(row: Any) -> None:
+            """Rate a single row with concurrency control."""
+            nonlocal total_cost_cents
 
-            rate_error: str | None = None
-            try:
-                rate_result = await self._ups.get_rate(request_body=rate_payload)
-                amount = rate_result.get("totalCharges", {}).get("monetaryValue", "0")
-                cost_cents = int(float(amount) * 100)
-            except UPSServiceError as e:
-                logger.warning("Rate quote failed for row %s: %s", row.row_number, e)
-                cost_cents = 0
-                rate_error = str(e)
+            async with semaphore:
+                order_data = self._parse_order_data(row)
+                simplified = build_shipment_request(
+                    order_data=order_data,
+                    shipper=shipper,
+                    service_code=service_code,
+                )
+                rate_payload = build_ups_rate_payload(
+                    simplified, account_number=self._account_number,
+                )
 
-            total_cost_cents += cost_cents
+                rate_error: str | None = None
+                try:
+                    rate_result = await self._ups.get_rate(request_body=rate_payload)
+                    amount = rate_result.get("totalCharges", {}).get("monetaryValue", "0")
+                    cost_cents = int(float(amount) * 100)
+                except UPSServiceError as e:
+                    logger.warning("Rate quote failed for row %s: %s", row.row_number, e)
+                    cost_cents = 0
+                    rate_error = str(e)
 
-            row_info: dict[str, Any] = {
-                "row_number": row.row_number,
-                "recipient_name": order_data.get("ship_to_name", f"Row {row.row_number}"),
-                "city_state": f"{order_data.get('ship_to_city', '')}, {order_data.get('ship_to_state', '')}",
-                "estimated_cost_cents": cost_cents,
-            }
-            if rate_error:
-                row_info["rate_error"] = rate_error
-            preview_rows.append(row_info)
+                # Serialize row list append and cost accumulation
+                async with rows_lock:
+                    nonlocal total_cost_cents
+                    total_cost_cents += cost_cents
+
+                    row_info: dict[str, Any] = {
+                        "row_number": row.row_number,
+                        "recipient_name": order_data.get("ship_to_name", f"Row {row.row_number}"),
+                        "city_state": f"{order_data.get('ship_to_city', '')}, {order_data.get('ship_to_state', '')}",
+                        "estimated_cost_cents": cost_cents,
+                    }
+                    if rate_error:
+                        row_info["rate_error"] = rate_error
+                    preview_rows.append(row_info)
+
+        # Rate first N rows concurrently
+        rows_to_rate = rows[: self.MAX_PREVIEW_ROWS]
+        await asyncio.gather(*[_rate_row(row) for row in rows_to_rate])
+
+        # Sort preview rows by row_number for consistent ordering
+        preview_rows.sort(key=lambda r: r["row_number"])
 
         # Estimate remaining rows from average
         additional_rows = max(0, len(rows) - len(preview_rows))
