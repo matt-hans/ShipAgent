@@ -1,5 +1,11 @@
 """FastAPI routes for command submission and history.
 
+.. deprecated::
+    Use ``/api/v1/conversations/`` endpoints instead.
+    The conversations route provides agent-driven SSE streaming via
+    the Claude SDK orchestration path. This legacy command path
+    bypasses the SDK and calls CommandProcessor directly.
+
 Provides REST API endpoints for submitting natural language shipping
 commands and retrieving command history.
 
@@ -8,7 +14,9 @@ processing via CommandProcessor to parse intent, filter orders, and
 create job rows with cost estimates.
 """
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response
 from sqlalchemy.orm import Session
 
 from src.api.schemas import (
@@ -19,6 +27,8 @@ from src.api.schemas import (
 from src.db.connection import SessionLocal, get_db
 from src.db.models import Job, JobStatus
 from src.services.command_processor import CommandProcessor
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/commands", tags=["commands"])
 
@@ -36,9 +46,13 @@ def _get_db_session() -> Session:
 async def submit_command(
     payload: CommandSubmit,
     background_tasks: BackgroundTasks,
+    response: Response,
     db: Session = Depends(get_db),
 ) -> CommandSubmitResponse:
     """Submit a natural language command for processing.
+
+    .. deprecated::
+        Use ``POST /api/v1/conversations/{id}/messages`` instead.
 
     Creates a new job with the provided command and triggers background
     processing via CommandProcessor. The processor will:
@@ -84,6 +98,11 @@ async def submit_command(
     # Trigger background processing via CommandProcessor
     processor = CommandProcessor(db_session_factory=_get_db_session)
     background_tasks.add_task(processor.process, str(job.id), payload.command)
+
+    # Deprecation headers
+    logger.warning("Deprecated /commands/ endpoint called. Use /conversations/ instead.")
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = '</api/v1/conversations/>; rel="successor-version"'
 
     return CommandSubmitResponse(
         job_id=str(job.id),

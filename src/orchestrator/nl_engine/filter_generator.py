@@ -1,5 +1,13 @@
 """Schema-grounded SQL filter generation from natural language.
 
+.. deprecated::
+    Use the Claude SDK orchestration path via
+    ``/api/v1/conversations/`` endpoints instead.
+    SQL filter generation is now handled by the agent's unified
+    system prompt (``system_prompt.py``) and the ``query_orders``
+    tool (``tools_v2.py``) within the SDK agent loop, rather than
+    by direct ``Anthropic()`` API calls in this module.
+
 This module converts natural language filter expressions into validated SQL
 WHERE clauses. The generation is grounded in the source schema to prevent
 column hallucination - the LLM can only reference columns that actually exist.

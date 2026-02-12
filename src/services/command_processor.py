@@ -1,5 +1,14 @@
 """Command processor for NL shipping commands.
 
+.. deprecated::
+    Use the Claude SDK orchestration path via
+    ``/api/v1/conversations/`` endpoints instead.
+    The agent-driven conversation flow replaces this direct
+    CommandProcessor pipeline. The agent's system prompt and
+    deterministic tools (``tools_v2.py``) handle intent parsing,
+    filter generation, and batch orchestration within the SDK
+    agent loop.
+
 This module bridges the FastAPI command endpoint to the NL pipeline,
 processing natural language commands into ready-to-preview jobs with
 JobRows and real UPS rate quotes.

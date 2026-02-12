@@ -1,5 +1,12 @@
 """Intent parser for natural language shipping commands.
 
+.. deprecated::
+    Use the Claude SDK orchestration path via
+    ``/api/v1/conversations/`` endpoints instead.
+    Intent parsing is now handled by the agent's unified system
+    prompt (``system_prompt.py``) within the SDK agent loop,
+    rather than by direct ``Anthropic()`` API calls in this module.
+
 This module parses natural language shipping commands into structured
 ShippingIntent objects using Claude's structured outputs feature.
 
