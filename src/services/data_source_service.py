@@ -178,6 +178,9 @@ class DataSourceService:
             result.row_count,
             len(result.columns),
         )
+
+        self._auto_save_csv(str(path.resolve()), result.row_count, len(result.columns))
+
         return result
 
     async def import_excel(
@@ -221,6 +224,9 @@ class DataSourceService:
             result.row_count,
             len(result.columns),
         )
+
+        self._auto_save_excel(str(path.resolve()), sheet, result.row_count, len(result.columns))
+
         return result
 
     async def import_database(
@@ -256,6 +262,9 @@ class DataSourceService:
             result.row_count,
             len(result.columns),
         )
+
+        self._auto_save_database(connection_string, query, result.row_count, len(result.columns))
+
         return result
 
     async def get_schema(self) -> list[SchemaColumnInfo]:
@@ -376,6 +385,84 @@ class DataSourceService:
             "status": "skipped",
             "message": f"Write-back not supported for {self._source_info.source_type}",
         }
+
+    def _auto_save_csv(
+        self, file_path: str, row_count: int, column_count: int
+    ) -> None:
+        """Persist CSV source metadata for future reconnection.
+
+        Args:
+            file_path: Absolute path to CSV file.
+            row_count: Number of rows imported.
+            column_count: Number of columns discovered.
+        """
+        try:
+            from src.db.connection import get_db_context
+            from src.services.saved_data_source_service import SavedDataSourceService
+
+            with get_db_context() as db:
+                SavedDataSourceService.save_or_update_csv(
+                    db, file_path, row_count, column_count
+                )
+        except Exception as e:
+            logger.warning("Auto-save CSV source failed (non-critical): %s", e)
+
+    def _auto_save_excel(
+        self, file_path: str, sheet_name: str | None, row_count: int, column_count: int
+    ) -> None:
+        """Persist Excel source metadata for future reconnection.
+
+        Args:
+            file_path: Absolute path to Excel file.
+            sheet_name: Sheet name (None for default).
+            row_count: Number of rows imported.
+            column_count: Number of columns discovered.
+        """
+        try:
+            from src.db.connection import get_db_context
+            from src.services.saved_data_source_service import SavedDataSourceService
+
+            with get_db_context() as db:
+                SavedDataSourceService.save_or_update_excel(
+                    db, file_path, sheet_name, row_count, column_count
+                )
+        except Exception as e:
+            logger.warning("Auto-save Excel source failed (non-critical): %s", e)
+
+    def _auto_save_database(
+        self, connection_string: str, query: str, row_count: int, column_count: int
+    ) -> None:
+        """Persist database source display metadata for future reconnection.
+
+        Extracts host/port/db_name from the connection string. Credentials
+        are never stored.
+
+        Args:
+            connection_string: Database connection URL.
+            query: SQL query used for import.
+            row_count: Number of rows imported.
+            column_count: Number of columns discovered.
+        """
+        try:
+            from src.db.connection import get_db_context
+            from src.services.saved_data_source_service import (
+                SavedDataSourceService,
+                parse_db_connection_string,
+            )
+
+            parsed = parse_db_connection_string(connection_string)
+            with get_db_context() as db:
+                SavedDataSourceService.save_or_update_database(
+                    db,
+                    host=parsed["host"],
+                    port=parsed["port"],
+                    db_name=parsed["db_name"],
+                    query=query,
+                    row_count=row_count,
+                    column_count=column_count,
+                )
+        except Exception as e:
+            logger.warning("Auto-save database source failed (non-critical): %s", e)
 
     def _write_back_csv(
         self, row_number: int, tracking_number: str

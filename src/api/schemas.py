@@ -316,3 +316,51 @@ class DataSourceStatusResponse(BaseModel):
     file_path: str | None = None
     row_count: int | None = None
     columns: list[DataSourceColumnInfo] | None = None
+
+
+# Saved data source schemas
+
+
+class SavedDataSourceResponse(BaseModel):
+    """Response schema for a saved data source record."""
+
+    id: str
+    name: str
+    source_type: str
+    file_path: str | None = None
+    sheet_name: str | None = None
+    db_host: str | None = None
+    db_port: int | None = None
+    db_name: str | None = None
+    db_query: str | None = None
+    row_count: int
+    column_count: int
+    connected_at: str
+    last_used_at: str
+
+    class Config:
+        """Pydantic config for ORM model conversion."""
+
+        from_attributes = True
+
+
+class SavedDataSourceListResponse(BaseModel):
+    """Response schema for listing saved data sources."""
+
+    sources: list[SavedDataSourceResponse]
+    total: int
+
+
+class ReconnectRequest(BaseModel):
+    """Request schema for reconnecting to a saved data source."""
+
+    source_id: str = Field(..., description="UUID of the saved data source")
+    connection_string: str | None = Field(
+        None, description="Database connection string (required for database sources)"
+    )
+
+
+class BulkDeleteRequest(BaseModel):
+    """Request schema for bulk-deleting saved data sources."""
+
+    source_ids: list[str] = Field(..., min_length=1, description="UUIDs to delete")

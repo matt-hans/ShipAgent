@@ -464,6 +464,82 @@ export async function disconnectDataSource(): Promise<void> {
   }
 }
 
+// === Saved Data Sources API ===
+
+import type {
+  SavedDataSource,
+  SavedDataSourceListResponse,
+} from '@/types/api';
+
+/**
+ * List all saved data sources, ordered by most recently used.
+ *
+ * @param sourceType - Optional filter ('csv', 'excel', 'database').
+ * @returns List of saved sources.
+ */
+export async function getSavedDataSources(
+  sourceType?: string
+): Promise<SavedDataSourceListResponse> {
+  const params = new URLSearchParams();
+  if (sourceType) params.set('source_type', sourceType);
+  const qs = params.toString();
+  const url = qs ? `${API_BASE}/saved-sources?${qs}` : `${API_BASE}/saved-sources`;
+  const response = await fetch(url);
+  return parseResponse<SavedDataSourceListResponse>(response);
+}
+
+/**
+ * Reconnect to a previously saved data source.
+ *
+ * @param sourceId - UUID of the saved source.
+ * @param connectionString - Required for database sources (credentials not stored).
+ * @returns Reconnection result with status, source_type, row_count.
+ */
+export async function reconnectSavedSource(
+  sourceId: string,
+  connectionString?: string
+): Promise<{ status: string; source_type: string; row_count: number; column_count: number }> {
+  const body: Record<string, unknown> = { source_id: sourceId };
+  if (connectionString) body.connection_string = connectionString;
+  const response = await fetch(`${API_BASE}/saved-sources/reconnect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return parseResponse(response);
+}
+
+/**
+ * Delete a single saved data source.
+ *
+ * @param sourceId - UUID of the source to delete.
+ */
+export async function deleteSavedSource(sourceId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/saved-sources/${sourceId}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    await parseResponse(response);
+  }
+}
+
+/**
+ * Delete multiple saved data sources.
+ *
+ * @param sourceIds - UUIDs of sources to delete.
+ * @returns Number of records deleted.
+ */
+export async function bulkDeleteSavedSources(
+  sourceIds: string[]
+): Promise<{ status: string; count: number }> {
+  const response = await fetch(`${API_BASE}/saved-sources/bulk-delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source_ids: sourceIds }),
+  });
+  return parseResponse(response);
+}
+
 // === External Platform API ===
 
 import type {

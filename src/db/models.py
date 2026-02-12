@@ -290,3 +290,66 @@ class AuditLog(Base):
 
     def __repr__(self) -> str:
         return f"<AuditLog(id={self.id!r}, job_id={self.job_id!r}, level={self.level!r}, type={self.event_type!r})>"
+
+
+class SavedDataSource(Base):
+    """Persistent record of a previously connected data source.
+
+    Stores display metadata for reconnection. File-based sources (CSV/Excel)
+    keep the server-side file_path for one-click reconnect. Database sources
+    store only display info (host, db_name) — credentials are never persisted.
+
+    Attributes:
+        id: UUID primary key.
+        name: Human-readable display name (e.g. filename or db name).
+        source_type: One of 'csv', 'excel', 'database'.
+        file_path: Server-side path for CSV/Excel sources.
+        sheet_name: Excel sheet name (if applicable).
+        db_host: Database host (display only, no credentials).
+        db_port: Database port (display only).
+        db_name: Database name (display only).
+        db_query: SQL query used for database import.
+        row_count: Number of rows at last connection.
+        column_count: Number of columns at last connection.
+        connected_at: ISO8601 timestamp of first connection.
+        last_used_at: ISO8601 timestamp of most recent use.
+    """
+
+    __tablename__ = "saved_data_sources"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # File-based sources
+    file_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    sheet_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Database sources (display info only — NO credentials)
+    db_host: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    db_port: Mapped[Optional[int]] = mapped_column(nullable=True)
+    db_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    db_query: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Metadata
+    row_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    column_count: Mapped[int] = mapped_column(default=0, nullable=False)
+
+    # Timestamps
+    connected_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+    last_used_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+
+    # Indexes
+    __table_args__ = (
+        Index("idx_saved_ds_source_type", "source_type"),
+        Index("idx_saved_ds_last_used_at", "last_used_at"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<SavedDataSource(id={self.id!r}, name={self.name!r}, type={self.source_type!r})>"
