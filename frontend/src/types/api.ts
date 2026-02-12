@@ -564,6 +564,39 @@ export interface ReconnectRequest {
   connection_string?: string;
 }
 
+// === Conversation Types ===
+
+/** Agent event types streamed via SSE. */
+export type AgentEventType =
+  | 'agent_thinking'
+  | 'tool_call'
+  | 'tool_result'
+  | 'agent_message'
+  | 'preview_ready'
+  | 'confirmation_needed'
+  | 'execution_progress'
+  | 'completion'
+  | 'error'
+  | 'done'
+  | 'ping';
+
+/** Base agent event from SSE stream. */
+export interface AgentEvent {
+  event: AgentEventType;
+  data: Record<string, unknown>;
+}
+
+/** Create conversation response. */
+export interface CreateConversationResponse {
+  session_id: string;
+}
+
+/** Send message response. */
+export interface SendMessageResponse {
+  status: string;
+  session_id: string;
+}
+
 /** Shopify environment status response. */
 export interface ShopifyEnvStatus {
   /** True if both SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN are set */

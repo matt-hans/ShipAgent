@@ -542,6 +542,70 @@ export async function bulkDeleteSavedSources(
 
 // === External Platform API ===
 
+// === Conversation API ===
+
+import type {
+  CreateConversationResponse,
+  SendMessageResponse,
+} from '@/types/api';
+
+/**
+ * Create a new conversation session.
+ *
+ * @returns The new session ID.
+ */
+export async function createConversation(): Promise<CreateConversationResponse> {
+  const response = await fetch(`${API_BASE}/conversations/`, {
+    method: 'POST',
+  });
+  return parseResponse<CreateConversationResponse>(response);
+}
+
+/**
+ * Send a user message to the conversation agent.
+ *
+ * @param sessionId - Conversation session ID.
+ * @param content - User message text.
+ * @returns Accepted response with session ID.
+ */
+export async function sendConversationMessage(
+  sessionId: string,
+  content: string
+): Promise<SendMessageResponse> {
+  const response = await fetch(`${API_BASE}/conversations/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  return parseResponse<SendMessageResponse>(response);
+}
+
+/**
+ * Get the SSE stream URL for a conversation.
+ *
+ * @param sessionId - Conversation session ID.
+ * @returns Full URL for EventSource connection.
+ */
+export function getConversationStreamUrl(sessionId: string): string {
+  return `${API_BASE}/conversations/${sessionId}/stream`;
+}
+
+/**
+ * End a conversation session and free resources.
+ *
+ * @param sessionId - Conversation session ID.
+ */
+export async function deleteConversation(sessionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/conversations/${sessionId}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    await parseResponse(response);
+  }
+}
+
+// === External Platform API ===
+
 import type {
   ListConnectionsResponse,
   PlatformType,
