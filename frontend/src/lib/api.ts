@@ -6,8 +6,6 @@
  */
 
 import type {
-  CommandSubmitResponse,
-  CommandHistoryItem,
   Job,
   JobRow,
   JobListResponse,
@@ -55,46 +53,6 @@ async function parseResponse<T>(response: Response): Promise<T> {
     );
   }
   return response.json();
-}
-
-/**
- * Submit a natural language command for processing.
- *
- * @param command - The natural language shipping command.
- * @param options - Optional refinement metadata for clean job naming.
- * @returns The job ID and initial status.
- */
-export async function submitCommand(
-  command: string,
-  options?: { baseCommand?: string; refinements?: string[] }
-): Promise<CommandSubmitResponse> {
-  const body: Record<string, unknown> = { command };
-  if (options?.baseCommand) body.base_command = options.baseCommand;
-  if (options?.refinements?.length) body.refinements = options.refinements;
-
-  const response = await fetch(`${API_BASE}/commands`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  return parseResponse<CommandSubmitResponse>(response);
-}
-
-/**
- * Get recent command history.
- *
- * @param limit - Maximum number of items to return (default 10).
- * @returns List of recent commands with their status.
- */
-export async function getCommandHistory(
-  limit = 10
-): Promise<CommandHistoryItem[]> {
-  const response = await fetch(
-    `${API_BASE}/commands/history?limit=${limit}`
-  );
-  return parseResponse<CommandHistoryItem[]>(response);
 }
 
 /**
@@ -155,64 +113,6 @@ export async function getJobRows(jobId: string): Promise<JobRow[]> {
 export async function getJobPreview(jobId: string): Promise<BatchPreview> {
   const response = await fetch(`${API_BASE}/jobs/${jobId}/preview`);
   return parseResponse<BatchPreview>(response);
-}
-
-/**
- * Wait for job processing to complete and then return preview.
- *
- * Polls the job endpoint until total_rows > 0 or error_code is set,
- * then fetches and returns the preview.
- *
- * @param jobId - The job UUID.
- * @param maxWaitMs - Maximum time to wait in milliseconds (default: 30000).
- * @param pollIntervalMs - Polling interval in milliseconds (default: 1000).
- * @returns Batch preview with sample rows and cost estimate.
- * @throws ApiError if job processing fails or times out.
- */
-export async function waitForPreview(
-  jobId: string,
-  maxWaitMs = 30000,
-  pollIntervalMs = 1000
-): Promise<BatchPreview> {
-  const startTime = Date.now();
-
-  while (Date.now() - startTime < maxWaitMs) {
-    const job = await getJob(jobId);
-
-    // Check if processing completed with error
-    if (job.error_code) {
-      throw new ApiError(
-        400,
-        {
-          error_code: job.error_code,
-          message: job.error_message || 'Command processing failed',
-          remediation: null,
-          details: null,
-        },
-        job.error_message || 'Command processing failed'
-      );
-    }
-
-    // Check if rows are ready
-    if (job.total_rows > 0) {
-      return getJobPreview(jobId);
-    }
-
-    // Wait before next poll
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-  }
-
-  // Timeout - processing took too long
-  throw new ApiError(
-    408,
-    {
-      error_code: 'E-4005',
-      message: 'Command processing timed out. Please try again.',
-      remediation: null,
-      details: null,
-    },
-    'Command processing timed out. Please try again.'
-  );
 }
 
 /**
@@ -355,50 +255,6 @@ export async function skipRows(
   }
 }
 
-/**
- * Refine a job by chaining a natural language refinement onto the original command.
- *
- * Submits the refined command, waits for preview, then deletes the old job.
- * Returns the new job ID and preview data.
- *
- * @param originalCommand - The base command before any refinements.
- * @param refinementHistory - Previous refinements already applied.
- * @param newRefinement - The new refinement to append.
- * @param previousJobId - The job ID to clean up after successful refinement.
- * @returns New job ID and preview data.
- */
-export async function refineJob(
-  originalCommand: string,
-  refinementHistory: string[],
-  newRefinement: string,
-  previousJobId: string,
-): Promise<{ jobId: string; preview: BatchPreview }> {
-  // Build refined command by chaining refinements
-  const allRefinements = [...refinementHistory, newRefinement];
-  const refinedCommand = allRefinements.reduce(
-    (cmd, refinement, i) => `${cmd}${i === 0 ? ', but ' : ', and '}${refinement}`,
-    originalCommand
-  );
-
-  // Submit refined command with refinement metadata for clean job naming
-  const result = await submitCommand(refinedCommand, {
-    baseCommand: originalCommand,
-    refinements: allRefinements,
-  });
-
-  // Wait for new preview
-  const preview = await waitForPreview(result.job_id);
-
-  // Clean up old job (best-effort)
-  try {
-    await deleteJob(previousJobId);
-  } catch {
-    // Delete may fail if job already processed; non-critical
-  }
-
-  return { jobId: result.job_id, preview };
-}
-
 // === Local Data Source API ===
 
 import type {
@@ -538,6 +394,70 @@ export async function bulkDeleteSavedSources(
     body: JSON.stringify({ source_ids: sourceIds }),
   });
   return parseResponse(response);
+}
+
+// === External Platform API ===
+
+// === Conversation API ===
+
+import type {
+  CreateConversationResponse,
+  SendMessageResponse,
+} from '@/types/api';
+
+/**
+ * Create a new conversation session.
+ *
+ * @returns The new session ID.
+ */
+export async function createConversation(): Promise<CreateConversationResponse> {
+  const response = await fetch(`${API_BASE}/conversations/`, {
+    method: 'POST',
+  });
+  return parseResponse<CreateConversationResponse>(response);
+}
+
+/**
+ * Send a user message to the conversation agent.
+ *
+ * @param sessionId - Conversation session ID.
+ * @param content - User message text.
+ * @returns Accepted response with session ID.
+ */
+export async function sendConversationMessage(
+  sessionId: string,
+  content: string
+): Promise<SendMessageResponse> {
+  const response = await fetch(`${API_BASE}/conversations/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  return parseResponse<SendMessageResponse>(response);
+}
+
+/**
+ * Get the SSE stream URL for a conversation.
+ *
+ * @param sessionId - Conversation session ID.
+ * @returns Full URL for EventSource connection.
+ */
+export function getConversationStreamUrl(sessionId: string): string {
+  return `${API_BASE}/conversations/${sessionId}/stream`;
+}
+
+/**
+ * End a conversation session and free resources.
+ *
+ * @param sessionId - Conversation session ID.
+ */
+export async function deleteConversation(sessionId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/conversations/${sessionId}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    await parseResponse(response);
+  }
 }
 
 // === External Platform API ===

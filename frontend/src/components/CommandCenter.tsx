@@ -13,7 +13,8 @@ import * as React from 'react';
 import { useAppState, type ConversationMessage, type WarningPreference } from '@/hooks/useAppState';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import { cn } from '@/lib/utils';
-import { submitCommand, waitForPreview, confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, refineJob, skipRows } from '@/lib/api';
+import { confirmJob, cancelJob, getJob, getMergedLabelsUrl, skipRows } from '@/lib/api';
+import { useConversation, type ConversationEvent } from '@/hooks/useConversation';
 import type { Job, BatchPreview, PreviewRow, OrderData } from '@/types/api';
 import { Package } from 'lucide-react';
 import { LabelPreview } from '@/components/LabelPreview';
@@ -1019,6 +1020,28 @@ function BannerHardDriveIcon({ className }: { className?: string }) {
   );
 }
 
+/** Collapsible chip showing an agent tool call. */
+function ToolCallChip({ event }: { event: ConversationEvent }) {
+  const toolName = (event.data.tool_name as string) || 'tool';
+  // Humanize tool names: "batch_preview_tool" → "Batch Preview"
+  const label = toolName
+    .replace(/_tool$/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+
+  return (
+    <div className="flex gap-3 animate-fade-in">
+      <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500/10 to-cyan-600/10 border border-cyan-500/20 flex items-center justify-center">
+        <GearIcon className="w-3.5 h-3.5 text-cyan-400/60" />
+      </div>
+      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/50 border border-slate-700/50">
+        <span className="w-2 h-2 rounded-full bg-cyan-400/50 animate-pulse" />
+        <span className="text-[11px] font-mono text-slate-400">{label}</span>
+      </div>
+    </div>
+  );
+}
+
 /** Compact banner showing the currently active data source at the top of the chat area. */
 function ActiveSourceBanner() {
   const { activeSourceInfo } = useAppState();
@@ -1166,9 +1189,13 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     refreshJobList,
     activeSourceType,
     warningPreference,
+    setConversationSessionId,
   } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
+
+  // Agent-driven conversation hook
+  const conv = useConversation();
 
   const [inputValue, setInputValue] = React.useState('');
   const [preview, setPreview] = React.useState<BatchPreview | null>(null);
@@ -1178,63 +1205,64 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const [showLabelPreview, setShowLabelPreview] = React.useState(false);
   const [labelPreviewJobId, setLabelPreviewJobId] = React.useState<string | null>(null);
   const [isRefining, setIsRefining] = React.useState(false);
-  const [refinementHistory, setRefinementHistory] = React.useState<string[]>([]);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
   const lastCommandRef = React.useRef<string>('');
   const lastJobNameRef = React.useRef<string>('');
 
+  // Sync conversation session ID to AppState
+  React.useEffect(() => {
+    setConversationSessionId(conv.sessionId);
+  }, [conv.sessionId, setConversationSessionId]);
+
+  // Render agent events as conversation messages
+  const lastProcessedEventRef = React.useRef(0);
+  React.useEffect(() => {
+    const newEvents = conv.events.slice(lastProcessedEventRef.current);
+    lastProcessedEventRef.current = conv.events.length;
+
+    for (const event of newEvents) {
+      if (event.type === 'agent_message') {
+        const text = (event.data.text as string) || '';
+        if (text) {
+          addMessage({ role: 'system', content: text });
+        }
+      } else if (event.type === 'error') {
+        const msg = (event.data.message as string) || 'Agent error';
+        addMessage({
+          role: 'system',
+          content: `Error: ${msg}`,
+          metadata: { action: 'error' },
+        });
+      }
+    }
+  }, [conv.events, addMessage]);
+
+  // Sync processing state from conversation hook
+  React.useEffect(() => {
+    setIsProcessing(conv.isProcessing);
+  }, [conv.isProcessing, setIsProcessing]);
+
   // Auto-scroll to bottom (includes activeJob so returning from job detail scrolls down)
   React.useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [conversation, preview, executingJobId, activeJob]);
+  }, [conversation, preview, executingJobId, activeJob, conv.events]);
 
-  // Handle command submit
+  // Handle command submit — uses agent-driven conversation flow
   const handleSubmit = async () => {
     const command = inputValue.trim();
     if (!command || isProcessing || !hasDataSource) return;
 
     lastCommandRef.current = command;
     setInputValue('');
-    setIsProcessing(true);
 
     // Add user message
     addMessage({ role: 'user', content: command });
 
-    try {
-      // Submit command to backend
-      const result = await submitCommand(command);
-      setCurrentJobId(result.job_id);
-
-      // Wait for processing and fetch preview
-      // This polls until rows are ready (background task completes)
-      const previewData = await waitForPreview(result.job_id);
-      setPreview(previewData);
-
-      // Add system response
-      addMessage({
-        role: 'system',
-        content: `Found ${previewData.total_rows} matching rows. Estimated cost: ${formatCurrency(previewData.total_estimated_cost_cents)}.\n\nReview the preview below and confirm to proceed.`,
-        metadata: {
-          jobId: result.job_id,
-          action: 'preview',
-          preview: {
-            rowCount: previewData.total_rows,
-            estimatedCost: previewData.total_estimated_cost_cents,
-            warnings: previewData.rows_with_warnings,
-          },
-        },
-      });
-    } catch (err) {
-      addMessage({
-        role: 'system',
-        content: `Error: ${err instanceof Error ? err.message : 'Failed to process command'}`,
-        metadata: { action: 'error' },
-      });
-    } finally {
-      setIsProcessing(false);
-    }
+    // Send via agent conversation — the hook manages SSE events,
+    // which are rendered as system messages via the effect above
+    await conv.sendMessage(command);
   };
 
   // Handle confirm with optional row skipping
@@ -1242,7 +1270,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     if (!currentJobId) return;
 
     setIsConfirming(true);
-    setRefinementHistory([]);
+    // refinement state cleared
     try {
       // Skip warning rows if explicitly requested or if preference is 'skip-warnings'
       if (opts?.skipWarningRows && opts.warningRowNumbers?.length) {
@@ -1279,7 +1307,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const handleCancel = async () => {
     if (!currentJobId) return;
 
-    setRefinementHistory([]);
+    // refinement state cleared
     try {
       await cancelJob(currentJobId);
       setPreview(null);
@@ -1295,54 +1323,18 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     }
   };
 
-  // Handle refinement
+  // Handle refinement — send as a follow-up conversation message
   const handleRefine = async (refinementText: string) => {
-    if (!currentJobId || !refinementText.trim() || isRefining) return;
+    if (!refinementText.trim() || isRefining) return;
 
     setIsRefining(true);
-    const previousJobId = currentJobId;
-
     try {
-      const newHistory = [...refinementHistory, refinementText.trim()];
-      setRefinementHistory(newHistory);
-
-      // Add user message showing the refinement
-      addMessage({ role: 'user', content: `Refine: ${refinementText.trim()}` });
-
-      // Use shared refineJob utility (submits, waits, deletes old job)
-      const { jobId, preview: previewData } = await refineJob(
-        lastCommandRef.current,
-        refinementHistory,
-        refinementText.trim(),
-        previousJobId,
-      );
-
-      setCurrentJobId(jobId);
-      setPreview(previewData);
-      refreshJobList();
-
-      // Add system message with updated stats
-      addMessage({
-        role: 'system',
-        content: `Updated preview: ${previewData.total_rows} rows. Estimated cost: ${formatCurrency(previewData.total_estimated_cost_cents)}.`,
-        metadata: {
-          jobId,
-          action: 'preview',
-          preview: {
-            rowCount: previewData.total_rows,
-            estimatedCost: previewData.total_estimated_cost_cents,
-            warnings: previewData.rows_with_warnings,
-          },
-        },
-      });
+      // Send refinement through the agent conversation
+      await conv.sendMessage(refinementText.trim());
     } catch (err) {
-      // On error, pop the last refinement from history and restore previous job
-      setRefinementHistory((prev) => prev.slice(0, -1));
-      setCurrentJobId(previousJobId);
-
       addMessage({
         role: 'system',
-        content: `Refinement failed: ${err instanceof Error ? err.message : 'Unknown error'}. Previous preview is still active.`,
+        content: `Refinement failed: ${err instanceof Error ? err.message : 'Unknown error'}.`,
         metadata: { action: 'error' },
       });
     } finally {
@@ -1498,6 +1490,15 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                 />
               </div>
             )}
+
+            {/* Agent tool call chips — shown while processing */}
+            {conv.isProcessing && conv.events
+              .filter((e) => e.type === 'tool_call')
+              .slice(-3)
+              .map((e) => (
+                <ToolCallChip key={e.id} event={e} />
+              ))
+            }
 
             {/* Typing indicator — shown during initial processing or refinement */}
             {isProcessing && <TypingIndicator />}

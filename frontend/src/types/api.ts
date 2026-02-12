@@ -174,27 +174,6 @@ export interface JobRow {
   processed_at: string | null;
 }
 
-// === Command Types ===
-
-/** Request schema for submitting a command. */
-export interface CommandSubmit {
-  command: string;
-}
-
-/** Response from command submission. */
-export interface CommandSubmitResponse {
-  job_id: string;
-  status: string;
-}
-
-/** Command history entry. */
-export interface CommandHistoryItem {
-  id: string;
-  command: string;
-  status: JobStatus;
-  created_at: string;
-}
-
 // === Preview Types ===
 
 /** Full order data for expanded shipment view. */
@@ -562,6 +541,39 @@ export interface SavedDataSourceListResponse {
 export interface ReconnectRequest {
   source_id: string;
   connection_string?: string;
+}
+
+// === Conversation Types ===
+
+/** Agent event types streamed via SSE. */
+export type AgentEventType =
+  | 'agent_thinking'
+  | 'tool_call'
+  | 'tool_result'
+  | 'agent_message'
+  | 'preview_ready'
+  | 'confirmation_needed'
+  | 'execution_progress'
+  | 'completion'
+  | 'error'
+  | 'done'
+  | 'ping';
+
+/** Base agent event from SSE stream. */
+export interface AgentEvent {
+  event: AgentEventType;
+  data: Record<string, unknown>;
+}
+
+/** Create conversation response. */
+export interface CreateConversationResponse {
+  session_id: string;
+}
+
+/** Send message response. */
+export interface SendMessageResponse {
+  status: string;
+  session_id: string;
 }
 
 /** Shopify environment status response. */

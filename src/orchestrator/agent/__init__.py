@@ -11,11 +11,6 @@ Configuration:
     create_mcp_servers_config: Get MCP server configurations
     create_hook_matchers: Get hook configurations
 
-Per CONTEXT.md:
-- MCPs spawn eagerly at startup
-- Session persists for process lifetime
-- Graceful shutdown with 5s timeout
-
 Architecture:
     The agent spawns MCP servers as child processes via stdio transport:
     - Data MCP: Data source operations (CSV, Excel, database imports)
@@ -26,9 +21,10 @@ Architecture:
 
 Modules:
     config: MCP server configuration for ClaudeAgentOptions
-    tools: Orchestrator-native tools for the SDK MCP server
+    tools_v2: Deterministic SDK tools (query, preview, execute, etc.)
     hooks: PreToolUse and PostToolUse hook implementations
     client: Main OrchestrationAgent class
+    system_prompt: Unified system prompt builder
 
 Exports:
     Client:
@@ -40,12 +36,6 @@ Exports:
         MCPServerConfig: TypedDict for MCP server spawn configuration
         get_data_mcp_config: Returns Data MCP configuration
         create_mcp_servers_config: Returns combined MCP server configurations
-
-    Tools:
-        process_command_tool: Process NL shipping commands
-        get_job_status_tool: Query job state
-        list_tools_tool: List available tools
-        get_orchestrator_tools: Get all tool definitions for SDK registration
 
     Hooks:
         validate_pre_tool: Generic pre-validation entry point
@@ -61,16 +51,6 @@ from src.orchestrator.agent.config import (
     MCPServerConfig,
     get_data_mcp_config,
     create_mcp_servers_config,
-)
-
-from src.orchestrator.agent.tools import (
-    GET_JOB_STATUS_SCHEMA,
-    LIST_TOOLS_SCHEMA,
-    PROCESS_COMMAND_SCHEMA,
-    get_job_status_tool,
-    get_orchestrator_tools,
-    list_tools_tool,
-    process_command_tool,
 )
 
 from src.orchestrator.agent.hooks import (
@@ -97,14 +77,6 @@ __all__ = [
     "MCPServerConfig",
     "get_data_mcp_config",
     "create_mcp_servers_config",
-    # Tools
-    "process_command_tool",
-    "get_job_status_tool",
-    "list_tools_tool",
-    "get_orchestrator_tools",
-    "PROCESS_COMMAND_SCHEMA",
-    "GET_JOB_STATUS_SCHEMA",
-    "LIST_TOOLS_SCHEMA",
     # Hooks
     "validate_pre_tool",
     "validate_shipping_input",
