@@ -112,6 +112,10 @@ interface AppState {
   // Warning row handling preference
   warningPreference: WarningPreference;
   setWarningPreference: (pref: WarningPreference) => void;
+
+  // Conversation session ID for agent-driven flow
+  conversationSessionId: string | null;
+  setConversationSessionId: (id: string | null) => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -126,6 +130,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [activeSourceType, setActiveSourceType] = React.useState<ActiveSourceType>(null);
   const [activeSourceInfo, setActiveSourceInfo] = React.useState<ActiveSourceInfo | null>(null);
   const [cachedLocalConfig, setCachedLocalConfig] = React.useState<CachedLocalConfig | null>(null);
+  const [conversationSessionId, setConversationSessionId] = React.useState<string | null>(null);
   const [warningPreference, setWarningPreferenceState] = React.useState<WarningPreference>(() => {
     const stored = localStorage.getItem('shipagent_warning_preference');
     return (stored === 'ship-all' || stored === 'skip-warnings') ? stored : 'ask';
@@ -178,6 +183,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setCachedLocalConfig,
     warningPreference,
     setWarningPreference,
+    conversationSessionId,
+    setConversationSessionId,
   };
 
   return (
