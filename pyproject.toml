@@ -26,6 +26,8 @@ dependencies = [
     "anthropic>=0.42.0",
     "jsonschema>=4.0.0",
     "jinja2>=3.0.0",
+    # Claude Agent SDK
+    "claude-agent-sdk>=0.1.22",
     # Web interface dependencies
     "sse-starlette>=2.0.0",
     "zipstream-ng>=1.7.0",

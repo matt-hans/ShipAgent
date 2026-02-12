@@ -346,19 +346,41 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Tool response with platform connection statuses.
     """
+    import os
+
     platforms: dict[str, Any] = {}
 
-    # Check Shopify
-    try:
-        from src.mcp.external_sources.clients.shopify import ShopifyClient
-
-        client = ShopifyClient()
+    # Check Shopify — detect from environment variables
+    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+    store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+    if access_token and store_domain:
+        store_name = store_domain.replace(".myshopify.com", "")
         platforms["shopify"] = {
-            "connected": client.is_configured(),
-            "shop_name": getattr(client, "shop_name", None),
+            "connected": True,
+            "shop_name": store_name,
+            "store_domain": store_domain,
         }
-    except Exception:
+    else:
         platforms["shopify"] = {"connected": False}
+
+    # Also report data source status
+    try:
+        from src.services.data_source_service import DataSourceService
+
+        svc = DataSourceService.get_instance()
+        source_info = svc.get_source_info()
+        if source_info:
+            platforms["data_source"] = {
+                "connected": True,
+                "source_type": source_info.source_type,
+                "label": source_info.file_path,
+                "row_count": source_info.row_count,
+                "column_count": len(source_info.columns),
+            }
+        else:
+            platforms["data_source"] = {"connected": False}
+    except Exception:
+        platforms["data_source"] = {"connected": False}
 
     return _ok({"platforms": platforms})
 
