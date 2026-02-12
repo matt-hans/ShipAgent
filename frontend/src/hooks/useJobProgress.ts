@@ -173,7 +173,7 @@ export function useJobProgress(
         case 'row_completed':
           setProgress((prev) => ({
             ...prev,
-            processed: typedEvent.data.row_number,
+            processed: prev.successful + prev.failed + 1,
             successful: prev.successful + 1,
             totalCostCents: prev.totalCostCents + typedEvent.data.cost_cents,
             lastTrackingNumber: typedEvent.data.tracking_number,
@@ -184,7 +184,7 @@ export function useJobProgress(
         case 'row_failed':
           setProgress((prev) => ({
             ...prev,
-            processed: typedEvent.data.row_number,
+            processed: prev.successful + prev.failed + 1,
             failed: prev.failed + 1,
             currentRow: null,
             error: {

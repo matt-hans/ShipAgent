@@ -533,6 +533,37 @@ export interface DataSourceStatusResponse {
   columns?: { name: string; type: string; nullable: boolean }[];
 }
 
+// === Saved Data Source Types ===
+
+/** A previously connected data source persisted for reconnection. */
+export interface SavedDataSource {
+  id: string;
+  name: string;
+  source_type: 'csv' | 'excel' | 'database';
+  file_path: string | null;
+  sheet_name: string | null;
+  db_host: string | null;
+  db_port: number | null;
+  db_name: string | null;
+  db_query: string | null;
+  row_count: number;
+  column_count: number;
+  connected_at: string;
+  last_used_at: string;
+}
+
+/** Response from listing saved data sources. */
+export interface SavedDataSourceListResponse {
+  sources: SavedDataSource[];
+  total: number;
+}
+
+/** Request for reconnecting to a saved data source. */
+export interface ReconnectRequest {
+  source_id: string;
+  connection_string?: string;
+}
+
 /** Shopify environment status response. */
 export interface ShopifyEnvStatus {
   /** True if both SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN are set */

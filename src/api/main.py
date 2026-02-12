@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import commands, data_sources, jobs, labels, logs, platforms, preview, progress
+from src.api.routes import commands, data_sources, jobs, labels, logs, platforms, preview, progress, saved_data_sources
 from src.db.connection import init_db
 from src.errors import ShipAgentError
 
@@ -86,6 +86,7 @@ app.include_router(labels.router, prefix="/api/v1")
 app.include_router(preview.router, prefix="/api/v1")
 app.include_router(progress.router, prefix="/api/v1")
 app.include_router(platforms.router, prefix="/api/v1")
+app.include_router(saved_data_sources.router, prefix="/api/v1")
 
 
 @app.get("/health")

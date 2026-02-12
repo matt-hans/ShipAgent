@@ -12,8 +12,9 @@ import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
-import { getJobs, deleteJob, connectPlatform, disconnectDataSource, importDataSource, uploadDataSource, getMergedLabelsUrl } from '@/lib/api';
+import { getJobs, deleteJob, connectPlatform, disconnectDataSource, importDataSource, uploadDataSource, getMergedLabelsUrl, getSavedDataSources, reconnectSavedSource } from '@/lib/api';
 import type { Job, JobSummary, DataSourceInfo, PlatformType } from '@/types/api';
+import { RecentSourcesModal } from '@/components/RecentSourcesModal';
 
 /* Future: more external platforms like WooCommerce, SAP, Oracle */
 
@@ -184,6 +185,9 @@ function DataSourceSection() {
   const shopifyEnvConnected = shopifyEnvStatus?.valid === true;
   const shopifyStoreName = shopifyEnvStatus?.store_name || shopifyEnvStatus?.store_url;
 
+  // Recent sources modal
+  const [showRecentSources, setShowRecentSources] = React.useState(false);
+
   // File picker ref and state
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [importError, setImportError] = React.useState<string | null>(null);
@@ -279,11 +283,42 @@ function DataSourceSection() {
     }
   };
 
-  /** Re-open file picker to reconnect a previously used local source. */
-  const handleReconnectLocal = () => {
-    if (!cachedLocalConfig) return;
-    const accept = cachedLocalConfig.type === 'csv' ? '.csv' : '.xlsx,.xls';
-    openFilePicker(accept);
+  /** Reconnect a previously used local source via the saved-sources API. */
+  const handleReconnectLocal = async () => {
+    if (!cachedLocalConfig?.file_path) return;
+
+    setIsConnecting(true);
+    setImportError(null);
+    try {
+      // Look up the saved source by matching file name
+      const saved = await getSavedDataSources();
+      const fileName = cachedLocalConfig.file_path.split('/').pop()?.toLowerCase();
+      const match = saved.sources.find((s) =>
+        s.name.toLowerCase() === fileName
+      );
+      if (!match) {
+        // Fallback: open file picker if saved source not found
+        const accept = cachedLocalConfig.type === 'csv' ? '.csv' : '.xlsx,.xls';
+        openFilePicker(accept);
+        return;
+      }
+
+      const result = await reconnectSavedSource(match.id);
+      const source: DataSourceInfo = {
+        type: match.source_type as 'csv' | 'excel',
+        status: 'connected' as const,
+        row_count: result.row_count,
+        column_count: result.column_count,
+        connected_at: new Date().toISOString(),
+        csv_path: match.source_type === 'csv' ? match.file_path ?? undefined : undefined,
+        excel_path: match.source_type === 'excel' ? match.file_path ?? undefined : undefined,
+      };
+      setDataSource(source);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Reconnect failed');
+    } finally {
+      setIsConnecting(false);
+    }
   };
 
   // Database connection handler — calls backend import API
@@ -649,6 +684,13 @@ function DataSourceSection() {
             </button>
           </div>
 
+          <button
+            onClick={() => setShowRecentSources(true)}
+            className="w-full py-1.5 text-[11px] font-medium rounded-md border border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300 transition-colors"
+          >
+            Saved Sources
+          </button>
+
           {/* Database connection form */}
           {showDbForm && (
             <div className="space-y-2 pt-1">
@@ -679,6 +721,16 @@ function DataSourceSection() {
           )}
         </div>
       )}
+
+      {/* Recent Sources Modal */}
+      <RecentSourcesModal
+        open={showRecentSources}
+        onClose={() => setShowRecentSources(false)}
+        onReconnected={(info) => {
+          setDataSource(info);
+          setShowRecentSources(false);
+        }}
+      />
     </div>
   );
 }

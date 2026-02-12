@@ -28,6 +28,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Chat-based UI with CompletionArtifact cards for completed batches (inline label access)
 - Continuous chat flow — multiple commands in same conversation without page reload
 - NL filter generation with AND/OR compound clause parsing and person name disambiguation
+- Saved data sources with one-click reconnect (CSV/Excel instant, database requires re-entering credentials)
 
 ## Architecture
 
@@ -84,11 +85,12 @@ src/
 │   │   ├── commands.py         # NL command processing
 │   │   ├── labels.py           # Label generation/download/merge
 │   │   ├── logs.py             # Audit log endpoints
-│   │   └── platforms.py        # Shopify, SAP, Oracle, WooCommerce
+│   │   ├── platforms.py        # Shopify, SAP, Oracle, WooCommerce
+│   │   └── saved_data_sources.py # Saved source CRUD + reconnect
 │   ├── main.py                 # App factory with lifespan events
 │   └── schemas.py              # Pydantic request/response models
 ├── db/                         # Database layer
-│   ├── models.py               # SQLAlchemy models (Job, JobRow, AuditLog)
+│   ├── models.py               # SQLAlchemy models (Job, JobRow, AuditLog, SavedDataSource)
 │   └── connection.py           # Session management
 ├── errors/                     # Error handling
 │   ├── registry.py             # E-XXXX error code registry
@@ -101,7 +103,9 @@ src/
 │   ├── ups_payload_builder.py  # Builds UPS API payloads from mapped data
 │   ├── command_processor.py    # Command routing, filter evaluation, Shopify integration
 │   ├── job_service.py          # Job state machine, row tracking
-│   └── audit_service.py        # Audit logging with redaction
+│   ├── audit_service.py        # Audit logging with redaction
+│   ├── data_source_service.py  # Data source import + auto-save hooks
+│   └── saved_data_source_service.py # Saved source CRUD (list, upsert, delete, reconnect)
 ├── mcp/
 │   ├── data_source/            # Data Source MCP server
 │   │   ├── server.py           # FastMCP server
@@ -140,6 +144,7 @@ frontend/
 │   │   ├── JobDetailPanel.tsx      # Full job detail view (from sidebar click)
 │   │   ├── LabelPreview.tsx        # PDF label viewer modal (react-pdf)
 │   │   ├── DataSourceManager.tsx   # Data source connection UI
+│   │   ├── RecentSourcesModal.tsx  # Saved sources browser (search, filter, reconnect, bulk delete)
 │   │   └── layout/
 │   │       ├── Sidebar.tsx         # Data sources + Job History sidebar
 │   │       └── Header.tsx          # App header
@@ -201,6 +206,19 @@ Builds OpenAPI-validated UPS API payloads from column-mapped data. Key details:
 
 Routes NL commands, evaluates SQL WHERE clause filters against in-memory order data, handles Shopify order integration. Supports compound AND/OR clause parsing with parenthesis-depth-aware splitting.
 
+### SavedDataSourceService (`src/services/saved_data_source_service.py`)
+
+Persists data source connection metadata for one-click reconnection. Auto-saved on every successful import (best-effort). Database credentials are NEVER stored — only display metadata (host, port, db_name). Upsert logic keyed by natural keys (file_path for CSV, file_path+sheet_name for Excel, host+db_name+query for databases).
+
+| Method | Purpose |
+|--------|---------|
+| `list_sources()` | List all saved sources, ordered by last used |
+| `save_or_update_csv()` | Upsert CSV source record |
+| `save_or_update_excel()` | Upsert Excel source record |
+| `save_or_update_database()` | Upsert database source record (no credentials) |
+| `delete_source()` / `bulk_delete()` | Remove saved source records |
+| `touch()` | Update `last_used_at` on reconnect |
+
 ## Frontend Architecture
 
 ### Chat Flow (CommandCenter.tsx)
@@ -224,7 +242,8 @@ The main UI is a conversational chat interface:
 | `ProgressDisplay` | Live batch execution progress (SSE-powered) |
 | `LabelPreview` | PDF modal viewer (react-pdf), opens as overlay |
 | `JobDetailPanel` | Full job detail view (triggered from sidebar click) |
-| `Sidebar` | Data source connections + searchable/filterable Job History |
+| `RecentSourcesModal` | Saved source browser with search, type filters, one-click reconnect, bulk delete |
+| `Sidebar` | Data source connections + saved sources + searchable/filterable Job History |
 
 ### State Management
 
@@ -248,6 +267,11 @@ All endpoints use `/api/v1/` prefix.
 | `/jobs/{id}/labels/merged` | GET | Download merged PDF labels |
 | `/jobs/{id}/labels/{tracking}` | GET | Download individual label |
 | `/jobs/{id}/logs` | GET | Get audit logs |
+| `/saved-sources` | GET | List all saved data sources (optional `source_type` filter) |
+| `/saved-sources/{id}` | GET | Get single saved source |
+| `/saved-sources/reconnect` | POST | Reconnect to saved source (one-click for files, requires connection_string for DBs) |
+| `/saved-sources/{id}` | DELETE | Delete saved source |
+| `/saved-sources/bulk-delete` | POST | Bulk delete saved sources |
 | `/platforms/shopify/env-status` | GET | Check Shopify connection (auto-detect from env) |
 | `/platforms/shopify/orders` | GET | Fetch Shopify orders |
 

@@ -237,6 +237,37 @@ Plans:
 
 ---
 
+### Phase 8: Interactive Shipping
+
+**Goal:** Users can create shipments purely through conversation (e.g., "Send a 5lb box to John Smith in NY") without requiring a source file, using MCP-compliant elicitation forms to collect missing shipment details.
+
+**Dependencies:** Phase 4 (NL engine, intent parsing, elicitation), Phase 7 (Web UI for form rendering)
+
+**Requirements:**
+- INT-01: User can create single shipments via conversational commands without a data source file
+- INT-02: System detects missing shipping fields and generates MCP-compliant flat JSON Schema for elicitation
+- INT-03: Frontend renders dynamic forms from JSON Schema with field-type-aware inputs (text, number, enum/select)
+- INT-04: Intent parser recognizes interactive shipping commands and extracts partial data from prompts
+- INT-05: Elicitation prompts are comprehensive — collecting all UPS-required fields (recipient, address, package dimensions, weight, service) with smart defaults
+- INT-06: UI provides an "Interactive Ship" mode button for direct entry without typing a command
+- INT-07: Elicitation uses minimal LLM tokens — schema generation is deterministic, not LLM-driven
+
+**Success Criteria:**
+1. User types "Ship a 5lb box to John Smith at 123 Main St, NY 10001" and system extracts available fields, prompts only for missing ones
+2. MCP elicitation schema is flat with primitive types only (no nested objects) per protocol spec
+3. Frontend renders correct input types: text for strings, number for weight, dropdown for service level
+4. User can click "Interactive Ship" button in UI to start a guided shipment creation flow
+5. Complete shipment created with tracking number and PDF label from conversational input alone
+6. Token usage for interactive flow is <500 tokens (schema generation is code-driven, not LLM)
+7. Form supports accept/cancel actions per MCP Response Action model
+
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 8 to break down)
+
+---
+
 ## Progress
 
 | Phase | Status | Requirements | Completion |
@@ -248,8 +279,9 @@ Plans:
 | 5 - Orchestration | Complete | 3 | 100% |
 | 6 - Batch Execution | Complete | 7 | 100% |
 | 7 - Web Interface | Planned | 5 | 0% |
+| 8 - Interactive Shipping | Planned | 7 | 0% |
 
-**Total:** 37 requirements across 7 phases (32 complete)
+**Total:** 44 requirements across 8 phases (32 complete)
 
 ---
 
@@ -273,6 +305,9 @@ Phase 1: Foundation
                    |
                    v
             Phase 7: Web Interface
+                   |
+                   v
+            Phase 8: Interactive Shipping
 ```
 
 ---
@@ -288,6 +323,7 @@ Phase 1: Foundation
 | 5 | Medium | MCP coordination patterns less documented |
 | 6 | Medium | Crash recovery and idempotency critical |
 | 7 | Low | Standard React/FastAPI patterns |
+| 8 | Medium | MCP elicitation spec compliance, token-efficient schema generation |
 
 ---
 
