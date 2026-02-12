@@ -22,11 +22,9 @@ from __future__ import annotations
 
 import sys
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    # Avoid import errors if SDK not installed yet
-    pass
+from claude_agent_sdk import HookMatcher
 
 
 __all__ = [
@@ -424,63 +422,43 @@ def _log_to_stderr(message: str) -> None:
 # =============================================================================
 
 
-def create_hook_matchers() -> dict[str, list[dict[str, Any]]]:
+def create_hook_matchers() -> dict[str, list[HookMatcher]]:
     """Create hook matchers for ClaudeAgentOptions.hooks configuration.
 
     Returns a dict structure ready for ClaudeAgentOptions(hooks=create_hook_matchers()).
 
-    Structure:
-        {
-            "PreToolUse": [
-                {"matcher": "mcp__ups__create_shipment", "hooks": [validate_shipping_input]},
-                {"matcher": "mcp__ups__void_shipment", "hooks": [validate_void_shipment]},
-                {"matcher": None, "hooks": [validate_pre_tool]}  # All tools
-            ],
-            "PostToolUse": [
-                {"matcher": None, "hooks": [log_post_tool, detect_error_response]}
-            ]
-        }
+    Uses HookMatcher dataclass instances as required by the Claude Agent SDK.
 
     Matchers:
         - matcher=None means "all tools"
         - matcher="mcp__ups__create_shipment" means "tools matching that name"
 
     Returns:
-        Dict with PreToolUse and PostToolUse hook configurations
+        Dict with PreToolUse and PostToolUse hook configurations.
     """
     return {
         "PreToolUse": [
-            # Specific validation for UPS create_shipment tool
-            {
-                "matcher": "mcp__ups__create_shipment",
-                "hooks": [validate_shipping_input],
-                "description": "Validates shipper and shipTo fields for shipping operations",
-            },
-            # Specific validation for UPS void_shipment tool
-            {
-                "matcher": "mcp__ups__void_shipment",
-                "hooks": [validate_void_shipment],
-                "description": "Validates tracking number before voiding a shipment",
-            },
-            # Specific validation for data query tools
-            {
-                "matcher": "mcp__data__query",
-                "hooks": [validate_data_query],
-                "description": "Warns about queries without WHERE clause",
-            },
-            # Generic validation for all tools (fallback)
-            {
-                "matcher": None,
-                "hooks": [validate_pre_tool],
-                "description": "Generic pre-validation for all tools",
-            },
+            HookMatcher(
+                matcher="mcp__ups__create_shipment",
+                hooks=[validate_shipping_input],
+            ),
+            HookMatcher(
+                matcher="mcp__ups__void_shipment",
+                hooks=[validate_void_shipment],
+            ),
+            HookMatcher(
+                matcher="mcp__data__query",
+                hooks=[validate_data_query],
+            ),
+            HookMatcher(
+                matcher=None,
+                hooks=[validate_pre_tool],
+            ),
         ],
         "PostToolUse": [
-            # Audit logging and error detection for all tools
-            {
-                "matcher": None,
-                "hooks": [log_post_tool, detect_error_response],
-                "description": "Logs all tool executions and detects errors",
-            },
+            HookMatcher(
+                matcher=None,
+                hooks=[log_post_tool, detect_error_response],
+            ),
         ],
     }

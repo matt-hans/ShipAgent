@@ -1,7 +1,7 @@
 """Preview and confirmation API routes.
 
 Provides endpoints for fetching batch preview data and confirming
-batches for execution. Integrates with UPSService + BatchEngine for
+batches for execution. Integrates with UPSMCPClient + BatchEngine for
 real shipment creation. Emits SSE progress events for real-time
 frontend updates.
 """
@@ -23,7 +23,7 @@ from src.api.schemas import (
 from src.db.connection import get_db
 from src.db.models import Job, JobRow, RowStatus
 from src.services.batch_engine import BatchEngine
-from src.services.ups_service import UPSService, UPSServiceError
+from src.services.ups_mcp_client import UPSMCPClient
 from src.services.ups_payload_builder import (
     build_shipment_request,
     build_shipper_from_env,
@@ -189,7 +189,7 @@ def _get_sse_observer():
 async def _execute_batch(job_id: str) -> None:
     """Execute batch shipment processing in the background.
 
-    Creates a UPSService and BatchEngine, then delegates row processing
+    Creates a UPSMCPClient and BatchEngine, then delegates row processing
     to the engine. Updates job counters and emits SSE progress events
     via a progress callback adapter.
 
@@ -233,65 +233,68 @@ async def _execute_batch(job_id: str) -> None:
         else:
             shipper = await _get_shipper_info()
 
-        # Create UPSService from environment
-        ups_service = UPSService(
-            base_url=os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com"),
-            client_id=os.environ.get("UPS_CLIENT_ID", ""),
-            client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
-        )
-
+        # Derive UPS environment from base URL
+        base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
+        environment = "test" if "wwwcie" in base_url else "production"
         account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
 
-        # Create BatchEngine
-        engine = BatchEngine(
-            ups_service=ups_service,
-            db_session=db,
+        # Create UPSMCPClient (async MCP over stdio)
+        async with UPSMCPClient(
+            client_id=os.environ.get("UPS_CLIENT_ID", ""),
+            client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
+            environment=environment,
             account_number=account_number,
-        )
+        ) as ups:
+            # Create BatchEngine
+            engine = BatchEngine(
+                ups_service=ups,
+                db_session=db,
+                account_number=account_number,
+            )
 
-        # SSE progress adapter — bridges BatchEngine callbacks to SSE observer
-        successful = 0
-        failed = 0
-        total_cost = 0
+            # SSE progress adapter — bridges BatchEngine callbacks to SSE observer
+            successful = 0
+            failed = 0
+            total_cost = 0
 
-        async def on_progress(event_type: str, **kwargs) -> None:
-            """Adapt BatchEngine progress events to SSE observer calls."""
-            nonlocal successful, failed, total_cost
+            async def on_progress(event_type: str, **kwargs) -> None:
+                """Adapt BatchEngine progress events to SSE observer calls."""
+                nonlocal successful, failed, total_cost
 
-            if event_type == "row_completed":
-                successful += 1
-                total_cost += kwargs.get("cost_cents", 0)
-                # Update job counters incrementally
-                job.processed_rows = successful + failed
-                job.successful_rows = successful
-                job.failed_rows = failed
-                job.total_cost_cents = total_cost
-                db.commit()
-                await observer.on_row_completed(
-                    job_id, kwargs["row_number"],
-                    kwargs.get("tracking_number", ""),
-                    kwargs.get("cost_cents", 0),
-                )
-            elif event_type == "row_failed":
-                failed += 1
-                job.processed_rows = successful + failed
-                job.successful_rows = successful
-                job.failed_rows = failed
-                job.total_cost_cents = total_cost
-                db.commit()
-                await observer.on_row_failed(
-                    job_id, kwargs["row_number"],
-                    kwargs.get("error_code", "E-3005"),
-                    kwargs.get("error_message", "Unknown error"),
-                )
+                if event_type == "row_completed":
+                    successful += 1
+                    total_cost += kwargs.get("cost_cents", 0)
+                    # Update job counters incrementally
+                    job.processed_rows = successful + failed
+                    job.successful_rows = successful
+                    job.failed_rows = failed
+                    job.total_cost_cents = total_cost
+                    db.commit()
+                    await observer.on_row_completed(
+                        job_id, kwargs["row_number"],
+                        kwargs.get("tracking_number", ""),
+                        kwargs.get("cost_cents", 0),
+                    )
+                elif event_type == "row_failed":
+                    failed += 1
+                    job.processed_rows = successful + failed
+                    job.successful_rows = successful
+                    job.failed_rows = failed
+                    job.total_cost_cents = total_cost
+                    db.commit()
+                    await observer.on_row_failed(
+                        job_id, kwargs["row_number"],
+                        kwargs.get("error_code", "E-3005"),
+                        kwargs.get("error_message", "Unknown error"),
+                    )
 
-        # Execute batch
-        result = await engine.execute(
-            job_id=job_id,
-            rows=rows,
-            shipper=shipper,
-            on_progress=on_progress,
-        )
+            # Execute batch
+            result = await engine.execute(
+                job_id=job_id,
+                rows=rows,
+                shipper=shipper,
+                on_progress=on_progress,
+            )
 
         successful = result["successful"]
         failed = result["failed"]

@@ -143,9 +143,10 @@ Follow these steps when processing a shipping command:
 3. **Generate Filter**: Convert any natural language filter to a SQL WHERE clause
 4. **Fetch Matching Rows**: Use the filter to retrieve matching rows from the data source
 5. **Map Columns**: Map source columns to UPS payload fields
-6. **Create Job**: Register the job in the state database
-7. **Preview**: Rate each row and show the user a cost preview — always preview before executing
-8. **Execute on Confirmation**: Only execute after the user explicitly confirms the preview
+6. **Create Job**: Register the job in the state database (use `create_job`)
+7. **Add Rows to Job**: Store fetched rows in the job (use `add_rows_to_job` with the rows from step 4)
+8. **Preview**: Rate each row and show the user a cost preview (use `batch_preview`) — always preview before executing
+9. **Execute on Confirmation**: Only execute after the user explicitly confirms the preview (use `batch_execute`)
 
 ## Safety Rules
 

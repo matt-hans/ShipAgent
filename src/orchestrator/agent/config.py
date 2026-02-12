@@ -8,13 +8,13 @@ Configuration includes:
     - Shopify MCP: Node.js-based server for Shopify order retrieval (via npx)
     - External Sources MCP: Python-based unified gateway for external platforms
     - UPS MCP: UPS API server for shipping, rating, tracking, address validation
-      (via uvx from github.com/UPS-API/ups-mcp)
+      (local fork, run as Python module via .venv)
 
 Hybrid UPS architecture:
     - Interactive path: Agent calls UPS MCP tools directly for ad-hoc operations
       (rate checks, address validation, tracking, label recovery, transit times)
-    - Batch path: BatchEngine uses UPSService (direct Python import) for
-      deterministic high-volume execution with per-row state tracking
+    - Batch path: BatchEngine uses UPSMCPClient (programmatic MCP over stdio)
+      for deterministic high-volume execution with per-row state tracking
 
 Environment Variables:
     SHOPIFY_ACCESS_TOKEN: Admin API access token from custom app (required for Shopify MCP)
@@ -115,17 +115,17 @@ def get_shopify_mcp_config() -> MCPServerConfig:
 def get_ups_mcp_config() -> MCPServerConfig:
     """Get configuration for the UPS MCP server.
 
-    The UPS MCP runs via uvx from the UPS-API/ups-mcp GitHub repository
-    with stdio transport. It provides 7 tools: track_package, validate_address,
-    rate_shipment, create_shipment, void_shipment, recover_label,
-    get_time_in_transit.
+    The UPS MCP runs as a Python module from the local ups-mcp fork
+    (installed as editable package in .venv) with stdio transport.
+    It provides 7 tools: track_package, validate_address, rate_shipment,
+    create_shipment, void_shipment, recover_label, get_time_in_transit.
 
     This gives the agent interactive access to UPS operations. The deterministic
-    batch path (BatchEngine + UPSService) remains separate for high-volume
-    execution with per-row state tracking.
+    batch path (BatchEngine + UPSMCPClient) uses the same local fork for
+    high-volume execution with per-row state tracking.
 
     Returns:
-        MCPServerConfig with uvx command to run ups-mcp
+        MCPServerConfig with venv Python command to run ups-mcp module
 
     Environment Variables:
         UPS_CLIENT_ID: Required - UPS OAuth client ID
@@ -153,13 +153,12 @@ def get_ups_mcp_config() -> MCPServerConfig:
             ", ".join(missing_vars),
         )
 
+    # Use the venv Python to run the local ups-mcp fork as a module
+    venv_python = str(PROJECT_ROOT / ".venv" / "bin" / "python3")
+
     return MCPServerConfig(
-        command="uvx",
-        args=[
-            "--from",
-            "git+https://github.com/UPS-API/ups-mcp.git@41fb64f71c5f9afe0fb8764e9dd29a71e3c773e1",
-            "ups-mcp",
-        ],
+        command=venv_python,
+        args=["-m", "ups_mcp"],
         env={
             "CLIENT_ID": client_id or "",
             "CLIENT_SECRET": client_secret or "",
@@ -206,8 +205,8 @@ def create_mcp_servers_config() -> dict[str, MCPServerConfig]:
         "python3"
         >>> print(config["shopify"]["command"])
         "npx"
-        >>> print(config["ups"]["command"])
-        "uvx"
+        >>> print(config["ups"]["args"])
+        ["-m", "ups_mcp"]
     """
     return {
         "data": get_data_mcp_config(),

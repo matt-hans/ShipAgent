@@ -9,19 +9,19 @@ from src.services.batch_engine import BatchEngine
 
 @pytest.fixture
 def mock_ups_service():
-    """Create mock UPSService."""
+    """Create mock async UPS client (UPSMCPClient interface)."""
     svc = MagicMock()
-    svc.create_shipment.return_value = {
+    svc.create_shipment = AsyncMock(return_value={
         "success": True,
         "trackingNumbers": ["1Z999AA10123456784"],
         "labelData": ["base64data=="],
         "shipmentIdentificationNumber": "1Z999AA10123456784",
         "totalCharges": {"monetaryValue": "15.50", "currencyCode": "USD"},
-    }
-    svc.get_rate.return_value = {
+    })
+    svc.get_rate = AsyncMock(return_value={
         "success": True,
         "totalCharges": {"monetaryValue": "15.50", "amount": "15.50", "currencyCode": "USD"},
-    }
+    })
     return svc
 
 
@@ -102,10 +102,10 @@ class TestBatchEngineExecute:
 
     async def test_handles_ups_error_per_row(self, mock_ups_service, mock_db_session):
         """Test UPS errors are recorded per row without stopping batch."""
-        from src.services.ups_service import UPSServiceError
+        from src.services.errors import UPSServiceError
 
-        mock_ups_service.create_shipment.side_effect = UPSServiceError(
-            code="E-3003", message="Address invalid"
+        mock_ups_service.create_shipment = AsyncMock(
+            side_effect=UPSServiceError(code="E-3003", message="Address invalid")
         )
 
         engine = BatchEngine(

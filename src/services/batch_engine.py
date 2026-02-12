@@ -5,8 +5,9 @@ src/orchestrator/batch/executor.py. Single engine for both
 REST API and orchestrator agent paths.
 
 Example:
-    engine = BatchEngine(ups_service=svc, db_session=session, account_number="X")
-    result = await engine.execute(job_id="...", rows=rows, shipper=shipper)
+    async with UPSMCPClient(...) as ups:
+        engine = BatchEngine(ups_service=ups, db_session=session, account_number="X")
+        result = await engine.execute(job_id="...", rows=rows, shipper=shipper)
 """
 
 import asyncio
@@ -23,7 +24,7 @@ from src.services.ups_payload_builder import (
     build_ups_api_payload,
     build_ups_rate_payload,
 )
-from src.services.ups_service import UPSServiceError
+from src.services.errors import UPSServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +39,11 @@ ProgressCallback = Callable[..., Awaitable[None]]
 class BatchEngine:
     """Consolidated batch preview and execution engine.
 
-    Uses deterministic payload building + UPSService for all UPS calls.
+    Uses deterministic payload building + UPSMCPClient for all UPS calls.
     Supports progress callbacks for SSE integration.
 
     Attributes:
-        _ups: UPSService instance for UPS API calls
+        _ups: UPS client (UPSMCPClient) for async UPS API calls
         _db: Database session for row state updates
         _account_number: UPS account number for billing
     """
@@ -59,7 +60,7 @@ class BatchEngine:
         """Initialize batch engine.
 
         Args:
-            ups_service: UPSService instance
+            ups_service: Async UPS client (UPSMCPClient)
             db_session: SQLAlchemy session for state updates
             account_number: UPS account number
             labels_dir: Directory for label files (default: PROJECT_ROOT/labels)
@@ -108,9 +109,7 @@ class BatchEngine:
 
             rate_error: str | None = None
             try:
-                rate_result = await asyncio.to_thread(
-                    self._ups.get_rate, request_body=rate_payload,
-                )
+                rate_result = await self._ups.get_rate(request_body=rate_payload)
                 amount = rate_result.get("totalCharges", {}).get("monetaryValue", "0")
                 cost_cents = int(float(amount) * 100)
             except UPSServiceError as e:
@@ -198,10 +197,8 @@ class BatchEngine:
                         simplified, account_number=self._account_number,
                     )
 
-                    # Call UPS (in thread — this is the slow part)
-                    result = await asyncio.to_thread(
-                        self._ups.create_shipment, request_body=api_payload,
-                    )
+                    # Call UPS via async MCP client
+                    result = await self._ups.create_shipment(request_body=api_payload)
 
                     # Extract results — prefer package tracking number,
                     # fall back to shipment ID (UPS test env masks package-level numbers)

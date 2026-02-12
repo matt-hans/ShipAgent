@@ -13,6 +13,7 @@ Example:
     defs = get_all_tool_definitions()
 """
 
+import hashlib
 import json
 import logging
 from typing import Any
@@ -188,6 +189,54 @@ async def create_job_tool(args: dict[str, Any]) -> dict[str, Any]:
         return _err(f"Failed to create job: {e}")
 
 
+async def add_rows_to_job_tool(args: dict[str, Any]) -> dict[str, Any]:
+    """Add fetched rows to a job so batch preview and execution can process them.
+
+    This bridges the gap between fetch_rows (which retrieves data) and
+    batch_preview/batch_execute (which need rows stored in the job).
+
+    Args:
+        args: Dict with 'job_id' (str) and 'rows' (list of row dicts from fetch_rows).
+
+    Returns:
+        Tool response with rows_added count.
+    """
+    job_id = args.get("job_id", "")
+    rows = args.get("rows", [])
+
+    if not job_id:
+        return _err("job_id is required")
+    if not rows:
+        return _err("rows list is required and must not be empty")
+
+    try:
+        with get_db_context() as db:
+            svc = JobService(db)
+
+            row_data = []
+            for i, row in enumerate(rows, start=1):
+                # Generate checksum from row content for crash recovery
+                row_json = json.dumps(row, sort_keys=True, default=str)
+                checksum = hashlib.md5(row_json.encode()).hexdigest()
+
+                row_data.append({
+                    "row_number": i,
+                    "row_checksum": checksum,
+                    "order_data": row_json,
+                })
+
+            created = svc.create_rows(job_id, row_data)
+            return _ok({
+                "job_id": job_id,
+                "rows_added": len(created),
+            })
+    except ValueError as e:
+        return _err(str(e))
+    except Exception as e:
+        logger.error("add_rows_to_job_tool failed: %s", e)
+        return _err(f"Failed to add rows to job: {e}")
+
+
 async def get_job_status_tool(args: dict[str, Any]) -> dict[str, Any]:
     """Get the summary/status of a job.
 
@@ -222,8 +271,7 @@ async def _run_batch_preview(job_id: str) -> dict[str, Any]:
     """Internal helper — run batch preview via BatchEngine.
 
     Separated for testability. In production this creates a BatchEngine
-    and calls preview(). The caller (batch_preview_tool) can be tested
-    by patching this function.
+    with UPSMCPClient (async MCP) and calls preview().
 
     Args:
         job_id: Job UUID.
@@ -231,30 +279,36 @@ async def _run_batch_preview(job_id: str) -> dict[str, Any]:
     Returns:
         Preview result dict from BatchEngine.
     """
-    # Import here to avoid circular imports and heavy setup in tests
     import os
 
     from src.services.batch_engine import BatchEngine
+    from src.services.ups_mcp_client import UPSMCPClient
     from src.services.ups_payload_builder import build_shipper_from_env
-    from src.services.ups_service import UPSService
 
     account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
-    ups = UPSService()
+    base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
+    environment = "test" if "wwwcie" in base_url else "production"
     shipper = build_shipper_from_env()
 
-    with get_db_context() as db:
-        engine = BatchEngine(
-            ups_service=ups,
-            db_session=db,
-            account_number=account_number,
-        )
-        svc = JobService(db)
-        rows = svc.get_rows(job_id)
-        result = await engine.preview(
-            job_id=job_id,
-            rows=rows,
-            shipper=shipper,
-        )
+    async with UPSMCPClient(
+        client_id=os.environ.get("UPS_CLIENT_ID", ""),
+        client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
+        environment=environment,
+        account_number=account_number,
+    ) as ups:
+        with get_db_context() as db:
+            engine = BatchEngine(
+                ups_service=ups,
+                db_session=db,
+                account_number=account_number,
+            )
+            svc = JobService(db)
+            rows = svc.get_rows(job_id)
+            result = await engine.preview(
+                job_id=job_id,
+                rows=rows,
+                shipper=shipper,
+            )
     return result
 
 
@@ -306,26 +360,33 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
         import os
 
         from src.services.batch_engine import BatchEngine
+        from src.services.ups_mcp_client import UPSMCPClient
         from src.services.ups_payload_builder import build_shipper_from_env
-        from src.services.ups_service import UPSService
 
         account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
-        ups = UPSService()
+        base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
+        environment = "test" if "wwwcie" in base_url else "production"
         shipper = build_shipper_from_env()
 
-        with get_db_context() as db:
-            engine = BatchEngine(
-                ups_service=ups,
-                db_session=db,
-                account_number=account_number,
-            )
-            svc = JobService(db)
-            rows = svc.get_rows(job_id)
-            result = await engine.execute(
-                job_id=job_id,
-                rows=rows,
-                shipper=shipper,
-            )
+        async with UPSMCPClient(
+            client_id=os.environ.get("UPS_CLIENT_ID", ""),
+            client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
+            environment=environment,
+            account_number=account_number,
+        ) as ups:
+            with get_db_context() as db:
+                engine = BatchEngine(
+                    ups_service=ups,
+                    db_session=db,
+                    account_number=account_number,
+                )
+                svc = JobService(db)
+                rows = svc.get_rows(job_id)
+                result = await engine.execute(
+                    job_id=job_id,
+                    rows=rows,
+                    shipper=shipper,
+                )
         return _ok(result)
     except Exception as e:
         logger.error("batch_execute_tool failed: %s", e)
@@ -469,6 +530,29 @@ def get_all_tool_definitions() -> list[dict[str, Any]]:
                 "required": ["name", "command"],
             },
             "handler": create_job_tool,
+        },
+        {
+            "name": "add_rows_to_job",
+            "description": (
+                "Add fetched rows to a job. Call this AFTER create_job and "
+                "BEFORE batch_preview. Pass the rows array from fetch_rows."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {
+                        "type": "string",
+                        "description": "Job UUID from create_job.",
+                    },
+                    "rows": {
+                        "type": "array",
+                        "description": "Array of row objects from fetch_rows result.",
+                        "items": {"type": "object"},
+                    },
+                },
+                "required": ["job_id", "rows"],
+            },
+            "handler": add_rows_to_job_tool,
         },
         {
             "name": "get_job_status",

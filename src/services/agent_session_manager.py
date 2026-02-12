@@ -1,8 +1,10 @@
 """Agent session manager for per-conversation lifecycle.
 
 Manages agent sessions keyed by conversation ID. Each session maintains
-its own conversation history. The actual OrchestrationAgent creation is
-handled externally (wired in the conversations route).
+its own conversation history and a persistent OrchestrationAgent instance.
+The agent stays alive across messages within the same session, leveraging
+the Claude SDK's internal conversation memory. MCP servers are spawned once
+on first message and persist until session deletion.
 
 Example:
     mgr = AgentSessionManager()
@@ -11,19 +13,29 @@ Example:
     history = mgr.get_history("conv-123")
 """
 
+import asyncio
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 class AgentSession:
-    """A single conversation session with an agent.
+    """A single conversation session with a persistent agent.
+
+    The agent instance persists across messages so the Claude SDK maintains
+    internal conversation history. An asyncio.Lock serializes message
+    processing to prevent concurrent access to the same agent.
 
     Attributes:
         session_id: Unique conversation identifier.
         history: Ordered list of messages [{role, content, timestamp}].
         created_at: When the session was created.
+        agent: Persistent OrchestrationAgent instance (None until first message).
+        agent_source_hash: Hash of the data source used to build the agent's
+            system prompt. If the data source changes, the agent is rebuilt.
+        lock: Async lock serializing message processing for this session.
     """
 
     def __init__(self, session_id: str) -> None:
@@ -35,6 +47,9 @@ class AgentSession:
         self.session_id = session_id
         self.history: list[dict] = []
         self.created_at = datetime.now(timezone.utc)
+        self.agent: Any = None  # OrchestrationAgent, set by conversations route
+        self.agent_source_hash: str | None = None
+        self.lock = asyncio.Lock()
 
     def add_message(self, role: str, content: str) -> None:
         """Append a message to the conversation history.
@@ -79,9 +94,10 @@ class AgentSessionManager:
         return self._sessions[session_id]
 
     def remove_session(self, session_id: str) -> None:
-        """Remove a session and free resources.
+        """Remove a session from tracking (sync).
 
-        Idempotent — does nothing if session doesn't exist.
+        Does NOT stop the agent — call stop_session_agent() first for
+        async cleanup. Idempotent.
 
         Args:
             session_id: Session to remove.
@@ -89,6 +105,27 @@ class AgentSessionManager:
         session = self._sessions.pop(session_id, None)
         if session is not None:
             logger.info("Removed agent session: %s", session_id)
+
+    async def stop_session_agent(self, session_id: str) -> None:
+        """Stop the persistent agent for a session (async).
+
+        Call this before remove_session() to cleanly shut down MCP servers.
+        Idempotent — does nothing if no agent or session.
+
+        Args:
+            session_id: Session whose agent should be stopped.
+        """
+        session = self._sessions.get(session_id)
+        if session is None or session.agent is None:
+            return
+
+        try:
+            await session.agent.stop()
+        except Exception as e:
+            logger.warning("Error stopping agent for session %s: %s", session_id, e)
+        finally:
+            session.agent = None
+            session.agent_source_hash = None
 
     def list_sessions(self) -> list[str]:
         """List all active session IDs.
