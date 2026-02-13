@@ -41,12 +41,15 @@ vi.mock('@/lib/api', () => ({
 
 // Stub EventSource so connectSSE doesn't throw.
 class MockEventSource {
+  url: string;
   onopen: (() => void) | null = null;
   onmessage: ((e: MessageEvent) => void) | null = null;
   onerror: (() => void) | null = null;
   readyState = 1;
   close = vi.fn();
-  constructor(public url: string) {}
+  constructor(url: string) {
+    this.url = url;
+  }
 }
 
 vi.stubGlobal('EventSource', MockEventSource);
