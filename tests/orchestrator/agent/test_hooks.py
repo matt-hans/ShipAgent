@@ -657,3 +657,146 @@ class TestCreateHookMatchers:
             for matcher in matchers[event_type]:
                 for hook in matcher.hooks:
                     assert callable(hook)
+
+    def test_accepts_interactive_shipping_parameter(self):
+        """create_hook_matchers accepts interactive_shipping kwarg."""
+        matchers = create_hook_matchers(interactive_shipping=True)
+        assert "PreToolUse" in matchers
+        assert "PostToolUse" in matchers
+
+    def test_default_interactive_shipping_is_false(self):
+        """create_hook_matchers defaults interactive_shipping to False."""
+        # Should work without args (backward compatible)
+        matchers = create_hook_matchers()
+        assert "PreToolUse" in matchers
+
+
+class TestInteractiveShippingHookEnforcement:
+    """Tests for deterministic create_shipment gating by interactive_shipping."""
+
+    @pytest.mark.asyncio
+    async def test_create_shipment_denied_when_interactive_off(self):
+        """create_shipment is deterministically blocked when interactive=False."""
+        from src.orchestrator.agent.hooks import create_shipping_hook
+
+        hook = create_shipping_hook(interactive_shipping=False)
+        result = await hook(
+            {"tool_name": "mcp__ups__create_shipment", "tool_input": {"request_body": {}}},
+            "test-id",
+            None,
+        )
+        assert "deny" in str(result)
+        assert "Interactive shipping is disabled" in str(result)
+
+    @pytest.mark.asyncio
+    async def test_create_shipment_allowed_when_interactive_on(self):
+        """create_shipment allowed (structural guard only) when interactive=True."""
+        from src.orchestrator.agent.hooks import create_shipping_hook
+
+        hook = create_shipping_hook(interactive_shipping=True)
+        result = await hook(
+            {"tool_name": "mcp__ups__create_shipment", "tool_input": {"request_body": {}}},
+            "test-id",
+            None,
+        )
+        assert result == {}  # Allowed
+
+    @pytest.mark.asyncio
+    async def test_structural_guard_still_applies_when_interactive_on(self):
+        """Non-dict tool_input denied even when interactive=True."""
+        from src.orchestrator.agent.hooks import create_shipping_hook
+
+        hook = create_shipping_hook(interactive_shipping=True)
+        result = await hook(
+            {"tool_name": "mcp__ups__create_shipment", "tool_input": "not a dict"},
+            "test-id",
+            None,
+        )
+        assert "deny" in str(result)
+
+    @pytest.mark.asyncio
+    async def test_non_shipping_tools_unaffected(self):
+        """Other tools pass through regardless of interactive flag."""
+        from src.orchestrator.agent.hooks import create_shipping_hook
+
+        hook = create_shipping_hook(interactive_shipping=False)
+        result = await hook(
+            {"tool_name": "mcp__ups__rate_shipment", "tool_input": {}},
+            "test-id",
+            None,
+        )
+        assert result == {}  # Allowed — only create_shipment is gated
+
+    @pytest.mark.asyncio
+    async def test_empty_dict_allowed_when_interactive_on(self):
+        """Empty dict tool_input allowed when interactive=True (MCP preflight handles)."""
+        from src.orchestrator.agent.hooks import create_shipping_hook
+
+        hook = create_shipping_hook(interactive_shipping=True)
+        result = await hook(
+            {"tool_name": "mcp__ups__create_shipment", "tool_input": {}},
+            "test-id",
+            None,
+        )
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_none_input_denied_when_interactive_on(self):
+        """None tool_input denied even when interactive=True."""
+        from src.orchestrator.agent.hooks import create_shipping_hook
+
+        hook = create_shipping_hook(interactive_shipping=True)
+        result = await hook(
+            {"tool_name": "mcp__ups__create_shipment", "tool_input": None},
+            "test-id",
+            None,
+        )
+        assert "deny" in str(result)
+
+    @pytest.mark.asyncio
+    async def test_list_input_denied_when_interactive_on(self):
+        """List tool_input denied even when interactive=True."""
+        from src.orchestrator.agent.hooks import create_shipping_hook
+
+        hook = create_shipping_hook(interactive_shipping=True)
+        result = await hook(
+            {"tool_name": "mcp__ups__create_shipment", "tool_input": [1, 2, 3]},
+            "test-id",
+            None,
+        )
+        assert "deny" in str(result)
+
+    @pytest.mark.asyncio
+    async def test_create_hook_matchers_uses_factory(self):
+        """create_hook_matchers(interactive_shipping=False) produces denial hook."""
+        matchers = create_hook_matchers(interactive_shipping=False)
+        shipment_matchers = [
+            m for m in matchers["PreToolUse"]
+            if m.matcher and "create_shipment" in m.matcher
+        ]
+        assert len(shipment_matchers) >= 1
+        # The hook should deny create_shipment when interactive=False
+        hook = shipment_matchers[0].hooks[0]
+        result = await hook(
+            {"tool_name": "mcp__ups__create_shipment", "tool_input": {"request_body": {}}},
+            "test-id",
+            None,
+        )
+        assert "deny" in str(result)
+
+    @pytest.mark.asyncio
+    async def test_create_hook_matchers_allows_when_interactive(self):
+        """create_hook_matchers(interactive_shipping=True) produces allow hook."""
+        matchers = create_hook_matchers(interactive_shipping=True)
+        shipment_matchers = [
+            m for m in matchers["PreToolUse"]
+            if m.matcher and "create_shipment" in m.matcher
+        ]
+        assert len(shipment_matchers) >= 1
+        hook = shipment_matchers[0].hooks[0]
+        result = await hook(
+            {"tool_name": "mcp__ups__create_shipment", "tool_input": {"request_body": {}}},
+            "test-id",
+            None,
+        )
+        assert result == {}  # Allowed
