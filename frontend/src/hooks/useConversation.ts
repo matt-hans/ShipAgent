@@ -33,7 +33,7 @@ export interface UseConversationReturn {
   /** Whether the agent is currently processing a message. */
   isProcessing: boolean;
   /** Send a user message to the agent. Creates session on first call. */
-  sendMessage: (content: string) => Promise<void>;
+  sendMessage: (content: string, interactiveShipping?: boolean) => Promise<void>;
   /** Reset the conversation — close SSE, delete session, clear events. */
   reset: () => Promise<void>;
   /** Clear events without resetting the session. */
@@ -57,6 +57,7 @@ export function useConversation(): UseConversationReturn {
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const sessionGenerationRef = useRef(0);
 
   // Keep ref in sync with state for use in callbacks
   useEffect(() => {
@@ -74,11 +75,17 @@ export function useConversation(): UseConversationReturn {
     const es = new EventSource(url);
     eventSourceRef.current = es;
 
+    // Capture generation at connection time for stale-event guard
+    const currentGen = sessionGenerationRef.current;
+
     es.onopen = () => {
       setIsConnected(true);
     };
 
     es.onmessage = (messageEvent) => {
+      // Stale-event guard: ignore events from a previous session generation
+      if (sessionGenerationRef.current !== currentGen) return;
+
       try {
         const parsed = JSON.parse(messageEvent.data);
         const eventType = parsed.event as AgentEventType;
@@ -114,12 +121,12 @@ export function useConversation(): UseConversationReturn {
   }, []);
 
   /** Ensure a session exists and SSE is connected. */
-  const ensureSession = useCallback(async (): Promise<string> => {
+  const ensureSession = useCallback(async (interactiveShipping: boolean): Promise<string> => {
     if (sessionIdRef.current) {
       return sessionIdRef.current;
     }
 
-    const resp = await createConversation();
+    const resp = await createConversation({ interactive_shipping: interactiveShipping });
     const sid = resp.session_id;
     setSessionId(sid);
     sessionIdRef.current = sid;
@@ -128,13 +135,13 @@ export function useConversation(): UseConversationReturn {
   }, [connectSSE]);
 
   /** Send a user message to the agent. */
-  const sendMessage = useCallback(async (content: string) => {
+  const sendMessage = useCallback(async (content: string, interactiveShipping: boolean = false) => {
     if (!content.trim()) return;
 
     setIsProcessing(true);
 
     try {
-      const sid = await ensureSession();
+      const sid = await ensureSession(interactiveShipping);
       await sendConversationMessage(sid, content);
     } catch (err) {
       // Push error event so the UI can display it
@@ -151,6 +158,9 @@ export function useConversation(): UseConversationReturn {
 
   /** Reset the conversation — close SSE, delete session, clear state. */
   const reset = useCallback(async () => {
+    // Increment generation to invalidate any in-flight SSE events
+    sessionGenerationRef.current += 1;
+
     // Close SSE
     if (eventSourceRef.current) {
       eventSourceRef.current.close();

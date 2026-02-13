@@ -116,6 +116,10 @@ interface AppState {
   // Conversation session ID for agent-driven flow
   conversationSessionId: string | null;
   setConversationSessionId: (id: string | null) => void;
+
+  // Interactive single-shipment mode toggle
+  interactiveShipping: boolean;
+  setInteractiveShipping: (enabled: boolean) => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -139,6 +143,15 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const setWarningPreference = React.useCallback((pref: WarningPreference) => {
     setWarningPreferenceState(pref);
     localStorage.setItem('shipagent_warning_preference', pref);
+  }, []);
+
+  const [interactiveShipping, setInteractiveShippingState] = React.useState<boolean>(() => {
+    return localStorage.getItem('shipagent_interactive_shipping') === 'true';
+  });
+
+  const setInteractiveShipping = React.useCallback((enabled: boolean) => {
+    setInteractiveShippingState(enabled);
+    localStorage.setItem('shipagent_interactive_shipping', String(enabled));
   }, []);
 
   const refreshJobList = React.useCallback(() => {
@@ -185,6 +198,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setWarningPreference,
     conversationSessionId,
     setConversationSessionId,
+    interactiveShipping,
+    setInteractiveShipping,
   };
 
   return (

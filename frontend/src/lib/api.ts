@@ -348,11 +348,16 @@ import type {
 /**
  * Create a new conversation session.
  *
- * @returns The new session ID.
+ * @param options - Optional configuration for the session.
+ * @returns The new session ID and configuration.
  */
-export async function createConversation(): Promise<CreateConversationResponse> {
+export async function createConversation(
+  options?: { interactive_shipping?: boolean },
+): Promise<CreateConversationResponse> {
   const response = await fetch(`${API_BASE}/conversations/`, {
     method: 'POST',
+    headers: options ? { 'Content-Type': 'application/json' } : undefined,
+    body: options ? JSON.stringify(options) : undefined,
   });
   return parseResponse<CreateConversationResponse>(response);
 }
