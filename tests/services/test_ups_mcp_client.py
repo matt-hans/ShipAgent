@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.services.errors import UPSServiceError
-from src.services.mcp_client import MCPToolError
+from src.services.mcp_client import MCPConnectionError, MCPToolError
 from src.services.ups_mcp_client import UPSMCPClient, _ups_is_retryable
 
 
@@ -368,8 +368,8 @@ class TestUPSMCPClientLifecycle:
         """async with creates and closes MCPClient."""
         with patch("src.services.ups_mcp_client.MCPClient") as MockMCP:
             mock_mcp = AsyncMock()
-            mock_mcp.__aenter__ = AsyncMock(return_value=mock_mcp)
-            mock_mcp.__aexit__ = AsyncMock(return_value=None)
+            mock_mcp.connect = AsyncMock(return_value=None)
+            mock_mcp.disconnect = AsyncMock(return_value=None)
             MockMCP.return_value = mock_mcp
 
             async with UPSMCPClient(
@@ -378,7 +378,24 @@ class TestUPSMCPClientLifecycle:
             ) as client:
                 assert client._mcp is mock_mcp
 
-            mock_mcp.__aexit__.assert_awaited_once()
+            mock_mcp.connect.assert_awaited_once()
+            mock_mcp.disconnect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_connect_disconnect_delegate_to_mcp(self):
+        """connect()/disconnect() delegate to underlying MCPClient."""
+        with patch("src.services.ups_mcp_client.MCPClient") as MockMCP:
+            mock_mcp = AsyncMock()
+            mock_mcp.connect = AsyncMock(return_value=None)
+            mock_mcp.disconnect = AsyncMock(return_value=None)
+            MockMCP.return_value = mock_mcp
+
+            client = UPSMCPClient(client_id="id", client_secret="secret")
+            await client.connect()
+            await client.disconnect()
+
+            mock_mcp.connect.assert_awaited_once()
+            mock_mcp.disconnect.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_not_connected_raises(self):
@@ -387,3 +404,42 @@ class TestUPSMCPClientLifecycle:
 
         with pytest.raises(RuntimeError, match="not connected"):
             await client.get_rate(request_body={})
+
+
+class TestUPSMCPReconnectBehavior:
+    """Transport reconnect behavior in _call()."""
+
+    @pytest.mark.asyncio
+    async def test_rate_call_reconnects_and_replays_once(self, ups_client, mock_mcp_client):
+        """Non-mutating rate calls are replayed once after reconnect."""
+        mock_mcp_client._session = object()
+        mock_mcp_client.call_tool = AsyncMock(side_effect=[
+            MCPConnectionError(command="test", reason="transport down"),
+            {"ok": True},
+        ])
+        mock_mcp_client.disconnect = AsyncMock(return_value=None)
+        mock_mcp_client.connect = AsyncMock(return_value=None)
+
+        result = await ups_client._call("rate_shipment", {"request_body": {}})
+
+        assert result == {"ok": True}
+        assert mock_mcp_client.call_tool.call_count == 2
+        mock_mcp_client.disconnect.assert_awaited_once()
+        mock_mcp_client.connect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_shipment_reconnects_without_replay(self, ups_client, mock_mcp_client):
+        """Mutating create_shipment calls reconnect but do not auto-replay."""
+        mock_mcp_client._session = object()
+        mock_mcp_client.call_tool = AsyncMock(side_effect=[
+            MCPConnectionError(command="test", reason="transport down"),
+        ])
+        mock_mcp_client.disconnect = AsyncMock(return_value=None)
+        mock_mcp_client.connect = AsyncMock(return_value=None)
+
+        with pytest.raises(MCPConnectionError):
+            await ups_client._call("create_shipment", {"request_body": {}})
+
+        assert mock_mcp_client.call_tool.call_count == 1
+        mock_mcp_client.disconnect.assert_awaited_once()
+        mock_mcp_client.connect.assert_awaited_once()

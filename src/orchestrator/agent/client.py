@@ -27,7 +27,6 @@ Per CONTEXT.md:
 import asyncio
 import logging
 import os
-import sys
 from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
@@ -205,13 +204,13 @@ class OrchestrationAgent:
         if self._started:
             raise RuntimeError("Agent already started")
 
-        print("[OrchestrationAgent] Starting...", file=sys.stderr)
+        logger.info("[OrchestrationAgent] Starting...")
 
         self._client = ClaudeSDKClient(self._options)
         await self._client.connect()
 
         self._started = True
-        print("[OrchestrationAgent] Started successfully", file=sys.stderr)
+        logger.info("[OrchestrationAgent] Started successfully")
 
     async def process_command(self, user_input: str) -> str:
         """Process a user command and return the complete response.
@@ -278,6 +277,7 @@ class OrchestrationAgent:
             # Track whether we received StreamEvents for text (to avoid
             # duplicate emission from AssistantMessage TextBlocks)
             streamed_text_in_turn = False
+            emitted_tool_ids: set[str] = set()
             current_text_parts: list[str] = []
 
             async for message in self._client.receive_response():
@@ -289,6 +289,12 @@ class OrchestrationAgent:
                     if event_type == "content_block_start":
                         cb = event.get("content_block", {})
                         if cb.get("type") == "tool_use":
+                            tool_id = cb.get("id")
+                            if not tool_id:
+                                # Without a stable ID, skip StreamEvent emission.
+                                # AssistantMessage emits the canonical tool call.
+                                continue
+                            emitted_tool_ids.add(tool_id)
                             yield {
                                 "event": "tool_call",
                                 "data": {
@@ -325,16 +331,18 @@ class OrchestrationAgent:
                 elif isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, ToolUseBlock):
-                            # Tool call already emitted via StreamEvent if
-                            # streaming is active; emit here as fallback
-                            if not streamed_text_in_turn:
-                                yield {
-                                    "event": "tool_call",
-                                    "data": {
-                                        "tool_name": block.name,
-                                        "tool_input": block.input,
-                                    },
-                                }
+                            block_id = getattr(block, "id", None)
+                            if block_id:
+                                if block_id in emitted_tool_ids:
+                                    continue
+                                emitted_tool_ids.add(block_id)
+                            yield {
+                                "event": "tool_call",
+                                "data": {
+                                    "tool_name": block.name,
+                                    "tool_input": block.input,
+                                },
+                            }
                         elif isinstance(block, TextBlock):
                             # Only emit if we didn't stream this text
                             if not streamed_text_in_turn:
@@ -342,8 +350,9 @@ class OrchestrationAgent:
                                     "event": "agent_message",
                                     "data": {"text": block.text},
                                 }
-                    # Reset streaming flag for next turn
+                    # Reset per-turn tracking
                     streamed_text_in_turn = False
+                    emitted_tool_ids.clear()
 
                 # --- ResultMessage: agent finished ---
                 elif isinstance(message, ResultMessage):
@@ -386,20 +395,20 @@ class OrchestrationAgent:
         if not self._started:
             return
 
-        print("[OrchestrationAgent] Stopping...", file=sys.stderr)
+        logger.info("[OrchestrationAgent] Stopping...")
 
         if self._client:
             try:
                 await asyncio.wait_for(self._client.disconnect(), timeout=timeout)
             except asyncio.TimeoutError:
-                print(
-                    f"[OrchestrationAgent] Shutdown timed out after {timeout}s",
-                    file=sys.stderr,
+                logger.warning(
+                    "[OrchestrationAgent] Shutdown timed out after %ss",
+                    timeout,
                 )
 
         self._started = False
         self._client = None
-        print("[OrchestrationAgent] Stopped", file=sys.stderr)
+        logger.info("[OrchestrationAgent] Stopped")
 
     @property
     def is_started(self) -> bool:

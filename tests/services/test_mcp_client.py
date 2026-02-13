@@ -128,6 +128,77 @@ class TestMCPClientLifecycle:
             mock_session_ctx.__aexit__.assert_awaited_once()
             mock_stdio_ctx.__aexit__.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_connect_is_idempotent(self):
+        """connect() is safe to call multiple times."""
+        mock_session = AsyncMock()
+        mock_read = MagicMock()
+        mock_write = MagicMock()
+
+        with patch("src.services.mcp_client.stdio_client") as mock_stdio, \
+             patch("src.services.mcp_client.ClientSession") as MockSession:
+            mock_stdio_ctx = AsyncMock()
+            mock_stdio_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
+            mock_stdio_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_stdio.return_value = mock_stdio_ctx
+
+            mock_session_ctx = AsyncMock()
+            mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session_ctx.__aexit__ = AsyncMock(return_value=None)
+            MockSession.return_value = mock_session_ctx
+
+            client = MCPClient(_make_server_params())
+            await client.connect()
+            await client.connect()
+            await client.disconnect()
+
+        mock_stdio.assert_called_once()
+        mock_session.initialize.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_is_idempotent(self):
+        """disconnect() is safe to call when already disconnected."""
+        client = MCPClient(_make_server_params())
+        await client.disconnect()
+        await client.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_reconnect_after_disconnect_creates_fresh_contexts(self):
+        """A second connect after disconnect creates fresh stdio/session contexts."""
+        mock_session1 = AsyncMock()
+        mock_session2 = AsyncMock()
+        mock_read1 = MagicMock()
+        mock_write1 = MagicMock()
+        mock_read2 = MagicMock()
+        mock_write2 = MagicMock()
+
+        with patch("src.services.mcp_client.stdio_client") as mock_stdio, \
+             patch("src.services.mcp_client.ClientSession") as MockSession:
+            stdio_ctx1 = AsyncMock()
+            stdio_ctx1.__aenter__ = AsyncMock(return_value=(mock_read1, mock_write1))
+            stdio_ctx1.__aexit__ = AsyncMock(return_value=None)
+            stdio_ctx2 = AsyncMock()
+            stdio_ctx2.__aenter__ = AsyncMock(return_value=(mock_read2, mock_write2))
+            stdio_ctx2.__aexit__ = AsyncMock(return_value=None)
+            mock_stdio.side_effect = [stdio_ctx1, stdio_ctx2]
+
+            session_ctx1 = AsyncMock()
+            session_ctx1.__aenter__ = AsyncMock(return_value=mock_session1)
+            session_ctx1.__aexit__ = AsyncMock(return_value=None)
+            session_ctx2 = AsyncMock()
+            session_ctx2.__aenter__ = AsyncMock(return_value=mock_session2)
+            session_ctx2.__aexit__ = AsyncMock(return_value=None)
+            MockSession.side_effect = [session_ctx1, session_ctx2]
+
+            client = MCPClient(_make_server_params())
+            await client.connect()
+            await client.disconnect()
+            await client.connect()
+            await client.disconnect()
+
+        assert mock_stdio.call_count == 2
+        assert MockSession.call_count == 2
+
 
 # ---------------------------------------------------------------------------
 # call_tool tests

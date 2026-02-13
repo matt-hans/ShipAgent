@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import sys
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -36,6 +37,8 @@ __all__ = [
     "detect_error_response",
     "create_hook_matchers",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -414,7 +417,12 @@ def _log_to_stderr(message: str) -> None:
     Args:
         message: The message to log
     """
-    print(message, file=sys.stderr)
+    try:
+        print(message, file=sys.stderr)
+    except (BrokenPipeError, OSError):
+        # In daemonized/reloaded environments stderr may be closed; logging
+        # should never break hook execution.
+        logger.debug("Dropped stderr hook log: %s", message)
 
 
 # =============================================================================

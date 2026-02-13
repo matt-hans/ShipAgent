@@ -115,6 +115,157 @@ class TestProcessMessageStream:
         sig = inspect.signature(OrchestrationAgent.process_message_stream)
         assert "user_input" in sig.parameters
 
+    @pytest.mark.asyncio
+    async def test_dedups_tool_call_between_stream_and_assistant_by_id(self):
+        """StreamEvent and AssistantMessage for same tool id emit one tool_call."""
+
+        class FakeStreamEvent:
+            def __init__(self, event):
+                self.event = event
+
+        class FakeToolUseBlock:
+            def __init__(self, block_id, name, block_input):
+                self.id = block_id
+                self.name = name
+                self.input = block_input
+
+        class FakeAssistantMessage:
+            def __init__(self, content):
+                self.content = content
+
+        class FakeResultMessage:
+            def __init__(self, is_error=False, result=""):
+                self.is_error = is_error
+                self.result = result
+
+        async def _gen():
+            yield FakeStreamEvent({
+                "type": "content_block_start",
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "tool-1",
+                    "name": "batch_preview",
+                    "input": {"job_id": "j1"},
+                },
+            })
+            yield FakeAssistantMessage([
+                FakeToolUseBlock("tool-1", "batch_preview", {"job_id": "j1"}),
+            ])
+            yield FakeResultMessage()
+
+        agent = OrchestrationAgent()
+        agent._started = True
+        agent._client = MagicMock()
+        agent._client.query = AsyncMock(return_value=None)
+        agent._client.receive_response = MagicMock(return_value=_gen())
+
+        with patch("src.orchestrator.agent.client._HAS_STREAM_EVENT", True), \
+             patch("src.orchestrator.agent.client.StreamEvent", FakeStreamEvent), \
+             patch("src.orchestrator.agent.client.AssistantMessage", FakeAssistantMessage), \
+             patch("src.orchestrator.agent.client.ToolUseBlock", FakeToolUseBlock), \
+             patch("src.orchestrator.agent.client.ResultMessage", FakeResultMessage):
+            events = [e async for e in agent.process_message_stream("Ship CA orders")]
+
+        tool_calls = [e for e in events if e["event"] == "tool_call"]
+        assert len(tool_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_missing_stream_event_id_emits_from_assistant_only(self):
+        """When StreamEvent tool_use has no id, AssistantMessage provides the tool_call."""
+
+        class FakeStreamEvent:
+            def __init__(self, event):
+                self.event = event
+
+        class FakeToolUseBlock:
+            def __init__(self, block_id, name, block_input):
+                self.id = block_id
+                self.name = name
+                self.input = block_input
+
+        class FakeAssistantMessage:
+            def __init__(self, content):
+                self.content = content
+
+        class FakeResultMessage:
+            def __init__(self, is_error=False, result=""):
+                self.is_error = is_error
+                self.result = result
+
+        async def _gen():
+            yield FakeStreamEvent({
+                "type": "content_block_start",
+                "content_block": {
+                    "type": "tool_use",
+                    "name": "batch_preview",
+                    "input": {},
+                },
+            })
+            yield FakeAssistantMessage([
+                FakeToolUseBlock("tool-2", "batch_preview", {"job_id": "j2"}),
+            ])
+            yield FakeResultMessage()
+
+        agent = OrchestrationAgent()
+        agent._started = True
+        agent._client = MagicMock()
+        agent._client.query = AsyncMock(return_value=None)
+        agent._client.receive_response = MagicMock(return_value=_gen())
+
+        with patch("src.orchestrator.agent.client._HAS_STREAM_EVENT", True), \
+             patch("src.orchestrator.agent.client.StreamEvent", FakeStreamEvent), \
+             patch("src.orchestrator.agent.client.AssistantMessage", FakeAssistantMessage), \
+             patch("src.orchestrator.agent.client.ToolUseBlock", FakeToolUseBlock), \
+             patch("src.orchestrator.agent.client.ResultMessage", FakeResultMessage):
+            events = [e async for e in agent.process_message_stream("Ship CA orders")]
+
+        tool_calls = [e for e in events if e["event"] == "tool_call"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["data"]["tool_input"] == {"job_id": "j2"}
+
+    @pytest.mark.asyncio
+    async def test_tool_dedup_tracking_resets_each_assistant_turn(self):
+        """Same tool id can appear in later turns due per-turn dedup reset."""
+
+        class FakeToolUseBlock:
+            def __init__(self, block_id, name, block_input):
+                self.id = block_id
+                self.name = name
+                self.input = block_input
+
+        class FakeAssistantMessage:
+            def __init__(self, content):
+                self.content = content
+
+        class FakeResultMessage:
+            def __init__(self, is_error=False, result=""):
+                self.is_error = is_error
+                self.result = result
+
+        async def _gen():
+            yield FakeAssistantMessage([
+                FakeToolUseBlock("same-id", "fetch_rows", {"where_clause": "state='CA'"}),
+            ])
+            yield FakeAssistantMessage([
+                FakeToolUseBlock("same-id", "fetch_rows", {"where_clause": "state='NY'"}),
+            ])
+            yield FakeResultMessage()
+
+        agent = OrchestrationAgent()
+        agent._started = True
+        agent._client = MagicMock()
+        agent._client.query = AsyncMock(return_value=None)
+        agent._client.receive_response = MagicMock(return_value=_gen())
+
+        with patch("src.orchestrator.agent.client._HAS_STREAM_EVENT", False), \
+             patch("src.orchestrator.agent.client.AssistantMessage", FakeAssistantMessage), \
+             patch("src.orchestrator.agent.client.ToolUseBlock", FakeToolUseBlock), \
+             patch("src.orchestrator.agent.client.ResultMessage", FakeResultMessage):
+            events = [e async for e in agent.process_message_stream("Ship orders")]
+
+        tool_calls = [e for e in events if e["event"] == "tool_call"]
+        assert len(tool_calls) == 2
+
 
 class TestInterruptSupport:
     """Tests for interrupt() method."""

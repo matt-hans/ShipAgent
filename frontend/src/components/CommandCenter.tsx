@@ -587,6 +587,14 @@ function PreviewCard({
         </div>
       </div>
 
+      {preview.additional_rows > 0 && (
+        <div className="p-3 rounded-lg bg-slate-800/50 border border-slate-700/50">
+          <p className="text-[11px] font-mono text-slate-400">
+            Rated {preview.preview_rows.length} row(s) directly. Remaining {preview.additional_rows} row(s) are estimated.
+          </p>
+        </div>
+      )}
+
       {/* Shipment rows */}
       {preview.preview_rows.length > 0 && (
         <ShipmentList
@@ -1023,8 +1031,9 @@ function BannerHardDriveIcon({ className }: { className?: string }) {
 /** Collapsible chip showing an agent tool call. */
 function ToolCallChip({ event }: { event: ConversationEvent }) {
   const toolName = (event.data.tool_name as string) || 'tool';
-  // Humanize tool names: "batch_preview_tool" → "Batch Preview"
+  // Humanize tool names: "mcp__orchestrator__batch_preview_tool" → "Batch Preview"
   const label = toolName
+    .replace(/^mcp__\w+__/, '')
     .replace(/_tool$/, '')
     .replace(/_/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -1218,12 +1227,21 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
 
   // Render agent events as conversation messages
   const lastProcessedEventRef = React.useRef(0);
+  const suppressNextMessageRef = React.useRef(false);
+  const wasProcessingRef = React.useRef(false);
   React.useEffect(() => {
+    if (conv.events.length < lastProcessedEventRef.current) {
+      lastProcessedEventRef.current = 0;
+    }
     const newEvents = conv.events.slice(lastProcessedEventRef.current);
     lastProcessedEventRef.current = conv.events.length;
 
     for (const event of newEvents) {
       if (event.type === 'agent_message') {
+        if (suppressNextMessageRef.current) {
+          suppressNextMessageRef.current = false;
+          continue;
+        }
         const text = (event.data.text as string) || '';
         if (text) {
           addMessage({ role: 'system', content: text });
@@ -1233,6 +1251,11 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         setPreview(previewData);
         setCurrentJobId(previewData.job_id);
         refreshJobList();
+        addMessage({
+          role: 'system',
+          content: 'Preview ready — please review and click Confirm or Cancel.',
+        });
+        suppressNextMessageRef.current = true;
       } else if (event.type === 'error') {
         const msg = (event.data.message as string) || 'Agent error';
         addMessage({
@@ -1242,7 +1265,17 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         });
       }
     }
-  }, [conv.events, addMessage]);
+  }, [conv.events, addMessage, refreshJobList]);
+
+  // Clear transient agent events after each completed run to bound memory.
+  React.useEffect(() => {
+    if (wasProcessingRef.current && !conv.isProcessing) {
+      suppressNextMessageRef.current = false;
+      lastProcessedEventRef.current = 0;
+      conv.clearEvents();
+    }
+    wasProcessingRef.current = conv.isProcessing;
+  }, [conv.isProcessing, conv.clearEvents]);
 
   // Sync processing state from conversation hook
   React.useEffect(() => {
@@ -1496,17 +1529,14 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
               </div>
             )}
 
-            {/* Agent tool call chips — shown while processing */}
-            {conv.isProcessing && conv.events
-              .filter((e) => e.type === 'tool_call')
-              .slice(-3)
-              .map((e) => (
-                <ToolCallChip key={e.id} event={e} />
-              ))
-            }
+            {/* Current tool call chip — only show active latest tool */}
+            {conv.isProcessing && !preview && (() => {
+              const lastToolCall = conv.events.filter((e) => e.type === 'tool_call').at(-1);
+              return lastToolCall ? <ToolCallChip key={lastToolCall.id} event={lastToolCall} /> : null;
+            })()}
 
             {/* Typing indicator — shown during initial processing or refinement */}
-            {isProcessing && <TypingIndicator />}
+            {isProcessing && !preview && <TypingIndicator />}
             {isRefining && (
               <div className="flex gap-3 animate-fade-in">
                 <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-gradient-to-br from-primary/20 to-primary/30 border border-primary/30 flex items-center justify-center">

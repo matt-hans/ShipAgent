@@ -174,7 +174,7 @@ export function useConversation(): UseConversationReturn {
     setIsProcessing(false);
   }, []);
 
-  /** Clear events without resetting the session. */
+  /** Clear transient events without resetting the session. */
   const clearEvents = useCallback(() => {
     setEvents([]);
   }, []);

@@ -14,6 +14,7 @@ import pytest
 
 from src.orchestrator.agent.config import (
     PROJECT_ROOT,
+    _get_python_command,
     create_mcp_servers_config,
     get_data_mcp_config,
     get_shopify_mcp_config,
@@ -41,10 +42,10 @@ class TestProjectRoot:
 class TestDataMCPConfig:
     """Tests for Data MCP configuration."""
 
-    def test_command_is_python3(self):
-        """Data MCP should use Python3 interpreter."""
+    def test_command_uses_preferred_python(self):
+        """Data MCP should use the preferred Python interpreter."""
         config = get_data_mcp_config()
-        assert config["command"] == "python3"
+        assert config["command"] == _get_python_command()
 
     def test_args_specify_module(self):
         """Args should specify the server module."""
@@ -57,6 +58,11 @@ class TestDataMCPConfig:
         config = get_data_mcp_config()
         assert "PYTHONPATH" in config["env"]
         assert str(PROJECT_ROOT) in config["env"]["PYTHONPATH"]
+
+    def test_env_has_path(self):
+        """Environment should include PATH for subprocess execution."""
+        config = get_data_mcp_config()
+        assert "PATH" in config["env"]
 
     def test_config_has_required_keys(self):
         """Config should have command, args, and env keys."""
@@ -269,15 +275,15 @@ class TestCreateMCPServersConfig:
         assert "args" in external_config
         assert "env" in external_config
 
-    def test_data_uses_python3(self):
-        """Data server should use python3 command."""
+    def test_data_uses_preferred_python(self):
+        """Data server should use the preferred Python command."""
         config = create_mcp_servers_config()
-        assert config["data"]["command"] == "python3"
+        assert config["data"]["command"] == _get_python_command()
 
-    def test_external_uses_python3(self):
-        """External Sources server should use python3 command."""
+    def test_external_uses_preferred_python(self):
+        """External Sources server should use the preferred Python command."""
         config = create_mcp_servers_config()
-        assert config["external"]["command"] == "python3"
+        assert config["external"]["command"] == _get_python_command()
 
     def test_shopify_uses_npx(self):
         """Shopify server should use npx command."""
