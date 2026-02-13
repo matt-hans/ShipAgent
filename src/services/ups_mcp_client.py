@@ -323,20 +323,28 @@ class UPSMCPClient:
                 return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
             raise
         except Exception as e:
-            if not self._is_transport_error(e):
+            is_non_mutating = tool_name in {
+                "rate_shipment", "validate_address", "track_package",
+            }
+            # For non-mutating operations, treat ANY non-MCPToolError as a
+            # transport failure worth reconnecting for.  This handles stale
+            # subprocess connections (anyio ClosedResourceError, etc.) that
+            # may not appear in the explicit type list.
+            if not (is_non_mutating or self._is_transport_error(e)):
                 raise
 
             logger.warning(
-                "UPS MCP transport failure during '%s', reconnecting once: %s",
+                "UPS MCP transport failure during '%s', reconnecting once: %s [%s]",
                 tool_name,
-                e,
+                e or type(e).__name__,
+                type(e).__name__,
             )
             self._reconnect_count += 1
             await self.disconnect()
             await self.connect()
 
             # Replay only non-mutating operations after reconnect.
-            if tool_name in {"rate_shipment", "validate_address"}:
+            if is_non_mutating:
                 return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
             raise
 
@@ -379,11 +387,14 @@ class UPSMCPClient:
         """Classify transport/session failures that warrant reconnect.
 
         Tool-level UPS errors (MCPToolError) are handled separately and
-        should not trigger reconnect retries.
+        should not trigger reconnect retries. Catches anyio closed/broken
+        resource errors that occur when MCP subprocess dies while idle.
         """
         if isinstance(error, MCPToolError):
             return False
-        return isinstance(
+
+        # Direct type check for common transport failures.
+        if isinstance(
             error,
             (
                 MCPConnectionError,
@@ -393,7 +404,17 @@ class UPSMCPClient:
                 BrokenPipeError,
                 EOFError,
             ),
-        )
+        ):
+            return True
+
+        # anyio raises ClosedResourceError / BrokenResourceError when the
+        # subprocess dies. These may not be in our import scope, so check
+        # by class name to avoid hard dependency.
+        err_name = type(error).__name__
+        if err_name in ("ClosedResourceError", "BrokenResourceError", "EndOfStream"):
+            return True
+
+        return False
 
     # ── Response normalisation (ported from UPSService) ────────────────
 

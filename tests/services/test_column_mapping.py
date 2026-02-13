@@ -1,10 +1,8 @@
 """Tests for column mapping service."""
 
-import pytest
-
 from src.services.column_mapping import (
-    REQUIRED_FIELDS,
     apply_mapping,
+    auto_map_columns,
     validate_mapping,
 )
 
@@ -151,3 +149,229 @@ class TestApplyMapping:
         order_data = apply_mapping(mapping, row)
 
         assert order_data["service_code"] == "01"
+
+
+class TestAutoMapColumns:
+    """Test auto column mapping heuristics."""
+
+    # Shopify ExternalOrder columns (minus items/raw_data)
+    SHOPIFY_COLUMNS = sorted([
+        "platform", "order_id", "order_number", "status", "created_at",
+        "customer_name", "customer_email",
+        "ship_to_name", "ship_to_company", "ship_to_address1", "ship_to_address2",
+        "ship_to_city", "ship_to_state", "ship_to_postal_code",
+        "ship_to_country", "ship_to_phone",
+        "total_price", "financial_status", "fulfillment_status", "tags",
+        "total_weight_grams", "shipping_method", "item_count",
+    ])
+
+    def test_ship_to_name_over_customer_name(self):
+        """ship_to_name must map to shipTo.name, not customer_name."""
+        mapping = auto_map_columns(self.SHOPIFY_COLUMNS)
+        assert mapping.get("shipTo.name") == "ship_to_name"
+
+    def test_customer_name_excluded_from_shipto(self):
+        """customer_name must NOT capture the shipTo.name slot."""
+        mapping = auto_map_columns(self.SHOPIFY_COLUMNS)
+        for path, col in mapping.items():
+            assert col != "customer_name", (
+                f"customer_name should not be mapped; found at {path}"
+            )
+
+    def test_order_number_preferred_over_order_id(self):
+        """order_number should map to reference, not order_id."""
+        mapping = auto_map_columns(self.SHOPIFY_COLUMNS)
+        assert mapping.get("reference") == "order_number"
+
+    def test_total_weight_grams_not_mapped_to_weight(self):
+        """total_weight_grams (grams) must not auto-map to packages[0].weight."""
+        mapping = auto_map_columns(self.SHOPIFY_COLUMNS)
+        weight_col = mapping.get("packages[0].weight")
+        assert weight_col is None or "grams" not in weight_col.lower()
+
+    def test_shopify_address_fields_mapped(self):
+        """Shopify address columns should map correctly."""
+        mapping = auto_map_columns(self.SHOPIFY_COLUMNS)
+        assert mapping.get("shipTo.addressLine1") == "ship_to_address1"
+        assert mapping.get("shipTo.addressLine2") == "ship_to_address2"
+        assert mapping.get("shipTo.city") == "ship_to_city"
+        assert mapping.get("shipTo.stateProvinceCode") == "ship_to_state"
+        assert mapping.get("shipTo.postalCode") == "ship_to_postal_code"
+        assert mapping.get("shipTo.countryCode") == "ship_to_country"
+        assert mapping.get("shipTo.phone") == "ship_to_phone"
+
+    def test_csv_generic_name_still_maps(self):
+        """A plain 'Name' column should still map to shipTo.name for CSV data."""
+        csv_cols = sorted(["Name", "Address", "City", "State", "Zip", "Weight"])
+        mapping = auto_map_columns(csv_cols)
+        assert mapping.get("shipTo.name") == "Name"
+
+    def test_csv_recipient_name_maps(self):
+        """A 'Recipient Name' column should map to shipTo.name."""
+        cols = sorted(["Recipient Name", "Address", "City", "State", "Zip", "Weight"])
+        mapping = auto_map_columns(cols)
+        assert mapping.get("shipTo.name") == "Recipient Name"
+
+    def test_weight_lbs_maps_correctly(self):
+        """A 'Weight' column (no 'grams') should map to packages[0].weight."""
+        cols = sorted(["Name", "Address", "City", "State", "Zip", "Weight"])
+        mapping = auto_map_columns(cols)
+        assert mapping.get("packages[0].weight") == "Weight"
+
+
+class TestNormalizeRowsEndToEnd:
+    """End-to-end test of auto_map + apply_mapping with data from all sources.
+
+    Mirrors what _normalize_rows_for_shipping does in tools_v2 without
+    importing the SDK-dependent module.
+    """
+
+    def _normalize_row(self, row: dict) -> dict:
+        """Replicate _normalize_rows_for_shipping logic for a single row."""
+        source_columns = sorted({str(k) for k in row.keys()})
+        mapping = auto_map_columns(source_columns)
+        out = dict(row)
+        mapped = apply_mapping(mapping, row)
+        for key, value in mapped.items():
+            if value is not None and value != "":
+                out[key] = value
+        # Fallback name fields
+        if not out.get("ship_to_name"):
+            for key in ("recipient_name", "customer_name", "name"):
+                value = row.get(key)
+                if value:
+                    out["ship_to_name"] = value
+                    break
+        # Default country
+        if not out.get("ship_to_country"):
+            out["ship_to_country"] = "US"
+        return out
+
+    def test_shopify_row_preserves_ship_to_name(self):
+        """Normalization must not overwrite ship_to_name with customer_name."""
+        row = {
+            "customer_name": "Alice Buyer",
+            "ship_to_name": "Bob Recipient",
+            "ship_to_address1": "123 Main St",
+            "ship_to_city": "Springfield",
+            "ship_to_state": "IL",
+            "ship_to_postal_code": "62701",
+            "ship_to_country": "US",
+            "order_number": "1001",
+            "total_weight_grams": "453.592",
+        }
+
+        out = self._normalize_row(row)
+
+        # ship_to_name must remain the original recipient, not the buyer
+        assert out["ship_to_name"] == "Bob Recipient"
+        # customer_name must still be preserved in the row
+        assert out["customer_name"] == "Alice Buyer"
+
+    def test_normalization_does_not_inject_grams_as_weight(self):
+        """total_weight_grams must not become the canonical weight value."""
+        row = {
+            "ship_to_name": "Bob Recipient",
+            "ship_to_address1": "123 Main St",
+            "ship_to_city": "Springfield",
+            "ship_to_state": "IL",
+            "ship_to_postal_code": "62701",
+            "ship_to_country": "US",
+            "total_weight_grams": "453.592",
+        }
+
+        out = self._normalize_row(row)
+
+        # The "weight" key (canonical lbs) should not contain the grams value
+        assert out.get("weight") != "453.592"
+
+    def test_csv_row_normalizes_to_canonical_keys(self):
+        """CSV row with generic headers must produce all canonical keys."""
+        row = {
+            "recipient_name": "Jane Doe",
+            "address_line_1": "456 Oak Ave",
+            "address_line_2": "",
+            "city": "Portland",
+            "state": "OR",
+            "zip_code": "97201",
+            "country": "US",
+            "weight_lbs": "3.5",
+            "phone": "503-555-1234",
+            "order_number": "ORD-100",
+        }
+
+        out = self._normalize_row(row)
+
+        assert out["ship_to_name"] == "Jane Doe"
+        assert out["ship_to_address1"] == "456 Oak Ave"
+        assert out["ship_to_city"] == "Portland"
+        assert out["ship_to_state"] == "OR"
+        assert out["ship_to_postal_code"] == "97201"
+        assert out["ship_to_country"] == "US"
+        assert out["weight"] == "3.5"
+
+    def test_csv_row_builds_valid_shipment_request(self):
+        """Normalized CSV data must produce a valid UPS shipment request."""
+        from src.services.ups_payload_builder import (
+            build_shipment_request,
+            build_ups_rate_payload,
+        )
+
+        row = {
+            "recipient_name": "Jane Doe",
+            "address_line_1": "456 Oak Ave",
+            "city": "Portland",
+            "state": "OR",
+            "zip_code": "97201",
+            "country": "US",
+            "weight_lbs": "3.5",
+        }
+
+        out = self._normalize_row(row)
+        shipper = {
+            "name": "Test Shipper",
+            "addressLine1": "100 Test St",
+            "city": "Test City",
+            "stateProvinceCode": "CA",
+            "postalCode": "90001",
+            "countryCode": "US",
+        }
+
+        simplified = build_shipment_request(
+            order_data=out, shipper=shipper, service_code="03",
+        )
+        assert simplified["shipTo"]["name"] == "Jane Doe"
+        assert simplified["shipTo"]["city"] == "Portland"
+        assert simplified["packages"][0]["weight"] == 3.5
+
+        rate_payload = build_ups_rate_payload(
+            simplified, account_number="TEST123",
+        )
+        pkg = rate_payload["RateRequest"]["Shipment"]["Package"][0]
+        assert pkg["PackageWeight"]["Weight"] == "3.5"
+
+    def test_csv_row_with_dimensions_builds_valid_payload(self):
+        """CSV row with length/width/height must include Dimensions."""
+        from src.services.ups_payload_builder import build_shipment_request
+
+        row = {
+            "recipient_name": "Bob Smith",
+            "address_line_1": "789 Pine Rd",
+            "city": "Denver",
+            "state": "CO",
+            "zip_code": "80201",
+            "weight_lbs": 4.2,
+            "length_in": 16,
+            "width_in": 12,
+            "height_in": 8,
+            "declared_value": 275.0,
+        }
+
+        out = self._normalize_row(row)
+        simplified = build_shipment_request(
+            order_data=out, service_code="03",
+        )
+        pkg = simplified["packages"][0]
+        assert pkg["weight"] == 4.2
+        assert pkg.get("length") == 16.0
+        assert pkg.get("declaredValue") == 275.0

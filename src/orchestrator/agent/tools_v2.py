@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
@@ -25,6 +26,7 @@ from uuid import uuid4
 import sqlglot
 
 from src.db.connection import get_db_context
+from src.orchestrator.models.intent import SERVICE_ALIASES
 from src.services.column_mapping import apply_mapping, auto_map_columns, translate_service_name, validate_mapping
 from src.services.data_source_service import DataSourceService
 from src.services.job_service import JobService
@@ -142,9 +144,24 @@ def _get_data_source_service() -> DataSourceService:
     return DataSourceService.get_instance()
 
 
-def _build_job_row_data(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Convert source rows into JobRow create payload with checksums."""
+def _build_job_row_data(
+    rows: list[dict[str, Any]],
+    service_code_override: str | None = None,
+) -> list[dict[str, Any]]:
+    """Convert source rows into JobRow create payload with checksums.
+
+    Args:
+        rows: Source rows fetched from the connected data source.
+        service_code_override: Optional UPS service code to force across all rows.
+            When set, this value is persisted into each row's order_data so
+            preview and execution use identical service selection.
+    """
     normalized_rows = _normalize_rows_for_shipping(rows)
+    if service_code_override:
+        for row in normalized_rows:
+            if isinstance(row, dict):
+                row["service_code"] = service_code_override
+
     row_data = []
     for i, row in enumerate(normalized_rows, start=1):
         row_json = json.dumps(row, sort_keys=True, default=str)
@@ -217,6 +234,21 @@ def _normalize_rows_for_shipping(rows: list[dict[str, Any]]) -> list[dict[str, A
         normalized.append(out)
 
     return normalized
+
+
+def _command_explicitly_requests_service(command: str) -> bool:
+    """Return True when the command text explicitly specifies a UPS service.
+
+    This prevents accidental service overrides when the agent auto-fills a
+    default service_code for commands like "ship all California orders".
+    """
+    text = command.lower()
+    for alias in SERVICE_ALIASES:
+        if alias in text:
+            return True
+
+    # Accept explicit numeric UPS service code mentions as user intent.
+    return bool(re.search(r"\b(01|02|03|11|12|13|14|59)\b", text))
 
 
 # ---------------------------------------------------------------------------
@@ -592,12 +624,22 @@ async def ship_command_pipeline_tool(args: dict[str, Any]) -> dict[str, Any]:
     where_clause = args.get("where_clause")
     limit = int(args.get("limit", 250))
     job_name = str(args.get("job_name") or command or "Shipping Job")
-    service_code = args.get("service_code")
-    if not service_code:
-        logger.warning(
-            "ship_command_pipeline called without service_code; defaulting to 03",
-        )
-        service_code = "03"
+    raw_service_code = args.get("service_code")
+    service_code: str | None = None
+    if raw_service_code:
+        resolved = translate_service_name(str(raw_service_code))
+        if _command_explicitly_requests_service(command):
+            service_code = resolved
+            logger.info(
+                "ship_command_pipeline applying explicit service override=%s",
+                service_code,
+            )
+        else:
+            logger.info(
+                "ship_command_pipeline ignoring implicit service_code=%s for "
+                "command without explicit service; using row-level service data",
+                raw_service_code,
+            )
 
     source_service = _get_data_source_service()
     try:
@@ -624,7 +666,13 @@ async def ship_command_pipeline_tool(args: dict[str, Any]) -> dict[str, Any]:
             job_service = JobService(db)
             job = job_service.create_job(name=job_name, original_command=command)
             try:
-                job_service.create_rows(job.id, _build_job_row_data(fetched_rows))
+                job_service.create_rows(
+                    job.id,
+                    _build_job_row_data(
+                        fetched_rows,
+                        service_code_override=service_code,
+                    ),
+                )
             except Exception as e:
                 # Cleanup orphan job when rows fail to persist.
                 try:
@@ -801,20 +849,10 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     platforms: dict[str, Any] = {}
 
-    # Check Shopify — detect from environment variables
-    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-    store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
-    if access_token and store_domain:
-        store_name = store_domain.replace(".myshopify.com", "")
-        platforms["shopify"] = {
-            "connected": True,
-            "shop_name": store_name,
-            "store_domain": store_domain,
-        }
-    else:
-        platforms["shopify"] = {"connected": False}
-
-    # Also report data source status
+    # Report the authoritative data source status.
+    # Shopify connection is only meaningful when its data has been imported
+    # into the DataSourceService (DuckDB). Env vars alone are not sufficient
+    # because the agent queries DuckDB, not the Shopify API directly.
     try:
         from src.services.data_source_service import DataSourceService
 
@@ -828,10 +866,36 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
                 "row_count": source_info.row_count,
                 "column_count": len(source_info.columns),
             }
+            # Shopify is connected only if it is the active data source.
+            if source_info.source_type == "shopify":
+                store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN", "")
+                store_name = store_domain.replace(".myshopify.com", "")
+                platforms["shopify"] = {
+                    "connected": True,
+                    "shop_name": store_name,
+                    "store_domain": store_domain,
+                }
+            else:
+                # Shopify env vars may be set but data isn't loaded yet.
+                access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+                store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+                platforms["shopify"] = {
+                    "connected": False,
+                    "configured": bool(access_token and store_domain),
+                    "note": "Shopify credentials found but another source is active",
+                }
         else:
             platforms["data_source"] = {"connected": False}
+            # Check if Shopify is at least configured (will auto-import on first message)
+            access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+            store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+            platforms["shopify"] = {
+                "connected": False,
+                "configured": bool(access_token and store_domain),
+            }
     except Exception:
         platforms["data_source"] = {"connected": False}
+        platforms["shopify"] = {"connected": False}
 
     return _ok({"platforms": platforms})
 

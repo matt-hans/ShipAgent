@@ -15,6 +15,7 @@ import base64
 import json
 import logging
 import os
+import traceback
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -142,12 +143,15 @@ class BatchEngine:
                 except Exception as e:
                     # Keep preview resilient: malformed row data or payload
                     # build issues should surface as row warnings, not hard fail.
+                    err_msg = str(e) or f"{type(e).__name__} (no message)"
                     logger.warning(
-                        "Preview row %s degraded to warning (non-fatal): %s",
+                        "Preview row %s degraded to warning (non-fatal): %s [%s]\n%s",
                         row.row_number,
-                        e,
+                        err_msg,
+                        type(e).__name__,
+                        traceback.format_exc(),
                     )
-                    rate_error = str(e)
+                    rate_error = err_msg
                 finally:
                     row_elapsed = (datetime.now(UTC) - row_started).total_seconds()
                     row_durations.append(row_elapsed)

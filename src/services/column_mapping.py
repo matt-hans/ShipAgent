@@ -121,6 +121,7 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["address_line_1"], [], "shipTo.addressLine1"),
     (["address"], ["2", "3"], "shipTo.addressLine1"),
     # Recipient name (before generic "name")
+    # Explicit ship_to patterns must come first so customer_name can't steal the slot.
     (["recipient", "name"], [], "shipTo.name"),
     (["ship_to_name"], [], "shipTo.name"),
     (["ship", "name"], [], "shipTo.name"),
@@ -128,8 +129,8 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["company"], [], "shipTo.attentionName"),
     (["organization"], [], "shipTo.attentionName"),
     (["attention"], [], "shipTo.attentionName"),
-    # Generic name (if not matched above)
-    (["name"], ["company", "organization", "file", "sheet"], "shipTo.name"),
+    # Generic name — exclude "customer" so customer_name doesn't steal shipTo.name.
+    (["name"], ["company", "organization", "file", "sheet", "customer"], "shipTo.name"),
     # Contact info
     (["phone"], [], "shipTo.phone"),
     (["tel"], ["hotel"], "shipTo.phone"),
@@ -140,8 +141,9 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["zip"], [], "shipTo.postalCode"),
     (["postal"], [], "shipTo.postalCode"),
     (["country"], [], "shipTo.countryCode"),
-    # Package dimensions
-    (["weight"], [], "packages[0].weight"),
+    # Package dimensions — exclude "grams" to avoid mapping total_weight_grams
+    # directly (the value is in grams, not lbs; conversion happens downstream).
+    (["weight"], ["grams"], "packages[0].weight"),
     (["length"], [], "packages[0].length"),
     (["width"], [], "packages[0].width"),
     (["height"], [], "packages[0].height"),
@@ -151,11 +153,13 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["insured", "value"], [], "packages[0].declaredValue"),
     # Description
     (["description"], ["package"], "description"),
-    # Reference / order
+    # Reference / order — prefer order_number over order_id for human-readable refs.
+    # Columns are iterated alphabetically, so order_id comes before order_number.
+    # Exclude "_id" from the first rule to prevent order_id from claiming the slot.
     (["order_number"], [], "reference"),
-    (["order_id"], [], "reference"),
     (["order", "number"], [], "reference"),
-    (["reference"], [], "reference"),
+    (["order"], ["_id", "status"], "reference"),
+    (["reference"], ["2"], "reference"),
     # Service
     (["service"], [], "serviceCode"),
     # Delivery confirmation / signature
