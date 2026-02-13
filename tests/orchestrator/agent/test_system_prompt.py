@@ -75,6 +75,25 @@ def test_prompt_without_source_shows_no_connection():
     assert "no data source" in prompt.lower() or "not connected" in prompt.lower()
 
 
+def test_prompt_without_source_interactive_does_not_demand_connection():
+    """When interactive=True and no source, prompt allows ad-hoc shipments without demanding a connection."""
+    prompt = build_system_prompt(source_info=None, interactive_shipping=True)
+    lower = prompt.lower()
+    # Should mention interactive mode is active
+    assert "interactive shipping mode is active" in lower
+    # Should allow single ad-hoc shipments
+    assert "ad-hoc shipments" in lower or "single ad-hoc" in lower
+    # Should NOT contain the blanket "ask the user to connect" instruction
+    assert "ask the user to connect a csv" not in lower
+
+
+def test_prompt_without_source_batch_demands_connection():
+    """When interactive=False and no source, prompt demands data source connection."""
+    prompt = build_system_prompt(source_info=None, interactive_shipping=False)
+    lower = prompt.lower()
+    assert "ask the user to connect" in lower
+
+
 def test_prompt_contains_workflow():
     """System prompt includes workflow steps."""
     prompt = build_system_prompt()
@@ -195,3 +214,11 @@ class TestInteractiveShippingPromptConditioning:
         assert "ELICITATION_DECLINED" not in prompt
         assert "ELICITATION_CANCELLED" not in prompt
         assert "MALFORMED_REQUEST" not in prompt
+
+    def test_no_source_safety_rule_scoped_to_batch_when_interactive(self):
+        """Safety rule about 'no data source' is scoped to batch ops when interactive=True."""
+        prompt = build_system_prompt(source_info=None, interactive_shipping=True)
+        # The rule should mention batch operations specifically, not blanket refusal
+        assert "batch operation" in prompt.lower()
+        # And should note that single ad-hoc shipments don't require a source
+        assert "do not require a data source" in prompt.lower()

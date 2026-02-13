@@ -32,6 +32,8 @@ export interface UseConversationReturn {
   isConnected: boolean;
   /** Whether the agent is currently processing a message. */
   isProcessing: boolean;
+  /** Whether a session is currently being created (in-flight createConversation). */
+  isCreatingSession: boolean;
   /** Send a user message to the agent. Creates session on first call. */
   sendMessage: (content: string, interactiveShipping?: boolean) => Promise<void>;
   /** Reset the conversation — close SSE, delete session, clear events. */
@@ -54,10 +56,15 @@ export function useConversation(): UseConversationReturn {
   const [events, setEvents] = useState<ConversationEvent[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const sessionGenerationRef = useRef(0);
+  /** Tracks the interactive_shipping mode the current session was created with. */
+  const sessionModeRef = useRef<boolean | null>(null);
+  /** Mutex: serialises session creation to prevent concurrent createConversation calls. */
+  const creatingSessionPromiseRef = useRef<Promise<string> | null>(null);
 
   // Keep ref in sync with state for use in callbacks
   useEffect(() => {
@@ -120,18 +127,43 @@ export function useConversation(): UseConversationReturn {
     };
   }, []);
 
-  /** Ensure a session exists and SSE is connected. */
+  /** Ensure a session exists and SSE is connected.
+   *
+   * Uses a mutex (creatingSessionPromiseRef) so that concurrent callers
+   * share the same in-flight createConversation request instead of racing.
+   * Tracks the mode the session was created with (sessionModeRef) so that
+   * a mode mismatch triggers a reset + recreation.
+   */
   const ensureSession = useCallback(async (interactiveShipping: boolean): Promise<string> => {
-    if (sessionIdRef.current) {
+    // If a session already exists with the correct mode, reuse it.
+    if (sessionIdRef.current && sessionModeRef.current === interactiveShipping) {
       return sessionIdRef.current;
     }
 
-    const resp = await createConversation({ interactive_shipping: interactiveShipping });
-    const sid = resp.session_id;
-    setSessionId(sid);
-    sessionIdRef.current = sid;
-    connectSSE(sid);
-    return sid;
+    // If a creation is already in-flight, wait for it.
+    if (creatingSessionPromiseRef.current) {
+      return creatingSessionPromiseRef.current;
+    }
+
+    // Create session (mutex-protected).
+    const promise = (async () => {
+      setIsCreatingSession(true);
+      try {
+        const resp = await createConversation({ interactive_shipping: interactiveShipping });
+        const sid = resp.session_id;
+        setSessionId(sid);
+        sessionIdRef.current = sid;
+        sessionModeRef.current = interactiveShipping;
+        connectSSE(sid);
+        return sid;
+      } finally {
+        setIsCreatingSession(false);
+        creatingSessionPromiseRef.current = null;
+      }
+    })();
+
+    creatingSessionPromiseRef.current = promise;
+    return promise;
   }, [connectSSE]);
 
   /** Send a user message to the agent. */
@@ -179,6 +211,7 @@ export function useConversation(): UseConversationReturn {
 
     setSessionId(null);
     sessionIdRef.current = null;
+    sessionModeRef.current = null;
     setEvents([]);
     setIsConnected(false);
     setIsProcessing(false);
@@ -203,6 +236,7 @@ export function useConversation(): UseConversationReturn {
     events,
     isConnected,
     isProcessing,
+    isCreatingSession,
     sendMessage,
     reset,
     clearEvents,
