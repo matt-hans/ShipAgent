@@ -567,7 +567,7 @@ export function PreviewCard({
       <div className="grid grid-cols-3 gap-3">
         <div className="p-3 rounded-lg bg-slate-800/50 text-center">
           <p className="text-2xl font-semibold text-slate-100">{preview.total_rows}</p>
-          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Total Rows</p>
+          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Total Shipments</p>
         </div>
         <div className="p-3 rounded-lg bg-slate-800/50 text-center">
           <p className="text-2xl font-semibold text-primary">

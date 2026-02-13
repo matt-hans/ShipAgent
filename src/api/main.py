@@ -59,9 +59,24 @@ app.add_middleware(
 )
 
 
+def _ensure_agent_sdk_available() -> None:
+    """Fail fast when backend is not running with the project virtualenv."""
+    try:
+        import claude_agent_sdk  # noqa: F401
+    except ModuleNotFoundError as exc:
+        if exc.name != "claude_agent_sdk":
+            raise
+        raise RuntimeError(
+            "Missing required dependency 'claude_agent_sdk'. "
+            "Start the backend with ./scripts/start-backend.sh "
+            "or install deps with .venv/bin/python -m pip install -e '.[dev]'."
+        ) from exc
+
+
 @app.on_event("startup")
 def startup_event() -> None:
     """Initialize database on startup."""
+    _ensure_agent_sdk_available()
     init_db()
     allow_multi_worker = os.environ.get("SHIPAGENT_ALLOW_MULTI_WORKER", "false").lower()
     if allow_multi_worker not in {"1", "true", "yes", "on"}:
