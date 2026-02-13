@@ -99,10 +99,10 @@ When generating SQL WHERE clauses to filter the user's data, follow these rules 
 - "ship_to_name" = the person who RECEIVES the package (the recipient)
 - When the user references a person by name (e.g. "customer Noah Bode", "for Noah Bode",
   "orders for John Smith"), ALWAYS check BOTH fields using OR logic:
-  customer_name = 'Noah Bode' OR ship_to_name = 'Noah Bode'
+  customer_name ILIKE '%Noah Bode%' OR ship_to_name ILIKE '%Noah Bode%'
 - When the user explicitly says "placed by" or "bought by", use only customer_name
 - When the user explicitly says "shipping to" or "deliver to", use only ship_to_name
-- For name matching, use exact match (=) by default
+- For name matching, use ILIKE with % wildcards to handle minor spelling variations
 
 ### Status Handling
 - "status" is a composite field like "paid/unfulfilled" — use LIKE for substring matching
