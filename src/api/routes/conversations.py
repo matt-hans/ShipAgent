@@ -293,8 +293,8 @@ async def _process_agent_message(session_id: str, content: str) -> None:
             svc = DataSourceService.get_instance()
             source_info = svc.get_source_info()
 
-            # Auto-import Shopify orders if no file/DB source is loaded.
-            if source_info is None:
+            # Auto-import Shopify orders only for batch-mode sessions.
+            if source_info is None and not session.interactive_shipping:
                 source_info = await _try_auto_import_shopify(svc)
                 auto_import_used = source_info is not None
 
@@ -464,7 +464,7 @@ async def create_conversation(
     # Best-effort prewarm when a source already exists; do not block response.
     try:
         source_info = DataSourceService.get_instance().get_source_info()
-        if source_info is not None:
+        if source_info is not None and not session.interactive_shipping:
             session.prewarm_task = asyncio.create_task(
                 _prewarm_session_agent(session_id)
             )

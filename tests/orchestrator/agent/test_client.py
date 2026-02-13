@@ -110,6 +110,12 @@ class TestAgentOptions:
         mcp_servers = agent._options.mcp_servers
         assert "data" in mcp_servers
 
+    def test_interactive_mode_omits_data_mcp(self):
+        """Interactive mode should not register the data MCP server."""
+        agent = OrchestrationAgent(interactive_shipping=True)
+        mcp_servers = agent._options.mcp_servers
+        assert "data" not in mcp_servers
+
     def test_has_orchestrator_mcp(self):
         """Options should include orchestrator MCP for native tools."""
         agent = OrchestrationAgent()
@@ -133,6 +139,14 @@ class TestAgentOptions:
         assert has_orchestrator
         assert has_data
         assert has_ups
+
+    def test_interactive_mode_allowed_tools_omit_data_namespace(self):
+        """Interactive mode should remove mcp__data__* from allowed tools."""
+        agent = OrchestrationAgent(interactive_shipping=True)
+        allowed = agent._options.allowed_tools
+        assert "mcp__data__*" not in allowed
+        assert "mcp__orchestrator__*" in allowed
+        assert "mcp__ups__*" in allowed
 
 
 class TestAgentHooksConfiguration:

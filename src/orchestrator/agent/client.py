@@ -77,7 +77,10 @@ DEFAULT_MODEL = (
 logger = logging.getLogger(__name__)
 
 
-def _create_orchestrator_mcp_server(event_bridge: EventEmitterBridge) -> Any:
+def _create_orchestrator_mcp_server(
+    event_bridge: EventEmitterBridge,
+    interactive_shipping: bool = False,
+) -> Any:
     """Create SDK MCP server for orchestrator-native tools.
 
     Uses tools_v2 deterministic-only tools. Legacy tools (tools.py)
@@ -88,7 +91,10 @@ def _create_orchestrator_mcp_server(event_bridge: EventEmitterBridge) -> Any:
     """
     tools: list[SdkMcpTool[Any]] = []
 
-    for tool_def in get_all_tool_definitions(event_bridge=event_bridge):
+    for tool_def in get_all_tool_definitions(
+        event_bridge=event_bridge,
+        interactive_shipping=interactive_shipping,
+    ):
         sdk_tool = SdkMcpTool(
             name=tool_def["name"],
             description=tool_def["description"],
@@ -163,14 +169,6 @@ class OrchestrationAgent:
         # Get MCP server configs for external servers
         mcp_configs = create_mcp_servers_config()
 
-        # Convert our MCPServerConfig to SDK's McpStdioServerConfig
-        data_config: McpStdioServerConfig = {
-            "type": "stdio",
-            "command": mcp_configs["data"]["command"],
-            "args": mcp_configs["data"]["args"],
-            "env": mcp_configs["data"]["env"],
-        }
-
         # UPS MCP config (stdio via venv python)
         ups_config: McpStdioServerConfig = {
             "type": "stdio",
@@ -180,30 +178,47 @@ class OrchestrationAgent:
         }
 
         # Create orchestrator MCP server for in-process tools
-        orchestrator_mcp = _create_orchestrator_mcp_server(self.emitter_bridge)
+        orchestrator_mcp = _create_orchestrator_mcp_server(
+            self.emitter_bridge,
+            interactive_shipping=self._interactive_shipping,
+        )
+
+        mcp_servers: dict[str, McpStdioServerConfig | Any] = {
+            # In-process orchestrator tools (deterministic, no LLM calls)
+            "orchestrator": orchestrator_mcp,
+            # NOTE: "external" MCP removed — its process-local state is
+            # not synchronized with the FastAPI backend's PlatformStateManager,
+            # causing "Platform not connected" errors. Shopify data flows
+            # through auto-import into DataSourceService (DuckDB) instead.
+            "ups": ups_config,
+        }
+
+        # Data MCP server only needed in batch mode — interactive mode
+        # uses UPS MCP directly for ad-hoc shipments.
+        if not self._interactive_shipping:
+            data_config: McpStdioServerConfig = {
+                "type": "stdio",
+                "command": mcp_configs["data"]["command"],
+                "args": mcp_configs["data"]["args"],
+                "env": mcp_configs["data"]["env"],
+            }
+            mcp_servers["data"] = data_config
+
+        allowed_tools = [
+            "mcp__orchestrator__*",
+            "mcp__ups__*",
+        ]
+        if not self._interactive_shipping:
+            allowed_tools.insert(1, "mcp__data__*")
 
         return ClaudeAgentOptions(
             system_prompt=self._system_prompt,
             model=self._model,
-            mcp_servers={
-                # In-process orchestrator tools (deterministic, no LLM calls)
-                "orchestrator": orchestrator_mcp,
-                # External MCP servers (stdio child processes)
-                "data": data_config,
-                # NOTE: "external" MCP removed — its process-local state is
-                # not synchronized with the FastAPI backend's PlatformStateManager,
-                # causing "Platform not connected" errors. Shopify data flows
-                # through auto-import into DataSourceService (DuckDB) instead.
-                "ups": ups_config,
-            },
+            mcp_servers=mcp_servers,
             # Disable all built-in Claude Code tools — we only use MCP tools
             tools=[],
             # Allow all MCP tools without permission prompts
-            allowed_tools=[
-                "mcp__orchestrator__*",
-                "mcp__data__*",
-                "mcp__ups__*",
-            ],
+            allowed_tools=allowed_tools,
             hooks=create_hook_matchers(
                 interactive_shipping=self._interactive_shipping,
             ),

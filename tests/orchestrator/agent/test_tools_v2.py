@@ -435,6 +435,7 @@ async def test_ship_command_pipeline_applies_explicit_service_override_to_rows()
     for row in captured_row_data:
         order_data = json.loads(row["order_data"])
         assert order_data["service_code"] == "03"
+    assert preview_result["preview_rows"][0]["service"] == "UPS Ground"
 
     preview_kwargs = MockEngine.return_value.preview.await_args.kwargs
     assert preview_kwargs["service_code"] == "03"
@@ -814,6 +815,22 @@ def test_tool_definitions_have_unique_names():
     defs = get_all_tool_definitions()
     names = [d["name"] for d in defs]
     assert len(names) == len(set(names))
+
+
+def test_tool_definitions_filtered_for_interactive_mode():
+    """Interactive mode exposes only non-batch orchestrator status tools."""
+    defs = get_all_tool_definitions(interactive_shipping=True)
+    names = {d["name"] for d in defs}
+    assert names == {"get_job_status", "get_platform_status"}
+
+
+def test_tool_definitions_unfiltered_when_interactive_disabled():
+    """Batch/data tools remain available when interactive mode is disabled."""
+    defs = get_all_tool_definitions(interactive_shipping=False)
+    names = {d["name"] for d in defs}
+    assert "ship_command_pipeline" in names
+    assert "batch_preview" in names
+    assert "fetch_rows" in names
 
 
 # ---------------------------------------------------------------------------

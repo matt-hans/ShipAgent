@@ -779,6 +779,10 @@ async def ship_command_pipeline_tool(
 
     preview_rows = result.get("preview_rows", [])
     normalized_rows = _normalize_rows_for_shipping(fetched_rows)
+    if service_code:
+        for row in normalized_rows:
+            if isinstance(row, dict):
+                row["service_code"] = service_code
     row_map = {i: row for i, row in enumerate(normalized_rows, start=1)}
     _enrich_preview_rows_from_map(preview_rows, row_map)
     rows_with_warnings = sum(1 for row in preview_rows if row.get("warnings"))
@@ -971,6 +975,7 @@ def _bind_bridge(
 
 def get_all_tool_definitions(
     event_bridge: EventEmitterBridge | None = None,
+    interactive_shipping: bool = False,
 ) -> list[dict[str, Any]]:
     """Return all tool definitions for the orchestration agent.
 
@@ -980,7 +985,7 @@ def get_all_tool_definitions(
         List of tool definition dicts.
     """
     bridge = event_bridge or EventEmitterBridge()
-    return [
+    definitions = [
         {
             "name": "get_source_info",
             "description": "Get metadata about the currently connected data source (type, path, row count).",
@@ -1194,3 +1199,9 @@ def get_all_tool_definitions(
             "handler": get_platform_status_tool,
         },
     ]
+
+    if not interactive_shipping:
+        return definitions
+
+    interactive_allowed = {"get_job_status", "get_platform_status"}
+    return [d for d in definitions if d["name"] in interactive_allowed]

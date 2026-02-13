@@ -495,6 +495,7 @@ export function PreviewCard({
   isConfirming,
   onRefine,
   isRefining,
+  isProcessing,
   warningPreference,
 }: {
   preview: BatchPreview;
@@ -503,6 +504,7 @@ export function PreviewCard({
   isConfirming: boolean;
   onRefine: (text: string) => void;
   isRefining: boolean;
+  isProcessing: boolean;
   warningPreference: WarningPreference;
 }) {
   const [expandedRows, setExpandedRows] = React.useState<Set<number>>(new Set());
@@ -560,7 +562,14 @@ export function PreviewCard({
       {/* Header */}
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-slate-200">Shipment Preview</h3>
-        <span className="badge badge-info">Ready</span>
+        {isRefining ? (
+          <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-primary/30 bg-primary/10 text-[10px] font-mono text-primary">
+            <span className="w-2.5 h-2.5 border border-primary/40 border-t-primary rounded-full animate-spin" />
+            Refining...
+          </span>
+        ) : (
+          <span className="badge badge-info">Ready</span>
+        )}
       </div>
 
       {/* Stats */}
@@ -603,7 +612,7 @@ export function PreviewCard({
         {!showRefinement ? (
           <button
             onClick={() => setShowRefinement(true)}
-            disabled={isRefining || isConfirming}
+            disabled={isRefining || isConfirming || isProcessing}
             className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-primary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <EditIcon className="w-3.5 h-3.5" />
@@ -618,12 +627,12 @@ export function PreviewCard({
               onChange={(e) => setRefinementInput(e.target.value)}
               onKeyDown={handleRefinementKeyDown}
               placeholder='e.g. "change to 2nd Day Air"'
-              disabled={isRefining}
+              disabled={isRefining || isProcessing}
               className="flex-1 px-3 py-2 text-xs bg-slate-800/70 border border-slate-700 rounded-md text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/25 disabled:opacity-50"
             />
             <button
               onClick={handleRefinementSubmit}
-              disabled={!refinementInput.trim() || isRefining}
+              disabled={!refinementInput.trim() || isRefining || isProcessing}
               className="px-3 py-2 text-xs btn-primary flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isRefining ? (
@@ -634,7 +643,7 @@ export function PreviewCard({
             </button>
             <button
               onClick={() => { setShowRefinement(false); setRefinementInput(''); }}
-              disabled={isRefining}
+              disabled={isRefining || isProcessing}
               className="px-2 py-2 text-xs text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-50"
             >
               <XIcon className="w-3.5 h-3.5" />
@@ -1076,6 +1085,18 @@ export function ActiveSourceBanner() {
   );
 }
 
+/** Compact banner shown when interactive shipping mode is active. */
+export function InteractiveModeBanner() {
+  return (
+    <div className="flex items-center gap-2 px-4 py-1.5 border-b border-amber-500/20 bg-amber-500/5">
+      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
+      <span className="text-xs font-medium text-amber-200">Interactive Shipping (Ad-hoc)</span>
+      <span className="text-amber-700">&middot;</span>
+      <span className="text-[10px] font-mono text-amber-300/90">Batch commands disabled</span>
+    </div>
+  );
+}
+
 // Welcome message with workflow steps
 export function WelcomeMessage({
   onExampleClick,
@@ -1098,11 +1119,43 @@ export function WelcomeMessage({
     { text: 'Create a Next Day Air shipment to 456 Oak Ave, Austin TX 78701', desc: 'Express shipment' },
   ];
 
-  const examples = interactiveShipping && !isConnected
-    ? interactiveExamples
-    : interactiveShipping && isConnected
-      ? [...interactiveExamples, ...batchExamples.slice(0, 1)]
-      : batchExamples;
+  const examples = interactiveShipping ? interactiveExamples : batchExamples;
+
+  if (interactiveShipping) {
+    return (
+      <div className="flex flex-col items-center pt-12 text-center px-4 animate-fade-in">
+        <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-primary mb-4">
+          <Package className="h-6 w-6 text-primary-foreground" />
+        </div>
+
+        <h2 className="text-xl font-semibold text-foreground mb-2">
+          Interactive Shipping
+        </h2>
+
+        <p className="text-sm text-slate-400 max-w-md mb-6">
+          Create one shipment from scratch in natural language.
+          <br />
+          ShipAgent will ask for any missing required details.
+        </p>
+
+        <div className="space-y-3 w-full max-w-md">
+          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Click to try</p>
+          <div className="space-y-2">
+            {examples.map((example, i) => (
+              <button
+                key={i}
+                onClick={() => onExampleClick?.(example.text)}
+                className="w-full px-4 py-3 rounded-lg bg-slate-800/50 border border-slate-700/50 text-left hover:bg-slate-800 hover:border-slate-600 transition-colors group"
+              >
+                <p className="text-sm text-slate-300 group-hover:text-slate-100">"{example.text}"</p>
+                <p className="text-[10px] text-slate-600 mt-0.5">{example.desc}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Not connected - show getting started workflow
   if (!isConnected) {

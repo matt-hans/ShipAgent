@@ -5,6 +5,7 @@ new agent-driven conversation flow.
 """
 
 import asyncio
+import importlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -52,12 +53,42 @@ class TestCreateConversation:
             mock_get_instance.return_value = mock_svc
             mock_task = MagicMock()
             mock_task.done.return_value = False
-            mock_create_task.return_value = mock_task
+            def _fake_create_task(coro):
+                coro.close()
+                return mock_task
+
+            mock_create_task.side_effect = _fake_create_task
 
             response = client.post("/api/v1/conversations/")
 
         assert response.status_code == 201
         mock_create_task.assert_called_once()
+
+    def test_create_conversation_skips_prewarm_in_interactive_mode(self):
+        """Interactive sessions should not schedule prewarm even when source exists."""
+        mock_source_info = MagicMock()
+        mock_source_info.source_type = "csv"
+
+        with (
+            patch(
+                "src.services.data_source_service.DataSourceService.get_instance",
+            ) as mock_get_instance,
+            patch(
+                "src.api.routes.conversations.asyncio.create_task",
+            ) as mock_create_task,
+        ):
+            mock_svc = MagicMock()
+            mock_svc.get_source_info.return_value = mock_source_info
+            mock_get_instance.return_value = mock_svc
+
+            response = client.post(
+                "/api/v1/conversations/",
+                json={"interactive_shipping": True},
+            )
+
+        assert response.status_code == 201
+        assert response.json()["interactive_shipping"] is True
+        mock_create_task.assert_not_called()
 
 
 class TestSendMessage:
@@ -177,12 +208,16 @@ class TestDeleteConversation:
 @pytest.mark.asyncio
 async def test_shutdown_event_calls_cached_ups_cleanup():
     """API shutdown hook tears down cached UPS MCP client."""
+    try:
+        import importlib
+
+        tools_v2 = importlib.import_module("src.orchestrator.agent.tools_v2")
+    except ModuleNotFoundError:
+        pytest.skip("claude_agent_sdk not available in this test environment")
+
     from src.api.main import shutdown_event
 
-    with patch(
-        "src.orchestrator.agent.tools_v2.shutdown_cached_ups_client",
-        new=AsyncMock(),
-    ) as mock_shutdown:
+    with patch.object(tools_v2, "shutdown_cached_ups_client", new=AsyncMock()) as mock_shutdown:
         await shutdown_event()
         mock_shutdown.assert_awaited_once()
 
@@ -239,5 +274,52 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
         )
 
     assert creation_count == 1
+    conversations._session_manager.remove_session(session_id)
+    conversations._event_queues.pop(session_id, None)
+
+
+@pytest.mark.asyncio
+async def test_interactive_mode_skips_shopify_auto_import():
+    """Interactive sessions should not attempt Shopify auto-import."""
+    from src.api.routes import conversations as conversations_mod
+    conversations = importlib.reload(conversations_mod)
+
+    class _FakeAgent:
+        last_turn_count = 0
+        emitter_bridge = SimpleNamespace(callback=None)
+
+        async def process_message_stream(self, _content):
+            if False:
+                yield {}
+
+    session_id = "interactive-auto-import-test"
+    session = conversations._session_manager.get_or_create_session(session_id)
+    session.interactive_shipping = True
+
+    mock_svc = MagicMock()
+    mock_svc.get_source_info.return_value = None
+
+    async def _fake_ensure_agent(sess, _source_info):
+        sess.agent = _FakeAgent()
+        sess.agent_source_hash = "hash"
+        return True
+
+    with (
+        patch(
+            "src.services.data_source_service.DataSourceService.get_instance",
+            return_value=mock_svc,
+        ),
+        patch(
+            "src.api.routes.conversations._try_auto_import_shopify",
+            new=AsyncMock(),
+        ) as mock_auto_import,
+        patch(
+            "src.api.routes.conversations._ensure_agent",
+            new=AsyncMock(side_effect=_fake_ensure_agent),
+        ),
+    ):
+        await conversations._process_agent_message(session_id, "Ship one package")
+
+    mock_auto_import.assert_not_awaited()
     conversations._session_manager.remove_session(session_id)
     conversations._event_queues.pop(session_id, None)

@@ -5,13 +5,14 @@
 import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
-import { confirmJob, cancelJob, getJob, getMergedLabelsUrl, skipRows } from '@/lib/api';
+import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows } from '@/lib/api';
 import { useConversation } from '@/hooks/useConversation';
 import type { Job, BatchPreview } from '@/types/api';
 import { LabelPreview } from '@/components/LabelPreview';
 import { JobDetailPanel } from '@/components/JobDetailPanel';
 import {
   ActiveSourceBanner,
+  InteractiveModeBanner,
   CompletionArtifact,
   EditIcon,
   PreviewCard,
@@ -34,6 +35,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const {
     conversation,
     addMessage,
+    clearConversation,
     isProcessing,
     setIsProcessing,
     setActiveJob,
@@ -101,11 +103,28 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       // If a creation is in-flight, the mutex promise settles once complete.
       // reset() then tears it down so the next send creates a fresh session.
       await conv.reset();
+      clearConversation();
+      setPreview(null);
+      setCurrentJobId(null);
+      setExecutingJobId(null);
+      setIsRefining(false);
+      setShowLabelPreview(false);
+      setLabelPreviewJobId(null);
       setIsResettingSession(false);
       setIsToggleLocked(false);
     };
     doReset();
-  }, [interactiveShipping, conv.sessionId, conv.isCreatingSession, conv.isProcessing, preview, setInteractiveShipping, setIsToggleLocked, conv.reset]);
+  }, [
+    interactiveShipping,
+    conv.sessionId,
+    conv.isCreatingSession,
+    conv.isProcessing,
+    preview,
+    setInteractiveShipping,
+    setIsToggleLocked,
+    conv.reset,
+    clearConversation,
+  ]);
 
   // Lock toggle while session creation is in-flight or agent is processing.
   // (Reset-driven locking is handled in the toggle-change effect above.)
@@ -146,16 +165,39 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         }
       } else if (event.type === 'preview_ready') {
         const previewData = event.data as unknown as BatchPreview;
+        const previousJobId = currentJobId;
+        const nextJobId = previewData.job_id;
+
         setPreview(previewData);
-        setCurrentJobId(previewData.job_id);
+        setCurrentJobId(nextJobId);
+        setIsRefining(false);
         refreshJobList();
         addMessage({
           role: 'system',
           content: 'Preview ready — please review and click Confirm or Cancel.',
         });
+
+        // Refinement previews may come back as a new pending job id.
+        // Keep history to one active pending entry by removing the superseded preview job.
+        if (
+          previousJobId &&
+          nextJobId &&
+          previousJobId !== nextJobId &&
+          preview &&
+          !executingJobId
+        ) {
+          void Promise.resolve(deleteJob(previousJobId))
+            .catch((err) => {
+              console.warn('Failed to remove superseded preview job:', err);
+            })
+            .finally(() => {
+              refreshJobList();
+            });
+        }
         suppressNextMessageRef.current = true;
       } else if (event.type === 'error') {
         const msg = (event.data.message as string) || 'Agent error';
+        setIsRefining(false);
         addMessage({
           role: 'system',
           content: `Error: ${msg}`,
@@ -163,7 +205,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         });
       }
     }
-  }, [conv.events, addMessage, refreshJobList]);
+  }, [conv.events, addMessage, refreshJobList, currentJobId, preview, executingJobId]);
 
   // Clear transient agent events after each completed run to bound memory.
   React.useEffect(() => {
@@ -262,19 +304,25 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   // Handle refinement — send as a follow-up conversation message
   const handleRefine = async (refinementText: string) => {
     if (!refinementText.trim() || isRefining) return;
+    if (conv.isProcessing) {
+      addMessage({
+        role: 'system',
+        content: 'Please wait for the current update to finish, then try refining again.',
+      });
+      return;
+    }
 
     setIsRefining(true);
     try {
       // Send refinement through the agent conversation
       await conv.sendMessage(refinementText.trim(), interactiveShipping);
     } catch (err) {
+      setIsRefining(false);
       addMessage({
         role: 'system',
         content: `Refinement failed: ${err instanceof Error ? err.message : 'Unknown error'}.`,
         metadata: { action: 'error' },
       });
-    } finally {
-      setIsRefining(false);
     }
   };
 
@@ -305,10 +353,10 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   }
 
   return (
-    <div className="flex flex-col h-full">
-      <ActiveSourceBanner />
+    <div className={cn('flex flex-col h-full', interactiveShipping && 'command-center--interactive')}>
+      {interactiveShipping ? <InteractiveModeBanner /> : <ActiveSourceBanner />}
       {/* Messages area */}
-      <div className="flex-1 overflow-y-auto scrollable p-6">
+      <div className="command-messages-shell flex-1 overflow-y-auto scrollable p-6">
         {conversation.length === 0 && !preview && !executingJobId ? (
           <WelcomeMessage onExampleClick={(text) => setInputValue(text)} interactiveShipping={interactiveShipping} />
         ) : (
@@ -361,6 +409,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                   isConfirming={isConfirming}
                   onRefine={handleRefine}
                   isRefining={isRefining}
+                  isProcessing={conv.isProcessing}
                   warningPreference={warningPreference}
                 />
               </div>
@@ -455,7 +504,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       </div>
 
       {/* Input area */}
-      <div className="border-t border-slate-800 px-4 py-3 bg-void-900/50 backdrop-blur">
+      <div className="command-input-shell border-t border-slate-800 px-4 py-3 bg-void-900/50 backdrop-blur">
         <div className="max-w-3xl mx-auto">
           <div className="flex gap-2">
             <div className="relative flex-1">
@@ -466,11 +515,9 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={
-                  interactiveShipping && !hasDataSource
-                    ? 'Describe your shipment details for interactive creation...'
-                    : interactiveShipping && hasDataSource
-                      ? 'Describe one shipment or enter a batch command...'
-                      : !hasDataSource
+                  interactiveShipping
+                    ? 'Describe one shipment from scratch...'
+                    : !hasDataSource
                         ? 'Connect a data source to begin...'
                         : 'Enter a shipping command...'
                 }
@@ -509,8 +556,8 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
 
           {/* Help text - single line */}
           <p className="text-[10px] font-mono text-slate-500 mt-1.5">
-            {interactiveShipping && !hasDataSource
-              ? 'Interactive mode — describe a single shipment'
+            {interactiveShipping
+              ? 'Ad-hoc mode — provide shipment details; ShipAgent will ask for missing fields'
               : hasDataSource
                 ? 'Describe what you want to ship in natural language'
                 : 'Connect a data source from the sidebar'} · Press <kbd className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700">Enter</kbd> to send
