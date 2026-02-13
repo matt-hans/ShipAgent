@@ -132,7 +132,11 @@ export function useConversation(): UseConversationReturn {
    * Uses a mutex (creatingSessionPromiseRef) so that concurrent callers
    * share the same in-flight createConversation request instead of racing.
    * Tracks the mode the session was created with (sessionModeRef) so that
-   * a mode mismatch triggers a reset + recreation.
+   * a mode mismatch triggers teardown of the old session before creating
+   * a new one.
+   *
+   * An epoch guard (sessionGenerationRef) prevents stale sessions from
+   * being committed when reset() fires during an in-flight creation.
    */
   const ensureSession = useCallback(async (interactiveShipping: boolean): Promise<string> => {
     // If a session already exists with the correct mode, reuse it.
@@ -140,10 +144,33 @@ export function useConversation(): UseConversationReturn {
       return sessionIdRef.current;
     }
 
+    // Mode mismatch — tear down the existing session before creating a new one
+    // so we don't orphan server-side sessions.
+    if (sessionIdRef.current && sessionModeRef.current !== interactiveShipping) {
+      const oldSid = sessionIdRef.current;
+      sessionIdRef.current = null;
+      sessionModeRef.current = null;
+      setSessionId(null);
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+        eventSourceRef.current = null;
+      }
+      try {
+        await deleteConversation(oldSid);
+      } catch {
+        // Non-critical — old session will expire on server
+      }
+    }
+
     // If a creation is already in-flight, wait for it.
     if (creatingSessionPromiseRef.current) {
       return creatingSessionPromiseRef.current;
     }
+
+    // Capture generation before the async call — if reset() fires while
+    // createConversation is in-flight, generation will have advanced and
+    // we must discard the stale session.
+    const genAtStart = sessionGenerationRef.current;
 
     // Create session (mutex-protected).
     const promise = (async () => {
@@ -151,6 +178,18 @@ export function useConversation(): UseConversationReturn {
       try {
         const resp = await createConversation({ interactive_shipping: interactiveShipping });
         const sid = resp.session_id;
+
+        // Epoch guard: if generation changed, a reset() fired while we
+        // were awaiting. Delete the just-created session and bail.
+        if (sessionGenerationRef.current !== genAtStart) {
+          try {
+            await deleteConversation(sid);
+          } catch {
+            // Non-critical cleanup
+          }
+          throw new Error('Session creation aborted by concurrent reset');
+        }
+
         setSessionId(sid);
         sessionIdRef.current = sid;
         sessionModeRef.current = interactiveShipping;
@@ -188,9 +227,16 @@ export function useConversation(): UseConversationReturn {
     }
   }, [ensureSession]);
 
-  /** Reset the conversation — close SSE, delete session, clear state. */
+  /** Reset the conversation — close SSE, delete session, clear state.
+   *
+   * If a createConversation call is in-flight, the generation increment
+   * causes the epoch guard in ensureSession() to discard the result and
+   * delete the just-created session. We await the in-flight promise so
+   * the cleanup completes before callers proceed.
+   */
   const reset = useCallback(async () => {
-    // Increment generation to invalidate any in-flight SSE events
+    // Increment generation to invalidate in-flight SSE events AND
+    // trigger the epoch guard in any in-flight ensureSession().
     sessionGenerationRef.current += 1;
 
     // Close SSE
@@ -199,7 +245,20 @@ export function useConversation(): UseConversationReturn {
       eventSourceRef.current = null;
     }
 
-    // Delete session (best-effort)
+    // If a creation is in-flight, await it so the epoch guard runs
+    // and cleans up the just-created session. The promise will reject
+    // with "aborted by concurrent reset" — swallow that error.
+    const inflightPromise = creatingSessionPromiseRef.current;
+    if (inflightPromise) {
+      creatingSessionPromiseRef.current = null;
+      try {
+        await inflightPromise;
+      } catch {
+        // Expected — epoch guard throws on stale generation
+      }
+    }
+
+    // Delete the currently-committed session (best-effort)
     const sid = sessionIdRef.current;
     if (sid) {
       try {
