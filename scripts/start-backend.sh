@@ -26,9 +26,15 @@ if [ -z "${AGENT_MODEL:-}" ] && [ -n "${ANTHROPIC_MODEL:-}" ]; then
     export AGENT_MODEL="$ANTHROPIC_MODEL"
 fi
 
-if [ ! -x .venv/bin/python3 ] || [ ! -x .venv/bin/uvicorn ]; then
+if [ ! -x .venv/bin/python ]; then
     echo "Error: .venv is missing or incomplete."
     echo "Run: python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'"
+    exit 1
+fi
+
+if ! .venv/bin/python -c "import uvicorn, claude_agent_sdk" >/dev/null 2>&1; then
+    echo "Error: backend dependencies are missing in .venv (uvicorn/claude_agent_sdk)."
+    echo "Run: .venv/bin/python -m pip install -e '.[dev]'"
     exit 1
 fi
 
@@ -37,6 +43,6 @@ echo "  Model: ${AGENT_MODEL:-claude-haiku-4-5-20251001}"
 echo "  Shopify: ${SHOPIFY_STORE_DOMAIN:-not configured}"
 echo ""
 
-# Always use project .venv so MCP subprocesses and backend share deps.
+# Always use project .venv Python so backend and MCP subprocesses share deps.
 # ShipAgent currently supports single-worker operation only.
-exec .venv/bin/uvicorn src.api.main:app --reload --reload-dir src --workers 1 --port 8000
+exec .venv/bin/python -m uvicorn src.api.main:app --reload --reload-dir src --workers 1 --port 8000

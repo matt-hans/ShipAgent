@@ -30,18 +30,27 @@ import os
 from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    HookMatcher,
-    ResultMessage,
-    SdkMcpTool,
-    TextBlock,
-    ToolUseBlock,
-    create_sdk_mcp_server,
-)
-from claude_agent_sdk.types import McpStdioServerConfig
+try:
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeAgentOptions,
+        ClaudeSDKClient,
+        HookMatcher,
+        ResultMessage,
+        SdkMcpTool,
+        TextBlock,
+        ToolUseBlock,
+        create_sdk_mcp_server,
+    )
+    from claude_agent_sdk.types import McpStdioServerConfig
+except ModuleNotFoundError as exc:
+    if exc.name != "claude_agent_sdk":
+        raise
+    raise ModuleNotFoundError(
+        "No module named 'claude_agent_sdk'. "
+        "Start backend with ./scripts/start-backend.sh (project .venv), "
+        "or install deps via .venv/bin/python -m pip install -e '.[dev]'."
+    ) from exc
 
 # StreamEvent is available when include_partial_messages=True
 try:
