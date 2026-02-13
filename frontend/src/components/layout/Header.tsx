@@ -11,7 +11,7 @@ import { Switch } from '@/components/ui/switch';
 import { useAppState } from '@/hooks/useAppState';
 
 export function Header() {
-  const { interactiveShipping, setInteractiveShipping } = useAppState();
+  const { interactiveShipping, setInteractiveShipping, isToggleLocked } = useAppState();
 
   return (
     <header className="app-header">
@@ -39,6 +39,7 @@ export function Header() {
             id="interactive-shipping-toggle"
             checked={interactiveShipping}
             onCheckedChange={setInteractiveShipping}
+            disabled={isToggleLocked}
           />
         </div>
       </div>

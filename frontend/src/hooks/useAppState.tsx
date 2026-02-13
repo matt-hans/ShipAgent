@@ -120,6 +120,10 @@ interface AppState {
   // Interactive single-shipment mode toggle
   interactiveShipping: boolean;
   setInteractiveShipping: (enabled: boolean) => void;
+
+  // Lock flag: disables the toggle while a session reset or creation is in-flight
+  isToggleLocked: boolean;
+  setIsToggleLocked: (locked: boolean) => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -153,6 +157,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setInteractiveShippingState(enabled);
     localStorage.setItem('shipagent_interactive_shipping', String(enabled));
   }, []);
+
+  const [isToggleLocked, setIsToggleLocked] = React.useState(false);
 
   const refreshJobList = React.useCallback(() => {
     setJobListVersion((v) => v + 1);
@@ -200,6 +206,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setConversationSessionId,
     interactiveShipping,
     setInteractiveShipping,
+    isToggleLocked,
+    setIsToggleLocked,
   };
 
   return (

@@ -81,9 +81,15 @@ def build_system_prompt(
     current_date = datetime.now().strftime("%Y-%m-%d")
     service_table = _build_service_table()
 
-    # Data source section
+    # Data source section — message varies by interactive mode.
     if source_info is not None:
         data_section = _build_schema_section(source_info)
+    elif interactive_shipping:
+        data_section = (
+            "No data source connected. "
+            "Interactive shipping mode is active — you can create single ad-hoc shipments "
+            "without a data source. For batch operations the user must connect a data source first."
+        )
     else:
         data_section = "No data source connected. Ask the user to connect a CSV, Excel, or database source first."
 
@@ -248,7 +254,7 @@ When the request is ambiguous, exploratory, or not a straightforward shipping co
 - After preview is ready, respond with ONLY one brief sentence. Do NOT provide row-level or shipment-level details in text.
 - After preview is ready, you must NOT call additional tools until the user confirms or cancels.
 - If the user's command is ambiguous, ask clarifying questions instead of guessing.
-- If no data source is connected, do not attempt to fetch rows — ask the user to connect one.
+- If no data source is connected and the user requests a batch operation, do not attempt to fetch rows — ask the user to connect a data source first. (In interactive mode, single ad-hoc shipments do not require a data source.)
 - Report errors clearly with the error code and a suggested remediation.
 {interactive_validation_section}
 ## Tool Usage

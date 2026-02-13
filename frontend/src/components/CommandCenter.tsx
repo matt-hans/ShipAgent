@@ -43,6 +43,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     setConversationSessionId,
     interactiveShipping,
     setInteractiveShipping,
+    setIsToggleLocked,
   } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
@@ -67,13 +68,18 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const prevInteractiveRef = React.useRef(interactiveShipping);
   const [isResettingSession, setIsResettingSession] = React.useState(false);
 
-  // Reset session when interactive shipping mode changes
+  // Reset session when interactive shipping mode changes.
+  //
+  // Handles two distinct cases:
+  // 1. Active session exists (sessionId is set) → reset and recreate on next send.
+  // 2. Session creation in-flight (isCreatingSession) → wait for it, then reset,
+  //    so the next send creates a session with the correct mode.
   React.useEffect(() => {
     if (prevInteractiveRef.current === interactiveShipping) return;
     prevInteractiveRef.current = interactiveShipping;
 
-    // Only reset if there's an active session
-    if (!conv.sessionId) return;
+    const hasActiveOrInflightSession = conv.sessionId || conv.isCreatingSession;
+    if (!hasActiveOrInflightSession) return;
 
     // Confirm if there's in-progress work
     if (preview || conv.isProcessing) {
@@ -88,10 +94,29 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       }
     }
 
-    // Race-safe reset
+    // Race-safe reset: wait for any in-flight creation to settle, then reset.
     setIsResettingSession(true);
-    conv.reset().finally(() => setIsResettingSession(false));
-  }, [interactiveShipping, conv.sessionId, conv.isProcessing, preview, setInteractiveShipping, conv.reset]);
+    setIsToggleLocked(true);
+    const doReset = async () => {
+      // If a creation is in-flight, the mutex promise settles once complete.
+      // reset() then tears it down so the next send creates a fresh session.
+      await conv.reset();
+      setIsResettingSession(false);
+      setIsToggleLocked(false);
+    };
+    doReset();
+  }, [interactiveShipping, conv.sessionId, conv.isCreatingSession, conv.isProcessing, preview, setInteractiveShipping, setIsToggleLocked, conv.reset]);
+
+  // Lock toggle while session creation is in-flight or agent is processing.
+  // (Reset-driven locking is handled in the toggle-change effect above.)
+  React.useEffect(() => {
+    if (conv.isCreatingSession || conv.isProcessing) {
+      setIsToggleLocked(true);
+    } else if (!isResettingSession) {
+      // Only unlock if we're not mid-reset (the reset effect unlocks itself).
+      setIsToggleLocked(false);
+    }
+  }, [conv.isCreatingSession, conv.isProcessing, isResettingSession, setIsToggleLocked]);
 
   // Sync conversation session ID to AppState
   React.useEffect(() => {
