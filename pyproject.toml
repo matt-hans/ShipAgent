@@ -30,7 +30,6 @@ dependencies = [
     "claude-agent-sdk>=0.1.22",
     # Web interface dependencies
     "sse-starlette>=2.0.0",
-    "zipstream-ng>=1.7.0",
     "pypdf>=4.0.0",
     # UPS MCP Python fork (pinned to specific commit with elicitation/preflight support)
     "ups-mcp @ git+https://github.com/matt-hans/ups-mcp.git@54124bc69d75fde6f0f16d49b924bdb286c25b87",
