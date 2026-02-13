@@ -7,10 +7,27 @@ conversation flow that replaces the legacy command endpoint.
 from pydantic import BaseModel, Field
 
 
+class CreateConversationRequest(BaseModel):
+    """Optional request body for creating a conversation session.
+
+    All fields are optional with safe defaults for backward compatibility.
+    Existing clients that POST with no body continue to work.
+    """
+
+    interactive_shipping: bool = Field(
+        default=False,
+        description="Enable interactive single-shipment creation via UPS MCP elicitation",
+    )
+
+
 class CreateConversationResponse(BaseModel):
     """Response for creating a new conversation session."""
 
     session_id: str
+    interactive_shipping: bool = Field(
+        default=False,
+        description="Effective interactive_shipping mode for this session",
+    )
 
 
 class SendMessageRequest(BaseModel):
