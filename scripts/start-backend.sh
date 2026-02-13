@@ -21,6 +21,11 @@ set -a
 source .env
 set +a
 
+# Backward compatibility: allow legacy ANTHROPIC_MODEL key.
+if [ -z "${AGENT_MODEL:-}" ] && [ -n "${ANTHROPIC_MODEL:-}" ]; then
+    export AGENT_MODEL="$ANTHROPIC_MODEL"
+fi
+
 if [ ! -x .venv/bin/python3 ] || [ ! -x .venv/bin/uvicorn ]; then
     echo "Error: .venv is missing or incomplete."
     echo "Run: python3 -m venv .venv && .venv/bin/python -m pip install -e '.[dev]'"
@@ -28,7 +33,7 @@ if [ ! -x .venv/bin/python3 ] || [ ! -x .venv/bin/uvicorn ]; then
 fi
 
 echo "Starting ShipAgent backend..."
-echo "  Model: ${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}"
+echo "  Model: ${AGENT_MODEL:-claude-haiku-4-5-20251001}"
 echo "  Shopify: ${SHOPIFY_STORE_DOMAIN:-not configured}"
 echo ""
 

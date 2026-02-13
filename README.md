@@ -116,6 +116,9 @@ Create a `.env` file in the project root:
 # Anthropic API (required)
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxx
 
+# Claude model (optional; defaults to Haiku 4.5 if unset)
+AGENT_MODEL=claude-haiku-4-5-20251001
+
 # UPS API Credentials (required for shipping)
 UPS_CLIENT_ID=your_client_id
 UPS_CLIENT_SECRET=your_client_secret

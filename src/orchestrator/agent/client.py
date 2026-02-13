@@ -55,8 +55,15 @@ from src.orchestrator.agent.config import create_mcp_servers_config
 from src.orchestrator.agent.hooks import create_hook_matchers
 from src.orchestrator.agent.tools_v2 import get_all_tool_definitions
 
-# Default model — configurable via AGENT_MODEL env var
-DEFAULT_MODEL = os.environ.get("AGENT_MODEL", "claude-sonnet-4-5-20250929")
+# Default model resolution:
+# 1) AGENT_MODEL (preferred)
+# 2) ANTHROPIC_MODEL (backward compatibility)
+# 3) Claude Haiku 4.5 (cost-optimized default)
+DEFAULT_MODEL = (
+    os.environ.get("AGENT_MODEL")
+    or os.environ.get("ANTHROPIC_MODEL")
+    or "claude-haiku-4-5-20251001"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +132,8 @@ class OrchestrationAgent:
             system_prompt: System prompt with domain knowledge. None for default.
             max_turns: Maximum conversation turns before requiring reset.
             permission_mode: SDK permission mode for file operations.
-            model: Claude model ID. Defaults to AGENT_MODEL env var or Sonnet 4.5.
+            model: Claude model ID. Defaults to AGENT_MODEL (or legacy
+                ANTHROPIC_MODEL) env var, else Haiku 4.5.
         """
         self._system_prompt = system_prompt
         self._model = model or DEFAULT_MODEL

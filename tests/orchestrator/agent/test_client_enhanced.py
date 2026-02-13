@@ -62,6 +62,28 @@ class TestModelConfiguration:
         agent = OrchestrationAgent(model="test-model")
         assert agent._options.model == "test-model"
 
+    def test_uses_agent_model_env_when_set(self, monkeypatch):
+        """AGENT_MODEL env var is preferred for default selection."""
+        monkeypatch.setenv("AGENT_MODEL", "claude-haiku-4-5-20251001")
+        monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+        from importlib import reload
+        import src.orchestrator.agent.client as client_mod
+
+        reload(client_mod)
+        agent = client_mod.OrchestrationAgent()
+        assert agent._model == "claude-haiku-4-5-20251001"
+
+    def test_uses_legacy_anthropic_model_env_when_agent_model_missing(self, monkeypatch):
+        """ANTHROPIC_MODEL remains supported for backward compatibility."""
+        monkeypatch.delenv("AGENT_MODEL", raising=False)
+        monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
+        from importlib import reload
+        import src.orchestrator.agent.client as client_mod
+
+        reload(client_mod)
+        agent = client_mod.OrchestrationAgent()
+        assert agent._model == "claude-sonnet-4-5-20250929"
+
 
 class TestPartialMessageStreaming:
     """Tests for include_partial_messages configuration."""
