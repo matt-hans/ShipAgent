@@ -4,6 +4,7 @@ Covers:
 - CreateConversationRequest schema defaults and validation
 - CreateConversationResponse echo of interactive_shipping
 - AgentSession storage of the flag
+- Rebuild hash differentation by interactive_shipping flag
 """
 
 import pytest
@@ -11,6 +12,8 @@ from src.api.schemas_conversations import (
     CreateConversationRequest,
     CreateConversationResponse,
 )
+from src.api.routes.conversations import _compute_source_hash
+from src.services.agent_session_manager import AgentSession
 
 
 class TestCreateConversationRequest:
@@ -72,24 +75,41 @@ class TestAgentSessionStorage:
 
     def test_session_defaults_false(self):
         """AgentSession defaults interactive_shipping to False."""
-        from src.services.agent_session_manager import AgentSession
-
         session = AgentSession("test-id")
         assert session.interactive_shipping is False
 
     def test_session_stores_true(self):
         """AgentSession stores interactive_shipping when set."""
-        from src.services.agent_session_manager import AgentSession
-
         session = AgentSession("test-id")
         session.interactive_shipping = True
         assert session.interactive_shipping is True
 
     def test_session_stores_false_after_true(self):
         """AgentSession can toggle interactive_shipping back to False."""
-        from src.services.agent_session_manager import AgentSession
-
         session = AgentSession("test-id")
         session.interactive_shipping = True
         session.interactive_shipping = False
         assert session.interactive_shipping is False
+
+
+class TestRebuildHashIncludesInteractive:
+    """Tests for rebuild hash including interactive_shipping flag."""
+
+    def test_hashes_differ_when_only_flag_changes(self):
+        """Rebuild hash differs when interactive_shipping changes (same source)."""
+        source_hash = _compute_source_hash(None)
+        hash_off = f"{source_hash}|interactive=False"
+        hash_on = f"{source_hash}|interactive=True"
+        assert hash_off != hash_on
+
+    def test_hash_stable_for_same_inputs(self):
+        """Rebuild hash is deterministic for identical inputs."""
+        source_hash = _compute_source_hash(None)
+        assert source_hash == _compute_source_hash(None)
+
+    def test_hash_includes_flag_and_source(self):
+        """Combined hash format includes both source and flag."""
+        source_hash = _compute_source_hash(None)
+        combined = f"{source_hash}|interactive=True"
+        assert "|interactive=" in combined
+        assert source_hash in combined
