@@ -29,6 +29,7 @@ from sse_starlette.sse import EventSourceResponse
 from src.api.schemas_conversations import (
     ConversationHistoryMessage,
     ConversationHistoryResponse,
+    CreateConversationRequest,
     CreateConversationResponse,
     SendMessageRequest,
     SendMessageResponse,
@@ -160,9 +161,10 @@ async def _ensure_agent(
 ) -> bool:
     """Ensure the session has a running agent, creating or rebuilding as needed.
 
-    Creates a new agent on first call or when the data source changes.
-    The agent and its MCP servers persist across messages for the session
-    lifetime, leveraging the SDK's internal conversation memory.
+    Creates a new agent on first call or when the data source or
+    interactive_shipping flag changes. The agent and its MCP servers
+    persist across messages for the session lifetime, leveraging the
+    SDK's internal conversation memory.
 
     Args:
         session: The conversation session.
@@ -175,29 +177,42 @@ async def _ensure_agent(
     from src.orchestrator.agent.system_prompt import build_system_prompt
 
     source_hash = _compute_source_hash(source_info)
+    combined_hash = f"{source_hash}|interactive={session.interactive_shipping}"
 
-    # Reuse existing agent if data source hasn't changed
-    if session.agent is not None and session.agent_source_hash == source_hash:
+    # Reuse existing agent if config hasn't changed
+    if session.agent is not None and session.agent_source_hash == combined_hash:
         return False
 
-    # Stop old agent if data source changed mid-conversation
+    # Stop old agent if config changed mid-conversation
     if session.agent is not None:
         logger.info(
-            "Data source changed for session %s, rebuilding agent",
+            "Config changed for session %s, rebuilding agent "
+            "(interactive_shipping=%s)",
             session.session_id,
+            session.interactive_shipping,
         )
         try:
             await session.agent.stop()
         except Exception as e:
             logger.warning("Error stopping old agent: %s", e)
 
-    system_prompt = build_system_prompt(source_info=source_info)
-    agent = OrchestrationAgent(system_prompt=system_prompt)
+    system_prompt = build_system_prompt(
+        source_info=source_info,
+        interactive_shipping=session.interactive_shipping,
+    )
+    agent = OrchestrationAgent(
+        system_prompt=system_prompt,
+        interactive_shipping=session.interactive_shipping,
+    )
     await agent.start()
 
     session.agent = agent
-    session.agent_source_hash = source_hash
-    logger.info("Agent started for session %s", session.session_id)
+    session.agent_source_hash = combined_hash
+    logger.info(
+        "Agent started for session %s interactive_shipping=%s",
+        session.session_id,
+        session.interactive_shipping,
+    )
     return True
 
 
@@ -356,7 +371,7 @@ async def _process_agent_message(session_id: str, content: str) -> None:
         "agent_timing marker=done_emitted session_id=%s source_type=%s "
         "auto_import_used=%s agent_rebuilt=%s agent_turns_count=%d "
         "preview_rows_rated=%d preview_total_rows=%d batch_concurrency=%s "
-        "first_event_source=%s ttfb=%.3f elapsed=%.3f",
+        "interactive_shipping=%s first_event_source=%s ttfb=%.3f elapsed=%.3f",
         session_id,
         source_type,
         auto_import_used,
@@ -365,6 +380,7 @@ async def _process_agent_message(session_id: str, content: str) -> None:
         preview_rows_rated,
         preview_total_rows,
         os.environ.get("BATCH_CONCURRENCY", "5"),
+        session.interactive_shipping,
         first_event_source,
         ttfb,
         elapsed,
@@ -425,16 +441,25 @@ async def _event_generator(
 
 
 @router.post("/", response_model=CreateConversationResponse, status_code=201)
-async def create_conversation() -> CreateConversationResponse:
+async def create_conversation(
+    payload: CreateConversationRequest | None = None,
+) -> CreateConversationResponse:
     """Create a new conversation session.
 
+    Args:
+        payload: Optional request body. Defaults to interactive_shipping=False.
+            Existing no-body POST clients continue to work (backward-compatible).
+
     Returns:
-        CreateConversationResponse with the new session_id.
+        CreateConversationResponse with session_id and effective mode.
     """
     from src.services.data_source_service import DataSourceService
 
+    effective_payload = payload or CreateConversationRequest()
+
     session_id = str(uuid4())
     session = _session_manager.get_or_create_session(session_id)
+    session.interactive_shipping = effective_payload.interactive_shipping
 
     # Best-effort prewarm when a source already exists; do not block response.
     try:
@@ -446,8 +471,15 @@ async def create_conversation() -> CreateConversationResponse:
     except Exception as e:
         logger.warning("Failed to schedule agent prewarm for %s: %s", session_id, e)
 
-    logger.info("Created conversation session: %s", session_id)
-    return CreateConversationResponse(session_id=session_id)
+    logger.info(
+        "Created conversation session: %s interactive_shipping=%s",
+        session_id,
+        session.interactive_shipping,
+    )
+    return CreateConversationResponse(
+        session_id=session_id,
+        interactive_shipping=session.interactive_shipping,
+    )
 
 
 @router.post("/{session_id}/messages", status_code=202)
