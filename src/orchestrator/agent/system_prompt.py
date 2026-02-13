@@ -57,14 +57,23 @@ def _build_schema_section(source_info: DataSourceInfo) -> str:
     return "\n".join(lines)
 
 
-def build_system_prompt(source_info: DataSourceInfo | None = None) -> str:
+def build_system_prompt(
+    source_info: DataSourceInfo | None = None,
+    interactive_shipping: bool = False,
+) -> str:
     """Build the complete system prompt for the orchestration agent.
 
     Merges identity, domain knowledge, filter rules, workflow steps,
     safety rules, and the current data source schema into a single prompt.
 
+    When interactive_shipping is True, includes sections for direct
+    single-shipment creation and validation error handling. When False
+    (default), these sections are omitted entirely, keeping the agent
+    focused on batch operations only.
+
     Args:
         source_info: Current data source metadata. None if no source connected.
+        interactive_shipping: Whether interactive single-shipment mode is enabled.
 
     Returns:
         Complete system prompt string.
@@ -77,6 +86,69 @@ def build_system_prompt(source_info: DataSourceInfo | None = None) -> str:
         data_section = _build_schema_section(source_info)
     else:
         data_section = "No data source connected. Ask the user to connect a CSV, Excel, or database source first."
+
+    # Build interactive sections conditionally
+    interactive_workflow_section = ""
+    interactive_validation_section = ""
+
+    if interactive_shipping:
+        interactive_workflow_section = """
+### Direct Single-Shipment Commands (check first)
+
+If the user asks to create a single ad-hoc shipment with specific details (not filtering from a data
+source), use `mcp__ups__create_shipment` directly instead of `ship_command_pipeline`.
+This path takes precedence over the batch path when the request is one shipment and not data-source-driven.
+
+Trigger criteria:
+- User explicitly asks to create one shipment with specific details ("ship a 5lb box to John Smith")
+- No data source batch involved
+- User provides shipper and/or recipient details conversationally
+
+Flow:
+1. Gather shipment details from the user's message
+2. Build a `request_body` dict with known fields in UPS nested structure.
+   Include Shipper, ShipTo, Package, and Service details you have. Omit optional/defaultable fields
+   (PaymentInformation, RequestOption, etc.) — UPS MCP auto-fills these from env/defaults.
+   The tool expects `request_body` as the top-level argument key.
+3. Call `mcp__ups__create_shipment` with `request_body=<your dict>`
+4. If successful: show tracking number and cost
+5. If ToolError with `missing` array: follow error recovery below
+
+Do NOT send an empty `request_body` to discover what's needed — populate what you know first.
+
+### Coexistence Routing Policy
+
+When interactive shipping is enabled alongside a connected data source:
+- Any request implying multiple shipments → batch path only
+- Explicit batch or data-source operations → batch path
+- Explicit single ad-hoc shipment details → direct MCP path (takes precedence)
+- Ambiguous intent with data source connected → ask one clarifying question before calling any tool
+- Before direct shipment creation when a data source is connected → short confirmation step
+"""
+        interactive_validation_section = """
+## Handling Create Shipment Validation Errors
+
+When `mcp__ups__create_shipment` returns a ToolError with a `missing` array:
+1. Read the `missing` array — each entry has a `prompt` field with a plain-English description
+2. Ask the user for the missing information conversationally (group related fields)
+3. Rebuild the full request_body with gathered info and retry (max 2 retries, then suggest checking their data)
+4. Do NOT retry silently — always show the user what was missing
+
+Common missing fields (most env-level defaults are auto-filled by UPS MCP):
+- Shipper name + address (street, city, state/zip for US/CA/PR, country)
+- Recipient name + address
+- Service code (e.g. "03" for Ground)
+- Package details (packaging code, weight, weight unit)
+
+Rules:
+- Do NOT retry ELICITATION_DECLINED or ELICITATION_CANCELLED — the user said no
+- Do NOT treat MALFORMED_REQUEST as recoverable by asking the user — this is a structural issue
+- Do NOT parse the message string for routing — use the code field
+- Do NOT send an empty request_body to discover what's needed — populate what you know first
+
+This applies to interactive single-shipment creation only. Batch operations
+handle validation errors as row failures automatically.
+"""
 
     return f"""You are ShipAgent, an AI shipping assistant that helps users create, rate, and manage UPS shipments from their data sources.
 
@@ -135,30 +207,7 @@ When generating SQL WHERE clauses to filter the user's data, follow these rules 
 - If the filter is ambiguous, ask the user for clarification — never guess
 
 ## Workflow
-
-### Direct Single-Shipment Commands (check first)
-
-If the user asks to create a single ad-hoc shipment with specific details (not filtering from a data
-source), use `mcp__ups__create_shipment` directly instead of `ship_command_pipeline`.
-This path takes precedence over the batch path when the request is one shipment and not data-source-driven.
-
-Trigger criteria:
-- User explicitly asks to create one shipment with specific details ("ship a 5lb box to John Smith")
-- No data source batch involved
-- User provides shipper and/or recipient details conversationally
-
-Flow:
-1. Gather shipment details from the user's message
-2. Build a `request_body` dict with known fields in UPS nested structure.
-   Include Shipper, ShipTo, Package, and Service details you have. Omit optional/defaultable fields
-   (PaymentInformation, RequestOption, etc.) — UPS MCP auto-fills these from env/defaults.
-   The tool expects `request_body` as the top-level argument key.
-3. Call `mcp__ups__create_shipment` with `request_body=<your dict>`
-4. If successful: show tracking number and cost
-5. If ToolError with `missing` array: follow error recovery below
-
-Do NOT send an empty `request_body` to discover what's needed — populate what you know first.
-
+{interactive_workflow_section}
 ### Shipping Commands (default path)
 
 For straightforward shipping commands (for example: "ship all CA orders via Ground"):
@@ -201,30 +250,7 @@ When the request is ambiguous, exploratory, or not a straightforward shipping co
 - If the user's command is ambiguous, ask clarifying questions instead of guessing.
 - If no data source is connected, do not attempt to fetch rows — ask the user to connect one.
 - Report errors clearly with the error code and a suggested remediation.
-
-## Handling Create Shipment Validation Errors
-
-When `mcp__ups__create_shipment` returns a ToolError with a `missing` array:
-1. Read the `missing` array — each entry has a `prompt` field with a plain-English description
-2. Ask the user for the missing information conversationally (group related fields)
-3. Rebuild the full request_body with gathered info and retry (max 2 retries, then suggest checking their data)
-4. Do NOT retry silently — always show the user what was missing
-
-Common missing fields (most env-level defaults are auto-filled by UPS MCP):
-- Shipper name + address (street, city, state/zip for US/CA/PR, country)
-- Recipient name + address
-- Service code (e.g. "03" for Ground)
-- Package details (packaging code, weight, weight unit)
-
-Rules:
-- Do NOT retry ELICITATION_DECLINED or ELICITATION_CANCELLED — the user said no
-- Do NOT treat MALFORMED_REQUEST as recoverable by asking the user — this is a structural issue
-- Do NOT parse the message string for routing — use the code field
-- Do NOT send an empty request_body to discover what's needed — populate what you know first
-
-This applies to interactive single-shipment creation only. Batch operations
-handle validation errors as row failures automatically.
-
+{interactive_validation_section}
 ## Tool Usage
 
 You have access to deterministic tools for data operations, job management, and batch processing.
