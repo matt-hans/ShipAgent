@@ -539,6 +539,73 @@ class TestTranslateErrorMCPPreflight:
         assert msg.index("Alpha") < msg.index("Bravo") < msg.index("Charlie")
 
 
+class TestMalformedRequestReasonPreservation:
+    """Tests for MALFORMED_REQUEST reason field preservation."""
+
+    @pytest.mark.asyncio
+    async def test_malformed_request_preserves_reason_in_details(self, ups_client, mock_mcp_client):
+        """MALFORMED_REQUEST preserves reason variant in details and message."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "MALFORMED_REQUEST",
+                "message": "Ambiguous payer configuration",
+                "reason": "ambiguous_payer",
+                "missing": [],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        err = exc_info.value
+        assert err.code == "E-2011"
+        assert err.details is not None
+        assert err.details.get("reason") == "ambiguous_payer"
+        # Reason should be explicitly appended to message for diagnostics
+        assert "(reason: ambiguous_payer)" in err.message
+
+    @pytest.mark.asyncio
+    async def test_malformed_request_reason_malformed_structure(self, ups_client, mock_mcp_client):
+        """MALFORMED_REQUEST with malformed_structure reason."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "MALFORMED_REQUEST",
+                "message": "Invalid payload structure",
+                "reason": "malformed_structure",
+                "missing": [],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        err = exc_info.value
+        assert err.code == "E-2011"
+        assert err.details.get("reason") == "malformed_structure"
+        assert "(reason: malformed_structure)" in err.message
+
+    @pytest.mark.asyncio
+    async def test_reason_absent_does_not_crash(self, ups_client, mock_mcp_client):
+        """Missing reason field does not crash _translate_error."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "MALFORMED_REQUEST",
+                "message": "Some error",
+                "missing": [],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        err = exc_info.value
+        assert err.code == "E-2011"
+        assert "(reason:" not in err.message  # No reason appended when absent
+
+
 class TestRetryableRegressionMCPPreflight:
     """Verify _ups_is_retryable returns False for all 6 MCP preflight codes.
 

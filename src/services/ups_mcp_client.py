@@ -634,6 +634,11 @@ class UPSMCPClient:
             fallback_fields = (ups_message or "unspecified fields")[:200]
             context = {"count": "0", "fields": fallback_fields}
 
+        # Preserve MCP reason field for diagnostics (P2 feedback)
+        reason = error_data.get("reason")
+        if reason and isinstance(reason, str):
+            ups_message = f"{ups_message} (reason: {reason})"
+
         # Log rare server-side conflict at warning level
         if ups_code == "ELICITATION_INVALID_RESPONSE":
             logger.warning(
