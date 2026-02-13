@@ -20,11 +20,15 @@ from src.orchestrator.agent.hooks import (
 
 
 class TestValidateShippingInput:
-    """Tests for UPS shipping input validation hook."""
+    """Tests for UPS shipping input validation hook.
+
+    Business-field checks are now delegated to UPS MCP preflight.
+    The hook only guards structural integrity (tool_input must be a dict).
+    """
 
     @pytest.mark.asyncio
-    async def test_denies_missing_shipper(self):
-        """Should deny shipping_create without shipper."""
+    async def test_allows_partial_payload_missing_shipper(self):
+        """Should allow create_shipment without shipper (MCP preflight handles it)."""
         result = await validate_shipping_input(
             {
                 "tool_name": "mcp__ups__create_shipment",
@@ -33,14 +37,11 @@ class TestValidateShippingInput:
             "test-id",
             None
         )
-
-        assert "hookSpecificOutput" in result
-        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "shipper" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+        assert result == {}
 
     @pytest.mark.asyncio
-    async def test_denies_missing_shipto(self):
-        """Should deny shipping_create without shipTo."""
+    async def test_allows_partial_payload_missing_shipto(self):
+        """Should allow create_shipment without shipTo (MCP preflight handles it)."""
         result = await validate_shipping_input(
             {
                 "tool_name": "mcp__ups__create_shipment",
@@ -49,13 +50,11 @@ class TestValidateShippingInput:
             "test-id",
             None
         )
-
-        assert "hookSpecificOutput" in result
-        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert result == {}
 
     @pytest.mark.asyncio
-    async def test_denies_missing_shipper_name(self):
-        """Should deny shipping_create without shipper name."""
+    async def test_allows_partial_payload_missing_shipper_name(self):
+        """Should allow create_shipment without shipper name (MCP preflight handles it)."""
         result = await validate_shipping_input(
             {
                 "tool_name": "mcp__ups__create_shipment",
@@ -67,15 +66,11 @@ class TestValidateShippingInput:
             "test-id",
             None
         )
-
-        assert "hookSpecificOutput" in result
-        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "shipper" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
-        assert "name" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+        assert result == {}
 
     @pytest.mark.asyncio
-    async def test_denies_missing_shipper_address(self):
-        """Should deny shipping_create without shipper address."""
+    async def test_allows_partial_payload_missing_shipper_address(self):
+        """Should allow create_shipment without shipper address."""
         result = await validate_shipping_input(
             {
                 "tool_name": "mcp__ups__create_shipment",
@@ -87,14 +82,11 @@ class TestValidateShippingInput:
             "test-id",
             None
         )
-
-        assert "hookSpecificOutput" in result
-        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "address" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+        assert result == {}
 
     @pytest.mark.asyncio
-    async def test_denies_missing_shipto_name(self):
-        """Should deny shipping_create without shipTo name."""
+    async def test_allows_partial_payload_missing_shipto_name(self):
+        """Should allow create_shipment without shipTo name."""
         result = await validate_shipping_input(
             {
                 "tool_name": "mcp__ups__create_shipment",
@@ -106,15 +98,11 @@ class TestValidateShippingInput:
             "test-id",
             None
         )
-
-        assert "hookSpecificOutput" in result
-        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "recipient" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
-        assert "name" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+        assert result == {}
 
     @pytest.mark.asyncio
-    async def test_denies_missing_shipto_address(self):
-        """Should deny shipping_create without shipTo address."""
+    async def test_allows_partial_payload_missing_shipto_address(self):
+        """Should allow create_shipment without shipTo address."""
         result = await validate_shipping_input(
             {
                 "tool_name": "mcp__ups__create_shipment",
@@ -126,10 +114,7 @@ class TestValidateShippingInput:
             "test-id",
             None
         )
-
-        assert "hookSpecificOutput" in result
-        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "address" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+        assert result == {}
 
     @pytest.mark.asyncio
     async def test_allows_valid_shipping_input(self):
@@ -145,9 +130,75 @@ class TestValidateShippingInput:
             "test-id",
             None
         )
-
-        # Empty dict means allow
         assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_allows_empty_dict(self):
+        """Should allow create_shipment with empty dict (MCP preflight handles it)."""
+        result = await validate_shipping_input(
+            {
+                "tool_name": "mcp__ups__create_shipment",
+                "tool_input": {}
+            },
+            "test-id",
+            None
+        )
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_allows_partial_shipment_request(self):
+        """Should allow create_shipment with partial ShipmentRequest structure."""
+        result = await validate_shipping_input(
+            {
+                "tool_name": "mcp__ups__create_shipment",
+                "tool_input": {"ShipmentRequest": {}}
+            },
+            "test-id",
+            None
+        )
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_denies_none_tool_input(self):
+        """Should deny create_shipment when tool_input is None."""
+        result = await validate_shipping_input(
+            {
+                "tool_name": "mcp__ups__create_shipment",
+                "tool_input": None
+            },
+            "test-id",
+            None
+        )
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.asyncio
+    async def test_denies_string_tool_input(self):
+        """Should deny create_shipment when tool_input is a string."""
+        result = await validate_shipping_input(
+            {
+                "tool_name": "mcp__ups__create_shipment",
+                "tool_input": "not a dict"
+            },
+            "test-id",
+            None
+        )
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    @pytest.mark.asyncio
+    async def test_denies_list_tool_input(self):
+        """Should deny create_shipment when tool_input is a list."""
+        result = await validate_shipping_input(
+            {
+                "tool_name": "mcp__ups__create_shipment",
+                "tool_input": [1, 2, 3]
+            },
+            "test-id",
+            None
+        )
+        assert "hookSpecificOutput" in result
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     @pytest.mark.asyncio
     async def test_allows_non_shipping_tools(self):
@@ -160,7 +211,6 @@ class TestValidateShippingInput:
             "test-id",
             None
         )
-
         assert result == {}
 
     @pytest.mark.asyncio
@@ -174,7 +224,6 @@ class TestValidateShippingInput:
             "test-id",
             None
         )
-
         assert result == {}
 
 
@@ -307,7 +356,11 @@ class TestValidatePreTool:
 
     @pytest.mark.asyncio
     async def test_routes_to_shipping_validator(self):
-        """Should route shipping_create to validate_shipping_input."""
+        """Should route shipping_create to validate_shipping_input.
+
+        Partial payloads (e.g. missing shipper) are allowed because
+        business-field validation is delegated to UPS MCP preflight.
+        """
         result = await validate_pre_tool(
             {
                 "tool_name": "mcp__ups__create_shipment",
@@ -317,9 +370,8 @@ class TestValidatePreTool:
             None
         )
 
-        # Should deny (missing shipper)
-        assert "hookSpecificOutput" in result
-        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        # Should allow — MCP preflight handles missing-field validation
+        assert result == {}
 
     @pytest.mark.asyncio
     async def test_routes_to_void_shipment_validator(self):

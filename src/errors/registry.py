@@ -106,6 +106,28 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         message_template="Address in row {row} exceeds maximum length ({max_length} characters).",
         remediation="Shorten the address field and retry. UPS limits address lines to 35 characters.",
     ),
+    # MCP preflight validation errors (E-2010 – E-2012)
+    "E-2010": ErrorCode(
+        code="E-2010",
+        category=ErrorCategory.VALIDATION,
+        title="Missing Required Shipment Fields",
+        message_template="Shipment is missing {count} required field(s): {fields}",
+        remediation="Provide the missing fields listed above and retry.",
+    ),
+    "E-2011": ErrorCode(
+        code="E-2011",
+        category=ErrorCategory.VALIDATION,
+        title="Malformed Shipment Request",
+        message_template="Shipment request has invalid structure: {ups_message}",
+        remediation="Check the request format and correct any structural issues.",
+    ),
+    "E-2012": ErrorCode(
+        code="E-2012",
+        category=ErrorCategory.VALIDATION,
+        title="Shipment Creation Cancelled",
+        message_template="Shipment creation was cancelled: {ups_message}",
+        remediation="Re-initiate the shipment when ready.",
+    ),
     # UPS API errors (E-3xxx)
     "E-3001": ErrorCode(
         code="E-3001",
@@ -167,6 +189,18 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         title="Template Error",
         message_template="Error processing mapping template: {details}",
         remediation="This indicates a problem with the generated mapping. Contact support.",
+    ),
+    # MCP elicitation integration error (E-4010)
+    "E-4010": ErrorCode(
+        code="E-4010",
+        category=ErrorCategory.SYSTEM,
+        title="Elicitation Integration Error",
+        message_template="Elicitation response conflict: {ups_message}",
+        remediation="This is an internal integration error. Retry the shipment. If the issue persists, report it.",
+        # is_retryable is user-facing guidance only; runtime auto-retry is
+        # disabled because create_shipment may have side effects.
+        # See _ups_is_retryable() which returns False for this code.
+        is_retryable=True,
     ),
     # Auth errors (E-5xxx)
     "E-5001": ErrorCode(

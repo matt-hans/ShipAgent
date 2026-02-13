@@ -105,3 +105,31 @@ def test_prompt_returns_string():
     result = build_system_prompt()
     assert isinstance(result, str)
     assert len(result) > 100  # non-trivial prompt
+
+
+def test_prompt_contains_direct_single_shipment_section():
+    """System prompt includes Direct Single-Shipment Commands section."""
+    prompt = build_system_prompt()
+    assert "Direct Single-Shipment Commands" in prompt
+    assert "mcp__ups__create_shipment" in prompt
+    assert "request_body" in prompt
+
+
+def test_prompt_contains_validation_error_handling_section():
+    """System prompt includes Handling Create Shipment Validation Errors section."""
+    prompt = build_system_prompt()
+    assert "Handling Create Shipment Validation Errors" in prompt
+    assert "missing" in prompt.lower()
+
+
+def test_prompt_contains_elicitation_declined_rule():
+    """System prompt instructs not to retry cancelled/declined errors."""
+    prompt = build_system_prompt()
+    assert "ELICITATION_DECLINED" in prompt
+    assert "ELICITATION_CANCELLED" in prompt
+
+
+def test_prompt_contains_malformed_request_rule():
+    """System prompt instructs MALFORMED_REQUEST is a structural issue."""
+    prompt = build_system_prompt()
+    assert "MALFORMED_REQUEST" in prompt
