@@ -127,9 +127,9 @@ def test_prompt_returns_string():
 
 
 def test_prompt_contains_direct_single_shipment_section_when_interactive():
-    """System prompt includes Direct Single-Shipment Commands when interactive=True."""
+    """System prompt includes the exclusive interactive ad-hoc section when interactive=True."""
     prompt = build_system_prompt(interactive_shipping=True)
-    assert "Direct Single-Shipment Commands" in prompt
+    assert "Interactive Ad-hoc Mode (Exclusive)" in prompt
     assert "mcp__ups__create_shipment" in prompt
     assert "request_body" in prompt
 
@@ -163,7 +163,7 @@ class TestInteractiveShippingPromptConditioning:
     def test_interactive_sections_included_when_true(self):
         """Direct shipment + validation sections present when interactive=True."""
         prompt = build_system_prompt(interactive_shipping=True)
-        assert "Direct Single-Shipment Commands" in prompt
+        assert "Interactive Ad-hoc Mode (Exclusive)" in prompt
         assert "Handling Create Shipment Validation Errors" in prompt
 
     def test_interactive_sections_omitted_when_false(self):
@@ -178,27 +178,26 @@ class TestInteractiveShippingPromptConditioning:
         assert "Direct Single-Shipment Commands" not in prompt
         assert "Handling Create Shipment Validation Errors" not in prompt
 
-    def test_coexistence_routing_policy_when_true(self):
-        """Coexistence routing rules present when interactive=True."""
+    def test_exclusive_mode_policy_when_true(self):
+        """Interactive prompt explicitly enforces exclusive ad-hoc mode."""
         prompt = build_system_prompt(interactive_shipping=True)
         lower = prompt.lower()
-        assert "batch path" in lower
-        assert "ambiguous" in lower
-        assert "clarifying question" in lower
+        assert "do not call batch or data-source tools" in lower
+        assert "turn interactive shipping off" in lower
 
-    def test_direct_path_precedence_text(self):
-        """Direct path takes precedence for ad-hoc when interactive=True."""
+    def test_interactive_section_mentions_ambiguity_guard(self):
+        """Interactive section still includes ambiguity handling guidance."""
         prompt = build_system_prompt(interactive_shipping=True)
         lower = prompt.lower()
-        assert "takes precedence" in lower or "check first" in lower
+        assert "ask one clarifying question" in lower
 
-    def test_batch_workflow_always_present(self):
-        """Batch shipping workflow is present regardless of interactive flag."""
+    def test_batch_workflow_present_only_when_interactive_disabled(self):
+        """Batch shipping workflow is omitted when interactive mode is enabled."""
         prompt_off = build_system_prompt(interactive_shipping=False)
         prompt_on = build_system_prompt(interactive_shipping=True)
-        for prompt in (prompt_off, prompt_on):
-            assert "ship_command_pipeline" in prompt
-            assert "preview" in prompt.lower()
+        assert "ship_command_pipeline" in prompt_off
+        assert "### Shipping Commands (default path)" in prompt_off
+        assert "### Shipping Commands (default path)" not in prompt_on
 
     def test_safety_rules_always_present(self):
         """Safety rules are present regardless of interactive flag."""
@@ -216,9 +215,13 @@ class TestInteractiveShippingPromptConditioning:
         assert "MALFORMED_REQUEST" not in prompt
 
     def test_no_source_safety_rule_scoped_to_batch_when_interactive(self):
-        """Safety rule about 'no data source' is scoped to batch ops when interactive=True."""
+        """Interactive mode instructs explicit redirect for batch/data-source requests."""
         prompt = build_system_prompt(source_info=None, interactive_shipping=True)
-        # The rule should mention batch operations specifically, not blanket refusal
-        assert "batch operation" in prompt.lower()
-        # And should note that single ad-hoc shipments don't require a source
-        assert "do not require a data source" in prompt.lower()
+        assert "turn interactive shipping off" in prompt.lower()
+
+    def test_schema_suppressed_when_interactive_even_with_source(self):
+        """Interactive mode suppresses schema details even when source_info exists."""
+        source = _make_source_info()
+        prompt = build_system_prompt(source_info=source, interactive_shipping=True)
+        assert "Columns:" not in prompt
+        assert "order_id (VARCHAR, not null)" not in prompt

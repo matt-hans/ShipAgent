@@ -81,55 +81,50 @@ def build_system_prompt(
     current_date = datetime.now().strftime("%Y-%m-%d")
     service_table = _build_service_table()
 
-    # Data source section — message varies by interactive mode.
-    if source_info is not None:
-        data_section = _build_schema_section(source_info)
-    elif interactive_shipping:
+    # Data source section — interactive mode suppresses schema details.
+    if interactive_shipping:
         data_section = (
-            "No data source connected. "
-            "Interactive shipping mode is active — you can create single ad-hoc shipments "
-            "without a data source. For batch operations the user must connect a data source first."
+            "Interactive shipping mode is active. "
+            "Single ad-hoc shipment creation is enabled and data-source schema context "
+            "is intentionally hidden in this mode. If the user requests batch or "
+            "data-source-driven shipping, instruct them to turn Interactive Shipping off."
         )
+    elif source_info is not None:
+        data_section = _build_schema_section(source_info)
     else:
         data_section = "No data source connected. Ask the user to connect a CSV, Excel, or database source first."
 
-    # Build interactive sections conditionally
-    interactive_workflow_section = ""
+    filter_rules_section = ""
+    workflow_section = ""
     interactive_validation_section = ""
+    safety_mode_section = ""
+    tool_usage_section = ""
 
     if interactive_shipping:
-        interactive_workflow_section = """
-### Direct Single-Shipment Commands (check first)
+        filter_rules_section = """
+Interactive mode is active:
+- Do NOT generate SQL WHERE clauses.
+- Do NOT reference data source columns.
+- Collect shipment details conversationally from the user.
+"""
+        workflow_section = """
+### Interactive Ad-hoc Mode (Exclusive)
 
-If the user asks to create a single ad-hoc shipment with specific details (not filtering from a data
-source), use `mcp__ups__create_shipment` directly instead of `ship_command_pipeline`.
-This path takes precedence over the batch path when the request is one shipment and not data-source-driven.
+Interactive Shipping is enabled for single-shipment creation only.
 
-Trigger criteria:
-- User explicitly asks to create one shipment with specific details ("ship a 5lb box to John Smith")
-- No data source batch involved
-- User provides shipper and/or recipient details conversationally
-
-Flow:
+Use `mcp__ups__create_shipment` for ad-hoc shipment creation:
 1. Gather shipment details from the user's message
-2. Build a `request_body` dict with known fields in UPS nested structure.
-   Include Shipper, ShipTo, Package, and Service details you have. Omit optional/defaultable fields
-   (PaymentInformation, RequestOption, etc.) — UPS MCP auto-fills these from env/defaults.
-   The tool expects `request_body` as the top-level argument key.
+2. Build a `request_body` dict with known UPS fields (Shipper, ShipTo, Package, Service)
 3. Call `mcp__ups__create_shipment` with `request_body=<your dict>`
-4. If successful: show tracking number and cost
-5. If ToolError with `missing` array: follow error recovery below
+4. If successful: return tracking number and shipment cost
+5. If ToolError includes `missing`: ask for the missing fields and retry
 
-Do NOT send an empty `request_body` to discover what's needed — populate what you know first.
+Batch and data-source policy in this mode:
+- Do NOT call batch or data-source tools
+- If the user requests batch or data-source shipping, instruct them to turn Interactive Shipping off
+- If the request is ambiguous between ad-hoc and batch, ask one clarifying question and default to ad-hoc only if explicitly confirmed
 
-### Coexistence Routing Policy
-
-When interactive shipping is enabled alongside a connected data source:
-- Any request implying multiple shipments → batch path only
-- Explicit batch or data-source operations → batch path
-- Explicit single ad-hoc shipment details → direct MCP path (takes precedence)
-- Ambiguous intent with data source connected → ask one clarifying question before calling any tool
-- Before direct shipment creation when a data source is connected → short confirmation step
+Do NOT send an empty `request_body` to discover required fields — populate what you know first.
 """
         interactive_validation_section = """
 ## Handling Create Shipment Validation Errors
@@ -155,21 +150,16 @@ Rules:
 This applies to interactive single-shipment creation only. Batch operations
 handle validation errors as row failures automatically.
 """
-
-    return f"""You are ShipAgent, an AI shipping assistant that helps users create, rate, and manage UPS shipments from their data sources.
-
-Current date: {current_date}
-
-## UPS Service Codes
-
-{service_table}
-
-## Connected Data Source
-
-{data_section}
-
-## Filter Generation Rules
-
+        safety_mode_section = """
+- In interactive mode, NEVER call batch/data-source tools.
+- If the user requests batch/data-source shipping, clearly instruct them to turn Interactive Shipping off.
+"""
+        tool_usage_section = """
+You have deterministic tools available. In interactive mode, focus on UPS ad-hoc shipment tools.
+Do not attempt batch/data-source tools in this mode.
+"""
+    else:
+        filter_rules_section = f"""
 When generating SQL WHERE clauses to filter the user's data, follow these rules strictly:
 
 ### Person Name Handling
@@ -211,9 +201,8 @@ When generating SQL WHERE clauses to filter the user's data, follow these rules 
 - ONLY reference columns that exist in the connected data source schema above
 - Use proper SQL syntax with single quotes for string values
 - If the filter is ambiguous, ask the user for clarification — never guess
-
-## Workflow
-{interactive_workflow_section}
+"""
+        workflow_section = """
 ### Shipping Commands (default path)
 
 For straightforward shipping commands (for example: "ship all CA orders via Ground"):
@@ -243,9 +232,26 @@ When the request is ambiguous, exploratory, or not a straightforward shipping co
 5. Add rows
 6. Preview
 7. Await confirmation
+"""
+        safety_mode_section = """
+- If no data source is connected and the user requests a batch operation, do not attempt to fetch rows — ask the user to connect a data source first.
+"""
+        tool_usage_section = """
+You have access to deterministic tools for data operations, job management, and batch processing.
+Use them to execute the workflow steps above. Never call the LLM for sub-tasks that tools can handle
+deterministically (e.g., SQL validation, column mapping, payload building).
+"""
 
-## Safety Rules
+    # Safety rules: common block applies to both modes, batch block only when not interactive.
+    common_safety = """
+- If the user's command is ambiguous, ask clarifying questions instead of guessing.
+- Report errors clearly with the error code and a suggested remediation.
+"""
 
+    if interactive_shipping:
+        batch_safety = ""
+    else:
+        batch_safety = """
 - You must NEVER execute a batch without user confirmation. Always preview first.
 - You must NEVER call batch_execute directly. The frontend handles execution via the Confirm button.
 - You must NEVER skip the preview step. The user must see costs before committing.
@@ -253,13 +259,31 @@ When the request is ambiguous, exploratory, or not a straightforward shipping co
 - During multi-tool fallback steps, prefer tool-first execution with minimal narration.
 - After preview is ready, respond with ONLY one brief sentence. Do NOT provide row-level or shipment-level details in text.
 - After preview is ready, you must NOT call additional tools until the user confirms or cancels.
-- If the user's command is ambiguous, ask clarifying questions instead of guessing.
-- If no data source is connected and the user requests a batch operation, do not attempt to fetch rows — ask the user to connect a data source first. (In interactive mode, single ad-hoc shipments do not require a data source.)
-- Report errors clearly with the error code and a suggested remediation.
+"""
+
+    return f"""You are ShipAgent, an AI shipping assistant that helps users create, rate, and manage UPS shipments from their data sources.
+
+Current date: {current_date}
+
+## UPS Service Codes
+
+{service_table}
+
+## Connected Data Source
+
+{data_section}
+
+## Filter Generation Rules
+
+{filter_rules_section}
+
+## Workflow
+{workflow_section}
+
+## Safety Rules
+{common_safety}{batch_safety}{safety_mode_section}
 {interactive_validation_section}
 ## Tool Usage
 
-You have access to deterministic tools for data operations, job management, and batch processing.
-Use them to execute the workflow steps above. Never call the LLM for sub-tasks that tools can handle
-deterministically (e.g., SQL validation, column mapping, payload building).
+{tool_usage_section}
 """

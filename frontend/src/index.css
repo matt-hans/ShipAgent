@@ -164,6 +164,18 @@
     @apply flex-shrink-0 border-r border-border bg-card/50;
   }
 
+  .command-center--interactive {
+    @apply bg-amber-500/[0.03];
+  }
+
+  .command-center--interactive .command-messages-shell {
+    @apply bg-amber-500/[0.02];
+  }
+
+  .command-center--interactive .command-input-shell {
+    @apply border-amber-500/20 bg-amber-500/[0.04];
+  }
+
   .container-wide {
     @apply px-4;
   }
