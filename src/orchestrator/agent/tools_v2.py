@@ -13,9 +13,11 @@ Example:
     defs = get_all_tool_definitions()
 """
 
+import asyncio
 import hashlib
 import json
 import logging
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -110,6 +112,67 @@ def _get_data_source_service() -> DataSourceService:
         The active DataSourceService.
     """
     return DataSourceService.get_instance()
+
+
+# ---------------------------------------------------------------------------
+# Shared UPS MCP Client (module-level cache)
+# ---------------------------------------------------------------------------
+
+_ups_client: Any | None = None
+_ups_client_lock = asyncio.Lock()
+
+
+def _build_ups_client() -> Any:
+    """Build a UPSMCPClient configured from environment variables."""
+    from src.services.ups_mcp_client import UPSMCPClient
+
+    base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
+    environment = "test" if "wwwcie" in base_url else "production"
+
+    return UPSMCPClient(
+        client_id=os.environ.get("UPS_CLIENT_ID", ""),
+        client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
+        environment=environment,
+        account_number=os.environ.get("UPS_ACCOUNT_NUMBER", ""),
+    )
+
+
+async def _get_ups_client() -> Any:
+    """Get the cached UPSMCPClient, creating it lazily if needed."""
+    global _ups_client
+
+    if _ups_client is not None:
+        await _ups_client.connect()
+        return _ups_client
+
+    async with _ups_client_lock:
+        if _ups_client is not None:
+            await _ups_client.connect()
+            return _ups_client
+        client = _build_ups_client()
+        await client.connect()
+        _ups_client = client
+        return _ups_client
+
+
+async def _reset_ups_client() -> None:
+    """Tear down and clear the cached UPSMCPClient."""
+    global _ups_client
+
+    async with _ups_client_lock:
+        if _ups_client is None:
+            return
+        try:
+            await _ups_client.disconnect()
+        except Exception as e:
+            logger.warning("Failed to disconnect cached UPS client: %s", e)
+        finally:
+            _ups_client = None
+
+
+async def shutdown_cached_ups_client() -> None:
+    """Shutdown hook for FastAPI app lifecycle."""
+    await _reset_ups_client()
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +375,7 @@ async def _run_batch_preview(job_id: str) -> dict[str, Any]:
     """Internal helper — run batch preview via BatchEngine.
 
     Separated for testability. In production this creates a BatchEngine
-    with UPSMCPClient (async MCP) and calls preview().
+    with the cached UPSMCPClient (async MCP) and calls preview().
 
     Args:
         job_id: Job UUID.
@@ -320,36 +383,26 @@ async def _run_batch_preview(job_id: str) -> dict[str, Any]:
     Returns:
         Preview result dict from BatchEngine.
     """
-    import os
-
     from src.services.batch_engine import BatchEngine
-    from src.services.ups_mcp_client import UPSMCPClient
     from src.services.ups_payload_builder import build_shipper_from_env
 
     account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
-    base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
-    environment = "test" if "wwwcie" in base_url else "production"
     shipper = build_shipper_from_env()
+    ups = await _get_ups_client()
 
-    async with UPSMCPClient(
-        client_id=os.environ.get("UPS_CLIENT_ID", ""),
-        client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
-        environment=environment,
-        account_number=account_number,
-    ) as ups:
-        with get_db_context() as db:
-            engine = BatchEngine(
-                ups_service=ups,
-                db_session=db,
-                account_number=account_number,
-            )
-            svc = JobService(db)
-            rows = svc.get_rows(job_id)
-            result = await engine.preview(
-                job_id=job_id,
-                rows=rows,
-                shipper=shipper,
-            )
+    with get_db_context() as db:
+        engine = BatchEngine(
+            ups_service=ups,
+            db_session=db,
+            account_number=account_number,
+        )
+        svc = JobService(db)
+        rows = svc.get_rows(job_id)
+        result = await engine.preview(
+            job_id=job_id,
+            rows=rows,
+            shipper=shipper,
+        )
     return result
 
 
@@ -433,10 +486,22 @@ async def batch_preview_tool(args: dict[str, Any]) -> dict[str, Any]:
         )
         result["rows_with_warnings"] = rows_with_warnings
 
-        # Emit to frontend SSE queue
+        # IMPORTANT: Emit full preview payload to frontend before
+        # returning a slim tool response to the LLM.
         _emit_event("preview_ready", result)
 
-        return _ok(result)
+        return _ok({
+            "status": "preview_ready",
+            "job_id": job_id,
+            "total_rows": result.get("total_rows", 0),
+            "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
+            "rows_with_warnings": rows_with_warnings,
+            "message": (
+                "Preview card has been displayed to the user. STOP HERE. "
+                "Respond with one brief sentence asking the user to review "
+                "the preview and click Confirm or Cancel."
+            ),
+        })
     except Exception as e:
         logger.error("batch_preview_tool failed: %s", e)
         return _err(f"Batch preview failed: {e}")
@@ -466,36 +531,26 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
         return _err("job_id is required")
 
     try:
-        import os
-
         from src.services.batch_engine import BatchEngine
-        from src.services.ups_mcp_client import UPSMCPClient
         from src.services.ups_payload_builder import build_shipper_from_env
 
         account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
-        base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
-        environment = "test" if "wwwcie" in base_url else "production"
         shipper = build_shipper_from_env()
+        ups = await _get_ups_client()
 
-        async with UPSMCPClient(
-            client_id=os.environ.get("UPS_CLIENT_ID", ""),
-            client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
-            environment=environment,
-            account_number=account_number,
-        ) as ups:
-            with get_db_context() as db:
-                engine = BatchEngine(
-                    ups_service=ups,
-                    db_session=db,
-                    account_number=account_number,
-                )
-                svc = JobService(db)
-                rows = svc.get_rows(job_id)
-                result = await engine.execute(
-                    job_id=job_id,
-                    rows=rows,
-                    shipper=shipper,
-                )
+        with get_db_context() as db:
+            engine = BatchEngine(
+                ups_service=ups,
+                db_session=db,
+                account_number=account_number,
+            )
+            svc = JobService(db)
+            rows = svc.get_rows(job_id)
+            result = await engine.execute(
+                job_id=job_id,
+                rows=rows,
+                shipper=shipper,
+            )
         return _ok(result)
     except Exception as e:
         logger.error("batch_execute_tool failed: %s", e)

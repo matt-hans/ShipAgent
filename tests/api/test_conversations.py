@@ -4,7 +4,7 @@ Tests the CRUD operations and basic SSE endpoint registration for the
 new agent-driven conversation flow.
 """
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -83,8 +83,12 @@ class TestStreamEndpoint:
 
     def test_stream_endpoint_exists(self):
         """Stream endpoint returns SSE content type."""
+        from src.api.routes.conversations import _get_event_queue
+
         create_resp = client.post("/api/v1/conversations/")
         session_id = create_resp.json()["session_id"]
+        # Ensure stream yields immediately and closes for deterministic test timing.
+        _get_event_queue(session_id).put_nowait({"event": "done", "data": {}})
 
         # Use stream=True to avoid hanging on long-running SSE
         with client.stream(
@@ -127,3 +131,16 @@ class TestDeleteConversation:
             json={"content": "test"},
         )
         assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_shutdown_event_calls_cached_ups_cleanup():
+    """API shutdown hook tears down cached UPS MCP client."""
+    from src.api.main import shutdown_event
+
+    with patch(
+        "src.orchestrator.agent.tools_v2.shutdown_cached_ups_client",
+        new=AsyncMock(),
+    ) as mock_shutdown:
+        await shutdown_event()
+        mock_shutdown.assert_awaited_once()

@@ -19,7 +19,7 @@ from mcp import StdioServerParameters
 
 from src.errors.ups_translation import translate_ups_error
 from src.services.errors import UPSServiceError
-from src.services.mcp_client import MCPClient, MCPToolError
+from src.services.mcp_client import MCPClient, MCPConnectionError, MCPToolError
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,12 @@ class UPSMCPClient:
         self._environment = environment
         self._account_number = account_number
         self._max_retries = max_retries
-        self._mcp: MCPClient | None = None
+        self._mcp = MCPClient(
+            server_params=self._build_server_params(),
+            max_retries=self._max_retries,
+            base_delay=1.0,
+            is_retryable=_ups_is_retryable,
+        )
 
     def _build_server_params(self) -> StdioServerParameters:
         """Build StdioServerParameters for the UPS MCP server.
@@ -115,15 +120,7 @@ class UPSMCPClient:
         Raises:
             MCPConnectionError: If server fails to spawn.
         """
-        params = self._build_server_params()
-        self._mcp = MCPClient(
-            server_params=params,
-            max_retries=self._max_retries,
-            base_delay=1.0,
-            is_retryable=_ups_is_retryable,
-        )
-        await self._mcp.__aenter__()
-        logger.info("UPS MCP client connected (env=%s)", self._environment)
+        await self.connect()
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -134,9 +131,16 @@ class UPSMCPClient:
             exc_val: Exception value if exiting due to error.
             exc_tb: Exception traceback if exiting due to error.
         """
-        if self._mcp is not None:
-            await self._mcp.__aexit__(exc_type, exc_val, exc_tb)
-            self._mcp = None
+        await self.disconnect()
+
+    async def connect(self) -> None:
+        """Connect to UPS MCP if disconnected."""
+        await self._mcp.connect()
+        logger.info("UPS MCP client connected (env=%s)", self._environment)
+
+    async def disconnect(self) -> None:
+        """Disconnect from UPS MCP."""
+        await self._mcp.disconnect()
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -262,11 +266,49 @@ class UPSMCPClient:
             MCPToolError: On tool error.
             RuntimeError: If client not connected.
         """
-        if self._mcp is None:
+        if getattr(self._mcp, "_session", None) is None:
             raise RuntimeError(
                 "UPSMCPClient not connected. Use 'async with UPSMCPClient(...)' context."
             )
-        return await self._mcp.call_tool(tool_name, arguments)
+
+        try:
+            return await self._mcp.call_tool(tool_name, arguments)
+        except Exception as e:
+            if not self._is_transport_error(e):
+                raise
+
+            logger.warning(
+                "UPS MCP transport failure during '%s', reconnecting once: %s",
+                tool_name,
+                e,
+            )
+            await self.disconnect()
+            await self.connect()
+
+            # Replay only non-mutating operations after reconnect.
+            if tool_name in {"rate_shipment", "validate_address"}:
+                return await self._mcp.call_tool(tool_name, arguments)
+            raise
+
+    def _is_transport_error(self, error: Exception) -> bool:
+        """Classify transport/session failures that warrant reconnect.
+
+        Tool-level UPS errors (MCPToolError) are handled separately and
+        should not trigger reconnect retries.
+        """
+        if isinstance(error, MCPToolError):
+            return False
+        return isinstance(
+            error,
+            (
+                MCPConnectionError,
+                ConnectionError,
+                OSError,
+                RuntimeError,
+                BrokenPipeError,
+                EOFError,
+            ),
+        )
 
     # ── Response normalisation (ported from UPSService) ────────────────
 

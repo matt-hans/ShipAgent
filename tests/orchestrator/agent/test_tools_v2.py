@@ -12,6 +12,8 @@ import pytest
 from src.orchestrator.agent.tools_v2 import (
     _emit_event,
     _enrich_preview_rows,
+    _get_ups_client,
+    _reset_ups_client,
     batch_execute_tool,
     batch_preview_tool,
     create_job_tool,
@@ -22,6 +24,7 @@ from src.orchestrator.agent.tools_v2 import (
     get_schema_tool,
     get_source_info_tool,
     set_event_emitter,
+    shutdown_cached_ups_client,
     validate_filter_syntax_tool,
 )
 
@@ -240,8 +243,9 @@ async def test_get_job_status_returns_summary():
 
 @pytest.mark.asyncio
 async def test_batch_preview_returns_preview_data():
-    """Preview tool delegates to BatchEngine.preview()."""
+    """Preview tool returns a slim LLM payload while keeping SSE payload full."""
     preview_result = {
+        "job_id": "test-job",
         "total_rows": 5,
         "total_estimated_cost_cents": 3500,
         "preview_rows": [],
@@ -253,7 +257,11 @@ async def test_batch_preview_returns_preview_data():
 
     assert result["isError"] is False
     data = json.loads(result["content"][0]["text"])
+    assert data["status"] == "preview_ready"
     assert data["total_rows"] == 5
+    assert data["total_estimated_cost_cents"] == 3500
+    assert "preview_rows" not in data
+    assert "STOP HERE" in data["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +366,34 @@ async def test_batch_preview_emits_preview_ready():
     assert len(captured) == 1
     assert captured[0][0] == "preview_ready"
     assert captured[0][1]["job_id"] == "test-job"
+    assert "preview_rows" in captured[0][1]
+
+
+@pytest.mark.asyncio
+async def test_batch_preview_emits_before_ok_return():
+    """_emit_event is called before _ok return construction."""
+    preview_result = {
+        "job_id": "test-job",
+        "total_rows": 1,
+        "total_estimated_cost_cents": 123,
+        "preview_rows": [],
+    }
+    call_order: list[str] = []
+
+    def _capture_emit(event_type: str, data: dict) -> None:
+        call_order.append("emit")
+
+    def _capture_ok(payload: dict) -> dict:
+        call_order.append("ok")
+        return {"isError": False, "content": [{"type": "text", "text": json.dumps(payload)}]}
+
+    with patch("src.orchestrator.agent.tools_v2._run_batch_preview", new=AsyncMock(return_value=preview_result)), \
+         patch("src.orchestrator.agent.tools_v2._enrich_preview_rows", return_value=preview_result["preview_rows"]), \
+         patch("src.orchestrator.agent.tools_v2._emit_event", side_effect=_capture_emit), \
+         patch("src.orchestrator.agent.tools_v2._ok", side_effect=_capture_ok):
+        await batch_preview_tool({"job_id": "test-job"})
+
+    assert call_order == ["emit", "ok"]
 
 
 def test_preview_data_normalization():
@@ -397,3 +433,37 @@ def test_preview_data_normalization():
     assert result[1]["service"] == "UPS Ground"
     assert result[1]["order_data"]["order_id"] == "A2"
     assert "rate_error" not in result[1]
+
+
+@pytest.mark.asyncio
+async def test_cached_ups_client_reused():
+    """_get_ups_client returns the same connected instance until reset."""
+    mock_client = AsyncMock()
+    mock_client.connect = AsyncMock(return_value=None)
+    mock_client.disconnect = AsyncMock(return_value=None)
+
+    await _reset_ups_client()
+    try:
+        with patch("src.orchestrator.agent.tools_v2._build_ups_client", return_value=mock_client):
+            c1 = await _get_ups_client()
+            c2 = await _get_ups_client()
+    finally:
+        await _reset_ups_client()
+
+    assert c1 is c2
+    assert mock_client.connect.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cached_ups_client_disconnects():
+    """shutdown_cached_ups_client disconnects and clears cached instance."""
+    mock_client = AsyncMock()
+    mock_client.connect = AsyncMock(return_value=None)
+    mock_client.disconnect = AsyncMock(return_value=None)
+
+    await _reset_ups_client()
+    with patch("src.orchestrator.agent.tools_v2._build_ups_client", return_value=mock_client):
+        await _get_ups_client()
+    await shutdown_cached_ups_client()
+
+    mock_client.disconnect.assert_awaited_once()

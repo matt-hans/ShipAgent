@@ -26,6 +26,7 @@ Environment Variables:
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,19 @@ from typing import TypedDict
 
 # Project root is parent of src/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+VENV_PYTHON = str(PROJECT_ROOT / ".venv" / "bin" / "python3")
+
+
+def _get_python_command() -> str:
+    """Return the preferred Python interpreter for MCP subprocesses.
+
+    Prioritizes the project virtual environment to ensure all MCP
+    subprocesses use the same dependency set as the backend.
+    Falls back to the current interpreter when .venv Python is missing.
+    """
+    if os.path.exists(VENV_PYTHON):
+        return VENV_PYTHON
+    return sys.executable
 
 
 class MCPServerConfig(TypedDict):
@@ -59,9 +73,12 @@ def get_data_mcp_config() -> MCPServerConfig:
         MCPServerConfig with Python command and module path
     """
     return MCPServerConfig(
-        command="python3",
+        command=_get_python_command(),
         args=["-m", "src.mcp.data_source.server"],
-        env={"PYTHONPATH": str(PROJECT_ROOT)},
+        env={
+            "PYTHONPATH": str(PROJECT_ROOT),
+            "PATH": os.environ.get("PATH", ""),
+        },
     )
 
 
@@ -154,10 +171,8 @@ def get_ups_mcp_config() -> MCPServerConfig:
         )
 
     # Use the venv Python to run the local ups-mcp fork as a module
-    venv_python = str(PROJECT_ROOT / ".venv" / "bin" / "python3")
-
     return MCPServerConfig(
-        command=venv_python,
+        command=_get_python_command(),
         args=["-m", "ups_mcp"],
         env={
             "CLIENT_ID": client_id or "",
@@ -184,9 +199,12 @@ def get_external_sources_mcp_config() -> MCPServerConfig:
         MCPServerConfig with Python command and module path
     """
     return MCPServerConfig(
-        command="python3",
+        command=_get_python_command(),
         args=["-m", "src.mcp.external_sources.server"],
-        env={"PYTHONPATH": str(PROJECT_ROOT)},
+        env={
+            "PYTHONPATH": str(PROJECT_ROOT),
+            "PATH": os.environ.get("PATH", ""),
+        },
     )
 
 

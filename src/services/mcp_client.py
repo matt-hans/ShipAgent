@@ -130,7 +130,23 @@ class MCPClient:
         Raises:
             MCPConnectionError: If the server fails to spawn or initialize.
         """
+        await self.connect()
+        return self
+
+    async def connect(self) -> None:
+        """Connect to the MCP server if not already connected.
+
+        Creates fresh stdio/session contexts on each disconnected connect call.
+
+        Raises:
+            MCPConnectionError: If the server fails to spawn or initialize.
+        """
+        if self._session is not None:
+            return
+
         try:
+            # Ensure stale partial contexts are cleared before reconnect.
+            await self._cleanup()
             self._stdio_context = stdio_client(self._server_params)
             read_stream, write_stream = await self._stdio_context.__aenter__()
             self._session_context = ClientSession(read_stream, write_stream)
@@ -139,7 +155,6 @@ class MCPClient:
             logger.info(
                 "MCP client connected to '%s'", self._server_params.command,
             )
-            return self
         except Exception as e:
             # Clean up partial state on failure
             await self._cleanup()
@@ -156,6 +171,10 @@ class MCPClient:
             exc_val: Exception value if exiting due to error.
             exc_tb: Exception traceback if exiting due to error.
         """
+        await self.disconnect()
+
+    async def disconnect(self) -> None:
+        """Disconnect MCP session and stop MCP server process."""
         await self._cleanup()
 
     async def _cleanup(self) -> None:
