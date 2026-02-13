@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.orchestrator.agent.tools_v2 import (
+    EventEmitterBridge,
     _emit_event,
+    _emit_preview_ready,
     _enrich_preview_rows,
     _get_ups_client,
     _reset_ups_client,
@@ -26,7 +28,6 @@ from src.orchestrator.agent.tools_v2 import (
     get_schema_tool,
     get_source_info_tool,
     ship_command_pipeline_tool,
-    set_event_emitter,
     shutdown_cached_ups_client,
     validate_filter_syntax_tool,
 )
@@ -116,6 +117,7 @@ async def test_get_schema_returns_columns():
 async def test_fetch_rows_with_valid_filter():
     """Fetches rows using the provided WHERE clause."""
     rows = [{"order_id": 1, "state": "CA"}]
+    bridge = EventEmitterBridge()
 
     with patch(
         "src.orchestrator.agent.tools_v2._get_data_source_service"
@@ -124,7 +126,10 @@ async def test_fetch_rows_with_valid_filter():
         mock_svc.get_rows_by_filter = AsyncMock(return_value=rows)
         mock_svc_fn.return_value = mock_svc
 
-        result = await fetch_rows_tool({"where_clause": "state = 'CA'", "limit": 10})
+        result = await fetch_rows_tool(
+            {"where_clause": "state = 'CA'", "limit": 10},
+            bridge=bridge,
+        )
 
     assert result["isError"] is False
     data = json.loads(result["content"][0]["text"])
@@ -138,6 +143,7 @@ async def test_fetch_rows_with_valid_filter():
 async def test_fetch_rows_include_rows_returns_full_payload():
     """include_rows=True returns full rows for compatibility/debug usage."""
     rows = [{"order_id": 1, "state": "CA"}]
+    bridge = EventEmitterBridge()
 
     with patch(
         "src.orchestrator.agent.tools_v2._get_data_source_service"
@@ -146,11 +152,14 @@ async def test_fetch_rows_include_rows_returns_full_payload():
         mock_svc.get_rows_by_filter = AsyncMock(return_value=rows)
         mock_svc_fn.return_value = mock_svc
 
-        result = await fetch_rows_tool({
-            "where_clause": "state = 'CA'",
-            "limit": 10,
-            "include_rows": True,
-        })
+        result = await fetch_rows_tool(
+            {
+                "where_clause": "state = 'CA'",
+                "limit": 10,
+                "include_rows": True,
+            },
+            bridge=bridge,
+        )
 
     assert result["isError"] is False
     data = json.loads(result["content"][0]["text"])
@@ -161,6 +170,7 @@ async def test_fetch_rows_include_rows_returns_full_payload():
 async def test_add_rows_to_job_uses_fetch_id_cache():
     """add_rows_to_job accepts fetch_id and resolves rows from cache."""
     rows = [{"order_id": 1, "state": "CA"}]
+    bridge = EventEmitterBridge()
 
     with patch(
         "src.orchestrator.agent.tools_v2._get_data_source_service"
@@ -168,7 +178,10 @@ async def test_add_rows_to_job_uses_fetch_id_cache():
         mock_svc = MagicMock()
         mock_svc.get_rows_by_filter = AsyncMock(return_value=rows)
         mock_svc_fn.return_value = mock_svc
-        fetch_res = await fetch_rows_tool({"where_clause": "state = 'CA'"})
+        fetch_res = await fetch_rows_tool(
+            {"where_clause": "state = 'CA'"},
+            bridge=bridge,
+        )
 
     fetch_data = json.loads(fetch_res["content"][0]["text"])
     fetch_id = fetch_data["fetch_id"]
@@ -180,10 +193,13 @@ async def test_add_rows_to_job_uses_fetch_id_cache():
 
         with patch("src.orchestrator.agent.tools_v2.JobService") as MockJS:
             MockJS.return_value.create_rows.return_value = [MagicMock()]
-            result = await add_rows_to_job_tool({
-                "job_id": "job-123",
-                "fetch_id": fetch_id,
-            })
+            result = await add_rows_to_job_tool(
+                {
+                    "job_id": "job-123",
+                    "fetch_id": fetch_id,
+                },
+                bridge=bridge,
+            )
 
     assert result["isError"] is False
     data = json.loads(result["content"][0]["text"])
@@ -193,16 +209,18 @@ async def test_add_rows_to_job_uses_fetch_id_cache():
 @pytest.mark.asyncio
 async def test_add_rows_to_job_auto_maps_csv_columns_to_canonical_order_data():
     """CSV-style headers are normalized to ship_to_* fields before persistence."""
-    rows = [{
-        "Recipient Name": "Alice",
-        "Address": "123 Main St",
-        "City": "Los Angeles",
-        "State": "CA",
-        "ZIP": "90001",
-        "Country": "US",
-        "Weight": 2.5,
-        "Service": "Ground",
-    }]
+    rows = [
+        {
+            "Recipient Name": "Alice",
+            "Address": "123 Main St",
+            "City": "Los Angeles",
+            "State": "CA",
+            "ZIP": "90001",
+            "Country": "US",
+            "Weight": 2.5,
+            "Service": "Ground",
+        }
+    ]
 
     captured_row_data: list[dict[str, Any]] = []
 
@@ -212,15 +230,18 @@ async def test_add_rows_to_job_auto_maps_csv_columns_to_canonical_order_data():
         mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
 
         with patch("src.orchestrator.agent.tools_v2.JobService") as MockJS:
+
             def _capture(job_id, row_data):
                 captured_row_data.extend(row_data)
                 return [MagicMock()]
 
             MockJS.return_value.create_rows.side_effect = _capture
-            result = await add_rows_to_job_tool({
-                "job_id": "job-123",
-                "rows": rows,
-            })
+            result = await add_rows_to_job_tool(
+                {
+                    "job_id": "job-123",
+                    "rows": rows,
+                }
+            )
 
     assert result["isError"] is False
     assert captured_row_data
@@ -277,10 +298,12 @@ async def test_create_job_returns_job_id():
         with patch("src.orchestrator.agent.tools_v2.JobService") as MockJS:
             MockJS.return_value.create_job.return_value = mock_job
 
-            result = await create_job_tool({
-                "name": "Ship CA orders",
-                "command": "Ship California orders via Ground",
-            })
+            result = await create_job_tool(
+                {
+                    "name": "Ship CA orders",
+                    "command": "Ship California orders via Ground",
+                }
+            )
 
     assert result["isError"] is False
     data = json.loads(result["content"][0]["text"])
@@ -303,12 +326,22 @@ async def test_ship_command_pipeline_success_with_where_clause_none():
         "total_estimated_cost_cents": 1000,
     }
 
-    with patch("src.orchestrator.agent.tools_v2._get_data_source_service") as mock_svc_fn, \
-         patch("src.orchestrator.agent.tools_v2._get_ups_client", new=AsyncMock(return_value=AsyncMock())), \
-         patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx, \
-         patch("src.orchestrator.agent.tools_v2.JobService") as MockJS, \
-         patch("src.services.batch_engine.BatchEngine") as MockEngine, \
-         patch("src.services.ups_payload_builder.build_shipper_from_env", return_value={"name": "Store"}):
+    with (
+        patch(
+            "src.orchestrator.agent.tools_v2._get_data_source_service"
+        ) as mock_svc_fn,
+        patch(
+            "src.orchestrator.agent.tools_v2._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch(
+            "src.services.ups_payload_builder.build_shipper_from_env",
+            return_value={"name": "Store"},
+        ),
+    ):
         mock_svc = MagicMock()
         mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
         mock_svc_fn.return_value = mock_svc
@@ -324,10 +357,12 @@ async def test_ship_command_pipeline_success_with_where_clause_none():
 
         MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
 
-        result = await ship_command_pipeline_tool({
-            "command": "Ship all orders",
-            "where_clause": None,
-        })
+        result = await ship_command_pipeline_tool(
+            {
+                "command": "Ship all orders",
+                "where_clause": None,
+            }
+        )
 
     assert result["isError"] is False
     mock_svc.get_rows_by_filter.assert_awaited_once_with(where_clause=None, limit=250)
@@ -351,12 +386,22 @@ async def test_ship_command_pipeline_applies_explicit_service_override_to_rows()
     }
     captured_row_data: list[dict[str, Any]] = []
 
-    with patch("src.orchestrator.agent.tools_v2._get_data_source_service") as mock_svc_fn, \
-         patch("src.orchestrator.agent.tools_v2._get_ups_client", new=AsyncMock(return_value=AsyncMock())), \
-         patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx, \
-         patch("src.orchestrator.agent.tools_v2.JobService") as MockJS, \
-         patch("src.services.batch_engine.BatchEngine") as MockEngine, \
-         patch("src.services.ups_payload_builder.build_shipper_from_env", return_value={"name": "Store"}):
+    with (
+        patch(
+            "src.orchestrator.agent.tools_v2._get_data_source_service"
+        ) as mock_svc_fn,
+        patch(
+            "src.orchestrator.agent.tools_v2._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch(
+            "src.services.ups_payload_builder.build_shipper_from_env",
+            return_value={"name": "Store"},
+        ),
+    ):
         mock_svc = MagicMock()
         mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
         mock_svc_fn.return_value = mock_svc
@@ -378,10 +423,12 @@ async def test_ship_command_pipeline_applies_explicit_service_override_to_rows()
         mock_job_service.create_rows.side_effect = _capture
         MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
 
-        result = await ship_command_pipeline_tool({
-            "command": "ship all california orders via UPS Ground",
-            "service_code": "03",
-        })
+        result = await ship_command_pipeline_tool(
+            {
+                "command": "ship all california orders via UPS Ground",
+                "service_code": "03",
+            }
+        )
 
     assert result["isError"] is False
     assert captured_row_data
@@ -408,12 +455,22 @@ async def test_ship_command_pipeline_ignores_implicit_service_code_default():
     }
     captured_row_data: list[dict[str, Any]] = []
 
-    with patch("src.orchestrator.agent.tools_v2._get_data_source_service") as mock_svc_fn, \
-         patch("src.orchestrator.agent.tools_v2._get_ups_client", new=AsyncMock(return_value=AsyncMock())), \
-         patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx, \
-         patch("src.orchestrator.agent.tools_v2.JobService") as MockJS, \
-         patch("src.services.batch_engine.BatchEngine") as MockEngine, \
-         patch("src.services.ups_payload_builder.build_shipper_from_env", return_value={"name": "Store"}):
+    with (
+        patch(
+            "src.orchestrator.agent.tools_v2._get_data_source_service"
+        ) as mock_svc_fn,
+        patch(
+            "src.orchestrator.agent.tools_v2._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch(
+            "src.services.ups_payload_builder.build_shipper_from_env",
+            return_value={"name": "Store"},
+        ),
+    ):
         mock_svc = MagicMock()
         mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
         mock_svc_fn.return_value = mock_svc
@@ -435,11 +492,13 @@ async def test_ship_command_pipeline_ignores_implicit_service_code_default():
         mock_job_service.create_rows.side_effect = _capture
         MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
 
-        result = await ship_command_pipeline_tool({
-            "command": "ship all california orders",
-            # Simulates agent filling an implicit default even though user did not.
-            "service_code": "03",
-        })
+        result = await ship_command_pipeline_tool(
+            {
+                "command": "ship all california orders",
+                # Simulates agent filling an implicit default even though user did not.
+                "service_code": "03",
+            }
+        )
 
     assert result["isError"] is False
     assert captured_row_data
@@ -455,11 +514,21 @@ async def test_ship_command_pipeline_create_rows_failure_deletes_job():
     """create_rows failure cleans up the just-created job."""
     fetched_rows = [{"order_id": "1", "service_code": "03"}]
 
-    with patch("src.orchestrator.agent.tools_v2._get_data_source_service") as mock_svc_fn, \
-         patch("src.orchestrator.agent.tools_v2._get_ups_client", new=AsyncMock(return_value=AsyncMock())), \
-         patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx, \
-         patch("src.orchestrator.agent.tools_v2.JobService") as MockJS, \
-         patch("src.services.ups_payload_builder.build_shipper_from_env", return_value={"name": "Store"}):
+    with (
+        patch(
+            "src.orchestrator.agent.tools_v2._get_data_source_service"
+        ) as mock_svc_fn,
+        patch(
+            "src.orchestrator.agent.tools_v2._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch(
+            "src.services.ups_payload_builder.build_shipper_from_env",
+            return_value={"name": "Store"},
+        ),
+    ):
         mock_svc = MagicMock()
         mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
         mock_svc_fn.return_value = mock_svc
@@ -474,10 +543,12 @@ async def test_ship_command_pipeline_create_rows_failure_deletes_job():
         mock_job_service.create_job.return_value = mock_job
         mock_job_service.create_rows.side_effect = RuntimeError("db row insert failed")
 
-        result = await ship_command_pipeline_tool({
-            "command": "Ship all orders",
-            "where_clause": None,
-        })
+        result = await ship_command_pipeline_tool(
+            {
+                "command": "Ship all orders",
+                "where_clause": None,
+            }
+        )
 
     assert result["isError"] is True
     mock_job_service.delete_job.assert_called_once_with("job-2")
@@ -488,12 +559,22 @@ async def test_ship_command_pipeline_preview_failure_preserves_job_and_returns_j
     """Preview hard failure returns error including job id (no delete cleanup)."""
     fetched_rows = [{"order_id": "1", "service_code": "03"}]
 
-    with patch("src.orchestrator.agent.tools_v2._get_data_source_service") as mock_svc_fn, \
-         patch("src.orchestrator.agent.tools_v2._get_ups_client", new=AsyncMock(return_value=AsyncMock())), \
-         patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx, \
-         patch("src.orchestrator.agent.tools_v2.JobService") as MockJS, \
-         patch("src.services.batch_engine.BatchEngine") as MockEngine, \
-         patch("src.services.ups_payload_builder.build_shipper_from_env", return_value={"name": "Store"}):
+    with (
+        patch(
+            "src.orchestrator.agent.tools_v2._get_data_source_service"
+        ) as mock_svc_fn,
+        patch(
+            "src.orchestrator.agent.tools_v2._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch(
+            "src.services.ups_payload_builder.build_shipper_from_env",
+            return_value={"name": "Store"},
+        ),
+    ):
         mock_svc = MagicMock()
         mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
         mock_svc_fn.return_value = mock_svc
@@ -508,11 +589,15 @@ async def test_ship_command_pipeline_preview_failure_preserves_job_and_returns_j
         mock_job_service.create_job.return_value = mock_job
         mock_job_service.get_rows.return_value = [MagicMock()]
 
-        MockEngine.return_value.preview = AsyncMock(side_effect=RuntimeError("UPS unavailable"))
+        MockEngine.return_value.preview = AsyncMock(
+            side_effect=RuntimeError("UPS unavailable")
+        )
 
-        result = await ship_command_pipeline_tool({
-            "command": "Ship all orders",
-        })
+        result = await ship_command_pipeline_tool(
+            {
+                "command": "Ship all orders",
+            }
+        )
 
     assert result["isError"] is True
     assert "job-3" in result["content"][0]["text"]
@@ -527,12 +612,17 @@ async def test_ship_command_pipeline_preview_failure_preserves_job_and_returns_j
 @pytest.mark.asyncio
 async def test_batch_execute_requires_approval():
     """Execute tool returns error if approved=False."""
-    result = await batch_execute_tool({
-        "job_id": "some-job",
-        "approved": False,
-    })
+    result = await batch_execute_tool(
+        {
+            "job_id": "some-job",
+            "approved": False,
+        }
+    )
     assert result["isError"] is True
-    assert "confirm" in result["content"][0]["text"].lower() or "approv" in result["content"][0]["text"].lower()
+    assert (
+        "confirm" in result["content"][0]["text"].lower()
+        or "approv" in result["content"][0]["text"].lower()
+    )
 
 
 @pytest.mark.asyncio
@@ -601,6 +691,92 @@ async def test_batch_preview_returns_preview_data():
     assert "STOP HERE" in data["message"]
 
 
+@pytest.mark.asyncio
+async def test_batch_preview_uses_emit_preview_ready_helper():
+    """batch_preview_tool delegates response construction to _emit_preview_ready."""
+    preview_result = {
+        "job_id": "test-job",
+        "total_rows": 5,
+        "total_estimated_cost_cents": 3500,
+        "preview_rows": [],
+    }
+    bridge = EventEmitterBridge()
+
+    with (
+        patch(
+            "src.orchestrator.agent.tools_v2._run_batch_preview",
+            new=AsyncMock(return_value=preview_result),
+        ),
+        patch(
+            "src.orchestrator.agent.tools_v2._emit_preview_ready",
+            return_value={
+                "isError": False,
+                "content": [{"type": "text", "text": "{}"}],
+            },
+        ) as mock_emit,
+    ):
+        await batch_preview_tool({"job_id": "test-job"}, bridge=bridge)
+
+    mock_emit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_ship_command_pipeline_uses_emit_preview_ready_helper():
+    """ship_command_pipeline_tool delegates final payload to _emit_preview_ready."""
+    fetched_rows = [{"order_id": "1", "service_code": "03"}]
+    preview_result = {
+        "job_id": "job-1",
+        "total_rows": 1,
+        "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
+        "total_estimated_cost_cents": 1000,
+    }
+    bridge = EventEmitterBridge()
+
+    with (
+        patch(
+            "src.orchestrator.agent.tools_v2._get_data_source_service"
+        ) as mock_svc_fn,
+        patch(
+            "src.orchestrator.agent.tools_v2._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch(
+            "src.services.ups_payload_builder.build_shipper_from_env",
+            return_value={"name": "Store"},
+        ),
+        patch(
+            "src.orchestrator.agent.tools_v2._emit_preview_ready",
+            return_value={
+                "isError": False,
+                "content": [{"type": "text", "text": "{}"}],
+            },
+        ) as mock_emit,
+    ):
+        mock_svc = MagicMock()
+        mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
+        mock_svc_fn.return_value = mock_svc
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-1"
+        MockJS.return_value.create_job.return_value = mock_job
+        MockJS.return_value.get_rows.return_value = [MagicMock()]
+        MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
+
+        await ship_command_pipeline_tool(
+            {"command": "Ship all orders"},
+            bridge=bridge,
+        )
+
+    mock_emit.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # get_platform_status_tool
 # ---------------------------------------------------------------------------
@@ -648,15 +824,13 @@ def test_tool_definitions_have_unique_names():
 def test_emit_event_calls_callback():
     """_emit_event invokes the registered callback with correct args."""
     captured = []
+    bridge = EventEmitterBridge()
 
     def callback(event_type: str, data: dict) -> None:
         captured.append((event_type, data))
 
-    set_event_emitter(callback)
-    try:
-        _emit_event("preview_ready", {"job_id": "j1", "total_rows": 3})
-    finally:
-        set_event_emitter(None)
+    bridge.callback = callback
+    _emit_event("preview_ready", {"job_id": "j1", "total_rows": 3}, bridge=bridge)
 
     assert len(captured) == 1
     assert captured[0][0] == "preview_ready"
@@ -665,9 +839,26 @@ def test_emit_event_calls_callback():
 
 def test_emit_event_noop_without_emitter():
     """_emit_event does not raise when no emitter is set."""
-    set_event_emitter(None)
+    bridge = EventEmitterBridge()
     # Should not raise
-    _emit_event("preview_ready", {"job_id": "j1"})
+    _emit_event("preview_ready", {"job_id": "j1"}, bridge=bridge)
+
+
+def test_emit_event_isolated_between_bridges():
+    """Bridge callback mutation is scoped per bridge instance."""
+    captured_a: list[tuple[str, dict]] = []
+    captured_b: list[tuple[str, dict]] = []
+    bridge_a = EventEmitterBridge()
+    bridge_b = EventEmitterBridge()
+
+    bridge_a.callback = lambda event_type, data: captured_a.append((event_type, data))
+    bridge_b.callback = lambda event_type, data: captured_b.append((event_type, data))
+
+    _emit_event("preview_ready", {"job_id": "a"}, bridge=bridge_a)
+
+    assert len(captured_a) == 1
+    assert captured_a[0][1]["job_id"] == "a"
+    assert captured_b == []
 
 
 @pytest.mark.asyncio
@@ -679,26 +870,31 @@ async def test_batch_preview_emits_preview_ready():
         "total_estimated_cost_cents": 2400,
         "preview_rows": [
             {"row_number": 1, "recipient_name": "Alice", "estimated_cost_cents": 1200},
-            {"row_number": 2, "recipient_name": "Bob", "estimated_cost_cents": 1200, "rate_error": "Bad address"},
+            {
+                "row_number": 2,
+                "recipient_name": "Bob",
+                "estimated_cost_cents": 1200,
+                "rate_error": "Bad address",
+            },
         ],
     }
 
     captured = []
+    bridge = EventEmitterBridge()
 
     def callback(event_type: str, data: dict) -> None:
         captured.append((event_type, data))
 
-    set_event_emitter(callback)
-    try:
-        with patch("src.orchestrator.agent.tools_v2._run_batch_preview") as mock_preview, \
-             patch("src.orchestrator.agent.tools_v2._enrich_preview_rows") as mock_enrich:
-            mock_preview.return_value = preview_result
-            # _enrich_preview_rows modifies rows in place; simulate no-op
-            mock_enrich.return_value = preview_result["preview_rows"]
+    bridge.callback = callback
+    with (
+        patch("src.orchestrator.agent.tools_v2._run_batch_preview") as mock_preview,
+        patch("src.orchestrator.agent.tools_v2._enrich_preview_rows") as mock_enrich,
+    ):
+        mock_preview.return_value = preview_result
+        # _enrich_preview_rows modifies rows in place; simulate no-op
+        mock_enrich.return_value = preview_result["preview_rows"]
 
-            result = await batch_preview_tool({"job_id": "test-job"})
-    finally:
-        set_event_emitter(None)
+        result = await batch_preview_tool({"job_id": "test-job"}, bridge=bridge)
 
     assert result["isError"] is False
     assert len(captured) == 1
@@ -718,27 +914,89 @@ async def test_batch_preview_emits_before_ok_return():
     }
     call_order: list[str] = []
 
-    def _capture_emit(event_type: str, data: dict) -> None:
+    def _capture_emit(*_args, **_kwargs) -> None:
         call_order.append("emit")
 
     def _capture_ok(payload: dict) -> dict:
         call_order.append("ok")
-        return {"isError": False, "content": [{"type": "text", "text": json.dumps(payload)}]}
+        return {
+            "isError": False,
+            "content": [{"type": "text", "text": json.dumps(payload)}],
+        }
 
-    with patch("src.orchestrator.agent.tools_v2._run_batch_preview", new=AsyncMock(return_value=preview_result)), \
-         patch("src.orchestrator.agent.tools_v2._enrich_preview_rows", return_value=preview_result["preview_rows"]), \
-         patch("src.orchestrator.agent.tools_v2._emit_event", side_effect=_capture_emit), \
-         patch("src.orchestrator.agent.tools_v2._ok", side_effect=_capture_ok):
+    with (
+        patch(
+            "src.orchestrator.agent.tools_v2._run_batch_preview",
+            new=AsyncMock(return_value=preview_result),
+        ),
+        patch(
+            "src.orchestrator.agent.tools_v2._enrich_preview_rows",
+            return_value=preview_result["preview_rows"],
+        ),
+        patch("src.orchestrator.agent.tools_v2._emit_event", side_effect=_capture_emit),
+        patch("src.orchestrator.agent.tools_v2._ok", side_effect=_capture_ok),
+    ):
         await batch_preview_tool({"job_id": "test-job"})
 
     assert call_order == ["emit", "ok"]
+
+
+def test_emit_preview_ready_payload_shape():
+    """_emit_preview_ready returns the expected slim payload schema."""
+    bridge = EventEmitterBridge()
+    result = _emit_preview_ready(
+        result={
+            "job_id": "job-1",
+            "total_rows": 5,
+            "total_estimated_cost_cents": 2500,
+        },
+        rows_with_warnings=1,
+        bridge=bridge,
+    )
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["status"] == "preview_ready"
+    assert payload["job_id"] == "job-1"
+    assert payload["rows_with_warnings"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_cache_isolated_between_bridges():
+    """fetch_id created on one bridge is not visible to another bridge."""
+    rows = [{"order_id": 1, "state": "CA"}]
+    bridge_a = EventEmitterBridge()
+    bridge_b = EventEmitterBridge()
+
+    with patch(
+        "src.orchestrator.agent.tools_v2._get_data_source_service"
+    ) as mock_svc_fn:
+        mock_svc = MagicMock()
+        mock_svc.get_rows_by_filter = AsyncMock(return_value=rows)
+        mock_svc_fn.return_value = mock_svc
+        fetch_res = await fetch_rows_tool(
+            {"where_clause": "state = 'CA'"},
+            bridge=bridge_a,
+        )
+
+    fetch_id = json.loads(fetch_res["content"][0]["text"])["fetch_id"]
+    result = await add_rows_to_job_tool(
+        {"job_id": "job-123", "fetch_id": fetch_id},
+        bridge=bridge_b,
+    )
+    assert result["isError"] is True
+    assert "fetch_id not found" in result["content"][0]["text"]
 
 
 def test_preview_data_normalization():
     """_enrich_preview_rows converts rate_error→warnings and adds service/order_data."""
     preview_rows = [
         {"row_number": 1, "recipient_name": "Alice", "estimated_cost_cents": 1200},
-        {"row_number": 2, "recipient_name": "Bob", "estimated_cost_cents": 0, "rate_error": "Address validation failed"},
+        {
+            "row_number": 2,
+            "recipient_name": "Bob",
+            "estimated_cost_cents": 0,
+            "rate_error": "Address validation failed",
+        },
     ]
 
     # Mock DB rows
@@ -788,7 +1046,10 @@ async def test_cached_ups_client_reused():
 
     await _reset_ups_client()
     try:
-        with patch("src.orchestrator.agent.tools_v2._build_ups_client", return_value=mock_client):
+        with patch(
+            "src.orchestrator.agent.tools_v2._build_ups_client",
+            return_value=mock_client,
+        ):
             c1 = await _get_ups_client()
             c2 = await _get_ups_client()
     finally:
@@ -806,7 +1067,9 @@ async def test_shutdown_cached_ups_client_disconnects():
     mock_client.disconnect = AsyncMock(return_value=None)
 
     await _reset_ups_client()
-    with patch("src.orchestrator.agent.tools_v2._build_ups_client", return_value=mock_client):
+    with patch(
+        "src.orchestrator.agent.tools_v2._build_ups_client", return_value=mock_client
+    ):
         await _get_ups_client()
     await shutdown_cached_ups_client()
 

@@ -38,4 +38,5 @@ echo "  Shopify: ${SHOPIFY_STORE_DOMAIN:-not configured}"
 echo ""
 
 # Always use project .venv so MCP subprocesses and backend share deps.
-exec .venv/bin/uvicorn src.api.main:app --reload --reload-dir src --port 8000
+# ShipAgent currently supports single-worker operation only.
+exec .venv/bin/uvicorn src.api.main:app --reload --reload-dir src --workers 1 --port 8000

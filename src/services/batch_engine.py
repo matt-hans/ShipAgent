@@ -132,13 +132,18 @@ class BatchEngine:
                         service_code=service_code,
                     )
                     rate_payload = build_ups_rate_payload(
-                        simplified, account_number=self._account_number,
+                        simplified,
+                        account_number=self._account_number,
                     )
                     rate_result = await self._ups.get_rate(request_body=rate_payload)
-                    amount = rate_result.get("totalCharges", {}).get("monetaryValue", "0")
+                    amount = rate_result.get("totalCharges", {}).get(
+                        "monetaryValue", "0"
+                    )
                     cost_cents = int(float(amount) * 100)
                 except UPSServiceError as e:
-                    logger.warning("Rate quote failed for row %s: %s", row.row_number, e)
+                    logger.warning(
+                        "Rate quote failed for row %s: %s", row.row_number, e
+                    )
                     rate_error = str(e)
                 except Exception as e:
                     # Keep preview resilient: malformed row data or payload
@@ -163,7 +168,9 @@ class BatchEngine:
 
                     row_info: dict[str, Any] = {
                         "row_number": row.row_number,
-                        "recipient_name": order_data.get("ship_to_name", f"Row {row.row_number}"),
+                        "recipient_name": order_data.get(
+                            "ship_to_name", f"Row {row.row_number}"
+                        ),
                         "city_state": f"{order_data.get('ship_to_city', '')}, {order_data.get('ship_to_state', '')}",
                         "estimated_cost_cents": cost_cents,
                     }
@@ -190,7 +197,9 @@ class BatchEngine:
         additional_rows = max(0, len(rows) - len(preview_rows))
         if additional_rows > 0 and preview_rows:
             avg_cost = total_cost_cents / len(preview_rows)
-            total_estimated_cost_cents = total_cost_cents + int(avg_cost * additional_rows)
+            total_estimated_cost_cents = total_cost_cents + int(
+                avg_cost * additional_rows
+            )
         else:
             total_estimated_cost_cents = total_cost_cents
 
@@ -252,6 +261,7 @@ class BatchEngine:
         successful = 0
         failed = 0
         total_cost_cents = 0
+        successful_write_back_updates: list[tuple[int, str]] = []
 
         pending_rows = [r for r in rows if r.status == "pending"]
 
@@ -271,7 +281,8 @@ class BatchEngine:
                     )
 
                     api_payload = build_ups_api_payload(
-                        simplified, account_number=self._account_number,
+                        simplified,
+                        account_number=self._account_number,
                     )
 
                     # Call UPS via async MCP client
@@ -282,7 +293,9 @@ class BatchEngine:
                     tracking_numbers = result.get("trackingNumbers", [])
                     tracking_number = tracking_numbers[0] if tracking_numbers else ""
                     if not tracking_number or "XXXX" in tracking_number:
-                        tracking_number = result.get("shipmentIdentificationNumber", tracking_number)
+                        tracking_number = result.get(
+                            "shipmentIdentificationNumber", tracking_number
+                        )
 
                     # Save label with unique filename per row
                     label_path = ""
@@ -310,32 +323,25 @@ class BatchEngine:
 
                         successful += 1
                         total_cost_cents += cost_cents
+                        if tracking_number:
+                            successful_write_back_updates.append(
+                                (row.row_number, tracking_number),
+                            )
 
                         if on_progress:
                             await on_progress(
-                                "row_completed", job_id=job_id,
+                                "row_completed",
+                                job_id=job_id,
                                 row_number=row.row_number,
                                 tracking_number=tracking_number,
                                 cost_cents=cost_cents,
                             )
 
-                    # Write-back tracking number to source file (best-effort)
-                    try:
-                        from src.services.data_source_service import DataSourceService
-
-                        ds_svc = DataSourceService.get_instance()
-                        if ds_svc.get_source_info() is not None and tracking_number:
-                            await ds_svc.write_back(row.row_number, tracking_number)
-                    except Exception as wb_err:
-                        logger.debug(
-                            "Write-back skipped for row %d: %s",
-                            row.row_number,
-                            wb_err,
-                        )
-
                     logger.info(
                         "Row %d completed: tracking=%s, cost=%d cents",
-                        row.row_number, tracking_number, cost_cents,
+                        row.row_number,
+                        tracking_number,
+                        cost_cents,
                     )
 
                 except (UPSServiceError, ValueError, Exception) as e:
@@ -352,7 +358,8 @@ class BatchEngine:
 
                         if on_progress:
                             await on_progress(
-                                "row_failed", job_id=job_id,
+                                "row_failed",
+                                job_id=job_id,
                                 row_number=row.row_number,
                                 error_code=error_code,
                                 error_message=error_message,
@@ -363,12 +370,67 @@ class BatchEngine:
         # Process all rows concurrently (bounded by semaphore)
         await asyncio.gather(*[_process_row(row) for row in pending_rows])
 
+        write_back_result: dict[str, Any] = {
+            "status": "skipped",
+            "message": "No successful tracking updates to write back.",
+        }
+        if successful_write_back_updates:
+            try:
+                from src.services.data_source_service import DataSourceService
+
+                ds_svc = DataSourceService.get_instance()
+                if ds_svc.get_source_info() is not None:
+                    write_back_result = await ds_svc.write_back_batch(
+                        successful_write_back_updates,
+                    )
+                    logger.info(
+                        (
+                            "Batch write-back finished: job_id=%s attempted=%s "
+                            "written=%s failed=%s status=%s"
+                        ),
+                        job_id,
+                        write_back_result.get("attempted"),
+                        write_back_result.get("written"),
+                        write_back_result.get("failed"),
+                        write_back_result.get("status"),
+                    )
+                    if write_back_result.get("status") == "error":
+                        logger.warning(
+                            (
+                                "Batch write-back failed after shipment processing: "
+                                "job_id=%s attempted=%s written=%s failed=%s"
+                            ),
+                            job_id,
+                            write_back_result.get("attempted"),
+                            write_back_result.get("written"),
+                            write_back_result.get("failed"),
+                        )
+                else:
+                    write_back_result = {
+                        "status": "skipped",
+                        "message": "No active source connected for write-back.",
+                    }
+            except Exception as wb_err:
+                write_back_result = {
+                    "status": "error",
+                    "message": str(wb_err),
+                }
+                logger.warning(
+                    (
+                        "Batch write-back raised after shipment processing: "
+                        "job_id=%s error=%s (recovery: replay_write_back_from_job)"
+                    ),
+                    job_id,
+                    wb_err,
+                )
+
         return {
             "job_id": job_id,
             "successful": successful,
             "failed": failed,
             "total_cost_cents": total_cost_cents,
             "total_rows": len(rows),
+            "write_back": write_back_result,
         }
 
     def _parse_order_data(self, row: Any) -> dict[str, Any]:

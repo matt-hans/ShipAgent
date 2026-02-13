@@ -139,7 +139,7 @@ DATABASE_URL=sqlite:///./shipagent.db
 
 1. **Start the backend API server**
    ```bash
-   uvicorn src.api.main:app --reload --port 8000
+   ./scripts/start-backend.sh
    ```
 
 2. **Start the frontend development server**
@@ -149,6 +149,13 @@ DATABASE_URL=sqlite:///./shipagent.db
    ```
 
 3. **Open your browser** at http://localhost:5173
+
+### Runtime Policy (Current)
+
+- ShipAgent is currently **local-first and single-worker**.
+- Use one backend worker (`--workers 1`) while state is process-local (conversation agents, in-memory caches).
+- Startup warns by default unless you set `SHIPAGENT_ALLOW_MULTI_WORKER=true`.
+- Redis/distributed worker support is deferred for a future migration.
 
 ---
 

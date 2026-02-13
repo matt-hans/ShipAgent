@@ -6,6 +6,7 @@ when available.
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -23,12 +24,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.api.routes import conversations, data_sources, jobs, labels, logs, platforms, preview, progress, saved_data_sources
+from src.api.routes import (
+    conversations,
+    data_sources,
+    jobs,
+    labels,
+    logs,
+    platforms,
+    preview,
+    progress,
+    saved_data_sources,
+)
 from src.db.connection import init_db
 from src.errors import ShipAgentError
 
 # Frontend build directory
 FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
+logger = logging.getLogger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
@@ -51,6 +63,16 @@ app.add_middleware(
 def startup_event() -> None:
     """Initialize database on startup."""
     init_db()
+    allow_multi_worker = os.environ.get("SHIPAGENT_ALLOW_MULTI_WORKER", "false").lower()
+    if allow_multi_worker not in {"1", "true", "yes", "on"}:
+        logger.warning(
+            (
+                "ShipAgent runtime policy: single-worker mode only. "
+                "Start uvicorn/gunicorn with one worker unless externalized "
+                "shared state is configured. Set SHIPAGENT_ALLOW_MULTI_WORKER=true "
+                "to suppress this warning."
+            ),
+        )
 
 
 @app.on_event("shutdown")
