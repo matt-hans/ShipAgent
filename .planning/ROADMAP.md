@@ -264,10 +264,10 @@ Plans:
 **Plans:** 4 plans
 
 Plans:
-- [ ] 08-01-PLAN.md — Backend core: interactive shipping service, schema generator, intent model extension, API schemas
-- [ ] 08-02-PLAN.md — Backend routing: interactive API endpoints, field extraction, CommandProcessor update
-- [ ] 08-03-PLAN.md — Frontend: DynamicFormRenderer, CommandCenter integration, Interactive Ship button
-- [ ] 08-04-PLAN.md — Testing: unit tests for schema/extraction/job creation, API integration tests
+- [ ] 08-01-PLAN.md — Backend core: InteractiveShippingService, deterministic schema generator, tools_v2 integration, system prompt update
+- [ ] 08-02-PLAN.md — Backend routing: /interactive/submit endpoint, Pydantic schemas, main.py registration
+- [ ] 08-03-PLAN.md — Frontend: DynamicFormRenderer, CommandCenter integration, Interactive Ship button, types, API client
+- [ ] 08-04-PLAN.md — Testing: unit tests for schema generation/form validation, API integration tests
 
 ---
 
@@ -330,4 +330,4 @@ Phase 1: Foundation
 
 ---
 
-*Last updated: 2026-02-12*
+*Last updated: 2026-02-13*
