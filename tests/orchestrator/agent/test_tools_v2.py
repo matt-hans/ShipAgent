@@ -337,6 +337,120 @@ async def test_ship_command_pipeline_success_with_where_clause_none():
 
 
 @pytest.mark.asyncio
+async def test_ship_command_pipeline_applies_explicit_service_override_to_rows():
+    """Explicit service request is persisted so execute matches preview."""
+    fetched_rows = [
+        {"order_id": "1", "service_code": "02"},
+        {"order_id": "2", "service_code": "12"},
+    ]
+    preview_result = {
+        "job_id": "job-override",
+        "total_rows": 2,
+        "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
+        "total_estimated_cost_cents": 2000,
+    }
+    captured_row_data: list[dict[str, Any]] = []
+
+    with patch("src.orchestrator.agent.tools_v2._get_data_source_service") as mock_svc_fn, \
+         patch("src.orchestrator.agent.tools_v2._get_ups_client", new=AsyncMock(return_value=AsyncMock())), \
+         patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx, \
+         patch("src.orchestrator.agent.tools_v2.JobService") as MockJS, \
+         patch("src.services.batch_engine.BatchEngine") as MockEngine, \
+         patch("src.services.ups_payload_builder.build_shipper_from_env", return_value={"name": "Store"}):
+        mock_svc = MagicMock()
+        mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
+        mock_svc_fn.return_value = mock_svc
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-override"
+        mock_job_service = MockJS.return_value
+        mock_job_service.create_job.return_value = mock_job
+        mock_job_service.get_rows.return_value = [MagicMock(), MagicMock()]
+
+        def _capture(job_id: str, row_data: list[dict[str, Any]]) -> list[MagicMock]:
+            captured_row_data.extend(row_data)
+            return [MagicMock(), MagicMock()]
+
+        mock_job_service.create_rows.side_effect = _capture
+        MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
+
+        result = await ship_command_pipeline_tool({
+            "command": "ship all california orders via UPS Ground",
+            "service_code": "03",
+        })
+
+    assert result["isError"] is False
+    assert captured_row_data
+    for row in captured_row_data:
+        order_data = json.loads(row["order_data"])
+        assert order_data["service_code"] == "03"
+
+    preview_kwargs = MockEngine.return_value.preview.await_args.kwargs
+    assert preview_kwargs["service_code"] == "03"
+
+
+@pytest.mark.asyncio
+async def test_ship_command_pipeline_ignores_implicit_service_code_default():
+    """Commands without explicit service should use row-level service data."""
+    fetched_rows = [
+        {"order_id": "1", "service_code": "02"},
+        {"order_id": "2", "service_code": "12"},
+    ]
+    preview_result = {
+        "job_id": "job-live-service",
+        "total_rows": 2,
+        "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
+        "total_estimated_cost_cents": 2000,
+    }
+    captured_row_data: list[dict[str, Any]] = []
+
+    with patch("src.orchestrator.agent.tools_v2._get_data_source_service") as mock_svc_fn, \
+         patch("src.orchestrator.agent.tools_v2._get_ups_client", new=AsyncMock(return_value=AsyncMock())), \
+         patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx, \
+         patch("src.orchestrator.agent.tools_v2.JobService") as MockJS, \
+         patch("src.services.batch_engine.BatchEngine") as MockEngine, \
+         patch("src.services.ups_payload_builder.build_shipper_from_env", return_value={"name": "Store"}):
+        mock_svc = MagicMock()
+        mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
+        mock_svc_fn.return_value = mock_svc
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-live-service"
+        mock_job_service = MockJS.return_value
+        mock_job_service.create_job.return_value = mock_job
+        mock_job_service.get_rows.return_value = [MagicMock(), MagicMock()]
+
+        def _capture(job_id: str, row_data: list[dict[str, Any]]) -> list[MagicMock]:
+            captured_row_data.extend(row_data)
+            return [MagicMock(), MagicMock()]
+
+        mock_job_service.create_rows.side_effect = _capture
+        MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
+
+        result = await ship_command_pipeline_tool({
+            "command": "ship all california orders",
+            # Simulates agent filling an implicit default even though user did not.
+            "service_code": "03",
+        })
+
+    assert result["isError"] is False
+    assert captured_row_data
+    assert json.loads(captured_row_data[0]["order_data"])["service_code"] == "02"
+    assert json.loads(captured_row_data[1]["order_data"])["service_code"] == "12"
+
+    preview_kwargs = MockEngine.return_value.preview.await_args.kwargs
+    assert preview_kwargs["service_code"] is None
+
+
+@pytest.mark.asyncio
 async def test_ship_command_pipeline_create_rows_failure_deletes_job():
     """create_rows failure cleans up the just-created job."""
     fetched_rows = [{"order_id": "1", "service_code": "03"}]

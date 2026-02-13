@@ -357,11 +357,10 @@ class TestBackwardCompatibility:
         assert asyncio.iscoroutinefunction(agent.process_command)
 
     def test_mcp_servers_still_configured(self):
-        """All MCP servers (data, external, ups, orchestrator) still present."""
+        """All MCP servers (data, ups, orchestrator) still present."""
         agent = OrchestrationAgent()
         servers = agent._options.mcp_servers
         assert "data" in servers
-        assert "external" in servers
         assert "ups" in servers
         assert "orchestrator" in servers
 

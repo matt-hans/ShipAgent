@@ -157,14 +157,6 @@ class OrchestrationAgent:
             "env": mcp_configs["data"]["env"],
         }
 
-        # External Sources Gateway MCP config
-        external_config: McpStdioServerConfig = {
-            "type": "stdio",
-            "command": mcp_configs["external"]["command"],
-            "args": mcp_configs["external"]["args"],
-            "env": mcp_configs["external"]["env"],
-        }
-
         # UPS MCP config (stdio via venv python)
         ups_config: McpStdioServerConfig = {
             "type": "stdio",
@@ -184,7 +176,10 @@ class OrchestrationAgent:
                 "orchestrator": orchestrator_mcp,
                 # External MCP servers (stdio child processes)
                 "data": data_config,
-                "external": external_config,
+                # NOTE: "external" MCP removed — its process-local state is
+                # not synchronized with the FastAPI backend's PlatformStateManager,
+                # causing "Platform not connected" errors. Shopify data flows
+                # through auto-import into DataSourceService (DuckDB) instead.
                 "ups": ups_config,
             },
             # Disable all built-in Claude Code tools — we only use MCP tools
@@ -193,7 +188,6 @@ class OrchestrationAgent:
             allowed_tools=[
                 "mcp__orchestrator__*",
                 "mcp__data__*",
-                "mcp__external__*",
                 "mcp__ups__*",
             ],
             hooks=create_hook_matchers(),
