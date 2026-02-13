@@ -32,8 +32,8 @@ dependencies = [
     "sse-starlette>=2.0.0",
     "zipstream-ng>=1.7.0",
     "pypdf>=4.0.0",
-    # UPS MCP Python fork (pinned to specific commit for stability)
-    "ups-mcp @ git+https://github.com/UPS-API/ups-mcp.git@41fb64f71c5f9afe0fb8764e9dd29a71e3c773e1",
+    # UPS MCP Python fork (pinned to specific commit with elicitation/preflight support)
+    "ups-mcp @ git+https://github.com/matt-hans/ups-mcp.git@54124bc69d75fde6f0f16d49b924bdb286c25b87",
 ]
 
 [project.optional-dependencies]
