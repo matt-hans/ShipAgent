@@ -36,6 +36,7 @@ class AgentSession:
         agent_source_hash: Hash of the data source used to build the agent's
             system prompt. If the data source changes, the agent is rebuilt.
         lock: Async lock serializing message processing for this session.
+        prewarm_task: Optional best-effort background task for agent prewarm.
     """
 
     def __init__(self, session_id: str) -> None:
@@ -50,6 +51,7 @@ class AgentSession:
         self.agent: Any = None  # OrchestrationAgent, set by conversations route
         self.agent_source_hash: str | None = None
         self.lock = asyncio.Lock()
+        self.prewarm_task: asyncio.Task[Any] | None = None
 
     def add_message(self, role: str, content: str) -> None:
         """Append a message to the conversation history.
@@ -126,6 +128,27 @@ class AgentSessionManager:
         finally:
             session.agent = None
             session.agent_source_hash = None
+
+    async def cancel_session_prewarm_task(self, session_id: str) -> None:
+        """Cancel and await a session's prewarm task, if active."""
+        session = self._sessions.get(session_id)
+        if session is None or session.prewarm_task is None:
+            return
+        task = session.prewarm_task
+        session.prewarm_task = None
+        if task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(
+                "Error while cancelling prewarm task for session %s: %s",
+                session_id,
+                e,
+            )
 
     def list_sessions(self) -> list[str]:
         """List all active session IDs.

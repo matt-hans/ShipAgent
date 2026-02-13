@@ -100,6 +100,8 @@ class TestGetRate:
         mock_mcp_client.call_tool.assert_awaited_once_with(
             "rate_shipment",
             {"requestoption": "Rate", "request_body": {"test": True}},
+            max_retries=2,
+            base_delay=0.2,
         )
 
     @pytest.mark.asyncio
@@ -185,6 +187,8 @@ class TestCreateShipment:
         mock_mcp_client.call_tool.assert_awaited_once_with(
             "create_shipment",
             {"request_body": {"test": True}},
+            max_retries=0,
+            base_delay=1.0,
         )
 
     @pytest.mark.asyncio
@@ -267,6 +271,8 @@ class TestVoidShipment:
         mock_mcp_client.call_tool.assert_awaited_once_with(
             "void_shipment",
             {"shipmentidentificationnumber": "1Z999AA1"},
+            max_retries=0,
+            base_delay=1.0,
         )
 
 

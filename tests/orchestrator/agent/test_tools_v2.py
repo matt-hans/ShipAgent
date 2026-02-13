@@ -14,6 +14,7 @@ from src.orchestrator.agent.tools_v2 import (
     _enrich_preview_rows,
     _get_ups_client,
     _reset_ups_client,
+    add_rows_to_job_tool,
     batch_execute_tool,
     batch_preview_tool,
     create_job_tool,
@@ -23,6 +24,7 @@ from src.orchestrator.agent.tools_v2 import (
     get_platform_status_tool,
     get_schema_tool,
     get_source_info_tool,
+    ship_command_pipeline_tool,
     set_event_emitter,
     shutdown_cached_ups_client,
     validate_filter_syntax_tool,
@@ -126,7 +128,65 @@ async def test_fetch_rows_with_valid_filter():
     assert result["isError"] is False
     data = json.loads(result["content"][0]["text"])
     assert data["row_count"] == 1
+    assert data["fetch_id"]
+    assert data["sample_rows"][0]["state"] == "CA"
+    assert "rows" not in data
+
+
+@pytest.mark.asyncio
+async def test_fetch_rows_include_rows_returns_full_payload():
+    """include_rows=True returns full rows for compatibility/debug usage."""
+    rows = [{"order_id": 1, "state": "CA"}]
+
+    with patch(
+        "src.orchestrator.agent.tools_v2._get_data_source_service"
+    ) as mock_svc_fn:
+        mock_svc = MagicMock()
+        mock_svc.get_rows_by_filter = AsyncMock(return_value=rows)
+        mock_svc_fn.return_value = mock_svc
+
+        result = await fetch_rows_tool({
+            "where_clause": "state = 'CA'",
+            "limit": 10,
+            "include_rows": True,
+        })
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
     assert data["rows"][0]["state"] == "CA"
+
+
+@pytest.mark.asyncio
+async def test_add_rows_to_job_uses_fetch_id_cache():
+    """add_rows_to_job accepts fetch_id and resolves rows from cache."""
+    rows = [{"order_id": 1, "state": "CA"}]
+
+    with patch(
+        "src.orchestrator.agent.tools_v2._get_data_source_service"
+    ) as mock_svc_fn:
+        mock_svc = MagicMock()
+        mock_svc.get_rows_by_filter = AsyncMock(return_value=rows)
+        mock_svc_fn.return_value = mock_svc
+        fetch_res = await fetch_rows_tool({"where_clause": "state = 'CA'"})
+
+    fetch_data = json.loads(fetch_res["content"][0]["text"])
+    fetch_id = fetch_data["fetch_id"]
+
+    with patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx:
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch("src.orchestrator.agent.tools_v2.JobService") as MockJS:
+            MockJS.return_value.create_rows.return_value = [MagicMock()]
+            result = await add_rows_to_job_tool({
+                "job_id": "job-123",
+                "fetch_id": fetch_id,
+            })
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["rows_added"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +240,124 @@ async def test_create_job_returns_job_id():
     assert result["isError"] is False
     data = json.loads(result["content"][0]["text"])
     assert data["job_id"] == "test-job-123"
+
+
+# ---------------------------------------------------------------------------
+# ship_command_pipeline_tool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ship_command_pipeline_success_with_where_clause_none():
+    """Pipeline fetches all rows when where_clause is omitted/None."""
+    fetched_rows = [{"order_id": "1", "service_code": "03"}]
+    preview_result = {
+        "job_id": "job-1",
+        "total_rows": 1,
+        "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
+        "total_estimated_cost_cents": 1000,
+    }
+
+    with patch("src.orchestrator.agent.tools_v2._get_data_source_service") as mock_svc_fn, \
+         patch("src.orchestrator.agent.tools_v2._get_ups_client", new=AsyncMock(return_value=AsyncMock())), \
+         patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx, \
+         patch("src.orchestrator.agent.tools_v2.JobService") as MockJS, \
+         patch("src.services.batch_engine.BatchEngine") as MockEngine, \
+         patch("src.services.ups_payload_builder.build_shipper_from_env", return_value={"name": "Store"}):
+        mock_svc = MagicMock()
+        mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
+        mock_svc_fn.return_value = mock_svc
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-1"
+        MockJS.return_value.create_job.return_value = mock_job
+        MockJS.return_value.get_rows.return_value = [MagicMock()]
+
+        MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
+
+        result = await ship_command_pipeline_tool({
+            "command": "Ship all orders",
+            "where_clause": None,
+        })
+
+    assert result["isError"] is False
+    mock_svc.get_rows_by_filter.assert_awaited_once_with(where_clause=None, limit=250)
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["status"] == "preview_ready"
+    assert payload["job_id"] == "job-1"
+
+
+@pytest.mark.asyncio
+async def test_ship_command_pipeline_create_rows_failure_deletes_job():
+    """create_rows failure cleans up the just-created job."""
+    fetched_rows = [{"order_id": "1", "service_code": "03"}]
+
+    with patch("src.orchestrator.agent.tools_v2._get_data_source_service") as mock_svc_fn, \
+         patch("src.orchestrator.agent.tools_v2._get_ups_client", new=AsyncMock(return_value=AsyncMock())), \
+         patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx, \
+         patch("src.orchestrator.agent.tools_v2.JobService") as MockJS, \
+         patch("src.services.ups_payload_builder.build_shipper_from_env", return_value={"name": "Store"}):
+        mock_svc = MagicMock()
+        mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
+        mock_svc_fn.return_value = mock_svc
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-2"
+        mock_job_service = MockJS.return_value
+        mock_job_service.create_job.return_value = mock_job
+        mock_job_service.create_rows.side_effect = RuntimeError("db row insert failed")
+
+        result = await ship_command_pipeline_tool({
+            "command": "Ship all orders",
+            "where_clause": None,
+        })
+
+    assert result["isError"] is True
+    mock_job_service.delete_job.assert_called_once_with("job-2")
+
+
+@pytest.mark.asyncio
+async def test_ship_command_pipeline_preview_failure_preserves_job_and_returns_job_id():
+    """Preview hard failure returns error including job id (no delete cleanup)."""
+    fetched_rows = [{"order_id": "1", "service_code": "03"}]
+
+    with patch("src.orchestrator.agent.tools_v2._get_data_source_service") as mock_svc_fn, \
+         patch("src.orchestrator.agent.tools_v2._get_ups_client", new=AsyncMock(return_value=AsyncMock())), \
+         patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx, \
+         patch("src.orchestrator.agent.tools_v2.JobService") as MockJS, \
+         patch("src.services.batch_engine.BatchEngine") as MockEngine, \
+         patch("src.services.ups_payload_builder.build_shipper_from_env", return_value={"name": "Store"}):
+        mock_svc = MagicMock()
+        mock_svc.get_rows_by_filter = AsyncMock(return_value=fetched_rows)
+        mock_svc_fn.return_value = mock_svc
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-3"
+        mock_job_service = MockJS.return_value
+        mock_job_service.create_job.return_value = mock_job
+        mock_job_service.get_rows.return_value = [MagicMock()]
+
+        MockEngine.return_value.preview = AsyncMock(side_effect=RuntimeError("UPS unavailable"))
+
+        result = await ship_command_pipeline_tool({
+            "command": "Ship all orders",
+        })
+
+    assert result["isError"] is True
+    assert "job-3" in result["content"][0]["text"]
+    mock_job_service.delete_job.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -293,6 +471,7 @@ def test_get_all_tool_definitions_count():
         assert "name" in d
         assert "description" in d
         assert "input_schema" in d
+    assert any(d["name"] == "ship_command_pipeline" for d in defs)
 
 
 def test_tool_definitions_have_unique_names():
@@ -439,8 +618,14 @@ def test_preview_data_normalization():
 async def test_cached_ups_client_reused():
     """_get_ups_client returns the same connected instance until reset."""
     mock_client = AsyncMock()
+    mock_client.is_connected = False
+
+    async def _connect() -> None:
+        mock_client.is_connected = True
+
     mock_client.connect = AsyncMock(return_value=None)
     mock_client.disconnect = AsyncMock(return_value=None)
+    mock_client.connect.side_effect = _connect
 
     await _reset_ups_client()
     try:
@@ -451,7 +636,7 @@ async def test_cached_ups_client_reused():
         await _reset_ups_client()
 
     assert c1 is c2
-    assert mock_client.connect.await_count == 2
+    assert mock_client.connect.await_count == 1
 
 
 @pytest.mark.asyncio

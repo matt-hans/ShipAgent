@@ -32,6 +32,8 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 from typing import TypedDict
 
+from src.services.ups_specs import ensure_ups_specs_dir
+
 # Project root is parent of src/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 VENV_PYTHON = str(PROJECT_ROOT / ".venv" / "bin" / "python3")
@@ -156,6 +158,7 @@ def get_ups_mcp_config() -> MCPServerConfig:
 
     # Derive environment from base URL
     environment = "test" if "wwwcie" in base_url else "production"
+    specs_dir = ensure_ups_specs_dir()
 
     # Check for required credentials and warn if missing
     missing_vars = []
@@ -178,6 +181,7 @@ def get_ups_mcp_config() -> MCPServerConfig:
             "CLIENT_ID": client_id or "",
             "CLIENT_SECRET": client_secret or "",
             "ENVIRONMENT": environment,
+            "UPS_MCP_SPECS_DIR": specs_dir,
             "PATH": os.environ.get("PATH", ""),
         },
     )

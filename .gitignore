@@ -81,3 +81,5 @@ test_data/
 uploads/
 
 repomix-output.xml
+
+.cache

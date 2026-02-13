@@ -120,6 +120,17 @@ class MCPClient:
         self._session: ClientSession | None = None
         self._stdio_context: Any = None
         self._session_context: Any = None
+        self._retry_attempts_total = 0
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether the MCP session is currently connected."""
+        return self._session is not None
+
+    @property
+    def retry_attempts_total(self) -> int:
+        """Total number of retry sleeps performed by this client."""
+        return self._retry_attempts_total
 
     async def __aenter__(self) -> "MCPClient":
         """Spawn MCP server and initialize session.
@@ -198,6 +209,9 @@ class MCPClient:
         self,
         name: str,
         arguments: dict[str, Any] | None = None,
+        *,
+        max_retries: int | None = None,
+        base_delay: float | None = None,
     ) -> dict[str, Any]:
         """Call an MCP tool with retry logic.
 
@@ -207,6 +221,8 @@ class MCPClient:
         Args:
             name: MCP tool name to call.
             arguments: Tool arguments dict.
+            max_retries: Optional per-call override for retry count.
+            base_delay: Optional per-call override for retry delay base.
 
         Returns:
             Parsed JSON dict from the tool response.
@@ -222,8 +238,11 @@ class MCPClient:
                 reason="Session not initialized. Use 'async with MCPClient(...)' context.",
             )
 
+        retries = self._max_retries if max_retries is None else max_retries
+        delay_base = self._base_delay if base_delay is None else base_delay
+
         last_error: str = ""
-        for attempt in range(self._max_retries + 1):
+        for attempt in range(retries + 1):
             result = await self._session.call_tool(name, arguments)
 
             if not result.isError:
@@ -234,13 +253,14 @@ class MCPClient:
             last_error = error_text
 
             # Check if retryable
-            if attempt < self._max_retries and self._is_retryable(error_text):
-                delay = self._base_delay * (2 ** attempt)
+            if attempt < retries and self._is_retryable(error_text):
+                delay = delay_base * (2 ** attempt)
                 logger.warning(
                     "MCP tool '%s' returned retryable error (attempt %d/%d), "
                     "retrying in %.1fs: %s",
-                    name, attempt + 1, self._max_retries + 1, delay, error_text[:200],
+                    name, attempt + 1, retries + 1, delay, error_text[:200],
                 )
+                self._retry_attempts_total += 1
                 await asyncio.sleep(delay)
                 continue
 

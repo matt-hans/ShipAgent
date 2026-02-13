@@ -266,6 +266,42 @@ class TestProcessMessageStream:
         tool_calls = [e for e in events if e["event"] == "tool_call"]
         assert len(tool_calls) == 2
 
+    @pytest.mark.asyncio
+    async def test_records_last_turn_count_from_assistant_messages(self):
+        """last_turn_count reflects assistant turns in last streamed request."""
+
+        class FakeTextBlock:
+            def __init__(self, text):
+                self.text = text
+
+        class FakeAssistantMessage:
+            def __init__(self, content):
+                self.content = content
+
+        class FakeResultMessage:
+            def __init__(self, is_error=False, result=""):
+                self.is_error = is_error
+                self.result = result
+
+        async def _gen():
+            yield FakeAssistantMessage([FakeTextBlock("one")])
+            yield FakeAssistantMessage([FakeTextBlock("two")])
+            yield FakeResultMessage()
+
+        agent = OrchestrationAgent()
+        agent._started = True
+        agent._client = MagicMock()
+        agent._client.query = AsyncMock(return_value=None)
+        agent._client.receive_response = MagicMock(return_value=_gen())
+
+        with patch("src.orchestrator.agent.client._HAS_STREAM_EVENT", False), \
+             patch("src.orchestrator.agent.client.AssistantMessage", FakeAssistantMessage), \
+             patch("src.orchestrator.agent.client.TextBlock", FakeTextBlock), \
+             patch("src.orchestrator.agent.client.ResultMessage", FakeResultMessage):
+            _ = [e async for e in agent.process_message_stream("Ship orders")]
+
+        assert agent.last_turn_count == 2
+
 
 class TestInterruptSupport:
     """Tests for interrupt() method."""

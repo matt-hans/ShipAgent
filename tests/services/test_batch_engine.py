@@ -170,3 +170,80 @@ class TestBatchEnginePreview:
 
         assert result["total_estimated_cost_cents"] > 0
         assert mock_ups_service.get_rate.call_count == 1
+
+    async def test_preview_default_cap_is_50(self, mock_ups_service, mock_db_session, monkeypatch):
+        """Default preview cap rates only first 50 rows and estimates remaining."""
+        monkeypatch.delenv("BATCH_PREVIEW_MAX_ROWS", raising=False)
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="ABC123",
+        )
+
+        rows = [
+            MagicMock(
+                id=f"row-{i}",
+                row_number=i,
+                order_data=json.dumps({
+                    "ship_to_name": f"User {i}",
+                    "ship_to_address1": "123 Main",
+                    "ship_to_city": "LA",
+                    "ship_to_state": "CA",
+                    "ship_to_postal_code": "90001",
+                    "weight": 2.0,
+                }),
+            )
+            for i in range(1, 61)
+        ]
+
+        shipper = {
+            "name": "Store",
+            "addressLine1": "456 Oak",
+            "city": "SF",
+            "stateProvinceCode": "CA",
+            "postalCode": "94102",
+            "countryCode": "US",
+        }
+
+        result = await engine.preview(job_id="job-50", rows=rows, shipper=shipper)
+        assert len(result["preview_rows"]) == 50
+        assert result["additional_rows"] == 10
+        assert mock_ups_service.get_rate.call_count == 50
+
+    async def test_preview_unlimited_when_cap_zero(self, mock_ups_service, mock_db_session, monkeypatch):
+        """BATCH_PREVIEW_MAX_ROWS=0 rates all rows with no estimation remainder."""
+        monkeypatch.setenv("BATCH_PREVIEW_MAX_ROWS", "0")
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="ABC123",
+        )
+
+        rows = [
+            MagicMock(
+                id=f"row-{i}",
+                row_number=i,
+                order_data=json.dumps({
+                    "ship_to_name": f"User {i}",
+                    "ship_to_address1": "123 Main",
+                    "ship_to_city": "LA",
+                    "ship_to_state": "CA",
+                    "ship_to_postal_code": "90001",
+                    "weight": 2.0,
+                }),
+            )
+            for i in range(1, 13)
+        ]
+        shipper = {
+            "name": "Store",
+            "addressLine1": "456 Oak",
+            "city": "SF",
+            "stateProvinceCode": "CA",
+            "postalCode": "94102",
+            "countryCode": "US",
+        }
+
+        result = await engine.preview(job_id="job-all", rows=rows, shipper=shipper)
+        assert len(result["preview_rows"]) == 12
+        assert result["additional_rows"] == 0
+        assert mock_ups_service.get_rate.call_count == 12

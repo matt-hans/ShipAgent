@@ -17,6 +17,8 @@ Endpoints:
 import asyncio
 import json
 import logging
+import os
+import time
 from typing import AsyncGenerator
 from uuid import uuid4
 
@@ -151,7 +153,7 @@ def _compute_source_hash(source_info: "DataSourceInfo | None") -> str:
 async def _ensure_agent(
     session: "AgentSession",
     source_info: "DataSourceInfo | None",
-) -> None:
+) -> bool:
     """Ensure the session has a running agent, creating or rebuilding as needed.
 
     Creates a new agent on first call or when the data source changes.
@@ -161,6 +163,9 @@ async def _ensure_agent(
     Args:
         session: The conversation session.
         source_info: Current data source metadata.
+
+    Returns:
+        True if a new agent was started/rebuilt, False if existing reused.
     """
     from src.orchestrator.agent.client import OrchestrationAgent
     from src.orchestrator.agent.system_prompt import build_system_prompt
@@ -169,7 +174,7 @@ async def _ensure_agent(
 
     # Reuse existing agent if data source hasn't changed
     if session.agent is not None and session.agent_source_hash == source_hash:
-        return
+        return False
 
     # Stop old agent if data source changed mid-conversation
     if session.agent is not None:
@@ -189,6 +194,36 @@ async def _ensure_agent(
     session.agent = agent
     session.agent_source_hash = source_hash
     logger.info("Agent started for session %s", session.session_id)
+    return True
+
+
+async def _prewarm_session_agent(session_id: str) -> None:
+    """Best-effort prewarm for session agent startup.
+
+    Runs in background after conversation creation when a source is already
+    connected. Never raises; first message path remains authoritative.
+    """
+    from src.services.data_source_service import DataSourceService
+
+    session = _session_manager.get_or_create_session(session_id)
+    try:
+        async with session.lock:
+            svc = DataSourceService.get_instance()
+            source_info = svc.get_source_info()
+            if source_info is None:
+                return
+            rebuilt = await _ensure_agent(session, source_info)
+            logger.info(
+                "Agent prewarm complete: session_id=%s rebuilt=%s source_type=%s",
+                session_id,
+                rebuilt,
+                source_info.source_type,
+            )
+    except asyncio.CancelledError:
+        logger.info("Agent prewarm cancelled for session %s", session_id)
+        raise
+    except Exception as e:
+        logger.warning("Agent prewarm failed for session %s: %s", session_id, e)
 
 
 async def _process_agent_message(session_id: str, content: str) -> None:
@@ -204,6 +239,33 @@ async def _process_agent_message(session_id: str, content: str) -> None:
     """
     queue = _get_event_queue(session_id)
     session = _session_manager.get_or_create_session(session_id)
+    started_at = time.perf_counter()
+    first_event_at: float | None = None
+    first_event_source = ""
+    preview_rows_rated = 0
+    preview_total_rows = 0
+    auto_import_used = False
+    source_type = "none"
+    agent_rebuilt = False
+
+    logger.info(
+        "agent_timing marker=message_received session_id=%s content_len=%d elapsed=%.3f",
+        session_id,
+        len(content),
+        0.0,
+    )
+
+    def _mark_first_event(source: str) -> None:
+        nonlocal first_event_at, first_event_source
+        if first_event_at is None:
+            first_event_at = time.perf_counter()
+            first_event_source = source
+            logger.info(
+                "agent_timing marker=first_event session_id=%s source=%s elapsed=%.3f",
+                session_id,
+                source,
+                first_event_at - started_at,
+            )
 
     async with session.lock:
         try:
@@ -212,35 +274,61 @@ async def _process_agent_message(session_id: str, content: str) -> None:
             svc = DataSourceService.get_instance()
             source_info = svc.get_source_info()
 
-            # Auto-import Shopify orders if no file/DB source is loaded
+            # Auto-import Shopify orders if no file/DB source is loaded.
             if source_info is None:
                 source_info = await _try_auto_import_shopify(svc)
+                auto_import_used = source_info is not None
+
+            source_type = source_info.source_type if source_info is not None else "none"
+            logger.info(
+                "agent_timing marker=source_resolved session_id=%s source_type=%s "
+                "auto_import_used=%s elapsed=%.3f",
+                session_id,
+                source_type,
+                auto_import_used,
+                time.perf_counter() - started_at,
+            )
 
             # Create or reuse agent (persists across messages)
-            await _ensure_agent(session, source_info)
+            agent_rebuilt = await _ensure_agent(session, source_info)
+            logger.info(
+                "agent_timing marker=agent_ready session_id=%s agent_rebuilt=%s elapsed=%.3f",
+                session_id,
+                agent_rebuilt,
+                time.perf_counter() - started_at,
+            )
 
-            # Bridge tool events to the SSE queue via ContextVar
+            # Bridge tool events to the SSE queue.
             def _emit_to_queue(event_type: str, data: dict) -> None:
+                _mark_first_event("tool_emit")
                 queue.put_nowait({"event": event_type, "data": data})
 
             set_event_emitter(_emit_to_queue)
             try:
-                # Process message — SDK maintains conversation context internally
+                # Process message — SDK maintains conversation context internally.
                 async for event in session.agent.process_message_stream(content):
+                    _mark_first_event(str(event.get("event", "unknown")))
                     await queue.put(event)
 
-                    # Store complete text blocks in session history
-                    if event.get("event") == "agent_message":
+                    event_type = event.get("event")
+                    if event_type == "preview_ready":
+                        preview_data = event.get("data", {})
+                        preview_total_rows = int(preview_data.get("total_rows", 0))
+                        preview_rows_rated = len(preview_data.get("preview_rows", []))
+
+                    # Store complete text blocks in session history.
+                    if event_type == "agent_message":
                         text = event.get("data", {}).get("text", "")
                         if text:
                             _session_manager.add_message(
-                                session_id, "assistant", text
+                                session_id, "assistant", text,
                             )
             finally:
                 set_event_emitter(None)
 
         except Exception as e:
             logger.error("Agent processing failed for session %s: %s", session_id, e)
+            _mark_first_event("error")
             await queue.put({
                 "event": "error",
                 "data": {"message": str(e)},
@@ -248,6 +336,31 @@ async def _process_agent_message(session_id: str, content: str) -> None:
 
     # Signal end of response
     await queue.put({"event": "done", "data": {}})
+
+    elapsed = time.perf_counter() - started_at
+    ttfb = (first_event_at - started_at) if first_event_at is not None else -1.0
+    agent_turns_count = (
+        int(getattr(session.agent, "last_turn_count", 0))
+        if session.agent is not None
+        else 0
+    )
+    logger.info(
+        "agent_timing marker=done_emitted session_id=%s source_type=%s "
+        "auto_import_used=%s agent_rebuilt=%s agent_turns_count=%d "
+        "preview_rows_rated=%d preview_total_rows=%d batch_concurrency=%s "
+        "first_event_source=%s ttfb=%.3f elapsed=%.3f",
+        session_id,
+        source_type,
+        auto_import_used,
+        agent_rebuilt,
+        agent_turns_count,
+        preview_rows_rated,
+        preview_total_rows,
+        os.environ.get("BATCH_CONCURRENCY", "5"),
+        first_event_source,
+        ttfb,
+        elapsed,
+    )
 
 
 async def _event_generator(
@@ -308,8 +421,19 @@ async def create_conversation() -> CreateConversationResponse:
     Returns:
         CreateConversationResponse with the new session_id.
     """
+    from src.services.data_source_service import DataSourceService
+
     session_id = str(uuid4())
-    _session_manager.get_or_create_session(session_id)
+    session = _session_manager.get_or_create_session(session_id)
+
+    # Best-effort prewarm when a source already exists; do not block response.
+    try:
+        source_info = DataSourceService.get_instance().get_source_info()
+        if source_info is not None:
+            session.prewarm_task = asyncio.create_task(_prewarm_session_agent(session_id))
+    except Exception as e:
+        logger.warning("Failed to schedule agent prewarm for %s: %s", session_id, e)
+
     logger.info("Created conversation session: %s", session_id)
     return CreateConversationResponse(session_id=session_id)
 
@@ -419,7 +543,8 @@ async def delete_conversation(session_id: str) -> Response:
     Returns:
         204 No Content.
     """
-    # Stop the agent (async) before removing session
+    # Stop prewarm and agent before removing session
+    await _session_manager.cancel_session_prewarm_task(session_id)
     await _session_manager.stop_session_agent(session_id)
     _session_manager.remove_session(session_id)
     _event_queues.pop(session_id, None)

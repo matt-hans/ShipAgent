@@ -146,6 +146,12 @@ def test_session_has_lock():
     assert isinstance(session.lock, asyncio.Lock)
 
 
+def test_session_has_prewarm_task_attribute():
+    """Session has prewarm_task attribute, initially None."""
+    session = AgentSession("test")
+    assert session.prewarm_task is None
+
+
 def test_session_agent_can_be_set():
     """Agent can be set on a session externally."""
     session = AgentSession("test")
@@ -210,3 +216,26 @@ async def test_stop_session_agent_handles_errors():
 
     # Agent should still be cleared
     assert session.agent is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_prewarm_task_is_idempotent():
+    """cancel_session_prewarm_task is safe when missing."""
+    mgr = AgentSessionManager()
+    await mgr.cancel_session_prewarm_task("missing")
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_prewarm_task_cancels_active_task():
+    """Active prewarm task is cancelled and cleared."""
+    mgr = AgentSessionManager()
+    session = mgr.get_or_create_session("sess-1")
+
+    async def _work() -> None:
+        await asyncio.sleep(5)
+
+    task = asyncio.create_task(_work())
+    session.prewarm_task = task
+    await mgr.cancel_session_prewarm_task("sess-1")
+    assert session.prewarm_task is None
+    assert task.cancelled()
