@@ -107,29 +107,91 @@ def test_prompt_returns_string():
     assert len(result) > 100  # non-trivial prompt
 
 
-def test_prompt_contains_direct_single_shipment_section():
-    """System prompt includes Direct Single-Shipment Commands section."""
-    prompt = build_system_prompt()
+def test_prompt_contains_direct_single_shipment_section_when_interactive():
+    """System prompt includes Direct Single-Shipment Commands when interactive=True."""
+    prompt = build_system_prompt(interactive_shipping=True)
     assert "Direct Single-Shipment Commands" in prompt
     assert "mcp__ups__create_shipment" in prompt
     assert "request_body" in prompt
 
 
-def test_prompt_contains_validation_error_handling_section():
-    """System prompt includes Handling Create Shipment Validation Errors section."""
-    prompt = build_system_prompt()
+def test_prompt_contains_validation_error_handling_when_interactive():
+    """System prompt includes validation error handling when interactive=True."""
+    prompt = build_system_prompt(interactive_shipping=True)
     assert "Handling Create Shipment Validation Errors" in prompt
     assert "missing" in prompt.lower()
 
 
-def test_prompt_contains_elicitation_declined_rule():
-    """System prompt instructs not to retry cancelled/declined errors."""
-    prompt = build_system_prompt()
+def test_prompt_contains_elicitation_declined_rule_when_interactive():
+    """System prompt instructs not to retry cancelled/declined errors when interactive=True."""
+    prompt = build_system_prompt(interactive_shipping=True)
     assert "ELICITATION_DECLINED" in prompt
     assert "ELICITATION_CANCELLED" in prompt
 
 
-def test_prompt_contains_malformed_request_rule():
-    """System prompt instructs MALFORMED_REQUEST is a structural issue."""
-    prompt = build_system_prompt()
+def test_prompt_contains_malformed_request_rule_when_interactive():
+    """System prompt instructs MALFORMED_REQUEST is structural when interactive=True."""
+    prompt = build_system_prompt(interactive_shipping=True)
     assert "MALFORMED_REQUEST" in prompt
+
+
+# --- Interactive shipping prompt conditioning tests ---
+
+
+class TestInteractiveShippingPromptConditioning:
+    """Tests for interactive_shipping prompt conditioning."""
+
+    def test_interactive_sections_included_when_true(self):
+        """Direct shipment + validation sections present when interactive=True."""
+        prompt = build_system_prompt(interactive_shipping=True)
+        assert "Direct Single-Shipment Commands" in prompt
+        assert "Handling Create Shipment Validation Errors" in prompt
+
+    def test_interactive_sections_omitted_when_false(self):
+        """Direct shipment + validation sections absent when interactive=False."""
+        prompt = build_system_prompt(interactive_shipping=False)
+        assert "Direct Single-Shipment Commands" not in prompt
+        assert "Handling Create Shipment Validation Errors" not in prompt
+
+    def test_interactive_sections_omitted_by_default(self):
+        """Default (no flag) omits interactive sections."""
+        prompt = build_system_prompt()
+        assert "Direct Single-Shipment Commands" not in prompt
+        assert "Handling Create Shipment Validation Errors" not in prompt
+
+    def test_coexistence_routing_policy_when_true(self):
+        """Coexistence routing rules present when interactive=True."""
+        prompt = build_system_prompt(interactive_shipping=True)
+        lower = prompt.lower()
+        assert "batch path" in lower
+        assert "ambiguous" in lower
+        assert "clarifying question" in lower
+
+    def test_direct_path_precedence_text(self):
+        """Direct path takes precedence for ad-hoc when interactive=True."""
+        prompt = build_system_prompt(interactive_shipping=True)
+        lower = prompt.lower()
+        assert "takes precedence" in lower or "check first" in lower
+
+    def test_batch_workflow_always_present(self):
+        """Batch shipping workflow is present regardless of interactive flag."""
+        prompt_off = build_system_prompt(interactive_shipping=False)
+        prompt_on = build_system_prompt(interactive_shipping=True)
+        for prompt in (prompt_off, prompt_on):
+            assert "ship_command_pipeline" in prompt
+            assert "preview" in prompt.lower()
+
+    def test_safety_rules_always_present(self):
+        """Safety rules are present regardless of interactive flag."""
+        prompt_off = build_system_prompt(interactive_shipping=False)
+        prompt_on = build_system_prompt(interactive_shipping=True)
+        for prompt in (prompt_off, prompt_on):
+            assert "Safety Rules" in prompt
+            assert "confirm" in prompt.lower()
+
+    def test_elicitation_codes_absent_when_false(self):
+        """Elicitation error codes absent from prompt when interactive=False."""
+        prompt = build_system_prompt(interactive_shipping=False)
+        assert "ELICITATION_DECLINED" not in prompt
+        assert "ELICITATION_CANCELLED" not in prompt
+        assert "MALFORMED_REQUEST" not in prompt
