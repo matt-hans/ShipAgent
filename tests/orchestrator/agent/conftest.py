@@ -5,6 +5,8 @@ requiring the actual SDK to be installed.
 """
 
 import sys
+from dataclasses import dataclass
+from typing import Any
 from unittest.mock import MagicMock
 
 
@@ -24,12 +26,23 @@ def mock_sdk_module():
     mock_sdk.ResultMessage = MagicMock
     mock_sdk.SdkMcpTool = MagicMock
     mock_sdk.TextBlock = MagicMock
+    mock_sdk.ToolUseBlock = MagicMock
     mock_sdk.create_sdk_mcp_server = MagicMock(return_value=MagicMock())
-    mock_sdk.tool = MagicMock
 
-    # Mock the types submodule
+    # Mock the types submodule with StreamEvent
     mock_types = MagicMock()
     mock_types.McpStdioServerConfig = dict  # Use dict as TypedDict standin
+
+    @dataclass
+    class MockStreamEvent:
+        """Mock StreamEvent for testing partial message streaming."""
+
+        uuid: str = ""
+        session_id: str = ""
+        event: dict[str, Any] = None  # type: ignore[assignment]
+        parent_tool_use_id: str | None = None
+
+    mock_types.StreamEvent = MockStreamEvent
     mock_sdk.types = mock_types
 
     return mock_sdk

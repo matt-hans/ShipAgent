@@ -16,6 +16,7 @@ Example:
 import hashlib
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 import sqlglot
@@ -25,6 +26,46 @@ from src.services.data_source_service import DataSourceService
 from src.services.job_service import JobService
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Event Emission (module-level bridge to SSE queue)
+# ---------------------------------------------------------------------------
+
+# Module-level mutable reference for the event emitter callback.
+# Using a simple module-level variable instead of contextvars.ContextVar
+# because the SDK's in-process MCP server runs tool handlers in a context
+# established during agent.start() — before set_event_emitter() is called.
+# ContextVar changes after task creation are invisible to child tasks.
+# Per-session locking in conversations.py ensures only one message
+# processes at a time, making this safe for concurrent sessions.
+_event_emitter_callback: Callable[[str, dict], None] | None = None
+
+
+def set_event_emitter(callback: Callable[[str, dict], None] | None) -> None:
+    """Set or clear the event emitter callback.
+
+    Called by conversations.py before/after agent message processing
+    to bridge tool events to the SSE queue.
+
+    Args:
+        callback: Function accepting (event_type, data) to push SSE events,
+                  or None to clear.
+    """
+    global _event_emitter_callback
+    _event_emitter_callback = callback
+
+
+def _emit_event(event_type: str, data: dict[str, Any]) -> None:
+    """Emit a structured event to the frontend via the module-level callback.
+
+    No-op if no emitter is set (e.g. in tests or non-SSE contexts).
+
+    Args:
+        event_type: SSE event name (e.g. "preview_ready").
+        data: Event payload dict.
+    """
+    if _event_emitter_callback is not None:
+        _event_emitter_callback(event_type, data)
 
 
 # ---------------------------------------------------------------------------
@@ -312,8 +353,62 @@ async def _run_batch_preview(job_id: str) -> dict[str, Any]:
     return result
 
 
+SERVICE_CODE_NAMES: dict[str, str] = {
+    "01": "UPS Next Day Air",
+    "02": "UPS 2nd Day Air",
+    "03": "UPS Ground",
+    "12": "UPS 3 Day Select",
+    "13": "UPS Next Day Air Saver",
+    "14": "UPS Next Day Air Early",
+    "59": "UPS 2nd Day Air A.M.",
+}
+
+
+def _enrich_preview_rows(job_id: str, preview_rows: list[dict]) -> list[dict]:
+    """Normalize preview rows for the frontend BatchPreview type.
+
+    Adds service name, order_data, and converts rate_error → warnings array.
+
+    Args:
+        job_id: Job UUID for DB row lookup.
+        preview_rows: Raw rows from BatchEngine.preview().
+
+    Returns:
+        Enriched preview rows.
+    """
+    # Build row_number → order_data map from DB
+    with get_db_context() as db:
+        db_rows = JobService(db).get_rows(job_id)
+        row_map: dict[int, dict] = {}
+        for r in db_rows:
+            if r.order_data:
+                try:
+                    row_map[r.row_number] = json.loads(r.order_data)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+    for row in preview_rows:
+        od = row_map.get(row.get("row_number", -1), {})
+        row["service"] = SERVICE_CODE_NAMES.get(
+            od.get("service_code", "03"), "UPS Ground"
+        )
+        row["order_data"] = od
+        # Normalize rate_error → warnings array
+        rate_error = row.pop("rate_error", None)
+        if rate_error:
+            row["warnings"] = [rate_error]
+        elif "warnings" not in row:
+            row["warnings"] = []
+
+    return preview_rows
+
+
 async def batch_preview_tool(args: dict[str, Any]) -> dict[str, Any]:
     """Run batch preview (rate all rows) for a job.
+
+    Emits a 'preview_ready' event to the frontend SSE queue so the
+    PreviewCard renders, while still returning the result to the LLM
+    for conversational context.
 
     Args:
         args: Dict with 'job_id' (str).
@@ -327,6 +422,20 @@ async def batch_preview_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     try:
         result = await _run_batch_preview(job_id)
+
+        # Enrich rows for the frontend
+        preview_rows = result.get("preview_rows", [])
+        _enrich_preview_rows(job_id, preview_rows)
+
+        # Count warnings after normalization
+        rows_with_warnings = sum(
+            1 for r in preview_rows if r.get("warnings")
+        )
+        result["rows_with_warnings"] = rows_with_warnings
+
+        # Emit to frontend SSE queue
+        _emit_event("preview_ready", result)
+
         return _ok(result)
     except Exception as e:
         logger.error("batch_preview_tool failed: %s", e)

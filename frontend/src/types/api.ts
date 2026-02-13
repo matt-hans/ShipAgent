@@ -551,6 +551,7 @@ export type AgentEventType =
   | 'tool_call'
   | 'tool_result'
   | 'agent_message'
+  | 'agent_message_delta'
   | 'preview_ready'
   | 'confirmation_needed'
   | 'execution_progress'

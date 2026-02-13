@@ -1,10 +1,19 @@
 """Tests for AgentSessionManager.
 
 Manages per-conversation agent sessions: creation, caching by session ID,
-teardown, and conversation history.
+teardown, conversation history, and persistent agent lifecycle.
 """
 
+import asyncio
+
+import pytest
+
 from src.services.agent_session_manager import AgentSession, AgentSessionManager
+
+
+# =========================================================================
+# Session Lifecycle
+# =========================================================================
 
 
 def test_create_new_session():
@@ -45,6 +54,11 @@ def test_list_sessions():
     mgr.get_or_create_session("c")
     sessions = mgr.list_sessions()
     assert set(sessions) == {"a", "b", "c"}
+
+
+# =========================================================================
+# Message & History
+# =========================================================================
 
 
 def test_add_message():
@@ -107,3 +121,92 @@ def test_messages_have_timestamps():
     mgr.add_message("sess-1", "user", "hello")
     msg = mgr.get_history("sess-1")[0]
     assert "timestamp" in msg
+
+
+# =========================================================================
+# Agent Persistence (new in SDK leverage update)
+# =========================================================================
+
+
+def test_session_has_agent_attribute():
+    """Session has an agent attribute, initially None."""
+    session = AgentSession("test")
+    assert session.agent is None
+
+
+def test_session_has_source_hash_attribute():
+    """Session has agent_source_hash for data source change detection."""
+    session = AgentSession("test")
+    assert session.agent_source_hash is None
+
+
+def test_session_has_lock():
+    """Session has an asyncio.Lock for message serialization."""
+    session = AgentSession("test")
+    assert isinstance(session.lock, asyncio.Lock)
+
+
+def test_session_agent_can_be_set():
+    """Agent can be set on a session externally."""
+    session = AgentSession("test")
+    mock_agent = object()  # Any object
+    session.agent = mock_agent
+    assert session.agent is mock_agent
+
+
+def test_session_source_hash_can_be_set():
+    """Source hash can be set for change tracking."""
+    session = AgentSession("test")
+    session.agent_source_hash = "csv|orders.csv|100|id,name"
+    assert session.agent_source_hash == "csv|orders.csv|100|id,name"
+
+
+@pytest.mark.asyncio
+async def test_stop_session_agent_with_no_agent():
+    """stop_session_agent is safe when no agent exists."""
+    mgr = AgentSessionManager()
+    mgr.get_or_create_session("sess-1")
+    await mgr.stop_session_agent("sess-1")  # Should not raise
+
+
+@pytest.mark.asyncio
+async def test_stop_session_agent_nonexistent_session():
+    """stop_session_agent is safe for nonexistent session."""
+    mgr = AgentSessionManager()
+    await mgr.stop_session_agent("nonexistent")  # Should not raise
+
+
+@pytest.mark.asyncio
+async def test_stop_session_agent_calls_stop():
+    """stop_session_agent calls agent.stop() and clears reference."""
+    from unittest.mock import AsyncMock
+
+    mgr = AgentSessionManager()
+    session = mgr.get_or_create_session("sess-1")
+    mock_agent = AsyncMock()
+    session.agent = mock_agent
+    session.agent_source_hash = "test-hash"
+
+    await mgr.stop_session_agent("sess-1")
+
+    mock_agent.stop.assert_awaited_once()
+    assert session.agent is None
+    assert session.agent_source_hash is None
+
+
+@pytest.mark.asyncio
+async def test_stop_session_agent_handles_errors():
+    """stop_session_agent handles errors from agent.stop() gracefully."""
+    from unittest.mock import AsyncMock
+
+    mgr = AgentSessionManager()
+    session = mgr.get_or_create_session("sess-1")
+    mock_agent = AsyncMock()
+    mock_agent.stop.side_effect = RuntimeError("stop failed")
+    session.agent = mock_agent
+
+    # Should not raise despite agent.stop() failing
+    await mgr.stop_session_agent("sess-1")
+
+    # Agent should still be cleared
+    assert session.agent is None

@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.orchestrator.agent.tools_v2 import (
+    _emit_event,
+    _enrich_preview_rows,
     batch_execute_tool,
     batch_preview_tool,
     create_job_tool,
@@ -19,6 +21,7 @@ from src.orchestrator.agent.tools_v2 import (
     get_platform_status_tool,
     get_schema_tool,
     get_source_info_tool,
+    set_event_emitter,
     validate_filter_syntax_tool,
 )
 
@@ -289,3 +292,108 @@ def test_tool_definitions_have_unique_names():
     defs = get_all_tool_definitions()
     names = [d["name"] for d in defs]
     assert len(names) == len(set(names))
+
+
+# ---------------------------------------------------------------------------
+# Event emission (module-level bridge)
+# ---------------------------------------------------------------------------
+
+
+def test_emit_event_calls_callback():
+    """_emit_event invokes the registered callback with correct args."""
+    captured = []
+
+    def callback(event_type: str, data: dict) -> None:
+        captured.append((event_type, data))
+
+    set_event_emitter(callback)
+    try:
+        _emit_event("preview_ready", {"job_id": "j1", "total_rows": 3})
+    finally:
+        set_event_emitter(None)
+
+    assert len(captured) == 1
+    assert captured[0][0] == "preview_ready"
+    assert captured[0][1]["job_id"] == "j1"
+
+
+def test_emit_event_noop_without_emitter():
+    """_emit_event does not raise when no emitter is set."""
+    set_event_emitter(None)
+    # Should not raise
+    _emit_event("preview_ready", {"job_id": "j1"})
+
+
+@pytest.mark.asyncio
+async def test_batch_preview_emits_preview_ready():
+    """batch_preview_tool emits preview_ready event to the registered callback."""
+    preview_result = {
+        "job_id": "test-job",
+        "total_rows": 2,
+        "total_estimated_cost_cents": 2400,
+        "preview_rows": [
+            {"row_number": 1, "recipient_name": "Alice", "estimated_cost_cents": 1200},
+            {"row_number": 2, "recipient_name": "Bob", "estimated_cost_cents": 1200, "rate_error": "Bad address"},
+        ],
+    }
+
+    captured = []
+
+    def callback(event_type: str, data: dict) -> None:
+        captured.append((event_type, data))
+
+    set_event_emitter(callback)
+    try:
+        with patch("src.orchestrator.agent.tools_v2._run_batch_preview") as mock_preview, \
+             patch("src.orchestrator.agent.tools_v2._enrich_preview_rows") as mock_enrich:
+            mock_preview.return_value = preview_result
+            # _enrich_preview_rows modifies rows in place; simulate no-op
+            mock_enrich.return_value = preview_result["preview_rows"]
+
+            result = await batch_preview_tool({"job_id": "test-job"})
+    finally:
+        set_event_emitter(None)
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    assert captured[0][0] == "preview_ready"
+    assert captured[0][1]["job_id"] == "test-job"
+
+
+def test_preview_data_normalization():
+    """_enrich_preview_rows converts rate_error→warnings and adds service/order_data."""
+    preview_rows = [
+        {"row_number": 1, "recipient_name": "Alice", "estimated_cost_cents": 1200},
+        {"row_number": 2, "recipient_name": "Bob", "estimated_cost_cents": 0, "rate_error": "Address validation failed"},
+    ]
+
+    # Mock DB rows
+    mock_row_1 = MagicMock()
+    mock_row_1.row_number = 1
+    mock_row_1.order_data = json.dumps({"service_code": "02", "order_id": "A1"})
+
+    mock_row_2 = MagicMock()
+    mock_row_2.row_number = 2
+    mock_row_2.order_data = json.dumps({"service_code": "03", "order_id": "A2"})
+
+    with patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx:
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch("src.orchestrator.agent.tools_v2.JobService") as MockJS:
+            MockJS.return_value.get_rows.return_value = [mock_row_1, mock_row_2]
+
+            result = _enrich_preview_rows("test-job", preview_rows)
+
+    # Row 1: no rate_error → empty warnings, service from code 02
+    assert result[0]["warnings"] == []
+    assert result[0]["service"] == "UPS 2nd Day Air"
+    assert result[0]["order_data"]["order_id"] == "A1"
+    assert "rate_error" not in result[0]
+
+    # Row 2: rate_error → warnings array, service from code 03
+    assert result[1]["warnings"] == ["Address validation failed"]
+    assert result[1]["service"] == "UPS Ground"
+    assert result[1]["order_data"]["order_id"] == "A2"
+    assert "rate_error" not in result[1]
