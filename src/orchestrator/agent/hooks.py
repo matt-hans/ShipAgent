@@ -36,6 +36,7 @@ __all__ = [
     "log_post_tool",
     "detect_error_response",
     "create_hook_matchers",
+    "create_shipping_hook",
 ]
 
 logger = logging.getLogger(__name__)
@@ -51,12 +52,12 @@ async def validate_shipping_input(
     tool_use_id: str | None,
     context: Any,
 ) -> dict[str, Any]:
-    """Validate UPS shipping tool inputs before execution.
+    """Validate tool_input is a well-formed dict for create_shipment.
 
-    Validates:
-    - For `create_shipment`: Require shipper and shipTo fields
-    - Return denial with clear reason if missing required fields
-    - Return empty dict `{}` to allow operation
+    Business-field validation (shipper, shipTo, packages, etc.) is delegated
+    to UPS MCP preflight, which returns structured ToolError payloads with
+    a ``missing`` array when required fields are absent. This hook only
+    guards against structurally invalid inputs (non-dict types).
 
     Args:
         input_data: Contains 'tool_name' and 'tool_input' keys
@@ -74,40 +75,13 @@ async def validate_shipping_input(
 
     # Validate create_shipment tool (mcp__ups__create_shipment)
     if "create_shipment" in tool_name:
-        # Check for required shipper information
-        if not tool_input.get("shipper"):
+        # Only deny when tool_input is not a dict (e.g. None, str, list).
+        # Empty dicts and partial payloads are allowed — MCP preflight
+        # handles missing-field validation and returns actionable errors.
+        if not isinstance(tool_input, dict):
             return _deny_with_reason(
-                "Missing required shipper information. "
-                "The 'shipper' field must include name and address details."
-            )
-
-        # Check for required shipTo information
-        if not tool_input.get("shipTo"):
-            return _deny_with_reason(
-                "Missing required recipient information. "
-                "The 'shipTo' field must include name and address details."
-            )
-
-        # Validate shipper has minimum required fields
-        shipper = tool_input.get("shipper", {})
-        if not shipper.get("name"):
-            return _deny_with_reason(
-                "Missing shipper name. The 'shipper.name' field is required."
-            )
-        if not shipper.get("addressLine1"):
-            return _deny_with_reason(
-                "Missing shipper address. The 'shipper.addressLine1' field is required."
-            )
-
-        # Validate shipTo has minimum required fields
-        ship_to = tool_input.get("shipTo", {})
-        if not ship_to.get("name"):
-            return _deny_with_reason(
-                "Missing recipient name. The 'shipTo.name' field is required."
-            )
-        if not ship_to.get("addressLine1"):
-            return _deny_with_reason(
-                "Missing recipient address. The 'shipTo.addressLine1' field is required."
+                "Invalid tool_input: expected a dict, "
+                f"got {type(tool_input).__name__}."
             )
 
     return {}  # Allow operation
@@ -426,29 +400,90 @@ def _log_to_stderr(message: str) -> None:
 
 
 # =============================================================================
+# Hook Factory — Instance-Scoped Enforcement
+# =============================================================================
+
+
+def create_shipping_hook(
+    interactive_shipping: bool = False,
+):
+    """Factory that creates a create_shipment pre-hook with mode enforcement.
+
+    When interactive_shipping=False, deterministically denies create_shipment.
+    When interactive_shipping=True, applies structural guard only (dict check).
+    Business-field validation is always delegated to UPS MCP preflight.
+
+    Args:
+        interactive_shipping: Whether interactive single-shipment mode is enabled.
+
+    Returns:
+        Async hook function with interactive_shipping captured via closure.
+    """
+
+    async def _validate_shipping(
+        input_data: dict[str, Any],
+        tool_use_id: str | None,
+        context: Any,
+    ) -> dict[str, Any]:
+        """Validate create_shipment with mode-aware enforcement."""
+        tool_name = input_data.get("tool_name", "")
+        tool_input = input_data.get("tool_input", {})
+
+        _log_to_stderr(
+            f"[VALIDATION] Pre-hook checking: {tool_name} | ID: {tool_use_id} | "
+            f"interactive={interactive_shipping}"
+        )
+
+        if "create_shipment" in tool_name:
+            # Hard enforcement: deny when interactive mode is off
+            if not interactive_shipping:
+                return _deny_with_reason(
+                    "Interactive shipping is disabled. "
+                    "Use batch processing for shipment creation."
+                )
+
+            # Structural guard: deny non-dict inputs
+            if not isinstance(tool_input, dict):
+                return _deny_with_reason(
+                    "Invalid tool_input: expected a dict, "
+                    f"got {type(tool_input).__name__}."
+                )
+
+        return {}
+
+    return _validate_shipping
+
+
+# =============================================================================
 # Hook Matcher Factory
 # =============================================================================
 
 
-def create_hook_matchers() -> dict[str, list[HookMatcher]]:
-    """Create hook matchers for ClaudeAgentOptions.hooks configuration.
+def create_hook_matchers(
+    interactive_shipping: bool = False,
+) -> dict[str, list[HookMatcher]]:
+    """Create hook matchers with mode-aware enforcement.
 
-    Returns a dict structure ready for ClaudeAgentOptions(hooks=create_hook_matchers()).
-
+    Returns a dict structure ready for ClaudeAgentOptions(hooks=...).
     Uses HookMatcher dataclass instances as required by the Claude Agent SDK.
 
-    Matchers:
-        - matcher=None means "all tools"
-        - matcher="mcp__ups__create_shipment" means "tools matching that name"
+    The create_shipment pre-hook is produced by ``create_shipping_hook()``
+    so the ``interactive_shipping`` flag is captured per-instance via closure,
+    avoiding global mutable state.
+
+    Args:
+        interactive_shipping: Whether interactive single-shipment mode is enabled.
 
     Returns:
         Dict with PreToolUse and PostToolUse hook configurations.
     """
+    shipping_hook = create_shipping_hook(interactive_shipping=interactive_shipping)
+
     return {
         "PreToolUse": [
             HookMatcher(
                 matcher="mcp__ups__create_shipment",
-                hooks=[validate_shipping_input],
+                hooks=[shipping_hook],
             ),
             HookMatcher(
                 matcher="mcp__ups__void_shipment",

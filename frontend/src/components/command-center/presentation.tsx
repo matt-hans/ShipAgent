@@ -1077,15 +1077,32 @@ export function ActiveSourceBanner() {
 }
 
 // Welcome message with workflow steps
-export function WelcomeMessage({ onExampleClick }: { onExampleClick?: (text: string) => void }) {
+export function WelcomeMessage({
+  onExampleClick,
+  interactiveShipping = false,
+}: {
+  onExampleClick?: (text: string) => void;
+  interactiveShipping?: boolean;
+}) {
   const { activeSourceInfo } = useAppState();
   const isConnected = !!activeSourceInfo;
 
-  const examples = [
+  const batchExamples = [
     { text: 'Ship all California orders using UPS Ground', desc: 'Filter by state' },
     { text: "Ship today's pending orders with 2nd Day Air", desc: 'Filter by status & date' },
     { text: 'Create shipments for orders over $100', desc: 'Filter by amount' },
   ];
+
+  const interactiveExamples = [
+    { text: 'Ship a 5lb box to John Smith at 123 Main St, Springfield IL 62704 via Ground', desc: 'Single ad-hoc shipment' },
+    { text: 'Create a Next Day Air shipment to 456 Oak Ave, Austin TX 78701', desc: 'Express shipment' },
+  ];
+
+  const examples = interactiveShipping && !isConnected
+    ? interactiveExamples
+    : interactiveShipping && isConnected
+      ? [...interactiveExamples, ...batchExamples.slice(0, 1)]
+      : batchExamples;
 
   // Not connected - show getting started workflow
   if (!isConnected) {

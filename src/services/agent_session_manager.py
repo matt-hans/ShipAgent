@@ -35,6 +35,7 @@ class AgentSession:
         agent: Persistent OrchestrationAgent instance (None until first message).
         agent_source_hash: Hash of the data source used to build the agent's
             system prompt. If the data source changes, the agent is rebuilt.
+        interactive_shipping: Whether interactive single-shipment mode is enabled.
         lock: Async lock serializing message processing for this session.
         prewarm_task: Optional best-effort background task for agent prewarm.
     """
@@ -50,6 +51,7 @@ class AgentSession:
         self.created_at = datetime.now(timezone.utc)
         self.agent: Any = None  # OrchestrationAgent, set by conversations route
         self.agent_source_hash: str | None = None
+        self.interactive_shipping: bool = False
         self.lock = asyncio.Lock()
         self.prewarm_task: asyncio.Task[Any] | None = None
 
