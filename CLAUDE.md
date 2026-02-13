@@ -84,14 +84,15 @@ src/
 ├── api/                        # FastAPI REST API
 │   ├── routes/                 # Endpoint modules
 │   │   ├── conversations.py    # Agent-driven SSE conversation (primary path)
-│   │   ├── jobs.py             # Job CRUD
-│   │   ├── preview.py          # Batch preview (rewritten for BatchEngine)
-│   │   ├── progress.py         # Real-time SSE streaming
-│   │   ├── labels.py           # Label generation/download/merge
-│   │   ├── logs.py             # Audit log endpoints
+│   │   ├── data_sources.py     # Local data source import/upload/disconnect/schema
+│   │   ├── jobs.py             # Job CRUD + status + rows + summary
+│   │   ├── preview.py          # Batch preview + confirm
+│   │   ├── progress.py         # Real-time SSE streaming + progress polling
+│   │   ├── labels.py           # Label download (individual, merged PDF, ZIP)
+│   │   ├── logs.py             # Audit log endpoints (list, errors, export)
 │   │   ├── platforms.py        # Shopify, SAP, Oracle, WooCommerce
 │   │   └── saved_data_sources.py # Saved source CRUD + reconnect
-│   ├── main.py                 # App factory with lifespan events
+│   ├── main.py                 # App factory with lifespan events + SPA serving
 │   ├── schemas.py              # Pydantic request/response models
 │   └── schemas_conversations.py # Conversation endpoint schemas
 ├── db/                         # Database layer
@@ -105,6 +106,7 @@ src/
 │   ├── errors.py               # Shared error types (UPSServiceError)
 │   ├── mcp_client.py           # Generic async MCP client with retry
 │   ├── ups_mcp_client.py       # UPSMCPClient — async UPS via MCP stdio
+│   ├── ups_specs.py            # UPS MCP OpenAPI spec path helpers
 │   ├── batch_engine.py         # BatchEngine — unified preview + execution
 │   ├── column_mapping.py       # ColumnMappingService — source → UPS field mapping
 │   ├── ups_payload_builder.py  # Builds UPS API payloads from mapped data
@@ -112,18 +114,44 @@ src/
 │   ├── job_service.py          # Job state machine, row tracking
 │   ├── audit_service.py        # Audit logging with redaction
 │   ├── data_source_service.py  # Data source import + auto-save hooks
-│   └── saved_data_source_service.py # Saved source CRUD (list, upsert, delete, reconnect)
+│   ├── saved_data_source_service.py # Saved source CRUD (list, upsert, delete, reconnect)
+│   └── write_back_utils.py     # Atomic CSV/Excel write-back utilities
 ├── mcp/
 │   ├── data_source/            # Data Source MCP server
 │   │   ├── server.py           # FastMCP server
-│   │   ├── adapters/           # CSV, Excel, Database, EDI adapters
-│   │   └── tools/              # Import, schema, query, checksum, writeback tools
+│   │   ├── models.py           # Pydantic models (SchemaColumn, ImportResult, RowData)
+│   │   ├── utils.py            # Row checksum (SHA-256) + date parsing utilities
+│   │   ├── adapters/           # Source adapters
+│   │   │   ├── base.py         # BaseSourceAdapter interface
+│   │   │   ├── csv_adapter.py  # CSV file adapter
+│   │   │   ├── excel_adapter.py # Excel (.xlsx) adapter
+│   │   │   ├── db_adapter.py   # PostgreSQL/MySQL database adapter
+│   │   │   └── edi_adapter.py  # EDI (X12/EDIFACT) adapter
+│   │   ├── tools/              # MCP tool implementations
+│   │   │   ├── import_tools.py # Data import tools
+│   │   │   ├── schema_tools.py # Schema inspection tools
+│   │   │   ├── query_tools.py  # SQL query tools
+│   │   │   ├── checksum_tools.py # Row checksum tools
+│   │   │   ├── writeback_tools.py # Write-back tools (tracking → source)
+│   │   │   └── edi_tools.py    # EDI-specific tools
+│   │   └── edi/                # EDI parsing module
+│   │       ├── models.py       # EDI data models
+│   │       ├── x12_parser.py   # ANSI X12 parser
+│   │       └── edifact_parser.py # UN/EDIFACT parser
 │   └── external_sources/       # External platform MCP
+│       ├── server.py           # External sources MCP server
+│       ├── tools.py            # Platform MCP tools
+│       ├── models.py           # PlatformType, ConnectionStatus, ExternalOrder models
 │       └── clients/            # Shopify, SAP, Oracle, WooCommerce clients
 └── orchestrator/               # Orchestration layer
     ├── filters/                # Jinja2 logistics filter library
     │   └── logistics.py        # truncate_address, format_us_zip, convert_weight, etc.
-    ├── models/                 # Data models (intent, filter, mapping, elicitation)
+    ├── models/                 # Data models
+    │   ├── intent.py           # Intent parsing models
+    │   ├── filter.py           # NL filter models
+    │   ├── mapping.py          # Column mapping models
+    │   ├── elicitation.py      # Elicitation models
+    │   └── correction.py       # Self-correction loop tracking (max 3 attempts)
     ├── agent/                  # Claude Agent SDK integration (primary orchestration)
     │   ├── client.py           # OrchestrationAgent — SDK agent with streaming
     │   ├── system_prompt.py    # Unified system prompt builder (domain knowledge + tools)
@@ -139,14 +167,26 @@ src/
 
 frontend/
 ├── src/
+│   ├── main.tsx                    # React entry point
+│   ├── App.tsx                     # Root component (AppStateProvider + layout)
+│   ├── index.css                   # Design system (Tailwind theme, animations, component styles)
 │   ├── components/
 │   │   ├── CommandCenter.tsx       # Main chat UI (messages, preview, progress, artifacts)
+│   │   ├── command-center/
+│   │   │   └── presentation.tsx    # Presentation layer (icons, messages, PreviewCard, ProgressDisplay, CompletionArtifact, ToolCallChip)
 │   │   ├── JobDetailPanel.tsx      # Full job detail view (from sidebar click)
 │   │   ├── LabelPreview.tsx        # PDF label viewer modal (react-pdf)
-│   │   ├── DataSourceManager.tsx   # Data source connection UI
 │   │   ├── RecentSourcesModal.tsx  # Saved sources browser (search, filter, reconnect, bulk delete)
+│   │   ├── sidebar/
+│   │   │   ├── panels.tsx          # DataSourceSection + JobHistorySection components
+│   │   │   └── dataSourceMappers.ts # Column-to-ColumnMetadata mapping helpers
+│   │   ├── ui/                     # shadcn/ui primitives
+│   │   │   ├── ShipAgentLogo.tsx   # Custom logo components
+│   │   │   ├── button.tsx, input.tsx, card.tsx, progress.tsx
+│   │   │   ├── dialog.tsx, alert.tsx, scroll-area.tsx
+│   │   │   └── ...
 │   │   └── layout/
-│   │       ├── Sidebar.tsx         # Data sources + Job History sidebar
+│   │       ├── Sidebar.tsx         # Sidebar shell (delegates to sidebar/panels.tsx)
 │   │       └── Header.tsx          # App header
 │   ├── hooks/
 │   │   ├── useAppState.tsx         # Global state context (conversation, jobs, data source)
@@ -155,7 +195,8 @@ frontend/
 │   │   ├── useSSE.ts              # Generic EventSource hook
 │   │   └── useExternalSources.ts   # Shopify/platform connection management
 │   ├── lib/
-│   │   └── api.ts                  # REST client (all /api/v1 endpoints)
+│   │   ├── api.ts                  # REST client (all /api/v1 endpoints)
+│   │   └── utils.ts               # Tailwind class merging utility (cn)
 │   └── types/
 │       └── api.ts                  # TypeScript types mirroring Pydantic schemas
 └── package.json
@@ -240,16 +281,21 @@ The main UI is an agent-driven conversational chat interface powered by `useConv
 
 ### Key Components
 
-| Component | Purpose |
-|-----------|---------|
-| `CommandCenter` | Main chat: messages, preview cards, progress, completion artifacts |
-| `CompletionArtifact` | Compact inline card for completed batches (green/amber/red border) |
-| `PreviewCard` | Shipment preview with expandable rows and Confirm/Cancel |
-| `ProgressDisplay` | Live batch execution progress (SSE-powered) |
-| `LabelPreview` | PDF modal viewer (react-pdf), opens as overlay |
-| `JobDetailPanel` | Full job detail view (triggered from sidebar click) |
-| `RecentSourcesModal` | Saved source browser with search, type filters, one-click reconnect, bulk delete |
-| `Sidebar` | Data source connections + saved sources + searchable/filterable Job History |
+| Component | File | Purpose |
+|-----------|------|---------|
+| `CommandCenter` | `CommandCenter.tsx` | Main chat: messages, preview cards, progress, completion artifacts |
+| `CompletionArtifact` | `command-center/presentation.tsx` | Inline card for completed batches (green/amber/red border, label access) |
+| `PreviewCard` | `command-center/presentation.tsx` | Shipment preview with expandable rows, cost estimates, warnings, Confirm/Cancel |
+| `ProgressDisplay` | `command-center/presentation.tsx` | Live batch execution progress with per-row failures |
+| `ToolCallChip` | `command-center/presentation.tsx` | Collapsible chip showing active agent tool calls |
+| `ActiveSourceBanner` | `command-center/presentation.tsx` | Banner showing currently connected data source |
+| `WelcomeMessage` | `command-center/presentation.tsx` | Initial welcome with example commands |
+| `LabelPreview` | `LabelPreview.tsx` | PDF modal viewer (react-pdf), opens as overlay |
+| `JobDetailPanel` | `JobDetailPanel.tsx` | Full job detail view (triggered from sidebar click) |
+| `RecentSourcesModal` | `RecentSourcesModal.tsx` | Saved source browser with search, type filters, one-click reconnect, bulk delete |
+| `DataSourceSection` | `sidebar/panels.tsx` | Data source switching, file upload, DB connection, Shopify integration |
+| `JobHistorySection` | `sidebar/panels.tsx` | Job list with search, filters, delete, printer access |
+| `Sidebar` | `layout/Sidebar.tsx` | Sidebar shell delegating to DataSourceSection + JobHistorySection |
 
 ### State Management
 
@@ -263,6 +309,8 @@ The main UI is an agent-driven conversational chat interface powered by `useConv
 
 All endpoints use `/api/v1/` prefix.
 
+### Conversations
+
 | Route | Method | Purpose |
 |-------|--------|---------|
 | `/conversations/` | POST | Create agent conversation session |
@@ -270,21 +318,80 @@ All endpoints use `/api/v1/` prefix.
 | `/conversations/{id}/stream` | GET | SSE stream of agent events |
 | `/conversations/{id}/history` | GET | Get conversation message history |
 | `/conversations/{id}` | DELETE | Delete conversation session |
+
+### Jobs
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/jobs/` | POST | Create a job |
 | `/jobs/` | GET | List all jobs |
 | `/jobs/{id}` | GET | Get job details |
+| `/jobs/{id}/status` | PATCH | Update job status |
+| `/jobs/{id}` | DELETE | Delete job |
+| `/jobs/{id}/rows` | GET | Get all rows for a job |
+| `/jobs/{id}/summary` | GET | Get job summary with metrics |
+| `/jobs/{id}/rows/skip` | PATCH | Mark rows as skipped |
 | `/jobs/{id}/preview` | GET | Get batch preview data |
-| `/jobs/{id}/preview/confirm` | POST | Confirm batch execution |
+| `/jobs/{id}/confirm` | POST | Confirm batch execution |
 | `/jobs/{id}/progress/stream` | GET | SSE stream for real-time progress |
+| `/jobs/{id}/progress` | GET | Get current progress (non-SSE fallback) |
+
+### Labels
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/labels/{tracking_number}` | GET | Download label by tracking number |
 | `/jobs/{id}/labels/merged` | GET | Download merged PDF labels |
-| `/jobs/{id}/labels/{tracking}` | GET | Download individual label |
+| `/jobs/{id}/labels/zip` | GET | Download labels as ZIP |
+| `/jobs/{id}/labels/{row_number}` | GET | Download label by row number |
+
+### Logs
+
+| Route | Method | Purpose |
+|-------|--------|---------|
 | `/jobs/{id}/logs` | GET | Get audit logs |
+| `/jobs/{id}/logs/errors` | GET | Get recent error logs |
+| `/jobs/{id}/logs/export` | GET | Export logs as plain text |
+
+### Data Sources
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/data-sources/import` | POST | Import CSV/Excel/Database |
+| `/data-sources/upload` | POST | Upload CSV/Excel file |
+| `/data-sources/status` | GET | Get current data source status |
+| `/data-sources/disconnect` | POST | Disconnect current source |
+| `/data-sources/schema` | GET | Get schema of current source |
+
+### Saved Sources
+
+| Route | Method | Purpose |
+|-------|--------|---------|
 | `/saved-sources` | GET | List all saved data sources (optional `source_type` filter) |
 | `/saved-sources/{id}` | GET | Get single saved source |
 | `/saved-sources/reconnect` | POST | Reconnect to saved source (one-click for files, requires connection_string for DBs) |
 | `/saved-sources/{id}` | DELETE | Delete saved source |
 | `/saved-sources/bulk-delete` | POST | Bulk delete saved sources |
+
+### Platforms
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/platforms/connections` | GET | List all configured platform connections |
+| `/platforms/{platform}/connect` | POST | Connect to platform |
+| `/platforms/{platform}/disconnect` | POST | Disconnect from platform |
+| `/platforms/{platform}/test` | GET | Test platform connection |
 | `/platforms/shopify/env-status` | GET | Check Shopify connection (auto-detect from env) |
-| `/platforms/shopify/orders` | GET | Fetch Shopify orders |
+| `/platforms/{platform}/orders` | GET | Fetch orders from platform |
+| `/platforms/{platform}/orders/{id}` | GET | Get single order |
+| `/platforms/{platform}/orders/{id}/tracking` | PUT | Update tracking on order |
+
+### System
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/health` | GET | Health check |
+| `/api` | GET | API root with docs links |
 
 ## Technology Stack
 
@@ -377,7 +484,11 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 ### Frontend Patterns
 
 - CSS classes: `card-premium`, `btn-primary`, `btn-secondary`, `badge-*` (success/error/info/warning)
-- Icons are inline SVG components (no external icon library)
+- Design system in `index.css`: OKLCH color space, custom animations, platform-specific colors (Shopify, WooCommerce, SAP, Oracle)
+- Icons are inline SVG components defined in `presentation.tsx` and `panels.tsx` (no external icon library)
+- Presentation components (PreviewCard, ProgressDisplay, CompletionArtifact, etc.) live in `command-center/presentation.tsx`
+- Sidebar panels (DataSourceSection, JobHistorySection) live in `sidebar/panels.tsx`
+- shadcn/ui primitives in `components/ui/` (button, input, card, dialog, alert, progress, scroll-area)
 - Job list refresh: `jobListVersion` counter + `refreshJobList()` in AppState
 - Labels stored on disk, paths in `JobRow.label_path`
 - `order_data` stored as JSON text in `JobRow.order_data` column
@@ -401,8 +512,8 @@ These are hard-won fixes — do not revert:
 
 ## Extension Points
 
-- **Data Adapters**: Implement `BaseSourceAdapter` (read, write_back, get_metadata)
-- **Carrier Services**: Follow UPSService pattern wrapping carrier SDK/API clients
+- **Data Adapters**: Implement `BaseSourceAdapter` in `src/mcp/data_source/adapters/` (read, write_back, get_metadata)
+- **Carrier Services**: Follow `UPSMCPClient` pattern wrapping carrier MCP servers via `MCPClient`
 - **Template Filters**: Register in Filter Registry for custom Jinja2 logistics filters
 - **Observers**: Subscribe to BatchEngine SSE events for notifications/webhooks
 - **Platform Clients**: Add new clients in `src/mcp/external_sources/clients/`
