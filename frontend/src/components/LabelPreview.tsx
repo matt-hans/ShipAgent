@@ -155,7 +155,7 @@ export function LabelPreview({
       <DialogContent className="sm:max-w-[600px] max-h-[90vh] flex flex-col">
         {/* Visually hidden header for accessibility */}
         <DialogHeader className="sr-only">
-          <DialogTitle>Label Preview</DialogTitle>
+          <DialogTitle>{title || 'Label Preview'}</DialogTitle>
           <DialogDescription>Shipping label preview</DialogDescription>
         </DialogHeader>
 

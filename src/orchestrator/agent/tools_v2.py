@@ -27,77 +27,81 @@ import sqlglot
 
 from src.db.connection import get_db_context
 from src.orchestrator.models.intent import SERVICE_ALIASES
-from src.services.column_mapping import apply_mapping, auto_map_columns, translate_service_name, validate_mapping
+from src.services.audit_service import AuditService, EventType
+from src.services.column_mapping import (
+    apply_mapping,
+    auto_map_columns,
+    translate_service_name,
+    validate_mapping,
+)
 from src.services.data_source_service import DataSourceService
 from src.services.job_service import JobService
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Event Emission (module-level bridge to SSE queue)
+# Event Emission + Session Cache Bridge
 # ---------------------------------------------------------------------------
 
-# Module-level mutable reference for the event emitter callback.
-# Using a simple module-level variable instead of contextvars.ContextVar
-# because the SDK's in-process MCP server runs tool handlers in a context
-# established during agent.start() — before set_event_emitter() is called.
-# ContextVar changes after task creation are invisible to child tasks.
-# Per-session locking in conversations.py ensures only one message
-# processes at a time, making this safe for concurrent sessions.
-_event_emitter_callback: Callable[[str, dict], None] | None = None
-
-# Cache fetched row sets so the agent can pass compact fetch_id values
-# between tools instead of large row arrays through model context.
-_fetched_rows_cache: dict[str, list[dict[str, Any]]] = {}
-_fetched_rows_order: list[str] = []
 _MAX_FETCH_CACHE_ENTRIES = 20
 
 
-def set_event_emitter(callback: Callable[[str, dict], None] | None) -> None:
-    """Set or clear the event emitter callback.
+class EventEmitterBridge:
+    """Per-agent mutable bridge for session-sensitive tool state."""
 
-    Called by conversations.py before/after agent message processing
-    to bridge tool events to the SSE queue.
+    def __init__(self) -> None:
+        self.callback: Callable[[str, dict], None] | None = None
+        self._fetched_rows_cache: dict[str, list[dict[str, Any]]] = {}
+        self._fetched_rows_order: list[str] = []
 
-    Args:
-        callback: Function accepting (event_type, data) to push SSE events,
-                  or None to clear.
-    """
-    global _event_emitter_callback
-    _event_emitter_callback = callback
+    def emit(self, event_type: str, data: dict[str, Any]) -> None:
+        if self.callback is not None:
+            self.callback(event_type, data)
 
+    def store_rows(self, rows: list[dict[str, Any]]) -> str:
+        fetch_id = str(uuid4())
+        self._fetched_rows_cache[fetch_id] = rows
+        self._fetched_rows_order.append(fetch_id)
+        while len(self._fetched_rows_order) > _MAX_FETCH_CACHE_ENTRIES:
+            oldest = self._fetched_rows_order.pop(0)
+            self._fetched_rows_cache.pop(oldest, None)
+        return fetch_id
 
-def _emit_event(event_type: str, data: dict[str, Any]) -> None:
-    """Emit a structured event to the frontend via the module-level callback.
-
-    No-op if no emitter is set (e.g. in tests or non-SSE contexts).
-
-    Args:
-        event_type: SSE event name (e.g. "preview_ready").
-        data: Event payload dict.
-    """
-    if _event_emitter_callback is not None:
-        _event_emitter_callback(event_type, data)
-
-
-def _store_fetched_rows(rows: list[dict[str, Any]]) -> str:
-    """Store fetched rows in an in-memory cache and return a fetch_id."""
-    fetch_id = str(uuid4())
-    _fetched_rows_cache[fetch_id] = rows
-    _fetched_rows_order.append(fetch_id)
-
-    while len(_fetched_rows_order) > _MAX_FETCH_CACHE_ENTRIES:
-        oldest = _fetched_rows_order.pop(0)
-        _fetched_rows_cache.pop(oldest, None)
-    return fetch_id
+    def consume_rows(self, fetch_id: str) -> list[dict[str, Any]] | None:
+        rows = self._fetched_rows_cache.pop(fetch_id, None)
+        if fetch_id in self._fetched_rows_order:
+            self._fetched_rows_order.remove(fetch_id)
+        return rows
 
 
-def _consume_fetched_rows(fetch_id: str) -> list[dict[str, Any]] | None:
-    """Get and remove cached rows for a fetch_id."""
-    rows = _fetched_rows_cache.pop(fetch_id, None)
-    if fetch_id in _fetched_rows_order:
-        _fetched_rows_order.remove(fetch_id)
-    return rows
+def _emit_event(
+    event_type: str,
+    data: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> None:
+    """Emit a structured event to the frontend through the provided bridge."""
+    if bridge is not None:
+        bridge.emit(event_type, data)
+
+
+def _store_fetched_rows(
+    rows: list[dict[str, Any]],
+    bridge: EventEmitterBridge | None = None,
+) -> str:
+    """Store fetched rows in bridge-local cache and return a fetch_id."""
+    if bridge is None:
+        raise RuntimeError("EventEmitterBridge is required for row cache access.")
+    return bridge.store_rows(rows)
+
+
+def _consume_fetched_rows(
+    fetch_id: str,
+    bridge: EventEmitterBridge | None = None,
+) -> list[dict[str, Any]] | None:
+    """Get and remove cached rows for a fetch_id from bridge-local cache."""
+    if bridge is None:
+        return None
+    return bridge.consume_rows(fetch_id)
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +148,28 @@ def _get_data_source_service() -> DataSourceService:
     return DataSourceService.get_instance()
 
 
+def _persist_job_source_signature(job_id: str, db: Any) -> None:
+    """Persist source signature metadata for replay safety checks."""
+    signature = _get_data_source_service().get_source_signature()
+    if signature is None:
+        return
+
+    try:
+        audit = AuditService(db)
+        audit.log_info(
+            job_id=job_id,
+            event_type=EventType.row_event,
+            message="job_source_signature",
+            details={"source_signature": signature},
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to persist job source signature for job %s: %s",
+            job_id,
+            e,
+        )
+
+
 def _build_job_row_data(
     rows: list[dict[str, Any]],
     service_code_override: str | None = None,
@@ -166,11 +192,13 @@ def _build_job_row_data(
     for i, row in enumerate(normalized_rows, start=1):
         row_json = json.dumps(row, sort_keys=True, default=str)
         checksum = hashlib.md5(row_json.encode()).hexdigest()
-        row_data.append({
-            "row_number": i,
-            "row_checksum": checksum,
-            "order_data": row_json,
-        })
+        row_data.append(
+            {
+                "row_number": i,
+                "row_checksum": checksum,
+                "order_data": row_json,
+            }
+        )
     return row_data
 
 
@@ -184,12 +212,9 @@ def _normalize_rows_for_shipping(rows: list[dict[str, Any]]) -> list[dict[str, A
     if not rows:
         return rows
 
-    source_columns: list[str] = sorted({
-        str(k)
-        for row in rows
-        if isinstance(row, dict)
-        for k in row.keys()
-    })
+    source_columns: list[str] = sorted(
+        {str(k) for row in rows if isinstance(row, dict) for k in row.keys()}
+    )
     mapping = auto_map_columns(source_columns)
     missing_required = validate_mapping(mapping)
     if missing_required:
@@ -255,6 +280,8 @@ def _command_explicitly_requests_service(command: str) -> bool:
 # Shared UPS MCP Client (module-level cache)
 # ---------------------------------------------------------------------------
 
+# Intentionally process-global singletons for shared stateless transport.
+# These are NOT session-sensitive state and should remain module-global.
 _ups_client: Any | None = None
 _ups_client_lock = asyncio.Lock()
 
@@ -333,14 +360,18 @@ async def get_source_info_tool(args: dict[str, Any]) -> dict[str, Any]:
     svc = _get_data_source_service()
     info = svc.get_source_info()
     if info is None:
-        return _err("No data source connected. Ask the user to connect a CSV, Excel, or database source.")
+        return _err(
+            "No data source connected. Ask the user to connect a CSV, Excel, or database source."
+        )
 
-    return _ok({
-        "source_type": info.source_type,
-        "file_path": info.file_path,
-        "row_count": info.row_count,
-        "column_count": len(info.columns),
-    })
+    return _ok(
+        {
+            "source_type": info.source_type,
+            "file_path": info.file_path,
+            "row_count": info.row_count,
+            "column_count": len(info.columns),
+        }
+    )
 
 
 async def get_schema_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -364,7 +395,10 @@ async def get_schema_tool(args: dict[str, Any]) -> dict[str, Any]:
     return _ok({"columns": columns})
 
 
-async def fetch_rows_tool(args: dict[str, Any]) -> dict[str, Any]:
+async def fetch_rows_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
     """Fetch rows from the connected data source with optional SQL filter.
 
     Args:
@@ -380,7 +414,7 @@ async def fetch_rows_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     try:
         rows = await svc.get_rows_by_filter(where_clause=where_clause, limit=limit)
-        fetch_id = _store_fetched_rows(rows)
+        fetch_id = _store_fetched_rows(rows, bridge=bridge)
         payload: dict[str, Any] = {
             "fetch_id": fetch_id,
             "row_count": len(rows),
@@ -438,13 +472,17 @@ async def create_job_tool(args: dict[str, Any]) -> dict[str, Any]:
         with get_db_context() as db:
             svc = JobService(db)
             job = svc.create_job(name=name, original_command=command)
+            _persist_job_source_signature(job.id, db)
             return _ok({"job_id": job.id, "status": job.status})
     except Exception as e:
         logger.error("create_job_tool failed: %s", e)
         return _err(f"Failed to create job: {e}")
 
 
-async def add_rows_to_job_tool(args: dict[str, Any]) -> dict[str, Any]:
+async def add_rows_to_job_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
     """Add fetched rows to a job so batch preview and execution can process them.
 
     This bridges the gap between fetch_rows (which retrieves data) and
@@ -463,7 +501,7 @@ async def add_rows_to_job_tool(args: dict[str, Any]) -> dict[str, Any]:
     if not job_id:
         return _err("job_id is required")
     if fetch_id:
-        cached_rows = _consume_fetched_rows(fetch_id)
+        cached_rows = _consume_fetched_rows(fetch_id, bridge=bridge)
         if cached_rows is None:
             return _err(
                 "fetch_id not found or expired. Re-run fetch_rows and pass the new fetch_id.",
@@ -479,10 +517,12 @@ async def add_rows_to_job_tool(args: dict[str, Any]) -> dict[str, Any]:
             row_data = _build_job_row_data(rows)
 
             created = svc.create_rows(job_id, row_data)
-            return _ok({
-                "job_id": job_id,
-                "rows_added": len(created),
-            })
+            return _ok(
+                {
+                    "job_id": job_id,
+                    "rows_added": len(created),
+                }
+            )
     except ValueError as e:
         return _err(str(e))
     except Exception as e:
@@ -574,7 +614,8 @@ def _enrich_preview_rows_from_map(
     for row in preview_rows:
         od = row_map.get(row.get("row_number", -1), {})
         row["service"] = SERVICE_CODE_NAMES.get(
-            od.get("service_code", "03"), "UPS Ground",
+            od.get("service_code", "03"),
+            "UPS Ground",
         )
         row["order_data"] = od
         # Normalize rate_error -> warnings array.
@@ -612,7 +653,34 @@ def _enrich_preview_rows(job_id: str, preview_rows: list[dict]) -> list[dict]:
     return _enrich_preview_rows_from_map(preview_rows, row_map)
 
 
-async def ship_command_pipeline_tool(args: dict[str, Any]) -> dict[str, Any]:
+def _emit_preview_ready(
+    result: dict[str, Any],
+    rows_with_warnings: int,
+    bridge: EventEmitterBridge | None = None,
+    job_id_override: str | None = None,
+) -> dict[str, Any]:
+    """Emit preview SSE payload and return slim LLM tool payload."""
+    _emit_event("preview_ready", result, bridge=bridge)
+    return _ok(
+        {
+            "status": "preview_ready",
+            "job_id": job_id_override or result.get("job_id"),
+            "total_rows": result.get("total_rows", 0),
+            "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
+            "rows_with_warnings": rows_with_warnings,
+            "message": (
+                "Preview card has been displayed to the user. STOP HERE. "
+                "Respond with one brief sentence asking the user to review "
+                "the preview and click Confirm or Cancel."
+            ),
+        }
+    )
+
+
+async def ship_command_pipeline_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
     """Fast-path pipeline for straightforward shipping commands.
 
     Performs fetch -> create job -> add rows -> preview in one tool call.
@@ -665,6 +733,7 @@ async def ship_command_pipeline_tool(args: dict[str, Any]) -> dict[str, Any]:
         with get_db_context() as db:
             job_service = JobService(db)
             job = job_service.create_job(name=job_name, original_command=command)
+            _persist_job_source_signature(job.id, db)
             try:
                 job_service.create_rows(
                     job.id,
@@ -700,7 +769,9 @@ async def ship_command_pipeline_tool(args: dict[str, Any]) -> dict[str, Any]:
                     service_code=service_code,
                 )
             except Exception as e:
-                logger.error("ship_command_pipeline preview failed for %s: %s", job.id, e)
+                logger.error(
+                    "ship_command_pipeline preview failed for %s: %s", job.id, e
+                )
                 return _err(f"Preview failed for job {job.id}: {e}")
     except Exception as e:
         logger.error("ship_command_pipeline create_job failed: %s", e)
@@ -713,24 +784,17 @@ async def ship_command_pipeline_tool(args: dict[str, Any]) -> dict[str, Any]:
     rows_with_warnings = sum(1 for row in preview_rows if row.get("warnings"))
     result["rows_with_warnings"] = rows_with_warnings
 
-    # IMPORTANT: Emit full payload to frontend before returning slim LLM payload.
-    _emit_event("preview_ready", result)
-
-    return _ok({
-        "status": "preview_ready",
-        "job_id": result.get("job_id"),
-        "total_rows": result.get("total_rows", 0),
-        "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
-        "rows_with_warnings": rows_with_warnings,
-        "message": (
-            "Preview card has been displayed to the user. STOP HERE. "
-            "Respond with one brief sentence asking the user to review "
-            "the preview and click Confirm or Cancel."
-        ),
-    })
+    return _emit_preview_ready(
+        result=result,
+        rows_with_warnings=rows_with_warnings,
+        bridge=bridge,
+    )
 
 
-async def batch_preview_tool(args: dict[str, Any]) -> dict[str, Any]:
+async def batch_preview_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
     """Run batch preview (rate all rows) for a job.
 
     Emits a 'preview_ready' event to the frontend SSE queue so the
@@ -755,27 +819,15 @@ async def batch_preview_tool(args: dict[str, Any]) -> dict[str, Any]:
         _enrich_preview_rows(job_id, preview_rows)
 
         # Count warnings after normalization
-        rows_with_warnings = sum(
-            1 for r in preview_rows if r.get("warnings")
-        )
+        rows_with_warnings = sum(1 for r in preview_rows if r.get("warnings"))
         result["rows_with_warnings"] = rows_with_warnings
 
-        # IMPORTANT: Emit full preview payload to frontend before
-        # returning a slim tool response to the LLM.
-        _emit_event("preview_ready", result)
-
-        return _ok({
-            "status": "preview_ready",
-            "job_id": job_id,
-            "total_rows": result.get("total_rows", 0),
-            "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
-            "rows_with_warnings": rows_with_warnings,
-            "message": (
-                "Preview card has been displayed to the user. STOP HERE. "
-                "Respond with one brief sentence asking the user to review "
-                "the preview and click Confirm or Cancel."
-            ),
-        })
+        return _emit_preview_ready(
+            result=result,
+            rows_with_warnings=rows_with_warnings,
+            bridge=bridge,
+            job_id_override=job_id,
+        )
     except Exception as e:
         logger.error("batch_preview_tool failed: %s", e)
         return _err(f"Batch preview failed: {e}")
@@ -905,7 +957,21 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def get_all_tool_definitions() -> list[dict[str, Any]]:
+def _bind_bridge(
+    handler: Callable[..., Any],
+    bridge: EventEmitterBridge,
+) -> Callable[[dict[str, Any]], Any]:
+    """Bind an EventEmitterBridge to a tool handler."""
+
+    async def _wrapped(args: dict[str, Any]) -> Any:
+        return await handler(args, bridge=bridge)
+
+    return _wrapped
+
+
+def get_all_tool_definitions(
+    event_bridge: EventEmitterBridge | None = None,
+) -> list[dict[str, Any]]:
     """Return all tool definitions for the orchestration agent.
 
     Each definition includes name, description, input_schema, and handler.
@@ -913,6 +979,7 @@ def get_all_tool_definitions() -> list[dict[str, Any]]:
     Returns:
         List of tool definition dicts.
     """
+    bridge = event_bridge or EventEmitterBridge()
     return [
         {
             "name": "get_source_info",
@@ -969,7 +1036,7 @@ def get_all_tool_definitions() -> list[dict[str, Any]]:
                 },
                 "required": ["command"],
             },
-            "handler": ship_command_pipeline_tool,
+            "handler": _bind_bridge(ship_command_pipeline_tool, bridge),
         },
         {
             "name": "fetch_rows",
@@ -1000,7 +1067,7 @@ def get_all_tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
             },
-            "handler": fetch_rows_tool,
+            "handler": _bind_bridge(fetch_rows_tool, bridge),
         },
         {
             "name": "validate_filter_syntax",
@@ -1066,7 +1133,7 @@ def get_all_tool_definitions() -> list[dict[str, Any]]:
                 },
                 "required": ["job_id"],
             },
-            "handler": add_rows_to_job_tool,
+            "handler": _bind_bridge(add_rows_to_job_tool, bridge),
         },
         {
             "name": "get_job_status",
@@ -1096,7 +1163,7 @@ def get_all_tool_definitions() -> list[dict[str, Any]]:
                 },
                 "required": ["job_id"],
             },
-            "handler": batch_preview_tool,
+            "handler": _bind_bridge(batch_preview_tool, bridge),
         },
         {
             "name": "batch_execute",

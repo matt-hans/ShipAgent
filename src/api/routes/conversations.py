@@ -33,7 +33,6 @@ from src.api.schemas_conversations import (
     SendMessageRequest,
     SendMessageResponse,
 )
-from src.orchestrator.agent.tools_v2 import set_event_emitter
 from src.services.agent_session_manager import AgentSessionManager
 
 logger = logging.getLogger(__name__)
@@ -105,8 +104,13 @@ async def _try_auto_import_shopify(svc: "DataSourceService") -> "DataSourceInfo 
         # Exclude nested fields (items, raw_data) that don't flatten into columns.
         exclude_fields = {"items", "raw_data"}
         records = [
-            {k: v for k, v in (o.model_dump() if hasattr(o, "model_dump") else dict(o)).items()
-             if k not in exclude_fields}
+            {
+                k: v
+                for k, v in (
+                    o.model_dump() if hasattr(o, "model_dump") else dict(o)
+                ).items()
+                if k not in exclude_fields
+            }
             for o in orders
         ]
 
@@ -303,7 +307,7 @@ async def _process_agent_message(session_id: str, content: str) -> None:
                 _mark_first_event("tool_emit")
                 queue.put_nowait({"event": event_type, "data": data})
 
-            set_event_emitter(_emit_to_queue)
+            session.agent.emitter_bridge.callback = _emit_to_queue
             try:
                 # Process message — SDK maintains conversation context internally.
                 async for event in session.agent.process_message_stream(content):
@@ -321,18 +325,22 @@ async def _process_agent_message(session_id: str, content: str) -> None:
                         text = event.get("data", {}).get("text", "")
                         if text:
                             _session_manager.add_message(
-                                session_id, "assistant", text,
+                                session_id,
+                                "assistant",
+                                text,
                             )
             finally:
-                set_event_emitter(None)
+                session.agent.emitter_bridge.callback = None
 
         except Exception as e:
             logger.error("Agent processing failed for session %s: %s", session_id, e)
             _mark_first_event("error")
-            await queue.put({
-                "event": "error",
-                "data": {"message": str(e)},
-            })
+            await queue.put(
+                {
+                    "event": "error",
+                    "data": {"message": str(e)},
+                }
+            )
 
     # Signal end of response
     await queue.put({"event": "done", "data": {}})
@@ -394,10 +402,12 @@ async def _event_generator(
                     break
 
                 yield {
-                    "data": json.dumps({
-                        "event": event.get("event", "unknown"),
-                        "data": event.get("data", {}),
-                    }),
+                    "data": json.dumps(
+                        {
+                            "event": event.get("event", "unknown"),
+                            "data": event.get("data", {}),
+                        }
+                    ),
                 }
             except asyncio.TimeoutError:
                 # Send ping to keep connection alive
@@ -430,7 +440,9 @@ async def create_conversation() -> CreateConversationResponse:
     try:
         source_info = DataSourceService.get_instance().get_source_info()
         if source_info is not None:
-            session.prewarm_task = asyncio.create_task(_prewarm_session_agent(session_id))
+            session.prewarm_task = asyncio.create_task(
+                _prewarm_session_agent(session_id)
+            )
     except Exception as e:
         logger.warning("Failed to schedule agent prewarm for %s: %s", session_id, e)
 

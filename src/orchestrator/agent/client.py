@@ -53,7 +53,7 @@ except ImportError:
 
 from src.orchestrator.agent.config import create_mcp_servers_config
 from src.orchestrator.agent.hooks import create_hook_matchers
-from src.orchestrator.agent.tools_v2 import get_all_tool_definitions
+from src.orchestrator.agent.tools_v2 import EventEmitterBridge, get_all_tool_definitions
 
 # Default model resolution:
 # 1) AGENT_MODEL (preferred)
@@ -68,7 +68,7 @@ DEFAULT_MODEL = (
 logger = logging.getLogger(__name__)
 
 
-def _create_orchestrator_mcp_server() -> Any:
+def _create_orchestrator_mcp_server(event_bridge: EventEmitterBridge) -> Any:
     """Create SDK MCP server for orchestrator-native tools.
 
     Uses tools_v2 deterministic-only tools. Legacy tools (tools.py)
@@ -79,7 +79,7 @@ def _create_orchestrator_mcp_server() -> Any:
     """
     tools: list[SdkMcpTool[Any]] = []
 
-    for tool_def in get_all_tool_definitions():
+    for tool_def in get_all_tool_definitions(event_bridge=event_bridge):
         sdk_tool = SdkMcpTool(
             name=tool_def["name"],
             description=tool_def["description"],
@@ -137,6 +137,7 @@ class OrchestrationAgent:
         """
         self._system_prompt = system_prompt
         self._model = model or DEFAULT_MODEL
+        self.emitter_bridge = EventEmitterBridge()
         self._options = self._create_options(max_turns, permission_mode)
         self._client: Optional[ClaudeSDKClient] = None
         self._started = False
@@ -166,7 +167,7 @@ class OrchestrationAgent:
         }
 
         # Create orchestrator MCP server for in-process tools
-        orchestrator_mcp = _create_orchestrator_mcp_server()
+        orchestrator_mcp = _create_orchestrator_mcp_server(self.emitter_bridge)
 
         return ClaudeAgentOptions(
             system_prompt=self._system_prompt,
@@ -249,7 +250,8 @@ class OrchestrationAgent:
         return "".join(response_parts)
 
     async def process_message_stream(
-        self, user_input: str,
+        self,
+        user_input: str,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Process a user message and yield SSE-compatible event dicts.
 

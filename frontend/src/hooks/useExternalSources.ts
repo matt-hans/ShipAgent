@@ -118,7 +118,7 @@ const INITIAL_PLATFORMS: Record<PlatformType, PlatformState> = ALL_PLATFORMS.red
  *
  * @example
  * ```tsx
- * function DataSourceManager() {
+ * function ConnectionsPanel() {
  *   const {
  *     state,
  *     connect,

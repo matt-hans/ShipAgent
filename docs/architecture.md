@@ -137,6 +137,7 @@ C4Container
 
 ### 3.5 Future Enhancements (Not in Prototype)
 
+- **Single-worker runtime policy (current):** ShipAgent is deployed local-first with one backend worker while conversation/session state is process-local.
 - **Message Queue (Redis/RabbitMQ)**: For true async batch processing with retry guarantees. Prototype uses in-memory queue within Agent.
 - **Distributed State (PostgreSQL)**: For multi-instance deployment. Prototype uses local SQLite.
 - **Additional Carrier MCPs**: FedEx, USPS, DHL would follow the same pattern as UPS MCP.
@@ -618,7 +619,7 @@ Key decisions made during architecture design:
 | UPS MCP language | TypeScript | Python | Zod + OpenAPI tooling superior in TS. Schema safety critical for carrier API. |
 | Template location | Embedded in Agent | Separate service | No network latency. Atomic error handling. CPU-bound operation doesn't need scaling. |
 | MCP hosting | Separate processes | Single bundled process | Fault isolation. Dependency isolation. Security boundaries. |
-| State storage | SQLite | JSON files, Redis | ACID transactions for crash recovery. SQL queries for job lookup. No server needed. |
+| State storage | SQLite (local-first, single-worker) | JSON files, Redis | ACID transactions for crash recovery. SQL queries for job lookup. No server needed. |
 | Checksum algorithm | SHA-256 | MD5, CRC32 | Industry standard. Consistency across all adapters. No performance concern at row level. |
 | Write-back strategy | New file / versioned copy | In-place overwrite | Non-destructive. Source file preserved. Standard ETL practice. |
 

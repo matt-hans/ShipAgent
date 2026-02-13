@@ -20,6 +20,8 @@ import duckdb
 
 logger = logging.getLogger(__name__)
 
+SOURCE_SIGNATURE_AUDIT_MESSAGE = "job_source_signature"
+
 
 class SchemaColumnInfo:
     """Lightweight column schema info (avoids importing from data_source package).
@@ -136,9 +138,7 @@ class DataSourceService:
             for col in adapter_columns
         ]
 
-    async def import_csv(
-        self, file_path: str, delimiter: str = ","
-    ) -> dict[str, Any]:
+    async def import_csv(self, file_path: str, delimiter: str = ",") -> dict[str, Any]:
         """Import a CSV file into the active DuckDB connection.
 
         Args:
@@ -206,9 +206,7 @@ class DataSourceService:
 
         conn = self._ensure_connection()
         adapter = ExcelAdapter()
-        result = adapter.import_data(
-            conn, file_path=str(path.resolve()), sheet=sheet
-        )
+        result = adapter.import_data(conn, file_path=str(path.resolve()), sheet=sheet)
 
         self._source_info = DataSourceInfo(
             source_type="excel",
@@ -225,7 +223,9 @@ class DataSourceService:
             len(result.columns),
         )
 
-        self._auto_save_excel(str(path.resolve()), sheet, result.row_count, len(result.columns))
+        self._auto_save_excel(
+            str(path.resolve()), sheet, result.row_count, len(result.columns)
+        )
 
         return result
 
@@ -263,7 +263,9 @@ class DataSourceService:
             len(result.columns),
         )
 
-        self._auto_save_database(connection_string, query, result.row_count, len(result.columns))
+        self._auto_save_database(
+            connection_string, query, result.row_count, len(result.columns)
+        )
 
         return result
 
@@ -305,7 +307,10 @@ class DataSourceService:
         placeholders = ", ".join("?" for _ in col_names)
         insert_sql = f"INSERT INTO imported_data VALUES ({placeholders})"
         for record in records:
-            values = [str(record.get(c, "")) if record.get(c) is not None else None for c in col_names]
+            values = [
+                str(record.get(c, "")) if record.get(c) is not None else None
+                for c in col_names
+            ]
             conn.execute(insert_sql, values)
 
         # Build schema info from DuckDB table metadata
@@ -363,7 +368,11 @@ class DataSourceService:
             raise RuntimeError("No data source connected")
 
         query = "SELECT *, rowid + 1 AS _row_number FROM imported_data"
-        if where_clause and where_clause.strip() and where_clause.strip() not in ("1=1", "TRUE"):
+        if (
+            where_clause
+            and where_clause.strip()
+            and where_clause.strip() not in ("1=1", "TRUE")
+        ):
             query += f" WHERE {where_clause}"
         query += f" LIMIT {limit}"
 
@@ -425,12 +434,28 @@ class DataSourceService:
         canonical = json.dumps(row_data, sort_keys=True, default=str)
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    async def write_back(
-        self, row_number: int, tracking_number: str
-    ) -> dict[str, Any]:
-        """Write tracking number back to the source file.
+    def get_source_signature(self) -> dict[str, Any] | None:
+        """Build a stable signature for the currently loaded source."""
+        if self._source_info is None:
+            return None
 
-        Currently supports CSV write-back. Excel write-back is planned.
+        schema_parts = [
+            f"{col.name}:{col.type}:{int(col.nullable)}"
+            for col in self._source_info.columns
+        ]
+        schema_fingerprint = hashlib.sha256(
+            "|".join(schema_parts).encode("utf-8"),
+        ).hexdigest()
+
+        source_ref = self._original_file_path or self._source_info.file_path or ""
+        return {
+            "source_type": self._source_info.source_type,
+            "source_ref": source_ref,
+            "schema_fingerprint": schema_fingerprint,
+        }
+
+    async def write_back(self, row_number: int, tracking_number: str) -> dict[str, Any]:
+        """Write tracking number back to the source file.
 
         Args:
             row_number: 1-indexed row number in the source.
@@ -439,20 +464,253 @@ class DataSourceService:
         Returns:
             Dict with status and details.
         """
+        return await self.write_back_batch([(row_number, tracking_number)])
+
+    async def write_back_batch(
+        self,
+        updates: list[tuple[int, str]],
+    ) -> dict[str, Any]:
+        """Write tracking numbers for multiple rows in a single pass.
+
+        Dispatches by active source type:
+        - CSV: one read + one atomic write
+        - Excel: one workbook load + one atomic save
+        - Database: one transaction with N UPDATE statements
+        """
         if self._source_info is None:
             return {"status": "error", "message": "No data source connected"}
 
-        if self._source_info.source_type == "csv" and self._original_file_path:
-            return self._write_back_csv(row_number, tracking_number)
+        attempted = len(updates)
+        if attempted == 0:
+            return {
+                "status": "success",
+                "source_type": self._source_info.source_type,
+                "attempted": 0,
+                "written": 0,
+                "skipped": 0,
+                "failed": 0,
+            }
 
+        normalized: dict[int, str] = {}
+        skipped = 0
+        for row_number, tracking_number in updates:
+            if row_number < 1 or not tracking_number:
+                skipped += 1
+                continue
+            normalized[row_number] = tracking_number
+
+        if not normalized:
+            return {
+                "status": "error",
+                "source_type": self._source_info.source_type,
+                "attempted": attempted,
+                "written": 0,
+                "skipped": skipped,
+                "failed": attempted,
+                "message": "No valid write-back updates provided.",
+            }
+
+        try:
+            source_type = self._source_info.source_type
+            if source_type == "csv":
+                file_path = self._original_file_path
+                if not file_path:
+                    return {
+                        "status": "error",
+                        "message": "Original CSV file path not available.",
+                    }
+                from src.services.write_back_utils import apply_csv_updates_atomic
+
+                apply_csv_updates_atomic(
+                    file_path=file_path,
+                    row_updates={
+                        row_number: {"tracking_number": tracking_number}
+                        for row_number, tracking_number in normalized.items()
+                    },
+                )
+            elif source_type == "excel":
+                file_path = self._original_file_path
+                if not file_path:
+                    return {
+                        "status": "error",
+                        "message": "Original Excel file path not available.",
+                    }
+                from src.services.write_back_utils import apply_excel_updates_atomic
+
+                apply_excel_updates_atomic(
+                    file_path=file_path,
+                    row_updates={
+                        row_number: {"tracking_number": tracking_number}
+                        for row_number, tracking_number in normalized.items()
+                    },
+                )
+            elif source_type == "database":
+                self._write_back_database_batch(normalized)
+            else:
+                return {
+                    "status": "skipped",
+                    "source_type": source_type,
+                    "attempted": attempted,
+                    "written": 0,
+                    "skipped": attempted,
+                    "failed": 0,
+                    "message": f"Write-back not supported for {source_type}",
+                }
+
+            written = len(normalized)
+            failed = attempted - written - skipped
+            status = "success" if skipped == 0 else "partial"
+            return {
+                "status": status,
+                "source_type": source_type,
+                "attempted": attempted,
+                "written": written,
+                "skipped": skipped,
+                "failed": max(0, failed),
+            }
+        except Exception as e:
+            logger.error("Batch write-back failed: %s", e)
+            return {
+                "status": "error",
+                "source_type": self._source_info.source_type,
+                "attempted": attempted,
+                "written": 0,
+                "skipped": skipped,
+                "failed": attempted - skipped,
+                "message": str(e),
+            }
+
+    async def replay_write_back_from_job(self, job_id: str) -> dict[str, Any]:
+        """Replay write-back for completed rows in a job.
+
+        Recovery source of truth is JobRow tracking_number state.
+        Replay is allowed only when the currently loaded source signature
+        matches the signature captured when the job was created.
+        """
+        from src.db.connection import get_db_context
+        from src.db.models import AuditLog, Job, JobRow, RowStatus
+
+        with get_db_context() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job is None:
+                return {"status": "error", "message": f"Job not found: {job_id}"}
+
+            signature_log = (
+                db.query(AuditLog)
+                .filter(
+                    AuditLog.job_id == job_id,
+                    AuditLog.message == SOURCE_SIGNATURE_AUDIT_MESSAGE,
+                )
+                .order_by(AuditLog.timestamp.desc())
+                .first()
+            )
+            if signature_log is None or not signature_log.details:
+                return {
+                    "status": "error",
+                    "message": (
+                        "Replay blocked: source signature metadata is missing "
+                        f"for job {job_id}."
+                    ),
+                }
+
+            try:
+                signature_payload = json.loads(signature_log.details)
+                expected_signature = signature_payload.get("source_signature")
+            except (json.JSONDecodeError, TypeError):
+                return {
+                    "status": "error",
+                    "message": (
+                        "Replay blocked: source signature metadata is invalid "
+                        f"for job {job_id}."
+                    ),
+                }
+
+            current_signature = self.get_source_signature()
+            if current_signature is None:
+                return {
+                    "status": "error",
+                    "message": (
+                        "Replay blocked: no source is currently loaded. "
+                        "Load the original source and retry."
+                    ),
+                }
+
+            if expected_signature != current_signature:
+                return {
+                    "status": "error",
+                    "message": (
+                        "Replay blocked: loaded source does not match job source. "
+                        f"expected={expected_signature} current={current_signature}"
+                    ),
+                }
+
+            successful_rows = (
+                db.query(JobRow)
+                .filter(
+                    JobRow.job_id == job_id,
+                    JobRow.status == RowStatus.completed.value,
+                    JobRow.tracking_number.isnot(None),
+                )
+                .order_by(JobRow.row_number.asc())
+                .all()
+            )
+
+            updates: list[tuple[int, str]] = []
+            for row in successful_rows:
+                if row.tracking_number:
+                    updates.append((row.row_number, row.tracking_number))
+
+        if not updates:
+            return {
+                "status": "skipped",
+                "job_id": job_id,
+                "message": "No completed rows with tracking numbers to replay.",
+                "replayed_rows": 0,
+            }
+
+        result = await self.write_back_batch(updates)
         return {
-            "status": "skipped",
-            "message": f"Write-back not supported for {self._source_info.source_type}",
+            "status": result.get("status", "error"),
+            "job_id": job_id,
+            "replayed_rows": len(updates),
+            "source_signature": self.get_source_signature(),
+            "write_back_result": result,
         }
 
-    def _auto_save_csv(
-        self, file_path: str, row_count: int, column_count: int
-    ) -> None:
+    def _write_back_database_batch(self, updates: dict[int, str]) -> None:
+        """Write tracking numbers into the in-memory database source in one transaction."""
+        if self._conn is None:
+            raise RuntimeError("No data source connection available")
+
+        describe_rows = self._conn.execute("DESCRIBE imported_data").fetchall()
+        columns = {row[0] for row in describe_rows}
+        if "tracking_number" not in columns:
+            self._conn.execute(
+                "ALTER TABLE imported_data ADD COLUMN tracking_number VARCHAR"
+            )
+
+        max_rows = int(
+            self._conn.execute("SELECT COUNT(*) FROM imported_data").fetchone()[0],
+        )
+        for row_number in updates:
+            if row_number < 1 or row_number > max_rows:
+                raise ValueError(
+                    f"Row {row_number} not found. Database source has {max_rows} rows.",
+                )
+
+        self._conn.execute("BEGIN TRANSACTION")
+        try:
+            for row_number, tracking_number in updates.items():
+                self._conn.execute(
+                    "UPDATE imported_data SET tracking_number = ? WHERE rowid + 1 = ?",
+                    [tracking_number, row_number],
+                )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+    def _auto_save_csv(self, file_path: str, row_count: int, column_count: int) -> None:
         """Persist CSV source metadata for future reconnection.
 
         Args:
@@ -527,67 +785,3 @@ class DataSourceService:
                 )
         except Exception as e:
             logger.warning("Auto-save database source failed (non-critical): %s", e)
-
-    def _write_back_csv(
-        self, row_number: int, tracking_number: str
-    ) -> dict[str, Any]:
-        """Write tracking number to CSV source file.
-
-        Adds or updates a 'tracking_number' column in the source CSV.
-
-        Args:
-            row_number: 1-indexed row number.
-            tracking_number: Tracking number to write.
-
-        Returns:
-            Dict with status and file path.
-        """
-        import csv
-
-        file_path = self._original_file_path
-        if not file_path:
-            return {"status": "error", "message": "Original file path not available"}
-
-        try:
-            # Read existing CSV
-            with open(file_path, newline="", encoding="utf-8") as f:
-                reader = csv.reader(f)
-                rows = list(reader)
-
-            if not rows:
-                return {"status": "error", "message": "CSV file is empty"}
-
-            headers = rows[0]
-
-            # Add tracking_number column if not present
-            if "tracking_number" not in headers:
-                headers.append("tracking_number")
-                for i in range(1, len(rows)):
-                    rows[i].append("")
-
-            tracking_col_idx = headers.index("tracking_number")
-
-            # Update the specific row (row_number is 1-indexed, rows[0] is header)
-            if row_number < 1 or row_number >= len(rows):
-                return {
-                    "status": "error",
-                    "message": f"Row {row_number} out of range (1-{len(rows)-1})",
-                }
-
-            rows[row_number][tracking_col_idx] = tracking_number
-
-            # Write back
-            with open(file_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerows(rows)
-
-            return {
-                "status": "success",
-                "file_path": file_path,
-                "row_number": row_number,
-                "tracking_number": tracking_number,
-            }
-
-        except Exception as e:
-            logger.error("CSV write-back failed: %s", e)
-            return {"status": "error", "message": str(e)}

@@ -9,7 +9,6 @@ import type {
   Job,
   JobRow,
   JobListResponse,
-  BatchPreview,
   JobProgress,
   ErrorResponse,
 } from '@/types/api';
@@ -105,17 +104,6 @@ export async function getJobRows(jobId: string): Promise<JobRow[]> {
 }
 
 /**
- * Get batch preview before execution.
- *
- * @param jobId - The job UUID.
- * @returns Batch preview with sample rows and cost estimate.
- */
-export async function getJobPreview(jobId: string): Promise<BatchPreview> {
-  const response = await fetch(`${API_BASE}/jobs/${jobId}/preview`);
-  return parseResponse<BatchPreview>(response);
-}
-
-/**
  * Response from confirm endpoint.
  */
 export interface ConfirmResponse {
@@ -163,42 +151,6 @@ export async function cancelJob(jobId: string): Promise<void> {
 export async function getJobProgress(jobId: string): Promise<JobProgress> {
   const response = await fetch(`${API_BASE}/jobs/${jobId}/progress`);
   return parseResponse<JobProgress>(response);
-}
-
-/**
- * Download a single label.
- *
- * @param trackingNumber - The UPS tracking number.
- * @returns Blob containing the PDF label.
- */
-export async function downloadLabel(trackingNumber: string): Promise<Blob> {
-  const response = await fetch(`${API_BASE}/labels/${trackingNumber}`);
-  if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      null,
-      `Failed to download label: ${response.statusText}`
-    );
-  }
-  return response.blob();
-}
-
-/**
- * Download all labels for a job as a ZIP file.
- *
- * @param jobId - The job UUID.
- * @returns Blob containing the ZIP archive.
- */
-export async function downloadLabelsZip(jobId: string): Promise<Blob> {
-  const response = await fetch(`${API_BASE}/jobs/${jobId}/labels/zip`);
-  if (!response.ok) {
-    throw new ApiError(
-      response.status,
-      null,
-      `Failed to download labels: ${response.statusText}`
-    );
-  }
-  return response.blob();
 }
 
 /**
@@ -260,7 +212,6 @@ export async function skipRows(
 import type {
   DataSourceImportRequest,
   DataSourceImportResponse,
-  DataSourceStatusResponse,
 } from '@/types/api';
 
 /**
@@ -299,16 +250,6 @@ export async function uploadDataSource(
 }
 
 /**
- * Get the status of the currently connected data source.
- *
- * @returns Connection status with source type, row count, and schema.
- */
-export async function getDataSourceStatus(): Promise<DataSourceStatusResponse> {
-  const response = await fetch(`${API_BASE}/data-sources/status`);
-  return parseResponse<DataSourceStatusResponse>(response);
-}
-
-/**
  * Disconnect the currently connected data source.
  */
 export async function disconnectDataSource(): Promise<void> {
@@ -323,7 +264,6 @@ export async function disconnectDataSource(): Promise<void> {
 // === Saved Data Sources API ===
 
 import type {
-  SavedDataSource,
   SavedDataSourceListResponse,
 } from '@/types/api';
 
@@ -467,9 +407,6 @@ import type {
   PlatformType,
   ConnectPlatformResponse,
   ListOrdersResponse,
-  GetOrderResponse,
-  TrackingUpdateRequest,
-  TrackingUpdateResponse,
   OrderFilters,
   ShopifyEnvStatus,
 } from '@/types/api';
@@ -562,48 +499,6 @@ export async function listPlatformOrders(
 
   const response = await fetch(url);
   return parseResponse<ListOrdersResponse>(response);
-}
-
-/**
- * Get a single order from a connected platform.
- *
- * @param platform - Platform identifier.
- * @param orderId - Platform-specific order ID.
- * @returns Order details.
- */
-export async function getPlatformOrder(
-  platform: PlatformType,
-  orderId: string
-): Promise<GetOrderResponse> {
-  const response = await fetch(
-    `${API_BASE}/platforms/${platform}/orders/${encodeURIComponent(orderId)}`
-  );
-  return parseResponse<GetOrderResponse>(response);
-}
-
-/**
- * Update tracking information on a platform order.
- *
- * @param request - Tracking update details.
- * @returns Update result.
- */
-export async function updatePlatformTracking(
-  request: TrackingUpdateRequest
-): Promise<TrackingUpdateResponse> {
-  const response = await fetch(
-    `${API_BASE}/platforms/${request.platform}/orders/${encodeURIComponent(request.order_id)}/tracking`,
-    {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        tracking_number: request.tracking_number,
-        carrier: request.carrier || 'UPS',
-      }),
-    }
-  );
-  return parseResponse<TrackingUpdateResponse>(response);
 }
 
 /**

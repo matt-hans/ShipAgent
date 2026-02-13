@@ -5,6 +5,7 @@ new agent-driven conversation flow.
 """
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -38,11 +39,14 @@ class TestCreateConversation:
         mock_source_info = MagicMock()
         mock_source_info.source_type = "csv"
 
-        with patch(
-            "src.services.data_source_service.DataSourceService.get_instance",
-        ) as mock_get_instance, patch(
-            "src.api.routes.conversations.asyncio.create_task",
-        ) as mock_create_task:
+        with (
+            patch(
+                "src.services.data_source_service.DataSourceService.get_instance",
+            ) as mock_get_instance,
+            patch(
+                "src.api.routes.conversations.asyncio.create_task",
+            ) as mock_create_task,
+        ):
             mock_svc = MagicMock()
             mock_svc.get_source_info.return_value = mock_source_info
             mock_get_instance.return_value = mock_svc
@@ -190,6 +194,7 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
 
     class _FakeAgent:
         last_turn_count = 0
+        emitter_bridge = SimpleNamespace(callback=None)
 
         async def process_message_stream(self, _content):
             if False:
@@ -218,12 +223,15 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
     mock_svc = MagicMock()
     mock_svc.get_source_info.return_value = mock_source_info
 
-    with patch(
-        "src.services.data_source_service.DataSourceService.get_instance",
-        return_value=mock_svc,
-    ), patch(
-        "src.api.routes.conversations._ensure_agent",
-        new=AsyncMock(side_effect=_fake_ensure_agent),
+    with (
+        patch(
+            "src.services.data_source_service.DataSourceService.get_instance",
+            return_value=mock_svc,
+        ),
+        patch(
+            "src.api.routes.conversations._ensure_agent",
+            new=AsyncMock(side_effect=_fake_ensure_agent),
+        ),
     ):
         await asyncio.gather(
             conversations._prewarm_session_agent(session_id),

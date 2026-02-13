@@ -20,7 +20,8 @@ from src.api.schemas import (
 )
 from src.db.connection import get_db
 from src.db.models import Job, JobRow, JobStatus, RowStatus
-from src.services import AuditService, InvalidStateTransition, JobService
+from src.services import AuditService, EventType, InvalidStateTransition, JobService
+from src.services.data_source_service import DataSourceService
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -58,6 +59,14 @@ def create_job(
         mode=job_data.mode.value,
     )
     audit_svc.log_state_change(job.id, "none", "pending")
+    source_signature = DataSourceService.get_instance().get_source_signature()
+    if source_signature is not None:
+        audit_svc.log_info(
+            job_id=job.id,
+            event_type=EventType.row_event,
+            message="job_source_signature",
+            details={"source_signature": source_signature},
+        )
     return job
 
 
