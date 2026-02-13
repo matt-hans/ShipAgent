@@ -1,10 +1,12 @@
-"""Tests for enhanced OrchestrationAgent (system prompt + streaming).
+"""Tests for enhanced OrchestrationAgent (SDK leverage improvements).
 
-Verifies the new capabilities added to client.py:
+Verifies the capabilities in client.py:
 - system_prompt parameter support
 - tools_v2 integration in orchestrator MCP
-- process_message() with conversation history
-- process_message_stream() yielding event dicts
+- process_message_stream() yielding event dicts (no history param)
+- include_partial_messages for real-time streaming
+- model configuration
+- interrupt() support
 """
 
 import asyncio
@@ -41,6 +43,37 @@ class TestSystemPromptSupport:
         assert options.system_prompt is None
 
 
+class TestModelConfiguration:
+    """Tests for model parameter and configuration."""
+
+    def test_constructor_accepts_model(self):
+        """OrchestrationAgent accepts a model parameter."""
+        agent = OrchestrationAgent(model="claude-opus-4-6")
+        assert agent._model == "claude-opus-4-6"
+
+    def test_default_model_is_set(self):
+        """Default model is set (not None)."""
+        agent = OrchestrationAgent()
+        assert agent._model is not None
+        assert len(agent._model) > 0
+
+    def test_options_include_model(self):
+        """ClaudeAgentOptions includes the model."""
+        agent = OrchestrationAgent(model="test-model")
+        assert agent._options.model == "test-model"
+
+
+class TestPartialMessageStreaming:
+    """Tests for include_partial_messages configuration."""
+
+    def test_options_include_partial_messages(self):
+        """ClaudeAgentOptions has include_partial_messages set."""
+        agent = OrchestrationAgent()
+        options = agent._options
+        # Should be set (True if StreamEvent is available, False otherwise)
+        assert hasattr(options, "include_partial_messages")
+
+
 class TestToolsV2Integration:
     """Tests for tools_v2 integration in orchestrator MCP."""
 
@@ -56,30 +89,6 @@ class TestToolsV2Integration:
         assert "orchestrator" in agent._options.mcp_servers
 
 
-class TestProcessMessage:
-    """Tests for process_message() with conversation history."""
-
-    def test_has_process_message_method(self):
-        """Agent has process_message method."""
-        agent = OrchestrationAgent()
-        assert hasattr(agent, "process_message")
-        assert asyncio.iscoroutinefunction(agent.process_message)
-
-    @pytest.mark.asyncio
-    async def test_process_message_requires_start(self):
-        """process_message raises error if agent not started."""
-        agent = OrchestrationAgent()
-        with pytest.raises(RuntimeError, match="not started"):
-            await agent.process_message("test")
-
-    def test_process_message_accepts_history(self):
-        """process_message signature accepts optional history parameter."""
-        import inspect
-
-        sig = inspect.signature(OrchestrationAgent.process_message)
-        assert "history" in sig.parameters
-
-
 class TestProcessMessageStream:
     """Tests for process_message_stream() async generator."""
 
@@ -88,12 +97,39 @@ class TestProcessMessageStream:
         agent = OrchestrationAgent()
         assert hasattr(agent, "process_message_stream")
 
-    def test_process_message_stream_accepts_history(self):
-        """process_message_stream signature accepts optional history parameter."""
+    def test_process_message_stream_no_history_param(self):
+        """process_message_stream no longer accepts history parameter.
+
+        The SDK maintains conversation history internally, so the
+        history parameter was removed.
+        """
         import inspect
 
         sig = inspect.signature(OrchestrationAgent.process_message_stream)
-        assert "history" in sig.parameters
+        assert "history" not in sig.parameters
+
+    def test_process_message_stream_accepts_user_input(self):
+        """process_message_stream accepts user_input parameter."""
+        import inspect
+
+        sig = inspect.signature(OrchestrationAgent.process_message_stream)
+        assert "user_input" in sig.parameters
+
+
+class TestInterruptSupport:
+    """Tests for interrupt() method."""
+
+    def test_has_interrupt_method(self):
+        """Agent has interrupt method."""
+        agent = OrchestrationAgent()
+        assert hasattr(agent, "interrupt")
+        assert asyncio.iscoroutinefunction(agent.interrupt)
+
+    @pytest.mark.asyncio
+    async def test_interrupt_without_client_is_safe(self):
+        """Calling interrupt without a client should not raise."""
+        agent = OrchestrationAgent()
+        await agent.interrupt()  # Should not raise
 
 
 class TestBackwardCompatibility:
@@ -106,7 +142,7 @@ class TestBackwardCompatibility:
         assert not agent.is_started
 
     def test_process_command_still_exists(self):
-        """Legacy process_command method still exists."""
+        """process_command method still exists."""
         agent = OrchestrationAgent()
         assert hasattr(agent, "process_command")
         assert asyncio.iscoroutinefunction(agent.process_command)

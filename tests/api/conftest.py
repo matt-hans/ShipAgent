@@ -7,6 +7,7 @@ for testing FastAPI endpoints.
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,6 +19,31 @@ from sqlalchemy.pool import StaticPool
 from src.api.main import app
 from src.db.connection import get_db
 from src.db.models import Base, Job, JobRow, JobStatus, RowStatus
+
+
+@pytest.fixture(autouse=True)
+def mock_agent_processing():
+    """Mock agent processing in conversation routes for API tests.
+
+    Prevents the real OrchestrationAgent from starting during tests.
+    The agent processing (background task) is replaced with a no-op
+    that immediately signals completion. This avoids:
+    - Actual Claude API calls
+    - MCP server spawning
+    - asyncio.Lock cancel scope conflicts with TestClient
+    """
+
+    async def _noop_process(session_id: str, content: str) -> None:
+        from src.api.routes.conversations import _get_event_queue
+
+        queue = _get_event_queue(session_id)
+        await queue.put({"event": "done", "data": {}})
+
+    with patch(
+        "src.api.routes.conversations._process_agent_message",
+        _noop_process,
+    ):
+        yield
 
 
 @pytest.fixture

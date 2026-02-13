@@ -1,15 +1,17 @@
 """FastAPI routes for agent-driven SSE conversations.
 
-Replaces the legacy /commands/ endpoint. Each conversation creates
-an agent session, accepts user messages, and streams agent events
-back via Server-Sent Events.
+Each conversation session has a persistent OrchestrationAgent instance.
+The agent and its MCP servers stay alive across messages, leveraging the
+Claude SDK's internal conversation memory. Agent is rebuilt only when the
+connected data source changes. Sessions are serialized per-conversation
+via asyncio.Lock to prevent concurrent access.
 
 Endpoints:
     POST   /conversations/              — Create new session
     POST   /conversations/{id}/messages — Send user message
     GET    /conversations/{id}/stream   — SSE event stream
     GET    /conversations/{id}/history  — Get conversation history
-    DELETE /conversations/{id}          — End session
+    DELETE /conversations/{id}          — End session (stops agent)
 """
 
 import asyncio
@@ -29,6 +31,7 @@ from src.api.schemas_conversations import (
     SendMessageRequest,
     SendMessageResponse,
 )
+from src.orchestrator.agent.tools_v2 import set_event_emitter
 from src.services.agent_session_manager import AgentSessionManager
 
 logger = logging.getLogger(__name__)
@@ -125,64 +128,123 @@ async def _try_auto_import_shopify(svc: "DataSourceService") -> "DataSourceInfo 
         return None
 
 
-async def _process_agent_message(session_id: str, content: str) -> None:
-    """Process a user message through the agent and push events to the queue.
+def _compute_source_hash(source_info: "DataSourceInfo | None") -> str:
+    """Compute a simple hash of data source metadata for change detection.
 
-    Runs as a background task. Builds the system prompt with the current
-    data source schema, creates/reuses the agent for this session, and
-    streams events to the session's event queue.
+    Args:
+        source_info: Current data source info, or None.
+
+    Returns:
+        Hash string identifying the data source state.
+    """
+    if source_info is None:
+        return "none"
+    parts = [
+        source_info.source_type,
+        str(source_info.file_path or ""),
+        str(source_info.row_count),
+        ",".join(c.name for c in source_info.columns),
+    ]
+    return "|".join(parts)
+
+
+async def _ensure_agent(
+    session: "AgentSession",
+    source_info: "DataSourceInfo | None",
+) -> None:
+    """Ensure the session has a running agent, creating or rebuilding as needed.
+
+    Creates a new agent on first call or when the data source changes.
+    The agent and its MCP servers persist across messages for the session
+    lifetime, leveraging the SDK's internal conversation memory.
+
+    Args:
+        session: The conversation session.
+        source_info: Current data source metadata.
+    """
+    from src.orchestrator.agent.client import OrchestrationAgent
+    from src.orchestrator.agent.system_prompt import build_system_prompt
+
+    source_hash = _compute_source_hash(source_info)
+
+    # Reuse existing agent if data source hasn't changed
+    if session.agent is not None and session.agent_source_hash == source_hash:
+        return
+
+    # Stop old agent if data source changed mid-conversation
+    if session.agent is not None:
+        logger.info(
+            "Data source changed for session %s, rebuilding agent",
+            session.session_id,
+        )
+        try:
+            await session.agent.stop()
+        except Exception as e:
+            logger.warning("Error stopping old agent: %s", e)
+
+    system_prompt = build_system_prompt(source_info=source_info)
+    agent = OrchestrationAgent(system_prompt=system_prompt)
+    await agent.start()
+
+    session.agent = agent
+    session.agent_source_hash = source_hash
+    logger.info("Agent started for session %s", session.session_id)
+
+
+async def _process_agent_message(session_id: str, content: str) -> None:
+    """Process a user message through the persistent agent.
+
+    Runs as a background task. Reuses the session's agent (SDK maintains
+    conversation history internally). The agent and MCP servers stay alive
+    across messages. An asyncio.Lock serializes access per session.
 
     Args:
         session_id: Conversation session ID.
         content: User message text.
     """
     queue = _get_event_queue(session_id)
+    session = _session_manager.get_or_create_session(session_id)
 
-    try:
-        # Build system prompt with current data source schema
-        from src.orchestrator.agent.system_prompt import build_system_prompt
-        from src.services.data_source_service import DataSourceService
-
-        svc = DataSourceService.get_instance()
-        source_info = svc.get_source_info()
-
-        # Auto-import Shopify orders if no file/DB source is loaded
-        if source_info is None:
-            source_info = await _try_auto_import_shopify(svc)
-
-        system_prompt = build_system_prompt(source_info=source_info)
-
-        # Get conversation history
-        history = _session_manager.get_history(session_id)
-
-        # Create agent and process message
-        from src.orchestrator.agent.client import OrchestrationAgent
-
-        agent = OrchestrationAgent(system_prompt=system_prompt)
-        await agent.start()
-
+    async with session.lock:
         try:
-            async for event in agent.process_message_stream(
-                content, history=history
-            ):
-                await queue.put(event)
+            from src.services.data_source_service import DataSourceService
 
-                # If the event is an agent_message, store it in history
-                if event.get("event") == "agent_message":
-                    text = event.get("data", {}).get("text", "")
-                    if text:
-                        _session_manager.add_message(
-                            session_id, "assistant", text
-                        )
-        finally:
-            await agent.stop()
+            svc = DataSourceService.get_instance()
+            source_info = svc.get_source_info()
 
-    except Exception as e:
-        logger.error("Agent processing failed for session %s: %s", session_id, e)
-        await queue.put({
-            "event": "error",
-            "data": {"message": str(e)},
-        })
+            # Auto-import Shopify orders if no file/DB source is loaded
+            if source_info is None:
+                source_info = await _try_auto_import_shopify(svc)
+
+            # Create or reuse agent (persists across messages)
+            await _ensure_agent(session, source_info)
+
+            # Bridge tool events to the SSE queue via ContextVar
+            def _emit_to_queue(event_type: str, data: dict) -> None:
+                queue.put_nowait({"event": event_type, "data": data})
+
+            set_event_emitter(_emit_to_queue)
+            try:
+                # Process message — SDK maintains conversation context internally
+                async for event in session.agent.process_message_stream(content):
+                    await queue.put(event)
+
+                    # Store complete text blocks in session history
+                    if event.get("event") == "agent_message":
+                        text = event.get("data", {}).get("text", "")
+                        if text:
+                            _session_manager.add_message(
+                                session_id, "assistant", text
+                            )
+            finally:
+                set_event_emitter(None)
+
+        except Exception as e:
+            logger.error("Agent processing failed for session %s: %s", session_id, e)
+            await queue.put({
+                "event": "error",
+                "data": {"message": str(e)},
+            })
 
     # Signal end of response
     await queue.put({"event": "done", "data": {}})
@@ -347,7 +409,9 @@ async def get_history(session_id: str) -> ConversationHistoryResponse:
 async def delete_conversation(session_id: str) -> Response:
     """End a conversation session and free resources.
 
-    Idempotent — returns 204 even if session doesn't exist.
+    Stops the persistent agent (and its MCP servers), removes session
+    state, and cleans up the event queue. Idempotent — returns 204
+    even if session doesn't exist.
 
     Args:
         session_id: Conversation session ID.
@@ -355,6 +419,8 @@ async def delete_conversation(session_id: str) -> Response:
     Returns:
         204 No Content.
     """
+    # Stop the agent (async) before removing session
+    await _session_manager.stop_session_agent(session_id)
     _session_manager.remove_session(session_id)
     _event_queues.pop(session_id, None)
     logger.info("Deleted conversation session: %s", session_id)

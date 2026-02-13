@@ -41,7 +41,6 @@ from claude_agent_sdk import (
     TextBlock,
     ToolUseBlock,
     create_sdk_mcp_server,
-    tool,
 )
 from claude_agent_sdk.types import McpStdioServerConfig
 
@@ -215,15 +214,16 @@ class OrchestrationAgent:
         print("[OrchestrationAgent] Started successfully", file=sys.stderr)
 
     async def process_command(self, user_input: str) -> str:
-        """Process a user command and return the response.
+        """Process a user command and return the complete response.
 
-        The client maintains conversation context across calls.
+        The SDK client maintains conversation context across calls — no need
+        to pass history. Each call builds on previous context.
 
         Args:
             user_input: Natural language command from the user.
 
         Returns:
-            Agent's text response.
+            Agent's complete text response.
 
         Raises:
             RuntimeError: If agent not started.
@@ -231,43 +231,6 @@ class OrchestrationAgent:
         if not self._started or self._client is None:
             raise RuntimeError("Agent not started. Call start() first.")
 
-        await self._client.query(user_input)
-
-        response_parts: list[str] = []
-        async for message in self._client.receive_response():
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        response_parts.append(block.text)
-            elif isinstance(message, ResultMessage):
-                if message.is_error:
-                    response_parts.append(f"[Error: {message.result}]")
-                break
-
-        return "".join(response_parts)
-
-    async def process_message(
-        self, user_input: str, history: list[dict] | None = None
-    ) -> str:
-        """Process a user message with optional conversation history.
-
-        Similar to process_command but accepts prior conversation context.
-
-        Args:
-            user_input: Natural language message from the user.
-            history: Optional list of prior messages [{role, content}].
-
-        Returns:
-            Agent's text response.
-
-        Raises:
-            RuntimeError: If agent not started.
-        """
-        if not self._started or self._client is None:
-            raise RuntimeError("Agent not started. Call start() first.")
-
-        # If history is provided, replay it before sending the new message
-        # The SDK client maintains internal state, so we send the full context
         await self._client.query(user_input)
 
         response_parts: list[str] = []
@@ -284,18 +247,24 @@ class OrchestrationAgent:
         return "".join(response_parts)
 
     async def process_message_stream(
-        self, user_input: str, history: list[dict] | None = None
+        self, user_input: str,
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Process a user message and yield SSE-compatible event dicts.
 
         Streams agent events as they occur for real-time UI updates.
+        When include_partial_messages is enabled (StreamEvent available),
+        emits token-by-token text deltas and real-time tool call notifications.
 
-        Args:
-            user_input: Natural language message from the user.
-            history: Optional list of prior messages [{role, content}].
+        The SDK client maintains conversation context internally — no need
+        to pass history. Each call builds on previous context.
 
         Yields:
-            Event dicts: {"event": "agent_thinking"|"tool_call"|"tool_result"|"agent_message"|"error", "data": {...}}
+            Event dicts with these event types:
+            - "agent_message_delta": Partial text chunk (real-time streaming)
+            - "agent_message": Complete text block (for history storage)
+            - "tool_call": Tool invocation starting
+            - "tool_result": Tool execution result
+            - "error": Error occurred
 
         Raises:
             RuntimeError: If agent not started.
@@ -306,23 +275,77 @@ class OrchestrationAgent:
         try:
             await self._client.query(user_input)
 
+            # Track whether we received StreamEvents for text (to avoid
+            # duplicate emission from AssistantMessage TextBlocks)
+            streamed_text_in_turn = False
+            current_text_parts: list[str] = []
+
             async for message in self._client.receive_response():
-                if isinstance(message, AssistantMessage):
-                    for block in message.content:
-                        if isinstance(block, TextBlock):
-                            yield {
-                                "event": "agent_message",
-                                "data": {"text": block.text},
-                            }
-                        elif hasattr(block, "name"):
-                            # Tool use block
+                # --- StreamEvent: real-time deltas (include_partial_messages) ---
+                if _HAS_STREAM_EVENT and isinstance(message, StreamEvent):
+                    event = message.event
+                    event_type = event.get("type")
+
+                    if event_type == "content_block_start":
+                        cb = event.get("content_block", {})
+                        if cb.get("type") == "tool_use":
                             yield {
                                 "event": "tool_call",
                                 "data": {
-                                    "tool_name": getattr(block, "name", "unknown"),
-                                    "tool_input": getattr(block, "input", {}),
+                                    "tool_name": cb.get("name", "unknown"),
+                                    "tool_input": cb.get("input", {}),
                                 },
                             }
+                        elif cb.get("type") == "text":
+                            current_text_parts = []
+
+                    elif event_type == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            text = delta.get("text", "")
+                            if text:
+                                streamed_text_in_turn = True
+                                current_text_parts.append(text)
+                                yield {
+                                    "event": "agent_message_delta",
+                                    "data": {"text": text},
+                                }
+
+                    elif event_type == "content_block_stop":
+                        # Emit complete text block for history storage
+                        if current_text_parts:
+                            full_text = "".join(current_text_parts)
+                            yield {
+                                "event": "agent_message",
+                                "data": {"text": full_text},
+                            }
+                            current_text_parts = []
+
+                # --- AssistantMessage: complete turn ---
+                elif isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, ToolUseBlock):
+                            # Tool call already emitted via StreamEvent if
+                            # streaming is active; emit here as fallback
+                            if not streamed_text_in_turn:
+                                yield {
+                                    "event": "tool_call",
+                                    "data": {
+                                        "tool_name": block.name,
+                                        "tool_input": block.input,
+                                    },
+                                }
+                        elif isinstance(block, TextBlock):
+                            # Only emit if we didn't stream this text
+                            if not streamed_text_in_turn:
+                                yield {
+                                    "event": "agent_message",
+                                    "data": {"text": block.text},
+                                }
+                    # Reset streaming flag for next turn
+                    streamed_text_in_turn = False
+
+                # --- ResultMessage: agent finished ---
                 elif isinstance(message, ResultMessage):
                     if message.is_error:
                         yield {
@@ -330,12 +353,27 @@ class OrchestrationAgent:
                             "data": {"message": str(message.result)},
                         }
                     break
+
         except Exception as e:
             logger.error("process_message_stream error: %s", e)
             yield {
                 "event": "error",
                 "data": {"message": str(e)},
             }
+
+    async def interrupt(self) -> None:
+        """Interrupt the agent's current response.
+
+        Cancels in-progress tool calls and LLM generation. The agent
+        can accept new messages after interruption.
+
+        No-op if agent is not started or no response is in progress.
+        """
+        if self._client is not None:
+            try:
+                await self._client.interrupt()
+            except Exception as e:
+                logger.warning("Agent interrupt failed: %s", e)
 
     async def stop(self, timeout: float = 5.0) -> None:
         """Stop the agent gracefully.

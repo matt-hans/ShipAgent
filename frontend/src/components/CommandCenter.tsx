@@ -1228,6 +1228,11 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         if (text) {
           addMessage({ role: 'system', content: text });
         }
+      } else if (event.type === 'preview_ready') {
+        const previewData = event.data as unknown as BatchPreview;
+        setPreview(previewData);
+        setCurrentJobId(previewData.job_id);
+        refreshJobList();
       } else if (event.type === 'error') {
         const msg = (event.data.message as string) || 'Agent error';
         addMessage({
