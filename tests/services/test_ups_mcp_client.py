@@ -361,6 +361,288 @@ class TestErrorTranslation:
         assert "Connection refused" in exc_info.value.message
 
 
+class TestTranslateErrorMCPPreflight:
+    """Tests for _translate_error() handling MCP preflight ToolErrors.
+
+    Verifies that structured ToolError payloads from UPS MCP preflight
+    (elicitation v1) are correctly mapped to ShipAgent E-codes with
+    actionable messages synthesised from missing[].prompt.
+    """
+
+    @pytest.mark.asyncio
+    async def test_elicitation_unsupported_with_missing(self, ups_client, mock_mcp_client):
+        """ELICITATION_UNSUPPORTED with missing[] -> E-2010 with prompt-based fields."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "ELICITATION_UNSUPPORTED",
+                "message": "Missing 3 required field(s)",
+                "reason": "unsupported",
+                "missing": [
+                    {"dot_path": "ShipmentRequest.Shipment.Shipper.Name", "flat_key": "shipper_name", "prompt": "Shipper name"},
+                    {"dot_path": "ShipmentRequest.Shipment.ShipTo.Address.City", "flat_key": "ship_to_city", "prompt": "Recipient city"},
+                    {"dot_path": "ShipmentRequest.Shipment.Package.PackageWeight.Weight", "flat_key": "package_1_weight", "prompt": "Package weight"},
+                ],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        err = exc_info.value
+        assert err.code == "E-2010"
+        assert "3" in err.message
+        assert "Shipper name" in err.message
+        assert "Recipient city" in err.message
+        assert "Package weight" in err.message
+
+    @pytest.mark.asyncio
+    async def test_elicitation_unsupported_many_fields_truncated(self, ups_client, mock_mcp_client):
+        """ELICITATION_UNSUPPORTED with 12 missing fields shows first 8 + count."""
+        missing = [
+            {"flat_key": f"field_{i}", "prompt": f"Field {i}"}
+            for i in range(12)
+        ]
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "ELICITATION_UNSUPPORTED",
+                "message": "Missing 12 required field(s)",
+                "missing": missing,
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        err = exc_info.value
+        assert err.code == "E-2010"
+        assert "(+4 more)" in err.message
+        assert "Field 0" in err.message
+        assert "Field 7" in err.message
+
+    @pytest.mark.asyncio
+    async def test_prompt_fallback_to_flat_key(self, ups_client, mock_mcp_client):
+        """When prompt is None, falls back to flat_key for display."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "ELICITATION_UNSUPPORTED",
+                "message": "Missing 1 required field(s)",
+                "missing": [
+                    {"dot_path": "ShipmentRequest.Shipment.Shipper.Name", "flat_key": "shipper_name", "prompt": None},
+                ],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        err = exc_info.value
+        assert err.code == "E-2010"
+        assert "shipper_name" in err.message
+
+    @pytest.mark.asyncio
+    async def test_e2010_empty_missing_uses_fallback(self, ups_client, mock_mcp_client):
+        """E-2010 with absent/empty missing[] uses fallback context (no raw placeholders)."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "ELICITATION_UNSUPPORTED",
+                "message": "Something about missing fields",
+                "missing": [],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        err = exc_info.value
+        assert err.code == "E-2010"
+        # Must not contain raw template placeholders
+        assert "{count}" not in err.message
+        assert "{fields}" not in err.message
+
+    @pytest.mark.asyncio
+    async def test_malformed_request_maps_to_e2011(self, ups_client, mock_mcp_client):
+        """MALFORMED_REQUEST with empty missing[] -> E-2011."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "MALFORMED_REQUEST",
+                "message": "Ambiguous payer configuration",
+                "missing": [],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        assert exc_info.value.code == "E-2011"
+        assert "Ambiguous payer" in exc_info.value.message
+
+    @pytest.mark.asyncio
+    async def test_elicitation_cancelled_maps_to_e2012(self, ups_client, mock_mcp_client):
+        """ELICITATION_CANCELLED -> E-2012."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "ELICITATION_CANCELLED",
+                "message": "User cancelled the form",
+                "missing": [],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        assert exc_info.value.code == "E-2012"
+
+    @pytest.mark.asyncio
+    async def test_elicitation_invalid_response_maps_to_e4010(self, ups_client, mock_mcp_client):
+        """ELICITATION_INVALID_RESPONSE -> E-4010."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "ELICITATION_INVALID_RESPONSE",
+                "message": "Rehydration error: field conflict",
+                "missing": [],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        assert exc_info.value.code == "E-4010"
+
+    @pytest.mark.asyncio
+    async def test_missing_ordering_preserved(self, ups_client, mock_mcp_client):
+        """Field order from missing[] is preserved in the message."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "ELICITATION_UNSUPPORTED",
+                "message": "Missing fields",
+                "missing": [
+                    {"flat_key": "a", "prompt": "Alpha"},
+                    {"flat_key": "b", "prompt": "Bravo"},
+                    {"flat_key": "c", "prompt": "Charlie"},
+                ],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        msg = exc_info.value.message
+        # Order should match: Alpha before Bravo before Charlie
+        assert msg.index("Alpha") < msg.index("Bravo") < msg.index("Charlie")
+
+
+class TestMalformedRequestReasonPreservation:
+    """Tests for MALFORMED_REQUEST reason field preservation."""
+
+    @pytest.mark.asyncio
+    async def test_malformed_request_preserves_reason_in_details(self, ups_client, mock_mcp_client):
+        """MALFORMED_REQUEST preserves reason variant in details and message."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "MALFORMED_REQUEST",
+                "message": "Ambiguous payer configuration",
+                "reason": "ambiguous_payer",
+                "missing": [],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        err = exc_info.value
+        assert err.code == "E-2011"
+        assert err.details is not None
+        assert err.details.get("reason") == "ambiguous_payer"
+        # Reason should be explicitly appended to message for diagnostics
+        assert "(reason: ambiguous_payer)" in err.message
+
+    @pytest.mark.asyncio
+    async def test_malformed_request_reason_malformed_structure(self, ups_client, mock_mcp_client):
+        """MALFORMED_REQUEST with malformed_structure reason."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "MALFORMED_REQUEST",
+                "message": "Invalid payload structure",
+                "reason": "malformed_structure",
+                "missing": [],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        err = exc_info.value
+        assert err.code == "E-2011"
+        assert err.details.get("reason") == "malformed_structure"
+        assert "(reason: malformed_structure)" in err.message
+
+    @pytest.mark.asyncio
+    async def test_reason_absent_does_not_crash(self, ups_client, mock_mcp_client):
+        """Missing reason field does not crash _translate_error."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "code": "MALFORMED_REQUEST",
+                "message": "Some error",
+                "missing": [],
+            }),
+        )
+
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.create_shipment(request_body={})
+
+        err = exc_info.value
+        assert err.code == "E-2011"
+        assert "(reason:" not in err.message  # No reason appended when absent
+
+
+class TestRetryableRegressionMCPPreflight:
+    """Verify _ups_is_retryable returns False for all 6 MCP preflight codes.
+
+    E-4010 has is_retryable=True in the error registry, but that is
+    user-facing guidance only. Runtime auto-retry must be disabled
+    because create_shipment may have side effects.
+    """
+
+    @pytest.mark.parametrize("code", [
+        "ELICITATION_UNSUPPORTED",
+        "INCOMPLETE_SHIPMENT",
+        "MALFORMED_REQUEST",
+        "ELICITATION_DECLINED",
+        "ELICITATION_CANCELLED",
+        "ELICITATION_INVALID_RESPONSE",
+    ])
+    def test_not_retryable(self, code: str):
+        """MCP preflight codes are never auto-retried."""
+        error_text = json.dumps({"code": code, "message": "test"})
+        assert _ups_is_retryable(error_text) is False
+
+    def test_elicitation_invalid_response_not_retryable_despite_registry(self):
+        """E-4010 is_retryable=True is user-facing guidance only.
+
+        Runtime auto-retry via _ups_is_retryable() must return False for
+        ELICITATION_INVALID_RESPONSE because create_shipment may have
+        side effects. The is_retryable flag in the error registry tells
+        the user they can manually retry, not that the system should
+        auto-retry.
+        """
+        error_text = json.dumps({
+            "code": "ELICITATION_INVALID_RESPONSE",
+            "message": "Rehydration error",
+        })
+        assert _ups_is_retryable(error_text) is False
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------

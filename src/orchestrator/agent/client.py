@@ -134,6 +134,7 @@ class OrchestrationAgent:
         max_turns: int = 50,
         permission_mode: str = "acceptEdits",
         model: str | None = None,
+        interactive_shipping: bool = False,
     ) -> None:
         """Initialize the Orchestration Agent.
 
@@ -143,9 +144,12 @@ class OrchestrationAgent:
             permission_mode: SDK permission mode for file operations.
             model: Claude model ID. Defaults to AGENT_MODEL (or legacy
                 ANTHROPIC_MODEL) env var, else Haiku 4.5.
+            interactive_shipping: Whether interactive single-shipment mode is
+                enabled. Passed to hook factory for deterministic enforcement.
         """
         self._system_prompt = system_prompt
         self._model = model or DEFAULT_MODEL
+        self._interactive_shipping = interactive_shipping
         self.emitter_bridge = EventEmitterBridge()
         self._options = self._create_options(max_turns, permission_mode)
         self._client: Optional[ClaudeSDKClient] = None
@@ -200,7 +204,9 @@ class OrchestrationAgent:
                 "mcp__data__*",
                 "mcp__ups__*",
             ],
-            hooks=create_hook_matchers(),
+            hooks=create_hook_matchers(
+                interactive_shipping=self._interactive_shipping,
+            ),
             # Enable real-time token streaming via StreamEvent
             include_partial_messages=_HAS_STREAM_EVENT,
             # Session settings

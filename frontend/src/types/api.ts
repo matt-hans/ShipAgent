@@ -569,6 +569,7 @@ export interface AgentEvent {
 /** Create conversation response. */
 export interface CreateConversationResponse {
   session_id: string;
+  interactive_shipping: boolean;
 }
 
 /** Send message response. */

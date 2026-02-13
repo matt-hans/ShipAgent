@@ -41,9 +41,13 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     activeSourceType,
     warningPreference,
     setConversationSessionId,
+    interactiveShipping,
+    setInteractiveShipping,
+    setIsToggleLocked,
   } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
+  const canInput = hasDataSource || interactiveShipping;
 
   // Agent-driven conversation hook
   const conv = useConversation();
@@ -61,6 +65,58 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const inputRef = React.useRef<HTMLInputElement>(null);
   const lastCommandRef = React.useRef<string>('');
   const lastJobNameRef = React.useRef<string>('');
+  const prevInteractiveRef = React.useRef(interactiveShipping);
+  const [isResettingSession, setIsResettingSession] = React.useState(false);
+
+  // Reset session when interactive shipping mode changes.
+  //
+  // Handles two distinct cases:
+  // 1. Active session exists (sessionId is set) → reset and recreate on next send.
+  // 2. Session creation in-flight (isCreatingSession) → wait for it, then reset,
+  //    so the next send creates a session with the correct mode.
+  React.useEffect(() => {
+    if (prevInteractiveRef.current === interactiveShipping) return;
+    prevInteractiveRef.current = interactiveShipping;
+
+    const hasActiveOrInflightSession = conv.sessionId || conv.isCreatingSession;
+    if (!hasActiveOrInflightSession) return;
+
+    // Confirm if there's in-progress work
+    if (preview || conv.isProcessing) {
+      const confirmed = window.confirm(
+        'Switching mode resets your current session. Continue?'
+      );
+      if (!confirmed) {
+        // Revert toggle
+        setInteractiveShipping(!interactiveShipping);
+        prevInteractiveRef.current = !interactiveShipping;
+        return;
+      }
+    }
+
+    // Race-safe reset: wait for any in-flight creation to settle, then reset.
+    setIsResettingSession(true);
+    setIsToggleLocked(true);
+    const doReset = async () => {
+      // If a creation is in-flight, the mutex promise settles once complete.
+      // reset() then tears it down so the next send creates a fresh session.
+      await conv.reset();
+      setIsResettingSession(false);
+      setIsToggleLocked(false);
+    };
+    doReset();
+  }, [interactiveShipping, conv.sessionId, conv.isCreatingSession, conv.isProcessing, preview, setInteractiveShipping, setIsToggleLocked, conv.reset]);
+
+  // Lock toggle while session creation is in-flight or agent is processing.
+  // (Reset-driven locking is handled in the toggle-change effect above.)
+  React.useEffect(() => {
+    if (conv.isCreatingSession || conv.isProcessing) {
+      setIsToggleLocked(true);
+    } else if (!isResettingSession) {
+      // Only unlock if we're not mid-reset (the reset effect unlocks itself).
+      setIsToggleLocked(false);
+    }
+  }, [conv.isCreatingSession, conv.isProcessing, isResettingSession, setIsToggleLocked]);
 
   // Sync conversation session ID to AppState
   React.useEffect(() => {
@@ -132,7 +188,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   // Handle command submit — uses agent-driven conversation flow
   const handleSubmit = async () => {
     const command = inputValue.trim();
-    if (!command || isProcessing || !hasDataSource) return;
+    if (!command || isProcessing || !canInput) return;
 
     lastCommandRef.current = command;
     setInputValue('');
@@ -142,7 +198,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
 
     // Send via agent conversation — the hook manages SSE events,
     // which are rendered as system messages via the effect above
-    await conv.sendMessage(command);
+    await conv.sendMessage(command, interactiveShipping);
   };
 
   // Handle confirm with optional row skipping
@@ -210,7 +266,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     setIsRefining(true);
     try {
       // Send refinement through the agent conversation
-      await conv.sendMessage(refinementText.trim());
+      await conv.sendMessage(refinementText.trim(), interactiveShipping);
     } catch (err) {
       addMessage({
         role: 'system',
@@ -254,7 +310,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto scrollable p-6">
         {conversation.length === 0 && !preview && !executingJobId ? (
-          <WelcomeMessage onExampleClick={(text) => setInputValue(text)} />
+          <WelcomeMessage onExampleClick={(text) => setInputValue(text)} interactiveShipping={interactiveShipping} />
         ) : (
           <div className="max-w-3xl mx-auto space-y-6">
             {conversation.map((message) => (
@@ -410,14 +466,18 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                 onChange={(e) => setInputValue(e.target.value)}
                 onKeyDown={handleKeyDown}
                 placeholder={
-                  !hasDataSource
-                    ? 'Connect a data source to begin...'
-                    : 'Enter a shipping command...'
+                  interactiveShipping && !hasDataSource
+                    ? 'Describe your shipment details for interactive creation...'
+                    : interactiveShipping && hasDataSource
+                      ? 'Describe one shipment or enter a batch command...'
+                      : !hasDataSource
+                        ? 'Connect a data source to begin...'
+                        : 'Enter a shipping command...'
                 }
-                disabled={!hasDataSource || isProcessing || !!preview || !!executingJobId}
+                disabled={!canInput || isProcessing || !!preview || !!executingJobId || isResettingSession}
                 className={cn(
                   'input-command pr-12',
-                  (!hasDataSource || isProcessing || !!preview || !!executingJobId) && 'opacity-50 cursor-not-allowed'
+                  (!canInput || isProcessing || !!preview || !!executingJobId || isResettingSession) && 'opacity-50 cursor-not-allowed'
                 )}
               />
 
@@ -431,10 +491,10 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
 
             <button
               onClick={handleSubmit}
-              disabled={!inputValue.trim() || !hasDataSource || isProcessing || !!preview || !!executingJobId}
+              disabled={!inputValue.trim() || !canInput || isProcessing || !!preview || !!executingJobId || isResettingSession}
               className={cn(
                 'btn-primary px-4',
-                (!inputValue.trim() || !hasDataSource || isProcessing || !!preview || !!executingJobId) && 'opacity-50 cursor-not-allowed'
+                (!inputValue.trim() || !canInput || isProcessing || !!preview || !!executingJobId || isResettingSession) && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isProcessing ? (
@@ -449,9 +509,11 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
 
           {/* Help text - single line */}
           <p className="text-[10px] font-mono text-slate-500 mt-1.5">
-            {hasDataSource
-              ? 'Describe what you want to ship in natural language'
-              : 'Connect a data source from the sidebar'} · Press <kbd className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700">Enter</kbd> to send
+            {interactiveShipping && !hasDataSource
+              ? 'Interactive mode — describe a single shipment'
+              : hasDataSource
+                ? 'Describe what you want to ship in natural language'
+                : 'Connect a data source from the sidebar'} · Press <kbd className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700">Enter</kbd> to send
           </p>
         </div>
       </div>

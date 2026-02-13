@@ -1,13 +1,12 @@
 """FastAPI routes for label downloads.
 
-Provides REST API endpoints for downloading individual shipping labels,
-bulk ZIP downloads, and merged PDF downloads of all labels for a job.
+Provides REST API endpoints for downloading individual shipping labels
+and merged PDF downloads of all labels for a job.
 """
 
 import io
 from pathlib import Path
 
-import zipstream
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from pypdf import PdfWriter
@@ -70,90 +69,6 @@ def get_label(
         path=str(label_path),
         media_type="application/pdf",
         filename=f"{tracking_number}.pdf",
-    )
-
-
-@router.get("/jobs/{job_id}/labels/zip")
-def download_labels_zip(
-    job_id: str,
-    db: Session = Depends(get_db),
-) -> StreamingResponse:
-    """Download all labels for a job as a ZIP file.
-
-    Streams a ZIP file containing all shipping labels for the specified job.
-    Uses zipstream-ng for memory-efficient streaming without loading all
-    files into memory at once.
-
-    Args:
-        job_id: The job UUID.
-        db: Database session dependency.
-
-    Returns:
-        StreamingResponse with the ZIP file.
-
-    Raises:
-        HTTPException: If job not found (404) or no labels available (404).
-    """
-    # Verify job exists
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    # Get all rows with labels
-    rows = (
-        db.query(JobRow)
-        .filter(
-            JobRow.job_id == job_id,
-            JobRow.label_path.isnot(None),
-        )
-        .all()
-    )
-
-    if not rows:
-        raise HTTPException(
-            status_code=404,
-            detail="No labels available for this job",
-        )
-
-    # Collect valid label paths with unique archive names
-    label_paths: list[tuple[str, str]] = []  # (file_path, archive_name)
-    seen_names: set[str] = set()
-    for row in rows:
-        if row.label_path:
-            path = Path(row.label_path)
-            if path.exists():
-                # Build archive name with row number prefix for uniqueness
-                # (tracking numbers may collide in UPS sandbox)
-                tracking = row.tracking_number or "unknown"
-                name = f"row{row.row_number:03d}_{tracking}.pdf"
-                # Ensure uniqueness even in unexpected edge cases
-                if name in seen_names:
-                    name = f"row{row.row_number:03d}_{tracking}_{row.id[:8]}.pdf"
-                seen_names.add(name)
-                label_paths.append((str(path), name))
-
-    if not label_paths:
-        raise HTTPException(
-            status_code=404,
-            detail="No valid label files found for this job",
-        )
-
-    def generate_zip():
-        """Generator that yields ZIP file chunks."""
-        zs = zipstream.ZipFile(mode="w", compression=zipstream.ZIP_STORED)
-        for file_path, archive_name in label_paths:
-            zs.write(file_path, arcname=archive_name)
-        yield from zs
-
-    # Create a sanitized filename for the ZIP
-    job_name_slug = "".join(c if c.isalnum() or c in "-_" else "_" for c in job.name[:30])
-
-    return StreamingResponse(
-        generate_zip(),
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f'attachment; filename="labels-{job_name_slug}-{job_id[:8]}.zip"'
-        },
     )
 
 
