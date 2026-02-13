@@ -25,6 +25,7 @@ from uuid import uuid4
 import sqlglot
 
 from src.db.connection import get_db_context
+from src.services.column_mapping import apply_mapping, auto_map_columns, translate_service_name, validate_mapping
 from src.services.data_source_service import DataSourceService
 from src.services.job_service import JobService
 
@@ -143,8 +144,9 @@ def _get_data_source_service() -> DataSourceService:
 
 def _build_job_row_data(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert source rows into JobRow create payload with checksums."""
+    normalized_rows = _normalize_rows_for_shipping(rows)
     row_data = []
-    for i, row in enumerate(rows, start=1):
+    for i, row in enumerate(normalized_rows, start=1):
         row_json = json.dumps(row, sort_keys=True, default=str)
         checksum = hashlib.md5(row_json.encode()).hexdigest()
         row_data.append({
@@ -153,6 +155,68 @@ def _build_job_row_data(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "order_data": row_json,
         })
     return row_data
+
+
+def _normalize_rows_for_shipping(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize source rows into canonical order_data keys for UPS payloads.
+
+    CSV/Excel imports often use arbitrary headers (e.g., "Recipient Name",
+    "Address", "Zip"). This function auto-maps those headers into the
+    canonical ship_to_* keys expected by build_shipment_request().
+    """
+    if not rows:
+        return rows
+
+    source_columns: list[str] = sorted({
+        str(k)
+        for row in rows
+        if isinstance(row, dict)
+        for k in row.keys()
+    })
+    mapping = auto_map_columns(source_columns)
+    missing_required = validate_mapping(mapping)
+    if missing_required:
+        logger.warning(
+            "Auto column mapping incomplete for %d rows: %s",
+            len(rows),
+            "; ".join(missing_required),
+        )
+
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            normalized.append(row)
+            continue
+
+        # Preserve original row fields for traceability, then overlay mapped
+        # canonical keys used by payload builders.
+        out: dict[str, Any] = dict(row)
+        mapped = apply_mapping(mapping, row)
+        for key, value in mapped.items():
+            if value is not None and value != "":
+                out[key] = value
+
+        # Fallback name fields commonly present in CSV exports.
+        if not out.get("ship_to_name"):
+            for key in ("recipient_name", "customer_name", "name"):
+                value = row.get(key)
+                if value:
+                    out["ship_to_name"] = value
+                    break
+
+        # Default country to US if absent.
+        if not out.get("ship_to_country"):
+            out["ship_to_country"] = "US"
+
+        # Normalize service names/codes when present.
+        if out.get("service_code"):
+            out["service_code"] = translate_service_name(str(out["service_code"]))
+        elif row.get("service"):
+            out["service_code"] = translate_service_name(str(row["service"]))
+
+        normalized.append(out)
+
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +659,8 @@ async def ship_command_pipeline_tool(args: dict[str, Any]) -> dict[str, Any]:
         return _err(f"Failed to create job: {e}")
 
     preview_rows = result.get("preview_rows", [])
-    row_map = {i: row for i, row in enumerate(fetched_rows, start=1)}
+    normalized_rows = _normalize_rows_for_shipping(fetched_rows)
+    row_map = {i: row for i, row in enumerate(normalized_rows, start=1)}
     _enrich_preview_rows_from_map(preview_rows, row_map)
     rows_with_warnings = sum(1 for row in preview_rows if row.get("warnings"))
     result["rows_with_warnings"] = rows_with_warnings

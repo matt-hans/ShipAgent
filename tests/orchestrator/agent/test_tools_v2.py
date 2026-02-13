@@ -5,6 +5,7 @@ No tool calls the LLM internally — all are deterministic.
 """
 
 import json
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -187,6 +188,50 @@ async def test_add_rows_to_job_uses_fetch_id_cache():
     assert result["isError"] is False
     data = json.loads(result["content"][0]["text"])
     assert data["rows_added"] == 1
+
+
+@pytest.mark.asyncio
+async def test_add_rows_to_job_auto_maps_csv_columns_to_canonical_order_data():
+    """CSV-style headers are normalized to ship_to_* fields before persistence."""
+    rows = [{
+        "Recipient Name": "Alice",
+        "Address": "123 Main St",
+        "City": "Los Angeles",
+        "State": "CA",
+        "ZIP": "90001",
+        "Country": "US",
+        "Weight": 2.5,
+        "Service": "Ground",
+    }]
+
+    captured_row_data: list[dict[str, Any]] = []
+
+    with patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx:
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch("src.orchestrator.agent.tools_v2.JobService") as MockJS:
+            def _capture(job_id, row_data):
+                captured_row_data.extend(row_data)
+                return [MagicMock()]
+
+            MockJS.return_value.create_rows.side_effect = _capture
+            result = await add_rows_to_job_tool({
+                "job_id": "job-123",
+                "rows": rows,
+            })
+
+    assert result["isError"] is False
+    assert captured_row_data
+    order_data = json.loads(captured_row_data[0]["order_data"])
+    assert order_data["ship_to_name"] == "Alice"
+    assert order_data["ship_to_address1"] == "123 Main St"
+    assert order_data["ship_to_city"] == "Los Angeles"
+    assert order_data["ship_to_state"] == "CA"
+    assert order_data["ship_to_postal_code"] == "90001"
+    assert order_data["ship_to_country"] == "US"
+    assert order_data["service_code"] == "03"
 
 
 # ---------------------------------------------------------------------------

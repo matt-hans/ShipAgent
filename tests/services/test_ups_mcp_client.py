@@ -449,3 +449,50 @@ class TestUPSMCPReconnectBehavior:
         assert mock_mcp_client.call_tool.call_count == 1
         mock_mcp_client.disconnect.assert_awaited_once()
         mock_mcp_client.connect.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_create_shipment_retries_once_for_no_healthy_upstream(self, ups_client, mock_mcp_client):
+        """Mutating call retries once only for strict upstream 503 signatures."""
+        mock_mcp_client._session = object()
+        mock_mcp_client.call_tool = AsyncMock(side_effect=[
+            MCPToolError(
+                tool_name="create_shipment",
+                error_text=json.dumps({
+                    "status_code": 503,
+                    "code": "503",
+                    "message": "UPS API returned HTTP 503",
+                    "details": {"raw": "no healthy upstream"},
+                }),
+            ),
+            {"ok": True},
+        ])
+
+        result = await ups_client._call("create_shipment", {"request_body": {"x": 1}})
+
+        assert result == {"ok": True}
+        assert mock_mcp_client.call_tool.call_count == 2
+        mock_mcp_client.call_tool.assert_any_await(
+            "create_shipment",
+            {"request_body": {"x": 1}},
+            max_retries=0,
+            base_delay=1.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_shipment_does_not_retry_generic_503(self, ups_client, mock_mcp_client):
+        """Generic 503 without upstream signature remains non-retry for safety."""
+        mock_mcp_client._session = object()
+        err = MCPToolError(
+            tool_name="create_shipment",
+            error_text=json.dumps({
+                "status_code": 503,
+                "code": "503",
+                "message": "Service temporarily unavailable",
+            }),
+        )
+        mock_mcp_client.call_tool = AsyncMock(side_effect=[err])
+
+        with pytest.raises(MCPToolError):
+            await ups_client._call("create_shipment", {"request_body": {"x": 1}})
+
+        assert mock_mcp_client.call_tool.call_count == 1
