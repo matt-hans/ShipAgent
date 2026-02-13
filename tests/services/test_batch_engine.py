@@ -247,3 +247,84 @@ class TestBatchEnginePreview:
         assert len(result["preview_rows"]) == 12
         assert result["additional_rows"] == 0
         assert mock_ups_service.get_rate.call_count == 12
+
+    async def test_preview_row_parse_error_becomes_warning_not_hard_fail(
+        self, mock_ups_service, mock_db_session,
+    ):
+        """Malformed CSV row data should produce row warning, not fail preview."""
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="ABC123",
+        )
+
+        rows = [
+            MagicMock(
+                id="row-1",
+                row_number=1,
+                order_data="{not-json",
+            ),
+            MagicMock(
+                id="row-2",
+                row_number=2,
+                order_data=json.dumps({
+                    "ship_to_name": "Jane",
+                    "ship_to_address1": "123 Main",
+                    "ship_to_city": "LA",
+                    "ship_to_state": "CA",
+                    "ship_to_postal_code": "90001",
+                    "weight": 2.0,
+                }),
+            ),
+        ]
+
+        shipper = {
+            "name": "Store",
+            "addressLine1": "456 Oak",
+            "city": "SF",
+            "stateProvinceCode": "CA",
+            "postalCode": "94102",
+            "countryCode": "US",
+        }
+
+        result = await engine.preview(job_id="job-warning", rows=rows, shipper=shipper)
+
+        assert result["total_rows"] == 2
+        assert len(result["preview_rows"]) == 2
+        first = result["preview_rows"][0]
+        assert first["row_number"] == 1
+        assert first["estimated_cost_cents"] == 0
+        assert "rate_error" in first
+        # Second row still rated successfully.
+        assert result["preview_rows"][1]["estimated_cost_cents"] > 0
+
+    async def test_preview_invalid_concurrency_env_falls_back_to_default(
+        self, mock_ups_service, mock_db_session, monkeypatch,
+    ):
+        """Invalid BATCH_CONCURRENCY should not crash preview."""
+        monkeypatch.setenv("BATCH_CONCURRENCY", "not-an-int")
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="ABC123",
+        )
+
+        rows = [
+            MagicMock(
+                id="row-1", row_number=1,
+                order_data=json.dumps({
+                    "ship_to_name": "John", "ship_to_address1": "123 Main",
+                    "ship_to_city": "LA", "ship_to_state": "CA",
+                    "ship_to_postal_code": "90001", "weight": 2.0,
+                }),
+            ),
+        ]
+        shipper = {
+            "name": "Store", "addressLine1": "456 Oak",
+            "city": "SF", "stateProvinceCode": "CA",
+            "postalCode": "94102", "countryCode": "US",
+        }
+
+        result = await engine.preview(job_id="job-safe-conc", rows=rows, shipper=shipper)
+        assert result["total_rows"] == 1
+        assert len(result["preview_rows"]) == 1

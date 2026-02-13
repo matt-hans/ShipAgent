@@ -72,6 +72,17 @@ class BatchEngine:
             "UPS_LABELS_OUTPUT_DIR", str(DEFAULT_LABELS_DIR)
         )
 
+    @staticmethod
+    def _resolve_concurrency() -> int:
+        """Resolve preview/execute concurrency from env with safe fallback."""
+        raw = os.environ.get("BATCH_CONCURRENCY", "5")
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning("Invalid BATCH_CONCURRENCY=%r, defaulting to 5", raw)
+            return 5
+        return max(1, value)
+
     async def preview(
         self,
         job_id: str,
@@ -94,8 +105,8 @@ class BatchEngine:
             Dict with total_estimated_cost_cents, preview_rows, etc.
         """
         started_at = datetime.now(UTC)
-        # Use same concurrency setting as execute for consistent performance
-        max_concurrent = int(os.environ.get("BATCH_CONCURRENCY", "5"))
+        # Use same concurrency setting as execute for consistent performance.
+        max_concurrent = self._resolve_concurrency()
         semaphore = asyncio.Semaphore(max_concurrent)
 
         preview_rows: list[dict[str, Any]] = []
@@ -109,24 +120,33 @@ class BatchEngine:
             row_started = datetime.now(UTC)
 
             async with semaphore:
-                order_data = self._parse_order_data(row)
-                simplified = build_shipment_request(
-                    order_data=order_data,
-                    shipper=shipper,
-                    service_code=service_code,
-                )
-                rate_payload = build_ups_rate_payload(
-                    simplified, account_number=self._account_number,
-                )
-
+                order_data: dict[str, Any] = {}
                 rate_error: str | None = None
+                cost_cents = 0
                 try:
+                    order_data = self._parse_order_data(row)
+                    simplified = build_shipment_request(
+                        order_data=order_data,
+                        shipper=shipper,
+                        service_code=service_code,
+                    )
+                    rate_payload = build_ups_rate_payload(
+                        simplified, account_number=self._account_number,
+                    )
                     rate_result = await self._ups.get_rate(request_body=rate_payload)
                     amount = rate_result.get("totalCharges", {}).get("monetaryValue", "0")
                     cost_cents = int(float(amount) * 100)
                 except UPSServiceError as e:
                     logger.warning("Rate quote failed for row %s: %s", row.row_number, e)
-                    cost_cents = 0
+                    rate_error = str(e)
+                except Exception as e:
+                    # Keep preview resilient: malformed row data or payload
+                    # build issues should surface as row warnings, not hard fail.
+                    logger.warning(
+                        "Preview row %s degraded to warning (non-fatal): %s",
+                        row.row_number,
+                        e,
+                    )
                     rate_error = str(e)
                 finally:
                     row_elapsed = (datetime.now(UTC) - row_started).total_seconds()
@@ -221,7 +241,7 @@ class BatchEngine:
         Returns:
             Dict with successful, failed, total_cost_cents counts
         """
-        max_concurrent = int(os.environ.get("BATCH_CONCURRENCY", "5"))
+        max_concurrent = self._resolve_concurrency()
         semaphore = asyncio.Semaphore(max_concurrent)
         db_lock = asyncio.Lock()
 
