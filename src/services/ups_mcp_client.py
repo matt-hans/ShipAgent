@@ -13,6 +13,7 @@ Example:
 import json
 import logging
 import os
+import asyncio
 from typing import Any
 
 from mcp import StdioServerParameters
@@ -305,6 +306,22 @@ class UPSMCPClient:
 
         try:
             return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
+        except MCPToolError as e:
+            # Keep mutating operations conservative, but allow one bounded
+            # retry for known upstream gateway outages where UPS never
+            # actually processed the request (e.g., "no healthy upstream").
+            if (
+                tool_name in {"create_shipment", "void_shipment"}
+                and self._is_safe_mutating_retry_error(e.error_text)
+            ):
+                logger.warning(
+                    "UPS upstream transient failure during '%s'; retrying once: %s",
+                    tool_name,
+                    str(e)[:200],
+                )
+                await asyncio.sleep(0.5)
+                return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
+            raise
         except Exception as e:
             if not self._is_transport_error(e):
                 raise
@@ -322,6 +339,41 @@ class UPSMCPClient:
             if tool_name in {"rate_shipment", "validate_address"}:
                 return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
             raise
+
+    @staticmethod
+    def _is_safe_mutating_retry_error(error_text: str) -> bool:
+        """Return True only for strict transient upstream outage signatures.
+
+        This intentionally does NOT retry generic 5xx errors for mutating UPS
+        operations to avoid duplicate shipment side effects.
+        """
+        status_code = None
+        message = error_text
+        details_raw = ""
+
+        try:
+            payload = json.loads(error_text)
+            if isinstance(payload, dict):
+                status_code = payload.get("status_code")
+                message = str(payload.get("message", message))
+                details = payload.get("details", {})
+                if isinstance(details, dict):
+                    details_raw = str(details.get("raw", ""))
+        except (TypeError, json.JSONDecodeError):
+            pass
+
+        combined = f"{message} {details_raw} {error_text}".lower()
+        has_503 = (
+            status_code == 503
+            or '"status_code": 503' in combined
+            or "http 503" in combined
+            or "503" in combined
+        )
+        has_gateway_signature = (
+            "no healthy upstream" in combined
+            or "upstream connect error" in combined
+        )
+        return has_503 and has_gateway_signature
 
     def _is_transport_error(self, error: Exception) -> bool:
         """Classify transport/session failures that warrant reconnect.
