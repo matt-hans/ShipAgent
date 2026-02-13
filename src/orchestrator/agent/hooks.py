@@ -51,12 +51,12 @@ async def validate_shipping_input(
     tool_use_id: str | None,
     context: Any,
 ) -> dict[str, Any]:
-    """Validate UPS shipping tool inputs before execution.
+    """Validate tool_input is a well-formed dict for create_shipment.
 
-    Validates:
-    - For `create_shipment`: Require shipper and shipTo fields
-    - Return denial with clear reason if missing required fields
-    - Return empty dict `{}` to allow operation
+    Business-field validation (shipper, shipTo, packages, etc.) is delegated
+    to UPS MCP preflight, which returns structured ToolError payloads with
+    a ``missing`` array when required fields are absent. This hook only
+    guards against structurally invalid inputs (non-dict types).
 
     Args:
         input_data: Contains 'tool_name' and 'tool_input' keys
@@ -74,40 +74,13 @@ async def validate_shipping_input(
 
     # Validate create_shipment tool (mcp__ups__create_shipment)
     if "create_shipment" in tool_name:
-        # Check for required shipper information
-        if not tool_input.get("shipper"):
+        # Only deny when tool_input is not a dict (e.g. None, str, list).
+        # Empty dicts and partial payloads are allowed — MCP preflight
+        # handles missing-field validation and returns actionable errors.
+        if not isinstance(tool_input, dict):
             return _deny_with_reason(
-                "Missing required shipper information. "
-                "The 'shipper' field must include name and address details."
-            )
-
-        # Check for required shipTo information
-        if not tool_input.get("shipTo"):
-            return _deny_with_reason(
-                "Missing required recipient information. "
-                "The 'shipTo' field must include name and address details."
-            )
-
-        # Validate shipper has minimum required fields
-        shipper = tool_input.get("shipper", {})
-        if not shipper.get("name"):
-            return _deny_with_reason(
-                "Missing shipper name. The 'shipper.name' field is required."
-            )
-        if not shipper.get("addressLine1"):
-            return _deny_with_reason(
-                "Missing shipper address. The 'shipper.addressLine1' field is required."
-            )
-
-        # Validate shipTo has minimum required fields
-        ship_to = tool_input.get("shipTo", {})
-        if not ship_to.get("name"):
-            return _deny_with_reason(
-                "Missing recipient name. The 'shipTo.name' field is required."
-            )
-        if not ship_to.get("addressLine1"):
-            return _deny_with_reason(
-                "Missing recipient address. The 'shipTo.addressLine1' field is required."
+                "Invalid tool_input: expected a dict, "
+                f"got {type(tool_input).__name__}."
             )
 
     return {}  # Allow operation

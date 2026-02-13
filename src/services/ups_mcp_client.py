@@ -37,6 +37,13 @@ def _ups_is_retryable(error_text: str) -> bool:
     Retries on rate limits, temporary unavailability, and transient
     network issues. Skips retry for validation/auth errors.
 
+    Note: MCP preflight codes (ELICITATION_UNSUPPORTED, INCOMPLETE_SHIPMENT,
+    MALFORMED_REQUEST, ELICITATION_DECLINED, ELICITATION_CANCELLED,
+    ELICITATION_INVALID_RESPONSE) intentionally do NOT match any pattern
+    below, so they are never auto-retried. E-4010 ``is_retryable=True`` in
+    the error registry is user-facing guidance only; runtime auto-retry is
+    disabled because ``create_shipment`` may have side effects.
+
     Args:
         error_text: Raw error text from the MCP tool response.
 
@@ -569,6 +576,10 @@ class UPSMCPClient:
     def _translate_error(self, error: MCPToolError) -> UPSServiceError:
         """Translate MCPToolError to UPSServiceError with ShipAgent E-code.
 
+        Builds a context dict from ``missing[]`` entries when present,
+        using ``prompt`` (plain-English label) with fallback to ``flat_key``.
+        Caps displayed fields at 8 with a "+N more" summary.
+
         Args:
             error: The MCPToolError to translate.
 
@@ -601,8 +612,37 @@ class UPSMCPClient:
         if not ups_message or ups_message == "Unknown error":
             ups_message = raw_str[:500]
 
+        # Build context from missing[] for E-2010 template placeholders
+        missing = error_data.get("missing", [])
+        if missing and isinstance(missing, list):
+            # Use prompt (plain-English) with fallback to flat_key
+            prompts = [
+                item.get("prompt") or item.get("flat_key", "unknown")
+                for item in missing
+                if isinstance(item, dict)
+            ]
+            # Display first 8, summarize rest
+            display_limit = 8
+            if len(prompts) > display_limit:
+                shown = ", ".join(prompts[:display_limit])
+                fields = f"{shown} (+{len(prompts) - display_limit} more)"
+            else:
+                fields = ", ".join(prompts)
+            context = {"count": str(len(prompts)), "fields": fields}
+        else:
+            # Fallback: prevent raw {count}/{fields} in rendered message
+            fallback_fields = (ups_message or "unspecified fields")[:200]
+            context = {"count": "0", "fields": fallback_fields}
+
+        # Log rare server-side conflict at warning level
+        if ups_code == "ELICITATION_INVALID_RESPONSE":
+            logger.warning(
+                "Elicitation integration conflict for create_shipment: %s",
+                ups_message[:200],
+            )
+
         sa_code, sa_message, remediation = translate_ups_error(
-            ups_code, ups_message,
+            ups_code, ups_message, context=context,
         )
 
         return UPSServiceError(

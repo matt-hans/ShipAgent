@@ -34,6 +34,13 @@ UPS_ERROR_MAP: dict[str, str] = {
     "190001": "E-3001",  # System unavailable
     "190002": "E-3001",  # Service temporarily unavailable
     "190100": "E-3002",  # Rate limit exceeded
+    # MCP preflight validation errors
+    "ELICITATION_UNSUPPORTED": "E-2010",
+    "INCOMPLETE_SHIPMENT": "E-2010",
+    "MALFORMED_REQUEST": "E-2011",
+    "ELICITATION_DECLINED": "E-2012",
+    "ELICITATION_CANCELLED": "E-2012",
+    "ELICITATION_INVALID_RESPONSE": "E-4010",
 }
 
 # Additional UPS error messages that require pattern matching
