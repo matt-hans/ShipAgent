@@ -199,6 +199,14 @@ class TestMCPClientLifecycle:
         assert mock_stdio.call_count == 2
         assert MockSession.call_count == 2
 
+    @pytest.mark.asyncio
+    async def test_is_connected_reflects_session_state(self):
+        """is_connected mirrors session lifecycle."""
+        client = MCPClient(_make_server_params())
+        assert client.is_connected is False
+        client._session = AsyncMock()
+        assert client.is_connected is True
+
 
 # ---------------------------------------------------------------------------
 # call_tool tests
@@ -332,6 +340,35 @@ class TestMCPClientCallTool:
         result = await client.call_tool("test_tool", {})
         assert result == {"ok": True}
         assert mock_session.call_tool.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_per_call_retry_overrides_take_precedence(self):
+        """Per-call retry args override client defaults."""
+        error_result = _make_call_result("503 Service Unavailable", is_error=True)
+        success_result = _make_call_result(json.dumps({"ok": True}))
+
+        mock_session = AsyncMock()
+        mock_session.call_tool = AsyncMock(
+            side_effect=[error_result, success_result],
+        )
+
+        client = MCPClient(
+            _make_server_params(),
+            max_retries=0,
+            base_delay=1.0,
+        )
+        client._session = mock_session
+
+        result = await client.call_tool(
+            "test_tool",
+            {},
+            max_retries=1,
+            base_delay=0.01,
+        )
+
+        assert result == {"ok": True}
+        assert mock_session.call_tool.call_count == 2
+        assert client.retry_attempts_total == 1
 
 
 # ---------------------------------------------------------------------------

@@ -48,7 +48,7 @@ class BatchEngine:
         _account_number: UPS account number for billing
     """
 
-    MAX_PREVIEW_ROWS = 20
+    DEFAULT_PREVIEW_MAX_ROWS = 50
 
     def __init__(
         self,
@@ -81,8 +81,8 @@ class BatchEngine:
     ) -> dict[str, Any]:
         """Generate preview with cost estimates.
 
-        Rates up to MAX_PREVIEW_ROWS concurrently (bounded by semaphore),
-        estimates the rest from the average cost.
+        Rates up to BATCH_PREVIEW_MAX_ROWS concurrently (bounded by semaphore),
+        estimates the rest from the average cost when capped.
 
         Args:
             job_id: Job UUID for tracking
@@ -93,6 +93,7 @@ class BatchEngine:
         Returns:
             Dict with total_estimated_cost_cents, preview_rows, etc.
         """
+        started_at = datetime.now(UTC)
         # Use same concurrency setting as execute for consistent performance
         max_concurrent = int(os.environ.get("BATCH_CONCURRENCY", "5"))
         semaphore = asyncio.Semaphore(max_concurrent)
@@ -100,10 +101,12 @@ class BatchEngine:
         preview_rows: list[dict[str, Any]] = []
         total_cost_cents = 0
         rows_lock = asyncio.Lock()
+        row_durations: list[float] = []
 
         async def _rate_row(row: Any) -> None:
             """Rate a single row with concurrency control."""
             nonlocal total_cost_cents
+            row_started = datetime.now(UTC)
 
             async with semaphore:
                 order_data = self._parse_order_data(row)
@@ -125,6 +128,9 @@ class BatchEngine:
                     logger.warning("Rate quote failed for row %s: %s", row.row_number, e)
                     cost_cents = 0
                     rate_error = str(e)
+                finally:
+                    row_elapsed = (datetime.now(UTC) - row_started).total_seconds()
+                    row_durations.append(row_elapsed)
 
                 # Serialize row list append and cost accumulation
                 async with rows_lock:
@@ -141,8 +147,16 @@ class BatchEngine:
                         row_info["rate_error"] = rate_error
                     preview_rows.append(row_info)
 
-        # Rate first N rows concurrently
-        rows_to_rate = rows[: self.MAX_PREVIEW_ROWS]
+        try:
+            preview_cap = int(
+                os.environ.get(
+                    "BATCH_PREVIEW_MAX_ROWS",
+                    str(self.DEFAULT_PREVIEW_MAX_ROWS),
+                ),
+            )
+        except ValueError:
+            preview_cap = self.DEFAULT_PREVIEW_MAX_ROWS
+        rows_to_rate = rows if preview_cap <= 0 else rows[:preview_cap]
         await asyncio.gather(*[_rate_row(row) for row in rows_to_rate])
 
         # Sort preview rows by row_number for consistent ordering
@@ -155,6 +169,26 @@ class BatchEngine:
             total_estimated_cost_cents = total_cost_cents + int(avg_cost * additional_rows)
         else:
             total_estimated_cost_cents = total_cost_cents
+
+        total_elapsed = (datetime.now(UTC) - started_at).total_seconds()
+        avg_row = (sum(row_durations) / len(row_durations)) if row_durations else 0.0
+        p95_row = 0.0
+        if row_durations:
+            ordered = sorted(row_durations)
+            idx = min(len(ordered) - 1, max(0, int(len(ordered) * 0.95) - 1))
+            p95_row = ordered[idx]
+        logger.info(
+            "Batch preview timing: job_id=%s rows_total=%d rows_rated=%d "
+            "concurrency=%d preview_cap=%d total=%.2fs avg_row=%.2fs p95_row=%.2fs",
+            job_id,
+            len(rows),
+            len(preview_rows),
+            max_concurrent,
+            preview_cap,
+            total_elapsed,
+            avg_row,
+            p95_row,
+        )
 
         return {
             "job_id": job_id,

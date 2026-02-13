@@ -20,6 +20,7 @@ from mcp import StdioServerParameters
 from src.errors.ups_translation import translate_ups_error
 from src.services.errors import UPSServiceError
 from src.services.mcp_client import MCPClient, MCPConnectionError, MCPToolError
+from src.services.ups_specs import ensure_ups_specs_dir
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,7 @@ class UPSMCPClient:
             base_delay=1.0,
             is_retryable=_ups_is_retryable,
         )
+        self._reconnect_count = 0
 
     def _build_server_params(self) -> StdioServerParameters:
         """Build StdioServerParameters for the UPS MCP server.
@@ -100,6 +102,7 @@ class UPSMCPClient:
         Returns:
             Configured StdioServerParameters.
         """
+        specs_dir = ensure_ups_specs_dir()
         return StdioServerParameters(
             command=_VENV_PYTHON,
             args=["-m", "ups_mcp"],
@@ -107,6 +110,7 @@ class UPSMCPClient:
                 "CLIENT_ID": self._client_id,
                 "CLIENT_SECRET": self._client_secret,
                 "ENVIRONMENT": self._environment,
+                "UPS_MCP_SPECS_DIR": specs_dir,
                 "PATH": os.environ.get("PATH", ""),
             },
         )
@@ -135,12 +139,33 @@ class UPSMCPClient:
 
     async def connect(self) -> None:
         """Connect to UPS MCP if disconnected."""
+        connected = getattr(self._mcp, "is_connected", False)
+        if isinstance(connected, bool) and connected:
+            return
         await self._mcp.connect()
         logger.info("UPS MCP client connected (env=%s)", self._environment)
 
     async def disconnect(self) -> None:
         """Disconnect from UPS MCP."""
         await self._mcp.disconnect()
+
+    @property
+    def is_connected(self) -> bool:
+        """Whether the underlying MCP session is connected."""
+        connected = getattr(self._mcp, "is_connected", False)
+        if isinstance(connected, bool):
+            return connected
+        return getattr(self._mcp, "_session", None) is not None
+
+    @property
+    def reconnect_count(self) -> int:
+        """Number of reconnects performed after transport failures."""
+        return self._reconnect_count
+
+    @property
+    def retry_attempts_total(self) -> int:
+        """Total MCP retry attempts across tool calls."""
+        return self._mcp.retry_attempts_total
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -266,13 +291,20 @@ class UPSMCPClient:
             MCPToolError: On tool error.
             RuntimeError: If client not connected.
         """
-        if getattr(self._mcp, "_session", None) is None:
+        if not self.is_connected:
             raise RuntimeError(
                 "UPSMCPClient not connected. Use 'async with UPSMCPClient(...)' context."
             )
 
+        # Faster retries for non-mutating requests. Mutating operations
+        # intentionally avoid tool-level retries to prevent side effects.
+        if tool_name in {"rate_shipment", "validate_address", "track_package"}:
+            retry_kwargs = {"max_retries": 2, "base_delay": 0.2}
+        else:
+            retry_kwargs = {"max_retries": 0, "base_delay": 1.0}
+
         try:
-            return await self._mcp.call_tool(tool_name, arguments)
+            return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
         except Exception as e:
             if not self._is_transport_error(e):
                 raise
@@ -282,12 +314,13 @@ class UPSMCPClient:
                 tool_name,
                 e,
             )
+            self._reconnect_count += 1
             await self.disconnect()
             await self.connect()
 
             # Replay only non-mutating operations after reconnect.
             if tool_name in {"rate_shipment", "validate_address"}:
-                return await self._mcp.call_tool(tool_name, arguments)
+                return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
             raise
 
     def _is_transport_error(self, error: Exception) -> bool:

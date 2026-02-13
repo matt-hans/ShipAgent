@@ -20,6 +20,7 @@ import logging
 import os
 from collections.abc import Callable
 from typing import Any
+from uuid import uuid4
 
 import sqlglot
 
@@ -41,6 +42,12 @@ logger = logging.getLogger(__name__)
 # Per-session locking in conversations.py ensures only one message
 # processes at a time, making this safe for concurrent sessions.
 _event_emitter_callback: Callable[[str, dict], None] | None = None
+
+# Cache fetched row sets so the agent can pass compact fetch_id values
+# between tools instead of large row arrays through model context.
+_fetched_rows_cache: dict[str, list[dict[str, Any]]] = {}
+_fetched_rows_order: list[str] = []
+_MAX_FETCH_CACHE_ENTRIES = 20
 
 
 def set_event_emitter(callback: Callable[[str, dict], None] | None) -> None:
@@ -68,6 +75,26 @@ def _emit_event(event_type: str, data: dict[str, Any]) -> None:
     """
     if _event_emitter_callback is not None:
         _event_emitter_callback(event_type, data)
+
+
+def _store_fetched_rows(rows: list[dict[str, Any]]) -> str:
+    """Store fetched rows in an in-memory cache and return a fetch_id."""
+    fetch_id = str(uuid4())
+    _fetched_rows_cache[fetch_id] = rows
+    _fetched_rows_order.append(fetch_id)
+
+    while len(_fetched_rows_order) > _MAX_FETCH_CACHE_ENTRIES:
+        oldest = _fetched_rows_order.pop(0)
+        _fetched_rows_cache.pop(oldest, None)
+    return fetch_id
+
+
+def _consume_fetched_rows(fetch_id: str) -> list[dict[str, Any]] | None:
+    """Get and remove cached rows for a fetch_id."""
+    rows = _fetched_rows_cache.pop(fetch_id, None)
+    if fetch_id in _fetched_rows_order:
+        _fetched_rows_order.remove(fetch_id)
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +141,20 @@ def _get_data_source_service() -> DataSourceService:
     return DataSourceService.get_instance()
 
 
+def _build_job_row_data(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert source rows into JobRow create payload with checksums."""
+    row_data = []
+    for i, row in enumerate(rows, start=1):
+        row_json = json.dumps(row, sort_keys=True, default=str)
+        checksum = hashlib.md5(row_json.encode()).hexdigest()
+        row_data.append({
+            "row_number": i,
+            "row_checksum": checksum,
+            "order_data": row_json,
+        })
+    return row_data
+
+
 # ---------------------------------------------------------------------------
 # Shared UPS MCP Client (module-level cache)
 # ---------------------------------------------------------------------------
@@ -142,11 +183,15 @@ async def _get_ups_client() -> Any:
     global _ups_client
 
     if _ups_client is not None:
-        await _ups_client.connect()
-        return _ups_client
+        connected = getattr(_ups_client, "is_connected", False)
+        if isinstance(connected, bool) and connected:
+            return _ups_client
 
     async with _ups_client_lock:
         if _ups_client is not None:
+            connected = getattr(_ups_client, "is_connected", False)
+            if isinstance(connected, bool) and connected:
+                return _ups_client
             await _ups_client.connect()
             return _ups_client
         client = _build_ups_client()
@@ -235,10 +280,20 @@ async def fetch_rows_tool(args: dict[str, Any]) -> dict[str, Any]:
     svc = _get_data_source_service()
     where_clause = args.get("where_clause")
     limit = args.get("limit", 250)
+    include_rows = bool(args.get("include_rows", False))
 
     try:
         rows = await svc.get_rows_by_filter(where_clause=where_clause, limit=limit)
-        return _ok({"row_count": len(rows), "rows": rows})
+        fetch_id = _store_fetched_rows(rows)
+        payload: dict[str, Any] = {
+            "fetch_id": fetch_id,
+            "row_count": len(rows),
+            "sample_rows": rows[:2],
+            "message": "Use fetch_id with add_rows_to_job. Avoid passing full rows through the model.",
+        }
+        if include_rows:
+            payload["rows"] = rows
+        return _ok(payload)
     except Exception as e:
         logger.error("fetch_rows_tool failed: %s", e)
         return _err(f"Failed to fetch rows: {e}")
@@ -306,28 +361,26 @@ async def add_rows_to_job_tool(args: dict[str, Any]) -> dict[str, Any]:
         Tool response with rows_added count.
     """
     job_id = args.get("job_id", "")
+    fetch_id = args.get("fetch_id", "")
     rows = args.get("rows", [])
 
     if not job_id:
         return _err("job_id is required")
+    if fetch_id:
+        cached_rows = _consume_fetched_rows(fetch_id)
+        if cached_rows is None:
+            return _err(
+                "fetch_id not found or expired. Re-run fetch_rows and pass the new fetch_id.",
+            )
+        rows = cached_rows
+
     if not rows:
-        return _err("rows list is required and must not be empty")
+        return _err("Either fetch_id or non-empty rows list is required")
 
     try:
         with get_db_context() as db:
             svc = JobService(db)
-
-            row_data = []
-            for i, row in enumerate(rows, start=1):
-                # Generate checksum from row content for crash recovery
-                row_json = json.dumps(row, sort_keys=True, default=str)
-                checksum = hashlib.md5(row_json.encode()).hexdigest()
-
-                row_data.append({
-                    "row_number": i,
-                    "row_checksum": checksum,
-                    "order_data": row_json,
-                })
+            row_data = _build_job_row_data(rows)
 
             created = svc.create_rows(job_id, row_data)
             return _ok({
@@ -417,6 +470,26 @@ SERVICE_CODE_NAMES: dict[str, str] = {
 }
 
 
+def _enrich_preview_rows_from_map(
+    preview_rows: list[dict[str, Any]],
+    row_map: dict[int, dict[str, Any]],
+) -> list[dict]:
+    """Normalize preview rows using an in-memory row_number -> order_data map."""
+    for row in preview_rows:
+        od = row_map.get(row.get("row_number", -1), {})
+        row["service"] = SERVICE_CODE_NAMES.get(
+            od.get("service_code", "03"), "UPS Ground",
+        )
+        row["order_data"] = od
+        # Normalize rate_error -> warnings array.
+        rate_error = row.pop("rate_error", None)
+        if rate_error:
+            row["warnings"] = [rate_error]
+        elif "warnings" not in row:
+            row["warnings"] = []
+    return preview_rows
+
+
 def _enrich_preview_rows(job_id: str, preview_rows: list[dict]) -> list[dict]:
     """Normalize preview rows for the frontend BatchPreview type.
 
@@ -440,20 +513,108 @@ def _enrich_preview_rows(job_id: str, preview_rows: list[dict]) -> list[dict]:
                 except (json.JSONDecodeError, TypeError):
                     pass
 
-    for row in preview_rows:
-        od = row_map.get(row.get("row_number", -1), {})
-        row["service"] = SERVICE_CODE_NAMES.get(
-            od.get("service_code", "03"), "UPS Ground"
-        )
-        row["order_data"] = od
-        # Normalize rate_error → warnings array
-        rate_error = row.pop("rate_error", None)
-        if rate_error:
-            row["warnings"] = [rate_error]
-        elif "warnings" not in row:
-            row["warnings"] = []
+    return _enrich_preview_rows_from_map(preview_rows, row_map)
 
-    return preview_rows
+
+async def ship_command_pipeline_tool(args: dict[str, Any]) -> dict[str, Any]:
+    """Fast-path pipeline for straightforward shipping commands.
+
+    Performs fetch -> create job -> add rows -> preview in one tool call.
+    """
+    command = str(args.get("command", "")).strip()
+    if not command:
+        return _err("command is required")
+
+    where_clause = args.get("where_clause")
+    limit = int(args.get("limit", 250))
+    job_name = str(args.get("job_name") or command or "Shipping Job")
+    service_code = args.get("service_code")
+    if not service_code:
+        logger.warning(
+            "ship_command_pipeline called without service_code; defaulting to 03",
+        )
+        service_code = "03"
+
+    source_service = _get_data_source_service()
+    try:
+        fetched_rows = await source_service.get_rows_by_filter(
+            where_clause=where_clause,
+            limit=limit,
+        )
+    except Exception as e:
+        logger.error("ship_command_pipeline fetch failed: %s", e)
+        return _err(f"Failed to fetch rows: {e}")
+
+    if not fetched_rows:
+        return _err("No rows matched the provided filter.")
+
+    from src.services.batch_engine import BatchEngine
+    from src.services.ups_payload_builder import build_shipper_from_env
+
+    account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
+    shipper = build_shipper_from_env()
+    ups = await _get_ups_client()
+
+    try:
+        with get_db_context() as db:
+            job_service = JobService(db)
+            job = job_service.create_job(name=job_name, original_command=command)
+            try:
+                job_service.create_rows(job.id, _build_job_row_data(fetched_rows))
+            except Exception as e:
+                # Cleanup orphan job when rows fail to persist.
+                try:
+                    job_service.delete_job(job.id)
+                except Exception as cleanup_err:
+                    logger.warning(
+                        "ship_command_pipeline cleanup failed for job %s: %s",
+                        job.id,
+                        cleanup_err,
+                    )
+                logger.error("ship_command_pipeline create_rows failed: %s", e)
+                return _err(f"Failed to add rows to job: {e}")
+
+            engine = BatchEngine(
+                ups_service=ups,
+                db_session=db,
+                account_number=account_number,
+            )
+            db_rows = job_service.get_rows(job.id)
+            try:
+                result = await engine.preview(
+                    job_id=job.id,
+                    rows=db_rows,
+                    shipper=shipper,
+                    service_code=service_code,
+                )
+            except Exception as e:
+                logger.error("ship_command_pipeline preview failed for %s: %s", job.id, e)
+                return _err(f"Preview failed for job {job.id}: {e}")
+    except Exception as e:
+        logger.error("ship_command_pipeline create_job failed: %s", e)
+        return _err(f"Failed to create job: {e}")
+
+    preview_rows = result.get("preview_rows", [])
+    row_map = {i: row for i, row in enumerate(fetched_rows, start=1)}
+    _enrich_preview_rows_from_map(preview_rows, row_map)
+    rows_with_warnings = sum(1 for row in preview_rows if row.get("warnings"))
+    result["rows_with_warnings"] = rows_with_warnings
+
+    # IMPORTANT: Emit full payload to frontend before returning slim LLM payload.
+    _emit_event("preview_ready", result)
+
+    return _ok({
+        "status": "preview_ready",
+        "job_id": result.get("job_id"),
+        "total_rows": result.get("total_rows", 0),
+        "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
+        "rows_with_warnings": rows_with_warnings,
+        "message": (
+            "Preview card has been displayed to the user. STOP HERE. "
+            "Respond with one brief sentence asking the user to review "
+            "the preview and click Confirm or Cancel."
+        ),
+    })
 
 
 async def batch_preview_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -643,8 +804,51 @@ def get_all_tool_definitions() -> list[dict[str, Any]]:
             "handler": get_schema_tool,
         },
         {
+            "name": "ship_command_pipeline",
+            "description": (
+                "Fast shipping pipeline for straightforward commands. "
+                "This tool fetches rows, creates a job, stores rows, and "
+                "generates the preview in one call."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "where_clause": {
+                        "type": "string",
+                        "description": (
+                            "Optional SQL WHERE clause without the 'WHERE' keyword. "
+                            "Omit to ship all rows."
+                        ),
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Original user shipping command.",
+                    },
+                    "job_name": {
+                        "type": "string",
+                        "description": "Optional human-readable job name.",
+                    },
+                    "service_code": {
+                        "type": "string",
+                        "description": "Optional UPS service code (e.g., 03 for Ground).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max rows to fetch (default 250).",
+                        "default": 250,
+                    },
+                },
+                "required": ["command"],
+            },
+            "handler": ship_command_pipeline_tool,
+        },
+        {
             "name": "fetch_rows",
-            "description": "Fetch rows from the data source, optionally filtered by a SQL WHERE clause.",
+            "description": (
+                "Fetch rows from the data source and return a compact fetch_id "
+                "reference for downstream tools. Avoid sending full row arrays "
+                "through model context unless explicitly needed."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -656,6 +860,14 @@ def get_all_tool_definitions() -> list[dict[str, Any]]:
                         "type": "integer",
                         "description": "Max rows to return (default 250).",
                         "default": 250,
+                    },
+                    "include_rows": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true only when full row objects are strictly "
+                            "needed in the response. Default false for speed."
+                        ),
+                        "default": False,
                     },
                 },
             },
@@ -699,7 +911,8 @@ def get_all_tool_definitions() -> list[dict[str, Any]]:
             "name": "add_rows_to_job",
             "description": (
                 "Add fetched rows to a job. Call this AFTER create_job and "
-                "BEFORE batch_preview. Pass the rows array from fetch_rows."
+                "BEFORE batch_preview. Prefer passing fetch_id from fetch_rows "
+                "instead of full rows for faster execution."
             ),
             "input_schema": {
                 "type": "object",
@@ -710,11 +923,19 @@ def get_all_tool_definitions() -> list[dict[str, Any]]:
                     },
                     "rows": {
                         "type": "array",
-                        "description": "Array of row objects from fetch_rows result.",
+                        "description": (
+                            "Optional full row array from fetch_rows. Prefer fetch_id."
+                        ),
                         "items": {"type": "object"},
                     },
+                    "fetch_id": {
+                        "type": "string",
+                        "description": (
+                            "Preferred compact reference returned by fetch_rows."
+                        ),
+                    },
                 },
-                "required": ["job_id", "rows"],
+                "required": ["job_id"],
             },
             "handler": add_rows_to_job_tool,
         },

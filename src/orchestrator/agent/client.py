@@ -132,6 +132,7 @@ class OrchestrationAgent:
         self._options = self._create_options(max_turns, permission_mode)
         self._client: Optional[ClaudeSDKClient] = None
         self._started = False
+        self._last_turn_count = 0
 
     def _create_options(
         self, max_turns: int, permission_mode: str
@@ -273,6 +274,7 @@ class OrchestrationAgent:
 
         try:
             await self._client.query(user_input)
+            assistant_turn_count = 0
 
             # Track whether we received StreamEvents for text (to avoid
             # duplicate emission from AssistantMessage TextBlocks)
@@ -329,6 +331,7 @@ class OrchestrationAgent:
 
                 # --- AssistantMessage: complete turn ---
                 elif isinstance(message, AssistantMessage):
+                    assistant_turn_count += 1
                     for block in message.content:
                         if isinstance(block, ToolUseBlock):
                             block_id = getattr(block, "id", None)
@@ -363,7 +366,10 @@ class OrchestrationAgent:
                         }
                     break
 
+            self._last_turn_count = assistant_turn_count
+
         except Exception as e:
+            self._last_turn_count = 0
             logger.error("process_message_stream error: %s", e)
             yield {
                 "event": "error",
@@ -414,6 +420,11 @@ class OrchestrationAgent:
     def is_started(self) -> bool:
         """Check if the agent is currently running."""
         return self._started
+
+    @property
+    def last_turn_count(self) -> int:
+        """Assistant turn count from the most recent streamed request."""
+        return self._last_turn_count
 
     async def __aenter__(self) -> "OrchestrationAgent":
         """Async context manager entry - start the agent."""
