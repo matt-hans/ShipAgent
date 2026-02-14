@@ -1,4 +1,4 @@
-"""Tests for deterministic SDK tools (tools_v2).
+"""Tests for deterministic SDK tools (tools/ package).
 
 Each tool wraps an existing service with a thin SDK-compatible interface.
 No tool calls the LLM internally — all are deterministic.

@@ -84,8 +84,8 @@ def _create_orchestrator_mcp_server(
 ) -> Any:
     """Create SDK MCP server for orchestrator-native tools.
 
-    Uses tools_v2 deterministic-only tools. Legacy tools (tools.py)
-    are fully deprecated and not registered.
+    Uses deterministic tools from the tools/ package (core, data, pipeline,
+    interactive). All tools are registered via get_all_tool_definitions().
 
     Returns:
         McpSdkServerConfig for ClaudeAgentOptions.mcp_servers.
