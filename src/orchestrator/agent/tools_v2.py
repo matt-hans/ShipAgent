@@ -34,7 +34,7 @@ from src.services.column_mapping import (
     translate_service_name,
     validate_mapping,
 )
-from src.services.data_source_service import DataSourceService
+from src.services.gateway_provider import get_data_gateway, get_external_sources_client
 from src.services.job_service import JobService
 
 logger = logging.getLogger(__name__)
@@ -139,18 +139,10 @@ def _err(message: str) -> dict[str, Any]:
     }
 
 
-def _get_data_source_service() -> DataSourceService:
-    """Get the singleton DataSourceService instance.
-
-    Returns:
-        The active DataSourceService.
-    """
-    return DataSourceService.get_instance()
-
-
-def _persist_job_source_signature(job_id: str, db: Any) -> None:
+async def _persist_job_source_signature(job_id: str, db: Any) -> None:
     """Persist source signature metadata for replay safety checks."""
-    signature = _get_data_source_service().get_source_signature()
+    gw = await get_data_gateway()
+    signature = await gw.get_source_signature()
     if signature is None:
         return
 
@@ -357,8 +349,8 @@ async def get_source_info_tool(args: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Tool response with source_type, file_path, row_count, column count.
     """
-    svc = _get_data_source_service()
-    info = svc.get_source_info()
+    gw = await get_data_gateway()
+    info = await gw.get_source_info()
     if info is None:
         return _err(
             "No data source connected. Ask the user to connect a CSV, Excel, or database source."
@@ -366,10 +358,10 @@ async def get_source_info_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     return _ok(
         {
-            "source_type": info.source_type,
-            "file_path": info.file_path,
-            "row_count": info.row_count,
-            "column_count": len(info.columns),
+            "source_type": info.get("source_type"),
+            "file_path": info.get("path"),
+            "row_count": info.get("row_count", 0),
+            "column_count": len(info.get("columns", [])),
         }
     )
 
@@ -383,14 +375,14 @@ async def get_schema_tool(args: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Tool response with list of column definitions.
     """
-    svc = _get_data_source_service()
-    info = svc.get_source_info()
+    gw = await get_data_gateway()
+    info = await gw.get_source_info()
     if info is None:
         return _err("No data source connected.")
 
     columns = [
-        {"name": col.name, "type": col.type, "nullable": col.nullable}
-        for col in info.columns
+        {"name": col["name"], "type": col["type"], "nullable": col.get("nullable", True)}
+        for col in info.get("columns", [])
     ]
     return _ok({"columns": columns})
 
@@ -407,13 +399,13 @@ async def fetch_rows_tool(
     Returns:
         Tool response with matched rows and count.
     """
-    svc = _get_data_source_service()
+    gw = await get_data_gateway()
     where_clause = args.get("where_clause")
     limit = args.get("limit", 250)
     include_rows = bool(args.get("include_rows", False))
 
     try:
-        rows = await svc.get_rows_by_filter(where_clause=where_clause, limit=limit)
+        rows = await gw.get_rows_by_filter(where_clause=where_clause, limit=limit)
         fetch_id = _store_fetched_rows(rows, bridge=bridge)
         payload: dict[str, Any] = {
             "fetch_id": fetch_id,
@@ -472,7 +464,7 @@ async def create_job_tool(args: dict[str, Any]) -> dict[str, Any]:
         with get_db_context() as db:
             svc = JobService(db)
             job = svc.create_job(name=name, original_command=command)
-            _persist_job_source_signature(job.id, db)
+            await _persist_job_source_signature(job.id, db)
             return _ok({"job_id": job.id, "status": job.status})
     except Exception as e:
         logger.error("create_job_tool failed: %s", e)
@@ -710,9 +702,9 @@ async def ship_command_pipeline_tool(
                 raw_service_code,
             )
 
-    source_service = _get_data_source_service()
+    gw = await get_data_gateway()
     try:
-        fetched_rows = await source_service.get_rows_by_filter(
+        fetched_rows = await gw.get_rows_by_filter(
             where_clause=where_clause,
             limit=limit,
         )
@@ -734,7 +726,7 @@ async def ship_command_pipeline_tool(
         with get_db_context() as db:
             job_service = JobService(db)
             job = job_service.create_job(name=job_name, original_command=command)
-            _persist_job_source_signature(job.id, db)
+            await _persist_job_source_signature(job.id, db)
             try:
                 job_service.create_rows(
                     job.id,
@@ -1184,25 +1176,23 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     platforms: dict[str, Any] = {}
 
-    # Report the authoritative data source status.
+    # Report the authoritative data source status via gateway.
     # Shopify connection is only meaningful when its data has been imported
-    # into the DataSourceService (DuckDB). Env vars alone are not sufficient
+    # into DuckDB via the gateway. Env vars alone are not sufficient
     # because the agent queries DuckDB, not the Shopify API directly.
     try:
-        from src.services.data_source_service import DataSourceService
-
-        svc = DataSourceService.get_instance()
-        source_info = svc.get_source_info()
+        gw = await get_data_gateway()
+        source_info = await gw.get_source_info()
         if source_info:
             platforms["data_source"] = {
                 "connected": True,
-                "source_type": source_info.source_type,
-                "label": source_info.file_path,
-                "row_count": source_info.row_count,
-                "column_count": len(source_info.columns),
+                "source_type": source_info.get("source_type"),
+                "label": source_info.get("path"),
+                "row_count": source_info.get("row_count", 0),
+                "column_count": len(source_info.get("columns", [])),
             }
             # Shopify is connected only if it is the active data source.
-            if source_info.source_type == "shopify":
+            if source_info.get("source_type") == "shopify":
                 store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN", "")
                 store_name = store_domain.replace(".myshopify.com", "")
                 platforms["shopify"] = {
@@ -1221,7 +1211,7 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
                 }
         else:
             platforms["data_source"] = {"connected": False}
-            # Check if Shopify is at least configured (will auto-import on first message)
+            # Check if Shopify is at least configured.
             access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
             store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
             platforms["shopify"] = {

@@ -186,30 +186,16 @@ class OrchestrationAgent:
         mcp_servers: dict[str, McpStdioServerConfig | Any] = {
             # In-process orchestrator tools (deterministic, no LLM calls)
             "orchestrator": orchestrator_mcp,
-            # NOTE: "external" MCP removed — its process-local state is
-            # not synchronized with the FastAPI backend's PlatformStateManager,
-            # causing "Platform not connected" errors. Shopify data flows
-            # through auto-import into DataSourceService (DuckDB) instead.
+            # NOTE: "external" and "data" MCP servers removed from agent.
+            # Data source access routes through DataSourceMCPClient singleton
+            # in gateway_provider. Agent tools call the gateway directly.
             "ups": ups_config,
         }
-
-        # Data MCP server only needed in batch mode — interactive mode
-        # uses UPS MCP directly for ad-hoc shipments.
-        if not self._interactive_shipping:
-            data_config: McpStdioServerConfig = {
-                "type": "stdio",
-                "command": mcp_configs["data"]["command"],
-                "args": mcp_configs["data"]["args"],
-                "env": mcp_configs["data"]["env"],
-            }
-            mcp_servers["data"] = data_config
 
         allowed_tools = [
             "mcp__orchestrator__*",
             "mcp__ups__*",
         ]
-        if not self._interactive_shipping:
-            allowed_tools.insert(1, "mcp__data__*")
 
         return ClaudeAgentOptions(
             system_prompt=self._system_prompt,

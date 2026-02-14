@@ -89,7 +89,7 @@ class TestAgentOptions:
         agent = OrchestrationAgent()
         options = agent._options
         assert options.mcp_servers is not None
-        assert len(options.mcp_servers) >= 3  # orchestrator, data, ups
+        assert len(options.mcp_servers) >= 2  # orchestrator, ups (data via gateway)
 
     def test_options_has_allowed_tools(self):
         """Options should configure allowed tools."""
@@ -104,11 +104,11 @@ class TestAgentOptions:
         options = agent._options
         assert options.hooks is not None
 
-    def test_has_data_mcp(self):
-        """Options should include Data MCP."""
+    def test_data_mcp_removed_from_agent(self):
+        """Data MCP server removed — gateway_provider owns the singleton."""
         agent = OrchestrationAgent()
         mcp_servers = agent._options.mcp_servers
-        assert "data" in mcp_servers
+        assert "data" not in mcp_servers
 
     def test_interactive_mode_omits_data_mcp(self):
         """Interactive mode should not register the data MCP server."""
@@ -132,13 +132,14 @@ class TestAgentOptions:
         """Allowed tools should include MCP wildcards."""
         agent = OrchestrationAgent()
         allowed = agent._options.allowed_tools
-        # Should have wildcards for each MCP namespace
+        # Should have wildcards for orchestrator and ups (data via gateway, not MCP)
         has_orchestrator = any("orchestrator" in t for t in allowed)
-        has_data = any("data" in t for t in allowed)
         has_ups = any("ups" in t for t in allowed)
         assert has_orchestrator
-        assert has_data
         assert has_ups
+        # Data namespace removed — gateway_provider handles data access
+        has_data = any("data" in t for t in allowed)
+        assert not has_data
 
     def test_interactive_mode_allowed_tools_omit_data_namespace(self):
         """Interactive mode should remove mcp__data__* from allowed tools."""

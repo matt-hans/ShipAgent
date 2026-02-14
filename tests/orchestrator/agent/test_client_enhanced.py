@@ -357,12 +357,13 @@ class TestBackwardCompatibility:
         assert asyncio.iscoroutinefunction(agent.process_command)
 
     def test_mcp_servers_still_configured(self):
-        """All MCP servers (data, ups, orchestrator) still present."""
+        """Core MCP servers (ups, orchestrator) still present; data via gateway."""
         agent = OrchestrationAgent()
         servers = agent._options.mcp_servers
-        assert "data" in servers
         assert "ups" in servers
         assert "orchestrator" in servers
+        # Data MCP removed from agent — gateway_provider owns the singleton
+        assert "data" not in servers
 
     def test_hooks_still_configured(self):
         """Pre/Post hooks still configured."""
