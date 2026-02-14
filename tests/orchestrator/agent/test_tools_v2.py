@@ -10,26 +10,30 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.orchestrator.agent.tools_v2 import (
+from src.orchestrator.agent.tools import get_all_tool_definitions
+from src.orchestrator.agent.tools.core import (
     EventEmitterBridge,
     _emit_event,
     _emit_preview_ready,
     _enrich_preview_rows,
     _get_ups_client,
     _reset_ups_client,
+    shutdown_cached_ups_client,
+)
+from src.orchestrator.agent.tools.data import (
+    fetch_rows_tool,
+    get_platform_status_tool,
+    get_schema_tool,
+    get_source_info_tool,
+    validate_filter_syntax_tool,
+)
+from src.orchestrator.agent.tools.pipeline import (
     add_rows_to_job_tool,
     batch_execute_tool,
     batch_preview_tool,
     create_job_tool,
-    fetch_rows_tool,
-    get_all_tool_definitions,
     get_job_status_tool,
-    get_platform_status_tool,
-    get_schema_tool,
-    get_source_info_tool,
     ship_command_pipeline_tool,
-    shutdown_cached_ups_client,
-    validate_filter_syntax_tool,
 )
 
 

@@ -159,7 +159,6 @@ src/
     ├── agent/                  # Claude Agent SDK integration (primary orchestration)
     │   ├── client.py           # OrchestrationAgent — SDK agent with streaming
     │   ├── system_prompt.py    # Unified system prompt builder (domain knowledge + tools)
-    │   ├── tools_v2.py         # Temporary barrel re-exporting from tools/ (removal target: 2026-03-14)
     │   ├── tools/              # Deterministic SDK tools (split by concern)
     │   │   ├── __init__.py     # Tool registry — get_all_tool_definitions()
     │   │   ├── core.py         # Shared internals (EventEmitterBridge, UPS client cache, helpers)
@@ -183,7 +182,6 @@ frontend/
 │   ├── components/
 │   │   ├── CommandCenter.tsx       # Main chat UI (messages, preview, progress, artifacts)
 │   │   ├── command-center/
-│   │   │   ├── presentation.tsx    # Barrel re-exporting split modules (removal target: 2026-03-14)
 │   │   │   ├── messages.tsx        # Message rendering (WelcomeMessage, ActiveSourceBanner, MessageBubble)
 │   │   │   ├── PreviewCard.tsx     # Shipment preview with expandable rows, cost estimates
 │   │   │   ├── ProgressDisplay.tsx # Live batch execution progress with per-row failures
@@ -193,7 +191,6 @@ frontend/
 │   │   ├── LabelPreview.tsx        # PDF label viewer modal (react-pdf)
 │   │   ├── RecentSourcesModal.tsx  # Saved sources browser (search, filter, reconnect, bulk delete)
 │   │   ├── sidebar/
-│   │   │   ├── panels.tsx          # Barrel re-exporting split modules (removal target: 2026-03-14)
 │   │   │   ├── DataSourcePanel.tsx # Data source switching, file upload, DB connection, Shopify
 │   │   │   ├── JobHistoryPanel.tsx # Job list with search, filters, delete, printer access
 │   │   │   └── dataSourceMappers.ts # Column-to-ColumnMetadata mapping helpers

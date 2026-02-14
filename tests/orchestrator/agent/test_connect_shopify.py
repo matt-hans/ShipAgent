@@ -28,7 +28,7 @@ async def test_connect_shopify_fetches_and_imports():
         gw.import_from_records.return_value = {"row_count": 1}
         mock_gw.return_value = gw
 
-        from src.orchestrator.agent.tools_v2 import connect_shopify_tool
+        from src.orchestrator.agent.tools.data import connect_shopify_tool
 
         result = await connect_shopify_tool(
             args={},
@@ -50,7 +50,7 @@ async def test_connect_shopify_fetches_and_imports():
 async def test_connect_shopify_missing_credentials():
     """connect_shopify returns error when env vars not set."""
     with patch.dict("os.environ", {}, clear=True):
-        from src.orchestrator.agent.tools_v2 import connect_shopify_tool
+        from src.orchestrator.agent.tools.data import connect_shopify_tool
 
         result = await connect_shopify_tool(args={}, bridge=None)
 
@@ -75,7 +75,7 @@ async def test_connect_shopify_connect_failure():
         }
         mock_ext.return_value = ext_client
 
-        from src.orchestrator.agent.tools_v2 import connect_shopify_tool
+        from src.orchestrator.agent.tools.data import connect_shopify_tool
 
         result = await connect_shopify_tool(args={}, bridge=None)
 
@@ -102,7 +102,7 @@ async def test_connect_shopify_no_orders():
         }
         mock_ext.return_value = ext_client
 
-        from src.orchestrator.agent.tools_v2 import connect_shopify_tool
+        from src.orchestrator.agent.tools.data import connect_shopify_tool
 
         result = await connect_shopify_tool(args={}, bridge=None)
 
@@ -112,7 +112,7 @@ async def test_connect_shopify_no_orders():
 
 def test_connect_shopify_registered_in_definitions():
     """connect_shopify is listed in get_all_tool_definitions()."""
-    from src.orchestrator.agent.tools_v2 import get_all_tool_definitions
+    from src.orchestrator.agent.tools import get_all_tool_definitions
 
     defs = get_all_tool_definitions()
     names = [d["name"] for d in defs]

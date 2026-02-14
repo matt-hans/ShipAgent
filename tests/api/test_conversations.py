@@ -210,13 +210,13 @@ async def test_shutdown_event_calls_cached_ups_cleanup():
     try:
         import importlib
 
-        tools_v2 = importlib.import_module("src.orchestrator.agent.tools_v2")
+        tools_core = importlib.import_module("src.orchestrator.agent.tools.core")
     except ModuleNotFoundError:
         pytest.skip("claude_agent_sdk not available in this test environment")
 
     from src.api.main import shutdown_event
 
-    with patch.object(tools_v2, "shutdown_cached_ups_client", new=AsyncMock()) as mock_shutdown:
+    with patch.object(tools_core, "shutdown_cached_ups_client", new=AsyncMock()) as mock_shutdown:
         await shutdown_event()
         mock_shutdown.assert_awaited_once()
 
