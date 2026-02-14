@@ -17,106 +17,19 @@ import { getMergedLabelsUrl } from '@/lib/api';
 import type { ConversationEvent } from '@/hooks/useConversation';
 import type { BatchPreview, PreviewRow, OrderData } from '@/types/api';
 import { Package } from 'lucide-react';
+import {
+  SendIcon, StopIcon, CheckIcon, XIcon, DownloadIcon, PackageIcon,
+  ChevronDownIcon, EditIcon, GearIcon, MapPinIcon, UserIcon,
+  ShoppingCartIcon, HardDriveIcon,
+} from '@/components/ui/icons';
+import { ShopifyIcon } from '@/components/ui/brand-icons';
 
-// Icons
-export function SendIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
-      <path d="M22 2L11 13" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M22 2L15 22L11 13L2 9L22 2Z" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function StopIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
-      <rect x="6" y="6" width="12" height="12" rx="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function CheckIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
-      <polyline points="20 6 9 17 4 12" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function XIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
-      <line x1="18" y1="6" x2="6" y2="18" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1="6" y1="6" x2="18" y2="18" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function DownloadIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
-      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" strokeLinecap="round" strokeLinejoin="round" />
-      <polyline points="7 10 12 15 17 10" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1="12" y1="15" x2="12" y2="3" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function PackageIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <path d="M16.5 9.4l-9-5.19" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" strokeLinecap="round" strokeLinejoin="round" />
-      <polyline points="3.27 6.96 12 12.01 20.73 6.96" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1="12" y1="22.08" x2="12" y2="12" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function ChevronDownIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
-      <polyline points="6 9 12 15 18 9" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function EditIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
-      <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function GearIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-export function MapPinIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="12" cy="10" r="3" />
-    </svg>
-  );
-}
-
-export function UserIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx="12" cy="7" r="4" />
-    </svg>
-  );
-}
+// Re-export icons that consumers import from this module
+export {
+  SendIcon, StopIcon, CheckIcon, XIcon, DownloadIcon, PackageIcon,
+  ChevronDownIcon, EditIcon, GearIcon, MapPinIcon, UserIcon,
+  ShoppingCartIcon,
+};
 
 // Format currency from cents
 export function formatCurrency(cents: number): string {
@@ -190,17 +103,6 @@ export function TypingIndicator() {
         </div>
       </div>
     </div>
-  );
-}
-
-// Shopping cart icon for customer
-export function ShoppingCartIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <circle cx="9" cy="21" r="1" />
-      <circle cx="20" cy="21" r="1" />
-      <path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
   );
 }
 
@@ -1161,35 +1063,9 @@ export function CompletionArtifact({ message, onViewLabels }: {
   );
 }
 
-// Icons for the active source banner
-export function BannerShopifyIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" className={className}>
-      <text
-        x="12"
-        y="17"
-        textAnchor="middle"
-        fontFamily="system-ui, -apple-system, sans-serif"
-        fontSize="18"
-        fontWeight="700"
-        fill="currentColor"
-      >
-        S
-      </text>
-    </svg>
-  );
-}
-
-export function BannerHardDriveIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <path d="M22 12H2" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1="6" y1="16" x2="6.01" y2="16" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1="10" y1="16" x2="10.01" y2="16" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
+// Banner icon aliases — ShopifyIcon and HardDriveIcon from shared library
+export { ShopifyIcon as BannerShopifyIcon };
+export { HardDriveIcon as BannerHardDriveIcon };
 
 /** Collapsible chip showing an agent tool call. */
 export function ToolCallChip({ event }: { event: ConversationEvent }) {
