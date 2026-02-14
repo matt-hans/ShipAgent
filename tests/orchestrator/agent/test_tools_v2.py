@@ -50,7 +50,7 @@ async def test_get_source_info_returns_metadata():
     }
 
     with patch(
-        "src.orchestrator.agent.tools_v2.get_data_gateway"
+        "src.orchestrator.agent.tools.data.get_data_gateway"
     ) as mock_gw_fn:
         mock_gw = AsyncMock()
         mock_gw.get_source_info.return_value = info_dict
@@ -68,7 +68,7 @@ async def test_get_source_info_returns_metadata():
 async def test_get_source_info_no_connection_returns_error():
     """Returns isError when no data source is connected."""
     with patch(
-        "src.orchestrator.agent.tools_v2.get_data_gateway"
+        "src.orchestrator.agent.tools.data.get_data_gateway"
     ) as mock_gw_fn:
         mock_gw = AsyncMock()
         mock_gw.get_source_info.return_value = None
@@ -93,7 +93,7 @@ async def test_get_schema_returns_columns():
     }
 
     with patch(
-        "src.orchestrator.agent.tools_v2.get_data_gateway"
+        "src.orchestrator.agent.tools.data.get_data_gateway"
     ) as mock_gw_fn:
         mock_gw = AsyncMock()
         mock_gw.get_source_info.return_value = info_dict
@@ -119,7 +119,7 @@ async def test_fetch_rows_with_valid_filter():
     bridge = EventEmitterBridge()
 
     with patch(
-        "src.orchestrator.agent.tools_v2.get_data_gateway"
+        "src.orchestrator.agent.tools.data.get_data_gateway"
     ) as mock_gw_fn:
         mock_gw = AsyncMock()
         mock_gw.get_rows_by_filter.return_value = rows
@@ -145,7 +145,7 @@ async def test_fetch_rows_include_rows_returns_full_payload():
     bridge = EventEmitterBridge()
 
     with patch(
-        "src.orchestrator.agent.tools_v2.get_data_gateway"
+        "src.orchestrator.agent.tools.data.get_data_gateway"
     ) as mock_gw_fn:
         mock_gw = AsyncMock()
         mock_gw.get_rows_by_filter.return_value = rows
@@ -172,7 +172,7 @@ async def test_add_rows_to_job_uses_fetch_id_cache():
     bridge = EventEmitterBridge()
 
     with patch(
-        "src.orchestrator.agent.tools_v2.get_data_gateway"
+        "src.orchestrator.agent.tools.data.get_data_gateway"
     ) as mock_gw_fn:
         mock_gw = AsyncMock()
         mock_gw.get_rows_by_filter.return_value = rows
@@ -185,12 +185,12 @@ async def test_add_rows_to_job_uses_fetch_id_cache():
     fetch_data = json.loads(fetch_res["content"][0]["text"])
     fetch_id = fetch_data["fetch_id"]
 
-    with patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx:
+    with patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx:
         mock_db = MagicMock()
         mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch("src.orchestrator.agent.tools_v2.JobService") as MockJS:
+        with patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS:
             MockJS.return_value.create_rows.return_value = [MagicMock()]
             result = await add_rows_to_job_tool(
                 {
@@ -223,12 +223,12 @@ async def test_add_rows_to_job_auto_maps_csv_columns_to_canonical_order_data():
 
     captured_row_data: list[dict[str, Any]] = []
 
-    with patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx:
+    with patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx:
         mock_db = MagicMock()
         mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch("src.orchestrator.agent.tools_v2.JobService") as MockJS:
+        with patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS:
 
             def _capture(job_id, row_data):
                 captured_row_data.extend(row_data)
@@ -290,9 +290,9 @@ async def test_create_job_returns_job_id():
     mock_job.status = "pending"
 
     with (
-        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
-        patch("src.orchestrator.agent.tools_v2._persist_job_source_signature", new=AsyncMock()),
-        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
     ):
         mock_db = MagicMock()
         mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
@@ -329,20 +329,20 @@ async def test_ship_command_pipeline_success_with_where_clause_none():
 
     with (
         patch(
-            "src.orchestrator.agent.tools_v2.get_data_gateway"
+            "src.orchestrator.agent.tools.pipeline.get_data_gateway"
         ) as mock_gw_fn,
         patch(
-            "src.orchestrator.agent.tools_v2._get_ups_client",
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
             new=AsyncMock(return_value=AsyncMock()),
         ),
-        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
-        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch("src.services.batch_engine.BatchEngine") as MockEngine,
         patch(
             "src.services.ups_payload_builder.build_shipper_from_env",
             return_value={"name": "Store"},
         ),
-        patch("src.orchestrator.agent.tools_v2._persist_job_source_signature", new=AsyncMock()),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
     ):
         mock_gw = AsyncMock()
         mock_gw.get_rows_by_filter.return_value = fetched_rows
@@ -390,20 +390,20 @@ async def test_ship_command_pipeline_applies_explicit_service_override_to_rows()
 
     with (
         patch(
-            "src.orchestrator.agent.tools_v2.get_data_gateway"
+            "src.orchestrator.agent.tools.pipeline.get_data_gateway"
         ) as mock_gw_fn,
         patch(
-            "src.orchestrator.agent.tools_v2._get_ups_client",
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
             new=AsyncMock(return_value=AsyncMock()),
         ),
-        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
-        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch("src.services.batch_engine.BatchEngine") as MockEngine,
         patch(
             "src.services.ups_payload_builder.build_shipper_from_env",
             return_value={"name": "Store"},
         ),
-        patch("src.orchestrator.agent.tools_v2._persist_job_source_signature", new=AsyncMock()),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
     ):
         mock_gw = AsyncMock()
         mock_gw.get_rows_by_filter.return_value = fetched_rows
@@ -461,20 +461,20 @@ async def test_ship_command_pipeline_ignores_implicit_service_code_default():
 
     with (
         patch(
-            "src.orchestrator.agent.tools_v2.get_data_gateway"
+            "src.orchestrator.agent.tools.pipeline.get_data_gateway"
         ) as mock_gw_fn,
         patch(
-            "src.orchestrator.agent.tools_v2._get_ups_client",
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
             new=AsyncMock(return_value=AsyncMock()),
         ),
-        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
-        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch("src.services.batch_engine.BatchEngine") as MockEngine,
         patch(
             "src.services.ups_payload_builder.build_shipper_from_env",
             return_value={"name": "Store"},
         ),
-        patch("src.orchestrator.agent.tools_v2._persist_job_source_signature", new=AsyncMock()),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
     ):
         mock_gw = AsyncMock()
         mock_gw.get_rows_by_filter.return_value = fetched_rows
@@ -521,19 +521,19 @@ async def test_ship_command_pipeline_create_rows_failure_deletes_job():
 
     with (
         patch(
-            "src.orchestrator.agent.tools_v2.get_data_gateway"
+            "src.orchestrator.agent.tools.pipeline.get_data_gateway"
         ) as mock_gw_fn,
         patch(
-            "src.orchestrator.agent.tools_v2._get_ups_client",
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
             new=AsyncMock(return_value=AsyncMock()),
         ),
-        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
-        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch(
             "src.services.ups_payload_builder.build_shipper_from_env",
             return_value={"name": "Store"},
         ),
-        patch("src.orchestrator.agent.tools_v2._persist_job_source_signature", new=AsyncMock()),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
     ):
         mock_gw = AsyncMock()
         mock_gw.get_rows_by_filter.return_value = fetched_rows
@@ -567,20 +567,20 @@ async def test_ship_command_pipeline_preview_failure_preserves_job_and_returns_j
 
     with (
         patch(
-            "src.orchestrator.agent.tools_v2.get_data_gateway"
+            "src.orchestrator.agent.tools.pipeline.get_data_gateway"
         ) as mock_gw_fn,
         patch(
-            "src.orchestrator.agent.tools_v2._get_ups_client",
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
             new=AsyncMock(return_value=AsyncMock()),
         ),
-        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
-        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch("src.services.batch_engine.BatchEngine") as MockEngine,
         patch(
             "src.services.ups_payload_builder.build_shipper_from_env",
             return_value={"name": "Store"},
         ),
-        patch("src.orchestrator.agent.tools_v2._persist_job_source_signature", new=AsyncMock()),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
     ):
         mock_gw = AsyncMock()
         mock_gw.get_rows_by_filter.return_value = fetched_rows
@@ -655,12 +655,12 @@ async def test_get_job_status_returns_summary():
         "status": "running",
     }
 
-    with patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx:
+    with patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx:
         mock_db = MagicMock()
         mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch("src.orchestrator.agent.tools_v2.JobService") as MockJS:
+        with patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS:
             MockJS.return_value.get_job_summary.return_value = summary
 
             result = await get_job_status_tool({"job_id": "test-job"})
@@ -685,7 +685,7 @@ async def test_batch_preview_returns_preview_data():
         "preview_rows": [],
     }
 
-    with patch("src.orchestrator.agent.tools_v2._run_batch_preview") as mock_preview:
+    with patch("src.orchestrator.agent.tools.pipeline._run_batch_preview") as mock_preview:
         mock_preview.return_value = preview_result
         result = await batch_preview_tool({"job_id": "test-job"})
 
@@ -711,11 +711,11 @@ async def test_batch_preview_uses_emit_preview_ready_helper():
 
     with (
         patch(
-            "src.orchestrator.agent.tools_v2._run_batch_preview",
+            "src.orchestrator.agent.tools.pipeline._run_batch_preview",
             new=AsyncMock(return_value=preview_result),
         ),
         patch(
-            "src.orchestrator.agent.tools_v2._emit_preview_ready",
+            "src.orchestrator.agent.tools.pipeline._emit_preview_ready",
             return_value={
                 "isError": False,
                 "content": [{"type": "text", "text": "{}"}],
@@ -741,27 +741,27 @@ async def test_ship_command_pipeline_uses_emit_preview_ready_helper():
 
     with (
         patch(
-            "src.orchestrator.agent.tools_v2.get_data_gateway"
+            "src.orchestrator.agent.tools.pipeline.get_data_gateway"
         ) as mock_gw_fn,
         patch(
-            "src.orchestrator.agent.tools_v2._get_ups_client",
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
             new=AsyncMock(return_value=AsyncMock()),
         ),
-        patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx,
-        patch("src.orchestrator.agent.tools_v2.JobService") as MockJS,
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch("src.services.batch_engine.BatchEngine") as MockEngine,
         patch(
             "src.services.ups_payload_builder.build_shipper_from_env",
             return_value={"name": "Store"},
         ),
         patch(
-            "src.orchestrator.agent.tools_v2._emit_preview_ready",
+            "src.orchestrator.agent.tools.pipeline._emit_preview_ready",
             return_value={
                 "isError": False,
                 "content": [{"type": "text", "text": "{}"}],
             },
         ) as mock_emit,
-        patch("src.orchestrator.agent.tools_v2._persist_job_source_signature", new=AsyncMock()),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
     ):
         mock_gw = AsyncMock()
         mock_gw.get_rows_by_filter.return_value = fetched_rows
@@ -793,7 +793,7 @@ async def test_ship_command_pipeline_uses_emit_preview_ready_helper():
 @pytest.mark.asyncio
 async def test_get_platform_status():
     """Returns connected platform statuses."""
-    with patch("src.orchestrator.agent.tools_v2.get_data_gateway") as mock_gw_fn:
+    with patch("src.orchestrator.agent.tools.data.get_data_gateway") as mock_gw_fn:
         mock_gw = AsyncMock()
         mock_gw.get_source_info.return_value = None
         mock_gw_fn.return_value = mock_gw
@@ -917,8 +917,8 @@ async def test_batch_preview_emits_preview_ready():
 
     bridge.callback = callback
     with (
-        patch("src.orchestrator.agent.tools_v2._run_batch_preview") as mock_preview,
-        patch("src.orchestrator.agent.tools_v2._enrich_preview_rows") as mock_enrich,
+        patch("src.orchestrator.agent.tools.pipeline._run_batch_preview") as mock_preview,
+        patch("src.orchestrator.agent.tools.pipeline._enrich_preview_rows") as mock_enrich,
     ):
         mock_preview.return_value = preview_result
         # _enrich_preview_rows modifies rows in place; simulate no-op
@@ -956,11 +956,11 @@ async def test_batch_preview_emits_before_ok_return():
 
     with (
         patch(
-            "src.orchestrator.agent.tools_v2._run_batch_preview",
+            "src.orchestrator.agent.tools.pipeline._run_batch_preview",
             new=AsyncMock(return_value=preview_result),
         ),
         patch(
-            "src.orchestrator.agent.tools_v2._enrich_preview_rows",
+            "src.orchestrator.agent.tools.pipeline._enrich_preview_rows",
             return_value=preview_result["preview_rows"],
         ),
         patch("src.orchestrator.agent.tools.core._emit_event", side_effect=_capture_emit),
@@ -998,7 +998,7 @@ async def test_fetch_cache_isolated_between_bridges():
     bridge_b = EventEmitterBridge()
 
     with patch(
-        "src.orchestrator.agent.tools_v2.get_data_gateway"
+        "src.orchestrator.agent.tools.data.get_data_gateway"
     ) as mock_gw_fn:
         mock_gw = AsyncMock()
         mock_gw.get_rows_by_filter.return_value = rows

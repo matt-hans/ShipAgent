@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 async def test_connect_shopify_fetches_and_imports():
     """connect_shopify tool should connect platform, fetch orders, import via gateway."""
     with (
-        patch("src.orchestrator.agent.tools_v2.get_external_sources_client") as mock_ext,
-        patch("src.orchestrator.agent.tools_v2.get_data_gateway") as mock_gw,
+        patch("src.orchestrator.agent.tools.data.get_external_sources_client") as mock_ext,
+        patch("src.orchestrator.agent.tools.data.get_data_gateway") as mock_gw,
         patch.dict("os.environ", {
             "SHOPIFY_ACCESS_TOKEN": "shpat_test",
             "SHOPIFY_STORE_DOMAIN": "test.myshopify.com",
@@ -62,7 +62,7 @@ async def test_connect_shopify_missing_credentials():
 async def test_connect_shopify_connect_failure():
     """connect_shopify returns error when platform connect fails."""
     with (
-        patch("src.orchestrator.agent.tools_v2.get_external_sources_client") as mock_ext,
+        patch("src.orchestrator.agent.tools.data.get_external_sources_client") as mock_ext,
         patch.dict("os.environ", {
             "SHOPIFY_ACCESS_TOKEN": "shpat_test",
             "SHOPIFY_STORE_DOMAIN": "test.myshopify.com",
@@ -87,7 +87,7 @@ async def test_connect_shopify_connect_failure():
 async def test_connect_shopify_no_orders():
     """connect_shopify returns error when no orders found."""
     with (
-        patch("src.orchestrator.agent.tools_v2.get_external_sources_client") as mock_ext,
+        patch("src.orchestrator.agent.tools.data.get_external_sources_client") as mock_ext,
         patch.dict("os.environ", {
             "SHOPIFY_ACCESS_TOKEN": "shpat_test",
             "SHOPIFY_STORE_DOMAIN": "test.myshopify.com",
