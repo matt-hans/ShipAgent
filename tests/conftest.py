@@ -195,6 +195,6 @@ def data_mcp_config() -> dict:
 
 @pytest.fixture
 def shopify_mcp_config() -> dict:
-    """Get Shopify MCP configuration for testing."""
-    from src.orchestrator.agent.config import get_shopify_mcp_config
-    return get_shopify_mcp_config()
+    """Get External Sources MCP configuration for testing."""
+    from src.orchestrator.agent.config import get_external_sources_mcp_config
+    return get_external_sources_mcp_config()

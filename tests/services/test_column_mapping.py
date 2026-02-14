@@ -222,7 +222,7 @@ class TestAutoMapColumns:
 class TestNormalizeRowsEndToEnd:
     """End-to-end test of auto_map + apply_mapping with data from all sources.
 
-    Mirrors what _normalize_rows_for_shipping does in tools_v2 without
+    Mirrors what _normalize_rows_for_shipping does in tools/core.py without
     importing the SDK-dependent module.
     """
 
