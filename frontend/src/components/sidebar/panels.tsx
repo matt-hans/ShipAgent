@@ -12,7 +12,7 @@ import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
-import { getJobs, deleteJob, connectPlatform, disconnectDataSource, importDataSource, uploadDataSource, getMergedLabelsUrl, getSavedDataSources, reconnectSavedSource } from '@/lib/api';
+import { getJobs, deleteJob, disconnectDataSource, importDataSource, uploadDataSource, getMergedLabelsUrl, getSavedDataSources, reconnectSavedSource } from '@/lib/api';
 import type { Job, JobSummary, DataSourceInfo, PlatformType } from '@/types/api';
 import { RecentSourcesModal } from '@/components/RecentSourcesModal';
 import { toDataSourceColumns } from '@/components/sidebar/dataSourceMappers';
@@ -160,7 +160,7 @@ export function DataSourceSection() {
     setActiveSourceInfo,
     cachedLocalConfig, setCachedLocalConfig,
   } = useAppState();
-  const { state: externalState } = useExternalSources();
+  const { state: externalState, connect: connectExternal } = useExternalSources();
   const [isConnecting, setIsConnecting] = React.useState(false);
   const [showShopifyForm, setShowShopifyForm] = React.useState(false);
   const [showDbForm, setShowDbForm] = React.useState(false);
@@ -348,7 +348,7 @@ export function DataSourceSection() {
     }
   };
 
-  // Shopify connection (manual form)
+  // Shopify connection (manual form) — delegates to useExternalSources hook
   const handleShopifyConnect = async () => {
     if (!shopifyStoreUrl.trim() || !shopifyAccessToken.trim()) return;
 
@@ -362,37 +362,18 @@ export function DataSourceSection() {
       }
       storeUrl = storeUrl.replace(/^https?:\/\//, '');
 
-      const result = await connectPlatform(
+      const success = await connectExternal(
         'shopify' as PlatformType,
         { access_token: shopifyAccessToken.trim() },
         storeUrl
       );
 
-      if (result.success) {
-        const mockSource: DataSourceInfo = {
-          type: 'csv',
-          status: 'connected' as const,
-          row_count: 0,
-          column_count: 12,
-          columns: [
-            { name: 'order_id', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-            { name: 'order_number', type: 'VARCHAR' as const, nullable: true, warnings: [] },
-            { name: 'customer_name', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-            { name: 'ship_to_name', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-            { name: 'ship_to_address1', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-            { name: 'ship_to_city', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-            { name: 'ship_to_state', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-            { name: 'ship_to_postal_code', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-            { name: 'ship_to_country', type: 'VARCHAR' as const, nullable: false, warnings: [] },
-          ],
-          connected_at: new Date().toISOString(),
-        };
-        setDataSource(mockSource);
+      if (success) {
         setShopifyStoreUrl('');
         setShopifyAccessToken('');
         setShowShopifyForm(false);
       } else {
-        setShopifyError(result.error || 'Failed to connect to Shopify');
+        setShopifyError('Failed to connect to Shopify');
       }
     } catch (err) {
       setShopifyError(err instanceof Error ? err.message : 'Connection failed');
