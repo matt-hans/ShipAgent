@@ -129,6 +129,36 @@ class DataSourceMCPClient:
             return None
         return result
 
+    async def get_source_info_typed(self) -> "DataSourceInfo | None":
+        """Get source info as a DataSourceInfo object for backward compatibility.
+
+        conversations.py and system_prompt.py expect DataSourceInfo with typed
+        attributes. This method converts the gateway dict to that format.
+
+        Returns:
+            DataSourceInfo if source active, None otherwise.
+        """
+        from src.services.data_source_service import DataSourceInfo, SchemaColumnInfo
+
+        info = await self.get_source_info()
+        if info is None:
+            return None
+
+        columns = [
+            SchemaColumnInfo(
+                name=col.get("name", ""),
+                type=col.get("type", "VARCHAR"),
+                nullable=col.get("nullable", True),
+            )
+            for col in info.get("columns", [])
+        ]
+        return DataSourceInfo(
+            source_type=info.get("source_type", "unknown"),
+            file_path=info.get("path"),
+            columns=columns,
+            row_count=info.get("row_count", 0),
+        )
+
     async def get_source_signature(self) -> dict[str, Any] | None:
         """Get stable source signature matching DataSourceService contract.
 

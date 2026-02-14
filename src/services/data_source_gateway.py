@@ -44,6 +44,14 @@ class DataSourceGateway(Protocol):
         """Get metadata about the active data source. None if no source."""
         ...
 
+    async def get_source_info_typed(self) -> Any:
+        """Get source info as DataSourceInfo for backward compat.
+
+        Returns DataSourceInfo if source active, None otherwise.
+        Used by conversations.py and system_prompt.py which expect typed attributes.
+        """
+        ...
+
     async def get_source_signature(self) -> dict[str, Any] | None:
         """Get stable source signature for replay safety checks.
 

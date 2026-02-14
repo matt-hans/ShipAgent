@@ -61,80 +61,6 @@ def _get_event_queue(session_id: str) -> asyncio.Queue:
     return _event_queues[session_id]
 
 
-async def _try_auto_import_shopify(svc: "DataSourceService") -> "DataSourceInfo | None":
-    """Auto-import Shopify orders if Shopify is configured and connected.
-
-    Checks environment for Shopify credentials, validates them,
-    fetches orders, and imports them into the DataSourceService.
-
-    Args:
-        svc: The DataSourceService singleton to import into.
-
-    Returns:
-        DataSourceInfo if import succeeded, None otherwise.
-    """
-    import os
-
-    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-    store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
-
-    if not access_token or not store_domain:
-        return None
-
-    try:
-        from src.mcp.external_sources.clients.shopify import ShopifyClient
-        from src.mcp.external_sources.models import OrderFilters
-
-        client = ShopifyClient()
-        credentials = {"access_token": access_token, "store_url": store_domain}
-        is_valid = await client.authenticate(credentials)
-
-        if not is_valid:
-            logger.warning("Shopify auto-import: authentication failed")
-            return None
-
-        # Fetch orders
-        filters = OrderFilters(limit=250)
-        orders = await client.fetch_orders(filters)
-
-        if not orders:
-            logger.info("Shopify auto-import: no orders found")
-            return None
-
-        # Convert ExternalOrder objects to flat dicts for DuckDB.
-        # Exclude nested fields (items, raw_data) that don't flatten into columns.
-        exclude_fields = {"items", "raw_data"}
-        records = [
-            {
-                k: v
-                for k, v in (
-                    o.model_dump() if hasattr(o, "model_dump") else dict(o)
-                ).items()
-                if k not in exclude_fields
-            }
-            for o in orders
-        ]
-
-        # Import into DataSourceService
-        store_name = store_domain.replace(".myshopify.com", "")
-        source_info = svc.import_from_records(
-            records,
-            source_type="shopify",
-            source_label=store_name,
-        )
-
-        logger.info(
-            "Shopify auto-import: %d orders from %s",
-            len(records),
-            store_name,
-        )
-        return source_info
-
-    except Exception as e:
-        logger.warning("Shopify auto-import failed (non-critical): %s", e)
-        return None
-
-
 def _compute_source_hash(source_info: "DataSourceInfo | None") -> str:
     """Compute a simple hash of data source metadata for change detection.
 
@@ -222,13 +148,13 @@ async def _prewarm_session_agent(session_id: str) -> None:
     Runs in background after conversation creation when a source is already
     connected. Never raises; first message path remains authoritative.
     """
-    from src.services.data_source_service import DataSourceService
+    from src.services.gateway_provider import get_data_gateway
 
     session = _session_manager.get_or_create_session(session_id)
     try:
         async with session.lock:
-            svc = DataSourceService.get_instance()
-            source_info = svc.get_source_info()
+            gw = await get_data_gateway()
+            source_info = await gw.get_source_info_typed()
             if source_info is None:
                 return
             rebuilt = await _ensure_agent(session, source_info)
@@ -263,7 +189,6 @@ async def _process_agent_message(session_id: str, content: str) -> None:
     first_event_source = ""
     preview_rows_rated = 0
     preview_total_rows = 0
-    auto_import_used = False
     source_type = "none"
     agent_rebuilt = False
 
@@ -288,23 +213,16 @@ async def _process_agent_message(session_id: str, content: str) -> None:
 
     async with session.lock:
         try:
-            from src.services.data_source_service import DataSourceService
+            from src.services.gateway_provider import get_data_gateway
 
-            svc = DataSourceService.get_instance()
-            source_info = svc.get_source_info()
-
-            # Auto-import Shopify orders only for batch-mode sessions.
-            if source_info is None and not session.interactive_shipping:
-                source_info = await _try_auto_import_shopify(svc)
-                auto_import_used = source_info is not None
+            gw = await get_data_gateway()
+            source_info = await gw.get_source_info_typed()
 
             source_type = source_info.source_type if source_info is not None else "none"
             logger.info(
-                "agent_timing marker=source_resolved session_id=%s source_type=%s "
-                "auto_import_used=%s elapsed=%.3f",
+                "agent_timing marker=source_resolved session_id=%s source_type=%s elapsed=%.3f",
                 session_id,
                 source_type,
-                auto_import_used,
                 time.perf_counter() - started_at,
             )
 
@@ -369,12 +287,11 @@ async def _process_agent_message(session_id: str, content: str) -> None:
     )
     logger.info(
         "agent_timing marker=done_emitted session_id=%s source_type=%s "
-        "auto_import_used=%s agent_rebuilt=%s agent_turns_count=%d "
+        "agent_rebuilt=%s agent_turns_count=%d "
         "preview_rows_rated=%d preview_total_rows=%d batch_concurrency=%s "
         "interactive_shipping=%s first_event_source=%s ttfb=%.3f elapsed=%.3f",
         session_id,
         source_type,
-        auto_import_used,
         agent_rebuilt,
         agent_turns_count,
         preview_rows_rated,
@@ -453,7 +370,7 @@ async def create_conversation(
     Returns:
         CreateConversationResponse with session_id and effective mode.
     """
-    from src.services.data_source_service import DataSourceService
+    from src.services.gateway_provider import get_data_gateway
 
     effective_payload = payload or CreateConversationRequest()
 
@@ -463,7 +380,8 @@ async def create_conversation(
 
     # Best-effort prewarm when a source already exists; do not block response.
     try:
-        source_info = DataSourceService.get_instance().get_source_info()
+        gw = await get_data_gateway()
+        source_info = await gw.get_source_info()
         if source_info is not None and not session.interactive_shipping:
             session.prewarm_task = asyncio.create_task(
                 _prewarm_session_agent(session_id)
