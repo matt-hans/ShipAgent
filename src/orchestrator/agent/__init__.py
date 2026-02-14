@@ -21,7 +21,7 @@ Architecture:
 
 Modules:
     config: MCP server configuration for ClaudeAgentOptions
-    tools_v2: Deterministic SDK tools (query, preview, execute, etc.)
+    tools/: Deterministic SDK tools split by concern (core, data, pipeline, interactive)
     hooks: PreToolUse and PostToolUse hook implementations
     client: Main OrchestrationAgent class
     system_prompt: Unified system prompt builder

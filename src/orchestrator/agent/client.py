@@ -62,7 +62,8 @@ except ImportError:
 
 from src.orchestrator.agent.config import create_mcp_servers_config
 from src.orchestrator.agent.hooks import create_hook_matchers
-from src.orchestrator.agent.tools_v2 import EventEmitterBridge, get_all_tool_definitions
+from src.orchestrator.agent.tools import get_all_tool_definitions
+from src.orchestrator.agent.tools.core import EventEmitterBridge
 
 # Default model resolution:
 # 1) AGENT_MODEL (preferred)

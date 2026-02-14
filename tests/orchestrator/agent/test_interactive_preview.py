@@ -24,7 +24,7 @@ class TestNormalizeShipFrom:
 
     def test_normalizes_agent_facing_keys(self):
         """Agent-facing keys (address1, state, zip) map to canonical keys."""
-        from src.orchestrator.agent.tools_v2 import _normalize_ship_from
+        from src.orchestrator.agent.tools.interactive import _normalize_ship_from
 
         raw = {
             "address1": "789 Broadway",
@@ -42,7 +42,7 @@ class TestNormalizeShipFrom:
 
     def test_drops_unknown_keys(self):
         """Unknown keys are silently dropped."""
-        from src.orchestrator.agent.tools_v2 import _normalize_ship_from
+        from src.orchestrator.agent.tools.interactive import _normalize_ship_from
 
         raw = {"foo": "bar", "baz": "qux", "city": "Austin"}
         result = _normalize_ship_from(raw)
@@ -50,7 +50,7 @@ class TestNormalizeShipFrom:
 
     def test_skips_empty_values(self):
         """Empty string values don't override env defaults."""
-        from src.orchestrator.agent.tools_v2 import _normalize_ship_from
+        from src.orchestrator.agent.tools.interactive import _normalize_ship_from
 
         raw = {"city": "", "state": "TX", "zip": ""}
         result = _normalize_ship_from(raw)
@@ -58,7 +58,7 @@ class TestNormalizeShipFrom:
 
     def test_skips_invalid_phone(self):
         """Short phone numbers that normalize to placeholder are dropped."""
-        from src.orchestrator.agent.tools_v2 import _normalize_ship_from
+        from src.orchestrator.agent.tools.interactive import _normalize_ship_from
 
         raw = {"phone": "123"}
         result = _normalize_ship_from(raw)
@@ -66,7 +66,7 @@ class TestNormalizeShipFrom:
 
     def test_normalizes_phone_and_zip(self):
         """Phone and ZIP values are normalized like env-derived shipper."""
-        from src.orchestrator.agent.tools_v2 import _normalize_ship_from
+        from src.orchestrator.agent.tools.interactive import _normalize_ship_from
 
         raw = {"phone": "(555) 123-4567", "zip": "90001-1234"}
         result = _normalize_ship_from(raw)
@@ -75,7 +75,7 @@ class TestNormalizeShipFrom:
 
     def test_coerces_numeric_values(self):
         """Numeric values (int/float) are coerced to str before normalization."""
-        from src.orchestrator.agent.tools_v2 import _normalize_ship_from
+        from src.orchestrator.agent.tools.interactive import _normalize_ship_from
 
         raw = {"zip": 90001, "phone": 5551234567}
         result = _normalize_ship_from(raw)
@@ -88,20 +88,20 @@ class TestMaskAccount:
 
     def test_masks_normal_account(self):
         """Normal-length account shows first 2 and last 2 chars."""
-        from src.orchestrator.agent.tools_v2 import _mask_account
+        from src.orchestrator.agent.tools.interactive import _mask_account
 
         assert _mask_account("AB1234CD") == "AB****CD"
 
     def test_masks_short_account(self):
         """Accounts <= 4 chars return all stars."""
-        from src.orchestrator.agent.tools_v2 import _mask_account
+        from src.orchestrator.agent.tools.interactive import _mask_account
 
         assert _mask_account("AB") == "****"
         assert _mask_account("ABCD") == "****"
 
     def test_masks_six_char_account(self):
         """Six-char account masks middle 2."""
-        from src.orchestrator.agent.tools_v2 import _mask_account
+        from src.orchestrator.agent.tools.interactive import _mask_account
 
         assert _mask_account("123456") == "12**56"
 
@@ -178,7 +178,7 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_fails_without_account_number(self):
         """Early error when UPS_ACCOUNT_NUMBER is empty/missing."""
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         env = {
             "UPS_ACCOUNT_NUMBER": "",
@@ -196,7 +196,7 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_none_required_fields_treated_as_missing(self):
         """None values in required fields are treated as empty, not 'None'."""
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         args = self._base_args()
         args["ship_to_name"] = None
@@ -207,10 +207,8 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_none_optional_fields_not_polluted(self):
         """None in optional fields becomes empty string, not 'None'."""
-        from src.orchestrator.agent.tools_v2 import (
-            EventEmitterBridge,
-            preview_interactive_shipment_tool,
-        )
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         mock_preview_result = {
             "job_id": "none-opt-test",
@@ -276,7 +274,7 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_fails_on_invalid_weight_string(self):
         """Non-numeric weight returns structured error, not uncaught exception."""
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         result = await preview_interactive_shipment_tool(
             self._base_args(weight="abc")
@@ -287,7 +285,7 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_fails_on_negative_weight(self):
         """Negative weight returns structured error."""
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         result = await preview_interactive_shipment_tool(
             self._base_args(weight=-2.5)
@@ -298,7 +296,7 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_non_string_packaging_type_does_not_crash(self):
         """Non-string packaging_type (int, dict) is coerced, not crash."""
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         mock_preview_result = {
             "job_id": "pkg-int-test",
@@ -356,7 +354,7 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_creates_job_with_interactive_flag(self):
         """Job created with is_interactive=True and shipper_json set."""
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         mock_preview_result = {
             "job_id": "test-job-id",
@@ -422,7 +420,7 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_uses_env_shipper_defaults(self):
         """Shipper comes from env vars when no ship_from override."""
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         mock_preview_result = {
             "job_id": "test-job-id",
@@ -482,7 +480,7 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_merges_ship_from_override(self):
         """ship_from override normalizes keys and merges onto env defaults."""
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         mock_preview_result = {
             "job_id": "test-job-id",
@@ -555,10 +553,8 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_emits_interactive_flag(self):
         """SSE event includes interactive=True in result."""
-        from src.orchestrator.agent.tools_v2 import (
-            EventEmitterBridge,
-            preview_interactive_shipment_tool,
-        )
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         mock_preview_result = {
             "job_id": "test-job-id",
@@ -620,10 +616,8 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_includes_resolved_payload(self):
         """Result includes resolved_payload for expandable view."""
-        from src.orchestrator.agent.tools_v2 import (
-            EventEmitterBridge,
-            preview_interactive_shipment_tool,
-        )
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         mock_preview_result = {
             "job_id": "test-job-id",
@@ -688,7 +682,7 @@ class TestPreviewInteractiveShipment:
         This prevents double-resolution that corrupts alphanumeric codes
         like '2a' (small express box) → '02' (customer supplied).
         """
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         mock_preview_result = {
             "job_id": "pkg-test",
@@ -751,7 +745,7 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_cleans_up_orphan_job_on_row_failure(self):
         """When create_rows fails, orphan job is deleted."""
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         created_job = MagicMock()
         created_job.id = "orphan-job"
@@ -786,7 +780,7 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_marks_job_failed_on_rate_error(self):
         """When BatchEngine.preview() raises, job transitions to failed."""
-        from src.orchestrator.agent.tools_v2 import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
 
         created_job = MagicMock()
         created_job.id = "rate-fail-job"
