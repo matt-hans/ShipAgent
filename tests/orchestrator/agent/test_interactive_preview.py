@@ -255,9 +255,9 @@ class TestPreviewInteractiveShipment:
 
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_db_ctx,
-            patch("src.orchestrator.agent.tools_v2._get_ups_client", return_value=AsyncMock()),
-            patch("src.orchestrator.agent.tools_v2.JobService", return_value=mock_job_service),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
             patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
             patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
         ):
@@ -337,9 +337,9 @@ class TestPreviewInteractiveShipment:
 
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_db_ctx,
-            patch("src.orchestrator.agent.tools_v2._get_ups_client", return_value=AsyncMock()),
-            patch("src.orchestrator.agent.tools_v2.JobService", return_value=mock_job_service),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
             patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
             patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
         ):
@@ -400,9 +400,9 @@ class TestPreviewInteractiveShipment:
 
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_db_ctx,
-            patch("src.orchestrator.agent.tools_v2._get_ups_client", return_value=mock_ups),
-            patch("src.orchestrator.agent.tools_v2.JobService", return_value=mock_job_service),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=mock_ups),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
             patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
             patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
         ):
@@ -462,9 +462,9 @@ class TestPreviewInteractiveShipment:
 
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_db_ctx,
-            patch("src.orchestrator.agent.tools_v2._get_ups_client", return_value=AsyncMock()),
-            patch("src.orchestrator.agent.tools_v2.JobService", return_value=mock_job_service),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
             patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
             patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
         ):
@@ -531,9 +531,9 @@ class TestPreviewInteractiveShipment:
 
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_db_ctx,
-            patch("src.orchestrator.agent.tools_v2._get_ups_client", return_value=AsyncMock()),
-            patch("src.orchestrator.agent.tools_v2.JobService", return_value=mock_job_service),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
             patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
             patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
         ):
@@ -601,9 +601,9 @@ class TestPreviewInteractiveShipment:
 
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_db_ctx,
-            patch("src.orchestrator.agent.tools_v2._get_ups_client", return_value=AsyncMock()),
-            patch("src.orchestrator.agent.tools_v2.JobService", return_value=mock_job_service),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
             patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
             patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
         ):
@@ -666,9 +666,9 @@ class TestPreviewInteractiveShipment:
 
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_db_ctx,
-            patch("src.orchestrator.agent.tools_v2._get_ups_client", return_value=AsyncMock()),
-            patch("src.orchestrator.agent.tools_v2.JobService", return_value=mock_job_service),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
             patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
             patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
         ):
@@ -727,13 +727,13 @@ class TestPreviewInteractiveShipment:
 
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_db_ctx,
-            patch("src.orchestrator.agent.tools_v2._get_ups_client", return_value=AsyncMock()),
-            patch("src.orchestrator.agent.tools_v2.JobService", return_value=mock_job_service),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
             patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
             patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
             patch(
-                "src.orchestrator.agent.tools_v2._build_job_row_data",
+                "src.orchestrator.agent.tools.interactive._build_job_row_data",
                 side_effect=lambda rows: rows,
             ) as mock_build,
         ):
@@ -771,8 +771,8 @@ class TestPreviewInteractiveShipment:
 
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_db_ctx,
-            patch("src.orchestrator.agent.tools_v2.JobService", return_value=mock_job_service),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
         ):
             mock_db_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
             mock_db_ctx.return_value.__exit__ = MagicMock(return_value=False)
@@ -810,9 +810,9 @@ class TestPreviewInteractiveShipment:
 
         with (
             patch.dict(os.environ, env, clear=False),
-            patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_db_ctx,
-            patch("src.orchestrator.agent.tools_v2._get_ups_client", return_value=AsyncMock()),
-            patch("src.orchestrator.agent.tools_v2.JobService", return_value=mock_job_service),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
             patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
             patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
         ):
