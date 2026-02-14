@@ -963,8 +963,8 @@ async def test_batch_preview_emits_before_ok_return():
             "src.orchestrator.agent.tools_v2._enrich_preview_rows",
             return_value=preview_result["preview_rows"],
         ),
-        patch("src.orchestrator.agent.tools_v2._emit_event", side_effect=_capture_emit),
-        patch("src.orchestrator.agent.tools_v2._ok", side_effect=_capture_ok),
+        patch("src.orchestrator.agent.tools.core._emit_event", side_effect=_capture_emit),
+        patch("src.orchestrator.agent.tools.core._ok", side_effect=_capture_ok),
     ):
         await batch_preview_tool({"job_id": "test-job"})
 
@@ -1038,12 +1038,12 @@ def test_preview_data_normalization():
     mock_row_2.row_number = 2
     mock_row_2.order_data = json.dumps({"service_code": "03", "order_id": "A2"})
 
-    with patch("src.orchestrator.agent.tools_v2.get_db_context") as mock_ctx:
+    with patch("src.orchestrator.agent.tools.core.get_db_context") as mock_ctx:
         mock_db = MagicMock()
         mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
         mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch("src.orchestrator.agent.tools_v2.JobService") as MockJS:
+        with patch("src.orchestrator.agent.tools.core.JobService") as MockJS:
             MockJS.return_value.get_rows.return_value = [mock_row_1, mock_row_2]
 
             result = _enrich_preview_rows("test-job", preview_rows)
@@ -1077,7 +1077,7 @@ async def test_cached_ups_client_reused():
     await _reset_ups_client()
     try:
         with patch(
-            "src.orchestrator.agent.tools_v2._build_ups_client",
+            "src.orchestrator.agent.tools.core._build_ups_client",
             return_value=mock_client,
         ):
             c1 = await _get_ups_client()
@@ -1098,7 +1098,7 @@ async def test_shutdown_cached_ups_client_disconnects():
 
     await _reset_ups_client()
     with patch(
-        "src.orchestrator.agent.tools_v2._build_ups_client", return_value=mock_client
+        "src.orchestrator.agent.tools.core._build_ups_client", return_value=mock_client
     ):
         await _get_ups_client()
     await shutdown_cached_ups_client()
