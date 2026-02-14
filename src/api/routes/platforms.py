@@ -3,27 +3,23 @@
 Provides REST API endpoints for managing connections to external platforms
 (Shopify, WooCommerce, SAP, Oracle) and fetching/updating orders.
 
-These routes orchestrate calls to the External Sources Gateway MCP server
-via the OrchestrationAgent using the Claude Agent SDK.
-
-Architecture:
-    Frontend -> FastAPI -> OrchestrationAgent -> External Sources MCP -> Platform APIs
+All routes are thin HTTP-to-MCP adapters delegating to the
+ExternalSourcesMCPClient via gateway_provider. No direct platform
+client imports or local state management.
 """
 
-import asyncio
 import os
-from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from src.mcp.external_sources.models import (
-    ConnectionStatus,
     ExternalOrder,
     PlatformConnection,
     PlatformType,
 )
+from src.services.gateway_provider import get_external_sources_client
 
 router = APIRouter(prefix="/platforms", tags=["platforms"])
 
@@ -118,149 +114,6 @@ class ShopifyEnvStatusResponse(BaseModel):
     error: str | None = Field(None, description="Error message if validation failed")
 
 
-# === Platform State Manager ===
-# Manages connections and clients with thread-safe operations
-
-
-class PlatformStateManager:
-    """Thread-safe manager for platform connections and clients.
-
-    Uses the actual platform clients (imported from external_sources.clients)
-    to perform operations. Credentials are stored securely in memory.
-    """
-
-    def __init__(self) -> None:
-        """Initialize the state manager."""
-        self._lock = asyncio.Lock()
-        self._connections: dict[str, PlatformConnection] = {}
-        self._clients: dict[str, Any] = {}
-        self._credentials: dict[str, dict[str, Any]] = {}
-
-    async def list_connections(self) -> list[PlatformConnection]:
-        """Get all current connections."""
-        async with self._lock:
-            return list(self._connections.values())
-
-    async def get_connection(self, platform: str) -> PlatformConnection | None:
-        """Get connection for a specific platform."""
-        async with self._lock:
-            return self._connections.get(platform)
-
-    async def get_client(self, platform: str) -> Any | None:
-        """Get client for a specific platform."""
-        async with self._lock:
-            return self._clients.get(platform)
-
-    async def connect(
-        self,
-        platform: str,
-        credentials: dict[str, Any],
-        store_url: str | None = None,
-    ) -> tuple[bool, str | None]:
-        """Connect to a platform.
-
-        Args:
-            platform: Platform identifier.
-            credentials: Platform-specific credentials.
-            store_url: Store/instance URL.
-
-        Returns:
-            Tuple of (success, error_message).
-        """
-        async with self._lock:
-            try:
-                client: Any = None
-
-                if platform == "shopify":
-                    from src.mcp.external_sources.clients.shopify import ShopifyClient
-
-                    client = ShopifyClient()
-                    if not store_url:
-                        return False, "store_url is required for Shopify"
-                    creds = {**credentials, "store_url": store_url}
-                    success = await client.authenticate(creds)
-
-                elif platform == "woocommerce":
-                    from src.mcp.external_sources.clients.woocommerce import (
-                        WooCommerceClient,
-                    )
-
-                    client = WooCommerceClient()
-                    if not store_url:
-                        return False, "store_url (site_url) is required for WooCommerce"
-                    creds = {**credentials, "site_url": store_url}
-                    success = await client.authenticate(creds)
-
-                elif platform == "sap":
-                    from src.mcp.external_sources.clients.sap import SAPClient
-
-                    client = SAPClient()
-                    success = await client.authenticate(credentials)
-
-                elif platform == "oracle":
-                    from src.mcp.external_sources.clients.oracle import (
-                        OracleClient,
-                        OracleDependencyError,
-                    )
-
-                    try:
-                        client = OracleClient()
-                        success = await client.authenticate(credentials)
-                    except OracleDependencyError as e:
-                        return False, str(e)
-                else:
-                    return False, f"Unknown platform: {platform}"
-
-                if success and client is not None:
-                    # Store state
-                    self._connections[platform] = PlatformConnection(
-                        platform=platform,
-                        store_url=store_url,
-                        status=ConnectionStatus.CONNECTED.value,
-                        last_connected=datetime.now().isoformat(),
-                        error_message=None,
-                    )
-                    self._clients[platform] = client
-                    self._credentials[platform] = credentials
-                    return True, None
-                else:
-                    return False, "Authentication failed"
-
-            except Exception as e:
-                return False, str(e)
-
-    async def disconnect(self, platform: str) -> bool:
-        """Disconnect from a platform."""
-        async with self._lock:
-            client = self._clients.pop(platform, None)
-            self._connections.pop(platform, None)
-            self._credentials.pop(platform, None)
-
-            if client is not None and hasattr(client, "close"):
-                try:
-                    await client.close()
-                except Exception:
-                    pass
-
-            return True
-
-    async def test_connection(self, platform: str) -> bool:
-        """Test if a connection is still valid."""
-        async with self._lock:
-            client = self._clients.get(platform)
-            if client is None:
-                return False
-
-            try:
-                return await client.test_connection()
-            except Exception:
-                return False
-
-
-# Global state manager instance
-_state_manager = PlatformStateManager()
-
-
 # === Routes ===
 
 
@@ -268,13 +121,21 @@ _state_manager = PlatformStateManager()
 async def list_connections() -> ListConnectionsResponse:
     """List all configured platform connections.
 
-    Returns status of each connected platform including
-    connection health and last sync time.
-
     Returns:
         List of platform connections with their status.
     """
-    connections = await _state_manager.list_connections()
+    ext = await get_external_sources_client()
+    result = await ext.list_connections()
+    raw_connections = result.get("connections", [])
+
+    # Convert dicts to PlatformConnection if needed
+    connections = []
+    for c in raw_connections:
+        if isinstance(c, dict):
+            connections.append(PlatformConnection(**c))
+        else:
+            connections.append(c)
+
     return ListConnectionsResponse(
         connections=connections,
         count=len(connections),
@@ -288,9 +149,6 @@ async def connect_platform(
 ) -> ConnectPlatformResponse:
     """Connect to an external platform.
 
-    Authenticates with the platform using the provided credentials
-    and stores the connection for reuse.
-
     Args:
         platform: Platform identifier (shopify, woocommerce, sap, oracle).
         request: Connection credentials and store URL.
@@ -298,7 +156,6 @@ async def connect_platform(
     Returns:
         Connection result with status.
     """
-    # Validate platform
     valid_platforms = {p.value for p in PlatformType}
     if platform not in valid_platforms:
         return ConnectPlatformResponse(
@@ -309,13 +166,14 @@ async def connect_platform(
             f"Supported: {', '.join(sorted(valid_platforms))}",
         )
 
-    success, error = await _state_manager.connect(
+    ext = await get_external_sources_client()
+    result = await ext.connect_platform(
         platform=platform,
         credentials=request.credentials,
         store_url=request.store_url,
     )
 
-    if success:
+    if result.get("success"):
         return ConnectPlatformResponse(
             success=True,
             platform=platform,
@@ -327,7 +185,7 @@ async def connect_platform(
             success=False,
             platform=platform,
             status="error",
-            error=error or "Connection failed",
+            error=result.get("error", "Connection failed"),
         )
 
 
@@ -335,24 +193,26 @@ async def connect_platform(
 async def disconnect_platform(platform: str) -> dict:
     """Disconnect from an external platform.
 
-    Closes the connection and removes stored credentials.
-
     Args:
         platform: Platform identifier.
 
     Returns:
         Success status.
     """
-    await _state_manager.disconnect(platform)
-    return {"success": True, "platform": platform}
+    ext = await get_external_sources_client()
+    result = await ext.disconnect_platform(platform)
+    return {
+        "success": result.get("success", True),
+        "platform": platform,
+        "status": result.get("status", "disconnected"),
+    }
 
 
 @router.get("/{platform}/test", response_model=TestConnectionResponse)
 async def test_connection(platform: str) -> TestConnectionResponse:
     """Test connection to a platform.
 
-    Verifies that the stored credentials are still valid
-    by making a health check call to the platform.
+    Checks if the platform appears in the active connections list.
 
     Args:
         platform: Platform identifier.
@@ -360,19 +220,24 @@ async def test_connection(platform: str) -> TestConnectionResponse:
     Returns:
         Connection test result.
     """
-    connection = await _state_manager.get_connection(platform)
-    if connection is None:
-        return TestConnectionResponse(
-            success=False,
-            platform=platform,
-            status="disconnected",
-        )
+    ext = await get_external_sources_client()
+    result = await ext.list_connections()
+    connections = result.get("connections", [])
 
-    is_healthy = await _state_manager.test_connection(platform)
+    for conn in connections:
+        conn_platform = conn.get("platform") if isinstance(conn, dict) else getattr(conn, "platform", None)
+        conn_status = conn.get("status") if isinstance(conn, dict) else getattr(conn, "status", None)
+        if conn_platform == platform and conn_status == "connected":
+            return TestConnectionResponse(
+                success=True,
+                platform=platform,
+                status="connected",
+            )
+
     return TestConnectionResponse(
-        success=is_healthy,
+        success=False,
         platform=platform,
-        status="connected" if is_healthy else "error",
+        status="disconnected",
     )
 
 
@@ -381,7 +246,7 @@ async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
     """Check Shopify credentials from environment variables.
 
     Reads SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN from environment,
-    validates them against the Shopify API, and auto-connects if valid.
+    validates them by connecting via the gateway, and fetches store name.
 
     Returns:
         Status indicating whether credentials are configured and valid.
@@ -389,7 +254,6 @@ async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
     access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
     store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
 
-    # Check if both are configured
     if not access_token or not store_domain:
         return ShopifyEnvStatusResponse(
             configured=False,
@@ -399,29 +263,30 @@ async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
             error="SHOPIFY_ACCESS_TOKEN and/or SHOPIFY_STORE_DOMAIN not set in environment",
         )
 
-    # Credentials are configured, validate against Shopify API
-    import httpx
-
-    from src.mcp.external_sources.clients.shopify import ShopifyClient
-
-    client = ShopifyClient()
-    credentials = {"access_token": access_token, "store_url": store_domain}
-
     try:
-        is_valid = await client.authenticate(credentials)
+        ext = await get_external_sources_client()
+        result = await ext.connect_platform(
+            platform="shopify",
+            credentials={"access_token": access_token},
+            store_url=store_domain,
+        )
 
-        if not is_valid:
+        if not result.get("success"):
             return ShopifyEnvStatusResponse(
                 configured=True,
                 valid=False,
                 store_url=store_domain,
                 store_name=None,
-                error="Authentication failed - check credentials",
+                error=result.get("error", "Authentication failed - check credentials"),
             )
 
         # Get shop name from Shopify API
         store_name = None
         try:
+            import httpx
+
+            from src.mcp.external_sources.clients.shopify import ShopifyClient
+
             async with httpx.AsyncClient() as http_client:
                 response = await http_client.get(
                     f"https://{store_domain}/admin/api/{ShopifyClient.API_VERSION}/shop.json",
@@ -433,15 +298,8 @@ async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
                 if response.status_code == 200:
                     data = response.json()
                     store_name = data.get("shop", {}).get("name")
-        except httpx.RequestError:
+        except Exception:
             pass
-
-        # Auto-connect to PlatformStateManager
-        await _state_manager.connect(
-            platform="shopify",
-            credentials={"access_token": access_token},
-            store_url=store_domain,
-        )
 
         return ShopifyEnvStatusResponse(
             configured=True,
@@ -472,8 +330,6 @@ async def list_orders(
 ) -> ListOrdersResponse:
     """List orders from a connected platform.
 
-    Fetches orders from the specified platform with optional filtering.
-
     Args:
         platform: Platform identifier.
         status: Filter by order status.
@@ -485,42 +341,35 @@ async def list_orders(
     Returns:
         List of orders in normalized format.
     """
-    client = await _state_manager.get_client(platform)
-    if client is None:
+    ext = await get_external_sources_client()
+    result = await ext.fetch_orders(platform, status=status, limit=limit)
+
+    if not result.get("success", True):
         return ListOrdersResponse(
             success=False,
             platform=platform,
             orders=[],
             count=0,
-            error=f"Platform {platform} not connected. Connect first.",
+            error=result.get("error", "Failed to fetch orders"),
         )
 
-    from src.mcp.external_sources.models import OrderFilters
+    raw_orders = result.get("orders", [])
+    orders = []
+    for o in raw_orders:
+        if isinstance(o, dict):
+            try:
+                orders.append(ExternalOrder(**o))
+            except Exception:
+                orders.append(o)
+        else:
+            orders.append(o)
 
-    filters = OrderFilters(
-        status=status,
-        date_from=date_from,
-        date_to=date_to,
-        limit=limit,
-        offset=offset,
+    return ListOrdersResponse(
+        success=True,
+        platform=platform,
+        orders=orders,
+        count=len(orders),
     )
-
-    try:
-        orders = await client.fetch_orders(filters)
-        return ListOrdersResponse(
-            success=True,
-            platform=platform,
-            orders=orders,
-            count=len(orders),
-        )
-    except Exception as e:
-        return ListOrdersResponse(
-            success=False,
-            platform=platform,
-            orders=[],
-            count=0,
-            error=str(e),
-        )
 
 
 @router.get("/{platform}/orders/{order_id}", response_model=GetOrderResponse)
@@ -534,36 +383,33 @@ async def get_order(platform: str, order_id: str) -> GetOrderResponse:
     Returns:
         Order details if found.
     """
-    client = await _state_manager.get_client(platform)
-    if client is None:
+    ext = await get_external_sources_client()
+    result = await ext.get_order(platform, order_id)
+
+    if not result.get("success", False):
         return GetOrderResponse(
             success=False,
             platform=platform,
             order_id=order_id,
-            error=f"Platform {platform} not connected. Connect first.",
+            error=result.get("error", f"Order {order_id} not found"),
         )
 
-    try:
-        order = await client.get_order(order_id)
-        if order is None:
-            return GetOrderResponse(
-                success=False,
-                platform=platform,
-                order_id=order_id,
-                error=f"Order {order_id} not found",
-            )
-        return GetOrderResponse(
-            success=True,
-            platform=platform,
-            order=order,
-        )
-    except Exception as e:
-        return GetOrderResponse(
-            success=False,
-            platform=platform,
-            order_id=order_id,
-            error=str(e),
-        )
+    raw_order = result.get("order")
+    order = None
+    if raw_order is not None:
+        if isinstance(raw_order, dict):
+            try:
+                order = ExternalOrder(**raw_order)
+            except Exception:
+                pass
+        else:
+            order = raw_order
+
+    return GetOrderResponse(
+        success=True,
+        platform=platform,
+        order=order,
+    )
 
 
 @router.put("/{platform}/orders/{order_id}/tracking", response_model=TrackingUpdateResponse)
@@ -574,8 +420,6 @@ async def update_tracking(
 ) -> TrackingUpdateResponse:
     """Update tracking information for an order.
 
-    Writes tracking number and carrier back to the source platform.
-
     Args:
         platform: Platform identifier.
         order_id: Platform-specific order identifier.
@@ -584,45 +428,26 @@ async def update_tracking(
     Returns:
         Update result.
     """
-    client = await _state_manager.get_client(platform)
-    if client is None:
-        return TrackingUpdateResponse(
-            success=False,
-            platform=platform,
-            order_id=order_id,
-            error=f"Platform {platform} not connected. Connect first.",
-        )
-
-    from src.mcp.external_sources.models import TrackingUpdate
-
-    update = TrackingUpdate(
+    ext = await get_external_sources_client()
+    result = await ext.update_tracking(
+        platform=platform,
         order_id=order_id,
         tracking_number=request.tracking_number,
         carrier=request.carrier,
-        tracking_url=None,
     )
 
-    try:
-        success = await client.update_tracking(update)
-        if success:
-            return TrackingUpdateResponse(
-                success=True,
-                platform=platform,
-                order_id=order_id,
-                tracking_number=request.tracking_number,
-                carrier=request.carrier,
-            )
-        else:
-            return TrackingUpdateResponse(
-                success=False,
-                platform=platform,
-                order_id=order_id,
-                error="Platform rejected tracking update",
-            )
-    except Exception as e:
+    if result.get("success"):
+        return TrackingUpdateResponse(
+            success=True,
+            platform=platform,
+            order_id=order_id,
+            tracking_number=request.tracking_number,
+            carrier=request.carrier,
+        )
+    else:
         return TrackingUpdateResponse(
             success=False,
             platform=platform,
             order_id=order_id,
-            error=str(e),
+            error=result.get("error", "Platform rejected tracking update"),
         )
