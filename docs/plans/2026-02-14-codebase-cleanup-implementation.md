@@ -10,6 +10,26 @@
 
 ---
 
+## Pre-Implementation: Contract Parity Checklist
+
+Before writing any Phase 1 code, verify these contracts by reading source. This
+prevents mid-phase reversals when implementation discovers mismatches.
+
+| Contract | Current Behavior | Gateway Must Match |
+|----------|------------------|--------------------|
+| **Platform client constructors** | All use `__init__(self)` — no args | `_create_platform_client()` calls `ShopifyClient()` etc. with no args |
+| **Platform authenticate()** | Returns `bool`, credentials as dict | Check return value, map `store_url` → platform-specific key (`site_url` for Woo, `base_url` for SAP) |
+| **Platform disconnect** | `PlatformStateManager.disconnect()` pops from dicts + calls `client.close()` | `disconnect_platform` MCP tool does the same |
+| **DataSourceService.disconnect()** | Closes DuckDB, clears `_source_info` and `_original_file_path` | `clear_source` MCP tool drops table + clears `current_source` |
+| **DataSourceService.get_source_info()** | Returns `DataSourceInfo` object with `.source_type`, `.file_path`, `.columns[].name/.type/.nullable`, `.row_count` | Gateway returns dict, but `get_source_info_typed()` adapter converts to `DataSourceInfo` for consumers |
+| **DataSourceService.get_source_signature()** | Returns `dict[str, Any]` with `source_type`, `source_ref`, `schema_fingerprint` (full SHA-256) | Gateway `get_source_signature()` returns same dict structure, full hash (no truncation) |
+| **get_rows_by_filter()** | Accepts `where_clause: str \| None`, None = all rows | Gateway normalizes `None` → `"1=1"` |
+| **Tool handler signature** | `(args: dict[str, Any], bridge: EventEmitterBridge \| None = None)` | `_bind_bridge` calls `await handler(args, bridge=bridge)` |
+| **Tool return type** | `_ok()` → `{"isError": False, "content": [...]}`, `_err()` → `{"isError": True, "content": [...]}` | All handlers return `dict[str, Any]`, not `str` |
+| **Gateway singleton ownership** | N/A (new) | `gateway_provider.py` owns both singletons. No other file creates instances. |
+
+---
+
 ## Phase 1A: Wire External Sources MCP Gateway
 
 ### Task 1: Complete MCP Gateway `connect_platform` Tool
@@ -149,13 +169,23 @@ Then replace the `connect_platform` body (lines 98-135) with:
     lifespan_ctx["credentials"] = creds
 
     # Instantiate and authenticate
-    # All clients use no-arg __init__. store_url is merged into
-    # credentials for authenticate() (e.g. Shopify expects "store_url" key).
+    # All clients use no-arg __init__. store_url is mapped to the
+    # platform-specific credential key for authenticate().
+    # - Shopify: "store_url"
+    # - WooCommerce: "site_url"
+    # - SAP: "base_url"
+    # - Oracle: no URL key needed
+    _URL_KEY_MAP = {
+        "shopify": "store_url",
+        "woocommerce": "site_url",
+        "sap": "base_url",
+    }
     try:
         client = _create_platform_client(platform)
         auth_creds = dict(credentials)
-        if store_url:
-            auth_creds.setdefault("store_url", store_url)
+        url_key = _URL_KEY_MAP.get(platform)
+        if store_url and url_key:
+            auth_creds.setdefault(url_key, store_url)
         auth_ok = await client.authenticate(auth_creds)
         if not auth_ok:
             raise ValueError(
@@ -206,12 +236,15 @@ Then replace the `connect_platform` body (lines 98-135) with:
     }
 ```
 
-**Step 4: Add disconnect_platform MCP tool**
+**Step 4: Add disconnect_platform tool function + register in server.py**
 
-Add to `src/mcp/external_sources/tools.py` after `connect_platform`:
+Add the function to `src/mcp/external_sources/tools.py` after `connect_platform`.
+NOTE: Do NOT use `@mcp.tool()` here — `mcp` is not defined in tools.py.
+Registration happens in `server.py` (same pattern as existing tools).
 
 ```python
-@mcp.tool()
+# In src/mcp/external_sources/tools.py — plain async function, no decorator
+
 async def disconnect_platform(platform: str, ctx: Context) -> dict:
     """Disconnect from a platform, removing client and connection state.
 
@@ -238,6 +271,24 @@ async def disconnect_platform(platform: str, ctx: Context) -> dict:
 
     await ctx.info(f"Platform {platform} disconnected")
     return {"success": True, "platform": platform, "status": "disconnected"}
+```
+
+Then register in `src/mcp/external_sources/server.py` — add to the import block
+(line 40-46) and registration block (line 49-53):
+
+```python
+# server.py — import
+from src.mcp.external_sources.tools import (
+    connect_platform,
+    disconnect_platform,  # NEW
+    get_order,
+    list_connections,
+    list_orders,
+    update_tracking,
+)
+
+# server.py — registration
+mcp.tool()(disconnect_platform)  # NEW
 ```
 
 **Step 5: Run tests to verify they pass**
@@ -558,16 +609,14 @@ git commit -m "feat: add ExternalSourcesMCPClient — process-global MCP client 
 ```python
 # tests/api/routes/test_platforms_mcp.py
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 
 
 @pytest.mark.asyncio
-async def test_connect_route_uses_mcp_client():
-    """Connect route should call ExternalSourcesMCPClient, not direct client."""
-    from src.api.routes.platforms import _get_external_sources_client
-
+async def test_connect_route_uses_gateway_provider():
+    """Connect route should call gateway_provider, not direct client."""
     with patch(
-        "src.api.routes.platforms._get_external_sources_client"
+        "src.api.routes.platforms.get_external_sources_client"
     ) as mock_get:
         mock_client = AsyncMock()
         mock_client.connect_platform = AsyncMock(return_value={
@@ -578,10 +627,28 @@ async def test_connect_route_uses_mcp_client():
         # Verify PlatformStateManager class has been removed
         import src.api.routes.platforms as platforms_mod
         assert not hasattr(platforms_mod, "PlatformStateManager"), \
-            "PlatformStateManager should be removed — routes must use ExternalSourcesMCPClient"
+            "PlatformStateManager should be removed — routes must use gateway_provider"
+        # Verify no local _ext_client singleton
+        assert not hasattr(platforms_mod, "_ext_client"), \
+            "No local singleton — gateway_provider owns the client"
 
-        # Verify the route calls ExternalSourcesMCPClient
-        mock_client.connect_platform.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_disconnect_route_uses_gateway_provider():
+    """Disconnect route should call gateway_provider.disconnect_platform."""
+    with patch(
+        "src.api.routes.platforms.get_external_sources_client"
+    ) as mock_get:
+        mock_client = AsyncMock()
+        mock_client.disconnect_platform = AsyncMock(return_value={
+            "success": True, "platform": "shopify", "status": "disconnected"
+        })
+        mock_get.return_value = mock_client
+
+        # Would call: ext = await get_external_sources_client()
+        ext = await mock_get()
+        result = await ext.disconnect_platform("shopify")
+        assert result["success"] is True
 ```
 
 **Step 2: Run test to verify it fails**
@@ -591,15 +658,30 @@ Expected: FAIL (PlatformStateManager still exists)
 
 **Step 3: Refactor platforms.py**
 
-Replace the `PlatformStateManager` class (lines 125-261) and all direct client imports with a module-level singleton accessor and thin route adapters. The routes should call `ExternalSourcesMCPClient` methods.
+Replace the `PlatformStateManager` class (lines 125-261) and all direct client imports with thin route adapters that call the shared `gateway_provider`.
 
 Key changes:
-- Add `_ext_client: ExternalSourcesMCPClient | None = None` module global
-- Add `_ext_client_lock = asyncio.Lock()` for lazy init
-- Add `async def _get_external_sources_client() -> ExternalSourcesMCPClient`
-- Replace each route handler to call `_get_external_sources_client()` then delegate
+- Import `get_external_sources_client` from `src.services.gateway_provider`
+  (NO local `_ext_client` singleton — the provider owns it)
+- Replace each route handler to call `await get_external_sources_client()` then delegate
 - Remove all `from src.mcp.external_sources.clients.*` imports
 - Remove `PlatformStateManager` class entirely
+- Remove `_state_manager` global instance
+
+```python
+# platforms.py — import pattern (NOT a local singleton)
+from src.services.gateway_provider import get_external_sources_client
+
+@router.post("/{platform}/connect")
+async def connect_platform_route(platform: str, body: ConnectRequest):
+    ext = await get_external_sources_client()
+    result = await ext.connect_platform(
+        platform=platform,
+        credentials=body.credentials,
+        store_url=body.store_url,
+    )
+    ...
+```
 
 **Step 4: Run existing platform tests + new test**
 
@@ -764,17 +846,27 @@ async def get_source_info(ctx: Context) -> dict:
 
     await ctx.info("Retrieving source info")
 
-    # Build signature from schema if available
+    # Build signature from schema if available.
+    # Mirrors DataSourceService.get_source_signature() format:
+    # full SHA-256 hex digest of "name:type:nullable|..." (no truncation).
     db = ctx.request_context.lifespan_context["db"]
     signature = None
     columns = []
     try:
         schema_rows = db.execute("DESCRIBE imported_data").fetchall()
-        columns = [{"name": col[0], "type": col[1]} for col in schema_rows]
-        sig_input = json.dumps(
-            [(c["name"], c["type"]) for c in columns], sort_keys=True
-        )
-        signature = hashlib.sha256(sig_input.encode()).hexdigest()[:16]
+        columns = [
+            {"name": col[0], "type": col[1], "nullable": True}
+            for col in schema_rows
+        ]
+        # Match DataSourceService fingerprint format exactly:
+        # "name:type:nullable_int|name:type:nullable_int|..."
+        schema_parts = [
+            f"{c['name']}:{c['type']}:{int(c.get('nullable', True))}"
+            for c in columns
+        ]
+        signature = hashlib.sha256(
+            "|".join(schema_parts).encode("utf-8")
+        ).hexdigest()
     except Exception:
         pass
 
@@ -846,6 +938,27 @@ async def import_records(
         "source_type": source_label,
         "columns": columns,
     }
+
+
+async def clear_source(ctx: Context) -> dict:
+    """Clear the active data source, dropping imported data.
+
+    Mirrors DataSourceService.disconnect() behavior:
+    closes DuckDB, clears current_source metadata.
+
+    Returns:
+        Status dict.
+    """
+    db = ctx.request_context.lifespan_context.get("db")
+    if db is not None:
+        try:
+            db.execute("DROP TABLE IF EXISTS imported_data")
+        except Exception:
+            pass
+
+    ctx.request_context.lifespan_context["current_source"] = None
+    await ctx.info("Active data source cleared")
+    return {"status": "disconnected"}
 ```
 
 **Step 4: Register new tools in server.py**
@@ -854,6 +967,7 @@ Add to `src/mcp/data_source/server.py` after existing imports (~line 85):
 
 ```python
 from src.mcp.data_source.tools.source_info_tools import (
+    clear_source,
     get_source_info,
     import_records,
 )
@@ -864,6 +978,7 @@ Add registrations after line 111:
 ```python
 mcp.tool()(get_source_info)
 mcp.tool()(import_records)
+mcp.tool()(clear_source)
 ```
 
 **Step 5: Run tests**
@@ -1300,10 +1415,14 @@ class DataSourceMCPClient:
     # ── Data source lifecycle ──────────────────────────────────────
 
     async def disconnect(self) -> None:
-        """Clear active data source (not the MCP connection)."""
-        # Data Source MCP does not have a disconnect tool.
-        # Importing a new source replaces the previous one.
-        pass
+        """Clear active data source (not the MCP connection).
+
+        Calls the clear_source MCP tool which drops the imported_data table
+        and clears the current_source metadata. Mirrors the existing
+        DataSourceService.disconnect() behavior.
+        """
+        await self._ensure_connected()
+        await self._mcp.call_tool("clear_source", {})
 
     async def list_sheets(self, file_path: str) -> dict[str, Any]:
         """List sheets in an Excel file."""
@@ -1576,7 +1695,26 @@ Replace every `svc = _get_data_source_service()` with `gw = await get_data_gatew
 - `ship_command_pipeline()` (line 715): Replace `source_service.get_rows_by_filter()` with `gw.get_rows_by_filter()`
 - `_persist_job_source_signature()` (line 153): Replace `DataSourceService.get_instance().get_source_signature()` with `(await get_data_gateway()).get_source_signature()`
 
-Note: `_persist_job_source_signature` becomes async since `get_data_gateway()` is async.
+**IMPORTANT: `_persist_job_source_signature` becomes async** since `get_data_gateway()` is async.
+All callsites MUST be updated to `await`:
+
+```python
+# Change function signature:
+async def _persist_job_source_signature(job_id: str, db: Any) -> None:
+    """Persist source signature metadata for replay safety checks."""
+    gw = await get_data_gateway()
+    signature = await gw.get_source_signature()
+    ...
+
+# Update callsite in create_job_tool (line 475):
+await _persist_job_source_signature(job.id, db)
+
+# Update callsite in ship_command_pipeline_tool (line 737):
+await _persist_job_source_signature(job.id, db)
+```
+
+Both callsites are already inside `async` functions, so adding `await` is safe.
+Verify no other callsites exist: `grep -rn "_persist_job_source_signature" src/`
 
 **Step 3: Remove mcp__data__* from agent client**
 
@@ -1602,19 +1740,76 @@ git commit -m "refactor: agent tools use DataSourceGateway, remove mcp__data__ f
 
 **Files:**
 - Modify: `src/api/routes/conversations.py` (replace DataSourceService, remove auto-import)
+- Modify: `src/services/data_source_mcp_client.py` (add `get_source_info_as_dataclass`)
 
-**Step 1: Replace source checks**
+**CRITICAL: Type contract issue**
 
-Replace `DataSourceService.get_instance()` calls (~line 291-293) with:
+`conversations.py` passes `DataSourceInfo` objects to:
+1. `_compute_source_hash()` — accesses `.source_type`, `.file_path`, `.row_count`, `.columns` (each with `.name`)
+2. `_ensure_agent()` → `build_system_prompt()` — accesses `.source_type`, `.file_path`, `.row_count`, `.columns` (each with `.name`, `.type`, `.nullable`)
+
+The gateway returns `dict[str, Any]`, not `DataSourceInfo`. We need an adapter.
+
+**Step 1: Add DataSourceInfo adapter to DataSourceMCPClient**
+
+Add to `src/services/data_source_mcp_client.py`:
+
+```python
+from src.services.data_source_service import DataSourceInfo, SchemaColumnInfo
+
+
+async def get_source_info_typed(self) -> "DataSourceInfo | None":
+    """Get source info as a DataSourceInfo object for backward compatibility.
+
+    conversations.py and system_prompt.py expect DataSourceInfo with typed
+    attributes. This method converts the gateway dict to that format.
+
+    Returns:
+        DataSourceInfo if source active, None otherwise.
+    """
+    info = await self.get_source_info()
+    if info is None:
+        return None
+
+    columns = [
+        SchemaColumnInfo(
+            name=col.get("name", ""),
+            type=col.get("type", "VARCHAR"),
+            nullable=col.get("nullable", True),
+        )
+        for col in info.get("columns", [])
+    ]
+    return DataSourceInfo(
+        source_type=info.get("source_type", "unknown"),
+        file_path=info.get("path"),
+        columns=columns,
+        row_count=info.get("row_count", 0),
+    )
+```
+
+Also add this method to the `DataSourceGateway` protocol:
+
+```python
+async def get_source_info_typed(self) -> "DataSourceInfo | None":
+    """Get source info as DataSourceInfo for backward compat."""
+    ...
+```
+
+**Step 2: Replace source checks in conversations.py**
+
+Replace `DataSourceService.get_instance()` calls (~line 291-294) with:
 
 ```python
 from src.services.gateway_provider import get_data_gateway
 
 gw = await get_data_gateway()
-source_info = await gw.get_source_info()
+source_info = await gw.get_source_info_typed()
 ```
 
-**Step 2: Delete _try_auto_import_shopify entirely**
+This returns a `DataSourceInfo` object, so `_compute_source_hash()` and
+`build_system_prompt()` work unchanged. No edits needed to those functions.
+
+**Step 3: Delete _try_auto_import_shopify entirely**
 
 Delete the function (lines 64-136) and ALL references in one atomic step:
 - Remove `from src.mcp.external_sources.clients.shopify import ShopifyClient` import
@@ -1624,16 +1819,16 @@ Delete the function (lines 64-136) and ALL references in one atomic step:
 
 Do NOT comment-out — delete in one step. The connect_shopify agent tool (Task 11) is the replacement.
 
-**Step 3: Run conversation tests**
+**Step 4: Run conversation tests**
 
 Run: `pytest tests/api/routes/test_conversations.py -v -k "not stream and not sse"`
 Expected: PASS
 
-**Step 4: Commit**
+**Step 5: Commit**
 
 ```bash
-git add src/api/routes/conversations.py
-git commit -m "refactor: conversations use gateway_provider, remove auto-import"
+git add src/api/routes/conversations.py src/services/data_source_mcp_client.py src/services/data_source_gateway.py
+git commit -m "refactor: conversations use gateway_provider with DataSourceInfo adapter"
 ```
 
 ---
@@ -1692,7 +1887,9 @@ async def test_connect_shopify_fetches_and_imports():
     )
     ext_client.fetch_orders.assert_called_once_with("shopify", limit=250)
     gw.import_from_records.assert_called_once()
-    assert "1" in result and "order" in result.lower()
+    # _ok() returns {"isError": False, "content": [{"type": "text", "text": "..."}]}
+    assert result["isError"] is False
+    assert "1" in result["content"][0]["text"]
 ```
 
 **Step 2: Implement connect_shopify tool handler**
@@ -1708,7 +1905,7 @@ So the handler takes `args: dict[str, Any]` as first param and
 async def connect_shopify_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
-) -> str:
+) -> dict[str, Any]:
     """Connect to Shopify and import orders as active data source.
 
     Reads SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN from env.
@@ -1720,7 +1917,9 @@ async def connect_shopify_tool(
         bridge: Optional event emitter bridge.
 
     Returns:
-        Human-readable result string.
+        MCP tool response dict (from _ok/_err helpers).
+        _ok() wraps data in {"isError": False, "content": [{"type": "text", "text": json}]}
+        _err() wraps message in {"isError": True, "content": [{"type": "text", "text": msg}]}
     """
     access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
     store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
@@ -2230,7 +2429,7 @@ Expected: PASS
 **Step 3: Update CLAUDE.md**
 
 Update the Source Structure section to reflect:
-- New files: `services/external_sources_mcp_client.py`, `services/data_source_gateway.py`, `services/data_source_mcp_client.py`
+- New files: `services/external_sources_mcp_client.py`, `services/data_source_gateway.py`, `services/data_source_mcp_client.py`, `services/gateway_provider.py`
 - New directories: `orchestrator/agent/tools/` (core, pipeline, data, interactive)
 - New frontend files: `ui/icons.tsx`, `ui/brand-icons.tsx`, split command-center and sidebar modules
 - Removed: `PlatformStateManager`, `get_shopify_mcp_config()`, auto-import side effect
@@ -2249,19 +2448,25 @@ git commit -m "docs: update CLAUDE.md for MCP-first architecture cleanup"
 
 | Phase | Tasks | Key Deliverables |
 |-------|-------|------------------|
-| **1A** | 1-4 | External Sources MCP gateway wired (connect + disconnect tools), ExternalSourcesMCPClient singleton, PlatformStateManager deleted, stale config removed |
-| **1B** | 5-10 | DataSourceGateway protocol, DataSourceMCPClient implementation, centralized gateway_provider, routes + agent tools wired, mcp__data__ removed from agent, auto-import deleted |
-| **2** | 11-13 | connect_shopify agent tool (correct _bind_bridge signature), orphaned assets deleted, frontend hook standardized |
+| **Pre** | Checklist | Contract parity verification before coding starts |
+| **1A** | 1-4 | External Sources MCP gateway wired (connect + disconnect tools, registered in server.py), ExternalSourcesMCPClient singleton, PlatformStateManager deleted, stale config removed |
+| **1B** | 5-10 | DataSourceGateway protocol + typed adapter, DataSourceMCPClient with real disconnect (clear_source tool), centralized gateway_provider, routes + agent + conversations wired, mcp__data__ removed from agent, auto-import deleted |
+| **2** | 11-13 | connect_shopify agent tool (dict return type, correct _bind_bridge signature), orphaned assets deleted, frontend hook standardized |
 | **3** | 14-20 | Icons consolidated, formatTimeAgo extracted, presentation.tsx split (5 files), panels.tsx split (2 files), tools_v2.py split (4 files), regression validated |
 
-**Total commits:** ~21 atomic commits
-**Risk mitigation:** Each task has explicit regression gates. Temporary barrel files preserve backward compatibility during migration with explicit removal dates (2026-03-14).
+**Total commits:** ~22 atomic commits
+**Risk mitigation:** Pre-implementation contract checklist, explicit regression gates per task, temporary barrel files with removal dates (2026-03-14).
 
 ### Key Architectural Invariants
 
-1. **Single provider module** — `gateway_provider.py` owns both MCP client singletons. No other file may create `DataSourceMCPClient` or `ExternalSourcesMCPClient` instances.
+1. **Single provider module** — `gateway_provider.py` owns both MCP client singletons. No other file may create `DataSourceMCPClient` or `ExternalSourcesMCPClient` instances. Specifically: `platforms.py` imports from `gateway_provider`, it does NOT create a local `_ext_client`.
 2. **No-arg client constructors** — All platform clients use `__init__(self)` with no args. Credentials (including URLs) pass through `authenticate(credentials: dict) -> bool`.
-3. **Auth return check** — Every `authenticate()` call checks the boolean return value.
-4. **Handler signature contract** — All tool handlers use `(args: dict[str, Any], bridge: EventEmitterBridge | None = None)` to match `_bind_bridge` wrapping.
-5. **Structured source signature** — `get_source_signature()` returns `dict[str, Any]` with `source_type`, `source_ref`, `schema_fingerprint` — NOT a truncated string.
-6. **None-safe where_clause** — Gateway normalizes `None` → `"1=1"` before passing to MCP tool.
+3. **Platform-specific URL key mapping** — `store_url` parameter is mapped to the platform's expected credential key: Shopify→`store_url`, WooCommerce→`site_url`, SAP→`base_url`, Oracle→none.
+4. **Auth return check** — Every `authenticate()` call checks the boolean return value; `False` raises an error.
+5. **Handler signature contract** — All tool handlers use `(args: dict[str, Any], bridge: EventEmitterBridge | None = None)` to match `_bind_bridge` wrapping. Return type is `dict[str, Any]` (from `_ok/_err`), never `str`.
+6. **MCP tool registration pattern** — Tool functions are plain `async def` in `tools.py` (no `@mcp.tool()` decorator). Registration happens in `server.py` via `mcp.tool()(function)`.
+7. **Structured source signature** — `get_source_signature()` returns `dict[str, Any]` with `source_type`, `source_ref`, `schema_fingerprint` (full SHA-256, no truncation).
+8. **DataSourceInfo typed adapter** — `get_source_info_typed()` converts gateway dicts to `DataSourceInfo` objects for consumers like `_compute_source_hash()` and `build_system_prompt()`.
+9. **Real disconnect semantics** — Gateway `disconnect()` calls `clear_source` MCP tool (drops table + clears metadata). Not a no-op.
+10. **None-safe where_clause** — Gateway normalizes `None` → `"1=1"` before passing to MCP tool.
+11. **Async _persist_job_source_signature** — Function becomes async, all callsites (lines 475, 737) updated to `await`.
