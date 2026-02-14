@@ -238,7 +238,7 @@ function RowDetailItem({ row }: { row: JobRow }) {
             </div>
             <div className="space-y-1">
               <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Customer</span>
-              <p className="text-sm text-slate-200">{orderData.customer_name}</p>
+              <p className="text-sm text-slate-200">{orderData.customer_name || orderData.ship_to_name}</p>
               {orderData.customer_email && (
                 <p className="text-[10px] font-mono text-slate-500">{orderData.customer_email}</p>
               )}
@@ -259,9 +259,9 @@ function RowDetailItem({ row }: { row: JobRow }) {
             </p>
           </div>
 
-          {orderData.order_number && (
+          {(orderData.order_number || orderData.order_id) && (
             <div className="mt-2 text-[10px] font-mono text-slate-500">
-              Order #{orderData.order_number}
+              Order #{orderData.order_number || orderData.order_id}
             </div>
           )}
         </div>

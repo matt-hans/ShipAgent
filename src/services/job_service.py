@@ -42,7 +42,7 @@ class InvalidStateTransition(Exception):
 
 # Valid state transitions for job lifecycle
 VALID_TRANSITIONS: dict[JobStatus, list[JobStatus]] = {
-    JobStatus.pending: [JobStatus.running, JobStatus.cancelled],
+    JobStatus.pending: [JobStatus.running, JobStatus.cancelled, JobStatus.failed],
     JobStatus.running: [
         JobStatus.paused,
         JobStatus.completed,

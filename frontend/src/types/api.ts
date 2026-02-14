@@ -205,6 +205,18 @@ export interface PreviewRow {
   order_data?: OrderData | null;
 }
 
+/** Shipper address info for interactive preview display. */
+export interface ShipperInfo {
+  name: string;
+  phone?: string;
+  addressLine1: string;
+  addressLine2?: string;
+  city: string;
+  stateProvinceCode: string;
+  postalCode: string;
+  countryCode: string;
+}
+
 /** Batch preview before execution. */
 export interface BatchPreview {
   job_id: string;
@@ -213,6 +225,25 @@ export interface BatchPreview {
   additional_rows: number;
   total_estimated_cost_cents: number;
   rows_with_warnings: number;
+  // Interactive shipment metadata (present when interactive=true)
+  interactive?: boolean;
+  shipper?: ShipperInfo;
+  ship_to?: {
+    name: string;
+    address1: string;
+    address2?: string;
+    city: string;
+    state: string;
+    postal_code: string;
+    country: string;
+    phone?: string;
+  };
+  account_number?: string;
+  service_name?: string;
+  service_code?: string;
+  weight_lbs?: number;
+  packaging_type?: string;
+  resolved_payload?: Record<string, unknown>;
 }
 
 // === Progress Types ===

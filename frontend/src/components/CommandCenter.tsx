@@ -13,6 +13,7 @@ import { JobDetailPanel } from '@/components/JobDetailPanel';
 import {
   ActiveSourceBanner,
   InteractiveModeBanner,
+  InteractivePreviewCard,
   CompletionArtifact,
   EditIcon,
   PreviewCard,
@@ -382,36 +383,46 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
             {/* Preview card */}
             {preview && !executingJobId && (
               <div className="pl-11">
-                <PreviewCard
-                  preview={preview}
-                  onConfirm={(opts) => {
-                    // Apply preference-based auto-behavior for non-'ask' modes
-                    if (warningPreference === 'ship-all') {
-                      handleConfirm();
-                    } else if (warningPreference === 'skip-warnings') {
-                      const warnRows = preview.preview_rows.filter(
-                        (r) => r.warnings?.length
-                      );
-                      if (warnRows.length > 0) {
-                        handleConfirm({
-                          skipWarningRows: true,
-                          warningRowNumbers: warnRows.map((r) => r.row_number),
-                        });
-                      } else {
+                {preview.interactive ? (
+                  <InteractivePreviewCard
+                    preview={preview}
+                    onConfirm={(opts) => handleConfirm(opts)}
+                    onCancel={handleCancel}
+                    isConfirming={isConfirming}
+                    isProcessing={conv.isProcessing}
+                  />
+                ) : (
+                  <PreviewCard
+                    preview={preview}
+                    onConfirm={(opts) => {
+                      // Apply preference-based auto-behavior for non-'ask' modes
+                      if (warningPreference === 'ship-all') {
                         handleConfirm();
+                      } else if (warningPreference === 'skip-warnings') {
+                        const warnRows = preview.preview_rows.filter(
+                          (r) => r.warnings?.length
+                        );
+                        if (warnRows.length > 0) {
+                          handleConfirm({
+                            skipWarningRows: true,
+                            warningRowNumbers: warnRows.map((r) => r.row_number),
+                          });
+                        } else {
+                          handleConfirm();
+                        }
+                      } else {
+                        // 'ask' mode — pass through from gate
+                        handleConfirm(opts);
                       }
-                    } else {
-                      // 'ask' mode — pass through from gate
-                      handleConfirm(opts);
-                    }
-                  }}
-                  onCancel={handleCancel}
-                  isConfirming={isConfirming}
-                  onRefine={handleRefine}
-                  isRefining={isRefining}
-                  isProcessing={conv.isProcessing}
-                  warningPreference={warningPreference}
-                />
+                    }}
+                    onCancel={handleCancel}
+                    isConfirming={isConfirming}
+                    onRefine={handleRefine}
+                    isRefining={isRefining}
+                    isProcessing={conv.isProcessing}
+                    warningPreference={warningPreference}
+                  />
+                )}
               </div>
             )}
 

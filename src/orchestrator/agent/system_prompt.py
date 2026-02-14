@@ -112,51 +112,39 @@ Interactive mode is active:
 
 Interactive Shipping is enabled for single-shipment creation only.
 
-Use `mcp__ups__create_shipment` for ad-hoc shipment creation:
-1. Gather shipment details from the user's message
-2. Build a `request_body` dict with known UPS fields (Shipper, ShipTo, Package, Service)
-3. Call `mcp__ups__create_shipment` with `request_body=<your dict>`
-4. If successful: return tracking number and shipment cost
-5. If ToolError includes `missing`: ask for the missing fields and retry
+**Your shipper address and UPS account number are auto-populated from configuration.**
+You do NOT need to ask for shipper details, account number, or billing information.
+
+**Gather from the user:**
+1. Recipient name
+2. Recipient address (street, city, state, ZIP)
+3. Service preference (optional — defaults to UPS Ground)
+4. Package weight in lbs (optional — defaults to 1.0)
+5. Recipient phone (optional)
+
+**Workflow:**
+1. Collect shipment details from the user's message
+2. Call `preview_interactive_shipment` with the gathered details
+3. STOP — the preview card will appear for the user to review all shipment details and estimated cost
+4. The system handles confirmation and execution automatically — do not call any other tools
+
+**Important:**
+- Do NOT call `mcp__ups__create_shipment` directly — always use `preview_interactive_shipment`
+- If the user says "ship from my NYC warehouse at 789 Broadway, New York, NY 10003", pass that as the `ship_from` override parameter
+- Do NOT ask for shipper address, account number, or billing details — these come from config
 
 Batch and data-source policy in this mode:
 - Do NOT call batch or data-source tools
 - If the user requests batch or data-source shipping, instruct them to turn Interactive Shipping off
 - If the request is ambiguous between ad-hoc and batch, ask one clarifying question and default to ad-hoc only if explicitly confirmed
-
-Do NOT send an empty `request_body` to discover required fields — populate what you know first.
-"""
-        interactive_validation_section = """
-## Handling Create Shipment Validation Errors
-
-When `mcp__ups__create_shipment` returns a ToolError with a `missing` array:
-1. Read the `missing` array — each entry has a `prompt` field with a plain-English description
-2. Ask the user for the missing information conversationally (group related fields)
-3. Rebuild the full request_body with gathered info and retry (max 2 retries, then suggest checking their data)
-4. Do NOT retry silently — always show the user what was missing
-
-Common missing fields (most env-level defaults are auto-filled by UPS MCP):
-- Shipper name + address (street, city, state/zip for US/CA/PR, country)
-- Recipient name + address
-- Service code (e.g. "03" for Ground)
-- Package details (packaging code, weight, weight unit)
-
-Rules:
-- Do NOT retry ELICITATION_DECLINED or ELICITATION_CANCELLED — the user said no
-- Do NOT treat MALFORMED_REQUEST as recoverable by asking the user — this is a structural issue
-- Do NOT parse the message string for routing — use the code field
-- Do NOT send an empty request_body to discover what's needed — populate what you know first
-
-This applies to interactive single-shipment creation only. Batch operations
-handle validation errors as row failures automatically.
 """
         safety_mode_section = """
 - In interactive mode, NEVER call batch/data-source tools.
 - If the user requests batch/data-source shipping, clearly instruct them to turn Interactive Shipping off.
 """
         tool_usage_section = """
-You have deterministic tools available. In interactive mode, focus on UPS ad-hoc shipment tools.
-Do not attempt batch/data-source tools in this mode.
+You have deterministic tools available. In interactive mode, use `preview_interactive_shipment`
+for shipment creation. Do not attempt batch/data-source tools in this mode.
 """
     else:
         filter_rules_section = f"""

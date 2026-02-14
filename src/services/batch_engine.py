@@ -238,6 +238,7 @@ class BatchEngine:
         shipper: dict[str, str],
         service_code: str | None = None,
         on_progress: ProgressCallback | None = None,
+        write_back_enabled: bool = True,
     ) -> dict[str, Any]:
         """Execute batch shipment processing with concurrent UPS API calls.
 
@@ -250,6 +251,9 @@ class BatchEngine:
             shipper: Shipper address info
             service_code: Optional service code override
             on_progress: Optional async callback for SSE events
+            write_back_enabled: Whether to write tracking numbers back to
+                the data source. Defaults to True. Set to False for
+                interactive shipments that have no source to write back to.
 
         Returns:
             Dict with successful, failed, total_cost_cents counts
@@ -374,7 +378,12 @@ class BatchEngine:
             "status": "skipped",
             "message": "No successful tracking updates to write back.",
         }
-        if successful_write_back_updates:
+        if successful_write_back_updates and not write_back_enabled:
+            write_back_result = {
+                "status": "skipped",
+                "message": "Write-back disabled for interactive shipment.",
+            }
+        elif successful_write_back_updates:
             try:
                 from src.services.data_source_service import DataSourceService
 

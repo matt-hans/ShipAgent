@@ -16,13 +16,8 @@ class TestInteractiveModeEndToEnd:
     """Behavior tests for interactive shipping mode flow."""
 
     @pytest.mark.asyncio
-    async def test_interactive_on_allows_and_translates_missing_error(self):
-        """With interactive=True: hook allows → _translate_error produces E-2010.
-
-        Simulates: agent calls create_shipment → MCP preflight returns ToolError
-        with missing[] → ShipAgent translates to actionable E-2010 error.
-        """
-        # 1. Hook allows create_shipment when interactive=True
+    async def test_interactive_on_denies_create_shipment_via_hook(self):
+        """With interactive=True: hook denies create_shipment — must use preview tool."""
         hook = create_shipping_hook(interactive_shipping=True)
         hook_result = await hook(
             {
@@ -32,9 +27,12 @@ class TestInteractiveModeEndToEnd:
             "test-tool-id",
             None,
         )
-        assert hook_result == {}, "Hook should allow create_shipment when interactive=True"
+        assert "deny" in str(hook_result)
+        assert "preview_interactive_shipment" in str(hook_result)
 
-        # 2. _translate_error converts missing[] ToolError to E-2010
+    @pytest.mark.asyncio
+    async def test_translate_error_still_produces_e2010_for_missing(self):
+        """_translate_error converts missing[] ToolError to E-2010."""
         client = UPSMCPClient.__new__(UPSMCPClient)
         error = MCPToolError(tool_name="create_shipment", error_text=json.dumps({
             "code": "ELICITATION_UNSUPPORTED",

@@ -142,6 +142,10 @@ class Job(Base):
     # Cost tracking (in cents to avoid float issues)
     total_cost_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
 
+    # Interactive shipment metadata
+    shipper_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_interactive: Mapped[bool] = mapped_column(nullable=False, default=False)
+
     # Timestamps (ISO8601 strings for SQLite compatibility)
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso
