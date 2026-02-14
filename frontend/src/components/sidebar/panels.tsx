@@ -11,7 +11,7 @@
 import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { useExternalSources } from '@/hooks/useExternalSources';
-import { cn } from '@/lib/utils';
+import { cn, formatTimeAgo } from '@/lib/utils';
 import { getJobs, deleteJob, disconnectDataSource, importDataSource, uploadDataSource, getMergedLabelsUrl, getSavedDataSources, reconnectSavedSource } from '@/lib/api';
 import type { Job, JobSummary, DataSourceInfo, PlatformType } from '@/types/api';
 import { RecentSourcesModal } from '@/components/RecentSourcesModal';
@@ -676,18 +676,6 @@ export function JobHistorySection({
       return matchesSearch && matchesFilter;
     });
   }, [jobs, search, filter]);
-
-  const formatTimeAgo = (date: string) => {
-    const diff = Date.now() - new Date(date).getTime();
-    const minutes = Math.floor(diff / 60000);
-    const hours = Math.floor(diff / 3600000);
-    const days = Math.floor(diff / 86400000);
-
-    if (days > 0) return `${days}d ago`;
-    if (hours > 0) return `${hours}h ago`;
-    if (minutes > 0) return `${minutes}m ago`;
-    return 'Just now';
-  };
 
   if (isLoading) {
     return (
