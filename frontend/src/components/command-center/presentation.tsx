@@ -737,6 +737,166 @@ export function PreviewCard({
   );
 }
 
+// Interactive preview card for single ad-hoc shipments
+export function InteractivePreviewCard({
+  preview,
+  onConfirm,
+  onCancel,
+  isConfirming,
+  isProcessing,
+}: {
+  preview: BatchPreview;
+  onConfirm: (opts?: ConfirmOptions) => void;
+  onCancel: () => void;
+  isConfirming: boolean;
+  isProcessing: boolean;
+}) {
+  const [showPayload, setShowPayload] = React.useState(false);
+  const { shipper, ship_to: shipTo } = preview;
+  const hasWarnings = preview.preview_rows?.some(r => r.warnings?.length > 0);
+
+  return (
+    <div className="card-premium p-5 animate-scale-in max-w-lg">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <PackageIcon className="w-5 h-5 text-blue-400" />
+          <h3 className="text-base font-semibold text-white">Shipment Preview</h3>
+        </div>
+        <span className="badge-info text-xs px-2 py-0.5">Ready</span>
+      </div>
+
+      {/* Ship From / Ship To */}
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        {/* Ship From */}
+        <div className="bg-slate-800/50 rounded-lg p-3">
+          <div className="flex items-center gap-1.5 mb-2">
+            <MapPinIcon className="w-3.5 h-3.5 text-slate-400" />
+            <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Ship From</span>
+          </div>
+          {shipper ? (
+            <div className="space-y-0.5 text-sm text-slate-200">
+              <p className="font-medium">{shipper.name}</p>
+              <p className="text-slate-300">{shipper.addressLine1}</p>
+              {shipper.addressLine2 && <p className="text-slate-300">{shipper.addressLine2}</p>}
+              <p className="text-slate-300">
+                {shipper.city}, {shipper.stateProvinceCode} {shipper.postalCode}
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-slate-400">From config</p>
+          )}
+        </div>
+
+        {/* Ship To */}
+        <div className="bg-slate-800/50 rounded-lg p-3">
+          <div className="flex items-center gap-1.5 mb-2">
+            <UserIcon className="w-3.5 h-3.5 text-slate-400" />
+            <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Ship To</span>
+          </div>
+          {shipTo ? (
+            <div className="space-y-0.5 text-sm text-slate-200">
+              <p className="font-medium">{shipTo.name}</p>
+              <p className="text-slate-300">{shipTo.address1}</p>
+              {shipTo.address2 && <p className="text-slate-300">{shipTo.address2}</p>}
+              <p className="text-slate-300">
+                {shipTo.city}, {shipTo.state} {shipTo.postal_code}
+              </p>
+              {shipTo.phone && (
+                <p className="text-slate-400 text-xs mt-1">{shipTo.phone}</p>
+              )}
+            </div>
+          ) : (
+            <p className="text-sm text-slate-400">--</p>
+          )}
+        </div>
+      </div>
+
+      {/* Service / Weight / Account */}
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="bg-slate-800/50 rounded-lg p-2.5 text-center">
+          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">Service</p>
+          <p className="text-sm font-semibold text-white">{preview.service_name || 'UPS Ground'}</p>
+        </div>
+        <div className="bg-slate-800/50 rounded-lg p-2.5 text-center">
+          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">Weight</p>
+          <p className="text-sm font-semibold text-white">{preview.weight_lbs ?? 1.0} lbs</p>
+        </div>
+        <div className="bg-slate-800/50 rounded-lg p-2.5 text-center">
+          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">Account</p>
+          <p className="text-sm font-semibold text-white font-mono">{preview.account_number || '****'}</p>
+        </div>
+      </div>
+
+      {/* Estimated Cost */}
+      <div className="bg-gradient-to-r from-emerald-500/10 to-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 mb-4 text-center">
+        <p className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider mb-1">Estimated Cost</p>
+        <p className="text-2xl font-bold text-emerald-400">
+          {formatCurrency(preview.total_estimated_cost_cents)}
+        </p>
+      </div>
+
+      {/* Warning (if rate failed) */}
+      {hasWarnings && (
+        <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 mb-4">
+          <p className="text-sm text-amber-300 font-medium mb-1">Rating Warning</p>
+          {preview.preview_rows?.map((r, i) =>
+            r.warnings?.map((w, j) => (
+              <p key={`${i}-${j}`} className="text-xs text-amber-200/80">{w}</p>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* Expandable Full Payload */}
+      {preview.resolved_payload && (
+        <div className="mb-4">
+          <button
+            onClick={() => setShowPayload(!showPayload)}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors"
+          >
+            <ChevronDownIcon className={cn('w-3.5 h-3.5 transition-transform', showPayload && 'rotate-180')} />
+            <span>Full Payload</span>
+          </button>
+          {showPayload && (
+            <pre className="mt-2 bg-slate-900/80 border border-slate-700/50 rounded-lg p-3 text-xs text-slate-300 overflow-x-auto max-h-64 overflow-y-auto font-mono">
+              {JSON.stringify(preview.resolved_payload, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex gap-3">
+        <button
+          onClick={onCancel}
+          disabled={isConfirming || isProcessing}
+          className="btn-secondary flex-1 h-9 text-sm"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={() => onConfirm()}
+          disabled={isConfirming || isProcessing}
+          className="btn-primary flex-1 h-9 text-sm flex items-center justify-center gap-2"
+        >
+          {isConfirming ? (
+            <>
+              <span className="animate-spin h-3.5 w-3.5 border-2 border-white/20 border-t-white rounded-full" />
+              <span>Confirming...</span>
+            </>
+          ) : (
+            <>
+              <CheckIcon className="w-3.5 h-3.5" />
+              <span>Confirm & Ship</span>
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Per-row failure detail for callbacks
 interface RowFailureInfo {
   rowNumber: number;

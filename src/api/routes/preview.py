@@ -220,18 +220,29 @@ async def _execute_batch(job_id: str) -> None:
         await observer.on_batch_started(job_id, len(rows))
 
         # Get shipper info once for all shipments.
-        # Use env-based shipper for local data sources (CSV/Excel) to match
-        # the preview path in CommandProcessor._rate_job_rows(), which always
-        # calls build_shipper_from_env(). Only use Shopify shop address when
-        # no local data source is active (i.e., Shopify-sourced jobs).
-        from src.services.data_source_service import DataSourceService
-
-        ds_service = DataSourceService.get_instance()
-        if ds_service.get_source_info() is not None:
-            shipper = build_shipper_from_env()
-            logger.info("Using env shipper for local data source job %s", job_id)
+        # Priority: (1) persisted shipper from interactive preview,
+        # (2) env-based shipper for local data sources (CSV/Excel),
+        # (3) Shopify shop address when no local source is active.
+        if job.shipper_json:
+            try:
+                shipper = json.loads(job.shipper_json)
+                logger.info("Using persisted shipper for job %s", job_id)
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.error(
+                    "Malformed shipper_json for job %s: %s — falling back to env",
+                    job_id,
+                    e,
+                )
+                shipper = build_shipper_from_env()
         else:
-            shipper = await _get_shipper_info()
+            from src.services.data_source_service import DataSourceService
+
+            ds_service = DataSourceService.get_instance()
+            if ds_service.get_source_info() is not None:
+                shipper = build_shipper_from_env()
+                logger.info("Using env shipper for local data source job %s", job_id)
+            else:
+                shipper = await _get_shipper_info()
 
         # Derive UPS environment from base URL
         base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
@@ -288,12 +299,13 @@ async def _execute_batch(job_id: str) -> None:
                         kwargs.get("error_message", "Unknown error"),
                     )
 
-            # Execute batch
+            # Execute batch (disable write-back for interactive jobs)
             result = await engine.execute(
                 job_id=job_id,
                 rows=rows,
                 shipper=shipper,
                 on_progress=on_progress,
+                write_back_enabled=not getattr(job, "is_interactive", False),
             )
 
         successful = result["successful"]

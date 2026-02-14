@@ -130,28 +130,7 @@ def test_prompt_contains_direct_single_shipment_section_when_interactive():
     """System prompt includes the exclusive interactive ad-hoc section when interactive=True."""
     prompt = build_system_prompt(interactive_shipping=True)
     assert "Interactive Ad-hoc Mode (Exclusive)" in prompt
-    assert "mcp__ups__create_shipment" in prompt
-    assert "request_body" in prompt
-
-
-def test_prompt_contains_validation_error_handling_when_interactive():
-    """System prompt includes validation error handling when interactive=True."""
-    prompt = build_system_prompt(interactive_shipping=True)
-    assert "Handling Create Shipment Validation Errors" in prompt
-    assert "missing" in prompt.lower()
-
-
-def test_prompt_contains_elicitation_declined_rule_when_interactive():
-    """System prompt instructs not to retry cancelled/declined errors when interactive=True."""
-    prompt = build_system_prompt(interactive_shipping=True)
-    assert "ELICITATION_DECLINED" in prompt
-    assert "ELICITATION_CANCELLED" in prompt
-
-
-def test_prompt_contains_malformed_request_rule_when_interactive():
-    """System prompt instructs MALFORMED_REQUEST is structural when interactive=True."""
-    prompt = build_system_prompt(interactive_shipping=True)
-    assert "MALFORMED_REQUEST" in prompt
+    assert "preview_interactive_shipment" in prompt
 
 
 # --- Interactive shipping prompt conditioning tests ---
@@ -164,19 +143,19 @@ class TestInteractiveShippingPromptConditioning:
         """Direct shipment + validation sections present when interactive=True."""
         prompt = build_system_prompt(interactive_shipping=True)
         assert "Interactive Ad-hoc Mode (Exclusive)" in prompt
-        assert "Handling Create Shipment Validation Errors" in prompt
+        assert "preview_interactive_shipment" in prompt
 
     def test_interactive_sections_omitted_when_false(self):
         """Direct shipment + validation sections absent when interactive=False."""
         prompt = build_system_prompt(interactive_shipping=False)
         assert "Direct Single-Shipment Commands" not in prompt
-        assert "Handling Create Shipment Validation Errors" not in prompt
+        assert "Interactive Ad-hoc Mode (Exclusive)" not in prompt
 
     def test_interactive_sections_omitted_by_default(self):
         """Default (no flag) omits interactive sections."""
         prompt = build_system_prompt()
         assert "Direct Single-Shipment Commands" not in prompt
-        assert "Handling Create Shipment Validation Errors" not in prompt
+        assert "Interactive Ad-hoc Mode (Exclusive)" not in prompt
 
     def test_exclusive_mode_policy_when_true(self):
         """Interactive prompt explicitly enforces exclusive ad-hoc mode."""
@@ -198,6 +177,22 @@ class TestInteractiveShippingPromptConditioning:
         assert "ship_command_pipeline" in prompt_off
         assert "### Shipping Commands (default path)" in prompt_off
         assert "### Shipping Commands (default path)" not in prompt_on
+
+    def test_interactive_prompt_mentions_auto_populated_shipper(self):
+        """Interactive prompt tells agent that shipper is auto-populated."""
+        prompt = build_system_prompt(interactive_shipping=True)
+        assert "auto-populated from configuration" in prompt
+
+    def test_interactive_prompt_references_preview_tool(self):
+        """Interactive prompt references the preview_interactive_shipment tool."""
+        prompt = build_system_prompt(interactive_shipping=True)
+        assert "preview_interactive_shipment" in prompt
+
+    def test_interactive_prompt_denies_direct_create_shipment(self):
+        """Interactive prompt tells agent not to call create_shipment directly."""
+        prompt = build_system_prompt(interactive_shipping=True)
+        assert "Do NOT call" in prompt
+        assert "mcp__ups__create_shipment" in prompt
 
     def test_safety_rules_always_present(self):
         """Safety rules are present regardless of interactive flag."""

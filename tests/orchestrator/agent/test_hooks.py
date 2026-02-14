@@ -689,8 +689,8 @@ class TestInteractiveShippingHookEnforcement:
         assert "Interactive shipping is disabled" in str(result)
 
     @pytest.mark.asyncio
-    async def test_create_shipment_allowed_when_interactive_on(self):
-        """create_shipment allowed (structural guard only) when interactive=True."""
+    async def test_create_shipment_denied_when_interactive_on(self):
+        """create_shipment denied in interactive mode — must use preview tool."""
         from src.orchestrator.agent.hooks import create_shipping_hook
 
         hook = create_shipping_hook(interactive_shipping=True)
@@ -699,11 +699,12 @@ class TestInteractiveShippingHookEnforcement:
             "test-id",
             None,
         )
-        assert result == {}  # Allowed
+        assert "deny" in str(result)
+        assert "preview_interactive_shipment" in str(result)
 
     @pytest.mark.asyncio
-    async def test_structural_guard_still_applies_when_interactive_on(self):
-        """Non-dict tool_input denied even when interactive=True."""
+    async def test_non_dict_input_denied_when_interactive_on(self):
+        """Non-dict tool_input denied in interactive mode (deny-all path)."""
         from src.orchestrator.agent.hooks import create_shipping_hook
 
         hook = create_shipping_hook(interactive_shipping=True)
@@ -728,8 +729,8 @@ class TestInteractiveShippingHookEnforcement:
         assert result == {}  # Allowed — only create_shipment is gated
 
     @pytest.mark.asyncio
-    async def test_empty_dict_allowed_when_interactive_on(self):
-        """Empty dict tool_input allowed when interactive=True (MCP preflight handles)."""
+    async def test_empty_dict_denied_when_interactive_on(self):
+        """Empty dict tool_input denied when interactive=True (deny-all path)."""
         from src.orchestrator.agent.hooks import create_shipping_hook
 
         hook = create_shipping_hook(interactive_shipping=True)
@@ -738,7 +739,7 @@ class TestInteractiveShippingHookEnforcement:
             "test-id",
             None,
         )
-        assert result == {}
+        assert "deny" in str(result)
 
     @pytest.mark.asyncio
     async def test_none_input_denied_when_interactive_on(self):
@@ -785,8 +786,8 @@ class TestInteractiveShippingHookEnforcement:
         assert "deny" in str(result)
 
     @pytest.mark.asyncio
-    async def test_create_hook_matchers_allows_when_interactive(self):
-        """create_hook_matchers(interactive_shipping=True) produces allow hook."""
+    async def test_create_hook_matchers_denies_when_interactive(self):
+        """create_hook_matchers(interactive_shipping=True) produces deny hook."""
         matchers = create_hook_matchers(interactive_shipping=True)
         shipment_matchers = [
             m for m in matchers["PreToolUse"]
@@ -799,4 +800,4 @@ class TestInteractiveShippingHookEnforcement:
             "test-id",
             None,
         )
-        assert result == {}  # Allowed
+        assert "deny" in str(result)

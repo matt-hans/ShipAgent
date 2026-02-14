@@ -409,9 +409,11 @@ def create_shipping_hook(
 ):
     """Factory that creates a create_shipment pre-hook with mode enforcement.
 
-    When interactive_shipping=False, deterministically denies create_shipment.
-    When interactive_shipping=True, applies structural guard only (dict check).
-    Business-field validation is always delegated to UPS MCP preflight.
+    Deterministically denies ``mcp__ups__create_shipment`` in **both** modes:
+    - interactive_shipping=False → directs user to batch processing.
+    - interactive_shipping=True  → directs agent to ``preview_interactive_shipment``.
+
+    All other tool calls pass through unmodified.
 
     Args:
         interactive_shipping: Whether interactive single-shipment mode is enabled.
@@ -435,18 +437,15 @@ def create_shipping_hook(
         )
 
         if "create_shipment" in tool_name:
-            # Hard enforcement: deny when interactive mode is off
             if not interactive_shipping:
                 return _deny_with_reason(
                     "Interactive shipping is disabled. "
                     "Use batch processing for shipment creation."
                 )
-
-            # Structural guard: deny non-dict inputs
-            if not isinstance(tool_input, dict):
+            else:
                 return _deny_with_reason(
-                    "Invalid tool_input: expected a dict, "
-                    f"got {type(tool_input).__name__}."
+                    "Direct shipment creation is not allowed in interactive mode. "
+                    "Use the preview_interactive_shipment tool instead."
                 )
 
         return {}

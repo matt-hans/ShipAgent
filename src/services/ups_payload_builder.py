@@ -221,7 +221,15 @@ def resolve_packaging_code(raw_value: str | None) -> str:
     if not raw_value:
         return "02"
 
-    stripped = raw_value.strip()
+    # Coerce non-string values (e.g. int 2 from LLM/tool args)
+    stripped = str(raw_value).strip()
+    if not stripped:
+        return "02"
+
+    # Known alphanumeric UPS codes — pass through as-is
+    _ALPHANUMERIC_CODES = {"2a", "2b", "2c"}
+    if stripped.lower() in _ALPHANUMERIC_CODES:
+        return stripped.lower()
 
     # Already a valid numeric code — return as-is
     if stripped.isdigit() and len(stripped) <= 3:

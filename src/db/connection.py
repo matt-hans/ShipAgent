@@ -24,7 +24,7 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -188,17 +188,66 @@ async def get_async_db_context() -> AsyncGenerator[AsyncSession, None]:
 # Initialization functions
 
 
+def _ensure_columns_exist(conn: Any) -> None:
+    """Add new columns to existing tables if missing (SQLite only).
+
+    Uses PRAGMA table_info to introspect columns and ALTER TABLE to add
+    missing ones. Idempotent — safe to call on every startup.
+
+    Works with both sync (engine.begin()) and async (run_sync) connections.
+
+    Args:
+        conn: SQLAlchemy Connection (sync or from run_sync).
+
+    Raises:
+        OperationalError: For non-duplicate-column DDL failures (locked DB,
+            malformed SQL, etc.).
+    """
+    import logging
+    from sqlalchemy.exc import OperationalError
+
+    log = logging.getLogger(__name__)
+
+    if conn.dialect.name != "sqlite":
+        return
+
+    result = conn.execute(text("PRAGMA table_info(jobs)"))
+    existing = {row[1] for row in result.fetchall()}
+
+    migrations: list[tuple[str, str]] = [
+        ("shipper_json", "ALTER TABLE jobs ADD COLUMN shipper_json TEXT"),
+        (
+            "is_interactive",
+            "ALTER TABLE jobs ADD COLUMN is_interactive BOOLEAN NOT NULL DEFAULT 0",
+        ),
+    ]
+
+    for col_name, ddl in migrations:
+        if col_name not in existing:
+            try:
+                conn.execute(text(ddl))
+            except OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    log.debug("Column %s already exists (concurrent add).", col_name)
+                else:
+                    log.error("Failed to add column %s: %s", col_name, e)
+                    raise
+
+
 def init_db() -> None:
     """Create all database tables synchronously.
 
     Uses the Base.metadata from models.py to create all defined tables.
     Safe to call multiple times - will not recreate existing tables.
+    Runs column migration for new columns on existing tables.
 
     Usage:
         from src.db.connection import init_db
         init_db()
     """
     Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
+        _ensure_columns_exist(conn)
 
 
 async def async_init_db() -> None:
@@ -206,6 +255,7 @@ async def async_init_db() -> None:
 
     Uses the Base.metadata from models.py to create all defined tables.
     Safe to call multiple times - will not recreate existing tables.
+    Runs column migration for new columns on existing tables.
 
     Usage:
         from src.db.connection import async_init_db
@@ -213,6 +263,7 @@ async def async_init_db() -> None:
     """
     async with async_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_ensure_columns_exist)
 
 
 # Cleanup functions

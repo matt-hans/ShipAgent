@@ -423,6 +423,38 @@ class TestBuildPackagesWithNames:
         assert packages[1]["packagingType"] == "02"
 
 
+class TestResolvePackagingCodeAlphanumeric:
+    """Test alphanumeric UPS packaging codes (2a/2b/2c) pass through correctly."""
+
+    def test_2a_small_express_box_code(self):
+        """Code '2a' passes through without falling back to '02'."""
+        assert resolve_packaging_code("2a") == "2a"
+
+    def test_2b_medium_express_box_code(self):
+        """Code '2b' passes through."""
+        assert resolve_packaging_code("2b") == "2b"
+
+    def test_2c_large_express_box_code(self):
+        """Code '2c' passes through."""
+        assert resolve_packaging_code("2c") == "2c"
+
+    def test_2a_case_insensitive(self):
+        """Code '2A' normalizes to '2a'."""
+        assert resolve_packaging_code("2A") == "2a"
+
+    def test_small_express_box_name_resolves_to_2a(self):
+        """Name 'small express box' still resolves to '2a'."""
+        assert resolve_packaging_code("small express box") == "2a"
+
+    def test_non_string_int_coerced(self):
+        """Integer packaging value coerced to string."""
+        assert resolve_packaging_code(2) == "02"
+
+    def test_non_string_dict_returns_default(self):
+        """Dict packaging value coerced to string, falls back to default."""
+        assert resolve_packaging_code({}) == "02"
+
+
 class TestGetServiceCode:
     """Test service code extraction."""
 

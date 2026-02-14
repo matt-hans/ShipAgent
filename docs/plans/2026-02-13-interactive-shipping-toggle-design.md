@@ -2,17 +2,27 @@
 
 **Date**: 2026-02-13
 **Branch**: `claude/zen-bohr`
-**Status**: Approved for implementation
-**Depends on**: UPS MCP Elicitation v1 (PR in progress on this branch)
+**Status**: Implemented (v3.1 — Preview Pipeline)
+**Depends on**: UPS MCP (stdio transport, batch + interactive paths)
 
 ## Overview
 
-Add a frontend toggle that enables/disables interactive single-shipment creation
-via UPS MCP elicitation. When OFF (default), all shipment operations route through
-the batch pipeline. When ON, the agent can also call `create_shipment` directly for
-ad-hoc single shipments, handling missing field prompts conversationally.
+Frontend toggle enables/disables interactive single-shipment creation. When OFF
+(default), all shipment operations route through the batch pipeline. When ON, the
+agent uses the `preview_interactive_shipment` deterministic tool to auto-populate
+shipper from env, rate the shipment, create a Job record, and display an
+InteractivePreviewCard. The existing `confirm_job` + `_execute_batch` pipeline
+handles execution.
 
-The batch processing pipeline remains unchanged regardless of toggle state.
+**Key changes in v3.1:**
+- Interactive mode now uses `preview_interactive_shipment` tool (not direct `mcp__ups__create_shipment`)
+- Shipper auto-populated from env vars, persisted on Job as `shipper_json` for execution parity
+- Preview card shows all shipment details + expandable resolved payload
+- Job records created with `is_interactive=True` for interactive shipments
+- Hook enforcement: `create_shipment` blocked in BOTH modes
+- Write-back disabled for interactive jobs via `write_back_enabled` parameter
+- New DB columns: `shipper_json` (Text), `is_interactive` (bool) on `jobs` table
+- State machine: `pending -> failed` transition now allowed for preview-time failures
 
 ## Design Decisions
 
@@ -26,11 +36,10 @@ while interactive mode enables ad-hoc single-shipment creation alongside it.
 | Condition | Route |
 |-----------|-------|
 | `interactive_shipping=False` | Batch path only. Hook denies `create_shipment`. |
-| `interactive_shipping=True` + explicit batch/data-source intent | Batch path. |
-| `interactive_shipping=True` + explicit single ad-hoc shipment details | Direct MCP path. |
-| `interactive_shipping=True` + multiple shipments implied | Batch path only. |
-| `interactive_shipping=True` + ambiguous intent + data source connected | Agent asks one clarifying question. |
-| `interactive_shipping=True` + direct create with data source connected | Short confirmation step first. |
+| `interactive_shipping=True` + explicit batch/data-source intent | Instruct user to turn interactive off. |
+| `interactive_shipping=True` + explicit single ad-hoc shipment details | `preview_interactive_shipment` tool. |
+| `interactive_shipping=True` + multiple shipments implied | Instruct user to turn interactive off. |
+| `interactive_shipping=True` + ambiguous intent | Agent asks one clarifying question, defaults to ad-hoc. |
 
 ### Session-Level Flag (Approach A)
 
@@ -126,7 +135,8 @@ Header Toggle (React)
   `self.interactive_shipping`
 - When `False` + tool is `create_shipment` → deny:
   "Interactive shipping is disabled. Use batch processing for shipment creation."
-- When `True` → existing relaxed structural guard (dict-type check only)
+- When `True` + tool is `create_shipment` → deny:
+  "Direct shipment creation is not allowed. Use preview_interactive_shipment."
 
 **`ups_mcp_client.py`**:
 - Preserve `reason` field from `MALFORMED_REQUEST` in `UPSServiceError.details`
@@ -166,7 +176,7 @@ Header Toggle (React)
 | 3 | `test_system_prompt.py` | Coexistence routing policy text present when `True` + source |
 | 4 | `test_system_prompt.py` | Precedence text: direct path > batch for ad-hoc when `True` |
 | 5 | `test_hooks.py` | `create_shipment` denied when `interactive_shipping=False` |
-| 6 | `test_hooks.py` | `create_shipment` allowed when `interactive_shipping=True` |
+| 6 | `test_hooks.py` | `create_shipment` denied when `interactive_shipping=True` (must use preview tool) |
 | 7 | `test_conversations.py` | Session stores `interactive_shipping`, defaults `False` |
 | 8 | `test_conversations.py` | `_ensure_agent` rebuilds when only flag changes |
 | 9 | `test_conversations.py` | Response echoes `interactive_shipping` value |
@@ -176,7 +186,8 @@ Header Toggle (React)
 
 | # | File | Assertion |
 |---|------|-----------|
-| 11 | `test_interactive_mode.py` | With `interactive_shipping=True`: mocked `create_shipment` ToolError with `missing[]` → hook allows (no deny) → `_translate_error()` produces E-2010 with field prompts from `prompt` values → no unhandled exception. Asserts observed runtime behavior, not prompt text. |
+| 11 | `test_interactive_mode.py` | With `interactive_shipping=True`: hook denies `create_shipment` → must use `preview_interactive_shipment`. Separate test verifies `_translate_error()` still produces E-2010 for edge cases. |
+| 12 | `test_interactive_preview.py` | 24 tests covering: preview tool, shipper resolution, ship_from normalization, write-back guard, account masking, migration idempotency, orphan cleanup, state transitions |
 
 ### Frontend Tests (Component-Level)
 

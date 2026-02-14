@@ -821,7 +821,7 @@ def test_tool_definitions_filtered_for_interactive_mode():
     """Interactive mode exposes only non-batch orchestrator status tools."""
     defs = get_all_tool_definitions(interactive_shipping=True)
     names = {d["name"] for d in defs}
-    assert names == {"get_job_status", "get_platform_status"}
+    assert names == {"get_job_status", "get_platform_status", "preview_interactive_shipment"}
 
 
 def test_tool_definitions_unfiltered_when_interactive_disabled():
