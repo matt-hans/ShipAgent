@@ -12,8 +12,10 @@
 
 ## Pre-Implementation: Contract Parity Checklist
 
-Before writing any Phase 1 code, verify these contracts by reading source. This
-prevents mid-phase reversals when implementation discovers mismatches.
+**MANDATORY PRE-FLIGHT GATE:** Before writing any Phase 1 code, verify every
+row below by reading the actual source files. Check off each row in the PR
+description before Task 1 begins. Do not skip this step — it prevents
+mid-phase reversals when implementation discovers mismatches.
 
 | Contract | Current Behavior | Gateway Must Match |
 |----------|------------------|--------------------|
@@ -644,9 +646,14 @@ class TestPlatformRoutesUseGateway:
         })
         mock_get.return_value = mock_client
 
+        # Body must match ConnectPlatformRequest schema (platforms.py:34):
+        # credentials: dict (required), store_url: str | None (optional)
         response = client.post(
             "/api/v1/platforms/shopify/connect",
-            json={"store_url": "test.myshopify.com", "access_token": "shpat_xxx"},
+            json={
+                "credentials": {"access_token": "shpat_xxx"},
+                "store_url": "test.myshopify.com",
+            },
         )
         assert response.status_code == 200
         data = response.json()
@@ -691,7 +698,7 @@ Key changes:
 from src.services.gateway_provider import get_external_sources_client
 
 @router.post("/{platform}/connect")
-async def connect_platform_route(platform: str, body: ConnectRequest):
+async def connect_platform_route(platform: str, body: ConnectPlatformRequest):
     ext = await get_external_sources_client()
     result = await ext.connect_platform(
         platform=platform,
@@ -830,6 +837,47 @@ async def test_import_records_creates_table(mock_ctx_no_source):
     )
     assert result["row_count"] == 3
     assert result["source_type"] == "shopify"
+
+
+@pytest.mark.asyncio
+async def test_source_signature_parity_with_data_source_service(mock_ctx_with_source):
+    """Signature from get_source_info must match DataSourceService.get_source_signature().
+
+    This is a replay-safety gate: if the two diverge, job source matching
+    will break during migration.
+    """
+    import hashlib
+    from src.mcp.data_source.tools.source_info_tools import get_source_info
+
+    # Simulate DuckDB DESCRIBE output: (name, type, nullable_flag, ...)
+    mock_schema = [
+        ("order_id", "BIGINT", "NO"),
+        ("customer_name", "VARCHAR", "YES"),
+        ("total", "DOUBLE", "YES"),
+    ]
+    db = mock_ctx_with_source.request_context.lifespan_context["db"]
+    db.execute.return_value.fetchall.return_value = mock_schema
+
+    result = await get_source_info(mock_ctx_with_source)
+
+    # Compute expected fingerprint the same way DataSourceService does
+    # (src/services/data_source_service.py:442-448)
+    expected_parts = [
+        f"{col[0]}:{col[1]}:{int(col[2] == 'YES')}"
+        for col in mock_schema
+    ]
+    expected_fingerprint = hashlib.sha256(
+        "|".join(expected_parts).encode("utf-8"),
+    ).hexdigest()
+
+    assert result["signature"] == expected_fingerprint, (
+        f"Signature mismatch — MCP tool produced {result['signature']!r}, "
+        f"DataSourceService would produce {expected_fingerprint!r}"
+    )
+
+    # Also verify nullable values match real DuckDB output, not hardcoded
+    assert result["columns"][0]["nullable"] is False  # BIGINT NO
+    assert result["columns"][1]["nullable"] is True   # VARCHAR YES
 ```
 
 **Step 2: Run test to verify it fails**
@@ -1984,7 +2032,11 @@ async def connect_shopify_tool(
     import_result = await gw.import_from_records(flat_orders, "shopify")
 
     count = import_result.get("row_count", len(flat_orders))
-    return _ok(f"Connected to Shopify and imported {count} orders as active data source.")
+    return _ok({
+        "message": f"Connected to Shopify and imported {count} orders as active data source.",
+        "platform": "shopify",
+        "orders_imported": count,
+    })
 ```
 
 **Step 3: Add tool definition to get_all_tool_definitions()**
