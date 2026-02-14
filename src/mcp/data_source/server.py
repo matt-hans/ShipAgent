@@ -82,6 +82,11 @@ from src.mcp.data_source.tools.schema_tools import (
     get_schema,
     override_column_type,
 )
+from src.mcp.data_source.tools.source_info_tools import (
+    clear_source,
+    get_source_info,
+    import_records,
+)
 from src.mcp.data_source.tools.writeback_tools import write_back
 
 # EDI tools require pydifact — import lazily so missing dependency
@@ -107,6 +112,9 @@ mcp.tool()(get_schema)
 mcp.tool()(override_column_type)
 mcp.tool()(verify_checksum)
 mcp.tool()(write_back)
+mcp.tool()(get_source_info)
+mcp.tool()(import_records)
+mcp.tool()(clear_source)
 if _edi_available:
     mcp.tool()(import_edi)
 
