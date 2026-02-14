@@ -20,9 +20,9 @@ prevents mid-phase reversals when implementation discovers mismatches.
 | **Platform client constructors** | All use `__init__(self)` — no args | `_create_platform_client()` calls `ShopifyClient()` etc. with no args |
 | **Platform authenticate()** | Returns `bool`, credentials as dict | Check return value, map `store_url` → platform-specific key (`site_url` for Woo, `base_url` for SAP) |
 | **Platform disconnect** | `PlatformStateManager.disconnect()` pops from dicts + calls `client.close()` | `disconnect_platform` MCP tool does the same |
-| **DataSourceService.disconnect()** | Closes DuckDB, clears `_source_info` and `_original_file_path` | `clear_source` MCP tool drops table + clears `current_source` |
+| **DataSourceService.disconnect()** | Closes DuckDB, clears `_source_info` and `_original_file_path` | `clear_source` MCP tool drops table + clears `current_source` + resets `type_overrides` |
 | **DataSourceService.get_source_info()** | Returns `DataSourceInfo` object with `.source_type`, `.file_path`, `.columns[].name/.type/.nullable`, `.row_count` | Gateway returns dict, but `get_source_info_typed()` adapter converts to `DataSourceInfo` for consumers |
-| **DataSourceService.get_source_signature()** | Returns `dict[str, Any]` with `source_type`, `source_ref`, `schema_fingerprint` (full SHA-256) | Gateway `get_source_signature()` returns same dict structure, full hash (no truncation) |
+| **DataSourceService.get_source_signature()** | Returns `dict[str, Any]` with `source_type`, `source_ref`, `schema_fingerprint` (full SHA-256). Nullable from `SchemaColumnInfo.nullable` (real values, not hardcoded) | Gateway `get_source_signature()` returns same dict structure, full hash (no truncation). Nullable read from DuckDB `DESCRIBE` col[2] (`"YES"`/`"NO"`) |
 | **get_rows_by_filter()** | Accepts `where_clause: str \| None`, None = all rows | Gateway normalizes `None` → `"1=1"` |
 | **Tool handler signature** | `(args: dict[str, Any], bridge: EventEmitterBridge \| None = None)` | `_bind_bridge` calls `await handler(args, bridge=bridge)` |
 | **Tool return type** | `_ok()` → `{"isError": False, "content": [...]}`, `_err()` → `{"isError": True, "content": [...]}` | All handlers return `dict[str, Any]`, not `str` |
@@ -299,7 +299,7 @@ Expected: PASS
 **Step 6: Commit**
 
 ```bash
-git add src/mcp/external_sources/tools.py tests/mcp/external_sources/test_connect_platform.py
+git add src/mcp/external_sources/tools.py src/mcp/external_sources/server.py tests/mcp/external_sources/test_connect_platform.py
 git commit -m "feat: complete connect_platform and disconnect_platform MCP tools"
 ```
 
@@ -608,47 +608,65 @@ git commit -m "feat: add ExternalSourcesMCPClient — process-global MCP client 
 
 ```python
 # tests/api/routes/test_platforms_mcp.py
+"""Tests that platform routes use gateway_provider and hit real HTTP endpoints.
+
+Uses TestClient (FastAPI) with patched gateway to verify actual route wiring,
+not just mock attribute checks.
+"""
 import pytest
 from unittest.mock import AsyncMock, patch
 
+from fastapi.testclient import TestClient
 
-@pytest.mark.asyncio
-async def test_connect_route_uses_gateway_provider():
-    """Connect route should call gateway_provider, not direct client."""
-    with patch(
-        "src.api.routes.platforms.get_external_sources_client"
-    ) as mock_get:
+from src.api.main import app
+
+
+client = TestClient(app)
+
+
+class TestPlatformRoutesUseGateway:
+    """Verify routes delegate to gateway_provider, not local client."""
+
+    def test_platform_state_manager_removed(self):
+        """PlatformStateManager and local _ext_client must not exist."""
+        import src.api.routes.platforms as platforms_mod
+        assert not hasattr(platforms_mod, "PlatformStateManager"), \
+            "PlatformStateManager should be removed — routes must use gateway_provider"
+        assert not hasattr(platforms_mod, "_ext_client"), \
+            "No local singleton — gateway_provider owns the client"
+
+    @patch("src.api.routes.platforms.get_external_sources_client")
+    def test_connect_route_calls_gateway(self, mock_get):
+        """POST /platforms/{platform}/connect hits gateway, not local client."""
         mock_client = AsyncMock()
         mock_client.connect_platform = AsyncMock(return_value={
             "success": True, "platform": "shopify", "status": "connected"
         })
         mock_get.return_value = mock_client
 
-        # Verify PlatformStateManager class has been removed
-        import src.api.routes.platforms as platforms_mod
-        assert not hasattr(platforms_mod, "PlatformStateManager"), \
-            "PlatformStateManager should be removed — routes must use gateway_provider"
-        # Verify no local _ext_client singleton
-        assert not hasattr(platforms_mod, "_ext_client"), \
-            "No local singleton — gateway_provider owns the client"
+        response = client.post(
+            "/api/v1/platforms/shopify/connect",
+            json={"store_url": "test.myshopify.com", "access_token": "shpat_xxx"},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "connected"
+        mock_client.connect_platform.assert_called_once()
 
-
-@pytest.mark.asyncio
-async def test_disconnect_route_uses_gateway_provider():
-    """Disconnect route should call gateway_provider.disconnect_platform."""
-    with patch(
-        "src.api.routes.platforms.get_external_sources_client"
-    ) as mock_get:
+    @patch("src.api.routes.platforms.get_external_sources_client")
+    def test_disconnect_route_calls_gateway(self, mock_get):
+        """POST /platforms/{platform}/disconnect hits gateway, not local client."""
         mock_client = AsyncMock()
         mock_client.disconnect_platform = AsyncMock(return_value={
             "success": True, "platform": "shopify", "status": "disconnected"
         })
         mock_get.return_value = mock_client
 
-        # Would call: ext = await get_external_sources_client()
-        ext = await mock_get()
-        result = await ext.disconnect_platform("shopify")
-        assert result["success"] is True
+        response = client.post("/api/v1/platforms/shopify/disconnect")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "disconnected"
+        mock_client.disconnect_platform.assert_called_once_with("shopify")
 ```
 
 **Step 2: Run test to verify it fails**
@@ -854,14 +872,17 @@ async def get_source_info(ctx: Context) -> dict:
     columns = []
     try:
         schema_rows = db.execute("DESCRIBE imported_data").fetchall()
+        # col[2] is "YES" or "NO" from DuckDB DESCRIBE — use real nullability,
+        # matching schema_tools.get_schema() at line 42 and
+        # DataSourceService.get_source_signature() at line 443.
         columns = [
-            {"name": col[0], "type": col[1], "nullable": True}
+            {"name": col[0], "type": col[1], "nullable": col[2] == "YES"}
             for col in schema_rows
         ]
         # Match DataSourceService fingerprint format exactly:
         # "name:type:nullable_int|name:type:nullable_int|..."
         schema_parts = [
-            f"{c['name']}:{c['type']}:{int(c.get('nullable', True))}"
+            f"{c['name']}:{c['type']}:{int(c['nullable'])}"
             for c in columns
         ]
         signature = hashlib.sha256(
@@ -944,7 +965,8 @@ async def clear_source(ctx: Context) -> dict:
     """Clear the active data source, dropping imported data.
 
     Mirrors DataSourceService.disconnect() behavior:
-    closes DuckDB, clears current_source metadata.
+    drops imported_data table, clears current_source metadata,
+    and resets type_overrides to prevent stale CASTs.
 
     Returns:
         Status dict.
@@ -957,7 +979,11 @@ async def clear_source(ctx: Context) -> dict:
             pass
 
     ctx.request_context.lifespan_context["current_source"] = None
-    await ctx.info("Active data source cleared")
+    # Clear type overrides to prevent stale CASTs leaking to the next source.
+    # type_overrides is read by query_tools.get_rows_by_filter() and
+    # schema_tools.get_schema() — must be reset on disconnect.
+    ctx.request_context.lifespan_context["type_overrides"] = {}
+    await ctx.info("Active data source cleared (table + overrides)")
     return {"status": "disconnected"}
 ```
 
@@ -1740,7 +1766,7 @@ git commit -m "refactor: agent tools use DataSourceGateway, remove mcp__data__ f
 
 **Files:**
 - Modify: `src/api/routes/conversations.py` (replace DataSourceService, remove auto-import)
-- Modify: `src/services/data_source_mcp_client.py` (add `get_source_info_as_dataclass`)
+- Modify: `src/services/data_source_mcp_client.py` (add `get_source_info_typed`)
 
 **CRITICAL: Type contract issue**
 
@@ -2465,8 +2491,8 @@ git commit -m "docs: update CLAUDE.md for MCP-first architecture cleanup"
 4. **Auth return check** — Every `authenticate()` call checks the boolean return value; `False` raises an error.
 5. **Handler signature contract** — All tool handlers use `(args: dict[str, Any], bridge: EventEmitterBridge | None = None)` to match `_bind_bridge` wrapping. Return type is `dict[str, Any]` (from `_ok/_err`), never `str`.
 6. **MCP tool registration pattern** — Tool functions are plain `async def` in `tools.py` (no `@mcp.tool()` decorator). Registration happens in `server.py` via `mcp.tool()(function)`.
-7. **Structured source signature** — `get_source_signature()` returns `dict[str, Any]` with `source_type`, `source_ref`, `schema_fingerprint` (full SHA-256, no truncation).
+7. **Structured source signature** — `get_source_signature()` returns `dict[str, Any]` with `source_type`, `source_ref`, `schema_fingerprint` (full SHA-256, no truncation). Nullable values come from DuckDB `DESCRIBE` column[2] (`"YES"`/`"NO"`), NOT hardcoded — must match `DataSourceService.get_source_signature()` at line 443.
 8. **DataSourceInfo typed adapter** — `get_source_info_typed()` converts gateway dicts to `DataSourceInfo` objects for consumers like `_compute_source_hash()` and `build_system_prompt()`.
-9. **Real disconnect semantics** — Gateway `disconnect()` calls `clear_source` MCP tool (drops table + clears metadata). Not a no-op.
+9. **Real disconnect semantics** — Gateway `disconnect()` calls `clear_source` MCP tool (drops table + clears `current_source` + resets `type_overrides`). Not a no-op. Matches `DataSourceService.disconnect()` which clears all state.
 10. **None-safe where_clause** — Gateway normalizes `None` → `"1=1"` before passing to MCP tool.
 11. **Async _persist_job_source_signature** — Function becomes async, all callsites (lines 475, 737) updated to `await`.
