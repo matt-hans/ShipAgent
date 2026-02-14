@@ -92,7 +92,12 @@ def build_system_prompt(
     elif source_info is not None:
         data_section = _build_schema_section(source_info)
     else:
-        data_section = "No data source connected. Ask the user to connect a CSV, Excel, or database source first."
+        data_section = (
+            "No data source connected. Ask the user to connect a CSV, Excel, "
+            "or database source first.\n"
+            "If SHOPIFY_ACCESS_TOKEN is configured, call the connect_shopify "
+            "tool to import Shopify orders before processing shipping commands."
+        )
 
     filter_rules_section = ""
     workflow_section = ""

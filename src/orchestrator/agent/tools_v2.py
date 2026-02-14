@@ -1225,6 +1225,83 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
     return _ok({"platforms": platforms})
 
 
+async def connect_shopify_tool(
+    args: dict[str, Any],
+    bridge: "EventEmitterBridge | None" = None,
+) -> dict[str, Any]:
+    """Connect to Shopify and import orders as active data source.
+
+    Reads SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN from env.
+    Calls ExternalSourcesMCPClient to connect + fetch, then
+    DataSourceGateway to import records.
+
+    Args:
+        args: Empty dict (credentials read from env).
+        bridge: Optional event emitter bridge.
+
+    Returns:
+        MCP tool response dict.
+    """
+    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+    store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+
+    if not access_token or not store_domain:
+        return _err(
+            "Shopify credentials not configured. Set SHOPIFY_ACCESS_TOKEN "
+            "and SHOPIFY_STORE_DOMAIN environment variables."
+        )
+
+    ext = await get_external_sources_client()
+
+    # Connect
+    connect_result = await ext.connect_platform(
+        platform="shopify",
+        credentials={"access_token": access_token},
+        store_url=f"https://{store_domain}",
+    )
+    if not connect_result.get("success"):
+        return _err(
+            f"Failed to connect to Shopify: "
+            f"{connect_result.get('error', 'Unknown error')}"
+        )
+
+    # Fetch orders
+    orders_result = await ext.fetch_orders("shopify", limit=250)
+    if not orders_result.get("success"):
+        return _err(
+            f"Failed to fetch Shopify orders: "
+            f"{orders_result.get('error', 'Unknown error')}"
+        )
+
+    orders = orders_result.get("orders", [])
+    if not orders:
+        return _err("No orders found in Shopify store.")
+
+    # Flatten orders for import (exclude nested objects)
+    flat_orders = []
+    for o in orders:
+        flat = {
+            k: v
+            for k, v in o.items()
+            if k not in ("items", "raw_data") and v is not None
+        }
+        flat_orders.append(flat)
+
+    # Import via gateway
+    gw = await get_data_gateway()
+    import_result = await gw.import_from_records(flat_orders, "shopify")
+
+    count = import_result.get("row_count", len(flat_orders))
+    return _ok({
+        "message": (
+            f"Connected to Shopify and imported {count} orders "
+            f"as active data source."
+        ),
+        "platform": "shopify",
+        "orders_imported": count,
+    })
+
+
 # ---------------------------------------------------------------------------
 # Tool Definitions Registry
 # ---------------------------------------------------------------------------
@@ -1466,6 +1543,19 @@ def get_all_tool_definitions(
                 "properties": {},
             },
             "handler": get_platform_status_tool,
+        },
+        {
+            "name": "connect_shopify",
+            "description": (
+                "Connect to Shopify using env credentials, fetch orders, "
+                "and import them as the active data source. Call this when "
+                "no data source is active and Shopify env vars are configured."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+            },
+            "handler": _bind_bridge(connect_shopify_tool, bridge),
         },
     ]
 
