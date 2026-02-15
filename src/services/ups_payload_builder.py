@@ -25,57 +25,58 @@ from src.services.ups_service_codes import resolve_service_code
 def normalize_phone(phone: str | None) -> str:
     """Normalize phone number to digits only.
 
-    UPS requires 10-15 digit phone numbers without formatting.
+    UPS requires 7-15 digit phone numbers. Handles both domestic
+    and international formats (strips formatting, preserves country code).
 
     Args:
-        phone: Raw phone number string (may contain dashes, spaces, parens)
+        phone: Raw phone number string (may contain dashes, spaces, parens, +)
 
     Returns:
-        Digits-only phone number, or default if invalid
+        Digits-only phone number, or empty string if invalid/missing.
     """
     if not phone:
-        return "5555555555"  # Default placeholder
+        return ""
 
     # Strip all non-digit characters
     digits = re.sub(r"\D", "", phone)
 
-    # Ensure minimum 10 digits
-    if len(digits) < 10:
-        return "5555555555"
+    # Accept 7-15 digits (international range)
+    if len(digits) < 7:
+        return ""
 
     # Truncate to 15 digits (UPS max)
     return digits[:15]
 
 
 def normalize_zip(postal_code: str | None) -> str:
-    """Normalize US postal code.
+    """Normalize postal code.
 
-    Handles both 5-digit and ZIP+4 formats.
+    For US codes: handles 5-digit and ZIP+4 formats.
+    For international codes: passes through with whitespace trimmed.
 
     Args:
-        postal_code: Raw postal code string
+        postal_code: Raw postal code string.
 
     Returns:
-        Normalized 5-digit or ZIP+4 format
+        Normalized postal code.
     """
     if not postal_code:
         return ""
 
-    # Strip whitespace
     postal_code = postal_code.strip()
 
-    # Extract digits
+    # Extract digits to check if this is a US ZIP
     digits = re.sub(r"\D", "", postal_code)
 
-    if len(digits) >= 9:
-        # ZIP+4 format
-        return f"{digits[:5]}-{digits[5:9]}"
-    elif len(digits) >= 5:
-        # 5-digit ZIP
-        return digits[:5]
-    else:
-        # Return as-is for international codes
-        return postal_code
+    # If all digits and 5+ chars, treat as US ZIP
+    if postal_code.isdigit() or (len(digits) >= 5 and digits == postal_code.replace("-", "")):
+        if len(digits) >= 9:
+            return f"{digits[:5]}-{digits[5:9]}"
+        elif len(digits) >= 5:
+            return digits[:5]
+
+    # International postal codes: return as-is (trimmed)
+    return postal_code
 
 
 def truncate_address(address: str | None, max_length: int = 35) -> str:
@@ -204,7 +205,7 @@ def build_ship_to(order_data: dict[str, Any]) -> dict[str, str]:
         "city": order_data.get("ship_to_city", ""),
         "stateProvinceCode": order_data.get("ship_to_state", ""),
         "postalCode": normalize_zip(order_data.get("ship_to_postal_code")),
-        "countryCode": order_data.get("ship_to_country", "US"),
+        "countryCode": order_data.get("ship_to_country", ""),
     }
 
 
@@ -371,6 +372,57 @@ def get_service_code(order_data: dict[str, Any], default: str = "03") -> str:
     return default
 
 
+def build_international_forms(
+    commodities: list[dict],
+    currency_code: str = "USD",
+    form_type: str = "01",
+    reason_for_export: str = "SALE",
+    invoice_date: str | None = None,
+) -> dict:
+    """Build UPS InternationalForms section for customs documentation.
+
+    Args:
+        commodities: List of commodity dicts with description, commodity_code,
+            origin_country, quantity, unit_value, and optional unit_of_measure.
+        currency_code: ISO 4217 currency code (default USD).
+        form_type: InternationalForms type (01 = commercial invoice).
+        reason_for_export: Export reason code (SALE, GIFT, SAMPLE, etc.).
+        invoice_date: Invoice date in YYYYMMDD format. Defaults to today.
+
+    Returns:
+        Dict ready to embed as InternationalForms in UPS payload.
+    """
+    from datetime import date as date_type
+
+    if invoice_date is None:
+        invoice_date = date_type.today().strftime("%Y%m%d")
+
+    products = []
+    for comm in commodities:
+        uom_code = str(comm.get("unit_of_measure", "PCS")).upper()
+        products.append({
+            "Description": str(comm["description"])[:35],
+            "CommodityCode": str(comm["commodity_code"]),
+            "OriginCountryCode": str(comm["origin_country"]).upper(),
+            "Unit": {
+                "Number": str(int(comm["quantity"])),
+                "UnitOfMeasurement": {
+                    "Code": uom_code,
+                    "Description": uom_code,
+                },
+                "Value": str(comm["unit_value"]),
+            },
+        })
+
+    return {
+        "FormType": form_type,
+        "InvoiceDate": invoice_date,
+        "ReasonForExport": reason_for_export,
+        "CurrencyCode": currency_code,
+        "Product": products,
+    }
+
+
 def build_shipment_request(
     order_data: dict[str, Any],
     shipper: dict[str, str] | None = None,
@@ -438,6 +490,55 @@ def build_shipment_request(
     # Saturday delivery
     if _is_truthy(order_data.get("saturday_delivery")):
         result["saturdayDelivery"] = True
+
+    # --- International enrichment ---
+    from src.services.international_rules import get_requirements
+
+    origin_country = shipper.get("countryCode", "US")
+    dest_country = order_data.get("ship_to_country", "") or origin_country
+    requirements = get_requirements(origin_country, dest_country, service_code)
+
+    if requirements.not_shippable_reason:
+        raise ValueError(f"Cannot ship: {requirements.not_shippable_reason}")
+
+    # Enrich simplified dict with international data for downstream consumption
+    result["destinationCountry"] = dest_country
+
+    # Contact fields — inject into existing shipper/shipTo sub-dicts
+    if requirements.requires_shipper_contact:
+        if order_data.get("shipper_attention_name"):
+            result["shipper"]["attentionName"] = order_data["shipper_attention_name"]
+        if order_data.get("shipper_phone"):
+            result["shipper"]["phone"] = normalize_phone(order_data["shipper_phone"])
+
+    if requirements.requires_recipient_contact:
+        if order_data.get("ship_to_attention_name"):
+            result["shipTo"]["attentionName"] = order_data["ship_to_attention_name"]
+        if order_data.get("ship_to_phone"):
+            result["shipTo"]["phone"] = normalize_phone(order_data["ship_to_phone"])
+
+    # InvoiceLineTotal — add as top-level key in simplified
+    if requirements.requires_invoice_line_total:
+        result["invoiceLineTotal"] = {
+            "currencyCode": order_data.get("invoice_currency_code", "USD"),
+            "monetaryValue": order_data.get("invoice_monetary_value", "0"),
+        }
+
+    # Description — add as top-level key in simplified
+    if requirements.requires_description:
+        desc = order_data.get("shipment_description", "")
+        if desc:
+            result["description"] = desc[:35]
+
+    # InternationalForms — build from commodities and add to simplified
+    if requirements.requires_international_forms:
+        commodities = order_data.get("commodities", [])
+        if commodities:
+            result["internationalForms"] = build_international_forms(
+                commodities=commodities,
+                currency_code=requirements.currency_code,
+                form_type=requirements.form_type,
+            )
 
     return result
 
@@ -647,13 +748,38 @@ def build_ups_api_payload(
         ups_ship_to["Address"]["ResidentialAddressIndicator"] = ""
 
     # Shipment-level options
-    options: dict[str, Any] = {}
+    options: dict[str, Any] = shipment.get("ShipmentServiceOptions", {})
     if simplified.get("saturdayDelivery"):
         options["SaturdayDeliveryIndicator"] = ""
     # Delivery confirmation (signature required)
     dc = simplified.get("deliveryConfirmation")
     if dc:
         options["DeliveryConfirmation"] = {"DCISType": str(dc)}
+
+    # --- International enrichment (reads from simplified, set by build_shipment_request) ---
+
+    # InvoiceLineTotal
+    invoice_lt = simplified.get("invoiceLineTotal")
+    if invoice_lt:
+        shipment["InvoiceLineTotal"] = {
+            "CurrencyCode": invoice_lt["currencyCode"],
+            "MonetaryValue": invoice_lt["monetaryValue"],
+        }
+
+    # Shipper contact (attentionName already handled above; add phone if enriched)
+    shipper_data = simplified.get("shipper", {})
+    if shipper_data.get("attentionName"):
+        ups_shipper["AttentionName"] = shipper_data["attentionName"]
+    if shipper_data.get("phone"):
+        ups_shipper["Phone"] = {"Number": shipper_data["phone"]}
+
+    # ShipTo contact (attentionName/phone already handled above in base build)
+
+    # InternationalForms
+    intl_forms = simplified.get("internationalForms")
+    if intl_forms:
+        options["InternationalForms"] = intl_forms
+
     if options:
         shipment["ShipmentServiceOptions"] = options
 
@@ -782,6 +908,21 @@ def build_ups_rate_payload(
         shipment.setdefault("ShipmentServiceOptions", {})[
             "SaturdayDeliveryIndicator"
         ] = ""
+
+    # --- International enrichment for rate accuracy ---
+
+    # InvoiceLineTotal required for accurate US→CA rate quotes
+    invoice_lt = simplified.get("invoiceLineTotal")
+    if invoice_lt:
+        shipment["InvoiceLineTotal"] = {
+            "CurrencyCode": invoice_lt["currencyCode"],
+            "MonetaryValue": invoice_lt["monetaryValue"],
+        }
+
+    # Description
+    desc = simplified.get("description")
+    if desc:
+        shipment["Description"] = desc
 
     return {
         "RateRequest": {

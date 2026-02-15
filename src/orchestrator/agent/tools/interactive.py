@@ -76,7 +76,7 @@ def _normalize_ship_from(raw: dict[str, Any]) -> dict[str, str]:
                 continue
             if canonical == "phone":
                 result = normalize_phone(v)
-                if result == "5555555555":
+                if not result:
                     continue  # skip invalid phone override
                 v = result
             elif canonical == "postalCode":
