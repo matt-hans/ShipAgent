@@ -232,7 +232,7 @@ export function JobHistorySection({
                   <>
                     <span className="text-slate-700">·</span>
                     <span className="text-[10px] font-mono text-slate-500">
-                      {job.successful_rows}/{job.total_rows} rows
+                      {job.successful_rows}/{job.total_rows} shipments
                     </span>
                   </>
                 )}

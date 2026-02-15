@@ -13,6 +13,8 @@ import { cn, formatRelativeTime } from '@/lib/utils';
 import { Package } from 'lucide-react';
 import { PackageIcon, GearIcon, HardDriveIcon } from '@/components/ui/icons';
 import { ShopifyIcon } from '@/components/ui/brand-icons';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 /** System-generated chat message with avatar. */
 export function SystemMessage({ message }: { message: ConversationMessage }) {
@@ -23,8 +25,10 @@ export function SystemMessage({ message }: { message: ConversationMessage }) {
       </div>
 
       <div className="flex-1 space-y-2">
-        <div className="message-system">
-          <p className="text-sm text-slate-200 whitespace-pre-wrap">{message.content}</p>
+        <div className="message-system prose prose-invert max-w-none prose-sm prose-p:leading-relaxed prose-pre:bg-slate-800/50 prose-pre:border prose-pre:border-slate-700/50">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {message.content}
+          </ReactMarkdown>
         </div>
 
         <span className="text-[10px] font-mono text-slate-500">
@@ -162,7 +166,7 @@ export function InteractiveModeBanner() {
   return (
     <div className="flex items-center gap-2 px-4 py-1.5 border-b border-amber-500/20 bg-amber-500/5">
       <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
-      <span className="text-xs font-medium text-amber-200">Interactive Shipping (Ad-hoc)</span>
+      <span className="text-xs font-medium text-amber-200">Single Shipment (Ad-hoc)</span>
       <span className="text-amber-700">&middot;</span>
       <span className="text-[10px] font-mono text-amber-300/90">Batch commands disabled</span>
     </div>
@@ -201,7 +205,7 @@ export function WelcomeMessage({
         </div>
 
         <h2 className="text-xl font-semibold text-foreground mb-2">
-          Interactive Shipping
+          Single Shipment
         </h2>
 
         <p className="text-sm text-slate-400 max-w-md mb-6">

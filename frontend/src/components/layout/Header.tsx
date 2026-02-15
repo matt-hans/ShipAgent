@@ -33,7 +33,7 @@ export function Header() {
             htmlFor="interactive-shipping-toggle"
             className="text-xs text-slate-400 cursor-pointer select-none"
           >
-            Interactive Shipping
+            Single Shipment
           </label>
           <Switch
             id="interactive-shipping-toggle"
