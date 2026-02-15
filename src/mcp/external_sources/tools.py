@@ -431,6 +431,7 @@ async def validate_credentials(
             "error": f"Unsupported platform: {platform}.",
         }
 
+    client = None
     try:
         client = _create_platform_client(platform)
         auth_creds = dict(credentials)
@@ -444,18 +445,24 @@ async def validate_credentials(
                 "platform": platform,
                 "error": "Authentication failed — check credentials.",
             }
+
+        # Best-effort shop metadata (Shopify only)
+        shop = None
+        if hasattr(client, "get_shop_info"):
+            try:
+                shop = await client.get_shop_info()
+            except Exception:
+                pass
+
+        return {"valid": True, "platform": platform, "shop": shop}
     except Exception as e:
         return {"valid": False, "platform": platform, "error": str(e)}
-
-    # Best-effort shop metadata (Shopify only)
-    shop = None
-    if hasattr(client, "get_shop_info"):
-        try:
-            shop = await client.get_shop_info()
-        except Exception:
-            pass
-
-    return {"valid": True, "platform": platform, "shop": shop}
+    finally:
+        if client is not None and hasattr(client, "close"):
+            try:
+                await client.close()
+            except Exception:
+                pass
 
 
 async def get_shop_info(platform: str, ctx: Context) -> dict:

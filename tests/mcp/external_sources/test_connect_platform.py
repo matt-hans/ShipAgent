@@ -275,3 +275,45 @@ async def test_validate_credentials_unsupported_platform(mock_ctx):
 
     assert result["valid"] is False
     assert "Unsupported platform" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_validate_credentials_closes_client(mock_ctx):
+    """validate_credentials must close temporary client to prevent resource leaks."""
+    with patch(
+        "src.mcp.external_sources.tools._create_platform_client"
+    ) as mock_create:
+        mock_client = AsyncMock()
+        mock_client.authenticate = AsyncMock(return_value=True)
+        mock_client.get_shop_info = AsyncMock(return_value={"name": "Store"})
+        mock_client.close = AsyncMock()
+        mock_create.return_value = mock_client
+
+        await validate_credentials(
+            platform="shopify",
+            credentials={"access_token": "shpat_test"},
+            ctx=mock_ctx,
+        )
+
+    mock_client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_validate_credentials_closes_client_on_auth_failure(mock_ctx):
+    """validate_credentials must close client even when authentication fails."""
+    with patch(
+        "src.mcp.external_sources.tools._create_platform_client"
+    ) as mock_create:
+        mock_client = AsyncMock()
+        mock_client.authenticate = AsyncMock(side_effect=Exception("Connection refused"))
+        mock_client.close = AsyncMock()
+        mock_create.return_value = mock_client
+
+        result = await validate_credentials(
+            platform="shopify",
+            credentials={"access_token": "bad"},
+            ctx=mock_ctx,
+        )
+
+    assert result["valid"] is False
+    mock_client.close.assert_awaited_once()
