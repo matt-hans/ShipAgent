@@ -587,6 +587,32 @@ class TestValidateInternationalReadiness:
             codes = [e.machine_code for e in errors]
             assert "INVALID_HS_CODE" in codes
 
+    def test_currency_mismatch_e2017(self):
+        """P2: E-2017 must fire when commodity currency differs from invoice currency."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_phone": "6045551234",
+                "ship_to_attention_name": "Jane",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme",
+                "shipment_description": "Goods",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "50.00",
+                "commodities": [
+                    {"description": "Widget", "commodity_code": "999999",
+                     "origin_country": "US", "quantity": 1, "unit_value": "50.00",
+                     "currency_code": "CAD"},  # Mismatch!
+                ],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "CURRENCY_MISMATCH" in codes
+            # Verify it maps to E-2017
+            mismatch_error = next(e for e in errors if e.machine_code == "CURRENCY_MISMATCH")
+            assert mismatch_error.error_code == "E-2017"
+
     def test_domestic_returns_no_errors(self):
         order = {"ship_to_country": "US"}
         req = get_requirements("US", "US", "03")
@@ -948,13 +974,31 @@ def validate_international_readiness(
                         field_path=f"InternationalForms.Product[{i}].Unit.Value",
                     ))
 
+    # P2: Currency mismatch validation (E-2017)
+    # If InvoiceLineTotal is required, verify commodity currencies match invoice currency
+    if requirements.requires_invoice_line_total and commodities:
+        invoice_currency = order_data.get("invoice_currency_code", "").upper()
+        if invoice_currency:
+            for i, comm in enumerate(commodities):
+                comm_currency = str(comm.get("currency_code", invoice_currency)).upper()
+                if comm_currency != invoice_currency:
+                    errors.append(ValidationError(
+                        machine_code="CURRENCY_MISMATCH",
+                        message=(
+                            f"Commodity {i+1} uses currency '{comm_currency}' "
+                            f"but invoice uses '{invoice_currency}'."
+                        ),
+                        field_path=f"InternationalForms.Product[{i}].Unit.Value",
+                        error_code="E-2017",
+                    ))
+
     return errors
 ```
 
 **Step 4: Run test to verify it passes**
 
 Run: `python3 -m pytest tests/services/test_international_rules.py -v`
-Expected: ALL PASS (13 tests)
+Expected: ALL PASS (14 tests)
 
 **Step 5: Commit**
 
@@ -1279,10 +1323,11 @@ git commit -m "feat: add international field mappings and context-aware validati
 - Test: `tests/services/test_payload_builder_international.py`
 
 This is the largest task. The payload builder gains:
-1. International detection + enrichment in `build_ups_api_payload()` and `build_ups_rate_payload()`
+1. International detection + enrichment in `build_shipment_request()` (the layer that has access to raw `order_data`), with `build_ups_api_payload()` reading enriched fields from the simplified dict
 2. `build_international_forms()` function for InternationalForms section
 3. Removal of hardcoded "US" defaults (replaced with explicit missing-field errors)
 4. Updated `normalize_phone()` for international numbers
+5. Removal of bare `"standard"` from `resolve_service_code()` internal map
 
 **Step 1: Write the failing tests**
 
@@ -1295,9 +1340,10 @@ import json
 
 from src.services.ups_payload_builder import (
     build_international_forms,
+    build_shipment_request,
+    build_ups_api_payload,
     normalize_phone,
     normalize_zip,
-    build_ups_api_payload,
 )
 
 
@@ -1539,171 +1585,251 @@ def build_international_forms(
 5. In `build_ship_to()` (around line 205), remove:
    - `"countryCode": order_data.get("ship_to_country", "US")` → `"countryCode": order_data.get("ship_to_country", "")`
 
-6. **P1: Wire rules engine call INTO the build path.** In `build_ups_api_payload()`, after constructing the base payload, add:
+6. **P0: Wire rules engine call INTO `build_shipment_request()`.** This is the correct enrichment layer because it has access to raw `order_data`. The simplified dict it returns is the interface between data-access and payload-building. In `build_shipment_request()`, **after** constructing the base `simplified` dict (the `return {...}` block), add enrichment before returning:
 
 ```python
-    from src.services.international_rules import get_requirements, validate_international_readiness
+    from src.services.international_rules import get_requirements
 
     # Determine international requirements
     origin_country = shipper.get("countryCode", "US")
-    dest_country = ship_to.get("countryCode", "")
-    service_code = order_data.get("service_code", "03")
+    dest_country = order_data.get("ship_to_country", "")
     requirements = get_requirements(origin_country, dest_country, service_code)
 
     if requirements.not_shippable_reason:
         raise ValueError(f"Cannot ship: {requirements.not_shippable_reason}")
 
-    # Enrich with InvoiceLineTotal when required by lane
+    # Enrich simplified dict with international data for downstream consumption
+    simplified["destinationCountry"] = dest_country
+
+    # Contact fields → inject into existing shipper/shipTo sub-dicts
+    if requirements.requires_shipper_contact:
+        if order_data.get("shipper_attention_name"):
+            simplified["shipper"]["attentionName"] = order_data["shipper_attention_name"]
+        if order_data.get("shipper_phone"):
+            simplified["shipper"]["phone"] = normalize_phone(order_data["shipper_phone"])
+
+    if requirements.requires_recipient_contact:
+        if order_data.get("ship_to_attention_name"):
+            simplified["shipTo"]["attentionName"] = order_data["ship_to_attention_name"]
+        if order_data.get("ship_to_phone"):
+            simplified["shipTo"]["phone"] = normalize_phone(order_data["ship_to_phone"])
+
+    # InvoiceLineTotal → add as top-level key in simplified
     if requirements.requires_invoice_line_total:
-        payload["ShipmentRequest"]["Shipment"]["InvoiceLineTotal"] = {
-            "CurrencyCode": order_data.get("invoice_currency_code", "USD"),
-            "MonetaryValue": order_data.get("invoice_monetary_value", "0"),
+        simplified["invoiceLineTotal"] = {
+            "currencyCode": order_data.get("invoice_currency_code", "USD"),
+            "monetaryValue": order_data.get("invoice_monetary_value", "0"),
         }
 
-    # Enrich with Description when required
+    # Description → add as top-level key in simplified
     if requirements.requires_description:
         desc = order_data.get("shipment_description", "")
         if desc:
-            payload["ShipmentRequest"]["Shipment"]["Description"] = desc[:35]
+            simplified["description"] = desc[:35]
 
-    # Enrich with shipper/recipient contact when required
-    if requirements.requires_shipper_contact:
-        shipper_section = payload["ShipmentRequest"]["Shipment"]["Shipper"]
-        if order_data.get("shipper_attention_name"):
-            shipper_section["AttentionName"] = order_data["shipper_attention_name"]
-        if order_data.get("shipper_phone"):
-            shipper_section["Phone"] = {"Number": normalize_phone(order_data["shipper_phone"])}
-
-    if requirements.requires_recipient_contact:
-        ship_to_section = payload["ShipmentRequest"]["Shipment"]["ShipTo"]
-        if order_data.get("ship_to_attention_name"):
-            ship_to_section["AttentionName"] = order_data["ship_to_attention_name"]
-        if order_data.get("ship_to_phone"):
-            ship_to_section["Phone"] = {"Number": normalize_phone(order_data["ship_to_phone"])}
-
-    # Enrich with InternationalForms when required
+    # InternationalForms → build from commodities and add to simplified
     if requirements.requires_international_forms:
         commodities = order_data.get("commodities", [])
         if commodities:
-            forms = build_international_forms(
+            simplified["internationalForms"] = build_international_forms(
                 commodities=commodities,
                 currency_code=requirements.currency_code,
                 form_type=requirements.form_type,
             )
-            payload["ShipmentRequest"]["Shipment"]["ShipmentServiceOptions"] = (
-                payload["ShipmentRequest"]["Shipment"].get("ShipmentServiceOptions", {})
-            )
-            payload["ShipmentRequest"]["Shipment"]["ShipmentServiceOptions"]["InternationalForms"] = forms
+
+    return simplified
 ```
 
-7. **Rate payload parity.** Apply the same enrichment to `build_ups_rate_payload()` — InvoiceLineTotal, Description, contact fields. InternationalForms is NOT needed for rating but InvoiceLineTotal IS required for accurate rate quotes on US→CA.
+Then in `build_ups_api_payload()`, **read** enriched fields from the simplified dict (this function does NOT access raw `order_data`):
 
-**Step 4: Write payload integration tests asserting final JSON content**
+```python
+    # --- International enrichment (reads from simplified, set by build_shipment_request) ---
+
+    # InvoiceLineTotal
+    invoice_lt = simplified.get("invoiceLineTotal")
+    if invoice_lt:
+        payload["ShipmentRequest"]["Shipment"]["InvoiceLineTotal"] = {
+            "CurrencyCode": invoice_lt["currencyCode"],
+            "MonetaryValue": invoice_lt["monetaryValue"],
+        }
+
+    # Description
+    desc = simplified.get("description")
+    if desc:
+        payload["ShipmentRequest"]["Shipment"]["Description"] = desc
+
+    # Shipper contact
+    shipper_data = simplified.get("shipper", {})
+    if shipper_data.get("attentionName"):
+        payload["ShipmentRequest"]["Shipment"]["Shipper"]["AttentionName"] = shipper_data["attentionName"]
+    if shipper_data.get("phone"):
+        payload["ShipmentRequest"]["Shipment"]["Shipper"]["Phone"] = {"Number": shipper_data["phone"]}
+
+    # ShipTo contact
+    ship_to_data = simplified.get("shipTo", {})
+    if ship_to_data.get("attentionName"):
+        payload["ShipmentRequest"]["Shipment"]["ShipTo"]["AttentionName"] = ship_to_data["attentionName"]
+    if ship_to_data.get("phone"):
+        payload["ShipmentRequest"]["Shipment"]["ShipTo"]["Phone"] = {"Number": ship_to_data["phone"]}
+
+    # InternationalForms
+    intl_forms = simplified.get("internationalForms")
+    if intl_forms:
+        sso = payload["ShipmentRequest"]["Shipment"].get("ShipmentServiceOptions", {})
+        sso["InternationalForms"] = intl_forms
+        payload["ShipmentRequest"]["Shipment"]["ShipmentServiceOptions"] = sso
+```
+
+7. **Rate payload parity.** Apply the same read-from-simplified logic to `build_ups_rate_payload()` — InvoiceLineTotal, Description, contact fields. InternationalForms is NOT needed for rating but InvoiceLineTotal IS required for accurate rate quotes on US→CA. Since `build_shipment_request()` already enriches the simplified dict, both `build_ups_rate_payload()` and `build_ups_api_payload()` read the same data.
+
+8. **P1: Remove bare `"standard"` from `resolve_service_code()`.** In `src/services/ups_payload_builder.py`, find `resolve_service_code()` (around line 370) and its internal `service_name_map` dict. Remove the line `"standard": "11"`. Only `"ups standard"` and `"international standard"` should map to `"11"`. Add a comment:
+
+```python
+    # NOTE: Do NOT add bare "standard" → "11" here.
+    # "standard" is ambiguous — domestic users mean UPS Ground.
+    # Only unambiguous aliases are allowed.
+```
+
+**Step 4: Write payload integration tests using the correct two-step call chain**
+
+**IMPORTANT:** The enrichment happens in `build_shipment_request()` (which has raw `order_data`).
+Then `build_ups_api_payload()` reads enriched fields from the simplified dict.
+Tests MUST call `build_shipment_request()` → `build_ups_api_payload()` — never pass `order_data` directly to `build_ups_api_payload()`.
 
 Add to `tests/services/test_payload_builder_international.py`:
 
 ```python
+import os
+from unittest.mock import patch
+
+from src.services.ups_payload_builder import (
+    build_shipment_request,
+    build_ups_api_payload,
+)
+
+
 class TestPayloadIntegration:
-    """P1: Assert actual final UPS payload JSON for CA and MX lanes."""
+    """P0: Assert actual final UPS payload JSON using the correct two-step chain.
+
+    Call chain: build_shipment_request(order_data, shipper, service_code)
+               → simplified dict (enriched with international fields)
+               → build_ups_api_payload(simplified, account_number)
+               → final UPS API payload
+    """
 
     def test_us_to_ca_payload_has_international_forms(self):
         """Full payload for US→CA must contain InternationalForms + InvoiceLineTotal."""
-        order_data = {
-            "ship_to_name": "Jane Doe",
-            "ship_to_address1": "100 Queen St W",
-            "ship_to_city": "Toronto",
-            "ship_to_state": "ON",
-            "ship_to_zip": "M5H 2N2",
-            "ship_to_country": "CA",
-            "ship_to_phone": "4165551234",
-            "ship_to_attention_name": "Jane Doe",
-            "shipper_attention_name": "Acme Corp",
-            "shipper_phone": "2125551234",
-            "shipment_description": "Coffee Beans",
-            "invoice_currency_code": "USD",
-            "invoice_monetary_value": "150.00",
-            "service_code": "11",
-            "weight": "5.0",
-            "commodities": [
-                {
-                    "description": "Coffee Beans",
-                    "commodity_code": "090111",
-                    "origin_country": "CO",
-                    "quantity": 5,
-                    "unit_value": "30.00",
-                }
-            ],
-        }
-        shipper = {
-            "name": "Acme Corp",
-            "addressLine1": "123 Main St",
-            "city": "New York",
-            "stateProvinceCode": "NY",
-            "postalCode": "10001",
-            "countryCode": "US",
-            "shipperNumber": "ABC123",
-        }
-        payload = build_ups_api_payload(order_data, shipper, account_number="ABC123")
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA,US-MX"}, clear=False):
+            order_data = {
+                "ship_to_name": "Jane Doe",
+                "ship_to_address1": "100 Queen St W",
+                "ship_to_city": "Toronto",
+                "ship_to_state": "ON",
+                "ship_to_zip": "M5H 2N2",
+                "ship_to_country": "CA",
+                "ship_to_phone": "4165551234",
+                "ship_to_attention_name": "Jane Doe",
+                "shipper_attention_name": "Acme Corp",
+                "shipper_phone": "2125551234",
+                "shipment_description": "Coffee Beans",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "150.00",
+                "weight": "5.0",
+                "commodities": [
+                    {
+                        "description": "Coffee Beans",
+                        "commodity_code": "090111",
+                        "origin_country": "CO",
+                        "quantity": 5,
+                        "unit_value": "30.00",
+                    }
+                ],
+            }
+            shipper = {
+                "name": "Acme Corp",
+                "addressLine1": "123 Main St",
+                "city": "New York",
+                "stateProvinceCode": "NY",
+                "postalCode": "10001",
+                "countryCode": "US",
+                "shipperNumber": "ABC123",
+            }
 
-        shipment = payload["ShipmentRequest"]["Shipment"]
-        # InvoiceLineTotal present for US→CA
-        assert "InvoiceLineTotal" in shipment
-        assert shipment["InvoiceLineTotal"]["CurrencyCode"] == "USD"
-        # InternationalForms present
-        sso = shipment.get("ShipmentServiceOptions", {})
-        assert "InternationalForms" in sso
-        forms = sso["InternationalForms"]
-        assert forms["FormType"] == "01"
-        assert len(forms["Product"]) == 1
-        assert forms["Product"][0]["CommodityCode"] == "090111"
-        # Contact fields
-        assert "AttentionName" in shipment["ShipTo"]
-        assert "Phone" in shipment["ShipTo"]
-        # Description
-        assert shipment.get("Description") == "Coffee Beans"
+            # Step 1: build_shipment_request enriches simplified with intl fields
+            simplified = build_shipment_request(
+                order_data=order_data, shipper=shipper, service_code="11",
+            )
+            # Verify enrichment happened at this layer
+            assert simplified.get("internationalForms") is not None
+            assert simplified.get("invoiceLineTotal") is not None
+            assert simplified.get("destinationCountry") == "CA"
+
+            # Step 2: build_ups_api_payload reads from simplified (no order_data)
+            payload = build_ups_api_payload(simplified, account_number="ABC123")
+
+            shipment = payload["ShipmentRequest"]["Shipment"]
+            # InvoiceLineTotal present for US→CA
+            assert "InvoiceLineTotal" in shipment
+            assert shipment["InvoiceLineTotal"]["CurrencyCode"] == "USD"
+            # InternationalForms present
+            sso = shipment.get("ShipmentServiceOptions", {})
+            assert "InternationalForms" in sso
+            forms = sso["InternationalForms"]
+            assert forms["FormType"] == "01"
+            assert len(forms["Product"]) == 1
+            assert forms["Product"][0]["CommodityCode"] == "090111"
+            # Contact fields
+            assert "AttentionName" in shipment["ShipTo"]
+            assert "Phone" in shipment["ShipTo"]
+            # Description
+            assert shipment.get("Description") == "Coffee Beans"
 
     def test_us_to_mx_payload_no_invoice_line_total(self):
         """US→MX does NOT require InvoiceLineTotal."""
-        order_data = {
-            "ship_to_name": "Carlos Garcia",
-            "ship_to_address1": "Av Insurgentes Sur 1000",
-            "ship_to_city": "Mexico City",
-            "ship_to_zip": "06600",
-            "ship_to_country": "MX",
-            "ship_to_phone": "5255551234",
-            "ship_to_attention_name": "Carlos Garcia",
-            "shipper_attention_name": "Acme Corp",
-            "shipper_phone": "2125551234",
-            "shipment_description": "Electronics",
-            "service_code": "07",
-            "weight": "3.0",
-            "commodities": [
-                {
-                    "description": "Laptop",
-                    "commodity_code": "847130",
-                    "origin_country": "US",
-                    "quantity": 1,
-                    "unit_value": "999.00",
-                }
-            ],
-        }
-        shipper = {
-            "name": "Acme Corp",
-            "addressLine1": "123 Main St",
-            "city": "New York",
-            "stateProvinceCode": "NY",
-            "postalCode": "10001",
-            "countryCode": "US",
-            "shipperNumber": "ABC123",
-        }
-        payload = build_ups_api_payload(order_data, shipper, account_number="ABC123")
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA,US-MX"}, clear=False):
+            order_data = {
+                "ship_to_name": "Carlos Garcia",
+                "ship_to_address1": "Av Insurgentes Sur 1000",
+                "ship_to_city": "Mexico City",
+                "ship_to_zip": "06600",
+                "ship_to_country": "MX",
+                "ship_to_phone": "5255551234",
+                "ship_to_attention_name": "Carlos Garcia",
+                "shipper_attention_name": "Acme Corp",
+                "shipper_phone": "2125551234",
+                "shipment_description": "Electronics",
+                "weight": "3.0",
+                "commodities": [
+                    {
+                        "description": "Laptop",
+                        "commodity_code": "847130",
+                        "origin_country": "US",
+                        "quantity": 1,
+                        "unit_value": "999.00",
+                    }
+                ],
+            }
+            shipper = {
+                "name": "Acme Corp",
+                "addressLine1": "123 Main St",
+                "city": "New York",
+                "stateProvinceCode": "NY",
+                "postalCode": "10001",
+                "countryCode": "US",
+                "shipperNumber": "ABC123",
+            }
 
-        shipment = payload["ShipmentRequest"]["Shipment"]
-        # NO InvoiceLineTotal for US→MX
-        assert "InvoiceLineTotal" not in shipment
-        # InternationalForms still present
-        sso = shipment.get("ShipmentServiceOptions", {})
-        assert "InternationalForms" in sso
+            simplified = build_shipment_request(
+                order_data=order_data, shipper=shipper, service_code="07",
+            )
+            payload = build_ups_api_payload(simplified, account_number="ABC123")
+
+            shipment = payload["ShipmentRequest"]["Shipment"]
+            # NO InvoiceLineTotal for US→MX
+            assert "InvoiceLineTotal" not in shipment
+            # InternationalForms still present
+            sso = shipment.get("ShipmentServiceOptions", {})
+            assert "InternationalForms" in sso
 
     def test_domestic_payload_unchanged(self):
         """Domestic US→US payload must NOT contain any international sections."""
@@ -1714,7 +1840,6 @@ class TestPayloadIntegration:
             "ship_to_state": "CA",
             "ship_to_zip": "90001",
             "ship_to_country": "US",
-            "service_code": "03",
             "weight": "2.0",
         }
         shipper = {
@@ -1726,7 +1851,11 @@ class TestPayloadIntegration:
             "countryCode": "US",
             "shipperNumber": "ABC123",
         }
-        payload = build_ups_api_payload(order_data, shipper, account_number="ABC123")
+
+        simplified = build_shipment_request(
+            order_data=order_data, shipper=shipper, service_code="03",
+        )
+        payload = build_ups_api_payload(simplified, account_number="ABC123")
 
         shipment = payload["ShipmentRequest"]["Shipment"]
         assert "InvoiceLineTotal" not in shipment
@@ -2023,6 +2152,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 from src.api.routes.preview import SERVICE_CODE_NAMES
+from src.api.schemas import PreviewRowResponse, BatchPreviewResponse
 
 
 class TestServiceCodeNames:
@@ -2048,6 +2178,79 @@ class TestServiceCodeNames:
         assert SERVICE_CODE_NAMES["03"] == "UPS Ground"
         assert SERVICE_CODE_NAMES["01"] == "UPS Next Day Air"
         assert SERVICE_CODE_NAMES["02"] == "UPS 2nd Day Air"
+
+
+class TestPreviewRowResponseInternationalFields:
+    """P1: Verify PreviewRowResponse includes actual international fields."""
+
+    def test_destination_country_field_exists(self):
+        row = PreviewRowResponse(
+            row_number=1, recipient_name="Jane Doe",
+            city_state="Toronto, ON", service="UPS Standard",
+            estimated_cost_cents=4550,
+            destination_country="CA",
+        )
+        assert row.destination_country == "CA"
+
+    def test_duties_taxes_cents_field_exists(self):
+        row = PreviewRowResponse(
+            row_number=1, recipient_name="Jane Doe",
+            city_state="Toronto, ON", service="UPS Standard",
+            estimated_cost_cents=4550,
+            duties_taxes_cents=1200,
+        )
+        assert row.duties_taxes_cents == 1200
+
+    def test_charge_breakdown_field_exists(self):
+        breakdown = {
+            "version": "1.0",
+            "transportationCharges": {"monetaryValue": "45.50", "currencyCode": "USD"},
+            "dutiesAndTaxes": {"monetaryValue": "12.00", "currencyCode": "USD"},
+        }
+        row = PreviewRowResponse(
+            row_number=1, recipient_name="Jane Doe",
+            city_state="Toronto, ON", service="UPS Standard",
+            estimated_cost_cents=4550,
+            charge_breakdown=breakdown,
+        )
+        assert row.charge_breakdown["version"] == "1.0"
+        assert row.charge_breakdown["dutiesAndTaxes"]["monetaryValue"] == "12.00"
+
+    def test_domestic_row_has_none_international_fields(self):
+        row = PreviewRowResponse(
+            row_number=1, recipient_name="John Doe",
+            city_state="Los Angeles, CA", service="UPS Ground",
+            estimated_cost_cents=1550,
+        )
+        assert row.destination_country is None
+        assert row.duties_taxes_cents is None
+        assert row.charge_breakdown is None
+
+
+class TestBatchPreviewResponseInternationalAggregates:
+    """P1: Verify BatchPreviewResponse includes international aggregates."""
+
+    def test_total_duties_taxes_cents_field(self):
+        resp = BatchPreviewResponse(
+            job_id="test-123",
+            total_rows=5,
+            preview_rows=[],
+            total_estimated_cost_cents=10000,
+            total_duties_taxes_cents=2400,
+            international_row_count=2,
+        )
+        assert resp.total_duties_taxes_cents == 2400
+        assert resp.international_row_count == 2
+
+    def test_domestic_only_batch_no_international_aggregates(self):
+        resp = BatchPreviewResponse(
+            job_id="test-456",
+            total_rows=3,
+            preview_rows=[],
+            total_estimated_cost_cents=5000,
+        )
+        assert resp.total_duties_taxes_cents is None
+        assert resp.international_row_count == 0
 ```
 
 **Step 6: Run tests**
@@ -2423,21 +2626,92 @@ from src.mcp.data_source.tools.commodity_tools import (
     get_commodities_bulk,
 )
 
-# Register alongside existing tools
-mcp.tool(import_commodities)
-mcp.tool(get_commodities_bulk)
+# Register alongside existing tools (note: use mcp.tool()(func) pattern,
+# matching the existing registration style in this server)
+mcp.tool()(import_commodities)
+mcp.tool()(get_commodities_bulk)
 ```
 
 **Step 5: Run tests**
 
 Run: `python3 -m pytest tests/mcp/test_commodity_tools.py -v`
-Expected: ALL PASS (7 tests)
+Expected: ALL PASS (9 tests — 7 commodity + 2 seam)
 
 **Step 6: Commit**
 
 ```bash
-git add src/mcp/data_source/tools/commodity_tools.py src/mcp/data_source/server.py tests/mcp/test_commodity_tools.py
-git commit -m "feat: add commodity import/query tools with imported_commodities auxiliary table"
+git add src/mcp/data_source/tools/commodity_tools.py src/mcp/data_source/server.py \
+    src/services/data_source_gateway.py src/services/data_source_mcp_client.py \
+    tests/mcp/test_commodity_tools.py
+git commit -m "feat: add commodity import/query tools with full hydration seam"
+```
+
+**Step 7: Wire the commodity hydration seam (P0 — execution blocker)**
+
+The MCP tools above handle DuckDB-level operations. The BatchEngine needs a way to call `get_commodities_bulk` through the gateway chain. Add methods to `DataSourceGateway`, `DataSourceMCPClient`, and register a helper on `BatchEngine`.
+
+**7a. Add to `DataSourceGateway` protocol** (`src/services/data_source_gateway.py`):
+
+```python
+    async def get_commodities_bulk(
+        self, order_ids: list[int | str],
+    ) -> dict[int | str, list[dict[str, Any]]]:
+        """Get commodities grouped by order_id for international shipments.
+
+        Args:
+            order_ids: List of order IDs to retrieve commodities for.
+
+        Returns:
+            Dict mapping order_id → list of commodity dicts.
+            Missing orders are omitted from the result.
+        """
+        ...
+```
+
+**7b. Add to `DataSourceMCPClient`** (`src/services/data_source_mcp_client.py`):
+
+```python
+    async def get_commodities_bulk(
+        self, order_ids: list[int | str],
+    ) -> dict[int | str, list[dict[str, Any]]]:
+        """Get commodities for multiple orders via MCP tool.
+
+        Args:
+            order_ids: List of order IDs to retrieve commodities for.
+
+        Returns:
+            Dict mapping order_id → list of commodity dicts.
+        """
+        await self._ensure_connected()
+        result = await self._mcp.call_tool("get_commodities_bulk", {
+            "order_ids": order_ids,
+        })
+        # MCP returns dict with string keys; normalize to match input type
+        return {
+            (int(k) if isinstance(order_ids[0], int) else k): v
+            for k, v in result.items()
+        } if result else {}
+```
+
+**7c. Write tests for the seam:**
+
+Add to `tests/mcp/test_commodity_tools.py`:
+
+```python
+class TestGatewaySeam:
+    """Verify the full chain: BatchEngine → DataSourceMCPClient → MCP tool."""
+
+    def test_data_source_gateway_has_get_commodities_bulk(self):
+        """Protocol must define get_commodities_bulk."""
+        from src.services.data_source_gateway import DataSourceGateway
+        assert hasattr(DataSourceGateway, "get_commodities_bulk")
+
+    def test_data_source_mcp_client_implements_method(self):
+        """DataSourceMCPClient must implement get_commodities_bulk."""
+        from src.services.data_source_mcp_client import DataSourceMCPClient
+        client = DataSourceMCPClient.__new__(DataSourceMCPClient)
+        assert hasattr(client, "get_commodities_bulk")
+        assert callable(getattr(client, "get_commodities_bulk"))
 ```
 
 **Design note:** The existing `imported_data` table and all 50+ hardcoded references to it are **NOT modified**. The commodity pipeline uses a parallel `imported_commodities` table with its own import/query tools. The `query_data` MCP tool already allows arbitrary SQL, so the agent can JOIN the two tables if needed. This avoids touching the adapter protocol or breaking existing flows.
@@ -2530,7 +2804,32 @@ if requirements.not_shippable_reason:
     continue
 ```
 
-2. For international rows, hydrate commodity data via `get_commodities_bulk()`:
+2. Add `_get_commodities_bulk()` helper to BatchEngine (P0 — completes the hydration seam from Task 11):
+
+```python
+    async def _get_commodities_bulk(
+        self, order_ids: list[int | str],
+    ) -> dict[int | str, list[dict]]:
+        """Fetch commodities for orders via the data source gateway.
+
+        Delegates to DataSourceGateway.get_commodities_bulk() which calls
+        the MCP get_commodities_bulk tool. Returns empty dict if gateway
+        doesn't support commodities (pre-international code path).
+
+        Args:
+            order_ids: List of order IDs to retrieve commodities for.
+
+        Returns:
+            Dict mapping order_id → list of commodity dicts.
+        """
+        try:
+            return await self._gateway.get_commodities_bulk(order_ids)
+        except Exception as e:
+            logger.warning("Commodity fetch failed (non-critical): %s", e)
+            return {}
+```
+
+3. Before processing international rows, bulk-fetch and inject commodities:
 
 ```python
 # Before processing international rows, bulk-fetch commodities
@@ -2544,7 +2843,7 @@ if any_international_rows:
             row_data["commodities"] = commodities_map[oid]
 ```
 
-3. Run `validate_international_readiness()` before sending to UPS:
+4. Run `validate_international_readiness()` before sending to UPS:
 
 ```python
 if requirements.is_international or requirements.requires_invoice_line_total:
@@ -2556,7 +2855,7 @@ if requirements.is_international or requirements.requires_invoice_line_total:
         continue
 ```
 
-4. Store `destination_country`, `duties_taxes_cents`, and `charge_breakdown` on JobRow after processing:
+5. Store `destination_country`, `duties_taxes_cents`, and `charge_breakdown` on JobRow after processing:
 
 ```python
 row.destination_country = dest_country if dest_country != "US" else None
@@ -2799,7 +3098,7 @@ class TestDomesticRegression:
 
     def test_domestic_payload_has_no_international_sections(self):
         """Domestic payload must NOT contain InternationalForms or InvoiceLineTotal."""
-        from src.services.ups_payload_builder import build_ups_api_payload
+        from src.services.ups_payload_builder import build_shipment_request, build_ups_api_payload
         order_data = {
             "ship_to_name": "John Doe",
             "ship_to_address1": "456 Oak Ave",
@@ -2807,7 +3106,6 @@ class TestDomesticRegression:
             "ship_to_state": "CA",
             "ship_to_zip": "90001",
             "ship_to_country": "US",
-            "service_code": "03",
             "weight": "2.0",
         }
         shipper = {
@@ -2816,7 +3114,8 @@ class TestDomesticRegression:
             "postalCode": "10001", "countryCode": "US",
             "shipperNumber": "ABC",
         }
-        payload = build_ups_api_payload(order_data, shipper, account_number="ABC")
+        simplified = build_shipment_request(order_data=order_data, shipper=shipper, service_code="03")
+        payload = build_ups_api_payload(simplified, account_number="ABC")
         shipment = payload["ShipmentRequest"]["Shipment"]
         assert "InvoiceLineTotal" not in shipment
         sso = shipment.get("ShipmentServiceOptions", {})
@@ -2882,11 +3181,13 @@ git commit -m "test: add domestic regression test verifying no behavioral change
 
 **DB migration**: `_ensure_columns_exist()` in `src/db/connection.py` handles both `jobs` and `job_rows` table migrations. Idempotent — safe on fresh and existing DBs. Test `test_migration_adds_columns_to_existing_db` proves columns are added to pre-existing databases.
 
-**Commodity data model**: Uses a parallel `imported_commodities` DuckDB table — does NOT modify the existing `imported_data` table or the 50+ references to it. The `import_commodities` MCP tool creates/replaces `imported_commodities`; `get_commodities_bulk` queries it grouped by order_id.
+**Commodity data model**: Uses a parallel `imported_commodities` DuckDB table — does NOT modify the existing `imported_data` table or the 50+ references to it. The `import_commodities` MCP tool creates/replaces `imported_commodities`; `get_commodities_bulk` queries it grouped by order_id. Full hydration seam: `BatchEngine._get_commodities_bulk()` → `DataSourceMCPClient.get_commodities_bulk()` → MCP `get_commodities_bulk` tool → DuckDB.
+
+**Enrichment architecture**: International enrichment happens in `build_shipment_request()` (which has raw `order_data`). It adds international fields to the `simplified` dict (e.g., `internationalForms`, `invoiceLineTotal`, contact fields in `shipper`/`shipTo` sub-dicts). `build_ups_api_payload()` reads these enriched fields from the simplified dict — it never receives raw `order_data`.
 
 **Money precision**: All dollar-to-cents conversions use `Decimal` via `_dollars_to_cents()`. The previous `int(float(amount) * 100)` pattern is replaced everywhere.
 
-**Service alias safety**: Bare `"standard"` is NOT mapped to any service. Only `"ups standard"` and `"international standard"` map to service code `"11"`. Domestic aliases are unchanged.
+**Service alias safety**: Bare `"standard"` is NOT mapped to any service in three locations: `SERVICE_ALIASES` (intent.py), `SERVICE_NAME_TO_CODE` (column_mapping.py), and `resolve_service_code()` (ups_payload_builder.py). Only `"ups standard"` and `"international standard"` map to service code `"11"`. Domestic aliases are unchanged.
 
 **CI gating**: Integration tests requiring UPS credentials use `pytest.mark.skipif(not os.environ.get("RUN_UPS_INTEGRATION"))`. Validation-only tests run unconditionally.
 
@@ -2895,6 +3196,8 @@ git commit -m "test: add domestic regression test verifying no behavioral change
 **Observability**: `rule_version` logged on every international validation. Error code metrics per lane. Raw UPS charge fragments in audit logs.
 
 ## Review Issue Resolution Matrix
+
+### Round 1
 
 | # | Severity | Issue | Resolution | Task |
 |---|----------|-------|------------|------|
@@ -2906,3 +3209,14 @@ git commit -m "test: add domestic regression test verifying no behavioral change
 | 6 | P1 | Preview route wiring missing | Added SERVICE_CODE_NAMES updates, PreviewRowResponse/BatchPreviewResponse wiring | Task 8 |
 | 7 | P2 | Money precision risk | Replaced `int(float(x)*100)` with `_dollars_to_cents()` using Decimal | Task 12 |
 | 8 | P2 | Integration test CI gating | Added `RUN_UPS_INTEGRATION` env skipif + separated validation-only tests | Tasks 16, 17 |
+
+### Round 2
+
+| # | Severity | Issue | Resolution | Task |
+|---|----------|-------|------------|------|
+| 9 | P0 | Payload builder interface mismatch — enrichment in `build_ups_api_payload()` which lacks `order_data` | Moved enrichment to `build_shipment_request()` (has `order_data`); `build_ups_api_payload()` reads enriched fields from simplified dict; integration tests use two-step chain | Task 6 |
+| 10 | P0 | Commodity hydration seam undefined — `_get_commodities_bulk()` called but never defined | Added `get_commodities_bulk()` to DataSourceGateway protocol + DataSourceMCPClient + BatchEngine helper with seam tests | Tasks 11, 12 |
+| 11 | P1 | Preview route test only checks SERVICE_CODE_NAMES dict | Added TestPreviewRowResponseInternationalFields and TestBatchPreviewResponseInternationalAggregates asserting `destination_country`, `duties_taxes_cents`, `charge_breakdown` fields | Task 8 |
+| 12 | P1 | "standard" alias in payload builder `resolve_service_code()` at line 407 | Added step 8 to Task 6: remove bare `"standard": "11"` from `resolve_service_code()` internal map | Task 6 |
+| 13 | P2 | MCP tool registration uses `mcp.tool(func)` but server uses `mcp.tool()(func)` | Fixed registration to `mcp.tool()(import_commodities)` / `mcp.tool()(get_commodities_bulk)` | Task 11 |
+| 14 | P2 | E-2017 currency mismatch error defined but no validator enforces it | Added currency mismatch check to `validate_international_readiness()` + test `test_currency_mismatch_e2017` | Task 3 |
