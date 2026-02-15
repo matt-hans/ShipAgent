@@ -94,6 +94,30 @@ def test_prompt_without_source_batch_demands_connection():
     assert "ask the user to connect" in lower
 
 
+def test_prompt_auto_imports_shopify_when_env_configured(monkeypatch):
+    """When Shopify env vars are set and no source, prompt demands connect_shopify call."""
+    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test_token")
+    monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "test.myshopify.com")
+    prompt = build_system_prompt(source_info=None, interactive_shipping=False)
+    lower = prompt.lower()
+    assert "connect_shopify" in lower
+    assert "must" in lower
+    # Data source section should direct auto-import, not ask user to connect a CSV/Excel
+    assert "shopify credentials are configured" in lower
+
+
+def test_prompt_no_shopify_env_asks_user_to_connect(monkeypatch):
+    """When Shopify env vars are absent and no source, prompt asks user to connect."""
+    monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SHOPIFY_STORE_DOMAIN", raising=False)
+    prompt = build_system_prompt(source_info=None, interactive_shipping=False)
+    lower = prompt.lower()
+    # Data section should tell agent to ask user — no auto-import
+    assert "ask the user to connect" in lower
+    # Should not reference connect_shopify in the data section
+    assert "connect_shopify" not in lower
+
+
 def test_prompt_contains_workflow():
     """System prompt includes workflow steps."""
     prompt = build_system_prompt()

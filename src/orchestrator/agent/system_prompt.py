@@ -9,6 +9,7 @@ Example:
     prompt = build_system_prompt(source_info=svc.get_source_info())
 """
 
+import os
 from datetime import datetime
 
 from src.orchestrator.models.intent import SERVICE_ALIASES, ServiceCode
@@ -92,12 +93,23 @@ def build_system_prompt(
     elif source_info is not None:
         data_section = _build_schema_section(source_info)
     else:
-        data_section = (
-            "No data source connected. Ask the user to connect a CSV, Excel, "
-            "or database source first.\n"
-            "If SHOPIFY_ACCESS_TOKEN is configured, call the connect_shopify "
-            "tool to import Shopify orders before processing shipping commands."
+        shopify_configured = bool(
+            os.environ.get("SHOPIFY_ACCESS_TOKEN")
+            and os.environ.get("SHOPIFY_STORE_DOMAIN")
         )
+        if shopify_configured:
+            data_section = (
+                "No data source imported yet, but Shopify credentials are configured "
+                "in the environment.\n"
+                "You MUST call the connect_shopify tool FIRST to import Shopify orders "
+                "before doing anything else. Do not ask the user to connect a source — "
+                "just call connect_shopify immediately."
+            )
+        else:
+            data_section = (
+                "No data source connected. Ask the user to connect a CSV, Excel, "
+                "or database source first."
+            )
 
     filter_rules_section = ""
     workflow_section = ""
