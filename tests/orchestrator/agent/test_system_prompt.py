@@ -244,3 +244,75 @@ class TestInteractiveShippingPromptConditioning:
         prompt = build_system_prompt(source_info=source, interactive_shipping=True)
         assert "Columns:" not in prompt
         assert "order_id (VARCHAR, not null)" not in prompt
+
+
+# --- International shipping prompt tests ---
+
+
+class TestInternationalShippingPrompt:
+    """Tests for international shipping sections in system prompt."""
+
+    def test_service_table_includes_international_labels(self):
+        """Service table labels international codes (07, 08, 11, 54, 65)."""
+        prompt = build_system_prompt()
+        assert "code 07, international" in prompt
+        assert "code 08, international" in prompt
+        assert "code 11, international" in prompt
+        assert "code 54, international" in prompt
+        assert "code 65, international" in prompt
+
+    def test_service_table_labels_domestic_services(self):
+        """Service table labels domestic codes (01, 02, 03, 12, 13)."""
+        prompt = build_system_prompt()
+        assert "code 01, domestic" in prompt
+        assert "code 02, domestic" in prompt
+        assert "code 03, domestic" in prompt
+
+    def test_international_section_present_when_lanes_configured(self, monkeypatch):
+        """International guidance section appears when lanes env var is set."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "US-CA,US-MX")
+        prompt = build_system_prompt(interactive_shipping=False)
+        assert "## International Shipping" in prompt
+        assert "US-CA" in prompt
+        assert "US-MX" in prompt
+
+    def test_international_section_lists_required_fields(self, monkeypatch):
+        """International section includes required field guidance."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "US-CA")
+        prompt = build_system_prompt(interactive_shipping=False)
+        assert "Recipient phone" in prompt
+        assert "Description of goods" in prompt
+        assert "Commodity data" in prompt
+        assert "InvoiceLineTotal" in prompt
+
+    def test_international_section_includes_filter_examples(self, monkeypatch):
+        """International section includes country-based SQL filter examples."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "US-CA,US-MX")
+        prompt = build_system_prompt(interactive_shipping=False)
+        assert "ship_to_country = 'CA'" in prompt
+        assert "ship_to_country = 'MX'" in prompt
+
+    def test_international_section_warns_about_service_ambiguity(self, monkeypatch):
+        """International section warns about 'standard' service code ambiguity."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "US-CA")
+        prompt = build_system_prompt(interactive_shipping=False)
+        lower = prompt.lower()
+        assert "do not silently default" in lower
+
+    def test_international_section_hidden_in_interactive_mode(self, monkeypatch):
+        """International guidance hidden when interactive mode is active."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "US-CA")
+        prompt = build_system_prompt(interactive_shipping=True)
+        assert "## International Shipping" not in prompt
+
+    def test_international_section_disabled_when_no_lanes(self, monkeypatch):
+        """When no lanes configured, prompt says international is not enabled."""
+        monkeypatch.delenv("INTERNATIONAL_ENABLED_LANES", raising=False)
+        prompt = build_system_prompt(interactive_shipping=False)
+        assert "International shipping is not currently enabled" in prompt
+
+    def test_international_uses_service_codes_not_domestic(self, monkeypatch):
+        """International section references international service codes."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "US-CA")
+        prompt = build_system_prompt(interactive_shipping=False)
+        assert "07, 08, 11, 54, or 65" in prompt
