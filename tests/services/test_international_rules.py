@@ -1,0 +1,212 @@
+"""Tests for international shipping rules engine."""
+
+import os
+from unittest.mock import patch
+
+from src.services.international_rules import (
+    RequirementSet,
+    ValidationError,
+    get_requirements,
+    validate_international_readiness,
+    is_lane_enabled,
+    SUPPORTED_INTERNATIONAL_SERVICES,
+)
+
+
+class TestGetRequirements:
+    """Test lane-driven requirement determination."""
+
+    def test_domestic_us_to_us(self):
+        req = get_requirements("US", "US", "03")
+        assert req.is_international is False
+        assert req.requires_international_forms is False
+
+    def test_us_to_ca_is_international(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA,US-MX"}, clear=False):
+            req = get_requirements("US", "CA", "11")
+            assert req.is_international is True
+            assert req.requires_description is True
+            assert req.requires_shipper_contact is True
+            assert req.requires_recipient_contact is True
+            assert req.requires_invoice_line_total is True
+            assert req.requires_international_forms is True
+            assert req.requires_commodities is True
+            assert req.form_type == "01"
+            assert req.currency_code == "USD"
+
+    def test_us_to_mx_no_invoice_line_total(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA,US-MX"}, clear=False):
+            req = get_requirements("US", "MX", "07")
+            assert req.is_international is True
+            assert req.requires_invoice_line_total is False
+            assert req.requires_international_forms is True
+
+    def test_us_to_pr_requires_invoice_line_total(self):
+        req = get_requirements("US", "PR", "03")
+        assert req.is_international is False  # PR is US territory
+        assert req.requires_invoice_line_total is True
+
+    def test_unsupported_lane_returns_not_shippable(self):
+        req = get_requirements("US", "GB", "07")
+        assert req.not_shippable_reason is not None
+        assert "not" in req.not_shippable_reason.lower()
+
+    def test_invalid_service_for_lane(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            req = get_requirements("US", "CA", "03")  # Ground is domestic only
+            assert req.not_shippable_reason is not None
+
+    def test_all_international_services_accepted_for_ca(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA,US-MX"}, clear=False):
+            for code in SUPPORTED_INTERNATIONAL_SERVICES:
+                req = get_requirements("US", "CA", code)
+                assert req.not_shippable_reason is None, f"Service {code} rejected for US→CA"
+
+    def test_requirement_set_has_rule_version(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            req = get_requirements("US", "CA", "11")
+            assert req.rule_version is not None
+            assert req.effective_date is not None
+
+    def test_kill_switch_blocks_enabled_lane(self):
+        """P0: get_requirements() must enforce is_lane_enabled() kill switch."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": ""}, clear=False):
+            req = get_requirements("US", "CA", "11")
+            assert req.not_shippable_reason is not None
+            assert "disabled" in req.not_shippable_reason.lower() or "not enabled" in req.not_shippable_reason.lower()
+
+    def test_kill_switch_allows_when_enabled(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            req = get_requirements("US", "CA", "11")
+            assert req.not_shippable_reason is None
+            assert req.is_international is True
+
+
+class TestValidateInternationalReadiness:
+    """Test pre-submit validation of order data."""
+
+    def test_valid_international_order(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_phone": "6045551234",
+                "ship_to_attention_name": "Jane Doe",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme Corp",
+                "shipment_description": "Coffee Beans",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "150.00",
+                "commodities": [
+                    {
+                        "description": "Coffee Beans",
+                        "commodity_code": "090111",
+                        "origin_country": "CO",
+                        "quantity": 5,
+                        "unit_value": "30.00",
+                    }
+                ],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            assert errors == []
+
+    def test_missing_recipient_phone(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_attention_name": "Jane Doe",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme Corp",
+                "shipment_description": "Coffee Beans",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "150.00",
+                "commodities": [{"description": "Coffee", "commodity_code": "090111",
+                                "origin_country": "CO", "quantity": 1, "unit_value": "30.00"}],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            assert len(errors) == 1
+            assert errors[0].machine_code == "MISSING_RECIPIENT_PHONE"
+            assert errors[0].field_path == "ShipTo.Phone.Number"
+
+    def test_missing_commodities(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_phone": "6045551234",
+                "ship_to_attention_name": "Jane",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme",
+                "shipment_description": "Goods",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "50.00",
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "MISSING_COMMODITIES" in codes
+
+    def test_invalid_hs_code_format(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_phone": "6045551234",
+                "ship_to_attention_name": "Jane",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme",
+                "shipment_description": "Goods",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "50.00",
+                "commodities": [{"description": "Widget", "commodity_code": "ABC",
+                                "origin_country": "US", "quantity": 1, "unit_value": "10.00"}],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "INVALID_HS_CODE" in codes
+
+    def test_currency_mismatch_e2017(self):
+        """P2: E-2017 must fire when commodity currency differs from invoice currency."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_phone": "6045551234",
+                "ship_to_attention_name": "Jane",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme",
+                "shipment_description": "Goods",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "50.00",
+                "commodities": [
+                    {"description": "Widget", "commodity_code": "999999",
+                     "origin_country": "US", "quantity": 1, "unit_value": "50.00",
+                     "currency_code": "CAD"},  # Mismatch!
+                ],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "CURRENCY_MISMATCH" in codes
+            # Verify it maps to E-2017
+            mismatch_error = next(e for e in errors if e.machine_code == "CURRENCY_MISMATCH")
+            assert mismatch_error.error_code == "E-2017"
+
+    def test_domestic_returns_no_errors(self):
+        order = {"ship_to_country": "US"}
+        req = get_requirements("US", "US", "03")
+        errors = validate_international_readiness(order, req)
+        assert errors == []
+
+
+class TestLaneEnabled:
+    """Test feature flag gating."""
+
+    def test_default_lanes_disabled(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": ""}, clear=False):
+            assert is_lane_enabled("US", "CA") is False
+
+    def test_ca_lane_enabled(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA,US-MX"}, clear=False):
+            assert is_lane_enabled("US", "CA") is True
+            assert is_lane_enabled("US", "MX") is True
+            assert is_lane_enabled("US", "GB") is False
