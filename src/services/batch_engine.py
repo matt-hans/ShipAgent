@@ -130,6 +130,23 @@ class BatchEngine:
         rows_lock = asyncio.Lock()
         row_durations: list[float] = []
 
+        # Pre-hydrate commodities for international rows that need them.
+        # Collect order IDs, bulk-fetch from MCP, then inject into order data.
+        commodity_cache: dict[str, list[dict]] = {}
+        if rows:
+            try:
+                order_ids = []
+                for r in rows:
+                    od = self._parse_order_data(r)
+                    oid = od.get("order_id") or od.get("order_number")
+                    if oid:
+                        order_ids.append(str(oid))
+                if order_ids:
+                    raw = await self._get_commodities_bulk(order_ids)
+                    commodity_cache = {str(k): v for k, v in raw.items()}
+            except Exception as e:
+                logger.warning("Commodity pre-hydration failed (non-critical): %s", e)
+
         async def _rate_row(row: Any) -> None:
             """Rate a single row with concurrency control."""
             nonlocal total_cost_cents
@@ -145,11 +162,17 @@ class BatchEngine:
                     # International validation (preview)
                     dest_country = order_data.get("ship_to_country", "US")
                     eff_service = service_code or order_data.get("service_code", "03")
-                    origin_country = shipper.get("country", "US")
+                    origin_country = shipper.get("countryCode", "US")
                     requirements = get_requirements(origin_country, dest_country, eff_service)
 
                     if requirements.not_shippable_reason:
                         raise ValueError(requirements.not_shippable_reason)
+
+                    # Hydrate commodities from cache if needed
+                    if requirements.requires_commodities and not order_data.get("commodities"):
+                        oid = str(order_data.get("order_id") or order_data.get("order_number") or "")
+                        if oid and oid in commodity_cache:
+                            order_data["commodities"] = commodity_cache[oid]
 
                     if requirements.is_international or requirements.requires_invoice_line_total:
                         validation_errors = validate_international_readiness(
@@ -303,6 +326,22 @@ class BatchEngine:
 
         pending_rows = [r for r in rows if r.status == "pending"]
 
+        # Pre-hydrate commodities for international rows that need them.
+        exec_commodity_cache: dict[str, list[dict]] = {}
+        if pending_rows:
+            try:
+                order_ids = []
+                for r in pending_rows:
+                    od = self._parse_order_data(r)
+                    oid = od.get("order_id") or od.get("order_number")
+                    if oid:
+                        order_ids.append(str(oid))
+                if order_ids:
+                    raw = await self._get_commodities_bulk(order_ids)
+                    exec_commodity_cache = {str(k): v for k, v in raw.items()}
+            except Exception as e:
+                logger.warning("Commodity pre-hydration failed (non-critical): %s", e)
+
         async def _process_row(row: Any) -> None:
             """Process a single row with concurrency control."""
             nonlocal successful, failed, total_cost_cents
@@ -315,11 +354,17 @@ class BatchEngine:
                     # International validation (execute)
                     dest_country = order_data.get("ship_to_country", "US")
                     eff_service = service_code or order_data.get("service_code", "03")
-                    origin_country = shipper.get("country", "US")
+                    origin_country = shipper.get("countryCode", "US")
                     requirements = get_requirements(origin_country, dest_country, eff_service)
 
                     if requirements.not_shippable_reason:
                         raise ValueError(requirements.not_shippable_reason)
+
+                    # Hydrate commodities from cache if needed
+                    if requirements.requires_commodities and not order_data.get("commodities"):
+                        oid = str(order_data.get("order_id") or order_data.get("order_number") or "")
+                        if oid and oid in exec_commodity_cache:
+                            order_data["commodities"] = exec_commodity_cache[oid]
 
                     if requirements.is_international or requirements.requires_invoice_line_total:
                         validation_errors = validate_international_readiness(
