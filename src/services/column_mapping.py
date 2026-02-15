@@ -13,6 +13,8 @@ Example:
 
 from typing import Any
 
+from src.services.ups_service_codes import SERVICE_NAME_TO_CODE, translate_service_name
+
 
 # Fields that must have a mapping entry for valid shipments
 REQUIRED_FIELDS = [
@@ -206,55 +208,5 @@ def auto_map_columns(source_columns: list[str]) -> dict[str, str]:
     return mapping
 
 
-# === Service name translation ===
-
-SERVICE_NAME_TO_CODE: dict[str, str] = {
-    "ground": "03",
-    "ups ground": "03",
-    "2nd day air": "02",
-    "ups 2nd day air": "02",
-    "next day air": "01",
-    "ups next day air": "01",
-    "3 day select": "12",
-    "ups 3 day select": "12",
-    "next day air saver": "13",
-    "ups next day air saver": "13",
-    "next day air early": "14",
-    "ups next day air early": "14",
-    "2nd day air am": "59",
-    "ups 2nd day air am": "59",
-    "standard": "11",
-    "ups standard": "11",
-    "express": "01",
-    "overnight": "01",
-}
-
-
-def translate_service_name(name: str) -> str:
-    """Translate a human-readable service name to a UPS service code.
-
-    Case-insensitive lookup. Returns the original value if already a
-    numeric code or if no match is found.
-
-    Args:
-        name: Service name string (e.g., "Ground", "Next Day Air").
-
-    Returns:
-        UPS service code string (e.g., "03", "01").
-    """
-    if not name:
-        return "03"  # Default to Ground
-
-    stripped = name.strip()
-
-    # Already a code (numeric string)?
-    if stripped.isdigit():
-        return stripped
-
-    # Lookup by lowercase
-    code = SERVICE_NAME_TO_CODE.get(stripped.lower())
-    if code:
-        return code
-
-    # Default to Ground if unrecognized
-    return "03"
+# Re-exported from src.services.ups_service_codes for backward compatibility:
+# SERVICE_NAME_TO_CODE, translate_service_name

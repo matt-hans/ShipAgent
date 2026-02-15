@@ -121,8 +121,8 @@ async def preview_interactive_shipment_tool(
         build_shipment_request,
         build_shipper_from_env,
         resolve_packaging_code,
-        resolve_service_code,
     )
+    from src.services.ups_service_codes import resolve_service_code
 
     # Safe coercion: None -> "", non-string -> str, then strip
     def _str(val: Any, default: str = "") -> str:

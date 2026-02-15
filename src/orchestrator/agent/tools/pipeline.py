@@ -10,8 +10,8 @@ import os
 from typing import Any
 
 from src.db.connection import get_db_context
-from src.services.column_mapping import translate_service_name
 from src.services.job_service import JobService
+from src.services.ups_service_codes import translate_service_name
 
 from src.orchestrator.agent.tools.core import (
     EventEmitterBridge,
