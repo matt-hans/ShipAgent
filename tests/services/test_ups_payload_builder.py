@@ -32,14 +32,14 @@ class TestNormalizePhone:
         """Test international phone numbers."""
         assert normalize_phone("+1 555-123-4567") == "15551234567"
 
-    def test_returns_default_for_short_numbers(self):
-        """Test short numbers return default."""
-        assert normalize_phone("123") == "5555555555"
-        assert normalize_phone("") == "5555555555"
+    def test_returns_empty_for_short_numbers(self):
+        """Test short numbers return empty string."""
+        assert normalize_phone("123") == ""
+        assert normalize_phone("") == ""
 
-    def test_returns_default_for_none(self):
-        """Test None returns default."""
-        assert normalize_phone(None) == "5555555555"
+    def test_returns_empty_for_none(self):
+        """Test None returns empty string."""
+        assert normalize_phone(None) == ""
 
     def test_truncates_to_15_digits(self):
         """Test very long numbers are truncated."""
@@ -140,7 +140,7 @@ class TestBuildShipperFromShop:
         shipper = build_shipper_from_shop(shop_info)
 
         assert shipper["name"] == "My Store"
-        assert shipper["phone"] == "5555555555"  # Default
+        assert shipper["phone"] == ""  # No phone provided, no placeholder
         # Missing addressLine1 falls back to env var (SHIPPER_ADDRESS1 or default)
         assert shipper["addressLine1"] != ""
         assert shipper["city"] == "Los Angeles"  # Provided
