@@ -157,7 +157,8 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
           continue;
         }
         const text = (event.data.text as string) || '';
-        if (text) {
+        // Suppress synthetic SDK error from hook denials (claude-agent-sdk-python#265)
+        if (text && !text.includes('API Error: 400 due to tool use concurrency issues')) {
           addMessage({ role: 'system', content: text });
         }
       } else if (event.type === 'preview_ready') {
