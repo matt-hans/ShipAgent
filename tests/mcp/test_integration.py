@@ -151,7 +151,8 @@ class TestAllToolsRegistered:
     """Verify all expected tools are registered.
 
     The EDI tool (import_edi) is optional — it requires pydifact which
-    may not be installed. Core tool count is 13; 14 with EDI support.
+    may not be installed. Core tool count is 18 (including 2 commodity tools);
+    19 with EDI support.
     """
 
     def test_tool_count(self):
@@ -164,7 +165,7 @@ class TestAllToolsRegistered:
             return len(tools)
 
         count = asyncio.run(get_tool_count())
-        expected_count = 17 if _edi_available else 16
+        expected_count = 19 if _edi_available else 18
         assert count == expected_count, f"Expected {expected_count} tools, got {count}"
 
     def test_tool_names(self):
@@ -195,6 +196,8 @@ class TestAllToolsRegistered:
             "get_source_info",
             "import_records",
             "clear_source",
+            "import_commodities",
+            "get_commodities_bulk",
         ]
 
         if _edi_available:

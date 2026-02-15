@@ -17,6 +17,7 @@ import logging
 import os
 import traceback
 from datetime import UTC, datetime
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -27,8 +28,21 @@ from src.services.ups_payload_builder import (
 )
 from src.services.errors import UPSServiceError
 from src.services.gateway_provider import get_data_gateway
+from src.services.international_rules import get_requirements, validate_international_readiness
 
 logger = logging.getLogger(__name__)
+
+
+def _dollars_to_cents(amount: str) -> int:
+    """Convert dollar string to cents using Decimal to avoid float drift.
+
+    Args:
+        amount: Dollar amount as string (e.g., "45.50").
+
+    Returns:
+        Integer cents value.
+    """
+    return int(Decimal(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) * 100)
 
 # Default labels output directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -127,6 +141,25 @@ class BatchEngine:
                 cost_cents = 0
                 try:
                     order_data = self._parse_order_data(row)
+
+                    # International validation (preview)
+                    dest_country = order_data.get("ship_to_country", "US")
+                    eff_service = service_code or order_data.get("service_code", "03")
+                    origin_country = shipper.get("country", "US")
+                    requirements = get_requirements(origin_country, dest_country, eff_service)
+
+                    if requirements.not_shippable_reason:
+                        raise ValueError(requirements.not_shippable_reason)
+
+                    if requirements.is_international or requirements.requires_invoice_line_total:
+                        validation_errors = validate_international_readiness(
+                            order_data, requirements,
+                        )
+                        if validation_errors:
+                            raise ValueError(
+                                "; ".join(e.message for e in validation_errors)
+                            )
+
                     simplified = build_shipment_request(
                         order_data=order_data,
                         shipper=shipper,
@@ -140,7 +173,7 @@ class BatchEngine:
                     amount = rate_result.get("totalCharges", {}).get(
                         "monetaryValue", "0"
                     )
-                    cost_cents = int(float(amount) * 100)
+                    cost_cents = _dollars_to_cents(amount)
                 except UPSServiceError as e:
                     logger.warning(
                         "Rate quote failed for row %s: %s", row.row_number, e
@@ -279,6 +312,24 @@ class BatchEngine:
                     # Parse and build payload (CPU-bound, fast)
                     order_data = self._parse_order_data(row)
 
+                    # International validation (execute)
+                    dest_country = order_data.get("ship_to_country", "US")
+                    eff_service = service_code or order_data.get("service_code", "03")
+                    origin_country = shipper.get("country", "US")
+                    requirements = get_requirements(origin_country, dest_country, eff_service)
+
+                    if requirements.not_shippable_reason:
+                        raise ValueError(requirements.not_shippable_reason)
+
+                    if requirements.is_international or requirements.requires_invoice_line_total:
+                        validation_errors = validate_international_readiness(
+                            order_data, requirements,
+                        )
+                        if validation_errors:
+                            raise ValueError(
+                                "; ".join(e.message for e in validation_errors)
+                            )
+
                     simplified = build_shipment_request(
                         order_data=order_data,
                         shipper=shipper,
@@ -315,13 +366,30 @@ class BatchEngine:
 
                     # Cost in cents
                     charges = result.get("totalCharges", {})
-                    cost_cents = int(float(charges.get("monetaryValue", "0")) * 100)
+                    cost_cents = _dollars_to_cents(charges.get("monetaryValue", "0"))
+
+                    # International charge breakdown and destination storage
+                    row_dest_country = dest_country if dest_country.upper() != "US" else None
+                    row_duties_taxes_cents = None
+                    row_charge_breakdown = None
+
+                    charge_breakdown = result.get("chargeBreakdown")
+                    if charge_breakdown:
+                        row_charge_breakdown = json.dumps(charge_breakdown)
+                        duties = charge_breakdown.get("dutiesAndTaxes", {})
+                        if duties.get("monetaryValue"):
+                            row_duties_taxes_cents = _dollars_to_cents(
+                                duties["monetaryValue"]
+                            )
 
                     # Serialize DB writes and progress events
                     async with db_lock:
                         row.tracking_number = tracking_number
                         row.label_path = label_path
                         row.cost_cents = cost_cents
+                        row.destination_country = row_dest_country
+                        row.duties_taxes_cents = row_duties_taxes_cents
+                        row.charge_breakdown = row_charge_breakdown
                         row.status = "completed"
                         row.processed_at = datetime.now(UTC).isoformat()
                         self._db.commit()
@@ -465,6 +533,29 @@ class BatchEngine:
             return json.loads(row.order_data)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid order_data JSON on row {row.row_number}: {e}")
+
+    async def _get_commodities_bulk(
+        self, order_ids: list[int | str],
+    ) -> dict[int | str, list[dict]]:
+        """Fetch commodities for orders via the data source gateway.
+
+        Resolves the process-global DataSourceMCPClient via get_data_gateway()
+        (already imported at module level). Delegates to its
+        get_commodities_bulk() method which calls the MCP tool.
+        Returns empty dict on any failure (non-critical for batch flow).
+
+        Args:
+            order_ids: List of order IDs to retrieve commodities for.
+
+        Returns:
+            Dict mapping order_id to list of commodity dicts.
+        """
+        try:
+            gateway = await get_data_gateway()
+            return await gateway.get_commodities_bulk(order_ids)
+        except Exception as e:
+            logger.warning("Commodity fetch failed (non-critical): %s", e)
+            return {}
 
     def _save_label(
         self,
