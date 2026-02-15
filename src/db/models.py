@@ -142,6 +142,10 @@ class Job(Base):
     # Cost tracking (in cents to avoid float issues)
     total_cost_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
 
+    # International shipping aggregates
+    total_duties_taxes_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
+    international_row_count: Mapped[int] = mapped_column(default=0, nullable=False)
+
     # Interactive shipment metadata
     shipper_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_interactive: Mapped[bool] = mapped_column(nullable=False, default=False)
@@ -220,6 +224,11 @@ class JobRow(Base):
     tracking_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     label_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     cost_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
+
+    # International shipping data
+    destination_country: Mapped[Optional[str]] = mapped_column(String(2), nullable=True)
+    duties_taxes_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
+    charge_breakdown: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Error info (if failed)
     error_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
