@@ -6,6 +6,7 @@ via a process-global, long-lived stdio connection.
 
 import logging
 import os
+import sys
 from typing import Any
 
 from mcp import StdioServerParameters
@@ -18,6 +19,19 @@ _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 _VENV_PYTHON = os.path.join(_PROJECT_ROOT, ".venv", "bin", "python3")
+
+
+def _get_python_command() -> str:
+    """Return the preferred Python interpreter for MCP subprocesses.
+
+    Prioritizes the project virtual environment to ensure all MCP
+    subprocesses use the same dependency set as the backend.
+    Falls back to the current interpreter when .venv Python is missing
+    (e.g. in worktrees or CI environments).
+    """
+    if os.path.exists(_VENV_PYTHON):
+        return _VENV_PYTHON
+    return sys.executable
 
 
 class DataSourceMCPClient:
@@ -45,7 +59,7 @@ class DataSourceMCPClient:
             Configured StdioServerParameters.
         """
         return StdioServerParameters(
-            command=_VENV_PYTHON,
+            command=_get_python_command(),
             args=["-m", "src.mcp.data_source.server"],
             env={
                 "PYTHONPATH": _PROJECT_ROOT,

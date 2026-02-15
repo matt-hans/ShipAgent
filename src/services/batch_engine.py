@@ -26,6 +26,7 @@ from src.services.ups_payload_builder import (
     build_ups_rate_payload,
 )
 from src.services.errors import UPSServiceError
+from src.services.gateway_provider import get_data_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -386,14 +387,18 @@ class BatchEngine:
             }
         elif successful_write_back_updates:
             try:
-                from src.services.gateway_provider import get_data_gateway
-
                 gw = await get_data_gateway()
                 source_info = await gw.get_source_info()
                 if source_info is not None:
-                    write_back_result = await gw.write_back_batch(
+                    gw_result = await gw.write_back_batch(
                         successful_write_back_updates,
                     )
+                    # Normalize gateway result to include a status key
+                    failures = gw_result.get("failure_count", 0)
+                    gw_result["status"] = (
+                        "partial" if failures > 0 else "success"
+                    )
+                    write_back_result = gw_result
                     logger.info(
                         (
                             "Batch write-back finished: job_id=%s success=%s "
@@ -402,9 +407,9 @@ class BatchEngine:
                         job_id,
                         write_back_result.get("success_count"),
                         write_back_result.get("failure_count"),
-                        write_back_result.get("status", "unknown"),
+                        write_back_result["status"],
                     )
-                    if write_back_result.get("failure_count", 0) > 0:
+                    if failures > 0:
                         logger.warning(
                             (
                                 "Batch write-back had failures: "
@@ -412,7 +417,7 @@ class BatchEngine:
                             ),
                             job_id,
                             write_back_result.get("success_count"),
-                            write_back_result.get("failure_count"),
+                            failures,
                         )
                 else:
                     write_back_result = {
