@@ -61,6 +61,17 @@ async def get_external_sources_client() -> ExternalSourcesMCPClient:
     return _ext_sources_client
 
 
+def get_data_gateway_if_connected() -> DataSourceMCPClient | None:
+    """Return the data gateway if already connected, None otherwise.
+
+    Non-async peek used by conversation creation to avoid opening an MCP
+    stdio connection during the request lifecycle.
+    """
+    if _data_gateway is not None and _data_gateway.is_connected:
+        return _data_gateway
+    return None
+
+
 async def shutdown_gateways() -> None:
     """Shutdown hook — disconnect all gateway clients. Call from FastAPI lifespan."""
     global _data_gateway, _ext_sources_client

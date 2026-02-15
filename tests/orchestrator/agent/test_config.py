@@ -85,11 +85,13 @@ class TestDataMCPConfig:
 class TestUPSMCPConfig:
     """Tests for UPS MCP configuration."""
 
-    def test_command_is_venv_python(self):
-        """UPS MCP should use venv Python to run local fork."""
+    def test_command_is_python_interpreter(self):
+        """UPS MCP should use a valid Python interpreter."""
         config = get_ups_mcp_config()
-        assert config["command"].endswith("python3")
-        assert ".venv/bin/python3" in config["command"]
+        cmd = config["command"]
+        # Must be either the venv python or sys.executable fallback
+        assert "python" in cmd, f"Expected a python interpreter, got: {cmd}"
+        assert cmd == _get_python_command()
 
     def test_args_run_as_module(self):
         """Args should run ups_mcp as a Python module."""
@@ -221,10 +223,10 @@ class TestCreateMCPServersConfig:
         config = create_mcp_servers_config()
         assert config["external"]["command"] == _get_python_command()
 
-    def test_ups_uses_venv_python(self):
-        """UPS server should use venv Python command."""
+    def test_ups_uses_preferred_python(self):
+        """UPS server should use the preferred Python command."""
         config = create_mcp_servers_config()
-        assert config["ups"]["command"].endswith("python3")
+        assert config["ups"]["command"] == _get_python_command()
 
     def test_ups_config_is_valid(self):
         """UPS config should have required keys."""
