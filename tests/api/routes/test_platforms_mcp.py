@@ -124,21 +124,18 @@ class TestPlatformRoutesUseGateway:
 
 
 class TestShopifyEnvStatusUsesGateway:
-    """Verify env-status route fetches shop info via gateway, not direct HTTP."""
+    """Verify env-status route validates credentials without mutating state."""
 
     @patch("src.api.routes.platforms.get_external_sources_client")
     @pytest.mark.asyncio
-    async def test_env_status_uses_get_shop_info(self, mock_get):
-        """GET /platforms/shopify/env-status should call get_shop_info via gateway."""
+    async def test_env_status_uses_validate_credentials(self, mock_get):
+        """GET /platforms/shopify/env-status should call validate_credentials (read-only)."""
         from fastapi.testclient import TestClient
         from src.api.main import app
 
         mock_client = AsyncMock()
-        mock_client.connect_platform = AsyncMock(return_value={
-            "success": True, "platform": "shopify", "status": "connected"
-        })
-        mock_client.get_shop_info = AsyncMock(return_value={
-            "success": True,
+        mock_client.validate_credentials = AsyncMock(return_value={
+            "valid": True,
             "platform": "shopify",
             "shop": {"name": "My Test Store"},
         })
@@ -156,23 +153,50 @@ class TestShopifyEnvStatusUsesGateway:
         assert data["configured"] is True
         assert data["valid"] is True
         assert data["store_name"] == "My Test Store"
-        mock_client.get_shop_info.assert_awaited_once_with("shopify")
+        mock_client.validate_credentials.assert_awaited_once()
+        # Ensure connect_platform was NOT called (no state mutation)
+        mock_client.connect_platform.assert_not_awaited()
 
     @patch("src.api.routes.platforms.get_external_sources_client")
     @pytest.mark.asyncio
-    async def test_env_status_handles_shop_info_failure(self, mock_get):
-        """env-status should still succeed when get_shop_info fails."""
+    async def test_env_status_handles_validation_failure(self, mock_get):
+        """env-status should return valid=False when credentials are invalid."""
         from fastapi.testclient import TestClient
         from src.api.main import app
 
         mock_client = AsyncMock()
-        mock_client.connect_platform = AsyncMock(return_value={
-            "success": True, "platform": "shopify", "status": "connected"
-        })
-        mock_client.get_shop_info = AsyncMock(return_value={
-            "success": False,
+        mock_client.validate_credentials = AsyncMock(return_value={
+            "valid": False,
             "platform": "shopify",
-            "error": "Not connected",
+            "error": "Authentication failed — check credentials.",
+        })
+        mock_get.return_value = mock_client
+
+        with patch.dict(os.environ, {
+            "SHOPIFY_ACCESS_TOKEN": "shpat_bad",
+            "SHOPIFY_STORE_DOMAIN": "test.myshopify.com",
+        }):
+            client = TestClient(app)
+            response = client.get("/api/v1/platforms/shopify/env-status")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["configured"] is True
+        assert data["valid"] is False
+        assert "Authentication failed" in data["error"]
+
+    @patch("src.api.routes.platforms.get_external_sources_client")
+    @pytest.mark.asyncio
+    async def test_env_status_no_shop_metadata(self, mock_get):
+        """env-status should handle missing shop metadata gracefully."""
+        from fastapi.testclient import TestClient
+        from src.api.main import app
+
+        mock_client = AsyncMock()
+        mock_client.validate_credentials = AsyncMock(return_value={
+            "valid": True,
+            "platform": "shopify",
+            "shop": None,
         })
         mock_get.return_value = mock_client
 

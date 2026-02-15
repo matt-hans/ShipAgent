@@ -11,6 +11,7 @@ from src.mcp.external_sources.tools import (
     connect_platform,
     disconnect_platform,
     get_shop_info,
+    validate_credentials,
 )
 
 
@@ -212,3 +213,65 @@ async def test_get_shop_info_returns_none(mock_ctx):
 
     assert result["success"] is False
     assert "Failed to retrieve" in result["error"]
+
+
+# -- validate_credentials tests (read-only, no lifespan mutation) --
+
+
+@pytest.mark.asyncio
+async def test_validate_credentials_success(mock_ctx):
+    """validate_credentials should authenticate without storing state."""
+    with patch(
+        "src.mcp.external_sources.tools._create_platform_client"
+    ) as mock_create:
+        mock_client = AsyncMock()
+        mock_client.authenticate = AsyncMock(return_value=True)
+        mock_client.get_shop_info = AsyncMock(return_value={"name": "Test Store"})
+        mock_create.return_value = mock_client
+
+        result = await validate_credentials(
+            platform="shopify",
+            credentials={"access_token": "shpat_test"},
+            ctx=mock_ctx,
+            store_url="https://test.myshopify.com",
+        )
+
+    assert result["valid"] is True
+    assert result["shop"]["name"] == "Test Store"
+    # Must NOT store anything in lifespan context
+    assert "shopify" not in mock_ctx.request_context.lifespan_context["clients"]
+    assert "shopify" not in mock_ctx.request_context.lifespan_context["connections"]
+    assert "shopify" not in mock_ctx.request_context.lifespan_context["credentials"]
+
+
+@pytest.mark.asyncio
+async def test_validate_credentials_auth_failure(mock_ctx):
+    """validate_credentials should return valid=False on auth failure."""
+    with patch(
+        "src.mcp.external_sources.tools._create_platform_client"
+    ) as mock_create:
+        mock_client = AsyncMock()
+        mock_client.authenticate = AsyncMock(return_value=False)
+        mock_create.return_value = mock_client
+
+        result = await validate_credentials(
+            platform="shopify",
+            credentials={"access_token": "bad"},
+            ctx=mock_ctx,
+        )
+
+    assert result["valid"] is False
+    assert "Authentication failed" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_validate_credentials_unsupported_platform(mock_ctx):
+    """validate_credentials should reject unsupported platforms."""
+    result = await validate_credentials(
+        platform="fedex",
+        credentials={},
+        ctx=mock_ctx,
+    )
+
+    assert result["valid"] is False
+    assert "Unsupported platform" in result["error"]

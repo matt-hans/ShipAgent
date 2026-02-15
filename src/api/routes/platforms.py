@@ -245,8 +245,9 @@ async def test_connection(platform: str) -> TestConnectionResponse:
 async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
     """Check Shopify credentials from environment variables.
 
-    Reads SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN from environment,
-    validates them by connecting via the gateway, and fetches store name.
+    Reads SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN from environment
+    and validates them via the gateway's read-only validate_credentials
+    tool. Does NOT mutate shared connection state.
 
     Returns:
         Status indicating whether credentials are configured and valid.
@@ -265,13 +266,13 @@ async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
 
     try:
         ext = await get_external_sources_client()
-        result = await ext.connect_platform(
+        result = await ext.validate_credentials(
             platform="shopify",
             credentials={"access_token": access_token},
             store_url=store_domain,
         )
 
-        if not result.get("success"):
+        if not result.get("valid"):
             return ShopifyEnvStatusResponse(
                 configured=True,
                 valid=False,
@@ -280,14 +281,9 @@ async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
                 error=result.get("error", "Authentication failed - check credentials"),
             )
 
-        # Get shop name via gateway
-        store_name = None
-        try:
-            shop_result = await ext.get_shop_info("shopify")
-            if shop_result.get("success"):
-                store_name = shop_result.get("shop", {}).get("name")
-        except Exception:
-            pass
+        # validate_credentials returns shop metadata inline
+        shop = result.get("shop") or {}
+        store_name = shop.get("name") if isinstance(shop, dict) else None
 
         return ShopifyEnvStatusResponse(
             configured=True,

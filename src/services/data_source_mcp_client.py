@@ -7,11 +7,34 @@ via a process-global, long-lived stdio connection.
 import logging
 import os
 import sys
+from dataclasses import dataclass, field
 from typing import Any
 
 from mcp import StdioServerParameters
 
 from src.services.mcp_client import MCPClient
+
+
+# -- Gateway-local DTOs (no dependency on legacy DataSourceService) -----------
+
+
+@dataclass
+class SchemaColumnInfo:
+    """Column metadata returned by the data source gateway."""
+
+    name: str
+    type: str = "VARCHAR"
+    nullable: bool = True
+
+
+@dataclass
+class DataSourceInfo:
+    """Data source metadata returned by the data source gateway."""
+
+    source_type: str
+    file_path: str | None = None
+    columns: list[SchemaColumnInfo] = field(default_factory=list)
+    row_count: int = 0
 
 logger = logging.getLogger(__name__)
 
@@ -165,8 +188,8 @@ class DataSourceMCPClient:
             return None
         return result
 
-    async def get_source_info_typed(self) -> "DataSourceInfo | None":
-        """Get source info as a DataSourceInfo object for backward compatibility.
+    async def get_source_info_typed(self) -> DataSourceInfo | None:
+        """Get source info as a DataSourceInfo object.
 
         conversations.py and system_prompt.py expect DataSourceInfo with typed
         attributes. This method converts the gateway dict to that format.
@@ -174,8 +197,6 @@ class DataSourceMCPClient:
         Returns:
             DataSourceInfo if source active, None otherwise.
         """
-        from src.services.data_source_service import DataSourceInfo, SchemaColumnInfo
-
         info = await self.get_source_info()
         if info is None:
             return None

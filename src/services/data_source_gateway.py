@@ -47,8 +47,9 @@ class DataSourceGateway(Protocol):
     async def get_source_info_typed(self) -> Any:
         """Get source info as DataSourceInfo for backward compat.
 
-        Returns DataSourceInfo if source active, None otherwise.
-        Used by conversations.py and system_prompt.py which expect typed attributes.
+        Returns data_source_mcp_client.DataSourceInfo if source active, None
+        otherwise. Used by conversations.py and system_prompt.py which expect
+        typed attributes.
         """
         ...
 

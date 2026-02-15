@@ -12,7 +12,7 @@ Example:
 from datetime import datetime
 
 from src.orchestrator.models.intent import SERVICE_ALIASES, ServiceCode
-from src.services.data_source_service import DataSourceInfo
+from src.services.data_source_mcp_client import DataSourceInfo
 
 
 def _build_service_table() -> str:
