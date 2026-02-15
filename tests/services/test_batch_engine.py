@@ -582,3 +582,232 @@ class TestBatchEnginePreview:
         )
         assert result["total_rows"] == 1
         assert len(result["preview_rows"]) == 1
+
+
+class TestBatchEngineExternalWriteBack:
+    """Test external platform write-back routing in BatchEngine."""
+
+    def _make_row(self, row_number: int, order_id: str | None = None) -> MagicMock:
+        """Create a mock JobRow with order_data containing platform fields."""
+        data = {
+            "ship_to_name": f"Customer {row_number}",
+            "ship_to_address1": f"{row_number} Main St",
+            "ship_to_city": "LA",
+            "ship_to_state": "CA",
+            "ship_to_postal_code": "90001",
+            "weight": 2.0,
+        }
+        if order_id is not None:
+            data["order_id"] = order_id
+        return MagicMock(
+            id=f"row-{row_number}",
+            row_number=row_number,
+            status="pending",
+            order_data=json.dumps(data),
+            cost_cents=0,
+        )
+
+    def _make_shipper(self) -> dict:
+        """Standard test shipper."""
+        return {
+            "name": "Store",
+            "addressLine1": "456 Oak",
+            "city": "SF",
+            "stateProvinceCode": "CA",
+            "postalCode": "94102",
+            "countryCode": "US",
+        }
+
+    async def test_external_write_back_routes_to_platform(
+        self, mock_ups_service, mock_db_session
+    ):
+        """Source type 'shopify' → ext.update_tracking() called, not gw.write_back_batch()."""
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="TEST",
+        )
+        rows = [self._make_row(1, order_id="SHP-1001")]
+
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"source_type": "shopify"}
+        )
+        mock_gw.write_back_batch = AsyncMock()
+
+        mock_ext = AsyncMock()
+        mock_ext.update_tracking = AsyncMock(
+            return_value={"success": True}
+        )
+
+        with patch(
+            "src.services.batch_engine.get_data_gateway",
+            new_callable=AsyncMock, return_value=mock_gw,
+        ), patch(
+            "src.services.batch_engine.get_external_sources_client",
+            new_callable=AsyncMock, return_value=mock_ext,
+        ):
+            result = await engine.execute(
+                job_id="job-ext-1", rows=rows,
+                shipper=self._make_shipper(),
+                write_back_enabled=True,
+            )
+
+        assert result["successful"] == 1
+        assert result["write_back"]["status"] == "success"
+        mock_ext.update_tracking.assert_called_once()
+        mock_gw.write_back_batch.assert_not_called()
+
+    async def test_external_write_back_extracts_order_id(
+        self, mock_ups_service, mock_db_session
+    ):
+        """order_id correctly parsed from order_data JSON."""
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="TEST",
+        )
+        rows = [self._make_row(1, order_id="SHOP-42")]
+
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"source_type": "shopify"}
+        )
+
+        mock_ext = AsyncMock()
+        mock_ext.update_tracking = AsyncMock(
+            return_value={"success": True}
+        )
+
+        with patch(
+            "src.services.batch_engine.get_data_gateway",
+            new_callable=AsyncMock, return_value=mock_gw,
+        ), patch(
+            "src.services.batch_engine.get_external_sources_client",
+            new_callable=AsyncMock, return_value=mock_ext,
+        ):
+            await engine.execute(
+                job_id="job-ext-2", rows=rows,
+                shipper=self._make_shipper(),
+                write_back_enabled=True,
+            )
+
+        call_kwargs = mock_ext.update_tracking.call_args[1]
+        assert call_kwargs["order_id"] == "SHOP-42"
+        assert call_kwargs["platform"] == "shopify"
+        assert "tracking_number" in call_kwargs
+
+    async def test_external_write_back_skips_missing_order_id(
+        self, mock_ups_service, mock_db_session
+    ):
+        """Rows without order_id reported as failures, don't crash."""
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="TEST",
+        )
+        # No order_id in order_data
+        rows = [self._make_row(1, order_id=None)]
+
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"source_type": "woocommerce"}
+        )
+
+        mock_ext = AsyncMock()
+        mock_ext.update_tracking = AsyncMock()
+
+        with patch(
+            "src.services.batch_engine.get_data_gateway",
+            new_callable=AsyncMock, return_value=mock_gw,
+        ), patch(
+            "src.services.batch_engine.get_external_sources_client",
+            new_callable=AsyncMock, return_value=mock_ext,
+        ):
+            result = await engine.execute(
+                job_id="job-ext-3", rows=rows,
+                shipper=self._make_shipper(),
+                write_back_enabled=True,
+            )
+
+        assert result["write_back"]["failure_count"] == 1
+        assert result["write_back"]["status"] == "partial"
+        mock_ext.update_tracking.assert_not_called()
+
+    async def test_local_write_back_unchanged_for_csv(
+        self, mock_ups_service, mock_db_session
+    ):
+        """Source type 'csv' → existing local path, no external routing."""
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="TEST",
+        )
+        rows = [self._make_row(1)]
+
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"source_type": "csv", "file_path": "/tmp/test.csv"}
+        )
+        mock_gw.write_back_batch = AsyncMock(
+            return_value={"success_count": 1, "failure_count": 0, "errors": []}
+        )
+
+        with patch(
+            "src.services.batch_engine.get_data_gateway",
+            new_callable=AsyncMock, return_value=mock_gw,
+        ):
+            result = await engine.execute(
+                job_id="job-local-1", rows=rows,
+                shipper=self._make_shipper(),
+                write_back_enabled=True,
+            )
+
+        assert result["write_back"]["status"] == "success"
+        mock_gw.write_back_batch.assert_called_once()
+
+    async def test_shopify_idempotency_guard_skips_fulfilled_orders(self):
+        """Already-fulfilled orders get tracking update, not duplicate fulfillment."""
+        import httpx
+
+        from src.mcp.external_sources.clients.shopify import ShopifyClient
+        from src.mcp.external_sources.models import TrackingUpdate
+
+        client = ShopifyClient()
+        client._authenticated = True
+        client._shop_domain = "test.myshopify.com"
+        client._access_token = "test-token"
+        client._api_version = "2024-01"
+
+        update = TrackingUpdate(
+            order_id="12345",
+            tracking_number="1ZTEST",
+            carrier="UPS",
+        )
+
+        # Mock httpx to return a fulfilled order
+        mock_response_order = MagicMock(spec=httpx.Response)
+        mock_response_order.status_code = 200
+        mock_response_order.json.return_value = {
+            "order": {
+                "fulfillment_status": "fulfilled",
+                "fulfillments": [{"id": 999}],
+            }
+        }
+
+        mock_response_update = MagicMock(spec=httpx.Response)
+        mock_response_update.status_code = 200
+
+        mock_http_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_http_client.get = AsyncMock(return_value=mock_response_order)
+        mock_http_client.put = AsyncMock(return_value=mock_response_update)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("httpx.AsyncClient", return_value=mock_http_client):
+            result = await client.update_tracking(update)
+
+        assert result is True
+        # Should have called PUT (update) not POST (create)
+        mock_http_client.put.assert_called_once()
+        assert "fulfillments/999" in str(mock_http_client.put.call_args)

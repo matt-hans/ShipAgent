@@ -233,7 +233,7 @@ function RowDetailItem({ row }: { row: JobRow }) {
  * from the sidebar history.
  */
 export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
-  const { refreshJobList } = useAppState();
+  const { refreshJobList, writeBackEnabled } = useAppState();
   const [fullJob, setFullJob] = React.useState<Job>(job);
   const [rows, setRows] = React.useState<JobRow[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
@@ -310,7 +310,7 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
     completeFiredRef.current = false;
 
     try {
-      await confirmJob(fullJob.id);
+      await confirmJob(fullJob.id, writeBackEnabled);
       setExecutingJobId(fullJob.id);
       setFullJob((prev) => ({ ...prev, status: 'running' }));
     } catch (err) {

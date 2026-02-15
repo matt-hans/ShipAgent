@@ -9,6 +9,14 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+# ---------------------------------------------------------------------------
+# Internal column name for source row identity tracking.
+# Persists the original 1-based row position from the source file/query
+# through all DuckDB operations so write-back targets the correct row.
+# ---------------------------------------------------------------------------
+SOURCE_ROW_NUM_COLUMN = "_source_row_num"
+
+
 class SchemaColumn(BaseModel):
     """Represents a column in the discovered schema.
 

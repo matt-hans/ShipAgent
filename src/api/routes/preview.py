@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from src.api.schemas import (
     BatchPreviewResponse,
+    ConfirmRequest,
     ConfirmResponse,
     PreviewRowResponse,
 )
@@ -325,13 +326,13 @@ async def _execute_batch(job_id: str) -> None:
                         kwargs.get("error_message", "Unknown error"),
                     )
 
-            # Execute batch (disable write-back for interactive jobs)
+            # Execute batch (write-back controlled by user toggle, stored on job)
             result = await engine.execute(
                 job_id=job_id,
                 rows=rows,
                 shipper=shipper,
                 on_progress=on_progress,
-                write_back_enabled=not getattr(job, "is_interactive", False),
+                write_back_enabled=getattr(job, "write_back_enabled", True),
             )
 
         successful = result["successful"]
@@ -433,6 +434,7 @@ async def _execute_batch_safe(job_id: str) -> None:
 @router.post("/jobs/{job_id}/confirm", response_model=ConfirmResponse)
 async def confirm_job(
     job_id: str,
+    req: ConfirmRequest | None = None,
     db: Session = Depends(get_db),
 ) -> ConfirmResponse:
     """Confirm a job for execution.
@@ -443,6 +445,7 @@ async def confirm_job(
 
     Args:
         job_id: The job UUID.
+        req: Optional request body with write-back preference.
         db: Database session.
 
     Returns:
@@ -461,6 +464,12 @@ async def confirm_job(
             detail=f"Job cannot be confirmed. Current status: {job.status}. "
             "Only pending jobs can be confirmed.",
         )
+
+    # Write-back preference: user toggle overrides, but interactive always off
+    if req and req.write_back_enabled is not None:
+        job.write_back_enabled = req.write_back_enabled and not job.is_interactive
+    else:
+        job.write_back_enabled = not job.is_interactive
 
     # Update job status to running
     job.status = "running"

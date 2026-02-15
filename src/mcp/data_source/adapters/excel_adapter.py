@@ -16,7 +16,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from .base import BaseSourceAdapter
-from ..models import ImportResult, SchemaColumn
+from ..models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
 from ..utils import parse_date_with_warnings
 
 if TYPE_CHECKING:
@@ -146,23 +146,23 @@ class ExcelAdapter(BaseSourceAdapter):
         # Infer types from data
         column_types = self._infer_column_types(headers, non_empty_rows)
 
-        # Create table with inferred schema
-        col_defs = ", ".join([
+        # Create table with inferred schema + identity tracking column
+        col_defs = f"{SOURCE_ROW_NUM_COLUMN} BIGINT, " + ", ".join([
             f'"{name}" {dtype}' for name, dtype in zip(headers, column_types)
         ])
         conn.execute(f"CREATE OR REPLACE TABLE imported_data ({col_defs})")
 
-        # Insert data
+        # Insert data with 1-based source row numbers
         if non_empty_rows:
-            placeholders = ", ".join(["?"] * len(headers))
-            for row in non_empty_rows:
+            placeholders = ", ".join(["?"] * (len(headers) + 1))
+            for row_idx, row in enumerate(non_empty_rows, start=1):
                 # Pad or truncate row to match header count
                 padded_row = list(row)[:len(headers)]
                 while len(padded_row) < len(headers):
                     padded_row.append(None)
                 conn.execute(
                     f"INSERT INTO imported_data VALUES ({placeholders})",
-                    padded_row
+                    [row_idx] + padded_row
                 )
 
         # Build schema info with warnings
@@ -227,9 +227,11 @@ class ExcelAdapter(BaseSourceAdapter):
                 "SELECT COUNT(*) FROM imported_data"
             ).fetchone()[0]
             columns = conn.execute("DESCRIBE imported_data").fetchall()
+            # Exclude internal _source_row_num from user-facing count
+            user_columns = [c for c in columns if c[0] != SOURCE_ROW_NUM_COLUMN]
             return {
                 "row_count": row_count,
-                "column_count": len(columns),
+                "column_count": len(user_columns),
                 "source_type": "excel",
             }
         except Exception:

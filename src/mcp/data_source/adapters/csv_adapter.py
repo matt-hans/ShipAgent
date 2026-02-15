@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 from src.mcp.data_source.adapters.base import BaseSourceAdapter
-from src.mcp.data_source.models import ImportResult, SchemaColumn
+from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
 from src.mcp.data_source.utils import parse_date_with_warnings
 
 
@@ -104,10 +104,17 @@ class CSVAdapter(BaseSourceAdapter):
 
         # Filter out rows where ALL columns are NULL (empty rows)
         # Per CONTEXT.md: "silent skip for empty rows"
+        # Assign _source_row_num BEFORE filtering so original row positions
+        # are preserved — write-back depends on these matching the source file.
         null_checks = " AND ".join([f'"{col}" IS NULL' for col in col_names])
+        select_cols = ", ".join([f'"{col}"' for col in col_names])
         conn.execute(f"""
             CREATE OR REPLACE TABLE imported_data AS
-            SELECT * FROM _raw_import
+            SELECT {SOURCE_ROW_NUM_COLUMN}, {select_cols}
+            FROM (
+                SELECT ROW_NUMBER() OVER () AS {SOURCE_ROW_NUM_COLUMN}, {select_cols}
+                FROM _raw_import
+            ) AS numbered
             WHERE NOT ({null_checks})
         """)
 
@@ -120,6 +127,9 @@ class CSVAdapter(BaseSourceAdapter):
         warnings: list[str] = []
 
         for col_name, col_type, nullable, key, default, extra in schema_rows:
+            # Hide internal identity column from user-facing schema
+            if col_name == SOURCE_ROW_NUM_COLUMN:
+                continue
             col_warnings: list[str] = []
 
             # Check for date columns that might have ambiguity
@@ -175,9 +185,11 @@ class CSVAdapter(BaseSourceAdapter):
                 "SELECT COUNT(*) FROM imported_data"
             ).fetchone()[0]
             columns = conn.execute("DESCRIBE imported_data").fetchall()
+            # Exclude internal _source_row_num from user-facing count
+            user_columns = [c for c in columns if c[0] != SOURCE_ROW_NUM_COLUMN]
             return {
                 "row_count": row_count,
-                "column_count": len(columns),
+                "column_count": len(user_columns),
                 "source_type": "csv",
             }
         except Exception:

@@ -253,7 +253,7 @@ class SkipRowsRequest(BaseModel):
 class ConfirmRequest(BaseModel):
     """Request schema for confirming a batch for execution."""
 
-    job_id: str
+    write_back_enabled: bool = True
 
 
 class ConfirmResponse(BaseModel):

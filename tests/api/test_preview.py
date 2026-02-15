@@ -203,3 +203,67 @@ class TestConfirmJob:
         assert "status" in data
         assert "message" in data
         assert data["status"] == "confirmed"
+
+    def test_confirm_write_back_disabled(
+        self, client: TestClient, test_db: Session
+    ):
+        """Confirm with write_back_enabled=false stores preference on job."""
+        job = Job(
+            name="No Write-back Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        response = client.post(
+            f"/api/v1/jobs/{job.id}/confirm",
+            json={"write_back_enabled": False},
+        )
+
+        assert response.status_code == 200
+        test_db.refresh(job)
+        assert job.write_back_enabled is False
+
+    def test_confirm_write_back_enabled_default(
+        self, client: TestClient, test_db: Session
+    ):
+        """Confirm without body defaults write_back_enabled to True (non-interactive)."""
+        job = Job(
+            name="Default Write-back Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        response = client.post(f"/api/v1/jobs/{job.id}/confirm")
+
+        assert response.status_code == 200
+        test_db.refresh(job)
+        assert job.write_back_enabled is True
+
+    def test_confirm_write_back_forced_off_for_interactive(
+        self, client: TestClient, test_db: Session
+    ):
+        """Interactive jobs always have write_back_enabled=False even if requested True."""
+        job = Job(
+            name="Interactive Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+            is_interactive=True,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        response = client.post(
+            f"/api/v1/jobs/{job.id}/confirm",
+            json={"write_back_enabled": True},
+        )
+
+        assert response.status_code == 200
+        test_db.refresh(job)
+        assert job.write_back_enabled is False

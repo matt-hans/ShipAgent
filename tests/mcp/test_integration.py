@@ -50,14 +50,14 @@ class TestCSVWorkflow:
         assert result.row_count == 4
         assert len(result.columns) == 7
 
-        # Query specific state
+        # Query specific state (use named columns, not positional index)
         ca_rows = duckdb_conn.execute(
             """
-            SELECT * FROM imported_data WHERE state = 'CA'
+            SELECT customer_name FROM imported_data WHERE state = 'CA'
         """
         ).fetchall()
         assert len(ca_rows) == 1
-        assert ca_rows[0][1] == "Alice Johnson"
+        assert ca_rows[0][0] == "Alice Johnson"
 
     def test_checksum_consistency(self, csv_file, duckdb_conn):
         """Test that checksums are consistent across imports."""

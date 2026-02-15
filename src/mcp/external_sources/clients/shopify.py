@@ -246,11 +246,11 @@ class ShopifyClient(PlatformClient):
             return None
 
     async def update_tracking(self, update: TrackingUpdate) -> bool:
-        """Create a fulfillment with tracking information.
+        """Create or update a fulfillment with tracking information.
 
         Shopify requires creating a fulfillment to add tracking to an order.
-        This method fetches the order's line items, then creates a fulfillment
-        with all items and the tracking information.
+        If the order is already fulfilled, updates the existing fulfillment's
+        tracking info instead of creating a duplicate.
 
         Args:
             update: Tracking update containing:
@@ -260,13 +260,12 @@ class ShopifyClient(PlatformClient):
                 - tracking_url: Optional tracking URL
 
         Returns:
-            True if fulfillment created successfully, False otherwise
+            True if fulfillment created/updated successfully, False otherwise
         """
         if not self._authenticated:
             return False
 
         try:
-            # First, get the order to retrieve line items
             async with httpx.AsyncClient() as client:
                 order_response = await client.get(
                     f"{self._get_base_url()}/orders/{update.order_id}.json",
@@ -276,6 +275,14 @@ class ShopifyClient(PlatformClient):
                     return False
 
                 order_data = order_response.json().get("order", {})
+
+                # Idempotency guard: if already fulfilled, update tracking
+                # on the existing fulfillment instead of creating a duplicate.
+                if order_data.get("fulfillment_status") == "fulfilled":
+                    return await self._update_existing_fulfillment_tracking(
+                        client, order_data, update
+                    )
+
                 line_items = order_data.get("line_items", [])
 
                 # Build fulfillment payload
@@ -305,6 +312,50 @@ class ShopifyClient(PlatformClient):
                 return fulfillment_response.status_code in (200, 201)
         except httpx.RequestError:
             return False
+
+    async def _update_existing_fulfillment_tracking(
+        self,
+        client: httpx.AsyncClient,
+        order_data: dict,
+        update: TrackingUpdate,
+    ) -> bool:
+        """Update tracking on an existing fulfillment (idempotency path).
+
+        Called when order is already fulfilled to prevent duplicate
+        fulfillment records on retries/reruns.
+
+        Args:
+            client: Active httpx client
+            order_data: Shopify order data dict
+            update: Tracking update with new tracking info
+
+        Returns:
+            True if tracking updated successfully, False otherwise
+        """
+        fulfillments = order_data.get("fulfillments", [])
+        if not fulfillments:
+            return False
+
+        fulfillment_id = fulfillments[0].get("id")
+        if not fulfillment_id:
+            return False
+        tracking_payload = {
+            "fulfillment": {
+                "tracking_number": update.tracking_number,
+                "tracking_company": update.carrier,
+                "notify_customer": False,
+            }
+        }
+        if update.tracking_url:
+            tracking_payload["fulfillment"]["tracking_url"] = update.tracking_url
+
+        resp = await client.put(
+            f"{self._get_base_url()}/orders/{update.order_id}"
+            f"/fulfillments/{fulfillment_id}.json",
+            headers=self._get_headers(),
+            json=tracking_payload,
+        )
+        return resp.status_code == 200
 
     def _normalize_order(self, shopify_order: dict) -> ExternalOrder:
         """Convert Shopify order format to normalized ExternalOrder.

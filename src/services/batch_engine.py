@@ -21,7 +21,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
+from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, UPS_CARRIER_NAME
 from src.services.ups_payload_builder import (
     build_shipment_request,
     build_ups_api_payload,
@@ -29,7 +29,7 @@ from src.services.ups_payload_builder import (
 )
 from src.services.ups_service_codes import ServiceCode
 from src.services.errors import UPSServiceError
-from src.services.gateway_provider import get_data_gateway
+from src.services.gateway_provider import get_data_gateway, get_external_sources_client
 from src.services.international_rules import get_requirements, validate_international_readiness
 
 logger = logging.getLogger(__name__)
@@ -519,9 +519,22 @@ class BatchEngine:
                 gw = await get_data_gateway()
                 source_info = await gw.get_source_info()
                 if source_info is not None:
-                    gw_result = await gw.write_back_batch(
-                        successful_write_back_updates,
-                    )
+                    source_type = source_info.get("source_type", "")
+
+                    # Route to external platform or local file write-back
+                    if source_type in (
+                        "shopify", "woocommerce", "sap", "oracle",
+                    ):
+                        ext = await get_external_sources_client()
+                        gw_result = await self._write_back_external(
+                            ext, source_type,
+                            successful_write_back_updates, rows,
+                        )
+                    else:
+                        gw_result = await gw.write_back_batch(
+                            successful_write_back_updates,
+                        )
+
                     # Normalize gateway result to include a status key
                     failures = gw_result.get("failure_count", 0)
                     gw_result["status"] = (
@@ -531,12 +544,13 @@ class BatchEngine:
                     logger.info(
                         (
                             "Batch write-back finished: job_id=%s success=%s "
-                            "failures=%s status=%s"
+                            "failures=%s status=%s source=%s"
                         ),
                         job_id,
                         write_back_result.get("success_count"),
                         write_back_result.get("failure_count"),
                         write_back_result["status"],
+                        source_type,
                     )
                     if failures > 0:
                         logger.warning(
@@ -574,6 +588,98 @@ class BatchEngine:
             "total_cost_cents": total_cost_cents,
             "total_rows": len(rows),
             "write_back": write_back_result,
+        }
+
+    async def _write_back_external(
+        self,
+        ext_client: Any,
+        platform: str,
+        updates: dict[int, dict[str, Any]],
+        rows: list[Any],
+    ) -> dict[str, Any]:
+        """Route tracking write-back to an external platform.
+
+        Instead of writing tracking numbers back to a local file (CSV/Excel),
+        this method pushes them to the originating platform (e.g., Shopify)
+        via the ExternalSourcesMCPClient.
+
+        Args:
+            ext_client: ExternalSourcesMCPClient instance
+            platform: Platform identifier (shopify, woocommerce, etc.)
+            updates: Map of row_number → {tracking_number, shipped_at}
+            rows: List of JobRow objects for order_data lookup
+
+        Returns:
+            Dict matching write_back_batch schema:
+            {success_count, failure_count, errors}
+        """
+        success = 0
+        failures = 0
+        errors: list[dict[str, Any]] = []
+
+        row_map = {r.row_number: r for r in rows}
+
+        for row_number, data in updates.items():
+            row = row_map.get(row_number)
+            if not row:
+                failures += 1
+                errors.append({
+                    "row_number": row_number,
+                    "error": f"Row {row_number} not found in job rows",
+                })
+                continue
+
+            if not row.order_data:
+                failures += 1
+                errors.append({
+                    "row_number": row_number,
+                    "error": "Missing order_data on row",
+                })
+                continue
+            try:
+                order_data = json.loads(row.order_data)
+            except (json.JSONDecodeError, TypeError):
+                failures += 1
+                errors.append({
+                    "row_number": row_number,
+                    "error": "Malformed order_data JSON on row",
+                })
+                continue
+            order_id = order_data.get("order_id")
+            if not order_id:
+                failures += 1
+                errors.append({
+                    "row_number": row_number,
+                    "error": "Missing order_id in order_data",
+                })
+                continue
+
+            try:
+                result = await ext_client.update_tracking(
+                    platform=platform,
+                    order_id=str(order_id),
+                    tracking_number=data["tracking_number"],
+                    carrier=UPS_CARRIER_NAME,
+                )
+                if result.get("success"):
+                    success += 1
+                else:
+                    failures += 1
+                    errors.append({
+                        "row_number": row_number,
+                        "error": result.get("error", "Unknown platform error"),
+                    })
+            except Exception as e:
+                failures += 1
+                errors.append({
+                    "row_number": row_number,
+                    "error": str(e),
+                })
+
+        return {
+            "success_count": success,
+            "failure_count": failures,
+            "errors": errors,
         }
 
     def _parse_order_data(self, row: Any) -> dict[str, Any]:

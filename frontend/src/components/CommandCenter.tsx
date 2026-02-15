@@ -42,6 +42,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     setConversationSessionId,
     interactiveShipping,
     setInteractiveShipping,
+    writeBackEnabled,
     setIsToggleLocked,
   } = useAppState();
 
@@ -253,7 +254,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         await skipRows(currentJobId, opts.warningRowNumbers);
       }
 
-      await confirmJob(currentJobId);
+      await confirmJob(currentJobId, writeBackEnabled);
       setExecutingJobId(currentJobId);
       setPreview(null);
 
