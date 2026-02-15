@@ -464,6 +464,31 @@ class UPSMCPClient:
         )
         charges = negotiated if negotiated.get("MonetaryValue") else published
 
+        # Extract itemized charge breakdown (international shipments)
+        shipment_charges = results.get("ShipmentCharges", {})
+        charge_breakdown = None
+        transportation = shipment_charges.get("TransportationCharges", {})
+        if transportation.get("MonetaryValue"):
+            charge_breakdown = {
+                "version": "1.0",
+                "transportationCharges": {
+                    "monetaryValue": transportation.get("MonetaryValue", "0"),
+                    "currencyCode": transportation.get("CurrencyCode", "USD"),
+                },
+            }
+            service_opts = shipment_charges.get("ServiceOptionsCharges", {})
+            if service_opts.get("MonetaryValue"):
+                charge_breakdown["serviceOptionsCharges"] = {
+                    "monetaryValue": service_opts["MonetaryValue"],
+                    "currencyCode": service_opts.get("CurrencyCode", "USD"),
+                }
+            duties = shipment_charges.get("DutyAndTaxCharges", {})
+            if duties.get("MonetaryValue"):
+                charge_breakdown["dutiesAndTaxes"] = {
+                    "monetaryValue": duties["MonetaryValue"],
+                    "currencyCode": duties.get("CurrencyCode", "USD"),
+                }
+
         return {
             "success": True,
             "trackingNumbers": tracking_numbers,
@@ -473,6 +498,7 @@ class UPSMCPClient:
                 "monetaryValue": charges.get("MonetaryValue", "0"),
                 "currencyCode": charges.get("CurrencyCode", "USD"),
             },
+            "chargeBreakdown": charge_breakdown,
         }
 
     def _normalize_rate_response(self, raw: dict) -> dict[str, Any]:
@@ -502,6 +528,24 @@ class UPSMCPClient:
         charges = negotiated if negotiated.get("MonetaryValue") else published
         value = charges.get("MonetaryValue", "0")
 
+        # Extract itemized charge breakdown (international rates)
+        charge_breakdown = None
+        transportation = first.get("TransportationCharges", {})
+        if transportation.get("MonetaryValue"):
+            charge_breakdown = {
+                "version": "1.0",
+                "transportationCharges": {
+                    "monetaryValue": transportation.get("MonetaryValue", "0"),
+                    "currencyCode": transportation.get("CurrencyCode", "USD"),
+                },
+            }
+            service_opts = first.get("ServiceOptionsCharges", {})
+            if service_opts.get("MonetaryValue"):
+                charge_breakdown["serviceOptionsCharges"] = {
+                    "monetaryValue": service_opts["MonetaryValue"],
+                    "currencyCode": service_opts.get("CurrencyCode", "USD"),
+                }
+
         return {
             "success": True,
             "totalCharges": {
@@ -509,6 +553,7 @@ class UPSMCPClient:
                 "amount": value,
                 "currencyCode": charges.get("CurrencyCode", "USD"),
             },
+            "chargeBreakdown": charge_breakdown,
         }
 
     def _normalize_address_response(self, raw: dict) -> dict[str, Any]:
