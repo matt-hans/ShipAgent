@@ -265,11 +265,146 @@ In `JobRow` class, add after `cost_cents` (line 222):
 Run: `python3 -m pytest tests/db/test_international_columns.py -v`
 Expected: ALL PASS (6 tests)
 
-**Step 5: Commit**
+**Step 5: Add SQLite migration entries for existing databases**
+
+Modify `src/db/connection.py` — in `_ensure_columns_exist()` at the `migrations` list (line 217), add entries for both `jobs` and `job_rows` tables:
+
+```python
+    migrations: list[tuple[str, str]] = [
+        ("shipper_json", "ALTER TABLE jobs ADD COLUMN shipper_json TEXT"),
+        (
+            "is_interactive",
+            "ALTER TABLE jobs ADD COLUMN is_interactive BOOLEAN NOT NULL DEFAULT 0",
+        ),
+        # International shipping columns — jobs table
+        (
+            "total_duties_taxes_cents",
+            "ALTER TABLE jobs ADD COLUMN total_duties_taxes_cents INTEGER",
+        ),
+        (
+            "international_row_count",
+            "ALTER TABLE jobs ADD COLUMN international_row_count INTEGER NOT NULL DEFAULT 0",
+        ),
+    ]
+
+    for col_name, ddl in migrations:
+        if col_name not in existing:
+            try:
+                conn.execute(text(ddl))
+            except OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    log.debug("Column %s already exists (concurrent add).", col_name)
+                else:
+                    log.error("Failed to add column %s: %s", col_name, e)
+                    raise
+
+    # job_rows table migrations
+    result_rows = conn.execute(text("PRAGMA table_info(job_rows)"))
+    existing_rows = {row[1] for row in result_rows.fetchall()}
+
+    row_migrations: list[tuple[str, str]] = [
+        (
+            "destination_country",
+            "ALTER TABLE job_rows ADD COLUMN destination_country VARCHAR(2)",
+        ),
+        (
+            "duties_taxes_cents",
+            "ALTER TABLE job_rows ADD COLUMN duties_taxes_cents INTEGER",
+        ),
+        (
+            "charge_breakdown",
+            "ALTER TABLE job_rows ADD COLUMN charge_breakdown TEXT",
+        ),
+    ]
+
+    for col_name, ddl in row_migrations:
+        if col_name not in existing_rows:
+            try:
+                conn.execute(text(ddl))
+            except OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    log.debug("Column %s already exists (concurrent add).", col_name)
+                else:
+                    log.error("Failed to add column %s: %s", col_name, e)
+                    raise
+```
+
+**Step 6: Write migration test on existing DB file**
+
+Add to `tests/db/test_international_columns.py`:
+
+```python
+import tempfile
+import os
+from sqlalchemy import create_engine, text
+
+
+class TestMigrationOnExistingDB:
+    """Verify columns are added to an existing database without the new columns."""
+
+    def test_migration_adds_columns_to_existing_db(self):
+        """Simulate an existing DB that lacks international columns."""
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+            db_path = f.name
+
+        try:
+            # Create a DB with the OLD schema (no international columns)
+            engine = create_engine(f"sqlite:///{db_path}")
+            with engine.begin() as conn:
+                conn.execute(text("""
+                    CREATE TABLE jobs (
+                        id TEXT PRIMARY KEY,
+                        name TEXT,
+                        original_command TEXT,
+                        status TEXT,
+                        total_cost_cents INTEGER,
+                        shipper_json TEXT,
+                        is_interactive BOOLEAN NOT NULL DEFAULT 0
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE job_rows (
+                        id TEXT PRIMARY KEY,
+                        job_id TEXT,
+                        row_number INTEGER,
+                        row_checksum TEXT,
+                        cost_cents INTEGER
+                    )
+                """))
+
+            # Run migration
+            from src.db.connection import _ensure_columns_exist
+            with engine.begin() as conn:
+                _ensure_columns_exist(conn)
+
+            # Verify new columns exist
+            with engine.begin() as conn:
+                cols_jobs = {r[1] for r in conn.execute(text("PRAGMA table_info(jobs)")).fetchall()}
+                assert "total_duties_taxes_cents" in cols_jobs
+                assert "international_row_count" in cols_jobs
+
+                cols_rows = {r[1] for r in conn.execute(text("PRAGMA table_info(job_rows)")).fetchall()}
+                assert "destination_country" in cols_rows
+                assert "duties_taxes_cents" in cols_rows
+                assert "charge_breakdown" in cols_rows
+
+            # Verify idempotent — running again doesn't crash
+            with engine.begin() as conn:
+                _ensure_columns_exist(conn)
+        finally:
+            os.unlink(db_path)
+```
+
+**Step 7: Run all DB tests**
+
+Run: `python3 -m pytest tests/db/test_international_columns.py -v`
+Expected: ALL PASS (7 tests)
+
+**Step 8: Commit**
 
 ```bash
-git add src/db/models.py tests/db/test_international_columns.py
-git commit -m "feat: add international columns to Job and JobRow models"
+git add src/db/models.py src/db/connection.py tests/db/test_international_columns.py
+git commit -m "feat: add international columns to Job/JobRow models with SQLite migration"
 ```
 
 ---
@@ -309,22 +444,24 @@ class TestGetRequirements:
         assert req.requires_international_forms is False
 
     def test_us_to_ca_is_international(self):
-        req = get_requirements("US", "CA", "11")
-        assert req.is_international is True
-        assert req.requires_description is True
-        assert req.requires_shipper_contact is True
-        assert req.requires_recipient_contact is True
-        assert req.requires_invoice_line_total is True
-        assert req.requires_international_forms is True
-        assert req.requires_commodities is True
-        assert req.form_type == "01"
-        assert req.currency_code == "USD"
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA,US-MX"}, clear=False):
+            req = get_requirements("US", "CA", "11")
+            assert req.is_international is True
+            assert req.requires_description is True
+            assert req.requires_shipper_contact is True
+            assert req.requires_recipient_contact is True
+            assert req.requires_invoice_line_total is True
+            assert req.requires_international_forms is True
+            assert req.requires_commodities is True
+            assert req.form_type == "01"
+            assert req.currency_code == "USD"
 
     def test_us_to_mx_no_invoice_line_total(self):
-        req = get_requirements("US", "MX", "07")
-        assert req.is_international is True
-        assert req.requires_invoice_line_total is False
-        assert req.requires_international_forms is True
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA,US-MX"}, clear=False):
+            req = get_requirements("US", "MX", "07")
+            assert req.is_international is True
+            assert req.requires_invoice_line_total is False
+            assert req.requires_international_forms is True
 
     def test_us_to_pr_requires_invoice_line_total(self):
         req = get_requirements("US", "PR", "03")
@@ -337,98 +474,118 @@ class TestGetRequirements:
         assert "not supported" in req.not_shippable_reason.lower()
 
     def test_invalid_service_for_lane(self):
-        req = get_requirements("US", "CA", "03")  # Ground is domestic only
-        assert req.not_shippable_reason is not None
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            req = get_requirements("US", "CA", "03")  # Ground is domestic only
+            assert req.not_shippable_reason is not None
 
     def test_all_international_services_accepted_for_ca(self):
-        for code in SUPPORTED_INTERNATIONAL_SERVICES:
-            req = get_requirements("US", "CA", code)
-            assert req.not_shippable_reason is None, f"Service {code} rejected for US→CA"
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA,US-MX"}, clear=False):
+            for code in SUPPORTED_INTERNATIONAL_SERVICES:
+                req = get_requirements("US", "CA", code)
+                assert req.not_shippable_reason is None, f"Service {code} rejected for US→CA"
 
     def test_requirement_set_has_rule_version(self):
-        req = get_requirements("US", "CA", "11")
-        assert req.rule_version is not None
-        assert req.effective_date is not None
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            req = get_requirements("US", "CA", "11")
+            assert req.rule_version is not None
+            assert req.effective_date is not None
+
+    def test_kill_switch_blocks_enabled_lane(self):
+        """P0: get_requirements() must enforce is_lane_enabled() kill switch."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": ""}, clear=False):
+            req = get_requirements("US", "CA", "11")
+            assert req.not_shippable_reason is not None
+            assert "disabled" in req.not_shippable_reason.lower() or "not enabled" in req.not_shippable_reason.lower()
+
+    def test_kill_switch_allows_when_enabled(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            req = get_requirements("US", "CA", "11")
+            assert req.not_shippable_reason is None
+            assert req.is_international is True
 
 
 class TestValidateInternationalReadiness:
     """Test pre-submit validation of order data."""
 
     def test_valid_international_order(self):
-        order = {
-            "ship_to_country": "CA",
-            "ship_to_phone": "6045551234",
-            "ship_to_attention_name": "Jane Doe",
-            "shipper_phone": "2125551234",
-            "shipper_attention_name": "Acme Corp",
-            "shipment_description": "Coffee Beans",
-            "invoice_currency_code": "USD",
-            "invoice_monetary_value": "150.00",
-            "commodities": [
-                {
-                    "description": "Coffee Beans",
-                    "commodity_code": "090111",
-                    "origin_country": "CO",
-                    "quantity": 5,
-                    "unit_value": "30.00",
-                }
-            ],
-        }
-        req = get_requirements("US", "CA", "11")
-        errors = validate_international_readiness(order, req)
-        assert errors == []
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_phone": "6045551234",
+                "ship_to_attention_name": "Jane Doe",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme Corp",
+                "shipment_description": "Coffee Beans",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "150.00",
+                "commodities": [
+                    {
+                        "description": "Coffee Beans",
+                        "commodity_code": "090111",
+                        "origin_country": "CO",
+                        "quantity": 5,
+                        "unit_value": "30.00",
+                    }
+                ],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            assert errors == []
 
     def test_missing_recipient_phone(self):
-        order = {
-            "ship_to_country": "CA",
-            "ship_to_attention_name": "Jane Doe",
-            "shipper_phone": "2125551234",
-            "shipper_attention_name": "Acme Corp",
-            "shipment_description": "Coffee Beans",
-            "invoice_currency_code": "USD",
-            "invoice_monetary_value": "150.00",
-            "commodities": [{"description": "Coffee", "commodity_code": "090111",
-                            "origin_country": "CO", "quantity": 1, "unit_value": "30.00"}],
-        }
-        req = get_requirements("US", "CA", "11")
-        errors = validate_international_readiness(order, req)
-        assert len(errors) == 1
-        assert errors[0].machine_code == "MISSING_RECIPIENT_PHONE"
-        assert errors[0].field_path == "ShipTo.Phone.Number"
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_attention_name": "Jane Doe",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme Corp",
+                "shipment_description": "Coffee Beans",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "150.00",
+                "commodities": [{"description": "Coffee", "commodity_code": "090111",
+                                "origin_country": "CO", "quantity": 1, "unit_value": "30.00"}],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            assert len(errors) == 1
+            assert errors[0].machine_code == "MISSING_RECIPIENT_PHONE"
+            assert errors[0].field_path == "ShipTo.Phone.Number"
 
     def test_missing_commodities(self):
-        order = {
-            "ship_to_country": "CA",
-            "ship_to_phone": "6045551234",
-            "ship_to_attention_name": "Jane",
-            "shipper_phone": "2125551234",
-            "shipper_attention_name": "Acme",
-            "shipment_description": "Goods",
-            "invoice_currency_code": "USD",
-            "invoice_monetary_value": "50.00",
-        }
-        req = get_requirements("US", "CA", "11")
-        errors = validate_international_readiness(order, req)
-        codes = [e.machine_code for e in errors]
-        assert "MISSING_COMMODITIES" in codes
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_phone": "6045551234",
+                "ship_to_attention_name": "Jane",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme",
+                "shipment_description": "Goods",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "50.00",
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "MISSING_COMMODITIES" in codes
 
     def test_invalid_hs_code_format(self):
-        order = {
-            "ship_to_country": "CA",
-            "ship_to_phone": "6045551234",
-            "ship_to_attention_name": "Jane",
-            "shipper_phone": "2125551234",
-            "shipper_attention_name": "Acme",
-            "shipment_description": "Goods",
-            "invoice_currency_code": "USD",
-            "invoice_monetary_value": "50.00",
-            "commodities": [{"description": "Widget", "commodity_code": "ABC",
-                            "origin_country": "US", "quantity": 1, "unit_value": "10.00"}],
-        }
-        req = get_requirements("US", "CA", "11")
-        errors = validate_international_readiness(order, req)
-        codes = [e.machine_code for e in errors]
-        assert "INVALID_HS_CODE" in codes
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_phone": "6045551234",
+                "ship_to_attention_name": "Jane",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme",
+                "shipment_description": "Goods",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "50.00",
+                "commodities": [{"description": "Widget", "commodity_code": "ABC",
+                                "origin_country": "US", "quantity": 1, "unit_value": "10.00"}],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "INVALID_HS_CODE" in codes
 
     def test_domestic_returns_no_errors(self):
         order = {"ship_to_country": "US"}
@@ -614,6 +771,18 @@ def get_requirements(
             not_shippable_reason=(
                 f"Shipping lane {origin} to {destination} is not currently supported. "
                 f"Supported lanes: {', '.join(sorted(supported_lanes))}."
+            ),
+        )
+
+    # P0 KILL SWITCH: Enforce feature flag BEFORE checking service codes.
+    # If lane is not enabled via INTERNATIONAL_ENABLED_LANES env var,
+    # return not_shippable immediately. This is the production safety gate.
+    if not is_lane_enabled(origin, destination):
+        return RequirementSet(
+            is_international=True,
+            not_shippable_reason=(
+                f"International shipping to {destination} is not enabled. "
+                f"Set INTERNATIONAL_ENABLED_LANES to include {lane_key} to enable."
             ),
         )
 
@@ -855,6 +1024,16 @@ class TestInternationalServiceAliases:
     def test_express_plus_alias(self):
         assert SERVICE_ALIASES["express plus"] == ServiceCode.WORLDWIDE_EXPRESS_PLUS
 
+    def test_standard_alias_not_present(self):
+        """P1: bare 'standard' must NOT map to international service 11."""
+        assert "standard" not in SERVICE_ALIASES
+
+    def test_ups_standard_alias(self):
+        assert SERVICE_ALIASES["ups standard"] == ServiceCode.UPS_STANDARD
+
+    def test_international_standard_alias(self):
+        assert SERVICE_ALIASES["international standard"] == ServiceCode.UPS_STANDARD
+
     def test_code_to_service_reverse_mapping(self):
         assert CODE_TO_SERVICE["07"] == ServiceCode.WORLDWIDE_EXPRESS
         assert CODE_TO_SERVICE["08"] == ServiceCode.WORLDWIDE_EXPEDITED
@@ -885,14 +1064,16 @@ Add to `SERVICE_ALIASES` dict (after line 52):
 
 ```python
     # International service aliases
+    # NOTE: Do NOT add "standard" → UPS_STANDARD here.
+    # "standard" is ambiguous — domestic users mean UPS Ground.
+    # Only unambiguous aliases are allowed.
     "worldwide express": ServiceCode.WORLDWIDE_EXPRESS,
     "international express": ServiceCode.WORLDWIDE_EXPRESS,
-    "international": ServiceCode.WORLDWIDE_EXPRESS,
     "worldwide expedited": ServiceCode.WORLDWIDE_EXPEDITED,
     "international expedited": ServiceCode.WORLDWIDE_EXPEDITED,
-    "expedited": ServiceCode.WORLDWIDE_EXPEDITED,
-    "standard": ServiceCode.UPS_STANDARD,
     "ups standard": ServiceCode.UPS_STANDARD,
+    "international standard": ServiceCode.UPS_STANDARD,
+    "ups standard international": ServiceCode.UPS_STANDARD,
     "worldwide saver": ServiceCode.WORLDWIDE_SAVER,
     "international saver": ServiceCode.WORLDWIDE_SAVER,
     "worldwide express plus": ServiceCode.WORLDWIDE_EXPRESS_PLUS,
@@ -996,7 +1177,11 @@ class TestInternationalServiceCodes:
         assert SERVICE_NAME_TO_CODE.get("worldwide expedited") == "08"
 
     def test_ups_standard_code(self):
-        assert SERVICE_NAME_TO_CODE.get("standard") == "11"
+        assert SERVICE_NAME_TO_CODE.get("ups standard") == "11"
+
+    def test_bare_standard_not_mapped(self):
+        """P1: bare 'standard' must NOT map to international service."""
+        assert "standard" not in SERVICE_NAME_TO_CODE
 
     def test_worldwide_saver_code(self):
         assert SERVICE_NAME_TO_CODE.get("worldwide saver") == "65"
@@ -1053,13 +1238,15 @@ def validate_mapping(
 3. Add international services to `SERVICE_NAME_TO_CODE` (find the existing dict and add):
 ```python
     # International services
+    # NOTE: Do NOT add bare "standard" → "11" here.
+    # "standard" is ambiguous — domestic users mean UPS Ground.
     "worldwide express": "07",
     "international express": "07",
-    "international": "07",
     "worldwide expedited": "08",
     "international expedited": "08",
-    "standard": "11",
     "ups standard": "11",
+    "international standard": "11",
+    "ups standard international": "11",
     "worldwide express plus": "54",
     "express plus": "54",
     "worldwide saver": "65",
@@ -1352,16 +1539,210 @@ def build_international_forms(
 5. In `build_ship_to()` (around line 205), remove:
    - `"countryCode": order_data.get("ship_to_country", "US")` → `"countryCode": order_data.get("ship_to_country", "")`
 
-**Step 4: Run tests**
+6. **P1: Wire rules engine call INTO the build path.** In `build_ups_api_payload()`, after constructing the base payload, add:
+
+```python
+    from src.services.international_rules import get_requirements, validate_international_readiness
+
+    # Determine international requirements
+    origin_country = shipper.get("countryCode", "US")
+    dest_country = ship_to.get("countryCode", "")
+    service_code = order_data.get("service_code", "03")
+    requirements = get_requirements(origin_country, dest_country, service_code)
+
+    if requirements.not_shippable_reason:
+        raise ValueError(f"Cannot ship: {requirements.not_shippable_reason}")
+
+    # Enrich with InvoiceLineTotal when required by lane
+    if requirements.requires_invoice_line_total:
+        payload["ShipmentRequest"]["Shipment"]["InvoiceLineTotal"] = {
+            "CurrencyCode": order_data.get("invoice_currency_code", "USD"),
+            "MonetaryValue": order_data.get("invoice_monetary_value", "0"),
+        }
+
+    # Enrich with Description when required
+    if requirements.requires_description:
+        desc = order_data.get("shipment_description", "")
+        if desc:
+            payload["ShipmentRequest"]["Shipment"]["Description"] = desc[:35]
+
+    # Enrich with shipper/recipient contact when required
+    if requirements.requires_shipper_contact:
+        shipper_section = payload["ShipmentRequest"]["Shipment"]["Shipper"]
+        if order_data.get("shipper_attention_name"):
+            shipper_section["AttentionName"] = order_data["shipper_attention_name"]
+        if order_data.get("shipper_phone"):
+            shipper_section["Phone"] = {"Number": normalize_phone(order_data["shipper_phone"])}
+
+    if requirements.requires_recipient_contact:
+        ship_to_section = payload["ShipmentRequest"]["Shipment"]["ShipTo"]
+        if order_data.get("ship_to_attention_name"):
+            ship_to_section["AttentionName"] = order_data["ship_to_attention_name"]
+        if order_data.get("ship_to_phone"):
+            ship_to_section["Phone"] = {"Number": normalize_phone(order_data["ship_to_phone"])}
+
+    # Enrich with InternationalForms when required
+    if requirements.requires_international_forms:
+        commodities = order_data.get("commodities", [])
+        if commodities:
+            forms = build_international_forms(
+                commodities=commodities,
+                currency_code=requirements.currency_code,
+                form_type=requirements.form_type,
+            )
+            payload["ShipmentRequest"]["Shipment"]["ShipmentServiceOptions"] = (
+                payload["ShipmentRequest"]["Shipment"].get("ShipmentServiceOptions", {})
+            )
+            payload["ShipmentRequest"]["Shipment"]["ShipmentServiceOptions"]["InternationalForms"] = forms
+```
+
+7. **Rate payload parity.** Apply the same enrichment to `build_ups_rate_payload()` — InvoiceLineTotal, Description, contact fields. InternationalForms is NOT needed for rating but InvoiceLineTotal IS required for accurate rate quotes on US→CA.
+
+**Step 4: Write payload integration tests asserting final JSON content**
+
+Add to `tests/services/test_payload_builder_international.py`:
+
+```python
+class TestPayloadIntegration:
+    """P1: Assert actual final UPS payload JSON for CA and MX lanes."""
+
+    def test_us_to_ca_payload_has_international_forms(self):
+        """Full payload for US→CA must contain InternationalForms + InvoiceLineTotal."""
+        order_data = {
+            "ship_to_name": "Jane Doe",
+            "ship_to_address1": "100 Queen St W",
+            "ship_to_city": "Toronto",
+            "ship_to_state": "ON",
+            "ship_to_zip": "M5H 2N2",
+            "ship_to_country": "CA",
+            "ship_to_phone": "4165551234",
+            "ship_to_attention_name": "Jane Doe",
+            "shipper_attention_name": "Acme Corp",
+            "shipper_phone": "2125551234",
+            "shipment_description": "Coffee Beans",
+            "invoice_currency_code": "USD",
+            "invoice_monetary_value": "150.00",
+            "service_code": "11",
+            "weight": "5.0",
+            "commodities": [
+                {
+                    "description": "Coffee Beans",
+                    "commodity_code": "090111",
+                    "origin_country": "CO",
+                    "quantity": 5,
+                    "unit_value": "30.00",
+                }
+            ],
+        }
+        shipper = {
+            "name": "Acme Corp",
+            "addressLine1": "123 Main St",
+            "city": "New York",
+            "stateProvinceCode": "NY",
+            "postalCode": "10001",
+            "countryCode": "US",
+            "shipperNumber": "ABC123",
+        }
+        payload = build_ups_api_payload(order_data, shipper, account_number="ABC123")
+
+        shipment = payload["ShipmentRequest"]["Shipment"]
+        # InvoiceLineTotal present for US→CA
+        assert "InvoiceLineTotal" in shipment
+        assert shipment["InvoiceLineTotal"]["CurrencyCode"] == "USD"
+        # InternationalForms present
+        sso = shipment.get("ShipmentServiceOptions", {})
+        assert "InternationalForms" in sso
+        forms = sso["InternationalForms"]
+        assert forms["FormType"] == "01"
+        assert len(forms["Product"]) == 1
+        assert forms["Product"][0]["CommodityCode"] == "090111"
+        # Contact fields
+        assert "AttentionName" in shipment["ShipTo"]
+        assert "Phone" in shipment["ShipTo"]
+        # Description
+        assert shipment.get("Description") == "Coffee Beans"
+
+    def test_us_to_mx_payload_no_invoice_line_total(self):
+        """US→MX does NOT require InvoiceLineTotal."""
+        order_data = {
+            "ship_to_name": "Carlos Garcia",
+            "ship_to_address1": "Av Insurgentes Sur 1000",
+            "ship_to_city": "Mexico City",
+            "ship_to_zip": "06600",
+            "ship_to_country": "MX",
+            "ship_to_phone": "5255551234",
+            "ship_to_attention_name": "Carlos Garcia",
+            "shipper_attention_name": "Acme Corp",
+            "shipper_phone": "2125551234",
+            "shipment_description": "Electronics",
+            "service_code": "07",
+            "weight": "3.0",
+            "commodities": [
+                {
+                    "description": "Laptop",
+                    "commodity_code": "847130",
+                    "origin_country": "US",
+                    "quantity": 1,
+                    "unit_value": "999.00",
+                }
+            ],
+        }
+        shipper = {
+            "name": "Acme Corp",
+            "addressLine1": "123 Main St",
+            "city": "New York",
+            "stateProvinceCode": "NY",
+            "postalCode": "10001",
+            "countryCode": "US",
+            "shipperNumber": "ABC123",
+        }
+        payload = build_ups_api_payload(order_data, shipper, account_number="ABC123")
+
+        shipment = payload["ShipmentRequest"]["Shipment"]
+        # NO InvoiceLineTotal for US→MX
+        assert "InvoiceLineTotal" not in shipment
+        # InternationalForms still present
+        sso = shipment.get("ShipmentServiceOptions", {})
+        assert "InternationalForms" in sso
+
+    def test_domestic_payload_unchanged(self):
+        """Domestic US→US payload must NOT contain any international sections."""
+        order_data = {
+            "ship_to_name": "John Doe",
+            "ship_to_address1": "456 Oak Ave",
+            "ship_to_city": "Los Angeles",
+            "ship_to_state": "CA",
+            "ship_to_zip": "90001",
+            "ship_to_country": "US",
+            "service_code": "03",
+            "weight": "2.0",
+        }
+        shipper = {
+            "name": "Acme Corp",
+            "addressLine1": "123 Main St",
+            "city": "New York",
+            "stateProvinceCode": "NY",
+            "postalCode": "10001",
+            "countryCode": "US",
+            "shipperNumber": "ABC123",
+        }
+        payload = build_ups_api_payload(order_data, shipper, account_number="ABC123")
+
+        shipment = payload["ShipmentRequest"]["Shipment"]
+        assert "InvoiceLineTotal" not in shipment
+        assert "InternationalForms" not in shipment.get("ShipmentServiceOptions", {})
+```
+
+**Step 5: Run all payload tests**
 
 Run: `python3 -m pytest tests/services/test_payload_builder_international.py tests/services/test_ups_payload_builder.py -v`
 Expected: ALL PASS
 
-**Step 5: Commit**
+**Step 6: Commit**
 
 ```bash
 git add src/services/ups_payload_builder.py tests/services/test_payload_builder_international.py
-git commit -m "feat: add international payload enrichment and InternationalForms builder"
+git commit -m "feat: add international payload enrichment with rules-engine integration and InternationalForms"
 ```
 
 ---
@@ -1523,12 +1904,14 @@ git commit -m "feat: extract itemized charge breakdown from UPS international re
 
 ## Phase 3: API & Agent Updates
 
-### Task 8: Update API Schemas
+### Task 8: Update API Schemas and Preview Route Wiring
 
 **Files:**
 - Modify: `src/api/schemas.py` (PreviewRowResponse, BatchPreviewResponse, JobRowResponse, JobResponse)
+- Modify: `src/api/routes/preview.py` (SERVICE_CODE_NAMES dict, PreviewRowResponse construction, BatchPreviewResponse construction)
+- Test: `tests/api/test_preview_international.py`
 
-**Step 1:** Add optional international fields to each response model:
+**Step 1:** Add optional international fields to each response model in `src/api/schemas.py`:
 
 ```python
 # In PreviewRowResponse (after warnings field):
@@ -1550,11 +1933,133 @@ git commit -m "feat: extract itemized charge breakdown from UPS international re
     international_row_count: int = 0
 ```
 
-**Step 2: Commit**
+**Step 2: Add international services to SERVICE_CODE_NAMES**
+
+In `src/api/routes/preview.py`, update the `SERVICE_CODE_NAMES` dict (line 38):
+
+```python
+SERVICE_CODE_NAMES = {
+    "01": "UPS Next Day Air",
+    "02": "UPS 2nd Day Air",
+    "03": "UPS Ground",
+    "07": "UPS Worldwide Express",
+    "08": "UPS Worldwide Expedited",
+    "11": "UPS Standard",
+    "12": "UPS 3 Day Select",
+    "13": "UPS Next Day Air Saver",
+    "14": "UPS Next Day Air Early",
+    "54": "UPS Worldwide Express Plus",
+    "59": "UPS 2nd Day Air A.M.",
+    "65": "UPS Worldwide Saver",
+}
+```
+
+**Step 3: Wire international fields into PreviewRowResponse construction**
+
+In `src/api/routes/preview.py`, update the `preview_rows.append(...)` block (lines 118-128) to include international data from the JobRow:
+
+```python
+        # Extract international data from row
+        destination_country = getattr(row, "destination_country", None)
+        duties_taxes_cents = getattr(row, "duties_taxes_cents", None)
+        charge_breakdown_raw = getattr(row, "charge_breakdown", None)
+        charge_breakdown = None
+        if charge_breakdown_raw:
+            try:
+                charge_breakdown = json.loads(charge_breakdown_raw)
+            except json.JSONDecodeError:
+                pass
+
+        preview_rows.append(
+            PreviewRowResponse(
+                row_number=row.row_number,
+                recipient_name=recipient_name,
+                city_state=city_state,
+                service=service,
+                estimated_cost_cents=estimated_cost,
+                warnings=warnings,
+                order_data=order_data_dict,
+                destination_country=destination_country,
+                duties_taxes_cents=duties_taxes_cents,
+                charge_breakdown=charge_breakdown,
+            )
+        )
+```
+
+**Step 4: Wire international aggregates into BatchPreviewResponse**
+
+Update the return statement (lines 130-137):
+
+```python
+    # Compute international aggregates
+    total_duties_taxes = 0
+    international_count = 0
+    for row in rows:
+        if getattr(row, "duties_taxes_cents", None):
+            total_duties_taxes += row.duties_taxes_cents
+        if getattr(row, "destination_country", None) and row.destination_country not in ("US", "PR"):
+            international_count += 1
+
+    return BatchPreviewResponse(
+        job_id=job_id,
+        total_rows=len(rows),
+        preview_rows=preview_rows,
+        additional_rows=0,
+        total_estimated_cost_cents=total_estimated_cost,
+        rows_with_warnings=rows_with_warnings,
+        total_duties_taxes_cents=total_duties_taxes if total_duties_taxes > 0 else None,
+        international_row_count=international_count,
+    )
+```
+
+**Step 5: Write preview route contract test**
+
+Create `tests/api/test_preview_international.py`:
+
+```python
+"""Tests for international fields in preview route responses."""
+
+import json
+from unittest.mock import MagicMock, patch
+
+from src.api.routes.preview import SERVICE_CODE_NAMES
+
+
+class TestServiceCodeNames:
+    """Verify SERVICE_CODE_NAMES includes international services."""
+
+    def test_worldwide_express(self):
+        assert "07" in SERVICE_CODE_NAMES
+        assert "Worldwide Express" in SERVICE_CODE_NAMES["07"]
+
+    def test_worldwide_expedited(self):
+        assert "08" in SERVICE_CODE_NAMES
+
+    def test_ups_standard(self):
+        assert "11" in SERVICE_CODE_NAMES
+
+    def test_worldwide_express_plus(self):
+        assert "54" in SERVICE_CODE_NAMES
+
+    def test_worldwide_saver(self):
+        assert "65" in SERVICE_CODE_NAMES
+
+    def test_domestic_services_unchanged(self):
+        assert SERVICE_CODE_NAMES["03"] == "UPS Ground"
+        assert SERVICE_CODE_NAMES["01"] == "UPS Next Day Air"
+        assert SERVICE_CODE_NAMES["02"] == "UPS 2nd Day Air"
+```
+
+**Step 6: Run tests**
+
+Run: `python3 -m pytest tests/api/test_preview_international.py -v`
+Expected: ALL PASS
+
+**Step 7: Commit**
 
 ```bash
-git add src/api/schemas.py
-git commit -m "feat: add international fields to API response schemas"
+git add src/api/schemas.py src/api/routes/preview.py tests/api/test_preview_international.py
+git commit -m "feat: wire international fields through API schemas and preview route"
 ```
 
 ---
@@ -1616,22 +2121,326 @@ git commit -m "feat: remove US default, add international field support to agent
 
 ## Phase 4: Data Pipeline & Batch Engine
 
-### Task 11: Add Commodities Query Tool to Data Source MCP
+### Task 11: MCP Commodity Data Pipeline (Multi-Table Support)
+
+**Context:** The current MCP data source uses a single hardcoded `imported_data` table. International shipping requires a second `imported_commodities` table linked by `order_id`. This task extends the MCP to support auxiliary table import while preserving the existing single-table contract.
 
 **Files:**
-- Modify: `src/mcp/data_source/tools/query_tools.py`
-- Test: `tests/mcp/test_commodities_query.py`
+- Create: `src/mcp/data_source/tools/commodity_tools.py`
+- Modify: `src/mcp/data_source/server.py` (register new tools)
+- Modify: `src/mcp/data_source/tools/query_tools.py` (add `get_commodities_bulk()`)
+- Test: `tests/mcp/test_commodity_tools.py`
 
-**Step 1:** Add `get_commodities_bulk()` function that queries the commodities table for a list of order IDs and returns grouped results.
+**Step 1: Write failing tests**
 
-**Step 2:** Register the tool in the MCP server.
+Create `tests/mcp/test_commodity_tools.py`:
 
-**Step 3: Commit**
+```python
+"""Tests for commodity import and query tools."""
+
+import duckdb
+import pytest
+
+
+class TestCommodityImport:
+    """Verify commodity data can be imported as auxiliary table."""
+
+    def setup_method(self):
+        self.db = duckdb.connect(":memory:")
+        # Simulate existing order import
+        self.db.execute("""
+            CREATE TABLE imported_data (
+                order_id INTEGER, customer_name VARCHAR, ship_to_country VARCHAR
+            )
+        """)
+        self.db.execute("""
+            INSERT INTO imported_data VALUES
+            (1001, 'Jane Doe', 'CA'),
+            (1002, 'Carlos Garcia', 'MX')
+        """)
+
+    def teardown_method(self):
+        self.db.close()
+
+    def test_import_commodities_creates_table(self):
+        from src.mcp.data_source.tools.commodity_tools import import_commodities_sync
+        result = import_commodities_sync(
+            self.db,
+            [
+                {"order_id": 1001, "description": "Coffee", "commodity_code": "090111",
+                 "origin_country": "CO", "quantity": 5, "unit_value": "30.00"},
+                {"order_id": 1001, "description": "Tea", "commodity_code": "090210",
+                 "origin_country": "CN", "quantity": 10, "unit_value": "15.00"},
+                {"order_id": 1002, "description": "Laptop", "commodity_code": "847130",
+                 "origin_country": "US", "quantity": 1, "unit_value": "999.00"},
+            ],
+        )
+        assert result["row_count"] == 3
+        assert result["table_name"] == "imported_commodities"
+        # Verify table exists
+        tables = [r[0] for r in self.db.execute("SHOW TABLES").fetchall()]
+        assert "imported_commodities" in tables
+
+    def test_import_commodities_replaces_previous(self):
+        from src.mcp.data_source.tools.commodity_tools import import_commodities_sync
+        import_commodities_sync(self.db, [
+            {"order_id": 1, "description": "Old", "commodity_code": "000000",
+             "origin_country": "US", "quantity": 1, "unit_value": "1.00"},
+        ])
+        import_commodities_sync(self.db, [
+            {"order_id": 2, "description": "New", "commodity_code": "111111",
+             "origin_country": "US", "quantity": 1, "unit_value": "2.00"},
+        ])
+        count = self.db.execute("SELECT COUNT(*) FROM imported_commodities").fetchone()[0]
+        assert count == 1  # Replaced, not appended
+
+
+class TestGetCommoditiesBulk:
+    """Verify bulk commodity retrieval grouped by order_id."""
+
+    def setup_method(self):
+        self.db = duckdb.connect(":memory:")
+        self.db.execute("""
+            CREATE TABLE imported_commodities (
+                order_id INTEGER, description VARCHAR, commodity_code VARCHAR,
+                origin_country VARCHAR, quantity INTEGER, unit_value VARCHAR,
+                unit_of_measure VARCHAR DEFAULT 'PCS'
+            )
+        """)
+        self.db.execute("""
+            INSERT INTO imported_commodities VALUES
+            (1001, 'Coffee', '090111', 'CO', 5, '30.00', 'PCS'),
+            (1001, 'Tea', '090210', 'CN', 10, '15.00', 'PCS'),
+            (1002, 'Laptop', '847130', 'US', 1, '999.00', 'PCS')
+        """)
+
+    def teardown_method(self):
+        self.db.close()
+
+    def test_get_commodities_for_single_order(self):
+        from src.mcp.data_source.tools.commodity_tools import get_commodities_bulk_sync
+        result = get_commodities_bulk_sync(self.db, [1001])
+        assert 1001 in result
+        assert len(result[1001]) == 2
+        descs = {c["description"] for c in result[1001]}
+        assert descs == {"Coffee", "Tea"}
+
+    def test_get_commodities_for_multiple_orders(self):
+        from src.mcp.data_source.tools.commodity_tools import get_commodities_bulk_sync
+        result = get_commodities_bulk_sync(self.db, [1001, 1002])
+        assert len(result[1001]) == 2
+        assert len(result[1002]) == 1
+
+    def test_missing_order_returns_empty(self):
+        from src.mcp.data_source.tools.commodity_tools import get_commodities_bulk_sync
+        result = get_commodities_bulk_sync(self.db, [9999])
+        assert result.get(9999, []) == []
+
+    def test_no_commodities_table_returns_empty(self):
+        db = duckdb.connect(":memory:")
+        from src.mcp.data_source.tools.commodity_tools import get_commodities_bulk_sync
+        result = get_commodities_bulk_sync(db, [1001])
+        assert result == {}
+        db.close()
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `python3 -m pytest tests/mcp/test_commodity_tools.py -v`
+Expected: FAIL — module does not exist
+
+**Step 3: Implement commodity tools**
+
+Create `src/mcp/data_source/tools/commodity_tools.py`:
+
+```python
+"""Commodity import and query tools for international shipping.
+
+Manages the `imported_commodities` auxiliary table alongside the
+primary `imported_data` table. Follows the same ephemeral session
+model — import replaces previous commodities data.
+"""
+
+from collections import defaultdict
+from typing import Any
+
+from fastmcp import Context
+
+
+COMMODITIES_TABLE = "imported_commodities"
+
+# Required columns for commodity data
+COMMODITY_COLUMNS = [
+    ("order_id", "INTEGER"),
+    ("description", "VARCHAR"),
+    ("commodity_code", "VARCHAR"),
+    ("origin_country", "VARCHAR(2)"),
+    ("quantity", "INTEGER"),
+    ("unit_value", "VARCHAR"),
+    ("unit_of_measure", "VARCHAR DEFAULT 'PCS'"),
+]
+
+
+def import_commodities_sync(
+    db: Any,
+    commodities: list[dict],
+) -> dict:
+    """Import commodity data into the imported_commodities table.
+
+    Replaces any existing commodity data (same ephemeral model as
+    imported_data). Links to orders via order_id.
+
+    Args:
+        db: DuckDB connection.
+        commodities: List of commodity dicts, each with order_id,
+            description, commodity_code, origin_country, quantity,
+            unit_value, and optional unit_of_measure.
+
+    Returns:
+        Dict with row_count and table_name.
+    """
+    col_defs = ", ".join(f"{name} {dtype}" for name, dtype in COMMODITY_COLUMNS)
+    db.execute(f"CREATE OR REPLACE TABLE {COMMODITIES_TABLE} ({col_defs})")
+
+    for comm in commodities:
+        db.execute(
+            f"""INSERT INTO {COMMODITIES_TABLE}
+            (order_id, description, commodity_code, origin_country, quantity, unit_value, unit_of_measure)
+            VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [
+                comm["order_id"],
+                str(comm["description"])[:35],
+                str(comm.get("commodity_code", "")),
+                str(comm.get("origin_country", "")).upper(),
+                int(comm.get("quantity", 1)),
+                str(comm.get("unit_value", "0")),
+                str(comm.get("unit_of_measure", "PCS")).upper(),
+            ],
+        )
+
+    count = db.execute(f"SELECT COUNT(*) FROM {COMMODITIES_TABLE}").fetchone()[0]
+    return {"row_count": count, "table_name": COMMODITIES_TABLE}
+
+
+def get_commodities_bulk_sync(
+    db: Any,
+    order_ids: list[int | str],
+) -> dict[int | str, list[dict]]:
+    """Get commodities for multiple orders, grouped by order_id.
+
+    Args:
+        db: DuckDB connection.
+        order_ids: List of order IDs to look up.
+
+    Returns:
+        Dict mapping order_id → list of commodity dicts.
+        Missing orders are omitted from the result.
+    """
+    # Check if commodities table exists
+    try:
+        tables = [r[0] for r in db.execute("SHOW TABLES").fetchall()]
+    except Exception:
+        return {}
+
+    if COMMODITIES_TABLE not in tables:
+        return {}
+
+    if not order_ids:
+        return {}
+
+    placeholders = ", ".join("?" for _ in order_ids)
+    rows = db.execute(
+        f"SELECT * FROM {COMMODITIES_TABLE} WHERE order_id IN ({placeholders})",
+        order_ids,
+    ).fetchall()
+
+    # Get column names
+    schema = db.execute(f"DESCRIBE {COMMODITIES_TABLE}").fetchall()
+    columns = [col[0] for col in schema]
+
+    result: dict[int | str, list[dict]] = defaultdict(list)
+    for row in rows:
+        row_dict = dict(zip(columns, row))
+        oid = row_dict.pop("order_id")
+        result[oid].append(row_dict)
+
+    return dict(result)
+
+
+async def import_commodities(
+    commodities: list[dict],
+    ctx: Context,
+) -> dict:
+    """MCP tool: Import commodity data for international shipments.
+
+    Each commodity must have an order_id matching the primary imported_data.
+    Replaces any previously imported commodities.
+
+    Args:
+        commodities: List of commodity dicts with order_id, description,
+            commodity_code, origin_country, quantity, unit_value.
+
+    Returns:
+        Dict with row_count and table_name.
+    """
+    db = ctx.request_context.lifespan_context["db"]
+    await ctx.info(f"Importing {len(commodities)} commodities")
+    result = import_commodities_sync(db, commodities)
+
+    # Track auxiliary table in session state
+    ctx.request_context.lifespan_context["commodities_loaded"] = True
+
+    await ctx.info(f"Imported {result['row_count']} commodities")
+    return result
+
+
+async def get_commodities_bulk(
+    order_ids: list[int | str],
+    ctx: Context,
+) -> dict:
+    """MCP tool: Get commodities for multiple orders.
+
+    Args:
+        order_ids: List of order IDs to retrieve commodities for.
+
+    Returns:
+        Dict mapping order_id → list of commodity dicts.
+    """
+    db = ctx.request_context.lifespan_context["db"]
+    await ctx.info(f"Fetching commodities for {len(order_ids)} orders")
+    result = get_commodities_bulk_sync(db, order_ids)
+    await ctx.info(f"Found commodities for {len(result)} orders")
+    return result
+```
+
+**Step 4: Register tools in MCP server**
+
+In `src/mcp/data_source/server.py`, import and register the new tools:
+
+```python
+from src.mcp.data_source.tools.commodity_tools import (
+    import_commodities,
+    get_commodities_bulk,
+)
+
+# Register alongside existing tools
+mcp.tool(import_commodities)
+mcp.tool(get_commodities_bulk)
+```
+
+**Step 5: Run tests**
+
+Run: `python3 -m pytest tests/mcp/test_commodity_tools.py -v`
+Expected: ALL PASS (7 tests)
+
+**Step 6: Commit**
 
 ```bash
-git add src/mcp/data_source/tools/query_tools.py tests/mcp/test_commodities_query.py
-git commit -m "feat: add get_commodities_bulk tool for international shipments"
+git add src/mcp/data_source/tools/commodity_tools.py src/mcp/data_source/server.py tests/mcp/test_commodity_tools.py
+git commit -m "feat: add commodity import/query tools with imported_commodities auxiliary table"
 ```
+
+**Design note:** The existing `imported_data` table and all 50+ hardcoded references to it are **NOT modified**. The commodity pipeline uses a parallel `imported_commodities` table with its own import/query tools. The `query_data` MCP tool already allows arbitrary SQL, so the agent can JOIN the two tables if needed. This avoids touching the adapter protocol or breaking existing flows.
 
 ---
 
@@ -1639,20 +2448,136 @@ git commit -m "feat: add get_commodities_bulk tool for international shipments"
 
 **Files:**
 - Modify: `src/services/batch_engine.py`
+- Test: `tests/services/test_batch_engine_international.py`
 
-**Step 1:** Before preview, detect international rows by checking `ship_to_country` against rules engine.
+**Step 1: Fix Decimal money conversion (P2)**
 
-**Step 2:** For international rows, hydrate commodity data via `get_commodities_bulk()`.
+In `src/services/batch_engine.py`, replace `int(float(amount) * 100)` (line 143) with Decimal-safe conversion:
 
-**Step 3:** Run `validate_international_readiness()` before sending to UPS. Rows that fail validation are marked failed with descriptive error codes.
+```python
+from decimal import Decimal, ROUND_HALF_UP
 
-**Step 4:** Store `destination_country`, `duties_taxes_cents`, and `charge_breakdown` on JobRow after processing.
+def _dollars_to_cents(amount: str) -> int:
+    """Convert dollar string to cents using Decimal to avoid float drift.
+
+    Args:
+        amount: Dollar amount as string (e.g., "45.50").
+
+    Returns:
+        Integer cents value.
+    """
+    return int(Decimal(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) * 100)
+```
+
+Replace all `int(float(amount) * 100)` calls with `_dollars_to_cents(amount)`.
+
+**Step 2: Write failing test for Decimal precision**
+
+Add to `tests/services/test_batch_engine_international.py`:
+
+```python
+"""Tests for batch engine international integration."""
+
+from decimal import Decimal
+from src.services.batch_engine import _dollars_to_cents
+
+
+class TestDollarsToCents:
+    """Verify Decimal-based money conversion avoids float drift."""
+
+    def test_simple_conversion(self):
+        assert _dollars_to_cents("45.50") == 4550
+
+    def test_problematic_float_value(self):
+        # 33.33 * 100 = 3332.9999... with float
+        assert _dollars_to_cents("33.33") == 3333
+
+    def test_zero(self):
+        assert _dollars_to_cents("0") == 0
+        assert _dollars_to_cents("0.00") == 0
+
+    def test_large_value(self):
+        assert _dollars_to_cents("99999.99") == 9999999
+
+    def test_no_decimal(self):
+        assert _dollars_to_cents("100") == 10000
+
+    def test_rounding(self):
+        # Values with more than 2 decimal places
+        assert _dollars_to_cents("10.555") == 1056  # ROUND_HALF_UP
+        assert _dollars_to_cents("10.554") == 1055
+```
+
+**Step 3: Implement international batch logic**
+
+In `src/services/batch_engine.py`:
+
+1. Before preview, detect international rows by checking `ship_to_country` against rules engine:
+
+```python
+from src.services.international_rules import get_requirements, validate_international_readiness
+
+# In the preview/execute loop, after loading order_data:
+dest_country = order_data.get("ship_to_country", "US")
+service_code = order_data.get("service_code", "03")
+requirements = get_requirements("US", dest_country, service_code)
+
+if requirements.not_shippable_reason:
+    # Mark row as failed with descriptive error
+    row.status = "failed"
+    row.error_message = requirements.not_shippable_reason
+    row.error_code = "E-2015"
+    continue
+```
+
+2. For international rows, hydrate commodity data via `get_commodities_bulk()`:
+
+```python
+# Before processing international rows, bulk-fetch commodities
+if any_international_rows:
+    order_ids = [row_data.get("order_id") for row_data in international_rows]
+    commodities_map = await self._get_commodities_bulk(order_ids)
+    # Inject into each row's order_data
+    for row_data in international_rows:
+        oid = row_data.get("order_id")
+        if oid in commodities_map:
+            row_data["commodities"] = commodities_map[oid]
+```
+
+3. Run `validate_international_readiness()` before sending to UPS:
+
+```python
+if requirements.is_international or requirements.requires_invoice_line_total:
+    validation_errors = validate_international_readiness(order_data, requirements)
+    if validation_errors:
+        row.status = "failed"
+        row.error_message = "; ".join(e.message for e in validation_errors)
+        row.error_code = validation_errors[0].error_code
+        continue
+```
+
+4. Store `destination_country`, `duties_taxes_cents`, and `charge_breakdown` on JobRow after processing:
+
+```python
+row.destination_country = dest_country if dest_country != "US" else None
+if result.get("chargeBreakdown"):
+    import json
+    row.charge_breakdown = json.dumps(result["chargeBreakdown"])
+    duties = result["chargeBreakdown"].get("dutiesAndTaxes", {})
+    if duties.get("monetaryValue"):
+        row.duties_taxes_cents = _dollars_to_cents(duties["monetaryValue"])
+```
+
+**Step 4: Run tests**
+
+Run: `python3 -m pytest tests/services/test_batch_engine_international.py -v`
+Expected: ALL PASS
 
 **Step 5: Commit**
 
 ```bash
-git add src/services/batch_engine.py
-git commit -m "feat: integrate international validation and commodity hydration in batch engine"
+git add src/services/batch_engine.py tests/services/test_batch_engine_international.py
+git commit -m "feat: integrate international validation, commodity hydration, and Decimal money in batch engine"
 ```
 
 ---
@@ -1764,17 +2689,80 @@ git commit -m "feat: add international indicators to CompletionArtifact, Progres
 **Files:**
 - Create: `tests/integration/test_international_batch.py`
 
-**Step 1:** Write a test that creates a batch with mixed domestic + international rows. Verify:
-- Domestic rows process normally (no international fields required)
-- International rows with valid data succeed
-- International rows missing fields fail with correct error codes
-- Aggregate totals are correct (shipping + duties)
+**Step 1:** Write a test with proper CI gating. Tests that hit real UPS API require `RUN_UPS_INTEGRATION=1` env var:
 
-**Step 2: Commit**
+```python
+"""End-to-end mixed domestic + international batch integration test."""
+
+import os
+import pytest
+
+# P2: CI gating — skip if no UPS credentials available
+pytestmark = pytest.mark.skipif(
+    not os.environ.get("RUN_UPS_INTEGRATION"),
+    reason="Set RUN_UPS_INTEGRATION=1 and provide UPS credentials to run",
+)
+
+
+class TestMixedBatch:
+    """Test batch with mixed domestic + international rows."""
+
+    @pytest.mark.integration
+    def test_domestic_rows_process_normally(self):
+        """Domestic rows should not require international fields."""
+        # ... test implementation using real or mocked UPS API
+
+    @pytest.mark.integration
+    def test_international_rows_with_valid_data_succeed(self):
+        """International rows with all required fields should succeed."""
+        # ... test implementation
+
+    @pytest.mark.integration
+    def test_international_rows_missing_fields_fail(self):
+        """International rows missing required fields fail with correct error codes."""
+        # ... test implementation — does NOT need UPS API, purely validation
+
+    @pytest.mark.integration
+    def test_aggregate_totals_correct(self):
+        """Aggregate totals include shipping + duties for international."""
+        # ... test implementation
+```
+
+**Step 2:** For tests that don't need UPS credentials (pure validation), use a separate class without the skipif:
+
+```python
+class TestMixedBatchValidation:
+    """Validation-only tests that don't require UPS API."""
+
+    def test_international_row_missing_commodities_fails(self):
+        """Row to CA without commodities should fail with E-2013."""
+        from src.services.international_rules import get_requirements, validate_international_readiness
+        req = get_requirements("US", "CA", "11")
+        errors = validate_international_readiness({"ship_to_country": "CA"}, req)
+        codes = [e.machine_code for e in errors]
+        assert "MISSING_COMMODITIES" in codes
+
+    def test_domestic_row_no_validation_needed(self):
+        """Domestic US→US row should pass with no errors."""
+        from src.services.international_rules import get_requirements, validate_international_readiness
+        req = get_requirements("US", "US", "03")
+        errors = validate_international_readiness({"ship_to_country": "US"}, req)
+        assert errors == []
+
+    def test_kill_switch_blocks_international(self):
+        """With INTERNATIONAL_ENABLED_LANES empty, international rows are rejected."""
+        from unittest.mock import patch
+        from src.services.international_rules import get_requirements
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": ""}, clear=False):
+            req = get_requirements("US", "CA", "11")
+            assert req.not_shippable_reason is not None
+```
+
+**Step 3: Commit**
 
 ```bash
 git add tests/integration/test_international_batch.py
-git commit -m "test: add mixed domestic+international batch integration test"
+git commit -m "test: add mixed domestic+international batch integration test with CI gating"
 ```
 
 ---
@@ -1784,17 +2772,104 @@ git commit -m "test: add mixed domestic+international batch integration test"
 **Files:**
 - Create: `tests/integration/test_domestic_regression.py`
 
-**Step 1:** Write a test that runs a fully domestic batch end-to-end. Verify:
-- No international fields required
-- No charge breakdown in response
-- Identical behavior to pre-international code
-- `international_row_count` is 0
+**Step 1:** Write a regression test. Most assertions can run without UPS credentials (using mocked responses):
 
-**Step 2: Commit**
+```python
+"""Domestic regression test — verify no behavioral change from international additions."""
+
+import os
+import pytest
+
+
+class TestDomesticRegression:
+    """Verify domestic-only batches are completely unaffected by international code."""
+
+    def test_domestic_no_international_fields_required(self):
+        """US→US shipment must not require any international fields."""
+        from src.services.international_rules import get_requirements
+        req = get_requirements("US", "US", "03")
+        assert req.is_international is False
+        assert req.requires_international_forms is False
+        assert req.requires_commodities is False
+        assert req.requires_invoice_line_total is False
+        assert req.requires_description is False
+        assert req.requires_shipper_contact is False
+        assert req.requires_recipient_contact is False
+        assert req.not_shippable_reason is None
+
+    def test_domestic_payload_has_no_international_sections(self):
+        """Domestic payload must NOT contain InternationalForms or InvoiceLineTotal."""
+        from src.services.ups_payload_builder import build_ups_api_payload
+        order_data = {
+            "ship_to_name": "John Doe",
+            "ship_to_address1": "456 Oak Ave",
+            "ship_to_city": "Los Angeles",
+            "ship_to_state": "CA",
+            "ship_to_zip": "90001",
+            "ship_to_country": "US",
+            "service_code": "03",
+            "weight": "2.0",
+        }
+        shipper = {
+            "name": "Acme", "addressLine1": "123 Main",
+            "city": "NYC", "stateProvinceCode": "NY",
+            "postalCode": "10001", "countryCode": "US",
+            "shipperNumber": "ABC",
+        }
+        payload = build_ups_api_payload(order_data, shipper, account_number="ABC")
+        shipment = payload["ShipmentRequest"]["Shipment"]
+        assert "InvoiceLineTotal" not in shipment
+        sso = shipment.get("ShipmentServiceOptions", {})
+        assert "InternationalForms" not in sso
+
+    def test_domestic_charge_breakdown_not_in_response(self):
+        """Domestic UPS response should not produce charge breakdown."""
+        from src.services.ups_mcp_client import UPSMCPClient
+        client = UPSMCPClient.__new__(UPSMCPClient)
+        raw = {
+            "ShipmentResponse": {
+                "ShipmentResults": {
+                    "ShipmentIdentificationNumber": "1Z999",
+                    "PackageResults": {"TrackingNumber": "1Z999", "ShippingLabel": {"GraphicImage": "base64"}},
+                    "ShipmentCharges": {
+                        "TotalCharges": {"MonetaryValue": "15.50", "CurrencyCode": "USD"},
+                    },
+                }
+            }
+        }
+        result = client._normalize_shipment_response(raw)
+        assert result.get("chargeBreakdown") is None
+
+    def test_service_aliases_domestic_unchanged(self):
+        """Existing domestic aliases must still work."""
+        from src.orchestrator.models.intent import SERVICE_ALIASES, ServiceCode
+        # These should still map to domestic services
+        assert SERVICE_ALIASES.get("ground") == ServiceCode.GROUND
+        assert SERVICE_ALIASES.get("next day air") == ServiceCode.NEXT_DAY_AIR
+        # "standard" must NOT be hijacked to international
+        assert "standard" not in SERVICE_ALIASES
+
+    @pytest.mark.skipif(
+        not os.environ.get("RUN_UPS_INTEGRATION"),
+        reason="Set RUN_UPS_INTEGRATION=1 to run live UPS tests",
+    )
+    @pytest.mark.integration
+    def test_live_domestic_batch_unchanged(self):
+        """Live domestic batch should produce identical results to pre-international code."""
+        # ... live API test
+        pass
+```
+
+**Step 2: Run regression tests**
+
+Run: `python3 -m pytest tests/integration/test_domestic_regression.py -v`
+Expected: ALL PASS (skip live test without credentials)
+
+**Step 3: Commit**
 
 ```bash
 git add tests/integration/test_domestic_regression.py
-git commit -m "test: add domestic regression test to verify no behavioral change"
+git commit -m "test: add domestic regression test verifying no behavioral change"
 ```
 
 ---
@@ -1803,8 +2878,31 @@ git commit -m "test: add domestic regression test to verify no behavioral change
 
 **Migration order**: Tasks 1-3 (foundation) → Tasks 4-7 (backend core) → Tasks 8-10 (API/agent) → Tasks 11-12 (data pipeline) → Tasks 13-15 (frontend) → Tasks 16-17 (integration)
 
-**Kill switch**: Set `INTERNATIONAL_ENABLED_LANES=""` to disable all international paths immediately.
+**Kill switch**: Set `INTERNATIONAL_ENABLED_LANES=""` to disable all international paths immediately. The kill switch is enforced inside `get_requirements()` — no separate check needed by callers. Test `test_kill_switch_blocks_enabled_lane` proves this.
+
+**DB migration**: `_ensure_columns_exist()` in `src/db/connection.py` handles both `jobs` and `job_rows` table migrations. Idempotent — safe on fresh and existing DBs. Test `test_migration_adds_columns_to_existing_db` proves columns are added to pre-existing databases.
+
+**Commodity data model**: Uses a parallel `imported_commodities` DuckDB table — does NOT modify the existing `imported_data` table or the 50+ references to it. The `import_commodities` MCP tool creates/replaces `imported_commodities`; `get_commodities_bulk` queries it grouped by order_id.
+
+**Money precision**: All dollar-to-cents conversions use `Decimal` via `_dollars_to_cents()`. The previous `int(float(amount) * 100)` pattern is replaced everywhere.
+
+**Service alias safety**: Bare `"standard"` is NOT mapped to any service. Only `"ups standard"` and `"international standard"` map to service code `"11"`. Domestic aliases are unchanged.
+
+**CI gating**: Integration tests requiring UPS credentials use `pytest.mark.skipif(not os.environ.get("RUN_UPS_INTEGRATION"))`. Validation-only tests run unconditionally.
 
 **Rollback**: Each task has its own commit. Revert individual commits to roll back specific changes.
 
 **Observability**: `rule_version` logged on every international validation. Error code metrics per lane. Raw UPS charge fragments in audit logs.
+
+## Review Issue Resolution Matrix
+
+| # | Severity | Issue | Resolution | Task |
+|---|----------|-------|------------|------|
+| 1 | P0 | DB migration incomplete | Added `_ensure_columns_exist()` entries for 5 columns + migration test | Task 2 |
+| 2 | P0 | MCP multi-table not addressed | New `commodity_tools.py` with `imported_commodities` table, import + bulk query | Task 11 |
+| 3 | P0 | Kill switch not enforced | `get_requirements()` calls `is_lane_enabled()` before returning valid requirements | Task 3 |
+| 4 | P1 | "standard" alias regression | Removed bare `"standard"` from SERVICE_ALIASES and SERVICE_NAME_TO_CODE | Tasks 4, 5 |
+| 5 | P1 | Payload enrichment incomplete | Added rules-engine call, InvoiceLineTotal/contact/forms injection, integration tests | Task 6 |
+| 6 | P1 | Preview route wiring missing | Added SERVICE_CODE_NAMES updates, PreviewRowResponse/BatchPreviewResponse wiring | Task 8 |
+| 7 | P2 | Money precision risk | Replaced `int(float(x)*100)` with `_dollars_to_cents()` using Decimal | Task 12 |
+| 8 | P2 | Integration test CI gating | Added `RUN_UPS_INTEGRATION` env skipif + separated validation-only tests | Tasks 16, 17 |
