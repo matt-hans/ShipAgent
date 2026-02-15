@@ -117,9 +117,10 @@ async def preview_interactive_shipment_tool(
     """
     from src.db.models import JobStatus
     from src.services.batch_engine import BatchEngine
+    from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, DEFAULT_PACKAGE_WEIGHT_LBS, UPS_ADDRESS_MAX_LEN
     from src.services.ups_payload_builder import (
         build_shipment_request,
-        build_shipper_from_env,
+        build_shipper,
         resolve_packaging_code,
     )
     from src.services.ups_service_codes import resolve_service_code
@@ -148,7 +149,7 @@ async def preview_interactive_shipment_tool(
     ship_to_address2 = _str(args.get("ship_to_address2"))
     ship_to_phone = _str(args.get("ship_to_phone"))
     ship_to_state = _str(args.get("ship_to_state"))
-    ship_to_country = (_str(args.get("ship_to_country"), "US") or "US").upper()
+    ship_to_country = (_str(args.get("ship_to_country"), DEFAULT_ORIGIN_COUNTRY) or DEFAULT_ORIGIN_COUNTRY).upper()
     ship_to_attention_name = _str(args.get("ship_to_attention_name"))
     shipment_description = _str(args.get("shipment_description"))
     commodities = args.get("commodities")
@@ -161,7 +162,7 @@ async def preview_interactive_shipment_tool(
 
     # Validate weight
     try:
-        weight = float(args.get("weight", 1.0))
+        weight = float(args.get("weight", DEFAULT_PACKAGE_WEIGHT_LBS))
         if weight <= 0:
             return _err("Weight must be a positive number.")
     except (ValueError, TypeError):
@@ -179,7 +180,7 @@ async def preview_interactive_shipment_tool(
         )
 
     # Resolve shipper from env, overlay optional overrides
-    shipper = build_shipper_from_env()
+    shipper = build_shipper()
     ship_from_override = args.get("ship_from")
     if isinstance(ship_from_override, dict) and ship_from_override:
         normalized_overrides = _normalize_ship_from(ship_from_override)
@@ -210,7 +211,7 @@ async def preview_interactive_shipment_tool(
     if ship_to_attention_name:
         order_data["ship_to_attention_name"] = ship_to_attention_name
     if shipment_description:
-        order_data["shipment_description"] = shipment_description[:35]
+        order_data["shipment_description"] = shipment_description[:UPS_ADDRESS_MAX_LEN]
     if isinstance(commodities, list) and commodities:
         order_data["commodities"] = commodities
     if invoice_currency_code:
@@ -220,7 +221,7 @@ async def preview_interactive_shipment_tool(
     if reason_for_export:
         order_data["reason_for_export"] = reason_for_export
 
-    if ship_to_country not in ("US", ""):
+    if ship_to_country not in (DEFAULT_ORIGIN_COUNTRY, ""):
         shipper_attention_name = _str(os.environ.get("SHIPPER_ATTENTION_NAME"))
         shipper_phone = _str(os.environ.get("SHIPPER_PHONE"))
         if shipper_attention_name:

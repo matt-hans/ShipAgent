@@ -2,7 +2,7 @@
 
 Transforms order data from JobRow.order_data (JSON) into UPS MCP
 shipping_create input format. Also handles shipper information
-from Shopify shop details.
+from environment variables and Shopify shop details.
 
 Example:
     from src.services.ups_payload_builder import build_shipment_request
@@ -19,7 +19,26 @@ Example:
 import re
 from typing import Any
 
-from src.services.ups_service_codes import resolve_service_code
+from src.services.ups_constants import (
+    DEFAULT_CURRENCY_CODE,
+    DEFAULT_FORM_TYPE,
+    DEFAULT_LABEL_FORMAT,
+    DEFAULT_LABEL_HEIGHT,
+    DEFAULT_LABEL_WIDTH,
+    DEFAULT_ORIGIN_COUNTRY,
+    DEFAULT_PACKAGE_WEIGHT_LBS,
+    DEFAULT_PACKAGING_CODE,
+    DEFAULT_REASON_FOR_EXPORT,
+    GRAMS_PER_LB,
+    PACKAGING_ALIASES,
+    UPS_ADDRESS_MAX_LEN,
+    UPS_DIMENSION_UNIT,
+    UPS_PHONE_MAX_DIGITS,
+    UPS_PHONE_MIN_DIGITS,
+    UPS_REFERENCE_MAX_LEN,
+    UPS_WEIGHT_UNIT,
+)
+from src.services.ups_service_codes import ServiceCode, resolve_service_code
 
 
 def normalize_phone(phone: str | None) -> str:
@@ -41,11 +60,11 @@ def normalize_phone(phone: str | None) -> str:
     digits = re.sub(r"\D", "", phone)
 
     # Accept 7-15 digits (international range)
-    if len(digits) < 7:
+    if len(digits) < UPS_PHONE_MIN_DIGITS:
         return ""
 
     # Truncate to 15 digits (UPS max)
-    return digits[:15]
+    return digits[:UPS_PHONE_MAX_DIGITS]
 
 
 def normalize_zip(postal_code: str | None) -> str:
@@ -79,7 +98,7 @@ def normalize_zip(postal_code: str | None) -> str:
     return postal_code
 
 
-def truncate_address(address: str | None, max_length: int = 35) -> str:
+def truncate_address(address: str | None, max_length: int = UPS_ADDRESS_MAX_LEN) -> str:
     """Truncate address without cutting words.
 
     UPS limits address lines to 35 characters. This function
@@ -87,7 +106,7 @@ def truncate_address(address: str | None, max_length: int = 35) -> str:
 
     Args:
         address: Raw address string
-        max_length: Maximum length (default 35 for UPS)
+        max_length: Maximum length (default UPS_ADDRESS_MAX_LEN)
 
     Returns:
         Truncated address string
@@ -110,71 +129,60 @@ def truncate_address(address: str | None, max_length: int = 35) -> str:
     return truncated
 
 
-def build_shipper_from_shop(shop_info: dict[str, Any]) -> dict[str, str]:
-    """Build UPS shipper from Shopify shop.json response.
+def build_shipper(shop_info: dict[str, Any] | None = None) -> dict[str, str]:
+    """Build UPS shipper from env vars, optionally overlaid with Shopify shop data.
 
-    Transforms Shopify shop details into UPS-compatible shipper format.
-    Falls back to environment variables for any missing required fields
-    (addressLine1, city, stateProvinceCode, postalCode) since Shopify
-    stores may not always have complete address information.
+    Reads SHIPPER_* environment variables as the base. If shop_info is provided,
+    non-empty Shopify values override the env var values.
+
+    Missing required fields default to empty strings (no dummy addresses).
+    The UPS API will reject empty shipper addresses with a clear error,
+    which is safer than silently shipping from a fake address.
 
     Args:
-        shop_info: Shopify shop data containing:
-            - name: Store name
-            - phone: Store phone
-            - address1: Street address
-            - city: City
-            - province_code: State/province code (e.g., "CA")
-            - zip: Postal code
-            - country_code: Country code (e.g., "US")
+        shop_info: Optional Shopify shop data dict with keys:
+            name, phone, address1, address2, city, province_code, zip, country_code.
 
     Returns:
-        Dict matching UPS shipper schema with all required fields populated
+        Dict matching UPS shipper schema.
     """
     import os
 
-    # Get env var fallbacks for required address fields
-    env_fallbacks = {
-        "addressLine1": os.environ.get("SHIPPER_ADDRESS1", "123 Main St"),
-        "city": os.environ.get("SHIPPER_CITY", "Los Angeles"),
-        "stateProvinceCode": os.environ.get("SHIPPER_STATE", "CA"),
-        "postalCode": normalize_zip(os.environ.get("SHIPPER_ZIP", "90001")),
-    }
-
-    return {
-        "name": truncate_address(shop_info.get("name", ""), 35) or "ShipAgent",
-        "phone": normalize_phone(shop_info.get("phone")),
-        "addressLine1": truncate_address(shop_info.get("address1", ""))
-        or env_fallbacks["addressLine1"],
-        "addressLine2": truncate_address(shop_info.get("address2")),
-        "city": shop_info.get("city") or env_fallbacks["city"],
-        "stateProvinceCode": shop_info.get("province_code")
-        or env_fallbacks["stateProvinceCode"],
-        "postalCode": normalize_zip(shop_info.get("zip"))
-        or env_fallbacks["postalCode"],
-        "countryCode": shop_info.get("country_code") or "US",
-    }
-
-
-def build_shipper_from_env() -> dict[str, str]:
-    """Build shipper from environment variables.
-
-    Fallback when shop info is not available. Uses SHIPPER_* env vars.
-
-    Returns:
-        Dict matching UPS shipper schema
-    """
-    import os
-
-    return {
-        "name": os.environ.get("SHIPPER_NAME", "ShipAgent Default"),
+    shipper = {
+        "name": truncate_address(os.environ.get("SHIPPER_NAME", ""), UPS_ADDRESS_MAX_LEN),
         "phone": normalize_phone(os.environ.get("SHIPPER_PHONE")),
-        "addressLine1": os.environ.get("SHIPPER_ADDRESS1", "123 Main St"),
-        "city": os.environ.get("SHIPPER_CITY", "Los Angeles"),
-        "stateProvinceCode": os.environ.get("SHIPPER_STATE", "CA"),
-        "postalCode": normalize_zip(os.environ.get("SHIPPER_ZIP", "90001")),
-        "countryCode": os.environ.get("SHIPPER_COUNTRY", "US"),
+        "addressLine1": truncate_address(os.environ.get("SHIPPER_ADDRESS1", ""), UPS_ADDRESS_MAX_LEN),
+        "addressLine2": "",
+        "city": os.environ.get("SHIPPER_CITY", ""),
+        "stateProvinceCode": os.environ.get("SHIPPER_STATE", ""),
+        "postalCode": normalize_zip(os.environ.get("SHIPPER_ZIP", "")),
+        "countryCode": os.environ.get("SHIPPER_COUNTRY", DEFAULT_ORIGIN_COUNTRY),
     }
+
+    if shop_info:
+        _SHOP_KEY_MAP = {
+            "name": "name",
+            "phone": "phone",
+            "address1": "addressLine1",
+            "address2": "addressLine2",
+            "city": "city",
+            "province_code": "stateProvinceCode",
+            "zip": "postalCode",
+            "country_code": "countryCode",
+        }
+        for shop_key, shipper_key in _SHOP_KEY_MAP.items():
+            val = shop_info.get(shop_key)
+            if val:
+                val = str(val)
+                if shipper_key == "phone":
+                    val = normalize_phone(val)
+                elif shipper_key == "postalCode":
+                    val = normalize_zip(val)
+                elif shipper_key in ("name", "addressLine1", "addressLine2"):
+                    val = truncate_address(val, UPS_ADDRESS_MAX_LEN)
+                shipper[shipper_key] = val
+
+    return shipper
 
 
 def build_ship_to(order_data: dict[str, Any]) -> dict[str, str]:
@@ -197,8 +205,8 @@ def build_ship_to(order_data: dict[str, Any]) -> dict[str, str]:
         name = f"{first} {last}".strip()
 
     return {
-        "name": truncate_address(name, 35) or "Recipient",
-        "attentionName": truncate_address(order_data.get("ship_to_company"), 35),
+        "name": truncate_address(name, UPS_ADDRESS_MAX_LEN) or "Recipient",
+        "attentionName": truncate_address(order_data.get("ship_to_company"), UPS_ADDRESS_MAX_LEN),
         "phone": normalize_phone(order_data.get("ship_to_phone")),
         "addressLine1": truncate_address(order_data.get("ship_to_address1", "")),
         "addressLine2": truncate_address(order_data.get("ship_to_address2")),
@@ -222,12 +230,12 @@ def resolve_packaging_code(raw_value: str | None) -> str:
         UPS packaging type code string. Defaults to "02" (Customer Supplied Package).
     """
     if not raw_value:
-        return "02"
+        return DEFAULT_PACKAGING_CODE.value
 
     # Coerce non-string values (e.g. int 2 from LLM/tool args)
     stripped = str(raw_value).strip()
     if not stripped:
-        return "02"
+        return DEFAULT_PACKAGING_CODE.value
 
     # Known alphanumeric UPS codes — pass through as-is
     _ALPHANUMERIC_CODES = {"2a", "2b", "2c"}
@@ -238,45 +246,12 @@ def resolve_packaging_code(raw_value: str | None) -> str:
     if stripped.isdigit() and len(stripped) <= 3:
         return stripped.zfill(2)
 
-    # Map human-readable names to UPS codes (case-insensitive)
-    packaging_name_map: dict[str, str] = {
-        "ups letter": "01",
-        "letter": "01",
-        "customer supplied package": "02",
-        "customer supplied": "02",
-        "custom": "02",
-        "tube": "03",
-        "ups tube": "03",
-        "pak": "04",
-        "ups pak": "04",
-        "ups express box": "21",
-        "express box": "21",
-        "25kg box": "24",
-        "ups 25kg box": "24",
-        "10kg box": "25",
-        "ups 10kg box": "25",
-        "pallet": "30",
-        "small express box": "2a",
-        "ups small express box": "2a",
-        "medium express box": "2b",
-        "ups medium express box": "2b",
-        "large express box": "2c",
-        "ups large express box": "2c",
-        "flats": "56",
-        "parcels": "57",
-        "bpm": "58",
-        "first class": "59",
-        "priority": "60",
-        "machineables": "61",
-        "irregulars": "62",
-        "parcel post": "63",
-        "bpm parcel": "64",
-        "media mail": "65",
-        "bpm flat": "66",
-        "standard flat": "67",
-    }
+    # Map human-readable names to UPS codes (case-insensitive) via PACKAGING_ALIASES
+    matched = PACKAGING_ALIASES.get(stripped.lower())
+    if matched is not None:
+        return matched.value
 
-    return packaging_name_map.get(stripped.lower(), "02")
+    return DEFAULT_PACKAGING_CODE.value
 
 
 def build_packages(order_data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -296,7 +271,7 @@ def build_packages(order_data: dict[str, Any]) -> list[dict[str, Any]]:
         result = []
         for pkg in packages:
             p: dict[str, Any] = {
-                "weight": float(pkg.get("weight", 1.0)),
+                "weight": float(pkg.get("weight", DEFAULT_PACKAGE_WEIGHT_LBS)),
                 "length": pkg.get("length"),
                 "width": pkg.get("width"),
                 "height": pkg.get("height"),
@@ -317,9 +292,9 @@ def build_packages(order_data: dict[str, Any]) -> list[dict[str, Any]]:
     if not weight:
         weight_grams = order_data.get("total_weight_grams")
         if weight_grams:
-            weight = float(weight_grams) / 453.592  # Convert grams to lbs
+            weight = float(weight_grams) / GRAMS_PER_LB
         else:
-            weight = 1.0
+            weight = DEFAULT_PACKAGE_WEIGHT_LBS
 
     package: dict[str, Any] = {
         "weight": float(weight),
@@ -346,7 +321,7 @@ def build_packages(order_data: dict[str, Any]) -> list[dict[str, Any]]:
     return [package]
 
 
-def get_service_code(order_data: dict[str, Any], default: str = "03") -> str:
+def get_service_code(order_data: dict[str, Any], default: str = ServiceCode.GROUND.value) -> str:
     """Get UPS service code from order data.
 
     Checks service_code first, then falls back to service name.
@@ -354,7 +329,7 @@ def get_service_code(order_data: dict[str, Any], default: str = "03") -> str:
 
     Args:
         order_data: Order data containing service info
-        default: Default service code ("03" = Ground)
+        default: Default service code (Ground)
 
     Returns:
         UPS service code string
@@ -374,10 +349,11 @@ def get_service_code(order_data: dict[str, Any], default: str = "03") -> str:
 
 def build_international_forms(
     commodities: list[dict],
-    currency_code: str = "USD",
-    form_type: str = "01",
-    reason_for_export: str = "SALE",
+    currency_code: str = DEFAULT_CURRENCY_CODE,
+    form_type: str = DEFAULT_FORM_TYPE,
+    reason_for_export: str = DEFAULT_REASON_FOR_EXPORT,
     invoice_date: str | None = None,
+    sold_to: dict[str, str] | None = None,
 ) -> dict:
     """Build UPS InternationalForms section for customs documentation.
 
@@ -388,6 +364,9 @@ def build_international_forms(
         form_type: InternationalForms type (01 = commercial invoice).
         reason_for_export: Export reason code (SALE, GIFT, SAMPLE, etc.).
         invoice_date: Invoice date in YYYYMMDD format. Defaults to today.
+        sold_to: Recipient address dict for Contacts.SoldTo (required by UPS
+            when FormType=01). Keys: name, attentionName, phone, addressLine1,
+            addressLine2, city, stateProvinceCode, postalCode, countryCode.
 
     Returns:
         Dict ready to embed as InternationalForms in UPS payload.
@@ -401,7 +380,7 @@ def build_international_forms(
     for comm in commodities:
         uom_code = str(comm.get("unit_of_measure", "PCS")).upper()
         products.append({
-            "Description": str(comm["description"])[:35],
+            "Description": str(comm["description"])[:UPS_ADDRESS_MAX_LEN],
             "CommodityCode": str(comm["commodity_code"]),
             "OriginCountryCode": str(comm["origin_country"]).upper(),
             "Unit": {
@@ -414,13 +393,39 @@ def build_international_forms(
             },
         })
 
-    return {
+    forms: dict[str, Any] = {
         "FormType": form_type,
         "InvoiceDate": invoice_date,
         "ReasonForExport": reason_for_export,
         "CurrencyCode": currency_code,
         "Product": products,
     }
+
+    if sold_to:
+        address_lines = [
+            line for line in [
+                sold_to.get("addressLine1", ""),
+                sold_to.get("addressLine2", ""),
+            ] if line
+        ]
+        contacts_sold_to: dict[str, Any] = {
+            "Name": sold_to.get("name", "")[:UPS_ADDRESS_MAX_LEN],
+            "AttentionName": sold_to.get(
+                "attentionName", sold_to.get("name", "")
+            )[:UPS_ADDRESS_MAX_LEN],
+            "Address": {
+                "AddressLine": address_lines or [""],
+                "City": sold_to.get("city", ""),
+                "StateProvinceCode": sold_to.get("stateProvinceCode", ""),
+                "PostalCode": sold_to.get("postalCode", ""),
+                "CountryCode": sold_to.get("countryCode", ""),
+            },
+        }
+        if sold_to.get("phone"):
+            contacts_sold_to["Phone"] = {"Number": sold_to["phone"]}
+        forms["Contacts"] = {"SoldTo": contacts_sold_to}
+
+    return forms
 
 
 def build_shipment_request(
@@ -442,7 +447,7 @@ def build_shipment_request(
     """
     # Use provided shipper or fall back to env vars
     if shipper is None:
-        shipper = build_shipper_from_env()
+        shipper = build_shipper()
 
     # Remove None values from shipper
     shipper = {k: v for k, v in shipper.items() if v}
@@ -494,7 +499,7 @@ def build_shipment_request(
     # --- International enrichment ---
     from src.services.international_rules import get_requirements
 
-    origin_country = shipper.get("countryCode", "US")
+    origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
     dest_country = order_data.get("ship_to_country", "") or origin_country
     requirements = get_requirements(origin_country, dest_country, service_code)
 
@@ -520,7 +525,7 @@ def build_shipment_request(
     # InvoiceLineTotal — add as top-level key in simplified
     if requirements.requires_invoice_line_total:
         result["invoiceLineTotal"] = {
-            "currencyCode": order_data.get("invoice_currency_code", "USD"),
+            "currencyCode": order_data.get("invoice_currency_code", DEFAULT_CURRENCY_CODE),
             "monetaryValue": order_data.get("invoice_monetary_value", "0"),
         }
 
@@ -528,18 +533,21 @@ def build_shipment_request(
     if requirements.requires_description:
         desc = order_data.get("shipment_description", "")
         if desc:
-            result["description"] = desc[:35]
+            result["description"] = desc[:UPS_ADDRESS_MAX_LEN]
 
     # InternationalForms — build from commodities and add to simplified
     if requirements.requires_international_forms:
         commodities = order_data.get("commodities", [])
         if commodities:
-            reason_for_export = str(order_data.get("reason_for_export", "SALE")).upper()
+            reason_for_export = str(
+                order_data.get("reason_for_export", DEFAULT_REASON_FOR_EXPORT)
+            ).upper()
             result["internationalForms"] = build_international_forms(
                 commodities=commodities,
                 currency_code=requirements.currency_code,
                 form_type=requirements.form_type,
                 reason_for_export=reason_for_export,
+                sold_to=ship_to,
             )
 
     return result
@@ -640,7 +648,7 @@ def build_ups_api_payload(
     shipper = simplified.get("shipper", {})
     ship_to = simplified.get("shipTo", {})
     packages = simplified.get("packages", [])
-    service_code = simplified.get("serviceCode", "03")
+    service_code = simplified.get("serviceCode", ServiceCode.GROUND.value)
 
     # Build Shipper
     ups_shipper: dict[str, Any] = {
@@ -651,7 +659,7 @@ def build_ups_api_payload(
             "City": shipper.get("city", ""),
             "StateProvinceCode": shipper.get("stateProvinceCode", ""),
             "PostalCode": shipper.get("postalCode", ""),
-            "CountryCode": shipper.get("countryCode", "US"),
+            "CountryCode": shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
         },
     }
     if shipper.get("phone"):
@@ -665,7 +673,7 @@ def build_ups_api_payload(
             "City": ship_to.get("city", ""),
             "StateProvinceCode": ship_to.get("stateProvinceCode", ""),
             "PostalCode": ship_to.get("postalCode", ""),
-            "CountryCode": ship_to.get("countryCode", "US"),
+            "CountryCode": ship_to.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
         },
     }
     if ship_to.get("attentionName"):
@@ -678,17 +686,17 @@ def build_ups_api_payload(
     for pkg in packages:
         ups_pkg: dict[str, Any] = {
             "Packaging": {
-                "Code": pkg.get("packagingType", "02"),
+                "Code": pkg.get("packagingType", DEFAULT_PACKAGING_CODE.value),
             },
             "PackageWeight": {
-                "UnitOfMeasurement": {"Code": "LBS"},
-                "Weight": str(float(pkg.get("weight", 1.0))),
+                "UnitOfMeasurement": {"Code": UPS_WEIGHT_UNIT},
+                "Weight": str(float(pkg.get("weight", DEFAULT_PACKAGE_WEIGHT_LBS))),
             },
         }
         # Dimensions (all three required if any present)
         if all(pkg.get(d) for d in ("length", "width", "height")):
             ups_pkg["Dimensions"] = {
-                "UnitOfMeasurement": {"Code": "IN"},
+                "UnitOfMeasurement": {"Code": UPS_DIMENSION_UNIT},
                 "Length": str(pkg["length"]),
                 "Width": str(pkg["width"]),
                 "Height": str(pkg["height"]),
@@ -701,7 +709,7 @@ def build_ups_api_payload(
                 "DeclaredValue"
             ] = {
                 "Type": {"Code": "01"},  # EVS (Enhanced Value Shipment)
-                "CurrencyCode": "USD",
+                "CurrencyCode": DEFAULT_CURRENCY_CODE,
                 "MonetaryValue": str(pkg["declaredValue"]),
             }
         ups_packages.append(ups_pkg)
@@ -736,12 +744,12 @@ def build_ups_api_payload(
     if reference and ups_packages:
         refs = []
         refs.append({
-            "Value": str(reference)[:35],  # UPS max 35 chars
+            "Value": str(reference)[:UPS_REFERENCE_MAX_LEN],
         })
         ref2 = simplified.get("reference2")
         if ref2:
             refs.append({
-                "Value": str(ref2)[:35],
+                "Value": str(ref2)[:UPS_REFERENCE_MAX_LEN],
             })
         ups_packages[0]["ReferenceNumber"] = refs
 
@@ -790,8 +798,11 @@ def build_ups_api_payload(
             "Request": {"RequestOption": "nonvalidate"},
             "Shipment": shipment,
             "LabelSpecification": {
-                "LabelImageFormat": {"Code": "PDF"},
-                "LabelStockSize": {"Height": "6", "Width": "4"},
+                "LabelImageFormat": {"Code": DEFAULT_LABEL_FORMAT},
+                "LabelStockSize": {
+                    "Height": DEFAULT_LABEL_HEIGHT,
+                    "Width": DEFAULT_LABEL_WIDTH,
+                },
             },
         }
     }
@@ -819,7 +830,7 @@ def build_ups_rate_payload(
     shipper = simplified.get("shipper", {})
     ship_to = simplified.get("shipTo", {})
     packages = simplified.get("packages", [])
-    service_code = simplified.get("serviceCode", "03")
+    service_code = simplified.get("serviceCode", ServiceCode.GROUND.value)
 
     ups_shipper: dict[str, Any] = {
         "Name": shipper.get("name", ""),
@@ -829,7 +840,7 @@ def build_ups_rate_payload(
             "City": shipper.get("city", ""),
             "StateProvinceCode": shipper.get("stateProvinceCode", ""),
             "PostalCode": shipper.get("postalCode", ""),
-            "CountryCode": shipper.get("countryCode", "US"),
+            "CountryCode": shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
         },
     }
 
@@ -838,7 +849,7 @@ def build_ups_rate_payload(
         "City": ship_to.get("city", ""),
         "StateProvinceCode": ship_to.get("stateProvinceCode", ""),
         "PostalCode": ship_to.get("postalCode", ""),
-        "CountryCode": ship_to.get("countryCode", "US"),
+        "CountryCode": ship_to.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
     }
     # Residential indicator affects rate (residential surcharge)
     if simplified.get("residential"):
@@ -852,15 +863,15 @@ def build_ups_rate_payload(
     ups_packages = []
     for pkg in packages:
         ups_pkg: dict[str, Any] = {
-            "PackagingType": {"Code": pkg.get("packagingType", "02")},
+            "PackagingType": {"Code": pkg.get("packagingType", DEFAULT_PACKAGING_CODE.value)},
             "PackageWeight": {
-                "UnitOfMeasurement": {"Code": "LBS"},
-                "Weight": str(float(pkg.get("weight", 1.0))),
+                "UnitOfMeasurement": {"Code": UPS_WEIGHT_UNIT},
+                "Weight": str(float(pkg.get("weight", DEFAULT_PACKAGE_WEIGHT_LBS))),
             },
         }
         if all(pkg.get(d) for d in ("length", "width", "height")):
             ups_pkg["Dimensions"] = {
-                "UnitOfMeasurement": {"Code": "IN"},
+                "UnitOfMeasurement": {"Code": UPS_DIMENSION_UNIT},
                 "Length": str(pkg["length"]),
                 "Width": str(pkg["width"]),
                 "Height": str(pkg["height"]),
@@ -871,7 +882,7 @@ def build_ups_rate_payload(
                 "DeclaredValue"
             ] = {
                 "Type": {"Code": "01"},
-                "CurrencyCode": "USD",
+                "CurrencyCode": DEFAULT_CURRENCY_CODE,
                 "MonetaryValue": str(pkg["declaredValue"]),
             }
         ups_packages.append(ups_pkg)

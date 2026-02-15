@@ -25,6 +25,7 @@ from src.services.column_mapping import (
 from src.services.ups_service_codes import (
     SERVICE_ALIASES,
     SERVICE_CODE_NAMES,
+    ServiceCode,
     translate_service_name,
 )
 from src.services.job_service import JobService
@@ -350,7 +351,7 @@ def _enrich_preview_rows_from_map(
     for row in preview_rows:
         od = row_map.get(row.get("row_number", -1), {})
         row["service"] = SERVICE_CODE_NAMES.get(
-            od.get("service_code", "03"),
+            od.get("service_code", ServiceCode.GROUND.value),
             "UPS Ground",
         )
         row["order_data"] = od

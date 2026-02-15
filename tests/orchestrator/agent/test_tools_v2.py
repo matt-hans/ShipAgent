@@ -343,7 +343,7 @@ async def test_ship_command_pipeline_success_with_where_clause_none():
         patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch("src.services.batch_engine.BatchEngine") as MockEngine,
         patch(
-            "src.services.ups_payload_builder.build_shipper_from_env",
+            "src.services.ups_payload_builder.build_shipper",
             return_value={"name": "Store"},
         ),
         patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
@@ -404,7 +404,7 @@ async def test_ship_command_pipeline_applies_explicit_service_override_to_rows()
         patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch("src.services.batch_engine.BatchEngine") as MockEngine,
         patch(
-            "src.services.ups_payload_builder.build_shipper_from_env",
+            "src.services.ups_payload_builder.build_shipper",
             return_value={"name": "Store"},
         ),
         patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
@@ -475,7 +475,7 @@ async def test_ship_command_pipeline_ignores_implicit_service_code_default():
         patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch("src.services.batch_engine.BatchEngine") as MockEngine,
         patch(
-            "src.services.ups_payload_builder.build_shipper_from_env",
+            "src.services.ups_payload_builder.build_shipper",
             return_value={"name": "Store"},
         ),
         patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
@@ -534,7 +534,7 @@ async def test_ship_command_pipeline_create_rows_failure_deletes_job():
         patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
         patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch(
-            "src.services.ups_payload_builder.build_shipper_from_env",
+            "src.services.ups_payload_builder.build_shipper",
             return_value={"name": "Store"},
         ),
         patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
@@ -581,7 +581,7 @@ async def test_ship_command_pipeline_preview_failure_preserves_job_and_returns_j
         patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch("src.services.batch_engine.BatchEngine") as MockEngine,
         patch(
-            "src.services.ups_payload_builder.build_shipper_from_env",
+            "src.services.ups_payload_builder.build_shipper",
             return_value={"name": "Store"},
         ),
         patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
@@ -755,7 +755,7 @@ async def test_ship_command_pipeline_uses_emit_preview_ready_helper():
         patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
         patch("src.services.batch_engine.BatchEngine") as MockEngine,
         patch(
-            "src.services.ups_payload_builder.build_shipper_from_env",
+            "src.services.ups_payload_builder.build_shipper",
             return_value={"name": "Store"},
         ),
         patch(

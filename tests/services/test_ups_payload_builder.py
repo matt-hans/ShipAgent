@@ -5,11 +5,11 @@ from typing import Any
 import pytest
 
 from src.services.ups_payload_builder import (
+    build_international_forms,
     build_packages,
     build_ship_to,
     build_shipment_request,
-    build_shipper_from_env,
-    build_shipper_from_shop,
+    build_shipper,
     get_service_code,
     normalize_phone,
     normalize_zip,
@@ -104,7 +104,7 @@ class TestTruncateAddress:
 
 
 class TestBuildShipperFromShop:
-    """Test shipper building from Shopify shop data."""
+    """Test shipper building from Shopify shop data overlay."""
 
     def test_builds_shipper_from_full_shop_info(self):
         """Test complete shipper from full shop data."""
@@ -119,7 +119,7 @@ class TestBuildShipperFromShop:
             "country_code": "US",
         }
 
-        shipper = build_shipper_from_shop(shop_info)
+        shipper = build_shipper(shop_info)
 
         assert shipper["name"] == "My Store"
         assert shipper["phone"] == "5551234567"
@@ -130,21 +130,42 @@ class TestBuildShipperFromShop:
         assert shipper["postalCode"] == "90001"
         assert shipper["countryCode"] == "US"
 
-    def test_handles_missing_fields(self):
-        """Test shipper falls back to env vars for missing required fields."""
+    def test_handles_missing_fields_with_env_vars(self):
+        """Test shipper falls back to env vars for missing shop fields."""
+        import os
+        from unittest.mock import patch
+
         shop_info = {
             "name": "My Store",
             "city": "Los Angeles",
         }
 
-        shipper = build_shipper_from_shop(shop_info)
+        with patch.dict(os.environ, {"SHIPPER_ADDRESS1": "456 Oak Ave"}, clear=True):
+            shipper = build_shipper(shop_info)
 
         assert shipper["name"] == "My Store"
         assert shipper["phone"] == ""  # No phone provided, no placeholder
-        # Missing addressLine1 falls back to env var (SHIPPER_ADDRESS1 or default)
-        assert shipper["addressLine1"] != ""
-        assert shipper["city"] == "Los Angeles"  # Provided
+        assert shipper["addressLine1"] == "456 Oak Ave"  # From env var
+        assert shipper["city"] == "Los Angeles"  # Provided by shop
         assert shipper["countryCode"] == "US"  # Default
+
+    def test_handles_missing_fields_no_env_vars(self):
+        """Test shipper returns empty strings when no shop or env data."""
+        import os
+        from unittest.mock import patch
+
+        shop_info = {
+            "name": "My Store",
+            "city": "Los Angeles",
+        }
+
+        with patch.dict(os.environ, {}, clear=True):
+            shipper = build_shipper(shop_info)
+
+        assert shipper["name"] == "My Store"
+        assert shipper["addressLine1"] == ""  # No dummy address
+        assert shipper["city"] == "Los Angeles"
+        assert shipper["countryCode"] == "US"  # Default origin country
 
     def test_truncates_long_names(self):
         """Test long store names are truncated."""
@@ -152,7 +173,7 @@ class TestBuildShipperFromShop:
             "name": "The Absolutely Incredibly Long Store Name That Exceeds UPS Limits",
         }
 
-        shipper = build_shipper_from_shop(shop_info)
+        shipper = build_shipper(shop_info)
 
         assert len(shipper["name"]) <= 35
 
@@ -176,7 +197,7 @@ class TestBuildShipperFromEnv:
         }
 
         with patch.dict(os.environ, env_vars):
-            shipper = build_shipper_from_env()
+            shipper = build_shipper()
 
         assert shipper["name"] == "Test Shipper"
         assert shipper["phone"] == "5559998888"
@@ -186,19 +207,20 @@ class TestBuildShipperFromEnv:
         assert shipper["postalCode"] == "94102"
         assert shipper["countryCode"] == "US"
 
-    def test_uses_defaults_when_missing(self):
-        """Test default values when env vars not set."""
+    def test_returns_empty_fields_when_missing(self):
+        """Test empty strings (no dummy addresses) when env vars not set."""
         import os
         from unittest.mock import patch
 
         with patch.dict(os.environ, {}, clear=True):
-            shipper = build_shipper_from_env()
+            shipper = build_shipper()
 
-        assert shipper["name"] == "ShipAgent Default"
-        assert shipper["addressLine1"] == "123 Main St"
-        assert shipper["city"] == "Los Angeles"
-        assert shipper["stateProvinceCode"] == "CA"
-        assert shipper["postalCode"] == "90001"
+        assert shipper["name"] == ""
+        assert shipper["addressLine1"] == ""
+        assert shipper["city"] == ""
+        assert shipper["stateProvinceCode"] == ""
+        assert shipper["postalCode"] == ""
+        assert shipper["countryCode"] == "US"  # Only country has a default
 
 
 class TestBuildShipTo:
@@ -1260,3 +1282,372 @@ class TestShopifyWeightConversion:
         order_data = {"ship_to_name": "John"}
         packages = build_packages(order_data)
         assert packages[0]["weight"] == 1.0
+
+
+# ── Tests for InternationalForms Contacts.SoldTo ──
+
+
+class TestInternationalFormsSoldToContacts:
+    """Test Contacts.SoldTo injection in InternationalForms."""
+
+    @pytest.fixture()
+    def sample_commodities(self) -> list[dict]:
+        """Return a minimal commodity list for tests."""
+        return [{
+            "description": "T-Shirt",
+            "commodity_code": "6109100010",
+            "origin_country": "US",
+            "quantity": 2,
+            "unit_value": "25.00",
+        }]
+
+    @pytest.fixture()
+    def sample_sold_to(self) -> dict[str, str]:
+        """Return a sample sold_to (recipient) dict."""
+        return {
+            "name": "Jane Smith",
+            "attentionName": "Acme Corp",
+            "phone": "4165551234",
+            "addressLine1": "100 Queen St W",
+            "addressLine2": "Suite 400",
+            "city": "Toronto",
+            "stateProvinceCode": "ON",
+            "postalCode": "M5H 2N2",
+            "countryCode": "CA",
+        }
+
+    def test_sold_to_included_when_provided(
+        self, sample_commodities: list[dict], sample_sold_to: dict[str, str]
+    ):
+        """Test Contacts.SoldTo is present when sold_to is passed."""
+        forms = build_international_forms(
+            commodities=sample_commodities, sold_to=sample_sold_to
+        )
+        assert "Contacts" in forms
+        assert "SoldTo" in forms["Contacts"]
+
+    def test_sold_to_name_and_attention(
+        self, sample_commodities: list[dict], sample_sold_to: dict[str, str]
+    ):
+        """Test SoldTo Name and AttentionName populated correctly."""
+        forms = build_international_forms(
+            commodities=sample_commodities, sold_to=sample_sold_to
+        )
+        sold = forms["Contacts"]["SoldTo"]
+        assert sold["Name"] == "Jane Smith"
+        assert sold["AttentionName"] == "Acme Corp"
+
+    def test_sold_to_address_structure(
+        self, sample_commodities: list[dict], sample_sold_to: dict[str, str]
+    ):
+        """Test SoldTo Address has required UPS fields."""
+        forms = build_international_forms(
+            commodities=sample_commodities, sold_to=sample_sold_to
+        )
+        addr = forms["Contacts"]["SoldTo"]["Address"]
+        assert addr["AddressLine"] == ["100 Queen St W", "Suite 400"]
+        assert addr["City"] == "Toronto"
+        assert addr["StateProvinceCode"] == "ON"
+        assert addr["PostalCode"] == "M5H 2N2"
+        assert addr["CountryCode"] == "CA"
+
+    def test_sold_to_phone_included(
+        self, sample_commodities: list[dict], sample_sold_to: dict[str, str]
+    ):
+        """Test SoldTo Phone is included when provided."""
+        forms = build_international_forms(
+            commodities=sample_commodities, sold_to=sample_sold_to
+        )
+        assert forms["Contacts"]["SoldTo"]["Phone"]["Number"] == "4165551234"
+
+    def test_sold_to_phone_omitted_when_empty(
+        self, sample_commodities: list[dict], sample_sold_to: dict[str, str]
+    ):
+        """Test SoldTo Phone is omitted when phone is empty."""
+        sample_sold_to.pop("phone")
+        forms = build_international_forms(
+            commodities=sample_commodities, sold_to=sample_sold_to
+        )
+        assert "Phone" not in forms["Contacts"]["SoldTo"]
+
+    def test_attention_name_defaults_to_name(
+        self, sample_commodities: list[dict]
+    ):
+        """Test AttentionName falls back to Name when not provided."""
+        sold_to = {
+            "name": "Bob Jones",
+            "addressLine1": "1 Main St",
+            "city": "Vancouver",
+            "stateProvinceCode": "BC",
+            "postalCode": "V6B 1A1",
+            "countryCode": "CA",
+        }
+        forms = build_international_forms(
+            commodities=sample_commodities, sold_to=sold_to
+        )
+        sold = forms["Contacts"]["SoldTo"]
+        assert sold["AttentionName"] == "Bob Jones"
+
+    def test_no_contacts_when_sold_to_is_none(
+        self, sample_commodities: list[dict]
+    ):
+        """Test no Contacts section when sold_to is not provided."""
+        forms = build_international_forms(commodities=sample_commodities)
+        assert "Contacts" not in forms
+
+    def test_sold_to_name_truncated_to_35(
+        self, sample_commodities: list[dict]
+    ):
+        """Test SoldTo Name is truncated to 35 chars (UPS limit)."""
+        sold_to = {
+            "name": "A" * 50,
+            "addressLine1": "1 Main St",
+            "city": "Toronto",
+            "stateProvinceCode": "ON",
+            "postalCode": "M5H 2N2",
+            "countryCode": "CA",
+        }
+        forms = build_international_forms(
+            commodities=sample_commodities, sold_to=sold_to
+        )
+        assert len(forms["Contacts"]["SoldTo"]["Name"]) == 35
+
+    def test_address_line2_omitted_when_empty(
+        self, sample_commodities: list[dict]
+    ):
+        """Test AddressLine only has non-empty entries."""
+        sold_to = {
+            "name": "Test",
+            "addressLine1": "1 Main St",
+            "city": "Toronto",
+            "stateProvinceCode": "ON",
+            "postalCode": "M5H 2N2",
+            "countryCode": "CA",
+        }
+        forms = build_international_forms(
+            commodities=sample_commodities, sold_to=sold_to
+        )
+        assert forms["Contacts"]["SoldTo"]["Address"]["AddressLine"] == ["1 Main St"]
+
+
+class TestBuildShipmentRequestSoldTo:
+    """Test build_shipment_request passes ship_to as sold_to for international."""
+
+    @pytest.fixture(autouse=True)
+    def _enable_us_ca_lane(self, monkeypatch: pytest.MonkeyPatch):
+        """Enable US-CA international lane for all tests in this class."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "US-CA")
+
+    def test_international_shipment_has_sold_to(self):
+        """Test US→CA shipment includes Contacts.SoldTo in internationalForms."""
+        order_data = {
+            "ship_to_name": "Marie Tremblay",
+            "ship_to_phone": "514-555-1234",
+            "ship_to_address1": "200 Rue Sainte-Catherine",
+            "ship_to_city": "Montreal",
+            "ship_to_state": "QC",
+            "ship_to_postal_code": "H2X 1L4",
+            "ship_to_country": "CA",
+            "weight": 2.0,
+            "service_code": "11",
+            "commodities": [{
+                "description": "Cotton T-Shirt",
+                "commodity_code": "6109100010",
+                "origin_country": "US",
+                "quantity": 3,
+                "unit_value": "20.00",
+            }],
+        }
+        shipper = {
+            "name": "Test Store",
+            "phone": "5559998888",
+            "addressLine1": "456 Oak Ave",
+            "city": "San Francisco",
+            "stateProvinceCode": "CA",
+            "postalCode": "94102",
+            "countryCode": "US",
+        }
+
+        request = build_shipment_request(order_data, shipper)
+
+        assert "internationalForms" in request
+        forms = request["internationalForms"]
+        assert "Contacts" in forms
+        sold = forms["Contacts"]["SoldTo"]
+        assert sold["Name"] == "Marie Tremblay"
+        assert sold["Address"]["City"] == "Montreal"
+        assert sold["Address"]["CountryCode"] == "CA"
+
+    def test_domestic_shipment_has_no_international_forms(self):
+        """Test US→US shipment does NOT include internationalForms."""
+        order_data = {
+            "ship_to_name": "John Doe",
+            "ship_to_address1": "123 Main St",
+            "ship_to_city": "Los Angeles",
+            "ship_to_state": "CA",
+            "ship_to_postal_code": "90001",
+            "ship_to_country": "US",
+            "weight": 2.0,
+        }
+        shipper = {
+            "name": "Test Store",
+            "addressLine1": "456 Oak Ave",
+            "city": "San Francisco",
+            "stateProvinceCode": "CA",
+            "postalCode": "94102",
+            "countryCode": "US",
+        }
+
+        request = build_shipment_request(order_data, shipper)
+
+        assert "internationalForms" not in request
+
+    def test_sold_to_phone_matches_ship_to(self):
+        """Test SoldTo phone comes from the ship_to (recipient) data."""
+        order_data = {
+            "ship_to_name": "Test Recipient",
+            "ship_to_phone": "416-555-9999",
+            "ship_to_address1": "100 King St",
+            "ship_to_city": "Toronto",
+            "ship_to_state": "ON",
+            "ship_to_postal_code": "M5H 1A1",
+            "ship_to_country": "CA",
+            "weight": 1.0,
+            "service_code": "11",
+            "commodities": [{
+                "description": "Widget",
+                "commodity_code": "8471300000",
+                "origin_country": "US",
+                "quantity": 1,
+                "unit_value": "50.00",
+            }],
+        }
+        shipper = {
+            "name": "Shipper",
+            "phone": "5551110000",
+            "addressLine1": "1 Elm St",
+            "city": "New York",
+            "stateProvinceCode": "NY",
+            "postalCode": "10001",
+            "countryCode": "US",
+        }
+
+        request = build_shipment_request(order_data, shipper)
+
+        sold = request["internationalForms"]["Contacts"]["SoldTo"]
+        assert sold["Phone"]["Number"] == "4165559999"
+
+
+# ── Tests for consolidated build_shipper ──
+
+
+class TestBuildShipper:
+    """Test unified build_shipper function."""
+
+    def test_no_env_vars_returns_empty_fields(self):
+        """Test no dummy addresses when env vars are missing."""
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {}, clear=True):
+            shipper = build_shipper()
+
+        assert shipper["name"] == ""
+        assert shipper["addressLine1"] == ""
+        assert shipper["city"] == ""
+        assert shipper["stateProvinceCode"] == ""
+        assert shipper["postalCode"] == ""
+        assert shipper["countryCode"] == "US"  # Only country has a default
+
+    def test_env_vars_populate_shipper(self):
+        """Test env vars are read correctly."""
+        import os
+        from unittest.mock import patch
+
+        env_vars = {
+            "SHIPPER_NAME": "Test Store",
+            "SHIPPER_PHONE": "555-888-7777",
+            "SHIPPER_ADDRESS1": "100 Oak Ave",
+            "SHIPPER_CITY": "Denver",
+            "SHIPPER_STATE": "CO",
+            "SHIPPER_ZIP": "80202",
+            "SHIPPER_COUNTRY": "US",
+        }
+
+        with patch.dict(os.environ, env_vars):
+            shipper = build_shipper()
+
+        assert shipper["name"] == "Test Store"
+        assert shipper["phone"] == "5558887777"
+        assert shipper["addressLine1"] == "100 Oak Ave"
+        assert shipper["city"] == "Denver"
+        assert shipper["stateProvinceCode"] == "CO"
+        assert shipper["postalCode"] == "80202"
+
+    def test_shop_info_overlays_env_vars(self):
+        """Test Shopify values override env vars."""
+        import os
+        from unittest.mock import patch
+
+        env_vars = {
+            "SHIPPER_NAME": "Env Store",
+            "SHIPPER_CITY": "San Francisco",
+        }
+        shop_info = {
+            "name": "Shopify Store",
+            "city": "Portland",
+            "province_code": "OR",
+            "zip": "97201",
+        }
+
+        with patch.dict(os.environ, env_vars, clear=True):
+            shipper = build_shipper(shop_info)
+
+        assert shipper["name"] == "Shopify Store"  # Shop overrides env
+        assert shipper["city"] == "Portland"  # Shop overrides env
+        assert shipper["stateProvinceCode"] == "OR"
+        assert shipper["postalCode"] == "97201"
+
+    def test_shop_info_does_not_override_with_empty(self):
+        """Test empty shop values don't override env vars."""
+        import os
+        from unittest.mock import patch
+
+        env_vars = {
+            "SHIPPER_NAME": "Env Store",
+            "SHIPPER_CITY": "San Francisco",
+        }
+        shop_info = {
+            "name": "",  # Empty — should NOT override
+            "city": "Portland",
+        }
+
+        with patch.dict(os.environ, env_vars, clear=True):
+            shipper = build_shipper(shop_info)
+
+        assert shipper["name"] == "Env Store"  # Empty shop value doesn't override
+        assert shipper["city"] == "Portland"  # Non-empty shop value does override
+
+    def test_shop_name_truncated(self):
+        """Test shop name is truncated to UPS max length."""
+        shop_info = {
+            "name": "A" * 50,
+        }
+        shipper = build_shipper(shop_info)
+        assert len(shipper["name"]) <= 35
+
+    def test_shop_phone_normalized(self):
+        """Test shop phone is normalized to digits."""
+        shop_info = {
+            "phone": "(555) 123-4567",
+        }
+        shipper = build_shipper(shop_info)
+        assert shipper["phone"] == "5551234567"
+
+    def test_shop_zip_normalized(self):
+        """Test shop zip is normalized."""
+        shop_info = {
+            "zip": "902101234",
+        }
+        shipper = build_shipper(shop_info)
+        assert shipper["postalCode"] == "90210-1234"

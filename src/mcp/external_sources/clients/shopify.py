@@ -152,7 +152,7 @@ class ShopifyClient(PlatformClient):
         Example:
             shop = await client.get_shop_info()
             if shop:
-                shipper = build_shipper_from_shop(shop)
+                shipper = build_shipper(shop)
         """
         if not self._authenticated:
             return None
