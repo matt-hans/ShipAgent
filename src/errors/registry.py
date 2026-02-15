@@ -128,6 +128,42 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         message_template="Shipment creation was cancelled: {ups_message}",
         remediation="Re-initiate the shipment when ready.",
     ),
+    # International shipping validation errors (E-2013 – E-2017)
+    "E-2013": ErrorCode(
+        code="E-2013",
+        category=ErrorCategory.VALIDATION,
+        title="Missing International Field",
+        message_template="Missing required international field: {field_name}",
+        remediation="Add the missing field to your source data or provide it during shipment creation.",
+    ),
+    "E-2014": ErrorCode(
+        code="E-2014",
+        category=ErrorCategory.VALIDATION,
+        title="Invalid HS Tariff Code",
+        message_template="Invalid HS tariff code: '{hs_code}'. Must be 6-10 digits.",
+        remediation="Check the harmonized system code against your country's tariff schedule.",
+    ),
+    "E-2015": ErrorCode(
+        code="E-2015",
+        category=ErrorCategory.VALIDATION,
+        title="Unsupported Shipping Lane",
+        message_template="Unsupported shipping lane: {origin} to {destination}.",
+        remediation="Currently supported lanes: US to CA, US to MX. Contact support for other destinations.",
+    ),
+    "E-2016": ErrorCode(
+        code="E-2016",
+        category=ErrorCategory.VALIDATION,
+        title="International Service Unavailable",
+        message_template="Service '{service}' is not available for {origin} to {destination}.",
+        remediation="Use one of the supported international services for this destination.",
+    ),
+    "E-2017": ErrorCode(
+        code="E-2017",
+        category=ErrorCategory.VALIDATION,
+        title="Currency Mismatch",
+        message_template="Currency mismatch: commodity uses '{commodity_currency}' but invoice uses '{invoice_currency}'.",
+        remediation="All commodity values must use the same currency as the invoice total.",
+    ),
     # UPS API errors (E-3xxx)
     "E-3001": ErrorCode(
         code="E-3001",
@@ -165,6 +201,13 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         title="UPS Unknown Error",
         message_template="UPS returned an unexpected error: {ups_message}",
         remediation="Contact support with error code E-3005 and the UPS message for assistance.",
+    ),
+    "E-3006": ErrorCode(
+        code="E-3006",
+        category=ErrorCategory.UPS_API,
+        title="Customs Validation Failed",
+        message_template="UPS customs validation failed: {ups_message}",
+        remediation="Review commodity descriptions, HS codes, and declared values for accuracy.",
     ),
     # System errors (E-4xxx)
     "E-4001": ErrorCode(
