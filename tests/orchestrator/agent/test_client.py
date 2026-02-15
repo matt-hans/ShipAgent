@@ -242,6 +242,26 @@ class TestOrchestrationAgentIntegration:
             await agent.stop()
 
 
+class TestStartTwiceErrorContext:
+    """Tests for enriched error message on double start."""
+
+    @pytest.mark.asyncio
+    async def test_start_twice_error_includes_context(self):
+        """RuntimeError from double start includes model, interactive flag, and uptime."""
+        agent = OrchestrationAgent(model="claude-haiku-4-5-20251001", interactive_shipping=True)
+        # Simulate started state without actually connecting
+        agent._started = True
+        agent._start_time = __import__("time").monotonic() - 10.0
+
+        with pytest.raises(RuntimeError) as exc_info:
+            await agent.start()
+
+        error_msg = str(exc_info.value)
+        assert "model=claude-haiku-4-5-20251001" in error_msg
+        assert "interactive=True" in error_msg
+        assert "uptime=" in error_msg
+
+
 class TestAgentGracefulShutdown:
     """Tests for graceful shutdown behavior."""
 

@@ -218,6 +218,26 @@ async def test_stop_session_agent_handles_errors():
     assert session.agent is None
 
 
+def test_session_terminating_defaults_false():
+    """Session's terminating flag defaults to False."""
+    session = AgentSession("test")
+    assert session.terminating is False
+
+
+def test_get_session_returns_none_for_unknown():
+    """get_session returns None for a session that doesn't exist."""
+    mgr = AgentSessionManager()
+    assert mgr.get_session("nonexistent") is None
+
+
+def test_get_session_returns_existing():
+    """get_session returns the session when it exists."""
+    mgr = AgentSessionManager()
+    created = mgr.get_or_create_session("sess-1")
+    fetched = mgr.get_session("sess-1")
+    assert fetched is created
+
+
 @pytest.mark.asyncio
 async def test_cancel_session_prewarm_task_is_idempotent():
     """cancel_session_prewarm_task is safe when missing."""

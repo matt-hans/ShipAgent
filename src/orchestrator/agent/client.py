@@ -27,6 +27,7 @@ Per CONTEXT.md:
 import asyncio
 import logging
 import os
+import time
 from collections.abc import AsyncGenerator
 from typing import Any, Optional
 
@@ -42,7 +43,7 @@ try:
         ToolUseBlock,
         create_sdk_mcp_server,
     )
-    from claude_agent_sdk.types import McpStdioServerConfig
+    from claude_agent_sdk.types import McpStdioServerConfig, StreamEvent
 except ModuleNotFoundError as exc:
     if exc.name != "claude_agent_sdk":
         raise
@@ -51,14 +52,6 @@ except ModuleNotFoundError as exc:
         "Start backend with ./scripts/start-backend.sh (project .venv), "
         "or install deps via .venv/bin/python -m pip install -e '.[dev]'."
     ) from exc
-
-# StreamEvent is available when include_partial_messages=True
-try:
-    from claude_agent_sdk.types import StreamEvent
-
-    _HAS_STREAM_EVENT = True
-except ImportError:
-    _HAS_STREAM_EVENT = False
 
 from src.orchestrator.agent.config import create_mcp_servers_config
 from src.orchestrator.agent.hooks import create_hook_matchers
@@ -161,6 +154,7 @@ class OrchestrationAgent:
         self._options = self._create_options(max_turns, permission_mode)
         self._client: Optional[ClaudeSDKClient] = None
         self._started = False
+        self._start_time: float | None = None
         self._last_turn_count = 0
 
     def _create_options(
@@ -210,7 +204,7 @@ class OrchestrationAgent:
                 interactive_shipping=self._interactive_shipping,
             ),
             # Enable real-time token streaming via StreamEvent
-            include_partial_messages=_HAS_STREAM_EVENT,
+            include_partial_messages=True,
             # Session settings
             permission_mode=permission_mode,  # type: ignore[arg-type]
             max_turns=max_turns,
@@ -223,7 +217,12 @@ class OrchestrationAgent:
             RuntimeError: If agent is already started.
         """
         if self._started:
-            raise RuntimeError("Agent already started")
+            elapsed = time.monotonic() - self._start_time if self._start_time else 0
+            raise RuntimeError(
+                f"Agent already started (model={self._model}, "
+                f"interactive={self._interactive_shipping}, "
+                f"uptime={elapsed:.1f}s)"
+            )
 
         logger.info("[OrchestrationAgent] Starting...")
 
@@ -231,6 +230,7 @@ class OrchestrationAgent:
         await self._client.connect()
 
         self._started = True
+        self._start_time = time.monotonic()
         logger.info("[OrchestrationAgent] Started successfully")
 
     async def process_command(self, user_input: str) -> str:
@@ -305,7 +305,7 @@ class OrchestrationAgent:
 
             async for message in self._client.receive_response():
                 # --- StreamEvent: real-time deltas (include_partial_messages) ---
-                if _HAS_STREAM_EVENT and isinstance(message, StreamEvent):
+                if isinstance(message, StreamEvent):
                     event = message.event
                     event_type = event.get("type")
 
@@ -434,6 +434,7 @@ class OrchestrationAgent:
                 )
 
         self._started = False
+        self._start_time = None
         self._client = None
         logger.info("[OrchestrationAgent] Stopped")
 

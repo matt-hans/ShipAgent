@@ -27,7 +27,7 @@ dependencies = [
     "jsonschema>=4.0.0",
     "jinja2>=3.0.0",
     # Claude Agent SDK
-    "claude-agent-sdk>=0.1.22",
+    "claude-agent-sdk>=0.1.22,<1",
     # Web interface dependencies
     "sse-starlette>=2.0.0",
     "pypdf>=4.0.0",

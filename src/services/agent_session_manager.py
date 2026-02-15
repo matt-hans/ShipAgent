@@ -36,6 +36,7 @@ class AgentSession:
         agent_source_hash: Hash of the data source used to build the agent's
             system prompt. If the data source changes, the agent is rebuilt.
         interactive_shipping: Whether interactive single-shipment mode is enabled.
+        terminating: Whether a DELETE request is in progress for this session.
         lock: Async lock serializing message processing for this session.
         prewarm_task: Optional best-effort background task for agent prewarm.
     """
@@ -52,6 +53,7 @@ class AgentSession:
         self.agent: Any = None  # OrchestrationAgent, set by conversations route
         self.agent_source_hash: str | None = None
         self.interactive_shipping: bool = False
+        self.terminating: bool = False
         self.lock = asyncio.Lock()
         self.prewarm_task: asyncio.Task[Any] | None = None
 
@@ -82,6 +84,17 @@ class AgentSessionManager:
     def __init__(self) -> None:
         """Initialize with no active sessions."""
         self._sessions: dict[str, AgentSession] = {}
+
+    def get_session(self, session_id: str) -> AgentSession | None:
+        """Get a session without auto-creating. Returns None if not found.
+
+        Args:
+            session_id: Unique conversation identifier.
+
+        Returns:
+            The AgentSession if it exists, None otherwise.
+        """
+        return self._sessions.get(session_id)
 
     def get_or_create_session(self, session_id: str) -> AgentSession:
         """Get an existing session or create a new one.

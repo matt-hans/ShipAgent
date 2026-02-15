@@ -4,7 +4,17 @@ Imports handler functions from submodules and assembles tool definition
 lists for the orchestration agent.
 """
 
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypedDict
+
+
+class ToolDefinition(TypedDict):
+    """Type-safe tool definition for the orchestration agent."""
+
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    handler: Callable[..., Awaitable[Any]]
 
 from src.orchestrator.agent.tools.core import EventEmitterBridge, _bind_bridge
 from src.orchestrator.agent.tools.data import (
@@ -31,7 +41,7 @@ from src.orchestrator.agent.tools.pipeline import (
 def get_all_tool_definitions(
     event_bridge: EventEmitterBridge | None = None,
     interactive_shipping: bool = False,
-) -> list[dict[str, Any]]:
+) -> list[ToolDefinition]:
     """Return all tool definitions for the orchestration agent.
 
     Each definition includes name, description, input_schema, and handler.

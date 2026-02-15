@@ -376,6 +376,39 @@ class TestMCPClientCallTool:
 # ---------------------------------------------------------------------------
 
 
+class TestMCPClientHealthCheck:
+    """Test check_health() diagnostic method."""
+
+    @pytest.mark.asyncio
+    async def test_check_health_true_when_connected(self):
+        """check_health returns True when session responds to list_tools."""
+        mock_session = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=[])
+
+        client = MCPClient(_make_server_params())
+        client._session = mock_session
+
+        assert await client.check_health() is True
+        mock_session.list_tools.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_check_health_false_when_no_session(self):
+        """check_health returns False when no session exists."""
+        client = MCPClient(_make_server_params())
+        assert await client.check_health() is False
+
+    @pytest.mark.asyncio
+    async def test_check_health_false_on_exception(self):
+        """check_health returns False when list_tools raises."""
+        mock_session = AsyncMock()
+        mock_session.list_tools = AsyncMock(side_effect=RuntimeError("broken"))
+
+        client = MCPClient(_make_server_params())
+        client._session = mock_session
+
+        assert await client.check_health() is False
+
+
 class TestDefaultIsRetryable:
     """Test _default_is_retryable patterns."""
 
