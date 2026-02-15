@@ -10,7 +10,7 @@
  */
 
 import * as React from 'react';
-import { cn } from '@/lib/utils';
+import { cn, formatTimeAgo } from '@/lib/utils';
 import {
   getSavedDataSources,
   reconnectSavedSource,
@@ -18,6 +18,7 @@ import {
   bulkDeleteSavedSources,
 } from '@/lib/api';
 import type { SavedDataSource, DataSourceInfo } from '@/types/api';
+import { SearchIcon, FileIcon, DatabaseIcon, TrashIcon, XIcon } from '@/components/ui/icons';
 
 interface RecentSourcesModalProps {
   open: boolean;
@@ -25,67 +26,7 @@ interface RecentSourcesModalProps {
   onReconnected: (info: DataSourceInfo) => void;
 }
 
-// --- Icons ---
-
-function SearchIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <circle cx="11" cy="11" r="8" />
-      <path d="M21 21l-4.35-4.35" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function FileIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" strokeLinecap="round" strokeLinejoin="round" />
-      <polyline points="14 2 14 8 20 8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function DatabaseIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <ellipse cx="12" cy="6" rx="8" ry="3" />
-      <path d="M4 6v6c0 1.657 3.582 3 8 3s8-1.343 8-3V6" />
-      <path d="M4 12v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6" />
-    </svg>
-  );
-}
-
-function TrashIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
-      <polyline points="3 6 5 6 21 6" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function XIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className={className}>
-      <line x1="18" y1="6" x2="6" y2="18" strokeLinecap="round" strokeLinejoin="round" />
-      <line x1="6" y1="6" x2="18" y2="18" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 // --- Helpers ---
-
-function formatTimeAgo(dateStr: string): string {
-  const diff = Date.now() - new Date(dateStr).getTime();
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-
-  if (days > 0) return `${days}d ago`;
-  if (hours > 0) return `${hours}h ago`;
-  if (minutes > 0) return `${minutes}m ago`;
-  return 'Just now';
-}
 
 function sourceIcon(type: string) {
   if (type === 'database') return <DatabaseIcon className="w-4 h-4 text-amber-400" />;

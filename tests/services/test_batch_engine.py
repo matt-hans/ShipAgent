@@ -262,12 +262,17 @@ class TestBatchEngineExecute:
         }
 
         with patch(
-            "src.services.data_source_service.DataSourceService.get_instance",
-        ) as mock_get_svc:
-            mock_ds = MagicMock()
-            mock_ds.get_source_info.return_value = MagicMock(source_type="csv")
-            mock_ds.write_back_batch = AsyncMock(return_value={"status": "success"})
-            mock_get_svc.return_value = mock_ds
+            "src.services.batch_engine.get_data_gateway",
+            new_callable=AsyncMock,
+        ) as mock_get_gw:
+            mock_gw = AsyncMock()
+            mock_gw.get_source_info.return_value = {"active": True, "source_type": "csv"}
+            mock_gw.write_back_batch.return_value = {
+                "success_count": 1,
+                "failure_count": 0,
+                "errors": [],
+            }
+            mock_get_gw.return_value = mock_gw
 
             result = await engine.execute(
                 job_id="job-1",
@@ -278,11 +283,11 @@ class TestBatchEngineExecute:
         assert result["successful"] == 1
         assert result["failed"] == 1
         assert result["write_back"]["status"] == "success"
-        mock_ds.write_back_batch.assert_awaited_once_with(
-            [
-                (1, "1Z999AA10123456784"),
-            ]
-        )
+        mock_gw.write_back_batch.assert_awaited_once()
+        call_args = mock_gw.write_back_batch.await_args[0][0]
+        assert 1 in call_args
+        assert call_args[1]["tracking_number"] == "1Z999AA10123456784"
+        assert "shipped_at" in call_args[1]
 
     async def test_batch_write_back_failure_does_not_lose_execution_results(
         self,
@@ -325,14 +330,17 @@ class TestBatchEngineExecute:
         }
 
         with patch(
-            "src.services.data_source_service.DataSourceService.get_instance",
-        ) as mock_get_svc:
-            mock_ds = MagicMock()
-            mock_ds.get_source_info.return_value = MagicMock(source_type="csv")
-            mock_ds.write_back_batch = AsyncMock(
-                return_value={"status": "error", "failed": 1},
-            )
-            mock_get_svc.return_value = mock_ds
+            "src.services.batch_engine.get_data_gateway",
+            new_callable=AsyncMock,
+        ) as mock_get_gw:
+            mock_gw = AsyncMock()
+            mock_gw.get_source_info.return_value = {"active": True, "source_type": "csv"}
+            mock_gw.write_back_batch.return_value = {
+                "success_count": 0,
+                "failure_count": 1,
+                "errors": [{"row_number": 1, "error": "write failed"}],
+            }
+            mock_get_gw.return_value = mock_gw
 
             result = await engine.execute(
                 job_id="job-1",
@@ -342,7 +350,7 @@ class TestBatchEngineExecute:
 
         assert result["successful"] == 1
         assert result["failed"] == 0
-        assert result["write_back"]["status"] == "error"
+        assert result["write_back"]["status"] == "partial"
 
 
 class TestBatchEnginePreview:

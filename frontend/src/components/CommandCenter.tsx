@@ -10,23 +10,19 @@ import { useConversation } from '@/hooks/useConversation';
 import type { Job, BatchPreview } from '@/types/api';
 import { LabelPreview } from '@/components/LabelPreview';
 import { JobDetailPanel } from '@/components/JobDetailPanel';
+import { SendIcon, StopIcon, EditIcon } from '@/components/ui/icons';
+import { PreviewCard, InteractivePreviewCard, type ConfirmOptions } from '@/components/command-center/PreviewCard';
+import { ProgressDisplay } from '@/components/command-center/ProgressDisplay';
+import { CompletionArtifact } from '@/components/command-center/CompletionArtifact';
+import { ToolCallChip } from '@/components/command-center/ToolCallChip';
 import {
   ActiveSourceBanner,
   InteractiveModeBanner,
-  InteractivePreviewCard,
-  CompletionArtifact,
-  EditIcon,
-  PreviewCard,
-  ProgressDisplay,
-  SendIcon,
-  StopIcon,
   SystemMessage,
-  ToolCallChip,
   TypingIndicator,
   UserMessage,
   WelcomeMessage,
-  type ConfirmOptions,
-} from '@/components/command-center/presentation';
+} from '@/components/command-center/messages';
 
 interface CommandCenterProps {
   activeJob: Job | null;

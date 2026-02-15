@@ -5,15 +5,10 @@
 import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
 import type { Job } from '@/types/api';
-import {
-  ChevronIcon,
-  DataSourceIcon,
-  DataSourceSection,
-  HardDriveIcon,
-  HistoryIcon,
-  JobHistorySection,
-  ShopifyIcon,
-} from '@/components/sidebar/panels';
+import { ChevronIcon, HardDriveIcon, HistoryIcon } from '@/components/ui/icons';
+import { ShopifyIcon, DataSourceIcon } from '@/components/ui/brand-icons';
+import { DataSourceSection } from '@/components/sidebar/DataSourcePanel';
+import { JobHistorySection } from '@/components/sidebar/JobHistoryPanel';
 
 interface SidebarProps {
   collapsed: boolean;
