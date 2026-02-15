@@ -17,11 +17,15 @@ class ServiceCode(str, Enum):
     NEXT_DAY_AIR = "01"
     SECOND_DAY_AIR = "02"
     GROUND = "03"
+    WORLDWIDE_EXPRESS = "07"
+    WORLDWIDE_EXPEDITED = "08"
     UPS_STANDARD = "11"
     THREE_DAY_SELECT = "12"
     NEXT_DAY_AIR_SAVER = "13"
     NEXT_DAY_AIR_EARLY = "14"
+    WORLDWIDE_EXPRESS_PLUS = "54"
     SECOND_DAY_AIR_AM = "59"
+    WORLDWIDE_SAVER = "65"
 
 
 # ---------------------------------------------------------------------------
@@ -70,9 +74,25 @@ SERVICE_ALIASES: dict[str, ServiceCode] = {
     "second day air am": ServiceCode.SECOND_DAY_AIR_AM,
     # UPS Standard (primarily Canada/Mexico)
     "ups standard": ServiceCode.UPS_STANDARD,
-    # NOTE: bare "standard" is intentionally aliased — the payload builder's
-    # resolve_service_code already mapped it, and column_mapping did too.
-    "standard": ServiceCode.UPS_STANDARD,
+    # NOTE: bare "standard" is intentionally NOT aliased — it's ambiguous
+    # ("standard shipping" = Ground vs "UPS Standard" = code 11 international).
+    # Users must say "ups standard" to get code 11.
+    # Worldwide Express
+    "worldwide express": ServiceCode.WORLDWIDE_EXPRESS,
+    "ups worldwide express": ServiceCode.WORLDWIDE_EXPRESS,
+    "international express": ServiceCode.WORLDWIDE_EXPRESS,
+    # Worldwide Expedited
+    "worldwide expedited": ServiceCode.WORLDWIDE_EXPEDITED,
+    "ups worldwide expedited": ServiceCode.WORLDWIDE_EXPEDITED,
+    # Worldwide Express Plus
+    "worldwide express plus": ServiceCode.WORLDWIDE_EXPRESS_PLUS,
+    "ups worldwide express plus": ServiceCode.WORLDWIDE_EXPRESS_PLUS,
+    "express plus": ServiceCode.WORLDWIDE_EXPRESS_PLUS,
+    # Worldwide Saver
+    "worldwide saver": ServiceCode.WORLDWIDE_SAVER,
+    "ups worldwide saver": ServiceCode.WORLDWIDE_SAVER,
+    # International Standard (alias for UPS Standard code 11)
+    "international standard": ServiceCode.UPS_STANDARD,
 }
 
 # Reverse mapping: code value → ServiceCode enum member
@@ -83,11 +103,15 @@ SERVICE_CODE_NAMES: dict[str, str] = {
     "01": "UPS Next Day Air",
     "02": "UPS 2nd Day Air",
     "03": "UPS Ground",
+    "07": "UPS Worldwide Express",
+    "08": "UPS Worldwide Expedited",
     "11": "UPS Standard",
     "12": "UPS 3 Day Select",
     "13": "UPS Next Day Air Saver",
     "14": "UPS Next Day Air Early",
+    "54": "UPS Worldwide Express Plus",
     "59": "UPS 2nd Day Air A.M.",
+    "65": "UPS Worldwide Saver",
 }
 
 # Auto-derived string-value alias map (for column_mapping compatibility)

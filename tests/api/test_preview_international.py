@@ -6,7 +6,7 @@ import uuid
 from fastapi.testclient import TestClient
 
 from src.api.main import app
-from src.api.routes.preview import SERVICE_CODE_NAMES
+from src.services.ups_service_codes import SERVICE_CODE_NAMES
 from src.api.schemas import PreviewRowResponse, BatchPreviewResponse
 from src.db.connection import get_db
 from src.db.models import Job, JobRow
