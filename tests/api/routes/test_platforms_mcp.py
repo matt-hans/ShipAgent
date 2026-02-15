@@ -4,6 +4,8 @@ Uses TestClient (FastAPI) with patched gateway to verify actual route wiring,
 not just mock attribute checks.
 """
 
+import os
+
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -119,3 +121,86 @@ class TestPlatformRoutesUseGateway:
         assert response.status_code == 200
         data = response.json()
         assert data["count"] == 1
+
+
+class TestShopifyEnvStatusUsesGateway:
+    """Verify env-status route fetches shop info via gateway, not direct HTTP."""
+
+    @patch("src.api.routes.platforms.get_external_sources_client")
+    @pytest.mark.asyncio
+    async def test_env_status_uses_get_shop_info(self, mock_get):
+        """GET /platforms/shopify/env-status should call get_shop_info via gateway."""
+        from fastapi.testclient import TestClient
+        from src.api.main import app
+
+        mock_client = AsyncMock()
+        mock_client.connect_platform = AsyncMock(return_value={
+            "success": True, "platform": "shopify", "status": "connected"
+        })
+        mock_client.get_shop_info = AsyncMock(return_value={
+            "success": True,
+            "platform": "shopify",
+            "shop": {"name": "My Test Store"},
+        })
+        mock_get.return_value = mock_client
+
+        with patch.dict(os.environ, {
+            "SHOPIFY_ACCESS_TOKEN": "shpat_test",
+            "SHOPIFY_STORE_DOMAIN": "test.myshopify.com",
+        }):
+            client = TestClient(app)
+            response = client.get("/api/v1/platforms/shopify/env-status")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["configured"] is True
+        assert data["valid"] is True
+        assert data["store_name"] == "My Test Store"
+        mock_client.get_shop_info.assert_awaited_once_with("shopify")
+
+    @patch("src.api.routes.platforms.get_external_sources_client")
+    @pytest.mark.asyncio
+    async def test_env_status_handles_shop_info_failure(self, mock_get):
+        """env-status should still succeed when get_shop_info fails."""
+        from fastapi.testclient import TestClient
+        from src.api.main import app
+
+        mock_client = AsyncMock()
+        mock_client.connect_platform = AsyncMock(return_value={
+            "success": True, "platform": "shopify", "status": "connected"
+        })
+        mock_client.get_shop_info = AsyncMock(return_value={
+            "success": False,
+            "platform": "shopify",
+            "error": "Not connected",
+        })
+        mock_get.return_value = mock_client
+
+        with patch.dict(os.environ, {
+            "SHOPIFY_ACCESS_TOKEN": "shpat_test",
+            "SHOPIFY_STORE_DOMAIN": "test.myshopify.com",
+        }):
+            client = TestClient(app)
+            response = client.get("/api/v1/platforms/shopify/env-status")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["configured"] is True
+        assert data["valid"] is True
+        assert data["store_name"] is None  # Graceful degradation
+
+    def test_env_status_without_credentials(self):
+        """env-status should return configured=False when env vars are missing."""
+        from fastapi.testclient import TestClient
+        from src.api.main import app
+
+        with patch.dict(os.environ, {}, clear=True):
+            # Explicitly unset the keys
+            os.environ.pop("SHOPIFY_ACCESS_TOKEN", None)
+            os.environ.pop("SHOPIFY_STORE_DOMAIN", None)
+            client = TestClient(app)
+            response = client.get("/api/v1/platforms/shopify/env-status")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["configured"] is False

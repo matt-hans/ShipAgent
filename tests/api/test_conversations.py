@@ -44,8 +44,8 @@ class TestCreateConversation:
 
         with (
             patch(
-                "src.services.gateway_provider.get_data_gateway",
-                new=AsyncMock(return_value=mock_gw),
+                "src.services.gateway_provider.get_data_gateway_if_connected",
+                return_value=mock_gw,
             ),
             patch(
                 "src.api.routes.conversations.asyncio.create_task",
@@ -73,8 +73,8 @@ class TestCreateConversation:
 
         with (
             patch(
-                "src.services.gateway_provider.get_data_gateway",
-                new=AsyncMock(return_value=mock_gw),
+                "src.services.gateway_provider.get_data_gateway_if_connected",
+                return_value=mock_gw,
             ),
             patch(
                 "src.api.routes.conversations.asyncio.create_task",

@@ -7,7 +7,11 @@ context management.
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.mcp.external_sources.tools import connect_platform, disconnect_platform
+from src.mcp.external_sources.tools import (
+    connect_platform,
+    disconnect_platform,
+    get_shop_info,
+)
 
 
 @pytest.fixture
@@ -150,3 +154,61 @@ async def test_disconnect_platform_no_close_method(mock_ctx):
     result = await disconnect_platform(platform="shopify", ctx=mock_ctx)
 
     assert result["success"] is True
+
+
+# -- get_shop_info tests --
+
+
+@pytest.mark.asyncio
+async def test_get_shop_info_returns_shop_data(mock_ctx):
+    """get_shop_info should return shop metadata from connected client."""
+    mock_client = AsyncMock()
+    mock_client.get_shop_info = AsyncMock(return_value={
+        "name": "Test Store",
+        "address1": "123 Main St",
+        "city": "Springfield",
+        "province_code": "IL",
+        "zip": "62701",
+        "country_code": "US",
+    })
+    mock_ctx.request_context.lifespan_context["clients"]["shopify"] = mock_client
+
+    result = await get_shop_info(platform="shopify", ctx=mock_ctx)
+
+    assert result["success"] is True
+    assert result["shop"]["name"] == "Test Store"
+    mock_client.get_shop_info.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_get_shop_info_not_connected(mock_ctx):
+    """get_shop_info should return error if platform not connected."""
+    result = await get_shop_info(platform="shopify", ctx=mock_ctx)
+
+    assert result["success"] is False
+    assert "not connected" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_shop_info_unsupported_platform(mock_ctx):
+    """get_shop_info should return error for platforms without get_shop_info."""
+    mock_client = MagicMock(spec=[])  # No get_shop_info
+    mock_ctx.request_context.lifespan_context["clients"]["woocommerce"] = mock_client
+
+    result = await get_shop_info(platform="woocommerce", ctx=mock_ctx)
+
+    assert result["success"] is False
+    assert "not supported" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_get_shop_info_returns_none(mock_ctx):
+    """get_shop_info should handle None response from client."""
+    mock_client = AsyncMock()
+    mock_client.get_shop_info = AsyncMock(return_value=None)
+    mock_ctx.request_context.lifespan_context["clients"]["shopify"] = mock_client
+
+    result = await get_shop_info(platform="shopify", ctx=mock_ctx)
+
+    assert result["success"] is False
+    assert "Failed to retrieve" in result["error"]

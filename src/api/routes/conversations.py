@@ -370,7 +370,7 @@ async def create_conversation(
     Returns:
         CreateConversationResponse with session_id and effective mode.
     """
-    from src.services.gateway_provider import get_data_gateway
+    from src.services.gateway_provider import get_data_gateway_if_connected
 
     effective_payload = payload or CreateConversationRequest()
 
@@ -379,13 +379,17 @@ async def create_conversation(
     session.interactive_shipping = effective_payload.interactive_shipping
 
     # Best-effort prewarm when a source already exists; do not block response.
+    # Only check if the gateway is already connected — never open an MCP stdio
+    # connection during conversation creation (causes cancel-scope conflicts
+    # with FastAPI's request lifecycle).
     try:
-        gw = await get_data_gateway()
-        source_info = await gw.get_source_info()
-        if source_info is not None and not session.interactive_shipping:
-            session.prewarm_task = asyncio.create_task(
-                _prewarm_session_agent(session_id)
-            )
+        gw = get_data_gateway_if_connected()
+        if gw is not None:
+            source_info = await gw.get_source_info()
+            if source_info is not None and not session.interactive_shipping:
+                session.prewarm_task = asyncio.create_task(
+                    _prewarm_session_agent(session_id)
+                )
     except Exception as e:
         logger.warning("Failed to schedule agent prewarm for %s: %s", session_id, e)
 
