@@ -375,6 +375,8 @@ async def _execute_batch(job_id: str) -> None:
             await observer.on_batch_failed(
                 job_id, "E-3005", f"{failed} row(s) failed during execution",
                 successful + failed,
+                duties_taxes_cents=intl_duties,
+                international_row_count=intl_count,
             )
 
         logger.info(
