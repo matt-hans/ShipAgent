@@ -367,7 +367,9 @@ async def _execute_batch(job_id: str) -> None:
         # Emit final batch event
         if failed == 0:
             await observer.on_batch_completed(
-                job_id, len(rows), successful, total_cost
+                job_id, len(rows), successful, total_cost,
+                duties_taxes_cents=intl_duties,
+                international_row_count=intl_count,
             )
         else:
             await observer.on_batch_failed(

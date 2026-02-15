@@ -134,18 +134,25 @@ class BatchEngine:
         # Collect order IDs, bulk-fetch from MCP, then inject into order data.
         commodity_cache: dict[str, list[dict]] = {}
         if rows:
-            try:
-                order_ids = []
-                for r in rows:
+            order_ids = []
+            for r in rows:
+                try:
                     od = self._parse_order_data(r)
                     oid = od.get("order_id") or od.get("order_number")
                     if oid:
                         order_ids.append(str(oid))
-                if order_ids:
+                except Exception as e:
+                    logger.warning(
+                        "Skipping commodity lookup for row %s (parse error): %s",
+                        getattr(r, "row_number", "?"),
+                        e,
+                    )
+            if order_ids:
+                try:
                     raw = await self._get_commodities_bulk(order_ids)
                     commodity_cache = {str(k): v for k, v in raw.items()}
-            except Exception as e:
-                logger.warning("Commodity pre-hydration failed (non-critical): %s", e)
+                except Exception as e:
+                    logger.warning("Commodity bulk fetch failed (non-critical): %s", e)
 
         async def _rate_row(row: Any) -> None:
             """Rate a single row with concurrency control."""
@@ -329,18 +336,25 @@ class BatchEngine:
         # Pre-hydrate commodities for international rows that need them.
         exec_commodity_cache: dict[str, list[dict]] = {}
         if pending_rows:
-            try:
-                order_ids = []
-                for r in pending_rows:
+            order_ids = []
+            for r in pending_rows:
+                try:
                     od = self._parse_order_data(r)
                     oid = od.get("order_id") or od.get("order_number")
                     if oid:
                         order_ids.append(str(oid))
-                if order_ids:
+                except Exception as e:
+                    logger.warning(
+                        "Skipping commodity lookup for row %s (parse error): %s",
+                        getattr(r, "row_number", "?"),
+                        e,
+                    )
+            if order_ids:
+                try:
                     raw = await self._get_commodities_bulk(order_ids)
                     exec_commodity_cache = {str(k): v for k, v in raw.items()}
-            except Exception as e:
-                logger.warning("Commodity pre-hydration failed (non-critical): %s", e)
+                except Exception as e:
+                    logger.warning("Commodity bulk fetch failed (non-critical): %s", e)
 
         async def _process_row(row: Any) -> None:
             """Process a single row with concurrency control."""

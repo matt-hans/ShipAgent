@@ -291,6 +291,8 @@ export interface JobProgress {
   successful_rows: number;
   failed_rows: number;
   total_cost_cents: number | null;
+  total_duties_taxes_cents?: number | null;
+  international_row_count?: number;
 }
 
 // === SSE Event Types ===
@@ -343,6 +345,8 @@ export interface BatchCompletedEvent {
     total_rows: number;
     successful: number;
     total_cost_cents: number;
+    duties_taxes_cents?: number;
+    international_row_count?: number;
   };
 }
 

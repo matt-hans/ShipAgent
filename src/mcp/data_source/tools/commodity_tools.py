@@ -15,7 +15,7 @@ COMMODITIES_TABLE = "imported_commodities"
 
 # Required columns for commodity data
 COMMODITY_COLUMNS = [
-    ("order_id", "INTEGER"),
+    ("order_id", "VARCHAR"),
     ("description", "VARCHAR"),
     ("commodity_code", "VARCHAR"),
     ("origin_country", "VARCHAR(2)"),
@@ -52,7 +52,7 @@ def import_commodities_sync(
             (order_id, description, commodity_code, origin_country, quantity, unit_value, unit_of_measure)
             VALUES (?, ?, ?, ?, ?, ?, ?)""",
             [
-                comm["order_id"],
+                str(comm["order_id"]),
                 str(comm["description"])[:35],
                 str(comm.get("commodity_code", "")),
                 str(comm.get("origin_country", "")).upper(),
@@ -92,10 +92,12 @@ def get_commodities_bulk_sync(
     if not order_ids:
         return {}
 
-    placeholders = ", ".join("?" for _ in order_ids)
+    # Coerce to strings for consistent VARCHAR matching
+    str_ids = [str(oid) for oid in order_ids]
+    placeholders = ", ".join("?" for _ in str_ids)
     rows = db.execute(
         f"SELECT * FROM {COMMODITIES_TABLE} WHERE order_id IN ({placeholders})",
-        order_ids,
+        str_ids,
     ).fetchall()
 
     # Get column names
