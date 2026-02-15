@@ -2,91 +2,214 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Vision
+
+**ShipAgent** is an AI-native shipping automation platform. The goal is to build the most robust shipping agent ever — a system where a conversational AI agent is the primary orchestrator of all operations, with MCP servers as the connectivity layer and deterministic tools as the execution layer.
+
+**Everything flows through the agent.** The agent interprets intent, coordinates services, manages workflows, and drives every operation from data import to label generation. There is no "dumb API" path — every user interaction is an agent-driven conversation.
+
+### Development Philosophy
+
+**Agent-First Architecture:** The `OrchestrationAgent` (Claude Agent SDK) is the brain. All new features MUST integrate through the agent's tool system. Never build standalone API endpoints that bypass the agent loop. The agent decides what to do; tools execute deterministically.
+
+**MCP as Connectivity Layer:** External systems (UPS APIs, data sources, e-commerce platforms) are accessed exclusively through MCP servers over stdio transport. MCP provides a universal protocol for the agent to discover and invoke capabilities. New integrations MUST be built as MCP servers or MCP clients, never as direct SDK imports.
+
+**Deterministic Tool Execution:** The LLM acts as a *Configuration Engine*, not a *Data Pipe*. It interprets user intent and generates transformation rules (SQL filters, column mappings, service selections), but deterministic code executes those rules on actual shipping data. The LLM never touches row data directly. Tools validate inputs, enforce business rules, and produce auditable results.
+
+**No Work Outside the Agentic Process:** Every capability — data import, filtering, preview, execution, tracking, label recovery — is an agent tool. If it can't be expressed as a tool the agent calls, it doesn't belong in the system. This discipline ensures the agent remains the single source of truth for all operations.
+
+### Agent Design Invariants
+
+These rules are non-negotiable. Violating them creates architectural debt that undermines the agent:
+
+1. **No business logic in API routes.** Routes are thin HTTP adapters. They create sessions, forward messages, and stream events. All decision-making happens inside the agent loop or deterministic tools.
+2. **No direct UPS calls outside MCP.** All UPS operations — interactive and batch — go through MCP servers (stdio transport). Never import UPS libraries directly. The `UPSService` class was deleted for this reason.
+3. **No LLM calls outside the agent.** The `OrchestrationAgent` is the sole consumer of the Anthropic API. Services, tools, and routes never call the LLM directly. If something needs LLM reasoning, it must be the agent's job.
+4. **No tool that skips the approval gate.** Every path that creates shipments or spends money must route through a preview step with mandatory user confirmation. The agent NEVER auto-executes.
+5. **No global mutable state for MCP clients.** All MCP client lifecycles are managed through `gateway_provider.py` singletons with proper async locking. Never create ad-hoc MCP connections.
+6. **No mode leakage.** Batch tools are hidden from the interactive agent; interactive tools are hidden from the batch agent. Mode enforcement is structural (tool registry filtering) + behavioral (hooks that deny cross-mode calls).
+7. **No row data through the LLM.** The agent generates transformation rules (SQL filters, service selections, column mappings). Deterministic tools apply those rules to actual data. The LLM never sees or processes individual shipment rows.
+
 ## Project Status
 
-**Current Phase:** 7 - Web Interface (in progress, core chat UI operational)
+**Current Phase:** 7 - Web Interface (core chat UI operational, interactive shipping mode complete)
 **Phases 1-6:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent Integration, Batch Execution)
-**SDK Orchestration Redesign:** COMPLETE — Claude SDK is now the primary orchestration path via `/api/v1/conversations/` endpoints; legacy `/commands/` path deprecated
-**Test Count:** 777+ tests (746 unit + 31 integration + new conversation tests)
+**SDK Orchestration Redesign:** COMPLETE — Claude SDK is the sole orchestration path via `/api/v1/conversations/` endpoints
+**Interactive Shipping:** COMPLETE — ad-hoc single-shipment creation with preview gate and auto-populated shipper config
+**International Shipping:** IN PLANNING — design document for CA/MX phase exists, implementation pending
+**Test Count:** 1013+ test functions across 81 test files
 **UPS MCP Hybrid:** COMPLETE — agent uses ups-mcp as stdio MCP server for interactive tools; BatchEngine uses UPSMCPClient (programmatic MCP over stdio) for deterministic batch execution
-
-## Project Overview
-
-**ShipAgent** is a natural language interface for batch shipment processing. Users describe what they want to ship in plain English ("Ship all California orders from today's spreadsheet using UPS Ground"), and the system handles parsing intent, extracting data, validating against carrier schemas, and executing shipments with full audit trails.
-
-**Core Design Principle:** The LLM acts as a *Configuration Engine*, not a *Data Pipe*. It interprets user intent and generates transformation rules, but deterministic code executes those rules on actual shipping data. The LLM never touches row data directly.
 
 ## Key Capabilities (Implemented)
 
-- Natural language commands for shipment creation
-- Data source support: CSV, Excel (.xlsx), PostgreSQL/MySQL databases, Shopify (via env auto-detect)
-- UPS API coverage: shipping, rating, address validation, tracking, label recovery, time-in-transit (via `ups-mcp` MCP server for both interactive agent and batch paths)
-- Deterministic batch execution with per-row audit logging and SSE real-time progress
-- Column mapping with LLM-generated source-to-payload field mappings
-- Preview mode with cost estimates before execution
-- Crash recovery (resume interrupted batches)
-- Write-back tracking numbers to source data
-- Chat-based UI with CompletionArtifact cards for completed batches (inline label access)
-- Continuous chat flow — multiple commands in same conversation without page reload
-- NL filter generation with AND/OR compound clause parsing and person name disambiguation
-- Saved data sources with one-click reconnect (CSV/Excel instant, database requires re-entering credentials)
+- Natural language batch + interactive ad-hoc shipment creation
+- Data sources: CSV, Excel, PostgreSQL/MySQL, Shopify (env auto-detect)
+- UPS: shipping, rating, address validation, tracking, label recovery, time-in-transit (all via MCP)
+- Concurrent batch execution with per-row audit, SSE progress, crash recovery
+- LLM-generated column mappings + NL filter generation (AND/OR, person name disambiguation)
+- Mandatory preview gate with cost estimates; refinement flow without restart
+- Write-back tracking numbers to source; saved sources with one-click reconnect
+- Continuous chat flow; agent prewarm; dual batch/interactive modes
 
 ## Architecture
 
-Uses a hybrid architecture: **Claude Agent SDK** as the primary orchestration engine, **Model Context Protocol (MCP)** for data source abstraction and all UPS operations (both interactive and batch), and **FastAPI + React** for the web interface. The agent drives the entire command lifecycle through its SDK agent loop — intent parsing, filter generation, and tool orchestration are all handled within the agent's system prompt and deterministic tools.
+### Core Principle: Agent → Tools → MCP → Services
+
+The architecture follows a strict hierarchy:
+
+1. **Agent (OrchestrationAgent)** — The brain. Interprets user intent, plans operations, calls tools.
+2. **Tools (orchestrator/agent/tools/)** — Deterministic handlers. Execute specific operations, emit events, enforce business rules.
+3. **MCP Servers** — Connectivity. Abstract external systems behind a uniform protocol.
+4. **Services** — Business logic. State management, payload building, batch processing.
+
+Nothing bypasses this chain. The frontend talks to the agent through SSE conversations. The agent talks to the world through tools and MCP.
+
+```
+User → Browser UI (React) → FastAPI REST API → Conversation SSE Route
+                                                       ↓
+                                              AgentSessionManager
+                                                       ↓
+                                              OrchestrationAgent (Claude SDK)
+                                               ↓              ↓
+                                    Orchestrator Tools    UPS MCP (stdio)
+                                         ↓
+                              ┌──────────┼──────────┐
+                              ↓          ↓          ↓
+                    DataSourceMCPClient  BatchEngine  ExternalSourcesMCPClient
+                    (MCP stdio)         (UPSMCPClient) (MCP stdio)
+                              ↓          ↓          ↓
+                         Data Source   UPS MCP    External Sources
+                         MCP Server   Server     MCP Server
+```
 
 ### System Components
 
-```
-User → Browser UI (React) → FastAPI REST API → Conversation SSE Route → AgentSessionManager → OrchestrationAgent → Services
-                                    ↓                    ↓                                          ↓
-                              State Database        SSE Event Stream                       Data Source MCP (stdio)
-```
+| Component | Technology | Role in Agent Architecture |
+|-----------|------------|---------------------------|
+| **OrchestrationAgent** | Claude Agent SDK | Primary orchestrator — interprets intent, coordinates all operations via deterministic tools |
+| **Agent Tools** | Python (4 modules) | Deterministic execution layer — data ops, pipeline ops, interactive ops |
+| **Agent Hooks** | Pre/PostToolUse | Validation + audit — enforce business rules before/after tool execution |
+| **Agent Session Manager** | Python | Per-conversation lifecycle — session isolation, agent persistence, prewarm |
+| **Data Source MCP** | FastMCP + DuckDB (stdio) | Data connectivity — CSV, Excel, DB, EDI abstracted behind SQL interface |
+| **UPS MCP** | `ups-mcp` local fork (stdio) | Carrier connectivity — 7 UPS tools (ship, rate, track, validate, void, recover, transit) |
+| **UPS MCP Client** | MCPClient (stdio) | Programmatic batch connectivity — deterministic UPS calls for high-volume execution |
+| **External Sources MCP** | FastMCP (stdio) | Platform connectivity — Shopify, WooCommerce, SAP, Oracle |
+| **Batch Engine** | Python | Batch execution — concurrent preview/execute with per-row state tracking |
+| **Gateway Provider** | Python singletons | MCP lifecycle — process-global singleton factory for all MCP clients |
+| **State Database** | SQLite + SQLAlchemy | Persistence — jobs, rows, audit logs, saved sources |
+| **FastAPI Backend** | Python + FastAPI | HTTP layer — REST API, SSE streaming, SPA serving |
+| **Browser UI** | React + Vite + TypeScript | Presentation — agent-driven chat, preview cards, progress, labels |
 
-| Container | Technology | Purpose |
-|-----------|------------|---------|
-| **FastAPI Backend** | Python + FastAPI + SQLAlchemy | REST API, job management, SSE conversation streaming |
-| **Orchestration Agent** | Python + Claude Agent SDK | Primary orchestration — interprets intent, coordinates services via deterministic tools |
-| **Agent Session Manager** | Python | Per-conversation agent session lifecycle, history isolation |
-| **Data Source MCP** | Python + FastMCP + DuckDB | Abstracts data sources (CSV, Excel, DB) behind SQL interface |
-| **UPS MCP** | `ups-mcp` via uvx (stdio) | Agent-accessible UPS tools: shipping, rating, tracking, address validation, label recovery, time-in-transit |
-| **UPS MCP Client** | Python + `MCPClient` | Async programmatic MCP client for deterministic batch execution (shipping, rating) via stdio |
-| **Batch Engine** | Python | Unified preview + execution with per-row state tracking |
-| **State Database** | SQLite | Job state, transaction journal, audit logs for crash recovery |
-| **Browser UI** | React + Vite + TypeScript + shadcn/ui | Chat interface, job history, label preview |
+### Agent Tool Architecture
 
-### Communication Patterns
+The agent's tools are split into 4 modules by concern:
 
-- **Browser ↔ Backend**: REST API (`/api/v1/conversations/`) + SSE for agent event streaming
-- **Conversation Route ↔ Agent**: `AgentSessionManager` manages per-session agent instances
-- **Agent ↔ Data Source MCP**: stdio transport (child process)
-- **Agent ↔ UPS MCP**: stdio transport (child process via uvx, interactive UPS operations)
-- **Agent ↔ Anthropic API**: HTTPS via Claude Agent SDK
-- **Backend ↔ State DB**: SQLite via SQLAlchemy
-- **BatchEngine ↔ UPS MCP**: Programmatic MCP over stdio via `UPSMCPClient` → `MCPClient` for batch execution
+| Module | File | Tools | Purpose |
+|--------|------|-------|---------|
+| **Core** | `tools/core.py` | `EventEmitterBridge`, helpers | Shared infrastructure — event emission, row caching, bridge binding |
+| **Data** | `tools/data.py` | `get_source_info`, `get_schema`, `fetch_rows`, `validate_filter_syntax`, `connect_shopify`, `get_platform_status` | Data source operations — querying, filtering, platform integration |
+| **Pipeline** | `tools/pipeline.py` | `ship_command_pipeline`, `create_job`, `add_rows_to_job`, `batch_preview`, `batch_execute`, `get_job_status` | Batch shipping workflow — the core pipeline from command to labels |
+| **Interactive** | `tools/interactive.py` | `preview_interactive_shipment` | Ad-hoc single-shipment creation (interactive mode only) |
+
+Tool registration: `get_all_tool_definitions()` in `tools/__init__.py` assembles all definitions. In interactive mode, only status tools + `preview_interactive_shipment` are exposed; batch/data tools are hidden.
+
+### Agent Hook System
+
+Pre/PostToolUse hooks enforce business rules without modifying the agent flow:
+
+| Hook | Trigger | Purpose |
+|------|---------|---------|
+| `create_shipping_hook()` | `mcp__ups__create_shipment` | Mode-aware enforcement — blocks direct shipment creation in BOTH modes (batch must use pipeline; interactive must use preview tool) |
+| `validate_void_shipment` | `mcp__ups__void_shipment` | Requires tracking number or shipment ID |
+| `validate_pre_tool` | All tools (fallback) | Routes to specific validators by tool name |
+| `log_post_tool` | All tools (post) | Audit logging to stderr |
+| `detect_error_response` | All tools (post) | Error detection and warning |
+
+### Agent Intelligence Architecture
+
+The agent's reasoning ability comes from its dynamically constructed system prompt (`system_prompt.py`). Understanding this is critical — the system prompt IS the agent's domain expertise.
+
+**Prompt Structure** (assembled per-message by `build_system_prompt()`):
+
+| Section | Source | Purpose |
+|---------|--------|---------|
+| Identity | Static | "You are ShipAgent, an AI shipping assistant..." |
+| Service Code Table | `ServiceCode` enum + `SERVICE_ALIASES` | Complete UPS service catalog so agent resolves "Ground" → code `03` |
+| Connected Data Source | `DataSourceInfo` (live) | Column names, types, nullability, row count — refreshed every message |
+| Filter Generation Rules | Static (mode-aware) | SQL WHERE clause generation: person name disambiguation, status/date/tag/weight handling |
+| Workflow | Static (mode-aware) | Step-by-step instructions: fast path (`ship_command_pipeline`) vs fallback path |
+| Safety Rules | Static (mode-aware) | Mandatory preview, no auto-execution, error reporting format |
+| Tool Usage | Static (mode-aware) | Which tools to prefer, when to use LLM vs deterministic execution |
+
+**Mode Awareness:** The entire prompt changes based on `interactive_shipping` flag:
+- **Batch mode**: Full schema, SQL filter rules, batch workflow, data source safety rules
+- **Interactive mode**: Schema suppressed, conversational collection flow, ad-hoc preview workflow
+- **No source**: Shopify auto-detect (if env configured) or prompt user to connect
+
+**Self-Correction:** When Jinja2 mapping templates fail UPS schema validation, the system tracks correction attempts (max 3 via `CorrectionResult` in `correction.py`). After exhaustion, the user gets options: fix source data, manual template fix, skip failing rows, or abort.
+
+**Key Intelligence Patterns:**
+- Person name queries → `customer_name ILIKE '%X%' OR ship_to_name ILIKE '%X%'` (disambiguation)
+- Status queries → substring match on composite `status` field OR exact match on `financial_status`/`fulfillment_status`
+- Tag queries → `tags LIKE '%VIP%'` (comma-separated field)
+- Weight queries → automatic gram conversion (`1 lb = 453.592g`)
+- Ambiguous commands → agent asks clarifying questions (never guesses)
+- Straightforward commands → single `ship_command_pipeline` call (fast path avoids 5-tool chain)
 
 ### Data Flow (Agent-Driven Conversation)
 
-1. **Session**: Frontend creates conversation session via `POST /conversations/` → `AgentSessionManager` allocates session
-2. **Message**: User sends message via `POST /conversations/{id}/messages` → stored in history, triggers agent processing
-3. **Agent Loop**: `OrchestrationAgent.process_message_stream()` runs SDK agent loop with unified system prompt
-4. **Tool Calls**: Agent calls deterministic tools (`query_orders`, `preview_batch`, `execute_batch`, etc.) — events streamed via SSE
-5. **Preview**: Agent calls `preview_batch` tool → `BatchEngine` rates rows → preview data sent as SSE event
-6. **Approval Gate**: Agent asks for confirmation → user responds in conversation → agent proceeds
-7. **Execution**: Agent calls `execute_batch` tool → per-row processing with SSE progress events
-8. **Completion**: CompletionArtifact card appears in chat with label access, job saved to history
-9. **Write-Back**: Tracking numbers written back to source, job marked complete
+1. **Session**: Frontend creates conversation session via `POST /conversations/` → `AgentSessionManager` allocates session + optional prewarm
+2. **Message**: User sends message via `POST /conversations/{id}/messages` → stored in history, triggers background agent processing
+3. **Agent Loop**: `OrchestrationAgent.process_message_stream()` runs SDK agent loop — events streamed via SSE queue
+4. **Tool Calls**: Agent calls deterministic tools — events appear as `ToolCallChip` components in UI
+5. **Fast Path**: For straightforward shipping commands, `ship_command_pipeline` handles fetch → job → rows → preview in one call
+6. **Preview**: Preview data sent as SSE `preview_ready` event → `PreviewCard` rendered with Confirm/Cancel/Refine buttons
+7. **Approval Gate**: User must confirm preview before execution (mandatory — agent NEVER auto-executes)
+8. **Execution**: `confirmJob()` triggers backend batch execution → `ProgressDisplay` streams per-row progress via SSE
+9. **Completion**: `CompletionArtifact` card appears in chat with label access, job saved to sidebar history
+10. **Write-Back**: Tracking numbers written back to source data, job marked complete
+11. **Continue**: User types next command in same session — agent retains conversation context
+
+### Dual Shipping Modes
+
+| Mode | Toggle | Agent Behavior | Tools Available |
+|------|--------|---------------|-----------------|
+| **Batch** (default) | Off | Data-source-driven — filter rows, preview costs, execute batch | All tools (data, pipeline, status) |
+| **Interactive** | On | Conversational — collect recipient details, preview single shipment | `preview_interactive_shipment`, `get_job_status`, `get_platform_status` only |
+
+Mode switching resets the conversation session (deletes old session, creates new one with opposite flag).
+
+### Agent Safety Model
+
+Safety is enforced at three layers — structural, behavioral, and procedural:
+
+**Structural (compile-time):**
+- Tool registry filtering: `get_all_tool_definitions(interactive_shipping=True)` returns only 3 tools; batch/data tools physically absent from the agent's toolset
+- Session isolation: each conversation gets its own `AgentSession` with independent history and agent instance
+- Gateway singletons: MCP client lifecycles managed centrally, not per-request
+
+**Behavioral (runtime hooks):**
+- `create_shipping_hook()`: Closure-based mode enforcement — `mcp__ups__create_shipment` is denied in BOTH modes (batch must use pipeline; interactive must use preview tool)
+- `validate_void_shipment`: Requires tracking number before allowing void
+- `validate_pre_tool`: Routes all tool calls through validation dispatch
+- `detect_error_response` + `log_post_tool`: Post-execution audit trail on stderr
+
+**Procedural (agent prompt rules):**
+- Mandatory preview before any execution — the agent is instructed to NEVER auto-execute
+- Frontend `confirmJob()` is the only path to batch execution — the agent cannot trigger it
+- Ambiguous commands trigger clarifying questions, never guesses
+- Error responses include E-XXXX codes with suggested remediation
 
 ## Source Structure
 
 ```
 src/
-├── api/                        # FastAPI REST API
+├── api/                        # FastAPI REST API (HTTP layer only — no business logic)
 │   ├── routes/                 # Endpoint modules
-│   │   ├── conversations.py    # Agent-driven SSE conversation (primary path)
+│   │   ├── conversations.py    # Agent-driven SSE conversation (PRIMARY — all user interaction flows here)
 │   │   ├── data_sources.py     # Local data source import/upload/disconnect/schema
 │   │   ├── jobs.py             # Job CRUD + status + rows + summary
-│   │   ├── preview.py          # Batch preview + confirm
+│   │   ├── preview.py          # Batch preview + confirm (triggers BatchEngine execution)
 │   │   ├── progress.py         # Real-time SSE streaming + progress polling
 │   │   ├── labels.py           # Label download (individual, merged PDF, ZIP)
 │   │   ├── logs.py             # Audit log endpoints (list, errors, export)
@@ -102,18 +225,18 @@ src/
 │   ├── registry.py             # E-XXXX error code registry
 │   ├── ups_translation.py      # UPS error → ShipAgent error mapping
 │   └── formatter.py            # Error message formatting
-├── services/                   # Business logic (core services)
+├── services/                   # Business logic (core services — called by agent tools)
 │   ├── errors.py               # Shared error types (UPSServiceError)
-│   ├── mcp_client.py           # Generic async MCP client with retry
-│   ├── ups_mcp_client.py       # UPSMCPClient — async UPS via MCP stdio
+│   ├── mcp_client.py           # Generic async MCP client with retry + exponential backoff
+│   ├── ups_mcp_client.py       # UPSMCPClient — async UPS via MCP stdio (batch path)
 │   ├── ups_specs.py            # UPS MCP OpenAPI spec path helpers
-│   ├── batch_engine.py         # BatchEngine — unified preview + execution
+│   ├── batch_engine.py         # BatchEngine — unified preview + execution with concurrency
 │   ├── column_mapping.py       # ColumnMappingService — source → UPS field mapping
 │   ├── ups_payload_builder.py  # Builds UPS API payloads from mapped data
 │   ├── agent_session_manager.py # Per-conversation agent session lifecycle
 │   ├── job_service.py          # Job state machine, row tracking
 │   ├── audit_service.py        # Audit logging with redaction
-│   ├── data_source_service.py  # Data source import + auto-save hooks
+│   ├── data_source_service.py  # Data source import + auto-save hooks (legacy — prefer MCP gateway)
 │   ├── data_source_gateway.py  # DataSourceGateway protocol + typed adapter
 │   ├── data_source_mcp_client.py # DataSourceMCPClient — async data source via MCP stdio
 │   ├── external_sources_mcp_client.py # ExternalSourcesMCPClient — async platform via MCP stdio
@@ -121,11 +244,11 @@ src/
 │   ├── saved_data_source_service.py # Saved source CRUD (list, upsert, delete, reconnect)
 │   └── write_back_utils.py     # Atomic CSV/Excel write-back utilities
 ├── mcp/
-│   ├── data_source/            # Data Source MCP server
-│   │   ├── server.py           # FastMCP server
+│   ├── data_source/            # Data Source MCP server (DuckDB-backed SQL interface)
+│   │   ├── server.py           # FastMCP server with stdio transport
 │   │   ├── models.py           # Pydantic models (SchemaColumn, ImportResult, RowData)
 │   │   ├── utils.py            # Row checksum (SHA-256) + date parsing utilities
-│   │   ├── adapters/           # Source adapters
+│   │   ├── adapters/           # Source adapters (pluggable)
 │   │   │   ├── base.py         # BaseSourceAdapter interface
 │   │   │   ├── csv_adapter.py  # CSV file adapter
 │   │   │   ├── excel_adapter.py # Excel (.xlsx) adapter
@@ -137,6 +260,7 @@ src/
 │   │   │   ├── query_tools.py  # SQL query tools
 │   │   │   ├── checksum_tools.py # Row checksum tools
 │   │   │   ├── writeback_tools.py # Write-back tools (tracking → source)
+│   │   │   ├── source_info_tools.py # Source metadata + record import + clear
 │   │   │   └── edi_tools.py    # EDI-specific tools
 │   │   └── edi/                # EDI parsing module
 │   │       ├── models.py       # EDI data models
@@ -147,45 +271,50 @@ src/
 │       ├── tools.py            # Platform MCP tools
 │       ├── models.py           # PlatformType, ConnectionStatus, ExternalOrder models
 │       └── clients/            # Shopify, SAP, Oracle, WooCommerce clients
-└── orchestrator/               # Orchestration layer
+│           ├── base.py         # BasePlatformClient interface
+│           ├── shopify.py      # Shopify Admin API client
+│           ├── woocommerce.py  # WooCommerce REST API client
+│           ├── sap.py          # SAP OData client
+│           └── oracle.py       # Oracle Database client
+└── orchestrator/               # Orchestration layer (AGENT IS PRIMARY)
     ├── filters/                # Jinja2 logistics filter library
     │   └── logistics.py        # truncate_address, format_us_zip, convert_weight, etc.
     ├── models/                 # Data models
-    │   ├── intent.py           # Intent parsing models
+    │   ├── intent.py           # ServiceCode enum + SERVICE_ALIASES mapping
     │   ├── filter.py           # NL filter models
     │   ├── mapping.py          # Column mapping models
     │   ├── elicitation.py      # Elicitation models
     │   └── correction.py       # Self-correction loop tracking (max 3 attempts)
-    ├── agent/                  # Claude Agent SDK integration (primary orchestration)
-    │   ├── client.py           # OrchestrationAgent — SDK agent with streaming
-    │   ├── system_prompt.py    # Unified system prompt builder (domain knowledge + tools)
+    ├── agent/                  # Claude Agent SDK integration (PRIMARY ORCHESTRATION PATH)
+    │   ├── client.py           # OrchestrationAgent — SDK agent with streaming + MCP coordination
+    │   ├── system_prompt.py    # Dynamic system prompt builder (domain knowledge + data schema)
     │   ├── tools/              # Deterministic SDK tools (split by concern)
     │   │   ├── __init__.py     # Tool registry — get_all_tool_definitions()
-    │   │   ├── core.py         # Shared internals (EventEmitterBridge, UPS client cache, helpers)
+    │   │   ├── core.py         # EventEmitterBridge, row cache, bridge binding helpers
     │   │   ├── data.py         # Data source + platform tool handlers
-    │   │   ├── pipeline.py     # Batch pipeline tool handlers (create, preview, execute)
-    │   │   └── interactive.py  # Interactive shipment tool handler
-    │   ├── config.py           # Agent configuration
-    │   └── hooks.py            # Lifecycle hooks
+    │   │   ├── pipeline.py     # Batch pipeline tool handlers (ship_command_pipeline fast path)
+    │   │   └── interactive.py  # Interactive shipment tool handler (preview_interactive_shipment)
+    │   ├── config.py           # MCP server configuration factory (Data, External, UPS)
+    │   └── hooks.py            # Pre/PostToolUse validation hooks (mode enforcement, audit)
     └── batch/                  # Batch orchestration
-        ├── events.py           # Batch execution events
+        ├── events.py           # BatchEventObserver protocol
         ├── models.py           # Batch state models
         ├── modes.py            # Preview/execute modes
-        ├── recovery.py         # Crash recovery
+        ├── recovery.py         # Crash recovery logic
         └── sse_observer.py     # SSE streaming observer
 
 frontend/
 ├── src/
 │   ├── main.tsx                    # React entry point
 │   ├── App.tsx                     # Root component (AppStateProvider + layout)
-│   ├── index.css                   # Design system (Tailwind theme, animations, component styles)
+│   ├── index.css                   # Design system (OKLCH colors, typography, animations)
 │   ├── components/
-│   │   ├── CommandCenter.tsx       # Main chat UI (messages, preview, progress, artifacts)
+│   │   ├── CommandCenter.tsx       # Main chat UI — agent event orchestration, preview/progress/completion
 │   │   ├── command-center/
-│   │   │   ├── messages.tsx        # Message rendering (WelcomeMessage, ActiveSourceBanner, MessageBubble)
-│   │   │   ├── PreviewCard.tsx     # Shipment preview with expandable rows, cost estimates
-│   │   │   ├── ProgressDisplay.tsx # Live batch execution progress with per-row failures
-│   │   │   ├── CompletionArtifact.tsx # Inline card for completed batches
+│   │   │   ├── messages.tsx        # SystemMessage, UserMessage, WelcomeMessage, ActiveSourceBanner, InteractiveModeBanner, SettingsPopover, TypingIndicator
+│   │   │   ├── PreviewCard.tsx     # Batch + interactive preview with expandable rows, cost estimates, warnings, refinement
+│   │   │   ├── ProgressDisplay.tsx # Live batch execution progress with per-row failure tracking
+│   │   │   ├── CompletionArtifact.tsx # Inline card for completed batches (status-colored border, label access)
 │   │   │   └── ToolCallChip.tsx    # Collapsible chip showing active agent tool calls
 │   │   ├── JobDetailPanel.tsx      # Full job detail view (from sidebar click)
 │   │   ├── LabelPreview.tsx        # PDF label viewer modal (react-pdf)
@@ -196,23 +325,23 @@ frontend/
 │   │   │   └── dataSourceMappers.ts # Column-to-ColumnMetadata mapping helpers
 │   │   ├── ui/                     # shadcn/ui primitives + consolidated icons
 │   │   │   ├── ShipAgentLogo.tsx   # Custom logo components
-│   │   │   ├── icons.tsx           # Consolidated SVG icon components
-│   │   │   ├── brand-icons.tsx     # Platform brand icons (Shopify, SAP, Oracle, WooCommerce)
-│   │   │   ├── button.tsx, input.tsx, card.tsx, progress.tsx
+│   │   │   ├── icons.tsx           # Consolidated SVG icon components (25+ icons)
+│   │   │   ├── brand-icons.tsx     # Platform brand icons (Shopify, DataSource)
+│   │   │   ├── button.tsx, input.tsx, card.tsx, progress.tsx, switch.tsx
 │   │   │   ├── dialog.tsx, alert.tsx, scroll-area.tsx
 │   │   │   └── ...
 │   │   └── layout/
-│   │       ├── Sidebar.tsx         # Sidebar shell (delegates to sidebar/panels.tsx)
-│   │       └── Header.tsx          # App header
+│   │       ├── Sidebar.tsx         # Sidebar shell (collapsible)
+│   │       └── Header.tsx          # App header with logo + interactive shipping toggle
 │   ├── hooks/
-│   │   ├── useAppState.tsx         # Global state context (conversation, jobs, data source)
-│   │   ├── useConversation.ts      # Agent SSE conversation lifecycle (session + events)
+│   │   ├── useAppState.tsx         # Global state context (conversation, jobs, data source, interactive mode)
+│   │   ├── useConversation.ts      # Agent SSE conversation lifecycle (session + events + mode management)
 │   │   ├── useJobProgress.ts       # Real-time SSE progress tracking
 │   │   ├── useSSE.ts              # Generic EventSource hook
 │   │   └── useExternalSources.ts   # Shopify/platform connection management
 │   ├── lib/
 │   │   ├── api.ts                  # REST client (all /api/v1 endpoints)
-│   │   └── utils.ts               # Tailwind class merging utility (cn)
+│   │   └── utils.ts               # Tailwind class merging (cn), formatCurrency, formatRelativeTime, formatTimeAgo
 │   └── types/
 │       └── api.ts                  # TypeScript types mirroring Pydantic schemas
 └── package.json
@@ -220,9 +349,20 @@ frontend/
 
 ## Key Services
 
-### UPS MCP Server (external: `github.com/UPS-API/ups-mcp`)
+### OrchestrationAgent (`src/orchestrator/agent/client.py`)
 
-Runs as a stdio child process (via uvx), providing the agent with interactive access to 7 UPS tools. The agent can call these directly for ad-hoc operations during conversation.
+The primary orchestrator. Uses Claude Agent SDK with persistent sessions. Manages MCP server lifecycle (Data Source, UPS), routes tool calls through validation hooks, and streams events via SSE. The agent maintains conversation context across messages within the same session — no manual history passing needed.
+
+Key features:
+- `process_message_stream()` — yields SSE-compatible event dicts (agent_message_delta, tool_call, error)
+- `StreamEvent` support — real-time token-by-token streaming when SDK supports it
+- `interrupt()` — graceful cancellation of in-progress responses
+- MCP servers: `orchestrator` (in-process tools) + `ups` (stdio child process)
+- Default model: `AGENT_MODEL` env → `ANTHROPIC_MODEL` env → Claude Haiku 4.5
+
+### UPS MCP Server (local fork: `matt-hans/ups-mcp`)
+
+Runs as a stdio child process via `.venv/bin/python3 -m ups_mcp`, providing the agent with interactive access to 7 UPS tools. Installed as editable package from pinned commit.
 
 | MCP Tool | Purpose |
 |----------|---------|
@@ -236,7 +376,7 @@ Runs as a stdio child process (via uvx), providing the agent with interactive ac
 
 ### UPSMCPClient (`src/services/ups_mcp_client.py`)
 
-Async UPS client communicating via MCP stdio protocol. Replaces the deprecated `UPSService` for batch execution. Built on the generic `MCPClient` with UPS-specific response normalization and error translation. Includes retry with exponential backoff for transient UPS errors.
+Async UPS client communicating via MCP stdio protocol — the batch execution path. Built on the generic `MCPClient` with UPS-specific response normalization and error translation. Includes retry with exponential backoff for transient UPS errors.
 
 | Method | Purpose |
 |--------|---------|
@@ -247,188 +387,61 @@ Async UPS client communicating via MCP stdio protocol. Replaces the deprecated `
 
 ### MCPClient (`src/services/mcp_client.py`)
 
-Generic reusable async MCP client with connection lifecycle management, JSON response parsing, and configurable retry with exponential backoff. Used by `UPSMCPClient`, `DataSourceMCPClient`, and `ExternalSourcesMCPClient`.
+Generic async MCP client with connection lifecycle, JSON parsing, retry with exponential backoff. Base class for `UPSMCPClient`, `DataSourceMCPClient`, `ExternalSourcesMCPClient`.
 
-### DataSourceGateway (`src/services/data_source_gateway.py`)
+### Gateway Provider (`src/services/gateway_provider.py`)
 
-Protocol-based abstraction for data source operations. `DataSourceMCPClient` implements this protocol, providing import, schema inspection, query, and disconnect operations via MCP stdio transport. The `gateway_provider.py` module provides centralized singleton access.
-
-### ExternalSourcesMCPClient (`src/services/external_sources_mcp_client.py`)
-
-Async client for external platform operations (Shopify connect/disconnect, order fetching) via MCP stdio transport. Singleton managed by `gateway_provider.py`.
+Process-global singleton factory for MCP clients. Double-checked locking. `get_data_gateway()`, `get_external_sources_client()`, `shutdown_gateways()` (FastAPI lifespan hook).
 
 ### BatchEngine (`src/services/batch_engine.py`)
 
-Unified engine for both preview (rating) and execution (shipping). Processes rows sequentially with per-row state writes for crash recovery. Emits SSE events for real-time progress.
-
-### ColumnMappingService (`src/services/column_mapping.py`)
-
-Maps source data columns to UPS payload fields. The LLM generates mapping rules; deterministic code applies them to actual data.
-
-### UPSPayloadBuilder (`src/services/ups_payload_builder.py`)
-
-Builds OpenAPI-validated UPS API payloads from column-mapped data. Key details:
-- Uses `Packaging` (not `PackagingType`) as the package type key
-- `ShipmentCharge` must be an array, not a single object
-- ReferenceNumber at shipment level is omitted (UPS Ground rejects it)
+Unified preview + execution with concurrent `asyncio.gather` + semaphore (`BATCH_CONCURRENCY` env, default 5). Per-row state writes for crash recovery. SSE events for real-time progress.
 
 ### AgentSessionManager (`src/services/agent_session_manager.py`)
 
-Manages per-conversation agent sessions. Each conversation gets an isolated `AgentSession` with its own message history. Sessions are created lazily on first message and cleaned up on delete.
+Per-conversation agent sessions. Each gets isolated history, persistent `OrchestrationAgent`, `agent_source_hash` for change detection (agent rebuilt on source/mode change), `asyncio.Lock` for serialization, optional prewarm.
 
-### SavedDataSourceService (`src/services/saved_data_source_service.py`)
+### UPSPayloadBuilder (`src/services/ups_payload_builder.py`)
 
-Persists data source connection metadata for one-click reconnection. Auto-saved on every successful import (best-effort). Database credentials are NEVER stored — only display metadata (host, port, db_name). Upsert logic keyed by natural keys (file_path for CSV, file_path+sheet_name for Excel, host+db_name+query for databases).
-
-| Method | Purpose |
-|--------|---------|
-| `list_sources()` | List all saved sources, ordered by last used |
-| `save_or_update_csv()` | Upsert CSV source record |
-| `save_or_update_excel()` | Upsert Excel source record |
-| `save_or_update_database()` | Upsert database source record (no credentials) |
-| `delete_source()` / `bulk_delete()` | Remove saved source records |
-| `touch()` | Update `last_used_at` on reconnect |
+Builds UPS API payloads from column-mapped data. Key details: `Packaging` (not `PackagingType`), `ShipmentCharge` as array, no shipment-level ReferenceNumber (Ground rejects it).
 
 ## Frontend Architecture
 
-### Chat Flow (CommandCenter.tsx)
+The UI is an agent-driven chat interface. `useConversation` hook manages session lifecycle and SSE event streaming. `useAppState` context holds conversation, jobs, data source, and mode state (`interactiveShipping` persisted to localStorage).
 
-The main UI is an agent-driven conversational chat interface powered by `useConversation` hook:
+**Chat flow**: User types command → SSE events stream (deltas, tool calls) → PreviewCard renders with Confirm/Cancel/Refine → ProgressDisplay streams per-row execution → CompletionArtifact card with label access → input re-enables for next command.
 
-1. **User types command** → `useConversation.sendMessage()` creates session (first time) + sends to agent
-2. **Agent Processing** → SSE events stream in: `agent_thinking`, `tool_call`, `tool_result`, `agent_message`
-3. **Tool Call Chips** → Active tool calls shown as collapsible chips in the message area
-4. **Preview** → PreviewCard with shipment samples, cost estimate, Confirm/Cancel buttons
-5. **Execution** → ProgressDisplay with live progress bar, stats via SSE
-6. **Completion** → CompletionArtifact card appears in chat with label access
-7. **Ready for next** → Input re-enables, user can type another command in same session
-
-### Key Components
-
-| Component | File | Purpose |
-|-----------|------|---------|
-| `CommandCenter` | `CommandCenter.tsx` | Main chat: messages, preview cards, progress, completion artifacts |
-| `CompletionArtifact` | `command-center/CompletionArtifact.tsx` | Inline card for completed batches (green/amber/red border, label access) |
-| `PreviewCard` | `command-center/PreviewCard.tsx` | Shipment preview with expandable rows, cost estimates, warnings, Confirm/Cancel |
-| `ProgressDisplay` | `command-center/ProgressDisplay.tsx` | Live batch execution progress with per-row failures |
-| `ToolCallChip` | `command-center/ToolCallChip.tsx` | Collapsible chip showing active agent tool calls |
-| `ActiveSourceBanner` | `command-center/messages.tsx` | Banner showing currently connected data source |
-| `WelcomeMessage` | `command-center/messages.tsx` | Initial welcome with example commands |
-| `LabelPreview` | `LabelPreview.tsx` | PDF modal viewer (react-pdf), opens as overlay |
-| `JobDetailPanel` | `JobDetailPanel.tsx` | Full job detail view (triggered from sidebar click) |
-| `RecentSourcesModal` | `RecentSourcesModal.tsx` | Saved source browser with search, type filters, one-click reconnect, bulk delete |
-| `DataSourceSection` | `sidebar/DataSourcePanel.tsx` | Data source switching, file upload, DB connection, Shopify integration |
-| `JobHistorySection` | `sidebar/JobHistoryPanel.tsx` | Job list with search, filters, delete, printer access |
-| `Sidebar` | `layout/Sidebar.tsx` | Sidebar shell delegating to DataSourceSection + JobHistorySection |
-
-### State Management
-
-- `useAppState` context: conversation history, active job, data source, processing state, `conversationSessionId`
-- `useConversation` hook: manages agent session lifecycle, SSE event streaming, session creation/deletion
-- `ConversationMessage` metadata: `action` field routes to different renderers (`preview`, `execute`, `complete`, `error`, `elicit`)
-- `useJobProgress` + `useSSE`: real-time SSE events for batch progress
-- `jobListVersion` counter triggers sidebar job list refresh
+**Key patterns**: `ConversationMessage.action` routes to renderers (`preview`, `execute`, `complete`, `error`). `jobListVersion` counter triggers sidebar refresh. `isToggleLocked` prevents mode toggle during processing.
 
 ## API Endpoints
 
-All endpoints use `/api/v1/` prefix.
+All endpoints use `/api/v1/` prefix. See route files in `src/api/routes/` for full details.
 
-### Conversations
+**Primary agent path** (conversations.py): `POST /conversations/` (create session) → `POST /conversations/{id}/messages` (send to agent) → `GET /conversations/{id}/stream` (SSE events) → `DELETE /conversations/{id}` (cleanup)
 
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/conversations/` | POST | Create agent conversation session |
-| `/conversations/{id}/messages` | POST | Send message to agent (202 accepted) |
-| `/conversations/{id}/stream` | GET | SSE stream of agent events |
-| `/conversations/{id}/history` | GET | Get conversation message history |
-| `/conversations/{id}` | DELETE | Delete conversation session |
+**Jobs** (jobs.py): CRUD on `/jobs/`, status via `PATCH /jobs/{id}/status`, preview via `GET /jobs/{id}/preview`, confirm via `POST /jobs/{id}/confirm`, SSE progress via `GET /jobs/{id}/progress/stream`
 
-### Jobs
+**Labels** (labels.py): Individual `GET /labels/{tracking}`, merged PDF `GET /jobs/{id}/labels/merged`, ZIP `GET /jobs/{id}/labels/zip`
 
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/jobs/` | POST | Create a job |
-| `/jobs/` | GET | List all jobs |
-| `/jobs/{id}` | GET | Get job details |
-| `/jobs/{id}/status` | PATCH | Update job status |
-| `/jobs/{id}` | DELETE | Delete job |
-| `/jobs/{id}/rows` | GET | Get all rows for a job |
-| `/jobs/{id}/summary` | GET | Get job summary with metrics |
-| `/jobs/{id}/rows/skip` | PATCH | Mark rows as skipped |
-| `/jobs/{id}/preview` | GET | Get batch preview data |
-| `/jobs/{id}/confirm` | POST | Confirm batch execution |
-| `/jobs/{id}/progress/stream` | GET | SSE stream for real-time progress |
-| `/jobs/{id}/progress` | GET | Get current progress (non-SSE fallback) |
+**Data Sources** (data_sources.py): `POST /data-sources/import`, `POST /data-sources/upload`, `GET /data-sources/status`, `POST /data-sources/disconnect`
 
-### Labels
+**Saved Sources** (saved_data_sources.py): `GET /saved-sources`, `POST /saved-sources/reconnect`, `DELETE /saved-sources/{id}`, `POST /saved-sources/bulk-delete`
 
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/labels/{tracking_number}` | GET | Download label by tracking number |
-| `/jobs/{id}/labels/merged` | GET | Download merged PDF labels |
-| `/jobs/{id}/labels/zip` | GET | Download labels as ZIP |
-| `/jobs/{id}/labels/{row_number}` | GET | Download label by row number |
-
-### Logs
-
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/jobs/{id}/logs` | GET | Get audit logs |
-| `/jobs/{id}/logs/errors` | GET | Get recent error logs |
-| `/jobs/{id}/logs/export` | GET | Export logs as plain text |
-
-### Data Sources
-
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/data-sources/import` | POST | Import CSV/Excel/Database |
-| `/data-sources/upload` | POST | Upload CSV/Excel file |
-| `/data-sources/status` | GET | Get current data source status |
-| `/data-sources/disconnect` | POST | Disconnect current source |
-| `/data-sources/schema` | GET | Get schema of current source |
-
-### Saved Sources
-
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/saved-sources` | GET | List all saved data sources (optional `source_type` filter) |
-| `/saved-sources/{id}` | GET | Get single saved source |
-| `/saved-sources/reconnect` | POST | Reconnect to saved source (one-click for files, requires connection_string for DBs) |
-| `/saved-sources/{id}` | DELETE | Delete saved source |
-| `/saved-sources/bulk-delete` | POST | Bulk delete saved sources |
-
-### Platforms
-
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/platforms/connections` | GET | List all configured platform connections |
-| `/platforms/{platform}/connect` | POST | Connect to platform |
-| `/platforms/{platform}/disconnect` | POST | Disconnect from platform |
-| `/platforms/{platform}/test` | GET | Test platform connection |
-| `/platforms/shopify/env-status` | GET | Check Shopify connection (auto-detect from env) |
-| `/platforms/{platform}/orders` | GET | Fetch orders from platform |
-| `/platforms/{platform}/orders/{id}` | GET | Get single order |
-| `/platforms/{platform}/orders/{id}/tracking` | PUT | Update tracking on order |
-
-### System
-
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/health` | GET | Health check |
-| `/api` | GET | API root with docs links |
+**Platforms** (platforms.py): `POST /platforms/{platform}/connect`, `GET /platforms/shopify/env-status` (auto-reconnect after restart), `GET /platforms/{platform}/orders`
 
 ## Technology Stack
 
 | Component | Technology |
 |-----------|------------|
 | Backend | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
-| Agent Framework | Claude Agent SDK, Anthropic API |
-| Data Processing | DuckDB, Pandas, openpyxl |
-| UPS Integration | `ups-mcp` ToolManager (direct Python import, pinned commit) |
-| NL Processing | sqlglot (SQL generation), Jinja2 (logistics filters) |
+| Agent Framework | Claude Agent SDK (`claude-agent-sdk>=0.1.22`), Anthropic API |
+| MCP Protocol | FastMCP v2 (servers), `mcp` (stdio clients) |
+| Data Processing | DuckDB (in-memory analytics), openpyxl (Excel) |
+| UPS Integration | `ups-mcp` local fork (pinned commit, editable install via pip) |
+| NL Processing | sqlglot (SQL generation/validation), Jinja2 (logistics filters) |
 | Real-time | SSE via `sse-starlette` |
 | PDF | `pypdf` (merging), `react-pdf` + `pdfjs-dist` (browser rendering) |
-| Frontend | React, Vite, TypeScript, Tailwind CSS, shadcn/ui |
+| Frontend | React, Vite, TypeScript, Tailwind CSS v4, shadcn/ui |
 
 ## Common Commands
 
@@ -454,6 +467,9 @@ pytest
 # Skip known hanging tests
 pytest -k "not test_stream_endpoint_exists"
 
+# Avoid tests that may hang (SSE/streaming)
+pytest -k "not stream and not sse and not progress"
+
 # Run specific test file
 pytest tests/services/test_ups_payload_builder.py -v
 
@@ -476,6 +492,31 @@ npm install
 npm run dev          # Development server (port 5173)
 npm run build        # Production build
 npx tsc --noEmit     # Type check
+```
+
+### Agent Testing
+
+```bash
+# Agent tools (deterministic — no LLM calls)
+pytest tests/orchestrator/agent/ -v
+
+# System prompt generation
+pytest tests/orchestrator/agent/test_system_prompt.py -v
+
+# Hooks (pre/post tool validation)
+pytest tests/orchestrator/agent/test_hooks.py -v
+
+# Batch engine (preview + execution paths)
+pytest tests/services/test_batch_engine.py -v
+
+# UPS MCP client (programmatic MCP calls)
+pytest tests/services/test_ups_mcp_client.py -v
+
+# Column mapping + payload builder
+pytest tests/services/test_column_mapping.py tests/services/test_ups_payload_builder.py -v
+
+# Logistics filters (Jinja2 template filters)
+pytest tests/orchestrator/test_logistics_filters.py -v
 ```
 
 ## Key Conventions
@@ -507,23 +548,17 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 
 ### Frontend Patterns
 
-- CSS classes: `card-premium`, `btn-primary`, `btn-secondary`, `badge-*` (success/error/info/warning)
-- Design system in `index.css`: OKLCH color space, custom animations, platform-specific colors (Shopify, WooCommerce, SAP, Oracle)
-- Icons consolidated in `ui/icons.tsx` (general) and `ui/brand-icons.tsx` (platform logos)
-- Presentation components split into individual files: `command-center/PreviewCard.tsx`, `ProgressDisplay.tsx`, `CompletionArtifact.tsx`, `ToolCallChip.tsx`, `messages.tsx`
-- Sidebar panels split: `sidebar/DataSourcePanel.tsx` and `sidebar/JobHistoryPanel.tsx`
-- shadcn/ui primitives in `components/ui/` (button, input, card, dialog, alert, progress, scroll-area)
-- Job list refresh: `jobListVersion` counter + `refreshJobList()` in AppState
-- Labels stored on disk, paths in `JobRow.label_path`
-- `order_data` stored as JSON text in `JobRow.order_data` column
+- Design system in `index.css`: OKLCH colors, DM Sans / Instrument Serif / JetBrains Mono typography
+- CSS classes: `card-premium`, `btn-primary`, `btn-secondary`, `badge-*`
+- Icons: `ui/icons.tsx` (general), `ui/brand-icons.tsx` (platform logos)
+- shadcn/ui primitives in `components/ui/`
+- Labels stored on disk, paths in `JobRow.label_path`; `order_data` as JSON text in `JobRow.order_data`
 
 ## Known Issues
 
-- `zipstream-ng` ZIP endpoint tests fail due to `zipstream.ZipFile` attribute error (pre-existing)
-- SSE test `test_stream_endpoint_exists` hangs indefinitely (skip with `-k`)
+- SSE/streaming tests may hang — use `pytest -k "not stream and not sse and not progress"`
+- After backend restart, Shopify connection lost (in-memory) — call `GET /api/v1/platforms/shopify/env-status`
 - EDI adapter test collection errors (10 tests, unrelated to core features)
-- After backend restart, Shopify connection is lost (in-memory) — call GET `/api/v1/platforms/shopify/env-status` to reconnect
-- UPS Ground rejects shipment-level ReferenceNumber (removed from payload builder)
 
 ## UPS API Lessons
 
@@ -533,21 +568,39 @@ These are hard-won fixes — do not revert:
 - ReferenceNumber at shipment level is rejected for Ground domestic (omitted entirely)
 - Filter evaluator handles compound AND/OR WHERE clauses with parenthesis-depth-aware splitting
 - Person name queries generate `customer_name = 'X' OR ship_to_name = 'X'` for disambiguation
+- UPS `_translate_error` was swallowing error details — ensure raw_str fallback when ups_message is empty
 
 ## Extension Points
 
-- **Data Adapters**: Implement `BaseSourceAdapter` in `src/mcp/data_source/adapters/` (read, write_back, get_metadata)
-- **Carrier Services**: Follow `UPSMCPClient` pattern wrapping carrier MCP servers via `MCPClient`
+All extensions MUST integrate through the agent's tool/MCP architecture:
+
+- **New Carrier (e.g., FedEx, USPS)**: Build as an MCP server (stdio), add MCP client wrapper following `UPSMCPClient` pattern, register carrier tools in the agent's tool registry
+- **New Data Source Adapter**: Implement `BaseSourceAdapter` in `src/mcp/data_source/adapters/`, register in the Data Source MCP server
+- **New Platform Integration**: Add client in `src/mcp/external_sources/clients/`, register in External Sources MCP server
+- **New Agent Tool**: Add handler in appropriate tool module (`data.py`, `pipeline.py`, `interactive.py`), register in `tools/__init__.py`
+- **New Batch Capability**: Extend `BatchEngine` with new execution mode, expose via pipeline tool
 - **Template Filters**: Register in Filter Registry for custom Jinja2 logistics filters
 - **Observers**: Subscribe to BatchEngine SSE events for notifications/webhooks
-- **Platform Clients**: Add new clients in `src/mcp/external_sources/clients/`
 
-## Out of Scope (MVP)
+## Roadmap (Agent Capabilities)
 
-- Order management (reads from external sources only)
-- Inventory management
-- Customer communication (email/SMS)
-- Payment processing
-- Multi-carrier routing (UPS only for MVP)
-- Google Sheets integration (deferred to v2)
-- International shipping with customs (deferred to v2)
+Each roadmap item adds new intelligence or connectivity to the agent:
+
+| Priority | Capability | Agent Impact | Status |
+|----------|-----------|-------------|--------|
+| **P0** | International Shipping (CA/MX) | Agent learns customs rules, commodity classification, duty/tax estimation. New `international_rules.py` provides lane-driven requirements. Payload builder gains international enrichment stage. | Design complete, 17 tasks planned across 6 phases |
+| **P1** | Multi-Carrier (FedEx, USPS) | New MCP servers per carrier. Agent gains carrier comparison intelligence — "ship cheapest" becomes multi-carrier rate shopping. New tool: `compare_carriers`. | Not started |
+| **P1** | Address Book | Persistent shipper/recipient profiles. Agent can reference "ship to John's usual address" via new `resolve_address` tool. | Not started |
+| **P2** | Google Sheets Integration | New data source adapter in `adapters/`. Agent gains cloud-native data connectivity. | Not started |
+| **P2** | Webhook Notifications | Batch completion alerts via external endpoints. Agent gains `notify_webhook` tool for post-execution actions. | Not started |
+| **P3** | Smart Routing | Agent recommends optimal carrier+service based on destination, weight, deadline, cost. Requires multi-carrier foundation. | Not started |
+
+## Boundaries
+
+ShipAgent is a **shipping orchestration agent**, not a general commerce platform. These boundaries are intentional — they keep the agent focused and the architecture clean:
+
+- **Read-only for orders**: The agent reads from data sources and platforms but never modifies source orders (except write-back of tracking numbers)
+- **No inventory management**: Out of scope — shipping is the domain, not warehouse management
+- **No payment processing**: Shipping costs are billed to the UPS account, not processed by ShipAgent
+- **No customer communication**: The agent doesn't send emails/SMS to end customers — that's the platform's job
+- **UPS only (for now)**: Multi-carrier is on the roadmap but MVP is UPS-only via the `ups-mcp` server
