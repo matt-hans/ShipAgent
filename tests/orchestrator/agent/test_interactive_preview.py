@@ -1051,7 +1051,7 @@ class TestExecutionUsesPersistedShipper:
 
     @pytest.mark.asyncio
     async def test_falls_back_on_malformed_shipper_json(self):
-        """Invalid JSON in shipper_json falls back to build_shipper_from_env()."""
+        """Invalid JSON in shipper_json falls back to build_shipper()."""
         from src.db.models import Job, JobRow
 
         env_shipper = {"name": "Env Shipper", "addressLine1": "100 Main St"}
@@ -1081,7 +1081,7 @@ class TestExecutionUsesPersistedShipper:
             patch("src.db.connection.get_db", mock_get_db),
             patch("src.api.routes.preview.UPSMCPClient", return_value=mock_ups_cm),
             patch("src.api.routes.preview.BatchEngine", return_value=mock_be_instance),
-            patch("src.api.routes.preview.build_shipper_from_env", return_value=env_shipper) as mock_env,
+            patch("src.api.routes.preview.build_shipper", return_value=env_shipper) as mock_env,
             patch.dict(os.environ, {
                 "UPS_ACCOUNT_NUMBER": "X",
                 "UPS_BASE_URL": "https://wwwcie.ups.com",
@@ -1093,7 +1093,7 @@ class TestExecutionUsesPersistedShipper:
 
             await _execute_batch("malformed-test")
 
-            # Assert fallback to build_shipper_from_env was called
+            # Assert fallback to build_shipper was called
             mock_env.assert_called_once()
             # Assert BatchEngine.execute received the env shipper
             call_kwargs = mock_be_instance.execute.call_args.kwargs

@@ -23,13 +23,10 @@ from src.api.schemas import (
 from src.db.connection import get_db
 from src.db.models import Job, JobRow, RowStatus
 from src.services.batch_engine import BatchEngine
+from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
 from src.services.ups_mcp_client import UPSMCPClient
-from src.services.ups_payload_builder import (
-    build_shipment_request,
-    build_shipper_from_env,
-    build_shipper_from_shop,
-)
-from src.services.ups_service_codes import SERVICE_CODE_NAMES
+from src.services.ups_payload_builder import build_shipper
+from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +90,7 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
                 city = order_data_dict.get("ship_to_city", "")
                 state = order_data_dict.get("ship_to_state", "")
                 city_state = f"{city}, {state}" if city and state else "Pending"
-                service_code = order_data_dict.get("service_code", "03")
+                service_code = order_data_dict.get("service_code", ServiceCode.GROUND.value)
                 service = SERVICE_CODE_NAMES.get(service_code, "UPS Ground")
             except json.JSONDecodeError:
                 pass
@@ -136,7 +133,7 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
     for row in rows:
         if getattr(row, "duties_taxes_cents", None):
             total_duties_taxes += row.duties_taxes_cents
-        if getattr(row, "destination_country", None) and row.destination_country not in ("US", "PR"):
+        if getattr(row, "destination_country", None) and row.destination_country not in (DEFAULT_ORIGIN_COUNTRY, "PR"):
             international_count += 1
 
     return BatchPreviewResponse(
@@ -193,12 +190,12 @@ async def _get_shipper_info() -> dict[str, str]:
                             "Using shipper info from Shopify store: %s",
                             shop_info.get("name"),
                         )
-                        return build_shipper_from_shop(shop_info)
+                        return build_shipper(shop_info)
         except Exception as e:
             logger.warning("Failed to get shop info from Shopify: %s", e)
 
     logger.info("Using shipper info from environment variables")
-    return build_shipper_from_env()
+    return build_shipper()
 
 
 def _get_sse_observer():
@@ -261,14 +258,14 @@ async def _execute_batch(job_id: str) -> None:
                     job_id,
                     e,
                 )
-                shipper = build_shipper_from_env()
+                shipper = build_shipper()
         else:
             from src.services.gateway_provider import get_data_gateway
 
             gw = await get_data_gateway()
             source_info = await gw.get_source_info()
             if source_info is not None:
-                shipper = build_shipper_from_env()
+                shipper = build_shipper()
                 logger.info("Using env shipper for local data source job %s", job_id)
             else:
                 shipper = await _get_shipper_info()

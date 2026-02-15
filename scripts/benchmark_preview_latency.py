@@ -18,7 +18,7 @@ from typing import Any
 
 from src.services.batch_engine import BatchEngine
 from src.services.ups_mcp_client import UPSMCPClient
-from src.services.ups_payload_builder import build_shipper_from_env
+from src.services.ups_payload_builder import build_shipper
 
 
 @dataclass
@@ -136,7 +136,7 @@ async def _benchmark_variant(
     environment: str,
 ) -> dict[str, float]:
     rows = _build_rows(dataset_size)
-    shipper = build_shipper_from_env()
+    shipper = build_shipper()
     os.environ["BATCH_CONCURRENCY"] = str(concurrency)
     os.environ["BATCH_PREVIEW_MAX_ROWS"] = str(dataset_size)
 

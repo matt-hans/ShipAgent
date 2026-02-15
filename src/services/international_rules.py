@@ -13,6 +13,12 @@ import re
 from dataclasses import dataclass, field
 from datetime import date
 
+from src.services.ups_constants import (
+    DEFAULT_CURRENCY_CODE,
+    DEFAULT_FORM_TYPE,
+    SUPPORTED_SHIPPING_LANES,
+)
+
 
 RULE_VERSION = "1.0.0"
 
@@ -86,8 +92,8 @@ class RequirementSet:
     requires_international_forms: bool = False
     requires_commodities: bool = False
     supported_services: list[str] = field(default_factory=list)
-    currency_code: str = "USD"
-    form_type: str = "01"
+    currency_code: str = DEFAULT_CURRENCY_CODE
+    form_type: str = DEFAULT_FORM_TYPE
     not_shippable_reason: str | None = None
 
 
@@ -144,13 +150,12 @@ def get_requirements(
         )
 
     # International: check if lane is supported
-    supported_lanes = {"US-CA", "US-MX"}
-    if lane_key not in supported_lanes:
+    if lane_key not in SUPPORTED_SHIPPING_LANES:
         return RequirementSet(
             is_international=True,
             not_shippable_reason=(
                 f"Shipping lane {origin} to {destination} is not currently supported. "
-                f"Supported lanes: {', '.join(sorted(supported_lanes))}."
+                f"Supported lanes: {', '.join(sorted(SUPPORTED_SHIPPING_LANES))}."
             ),
         )
 
@@ -196,8 +201,8 @@ def get_requirements(
         requires_international_forms=True,
         requires_commodities=True,
         supported_services=list(SUPPORTED_INTERNATIONAL_SERVICES),
-        currency_code="USD",
-        form_type="01",
+        currency_code=DEFAULT_CURRENCY_CODE,
+        form_type=DEFAULT_FORM_TYPE,
     )
 
 

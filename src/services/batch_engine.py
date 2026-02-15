@@ -21,11 +21,13 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
 from src.services.ups_payload_builder import (
     build_shipment_request,
     build_ups_api_payload,
     build_ups_rate_payload,
 )
+from src.services.ups_service_codes import ServiceCode
 from src.services.errors import UPSServiceError
 from src.services.gateway_provider import get_data_gateway
 from src.services.international_rules import get_requirements, validate_international_readiness
@@ -167,9 +169,9 @@ class BatchEngine:
                     order_data = self._parse_order_data(row)
 
                     # International validation (preview)
-                    dest_country = order_data.get("ship_to_country", "US")
-                    eff_service = service_code or order_data.get("service_code", "03")
-                    origin_country = shipper.get("countryCode", "US")
+                    dest_country = order_data.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
+                    eff_service = service_code or order_data.get("service_code", ServiceCode.GROUND.value)
+                    origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
                     requirements = get_requirements(origin_country, dest_country, eff_service)
 
                     if requirements.not_shippable_reason:
@@ -366,9 +368,9 @@ class BatchEngine:
                     order_data = self._parse_order_data(row)
 
                     # International validation (execute)
-                    dest_country = order_data.get("ship_to_country", "US")
-                    eff_service = service_code or order_data.get("service_code", "03")
-                    origin_country = shipper.get("countryCode", "US")
+                    dest_country = order_data.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
+                    eff_service = service_code or order_data.get("service_code", ServiceCode.GROUND.value)
+                    origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
                     requirements = get_requirements(origin_country, dest_country, eff_service)
 
                     if requirements.not_shippable_reason:
@@ -428,7 +430,7 @@ class BatchEngine:
                     cost_cents = _dollars_to_cents(charges.get("monetaryValue", "0"))
 
                     # International charge breakdown and destination storage
-                    row_dest_country = dest_country if dest_country.upper() != "US" else None
+                    row_dest_country = dest_country if dest_country.upper() != DEFAULT_ORIGIN_COUNTRY else None
                     row_duties_taxes_cents = None
                     row_charge_breakdown = None
 

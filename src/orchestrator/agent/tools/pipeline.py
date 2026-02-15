@@ -145,10 +145,10 @@ async def _run_batch_preview(job_id: str) -> dict[str, Any]:
         Preview result dict from BatchEngine.
     """
     from src.services.batch_engine import BatchEngine
-    from src.services.ups_payload_builder import build_shipper_from_env
+    from src.services.ups_payload_builder import build_shipper
 
     account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
-    shipper = build_shipper_from_env()
+    shipper = build_shipper()
     ups = await _get_ups_client()
 
     with get_db_context() as db:
@@ -213,10 +213,10 @@ async def ship_command_pipeline_tool(
         return _err("No rows matched the provided filter.")
 
     from src.services.batch_engine import BatchEngine
-    from src.services.ups_payload_builder import build_shipper_from_env
+    from src.services.ups_payload_builder import build_shipper
 
     account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
-    shipper = build_shipper_from_env()
+    shipper = build_shipper()
     ups = await _get_ups_client()
 
     try:
@@ -352,10 +352,10 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     try:
         from src.services.batch_engine import BatchEngine
-        from src.services.ups_payload_builder import build_shipper_from_env
+        from src.services.ups_payload_builder import build_shipper
 
         account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
-        shipper = build_shipper_from_env()
+        shipper = build_shipper()
         ups = await _get_ups_client()
 
         with get_db_context() as db:
