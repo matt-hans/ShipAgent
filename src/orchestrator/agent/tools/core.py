@@ -16,13 +16,16 @@ from typing import Any
 from uuid import uuid4
 
 from src.db.connection import get_db_context
-from src.orchestrator.models.intent import SERVICE_ALIASES
 from src.services.audit_service import AuditService, EventType
 from src.services.column_mapping import (
     apply_mapping,
     auto_map_columns,
-    translate_service_name,
     validate_mapping,
+)
+from src.services.ups_service_codes import (
+    SERVICE_ALIASES,
+    SERVICE_CODE_NAMES,
+    translate_service_name,
 )
 from src.services.job_service import JobService
 
@@ -340,17 +343,6 @@ async def shutdown_cached_ups_client() -> None:
 # ---------------------------------------------------------------------------
 # Preview Enrichment Helpers
 # ---------------------------------------------------------------------------
-
-SERVICE_CODE_NAMES: dict[str, str] = {
-    "01": "UPS Next Day Air",
-    "02": "UPS 2nd Day Air",
-    "03": "UPS Ground",
-    "11": "UPS Standard",
-    "12": "UPS 3 Day Select",
-    "13": "UPS Next Day Air Saver",
-    "14": "UPS Next Day Air Early",
-    "59": "UPS 2nd Day Air A.M.",
-}
 
 
 def _enrich_preview_rows_from_map(
