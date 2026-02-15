@@ -374,8 +374,13 @@ class TestLookupServiceCode:
 
     def test_unknown_passthrough(self):
         """Unknown values pass through unchanged."""
+        result = lookup_service_code("carrier_pigeon")
+        assert result == "carrier_pigeon"
+
+    def test_express_resolves_to_next_day_air(self):
+        """Express is an alias for Next Day Air (01)."""
         result = lookup_service_code("express")
-        assert result == "express"
+        assert result == "01"
 
 
 class TestLogisticsFiltersRegistry:

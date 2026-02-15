@@ -29,22 +29,11 @@ from src.services.ups_payload_builder import (
     build_shipper_from_env,
     build_shipper_from_shop,
 )
+from src.services.ups_service_codes import SERVICE_CODE_NAMES
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["preview"])
-
-# UPS service code to name mapping
-SERVICE_CODE_NAMES = {
-    "01": "UPS Next Day Air",
-    "02": "UPS 2nd Day Air",
-    "03": "UPS Ground",
-    "11": "UPS Standard",
-    "12": "UPS 3 Day Select",
-    "13": "UPS Next Day Air Saver",
-    "14": "UPS Next Day Air Early",
-    "59": "UPS 2nd Day Air A.M.",
-}
 
 @router.get("/jobs/{job_id}/preview", response_model=BatchPreviewResponse)
 def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewResponse:

@@ -4,58 +4,18 @@ These Pydantic models define the structure of parsed user commands,
 including shipping intents, filter criteria, and row qualifiers.
 """
 
-from enum import Enum
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
-class ServiceCode(str, Enum):
-    """UPS service codes for shipping services.
-
-    These codes correspond to UPS API service type identifiers.
-    """
-
-    GROUND = "03"
-    NEXT_DAY_AIR = "01"
-    SECOND_DAY_AIR = "02"
-    THREE_DAY_SELECT = "12"
-    NEXT_DAY_AIR_SAVER = "13"
-
-
-# Service alias mapping per CONTEXT.md Decision 1
-# Maps user-friendly terms to ServiceCode enum values
-SERVICE_ALIASES: dict[str, ServiceCode] = {
-    # Ground service
-    "ground": ServiceCode.GROUND,
-    "ups ground": ServiceCode.GROUND,
-    # Next Day Air
-    "overnight": ServiceCode.NEXT_DAY_AIR,
-    "next day": ServiceCode.NEXT_DAY_AIR,
-    "next day air": ServiceCode.NEXT_DAY_AIR,
-    "nda": ServiceCode.NEXT_DAY_AIR,
-    # Second Day Air
-    "2-day": ServiceCode.SECOND_DAY_AIR,
-    "2 day": ServiceCode.SECOND_DAY_AIR,
-    "two day": ServiceCode.SECOND_DAY_AIR,
-    "2nd day air": ServiceCode.SECOND_DAY_AIR,
-    "second day air": ServiceCode.SECOND_DAY_AIR,
-    # Three Day Select
-    "3-day": ServiceCode.THREE_DAY_SELECT,
-    "3 day": ServiceCode.THREE_DAY_SELECT,
-    "three day": ServiceCode.THREE_DAY_SELECT,
-    "3 day select": ServiceCode.THREE_DAY_SELECT,
-    "three day select": ServiceCode.THREE_DAY_SELECT,
-    # Next Day Air Saver
-    "saver": ServiceCode.NEXT_DAY_AIR_SAVER,
-    "next day air saver": ServiceCode.NEXT_DAY_AIR_SAVER,
-    "nda saver": ServiceCode.NEXT_DAY_AIR_SAVER,
-}
-
-# Reverse mapping from code value to ServiceCode enum
-CODE_TO_SERVICE: dict[str, ServiceCode] = {
-    code.value: code for code in ServiceCode
-}
+# Re-export canonical service code definitions for backward compatibility.
+# All consumers that import ServiceCode, SERVICE_ALIASES, CODE_TO_SERVICE
+# from this module continue to work unchanged.
+from src.services.ups_service_codes import (  # noqa: F401
+    CODE_TO_SERVICE,
+    SERVICE_ALIASES,
+    ServiceCode,
+)
 
 
 class RowQualifier(BaseModel):
