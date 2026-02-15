@@ -104,6 +104,17 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
         if warnings:
             rows_with_warnings += 1
 
+        # Extract international data from row
+        destination_country = getattr(row, "destination_country", None)
+        duties_taxes_cents = getattr(row, "duties_taxes_cents", None)
+        charge_breakdown_raw = getattr(row, "charge_breakdown", None)
+        charge_breakdown = None
+        if charge_breakdown_raw:
+            try:
+                charge_breakdown = json.loads(charge_breakdown_raw)
+            except json.JSONDecodeError:
+                pass
+
         preview_rows.append(
             PreviewRowResponse(
                 row_number=row.row_number,
@@ -113,8 +124,20 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
                 estimated_cost_cents=estimated_cost,
                 warnings=warnings,
                 order_data=order_data_dict,
+                destination_country=destination_country,
+                duties_taxes_cents=duties_taxes_cents,
+                charge_breakdown=charge_breakdown,
             )
         )
+
+    # Compute international aggregates
+    total_duties_taxes = 0
+    international_count = 0
+    for row in rows:
+        if getattr(row, "duties_taxes_cents", None):
+            total_duties_taxes += row.duties_taxes_cents
+        if getattr(row, "destination_country", None) and row.destination_country not in ("US", "PR"):
+            international_count += 1
 
     return BatchPreviewResponse(
         job_id=job_id,
@@ -123,6 +146,8 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
         additional_rows=0,
         total_estimated_cost_cents=total_estimated_cost,
         rows_with_warnings=rows_with_warnings,
+        total_duties_taxes_cents=total_duties_taxes if total_duties_taxes > 0 else None,
+        international_row_count=international_count,
     )
 
 
