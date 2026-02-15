@@ -124,6 +124,10 @@ export interface Job {
   failed_rows: number;
   total_cost_cents: number | null;
 
+  // International shipping aggregates
+  total_duties_taxes_cents?: number | null;
+  international_row_count?: number;
+
   error_code: string | null;
   error_message: string | null;
 
@@ -168,10 +172,33 @@ export interface JobRow {
   tracking_number: string | null;
   label_path: string | null;
   cost_cents: number | null;
+
+  // International shipping data
+  destination_country?: string | null;
+  duties_taxes_cents?: number | null;
+  charge_breakdown?: ChargeBreakdown | null;
+
   error_code: string | null;
   error_message: string | null;
   created_at: string;
   processed_at: string | null;
+}
+
+// === International Shipping Types ===
+
+/** Monetary entry in a charge breakdown (e.g., transportation, duties). */
+export interface ChargeBreakdownEntry {
+  monetaryValue: string;
+  currencyCode: string;
+}
+
+/** Itemized charge breakdown for international shipments. */
+export interface ChargeBreakdown {
+  version: string;
+  transportationCharges?: ChargeBreakdownEntry;
+  serviceOptionsCharges?: ChargeBreakdownEntry;
+  dutiesAndTaxes?: ChargeBreakdownEntry;
+  brokerageCharges?: ChargeBreakdownEntry;
 }
 
 // === Preview Types ===
@@ -203,6 +230,10 @@ export interface PreviewRow {
   estimated_cost_cents: number;
   warnings: string[];
   order_data?: OrderData | null;
+
+  // International shipping data
+  destination_country?: string;
+  charge_breakdown?: ChargeBreakdown;
 }
 
 /** Shipper address info for interactive preview display. */
@@ -225,6 +256,9 @@ export interface BatchPreview {
   additional_rows: number;
   total_estimated_cost_cents: number;
   rows_with_warnings: number;
+  // International shipping aggregates
+  total_duties_taxes_cents?: number;
+  international_row_count?: number;
   // Interactive shipment metadata (present when interactive=true)
   interactive?: boolean;
   shipper?: ShipperInfo;
