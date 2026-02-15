@@ -303,6 +303,34 @@ class DataSourceMCPClient:
             "errors": errors,
         }
 
+    # -- Commodity operations -----------------------------------------------
+
+    async def get_commodities_bulk(
+        self, order_ids: list[int | str],
+    ) -> dict[int | str, list[dict[str, Any]]]:
+        """Get commodities for multiple orders via MCP tool.
+
+        Args:
+            order_ids: List of order IDs to retrieve commodities for.
+
+        Returns:
+            Dict mapping order_id to list of commodity dicts.
+        """
+        await self._ensure_connected()
+        result = await self._mcp.call_tool("get_commodities_bulk", {
+            "order_ids": order_ids,
+        })
+        if not result:
+            return {}
+        # MCP returns dict with string keys; normalize to match input type
+        normalized: dict[int | str, list[dict[str, Any]]] = {}
+        for k, v in result.items():
+            try:
+                normalized[int(k) if order_ids and isinstance(order_ids[0], int) else k] = v
+            except (ValueError, TypeError):
+                normalized[k] = v
+        return normalized
+
     # -- Data source lifecycle ---------------------------------------------
 
     async def disconnect(self) -> None:

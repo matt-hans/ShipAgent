@@ -102,6 +102,20 @@ class DataSourceGateway(Protocol):
         """List sheets in an Excel file."""
         ...
 
+    async def get_commodities_bulk(
+        self, order_ids: list[int | str],
+    ) -> dict[int | str, list[dict[str, Any]]]:
+        """Get commodities grouped by order_id for international shipments.
+
+        Args:
+            order_ids: List of order IDs to retrieve commodities for.
+
+        Returns:
+            Dict mapping order_id to list of commodity dicts.
+            Missing orders are omitted from the result.
+        """
+        ...
+
     async def list_tables(
         self, connection_string: str, schema: str = "public"
     ) -> dict[str, Any]:
