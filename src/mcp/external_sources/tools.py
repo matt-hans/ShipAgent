@@ -398,6 +398,66 @@ async def get_order(
         }
 
 
+async def validate_credentials(
+    platform: str,
+    credentials: dict,
+    ctx: Context,
+    store_url: str | None = None,
+) -> dict:
+    """Validate platform credentials without mutating shared state.
+
+    Creates a temporary client, authenticates, and optionally fetches
+    shop metadata. Does NOT store credentials, clients, or connections
+    in lifespan context — purely read-only.
+
+    Args:
+        platform: Platform identifier (e.g., 'shopify').
+        credentials: Platform-specific credentials.
+        store_url: Store/instance URL.
+
+    Returns:
+        Dictionary with:
+        - valid: True if credentials authenticated successfully
+        - platform: Platform identifier
+        - shop: Shop metadata dict (if available, Shopify only)
+        - error: Error message if validation failed
+    """
+    await ctx.info(f"Validating credentials for {platform} (read-only)")
+
+    if platform not in SUPPORTED_PLATFORMS:
+        return {
+            "valid": False,
+            "platform": platform,
+            "error": f"Unsupported platform: {platform}.",
+        }
+
+    try:
+        client = _create_platform_client(platform)
+        auth_creds = dict(credentials)
+        url_key = _URL_KEY_MAP.get(platform)
+        if store_url and url_key:
+            auth_creds.setdefault(url_key, store_url)
+        auth_ok = await client.authenticate(auth_creds)
+        if not auth_ok:
+            return {
+                "valid": False,
+                "platform": platform,
+                "error": "Authentication failed — check credentials.",
+            }
+    except Exception as e:
+        return {"valid": False, "platform": platform, "error": str(e)}
+
+    # Best-effort shop metadata (Shopify only)
+    shop = None
+    if hasattr(client, "get_shop_info"):
+        try:
+            shop = await client.get_shop_info()
+        except Exception:
+            pass
+
+    return {"valid": True, "platform": platform, "shop": shop}
+
+
 async def get_shop_info(platform: str, ctx: Context) -> dict:
     """Get shop/store metadata from a connected platform.
 

@@ -113,6 +113,34 @@ class ExternalSourcesMCPClient:
             },
         )
 
+    async def validate_credentials(
+        self,
+        platform: str,
+        credentials: dict[str, Any],
+        store_url: str | None = None,
+    ) -> dict[str, Any]:
+        """Validate platform credentials without mutating shared state.
+
+        Read-only check — does NOT store credentials, clients, or
+        connections in the MCP server's lifespan context.
+
+        Args:
+            platform: Platform identifier.
+            credentials: Platform-specific credentials.
+            store_url: Store/instance URL.
+
+        Returns:
+            Dict with valid, platform, shop (optional), error (optional).
+        """
+        return await self._mcp.call_tool(
+            "validate_credentials",
+            {
+                "platform": platform,
+                "credentials": credentials,
+                "store_url": store_url,
+            },
+        )
+
     async def disconnect_platform(self, platform: str) -> dict[str, Any]:
         """Disconnect a platform via MCP gateway.
 
