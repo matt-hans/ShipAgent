@@ -8,7 +8,9 @@ from datetime import date
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+import json
+
+from pydantic import BaseModel, Field, field_validator
 
 
 # Enums for API validation
@@ -61,10 +63,26 @@ class JobRowResponse(BaseModel):
     tracking_number: str | None
     label_path: str | None
     cost_cents: int | None
+    destination_country: str | None = None
+    duties_taxes_cents: int | None = None
+    charge_breakdown: dict | None = None
     error_code: str | None
     error_message: str | None
     created_at: str
     processed_at: str | None
+
+    @field_validator("charge_breakdown", mode="before")
+    @classmethod
+    def _parse_charge_breakdown(cls, v: str | dict | None) -> dict | None:
+        """Parse charge_breakdown from JSON string if stored as text in SQLite."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return v
 
     class Config:
         """Pydantic config for ORM model conversion."""
@@ -87,6 +105,8 @@ class JobResponse(BaseModel):
     successful_rows: int
     failed_rows: int
     total_cost_cents: int | None
+    total_duties_taxes_cents: int | None = None
+    international_row_count: int = 0
 
     error_code: str | None
     error_message: str | None
@@ -202,6 +222,9 @@ class PreviewRowResponse(BaseModel):
         default=None,
         description="Full order details for expanded view",
     )
+    destination_country: str | None = None
+    duties_taxes_cents: int | None = None
+    charge_breakdown: dict | None = None
 
 
 class BatchPreviewResponse(BaseModel):
@@ -217,6 +240,8 @@ class BatchPreviewResponse(BaseModel):
     rows_with_warnings: int = Field(
         default=0, description="Number of rows with warnings"
     )
+    total_duties_taxes_cents: int | None = None
+    international_row_count: int = 0
 
 
 class SkipRowsRequest(BaseModel):
