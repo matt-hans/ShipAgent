@@ -341,11 +341,25 @@ async def _execute_batch(job_id: str) -> None:
         failed = result["failed"]
         total_cost = result["total_cost_cents"]
 
+        # Aggregate international row-level data onto job
+        intl_rows = (
+            db.query(JobRow)
+            .filter(
+                JobRow.job_id == job_id,
+                JobRow.destination_country.isnot(None),
+            )
+            .all()
+        )
+        intl_count = len(intl_rows)
+        intl_duties = sum(r.duties_taxes_cents or 0 for r in intl_rows)
+
         # Update job with final status
         job.processed_rows = successful + failed
         job.successful_rows = successful
         job.failed_rows = failed
         job.total_cost_cents = total_cost
+        job.international_row_count = intl_count
+        job.total_duties_taxes_cents = intl_duties if intl_duties > 0 else None
         job.status = "completed" if failed == 0 else "failed"
         job.completed_at = datetime.now(UTC).isoformat()
         db.commit()

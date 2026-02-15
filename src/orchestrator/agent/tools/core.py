@@ -269,7 +269,7 @@ def _command_explicitly_requests_service(command: str) -> bool:
     for alias in SERVICE_ALIASES:
         if alias in text:
             return True
-    return bool(re.search(r"\b(01|02|03|11|12|13|14|59)\b", text))
+    return bool(re.search(r"\b(01|02|03|07|08|11|12|13|14|54|59|65)\b", text))
 
 
 # ---------------------------------------------------------------------------

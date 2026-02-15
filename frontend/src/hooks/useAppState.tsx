@@ -64,6 +64,8 @@ interface ConversationMessage {
       successful: number;
       failed: number;
       totalCostCents: number;
+      dutiesTaxesCents?: number;
+      internationalCount?: number;
       rowFailures?: Array<{
         rowNumber: number;
         errorCode: string;

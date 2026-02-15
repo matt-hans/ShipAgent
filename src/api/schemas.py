@@ -8,7 +8,9 @@ from datetime import date
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field
+import json
+
+from pydantic import BaseModel, Field, field_validator
 
 
 # Enums for API validation
@@ -68,6 +70,19 @@ class JobRowResponse(BaseModel):
     error_message: str | None
     created_at: str
     processed_at: str | None
+
+    @field_validator("charge_breakdown", mode="before")
+    @classmethod
+    def _parse_charge_breakdown(cls, v: str | dict | None) -> dict | None:
+        """Parse charge_breakdown from JSON string if stored as text in SQLite."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return v
 
     class Config:
         """Pydantic config for ORM model conversion."""
