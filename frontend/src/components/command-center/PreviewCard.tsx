@@ -599,7 +599,12 @@ export function InteractivePreviewCard({
           </div>
           {shipTo ? (
             <div className="space-y-0.5 text-sm text-slate-200">
-              <p className="font-medium">{shipTo.name}</p>
+              <div className="flex items-center gap-1.5">
+                <p className="font-medium">{shipTo.name}</p>
+                {shipTo.country && shipTo.country !== 'US' && (
+                  <CountryBadge country={shipTo.country} />
+                )}
+              </div>
               <p className="text-slate-300">{shipTo.address1}</p>
               {shipTo.address2 && <p className="text-slate-300">{shipTo.address2}</p>}
               <p className="text-slate-300">

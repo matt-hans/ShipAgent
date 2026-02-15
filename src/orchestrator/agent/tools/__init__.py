@@ -330,8 +330,12 @@ def get_all_tool_definitions(
                     },
                     "service": {
                         "type": "string",
-                        "description": "UPS service name or code (default Ground).",
-                        "default": "Ground",
+                        "description": (
+                            "UPS service name or code. ALWAYS extract and pass the user's "
+                            "service preference (e.g. 'Ground', 'Next Day Air', '2nd Day Air', "
+                            "'3 Day Select', 'UPS Standard'). Only use 'Ground' when the user "
+                            "explicitly says Ground or does not mention any service."
+                        ),
                     },
                     "weight": {
                         "type": "number",
@@ -353,6 +357,65 @@ def get_all_tool_definitions(
                             "name, phone, address1, city, state, zip, country. "
                             "Overrides are merged on top of env-configured defaults."
                         ),
+                    },
+                    "commodities": {
+                        "type": "array",
+                        "description": (
+                            "Commodity lines for international customs (required for "
+                            "US->CA and US->MX)."
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "description": {
+                                    "type": "string",
+                                    "description": "Commodity description (max 35 chars).",
+                                },
+                                "commodity_code": {
+                                    "type": "string",
+                                    "description": "HS tariff/commodity code.",
+                                },
+                                "origin_country": {
+                                    "type": "string",
+                                    "description": "Country of origin (ISO 2-letter code).",
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "description": "Item quantity for this commodity line.",
+                                },
+                                "unit_value": {
+                                    "type": "string",
+                                    "description": "Monetary value per unit.",
+                                },
+                            },
+                            "required": [
+                                "description",
+                                "commodity_code",
+                                "origin_country",
+                                "quantity",
+                                "unit_value",
+                            ],
+                        },
+                    },
+                    "invoice_currency_code": {
+                        "type": "string",
+                        "description": "Invoice currency code (ISO 4217, e.g. USD, CAD).",
+                    },
+                    "invoice_monetary_value": {
+                        "type": "string",
+                        "description": "Invoice total monetary value.",
+                    },
+                    "reason_for_export": {
+                        "type": "string",
+                        "description": "Reason for export.",
+                        "enum": [
+                            "SALE",
+                            "GIFT",
+                            "SAMPLE",
+                            "REPAIR",
+                            "RETURN",
+                            "INTERCOMPANY",
+                        ],
                     },
                 },
                 "required": [

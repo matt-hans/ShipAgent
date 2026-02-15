@@ -534,10 +534,12 @@ def build_shipment_request(
     if requirements.requires_international_forms:
         commodities = order_data.get("commodities", [])
         if commodities:
+            reason_for_export = str(order_data.get("reason_for_export", "SALE")).upper()
             result["internationalForms"] = build_international_forms(
                 commodities=commodities,
                 currency_code=requirements.currency_code,
                 form_type=requirements.form_type,
+                reason_for_export=reason_for_export,
             )
 
     return result
