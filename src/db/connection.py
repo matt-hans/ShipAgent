@@ -220,10 +220,49 @@ def _ensure_columns_exist(conn: Any) -> None:
             "is_interactive",
             "ALTER TABLE jobs ADD COLUMN is_interactive BOOLEAN NOT NULL DEFAULT 0",
         ),
+        # International shipping columns — jobs table
+        (
+            "total_duties_taxes_cents",
+            "ALTER TABLE jobs ADD COLUMN total_duties_taxes_cents INTEGER",
+        ),
+        (
+            "international_row_count",
+            "ALTER TABLE jobs ADD COLUMN international_row_count INTEGER NOT NULL DEFAULT 0",
+        ),
     ]
 
     for col_name, ddl in migrations:
         if col_name not in existing:
+            try:
+                conn.execute(text(ddl))
+            except OperationalError as e:
+                if "duplicate column" in str(e).lower():
+                    log.debug("Column %s already exists (concurrent add).", col_name)
+                else:
+                    log.error("Failed to add column %s: %s", col_name, e)
+                    raise
+
+    # job_rows table migrations
+    result_rows = conn.execute(text("PRAGMA table_info(job_rows)"))
+    existing_rows = {row[1] for row in result_rows.fetchall()}
+
+    row_migrations: list[tuple[str, str]] = [
+        (
+            "destination_country",
+            "ALTER TABLE job_rows ADD COLUMN destination_country VARCHAR(2)",
+        ),
+        (
+            "duties_taxes_cents",
+            "ALTER TABLE job_rows ADD COLUMN duties_taxes_cents INTEGER",
+        ),
+        (
+            "charge_breakdown",
+            "ALTER TABLE job_rows ADD COLUMN charge_breakdown TEXT",
+        ),
+    ]
+
+    for col_name, ddl in row_migrations:
+        if col_name not in existing_rows:
             try:
                 conn.execute(text(ddl))
             except OperationalError as e:

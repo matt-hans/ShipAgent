@@ -88,6 +88,10 @@ from src.mcp.data_source.tools.source_info_tools import (
     import_records,
 )
 from src.mcp.data_source.tools.writeback_tools import write_back
+from src.mcp.data_source.tools.commodity_tools import (
+    import_commodities,
+    get_commodities_bulk,
+)
 
 # EDI tools require pydifact — import lazily so missing dependency
 # does not break CSV/Excel/Database operations.
@@ -115,6 +119,8 @@ mcp.tool()(write_back)
 mcp.tool()(get_source_info)
 mcp.tool()(import_records)
 mcp.tool()(clear_source)
+mcp.tool()(import_commodities)
+mcp.tool()(get_commodities_bulk)
 if _edi_available:
     mcp.tool()(import_edi)
 

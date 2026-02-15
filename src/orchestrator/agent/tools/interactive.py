@@ -76,7 +76,7 @@ def _normalize_ship_from(raw: dict[str, Any]) -> dict[str, str]:
                 continue
             if canonical == "phone":
                 result = normalize_phone(v)
-                if result == "5555555555":
+                if not result:
                     continue  # skip invalid phone override
                 v = result
             elif canonical == "postalCode":
@@ -138,16 +138,19 @@ async def preview_interactive_shipment_tool(
     ship_to_zip = _str(args.get("ship_to_zip"))
     command = _str(args.get("command"))
 
-    if not all([ship_to_name, ship_to_address1, ship_to_city, ship_to_state, ship_to_zip]):
+    if not all([ship_to_name, ship_to_address1, ship_to_city, ship_to_zip]):
         return _err(
             "Missing required fields: ship_to_name, ship_to_address1, "
-            "ship_to_city, ship_to_state, ship_to_zip are all required."
+            "ship_to_city, ship_to_zip are all required."
         )
 
     # Optional fields
     ship_to_address2 = _str(args.get("ship_to_address2"))
     ship_to_phone = _str(args.get("ship_to_phone"))
+    ship_to_state = _str(args.get("ship_to_state"))
     ship_to_country = _str(args.get("ship_to_country"), "US") or "US"
+    ship_to_attention_name = _str(args.get("ship_to_attention_name"))
+    shipment_description = _str(args.get("shipment_description"))
     service = _str(args.get("service"), "Ground")
     raw_packaging = args.get("packaging_type")
     packaging_type = str(raw_packaging).strip() if raw_packaging is not None else None
@@ -188,17 +191,22 @@ async def preview_interactive_shipment_tool(
         "ship_to_name": ship_to_name,
         "ship_to_address1": ship_to_address1,
         "ship_to_city": ship_to_city,
-        "ship_to_state": ship_to_state,
         "ship_to_postal_code": ship_to_zip,
         "ship_to_country": ship_to_country,
         "service_code": service_code,
         "weight": weight,
         "packaging_type": packaging_type,
     }
+    if ship_to_state:
+        order_data["ship_to_state"] = ship_to_state
     if ship_to_address2:
         order_data["ship_to_address2"] = ship_to_address2
     if ship_to_phone:
         order_data["ship_to_phone"] = ship_to_phone
+    if ship_to_attention_name:
+        order_data["ship_to_attention_name"] = ship_to_attention_name
+    if shipment_description:
+        order_data["shipment_description"] = shipment_description[:35]
 
     # Create Job with interactive flag
     try:

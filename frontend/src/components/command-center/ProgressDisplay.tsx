@@ -24,6 +24,8 @@ export interface ProgressData {
   successful: number;
   failed: number;
   totalCostCents: number;
+  dutiesTaxesCents?: number;
+  internationalCount?: number;
   rowFailures: RowFailureInfo[];
 }
 
@@ -50,6 +52,8 @@ export function ProgressDisplay({ jobId, onComplete, onFailed }: {
         successful: progress.successful,
         failed: progress.failed,
         totalCostCents: progress.totalCostCents,
+        dutiesTaxesCents: progress.dutiesTaxesCents,
+        internationalCount: progress.internationalCount,
         rowFailures: progress.rowFailures,
       });
     }
@@ -63,6 +67,8 @@ export function ProgressDisplay({ jobId, onComplete, onFailed }: {
         successful: progress.successful,
         failed: progress.failed,
         totalCostCents: progress.totalCostCents,
+        dutiesTaxesCents: progress.dutiesTaxesCents,
+        internationalCount: progress.internationalCount,
         rowFailures: progress.rowFailures,
       });
     }
@@ -107,7 +113,7 @@ export function ProgressDisplay({ jobId, onComplete, onFailed }: {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-2">
+      <div className={cn('grid gap-2', progress.dutiesTaxesCents ? 'grid-cols-5' : 'grid-cols-4')}>
         <div className="p-2 rounded bg-slate-800/50 text-center">
           <p className="text-lg font-semibold text-slate-100">{progress.total}</p>
           <p className="text-[10px] font-mono text-slate-500">Total</p>
@@ -126,6 +132,14 @@ export function ProgressDisplay({ jobId, onComplete, onFailed }: {
           </p>
           <p className="text-[10px] font-mono text-slate-500">Cost</p>
         </div>
+        {progress.dutiesTaxesCents != null && progress.dutiesTaxesCents > 0 && (
+          <div className="p-2 rounded bg-amber-500/10 border border-amber-500/20 text-center">
+            <p className="text-lg font-semibold text-amber-400">
+              {formatCurrency(progress.dutiesTaxesCents)}
+            </p>
+            <p className="text-[10px] font-mono text-amber-400/70">Duties</p>
+          </div>
+        )}
       </div>
 
       {/* Per-row failure details */}

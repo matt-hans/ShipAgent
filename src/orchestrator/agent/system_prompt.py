@@ -15,9 +15,12 @@ from datetime import datetime
 from src.orchestrator.models.intent import SERVICE_ALIASES, ServiceCode
 from src.services.data_source_mcp_client import DataSourceInfo
 
+# International service codes for labeling
+_INTERNATIONAL_SERVICES = frozenset({"07", "08", "11", "54", "65"})
+
 
 def _build_service_table() -> str:
-    """Build UPS service code reference table.
+    """Build UPS service code reference table with domestic/international labels.
 
     Returns:
         Formatted string listing all service codes and their aliases.
@@ -31,7 +34,8 @@ def _build_service_table() -> str:
     lines = []
     for code_enum in ServiceCode:
         aliases = code_to_aliases.get(code_enum.value, [])
-        lines.append(f"- {code_enum.name} (code {code_enum.value}): {', '.join(aliases)}")
+        label = "international" if code_enum.value in _INTERNATIONAL_SERVICES else "domestic"
+        lines.append(f"- {code_enum.name} (code {code_enum.value}, {label}): {', '.join(aliases)}")
     return "\n".join(lines)
 
 
@@ -266,6 +270,45 @@ deterministically (e.g., SQL validation, column mapping, payload building).
 - After preview is ready, you must NOT call additional tools until the user confirms or cancels.
 """
 
+    # International shipping guidance — only in batch mode
+    international_section = ""
+    if not interactive_shipping:
+        enabled_lanes = os.environ.get("INTERNATIONAL_ENABLED_LANES", "")
+        if enabled_lanes:
+            lanes_list = ", ".join(
+                lane.strip() for lane in enabled_lanes.split(",") if lane.strip()
+            )
+            international_section = f"""
+## International Shipping
+
+**Enabled lanes:** {lanes_list}
+
+International shipments require additional fields beyond domestic:
+- **Recipient phone** and **attention name** (required)
+- **Shipper phone** and **attention name** (required)
+- **Description of goods** (max 35 chars, required for customs)
+- **Commodity data** (HS tariff code, origin country, quantity, unit value per item)
+- **InvoiceLineTotal** (currency + monetary value — required for US→CA)
+
+When the user ships to CA or MX:
+- Use an international service code (07, 08, 11, 54, or 65). Domestic codes (01, 02, 03, 12, 13) are rejected.
+- If the user says "standard" without qualification, ask whether they mean UPS Ground (domestic) or UPS Standard (international). Do NOT silently default.
+- Never silently default ship_to_country to "US". If country is missing, ask the user.
+
+Country-based filter examples:
+- "ship Canadian orders": ship_to_country = 'CA'
+- "orders going to Mexico": ship_to_country = 'MX'
+- "international orders": ship_to_country != 'US' AND ship_to_country != 'PR'
+"""
+        else:
+            international_section = """
+## International Shipping
+
+International shipping is not currently enabled. The INTERNATIONAL_ENABLED_LANES environment
+variable is not set. If a user asks about international shipping, inform them that it requires
+configuration by an administrator.
+"""
+
     return f"""You are ShipAgent, an AI shipping assistant that helps users create, rate, and manage UPS shipments from their data sources.
 
 Current date: {current_date}
@@ -273,7 +316,7 @@ Current date: {current_date}
 ## UPS Service Codes
 
 {service_table}
-
+{international_section}
 ## Connected Data Source
 
 {data_section}

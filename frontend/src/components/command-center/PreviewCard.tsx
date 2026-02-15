@@ -7,7 +7,7 @@
 
 import * as React from 'react';
 import { cn, formatCurrency } from '@/lib/utils';
-import type { BatchPreview, PreviewRow, OrderData } from '@/types/api';
+import type { BatchPreview, PreviewRow, OrderData, ChargeBreakdown } from '@/types/api';
 import type { WarningPreference } from '@/hooks/useAppState';
 import {
   ChevronDownIcon, CheckIcon, XIcon, EditIcon,
@@ -97,6 +97,45 @@ export function ShipmentDetails({ orderData }: { orderData: OrderData }) {
   );
 }
 
+/** Country badge for international destinations. */
+function CountryBadge({ country }: { country: string }) {
+  return (
+    <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-[8px] font-mono font-medium uppercase">
+      {country}
+    </span>
+  );
+}
+
+/** Inline charge breakdown for international rows. */
+function ChargeBreakdownDetail({ breakdown }: { breakdown: ChargeBreakdown }) {
+  const transport = breakdown.transportationCharges;
+  const duties = breakdown.dutiesAndTaxes;
+  const brokerage = breakdown.brokerageCharges;
+
+  return (
+    <div className="px-3 pb-2 ml-6 space-y-0.5">
+      {transport && (
+        <div className="flex justify-between text-[10px] font-mono text-slate-400">
+          <span>Transport</span>
+          <span>${transport.monetaryValue}</span>
+        </div>
+      )}
+      {duties && (
+        <div className="flex justify-between text-[10px] font-mono text-amber-400/80">
+          <span>Duties & Taxes</span>
+          <span>${duties.monetaryValue}</span>
+        </div>
+      )}
+      {brokerage && (
+        <div className="flex justify-between text-[10px] font-mono text-slate-400">
+          <span>Brokerage</span>
+          <span>${brokerage.monetaryValue}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Single collapsible shipment row with warnings. */
 export function ShipmentRow({
   row,
@@ -145,12 +184,20 @@ export function ShipmentRow({
                   <span className="px-1 py-0.5 rounded bg-primary/20 text-primary text-[8px] font-medium">
                     GIFT
                   </span>
+                  {row.destination_country && row.destination_country !== 'US' && (
+                    <CountryBadge country={row.destination_country} />
+                  )}
                 </div>
                 <span className="text-slate-500 text-[10px]">{row.city_state}</span>
               </>
             ) : (
               <>
-                <span className="text-slate-200 font-medium truncate block">{recipientName}</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-slate-200 font-medium truncate">{recipientName}</span>
+                  {row.destination_country && row.destination_country !== 'US' && (
+                    <CountryBadge country={row.destination_country} />
+                  )}
+                </div>
                 <span className="text-slate-500 text-[10px]">{row.city_state}</span>
               </>
             )}
@@ -176,6 +223,11 @@ export function ShipmentRow({
             </div>
           ))}
         </div>
+      )}
+
+      {/* International charge breakdown */}
+      {row.charge_breakdown && (
+        <ChargeBreakdownDetail breakdown={row.charge_breakdown} />
       )}
 
       {/* Expanded details */}
@@ -322,7 +374,7 @@ export function PreviewCard({
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className={cn('grid gap-3', preview.international_row_count ? 'grid-cols-4' : 'grid-cols-3')}>
         <div className="p-3 rounded-lg bg-slate-800/50 text-center">
           <p className="text-2xl font-semibold text-slate-100">{preview.total_rows}</p>
           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Total Shipments</p>
@@ -333,6 +385,12 @@ export function PreviewCard({
           </p>
           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Est. Cost</p>
         </div>
+        {preview.international_row_count != null && preview.international_row_count > 0 && (
+          <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-center">
+            <p className="text-2xl font-semibold text-blue-400">{preview.international_row_count}</p>
+            <p className="text-[10px] font-mono text-blue-400/70 uppercase tracking-wider">International</p>
+          </div>
+        )}
         <div className="p-3 rounded-lg bg-slate-800/50 text-center">
           <p className="text-2xl font-semibold text-slate-100">{preview.rows_with_warnings}</p>
           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Warnings</p>

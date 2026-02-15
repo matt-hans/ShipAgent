@@ -62,20 +62,34 @@ _FIELD_TO_ORDER_DATA: dict[str, str] = {
     "shipper.postalCode": "shipper_postal_code",
     "shipper.countryCode": "shipper_country",
     "shipper.phone": "shipper_phone",
+    # International shipping fields
+    "shipper.attentionName": "shipper_attention_name",
+    "shipTo.attentionName": "ship_to_attention_name",
+    "invoiceLineTotal.currencyCode": "invoice_currency_code",
+    "invoiceLineTotal.monetaryValue": "invoice_monetary_value",
+    "shipmentDescription": "shipment_description",
 }
 
 
-def validate_mapping(mapping: dict[str, str]) -> list[str]:
+def validate_mapping(
+    mapping: dict[str, str],
+    destination_country: str | None = None,
+) -> list[str]:
     """Validate that all required fields have mapping entries.
 
     Args:
         mapping: Dict of {simplified_path: source_column_name}.
+        destination_country: If provided, adjusts required fields.
+            For non-US destinations, stateProvinceCode is optional.
 
     Returns:
         List of error messages (empty if valid).
     """
     errors = []
+    is_international = destination_country and destination_country.upper() not in ("US", "PR")
     for field in REQUIRED_FIELDS:
+        if field == "shipTo.stateProvinceCode" and is_international:
+            continue  # State/province optional for international
         if field not in mapping:
             errors.append(f"Missing required field mapping: '{field}'")
     return errors

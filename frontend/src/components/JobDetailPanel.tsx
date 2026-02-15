@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils';
 import { useJobProgress } from '@/hooks/useJobProgress';
 import { useAppState } from '@/hooks/useAppState';
 import { LabelPreview } from '@/components/LabelPreview';
-import type { Job, JobRow, OrderData } from '@/types/api';
+import type { Job, JobRow, OrderData, ChargeBreakdown } from '@/types/api';
 import {
   ArrowLeftIcon,
   PrinterIcon,
@@ -75,10 +75,24 @@ function parseOrderData(raw: string | null): OrderData | null {
   }
 }
 
+/** Parse charge_breakdown which may be a JSON string or already an object. */
+function parseChargeBreakdown(raw: ChargeBreakdown | string | null | undefined): ChargeBreakdown | null {
+  if (!raw) return null;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  return raw;
+}
+
 /** Row detail item with expand/collapse. */
 function RowDetailItem({ row }: { row: JobRow }) {
   const [expanded, setExpanded] = React.useState(false);
   const orderData = parseOrderData(row.order_data);
+  const chargeBreakdown = parseChargeBreakdown(row.charge_breakdown);
   const isSuccess = row.status === 'completed';
   const isFailed = row.status === 'failed';
 
@@ -123,6 +137,11 @@ function RowDetailItem({ row }: { row: JobRow }) {
         </div>
 
         <div className="flex items-center gap-3 flex-shrink-0">
+          {row.destination_country && row.destination_country !== 'US' && (
+            <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-[8px] font-mono font-medium uppercase">
+              {row.destination_country}
+            </span>
+          )}
           {row.tracking_number && (
             <span className="font-mono text-cyan-400 text-[10px]">{row.tracking_number}</span>
           )}
@@ -170,6 +189,33 @@ function RowDetailItem({ row }: { row: JobRow }) {
               {orderData.ship_to_city}, {orderData.ship_to_state} {orderData.ship_to_postal_code}
             </p>
           </div>
+
+          {/* Charge breakdown for international rows */}
+          {chargeBreakdown && (
+            <div className="mt-3 pt-3 border-t border-slate-800/50">
+              <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Charge Breakdown</span>
+              <div className="mt-1 space-y-0.5">
+                {chargeBreakdown.transportationCharges && (
+                  <div className="flex justify-between text-[10px] font-mono text-slate-400">
+                    <span>Transportation</span>
+                    <span>${chargeBreakdown.transportationCharges.monetaryValue}</span>
+                  </div>
+                )}
+                {chargeBreakdown.dutiesAndTaxes && (
+                  <div className="flex justify-between text-[10px] font-mono text-amber-400/80">
+                    <span>Duties & Taxes</span>
+                    <span>${chargeBreakdown.dutiesAndTaxes.monetaryValue}</span>
+                  </div>
+                )}
+                {chargeBreakdown.brokerageCharges && (
+                  <div className="flex justify-between text-[10px] font-mono text-slate-400">
+                    <span>Brokerage</span>
+                    <span>${chargeBreakdown.brokerageCharges.monetaryValue}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {(orderData.order_number || orderData.order_id) && (
             <div className="mt-2 text-[10px] font-mono text-slate-500">

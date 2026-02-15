@@ -145,4 +145,6 @@ def get_progress(
         "successful_rows": job.successful_rows,
         "failed_rows": job.failed_rows,
         "total_cost_cents": job.total_cost_cents,
+        "total_duties_taxes_cents": job.total_duties_taxes_cents,
+        "international_row_count": job.international_row_count,
     }

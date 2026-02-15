@@ -42,6 +42,10 @@ UPS_ERROR_MAP: dict[str, str] = {
     "ELICITATION_CANCELLED": "E-2012",
     "ELICITATION_INVALID_RESPONSE": "E-4010",
     "ELICITATION_FAILED": "E-4010",
+    # International/customs UPS error codes
+    "CUSTOMS_MISSING_DATA": "E-2013",
+    "CUSTOMS_INVALID_HS": "E-2014",
+    "CUSTOMS_VALIDATION_FAILED": "E-3006",
 }
 
 # Additional UPS error messages that require pattern matching
@@ -53,6 +57,10 @@ UPS_MESSAGE_PATTERNS: dict[str, str] = {
     "rate limit": "E-3002",
     "unauthorized": "E-5001",
     "token expired": "E-5002",
+    "customs": "E-3006",
+    "export control": "E-3006",
+    "commercial invoice": "E-3006",
+    "duty": "E-3006",
 }
 
 

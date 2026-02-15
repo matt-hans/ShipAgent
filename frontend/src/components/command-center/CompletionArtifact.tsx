@@ -68,10 +68,24 @@ export function CompletionArtifact({ message, onViewLabels }: {
         <span>{meta.successful} shipment{meta.successful !== 1 ? 's' : ''}</span>
         <span className="text-slate-600">&middot;</span>
         <span className="text-primary">{formatCurrency(meta.totalCostCents)}</span>
+        {meta.dutiesTaxesCents != null && meta.dutiesTaxesCents > 0 && (
+          <>
+            <span className="text-slate-600">&middot;</span>
+            <span className="text-amber-400">{formatCurrency(meta.dutiesTaxesCents)} duties</span>
+          </>
+        )}
         {meta.failed > 0 && (
           <>
             <span className="text-slate-600">&middot;</span>
             <span className="text-error">{meta.failed} failed</span>
+          </>
+        )}
+        {meta.internationalCount != null && meta.internationalCount > 0 && (
+          <>
+            <span className="text-slate-600">&middot;</span>
+            <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-[8px] font-medium">
+              {meta.internationalCount} INTL
+            </span>
           </>
         )}
       </div>
