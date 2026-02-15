@@ -23,6 +23,9 @@ from src.services.gateway_provider import get_external_sources_client
 
 router = APIRouter(prefix="/platforms", tags=["platforms"])
 
+# Shopify Admin API version — kept in sync with ShopifyClient.API_VERSION
+_SHOPIFY_API_VERSION = "2024-01"
+
 
 # === Request/Response Schemas ===
 
@@ -285,11 +288,9 @@ async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
         try:
             import httpx
 
-            from src.mcp.external_sources.clients.shopify import ShopifyClient
-
             async with httpx.AsyncClient() as http_client:
                 response = await http_client.get(
-                    f"https://{store_domain}/admin/api/{ShopifyClient.API_VERSION}/shop.json",
+                    f"https://{store_domain}/admin/api/{_SHOPIFY_API_VERSION}/shop.json",
                     headers={
                         "X-Shopify-Access-Token": access_token,
                         "Content-Type": "application/json",
@@ -323,20 +324,14 @@ async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
 async def list_orders(
     platform: str,
     status: str | None = None,
-    date_from: str | None = None,
-    date_to: str | None = None,
     limit: int = 100,
-    offset: int = 0,
 ) -> ListOrdersResponse:
     """List orders from a connected platform.
 
     Args:
         platform: Platform identifier.
         status: Filter by order status.
-        date_from: Start date (ISO format).
-        date_to: End date (ISO format).
         limit: Maximum orders to return (default 100).
-        offset: Pagination offset.
 
     Returns:
         List of orders in normalized format.

@@ -137,38 +137,64 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
     )
 
 
+_SHOPIFY_API_VERSION = "2024-01"
+
+
 async def _get_shipper_info() -> dict[str, str]:
     """Get shipper information from Shopify or environment.
 
-    Attempts to fetch shop details from Shopify if credentials are configured.
+    Checks if Shopify is connected via the ExternalSourcesMCPClient gateway.
+    If connected, fetches shop details via Shopify API for shipper address.
     Falls back to environment variables if Shopify is unavailable.
 
     Returns:
-        Dict containing shipper address details
+        Dict containing shipper address details.
     """
-    # Check if Shopify credentials are configured
     shopify_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
     shopify_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
 
     if shopify_token and shopify_domain:
         try:
-            from src.mcp.external_sources.clients.shopify import ShopifyClient
+            from src.services.gateway_provider import get_external_sources_client
 
-            client = ShopifyClient()
-            authenticated = await client.authenticate({
-                "store_url": shopify_domain,
-                "access_token": shopify_token,
-            })
+            ext = await get_external_sources_client()
+            connections = await ext.list_connections()
+            shopify_connected = any(
+                (c.get("platform") if isinstance(c, dict) else getattr(c, "platform", None)) == "shopify"
+                and (c.get("status") if isinstance(c, dict) else getattr(c, "status", None)) == "connected"
+                for c in connections.get("connections", [])
+            )
 
-            if authenticated:
-                shop_info = await client.get_shop_info()
-                if shop_info:
-                    logger.info("Using shipper info from Shopify store: %s", shop_info.get("name"))
-                    return build_shipper_from_shop(shop_info)
+            if not shopify_connected:
+                result = await ext.connect_platform(
+                    platform="shopify",
+                    credentials={"access_token": shopify_token},
+                    store_url=shopify_domain,
+                )
+                shopify_connected = result.get("success", False)
+
+            if shopify_connected:
+                import httpx
+
+                async with httpx.AsyncClient() as http_client:
+                    response = await http_client.get(
+                        f"https://{shopify_domain}/admin/api/{_SHOPIFY_API_VERSION}/shop.json",
+                        headers={
+                            "X-Shopify-Access-Token": shopify_token,
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    if response.status_code == 200:
+                        shop_info = response.json().get("shop", {})
+                        if shop_info:
+                            logger.info(
+                                "Using shipper info from Shopify store: %s",
+                                shop_info.get("name"),
+                            )
+                            return build_shipper_from_shop(shop_info)
         except Exception as e:
             logger.warning("Failed to get shop info from Shopify: %s", e)
 
-    # Fall back to environment variables
     logger.info("Using shipper info from environment variables")
     return build_shipper_from_env()
 
@@ -235,10 +261,11 @@ async def _execute_batch(job_id: str) -> None:
                 )
                 shipper = build_shipper_from_env()
         else:
-            from src.services.data_source_service import DataSourceService
+            from src.services.gateway_provider import get_data_gateway
 
-            ds_service = DataSourceService.get_instance()
-            if ds_service.get_source_info() is not None:
+            gw = await get_data_gateway()
+            source_info = await gw.get_source_info()
+            if source_info is not None:
                 shipper = build_shipper_from_env()
                 logger.info("Using env shipper for local data source job %s", job_id)
             else:
