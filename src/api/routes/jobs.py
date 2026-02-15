@@ -21,7 +21,7 @@ from src.api.schemas import (
 from src.db.connection import get_db
 from src.db.models import Job, JobRow, JobStatus, RowStatus
 from src.services import AuditService, EventType, InvalidStateTransition, JobService
-from src.services.data_source_service import DataSourceService
+from src.services.gateway_provider import get_data_gateway
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -37,7 +37,7 @@ def get_audit_service(db: Session = Depends(get_db)) -> AuditService:
 
 
 @router.post("", response_model=JobResponse, status_code=201)
-def create_job(
+async def create_job(
     job_data: JobCreate,
     job_svc: JobService = Depends(get_job_service),
     audit_svc: AuditService = Depends(get_audit_service),
@@ -59,7 +59,8 @@ def create_job(
         mode=job_data.mode.value,
     )
     audit_svc.log_state_change(job.id, "none", "pending")
-    source_signature = DataSourceService.get_instance().get_source_signature()
+    gw = await get_data_gateway()
+    source_signature = await gw.get_source_signature()
     if source_signature is not None:
         audit_svc.log_info(
             job_id=job.id,

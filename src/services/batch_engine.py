@@ -265,7 +265,7 @@ class BatchEngine:
         successful = 0
         failed = 0
         total_cost_cents = 0
-        successful_write_back_updates: list[tuple[int, str]] = []
+        successful_write_back_updates: dict[int, dict[str, str]] = {}
 
         pending_rows = [r for r in rows if r.status == "pending"]
 
@@ -328,9 +328,10 @@ class BatchEngine:
                         successful += 1
                         total_cost_cents += cost_cents
                         if tracking_number:
-                            successful_write_back_updates.append(
-                                (row.row_number, tracking_number),
-                            )
+                            successful_write_back_updates[row.row_number] = {
+                                "tracking_number": tracking_number,
+                                "shipped_at": row.processed_at or "",
+                            }
 
                         if on_progress:
                             await on_progress(
@@ -385,34 +386,33 @@ class BatchEngine:
             }
         elif successful_write_back_updates:
             try:
-                from src.services.data_source_service import DataSourceService
+                from src.services.gateway_provider import get_data_gateway
 
-                ds_svc = DataSourceService.get_instance()
-                if ds_svc.get_source_info() is not None:
-                    write_back_result = await ds_svc.write_back_batch(
+                gw = await get_data_gateway()
+                source_info = await gw.get_source_info()
+                if source_info is not None:
+                    write_back_result = await gw.write_back_batch(
                         successful_write_back_updates,
                     )
                     logger.info(
                         (
-                            "Batch write-back finished: job_id=%s attempted=%s "
-                            "written=%s failed=%s status=%s"
+                            "Batch write-back finished: job_id=%s success=%s "
+                            "failures=%s status=%s"
                         ),
                         job_id,
-                        write_back_result.get("attempted"),
-                        write_back_result.get("written"),
-                        write_back_result.get("failed"),
-                        write_back_result.get("status"),
+                        write_back_result.get("success_count"),
+                        write_back_result.get("failure_count"),
+                        write_back_result.get("status", "unknown"),
                     )
-                    if write_back_result.get("status") == "error":
+                    if write_back_result.get("failure_count", 0) > 0:
                         logger.warning(
                             (
-                                "Batch write-back failed after shipment processing: "
-                                "job_id=%s attempted=%s written=%s failed=%s"
+                                "Batch write-back had failures: "
+                                "job_id=%s success=%s failures=%s"
                             ),
                             job_id,
-                            write_back_result.get("attempted"),
-                            write_back_result.get("written"),
-                            write_back_result.get("failed"),
+                            write_back_result.get("success_count"),
+                            write_back_result.get("failure_count"),
                         )
                 else:
                     write_back_result = {

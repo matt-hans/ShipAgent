@@ -183,9 +183,9 @@ async def validate_pre_tool(
     """Generic pre-validation entry point for all tool calls.
 
     Routes to specific validators based on tool_name substring:
-    - mcp__ups__create_shipment -> validate_shipping_input
-    - mcp__ups__void_shipment -> validate_void_shipment
-    - mcp__data__query_data -> validate_data_query
+    - create_shipment -> validate_shipping_input
+    - void_shipment -> validate_void_shipment
+    - query_data -> validate_data_query
 
     This is the default pre-hook for all tools when specific
     matchers are not provided.
@@ -487,10 +487,6 @@ def create_hook_matchers(
             HookMatcher(
                 matcher="mcp__ups__void_shipment",
                 hooks=[validate_void_shipment],
-            ),
-            HookMatcher(
-                matcher="mcp__data__query",
-                hooks=[validate_data_query],
             ),
             HookMatcher(
                 matcher=None,

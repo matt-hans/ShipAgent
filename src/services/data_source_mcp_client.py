@@ -79,32 +79,54 @@ class DataSourceMCPClient:
     async def import_csv(
         self, file_path: str, delimiter: str = ",", header: bool = True
     ) -> dict[str, Any]:
-        """Import CSV file as active data source."""
+        """Import CSV file as active data source.
+
+        Auto-saves source metadata for future reconnection on success.
+        """
         await self._ensure_connected()
-        return await self._mcp.call_tool("import_csv", {
+        result = await self._mcp.call_tool("import_csv", {
             "file_path": file_path, "delimiter": delimiter, "header": header,
         })
+        self._auto_save_csv(
+            file_path, result.get("row_count", 0), len(result.get("columns", []))
+        )
+        return result
 
     async def import_excel(
         self, file_path: str, sheet: str | None = None, header: bool = True
     ) -> dict[str, Any]:
-        """Import Excel sheet as active data source."""
+        """Import Excel sheet as active data source.
+
+        Auto-saves source metadata for future reconnection on success.
+        """
         await self._ensure_connected()
         args: dict[str, Any] = {"file_path": file_path, "header": header}
         if sheet:
             args["sheet"] = sheet
-        return await self._mcp.call_tool("import_excel", args)
+        result = await self._mcp.call_tool("import_excel", args)
+        self._auto_save_excel(
+            file_path, sheet, result.get("row_count", 0), len(result.get("columns", []))
+        )
+        return result
 
     async def import_database(
         self, connection_string: str, query: str, schema: str = "public"
     ) -> dict[str, Any]:
-        """Import database query results as active data source."""
+        """Import database query results as active data source.
+
+        Auto-saves source display metadata (no credentials) for future reconnection.
+        """
         await self._ensure_connected()
-        return await self._mcp.call_tool("import_database", {
+        result = await self._mcp.call_tool("import_database", {
             "connection_string": connection_string,
             "query": query,
             "schema": schema,
         })
+        self._auto_save_database(
+            connection_string, query,
+            result.get("row_count", 0), len(result.get("columns", [])),
+        )
+        return result
 
     async def import_from_records(
         self, records: list[dict[str, Any]], source_label: str
@@ -290,3 +312,83 @@ class DataSourceMCPClient:
             flat["_checksum"] = row.get("checksum")
             normalized.append(flat)
         return normalized
+
+    # -- Auto-save hooks (best-effort persistence) -------------------------
+
+    @staticmethod
+    def _auto_save_csv(file_path: str, row_count: int, column_count: int) -> None:
+        """Persist CSV source metadata for future reconnection.
+
+        Args:
+            file_path: Absolute path to CSV file.
+            row_count: Number of rows imported.
+            column_count: Number of columns discovered.
+        """
+        try:
+            from src.db.connection import get_db_context
+            from src.services.saved_data_source_service import SavedDataSourceService
+
+            with get_db_context() as db:
+                SavedDataSourceService.save_or_update_csv(
+                    db, file_path, row_count, column_count
+                )
+        except Exception as e:
+            logger.warning("Auto-save CSV source failed (non-critical): %s", e)
+
+    @staticmethod
+    def _auto_save_excel(
+        file_path: str, sheet_name: str | None, row_count: int, column_count: int
+    ) -> None:
+        """Persist Excel source metadata for future reconnection.
+
+        Args:
+            file_path: Absolute path to Excel file.
+            sheet_name: Sheet name (None for default).
+            row_count: Number of rows imported.
+            column_count: Number of columns discovered.
+        """
+        try:
+            from src.db.connection import get_db_context
+            from src.services.saved_data_source_service import SavedDataSourceService
+
+            with get_db_context() as db:
+                SavedDataSourceService.save_or_update_excel(
+                    db, file_path, sheet_name, row_count, column_count
+                )
+        except Exception as e:
+            logger.warning("Auto-save Excel source failed (non-critical): %s", e)
+
+    @staticmethod
+    def _auto_save_database(
+        connection_string: str, query: str, row_count: int, column_count: int
+    ) -> None:
+        """Persist database source display metadata for future reconnection.
+
+        Credentials are never stored — only host/port/db_name for display.
+
+        Args:
+            connection_string: Database connection URL.
+            query: SQL query used for import.
+            row_count: Number of rows imported.
+            column_count: Number of columns discovered.
+        """
+        try:
+            from src.db.connection import get_db_context
+            from src.services.saved_data_source_service import (
+                SavedDataSourceService,
+                parse_db_connection_string,
+            )
+
+            parsed = parse_db_connection_string(connection_string)
+            with get_db_context() as db:
+                SavedDataSourceService.save_or_update_database(
+                    db,
+                    host=parsed["host"],
+                    port=parsed["port"],
+                    db_name=parsed["db_name"],
+                    query=query,
+                    row_count=row_count,
+                    column_count=column_count,
+                )
+        except Exception as e:
+            logger.warning("Auto-save database source failed (non-critical): %s", e)
