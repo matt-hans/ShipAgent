@@ -29,6 +29,8 @@ export interface JobProgressState {
   failed: number;
   /** Total cost in cents. */
   totalCostCents: number;
+  /** Total duties and taxes in cents (international shipments). */
+  dutiesTaxesCents?: number;
   /** Current job status. */
   status: JobStatus;
   /** Error information if the batch failed. */
