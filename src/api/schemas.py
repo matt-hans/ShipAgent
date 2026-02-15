@@ -61,6 +61,9 @@ class JobRowResponse(BaseModel):
     tracking_number: str | None
     label_path: str | None
     cost_cents: int | None
+    destination_country: str | None = None
+    duties_taxes_cents: int | None = None
+    charge_breakdown: dict | None = None
     error_code: str | None
     error_message: str | None
     created_at: str
@@ -87,6 +90,8 @@ class JobResponse(BaseModel):
     successful_rows: int
     failed_rows: int
     total_cost_cents: int | None
+    total_duties_taxes_cents: int | None = None
+    international_row_count: int = 0
 
     error_code: str | None
     error_message: str | None
@@ -202,6 +207,9 @@ class PreviewRowResponse(BaseModel):
         default=None,
         description="Full order details for expanded view",
     )
+    destination_country: str | None = None
+    duties_taxes_cents: int | None = None
+    charge_breakdown: dict | None = None
 
 
 class BatchPreviewResponse(BaseModel):
@@ -217,6 +225,8 @@ class BatchPreviewResponse(BaseModel):
     rows_with_warnings: int = Field(
         default=0, description="Number of rows with warnings"
     )
+    total_duties_taxes_cents: int | None = None
+    international_row_count: int = 0
 
 
 class SkipRowsRequest(BaseModel):
