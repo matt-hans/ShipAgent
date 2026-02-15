@@ -115,11 +115,17 @@ export interface ConfirmResponse {
  * Confirm a job for execution.
  *
  * @param jobId - The job UUID.
+ * @param writeBackEnabled - Whether to write tracking numbers back to the source.
  * @returns Confirmation status and message.
  */
-export async function confirmJob(jobId: string): Promise<ConfirmResponse> {
+export async function confirmJob(
+  jobId: string,
+  writeBackEnabled: boolean = true,
+): Promise<ConfirmResponse> {
   const response = await fetch(`${API_BASE}/jobs/${jobId}/confirm`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ write_back_enabled: writeBackEnabled }),
   });
   return parseResponse<ConfirmResponse>(response);
 }

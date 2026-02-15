@@ -150,6 +150,11 @@ class Job(Base):
     shipper_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_interactive: Mapped[bool] = mapped_column(nullable=False, default=False)
 
+    # Write-back preference (tracking numbers written back to source after execution)
+    write_back_enabled: Mapped[bool] = mapped_column(
+        nullable=False, default=True, server_default="1"
+    )
+
     # Timestamps (ISO8601 strings for SQLite compatibility)
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso

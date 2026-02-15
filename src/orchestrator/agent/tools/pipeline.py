@@ -10,6 +10,7 @@ import os
 from typing import Any
 
 from src.db.connection import get_db_context
+from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN
 from src.services.job_service import JobService
 from src.services.ups_service_codes import translate_service_name
 
@@ -273,7 +274,12 @@ async def ship_command_pipeline_tool(
         for row in normalized_rows:
             if isinstance(row, dict):
                 row["service_code"] = service_code
-    row_map = {i: row for i, row in enumerate(normalized_rows, start=1)}
+    # Key row_map by source row number to match JobRow.row_number.
+    # Check both _row_number and _source_row_num for compatibility.
+    row_map = {}
+    for idx, row in enumerate(normalized_rows, start=1):
+        key = row.get("_row_number") or row.get(SOURCE_ROW_NUM_COLUMN) or idx
+        row_map[key] = row
     _enrich_preview_rows_from_map(preview_rows, row_map)
     rows_with_warnings = sum(1 for row in preview_rows if row.get("warnings"))
     result["rows_with_warnings"] = rows_with_warnings

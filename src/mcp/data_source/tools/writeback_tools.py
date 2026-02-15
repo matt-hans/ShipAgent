@@ -15,6 +15,7 @@ from typing import Optional
 
 from fastmcp import Context
 
+from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN
 from src.services.write_back_utils import (
     apply_csv_updates_atomic,
     apply_excel_updates_atomic,
@@ -187,7 +188,7 @@ async def _write_back_database(
     update_sql = f"""
         UPDATE {table_name}
         SET tracking_number = $1, shipped_at = $2
-        WHERE _row_number = $3
+        WHERE {SOURCE_ROW_NUM_COLUMN} = $3
     """
 
     try:

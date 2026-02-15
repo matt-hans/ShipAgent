@@ -4,7 +4,7 @@ from typing import Any
 
 from fastmcp import Context
 
-from ..models import QueryResult, RowData
+from ..models import SOURCE_ROW_NUM_COLUMN, QueryResult, RowData
 from ..utils import compute_row_checksum
 
 
@@ -30,9 +30,9 @@ async def get_row(row_number: int, ctx: Context) -> dict:
 
     await ctx.info(f"Fetching row {row_number}")
 
-    # Get column names
+    # Get column names, excluding internal identity column
     schema = db.execute("DESCRIBE imported_data").fetchall()
-    columns = [col[0] for col in schema]
+    columns = [col[0] for col in schema if col[0] != SOURCE_ROW_NUM_COLUMN]
 
     # Build SELECT with type casts for overrides
     select_parts = []
@@ -44,11 +44,11 @@ async def get_row(row_number: int, ctx: Context) -> dict:
 
     select_clause = ", ".join(select_parts)
 
-    # DuckDB uses 0-based OFFSET
+    # Look up by identity column (parameterized)
     result = db.execute(f"""
         SELECT {select_clause} FROM imported_data
-        LIMIT 1 OFFSET {row_number - 1}
-    """).fetchone()
+        WHERE {SOURCE_ROW_NUM_COLUMN} = $1
+    """, [row_number]).fetchone()
 
     if result is None:
         raise ValueError(f"Row {row_number} not found. Data may have fewer rows.")
@@ -95,9 +95,9 @@ async def get_rows_by_filter(
 
     await ctx.info(f"Querying rows with filter: {where_clause}")
 
-    # Get column names
+    # Get column names, excluding internal identity column
     schema = db.execute("DESCRIBE imported_data").fetchall()
-    columns = [col[0] for col in schema]
+    columns = [col[0] for col in schema if col[0] != SOURCE_ROW_NUM_COLUMN]
 
     # Build SELECT with type casts
     select_parts = []
@@ -115,22 +115,20 @@ async def get_rows_by_filter(
         WHERE {where_clause}
     """).fetchone()[0]
 
-    # Get rows with ROW_NUMBER for consistent numbering
+    # Use persisted identity column for stable row identity across filters
     results = db.execute(f"""
-        WITH numbered AS (
-            SELECT ROW_NUMBER() OVER () as _row_num, {select_clause}
-            FROM imported_data
-            WHERE {where_clause}
-        )
-        SELECT * FROM numbered
+        SELECT {SOURCE_ROW_NUM_COLUMN}, {select_clause}
+        FROM imported_data
+        WHERE {where_clause}
+        ORDER BY {SOURCE_ROW_NUM_COLUMN}
         LIMIT {limit} OFFSET {offset}
     """).fetchall()
 
-    # Process results
+    # Process results — identity column is the first column
     rows = []
     for row in results:
         row_num = row[0]
-        row_data = dict(zip(columns, row[1:]))  # Skip _row_num
+        row_data = dict(zip(columns, row[1:]))
         checksum = compute_row_checksum(row_data)
         rows.append(RowData(
             row_number=row_num,

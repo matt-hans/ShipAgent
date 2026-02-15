@@ -123,6 +123,10 @@ interface AppState {
   interactiveShipping: boolean;
   setInteractiveShipping: (enabled: boolean) => void;
 
+  // Write-back toggle: controls whether tracking numbers are written back to source
+  writeBackEnabled: boolean;
+  setWriteBackEnabled: (enabled: boolean) => void;
+
   // Lock flag: disables the toggle while a session reset or creation is in-flight
   isToggleLocked: boolean;
   setIsToggleLocked: (locked: boolean) => void;
@@ -158,6 +162,15 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const setInteractiveShipping = React.useCallback((enabled: boolean) => {
     setInteractiveShippingState(enabled);
     localStorage.setItem('shipagent_interactive_shipping', String(enabled));
+  }, []);
+
+  const [writeBackEnabled, setWriteBackEnabledState] = React.useState<boolean>(() => {
+    return localStorage.getItem('shipagent_write_back') !== 'false';
+  });
+
+  const setWriteBackEnabled = React.useCallback((enabled: boolean) => {
+    setWriteBackEnabledState(enabled);
+    localStorage.setItem('shipagent_write_back', String(enabled));
   }, []);
 
   const [isToggleLocked, setIsToggleLocked] = React.useState(false);
@@ -208,6 +221,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setConversationSessionId,
     interactiveShipping,
     setInteractiveShipping,
+    writeBackEnabled,
+    setWriteBackEnabled,
     isToggleLocked,
     setIsToggleLocked,
   };

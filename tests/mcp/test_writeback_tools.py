@@ -21,6 +21,7 @@ import duckdb
 import pytest
 from openpyxl import Workbook, load_workbook
 
+from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN
 from src.mcp.data_source.tools.writeback_tools import (
     _extract_table_name,
     write_back,
@@ -434,10 +435,10 @@ class TestWriteBackDatabase:
     @pytest.mark.asyncio
     async def test_write_back_database_updates_row(self, mock_ctx, duckdb_conn):
         """Test that UPDATE executes correctly via DuckDB."""
-        # Setup: Create table with _row_number column
-        duckdb_conn.execute("""
+        # Setup: Create table with identity tracking column
+        duckdb_conn.execute(f"""
             CREATE TABLE orders (
-                _row_number INTEGER,
+                {SOURCE_ROW_NUM_COLUMN} INTEGER,
                 order_id INTEGER,
                 customer VARCHAR,
                 tracking_number VARCHAR,
@@ -469,14 +470,14 @@ class TestWriteBackDatabase:
 
         # Verify row was updated
         row = duckdb_conn.execute(
-            "SELECT tracking_number, shipped_at FROM orders WHERE _row_number = 1"
+            f"SELECT tracking_number, shipped_at FROM orders WHERE {SOURCE_ROW_NUM_COLUMN} = 1"
         ).fetchone()
         assert row[0] == "1Z999AA10123456784"
         assert row[1] == "2026-01-25T12:00:00Z"
 
         # Other row unchanged
         row2 = duckdb_conn.execute(
-            "SELECT tracking_number FROM orders WHERE _row_number = 2"
+            f"SELECT tracking_number FROM orders WHERE {SOURCE_ROW_NUM_COLUMN} = 2"
         ).fetchone()
         assert row2[0] is None
 
@@ -484,9 +485,9 @@ class TestWriteBackDatabase:
     async def test_write_back_database_parameterized(self, mock_ctx, duckdb_conn):
         """Test that queries use parameterization (no SQL injection)."""
         # Setup
-        duckdb_conn.execute("""
+        duckdb_conn.execute(f"""
             CREATE TABLE orders (
-                _row_number INTEGER,
+                {SOURCE_ROW_NUM_COLUMN} INTEGER,
                 tracking_number VARCHAR,
                 shipped_at VARCHAR
             )
@@ -517,7 +518,7 @@ class TestWriteBackDatabase:
 
         # Value should be stored literally
         row = duckdb_conn.execute(
-            "SELECT tracking_number FROM orders WHERE _row_number = 1"
+            f"SELECT tracking_number FROM orders WHERE {SOURCE_ROW_NUM_COLUMN} = 1"
         ).fetchone()
         assert row[0] == malicious_tracking
 

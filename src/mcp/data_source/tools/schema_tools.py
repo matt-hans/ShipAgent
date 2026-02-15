@@ -2,7 +2,7 @@
 
 from fastmcp import Context
 
-from ..models import SchemaColumn
+from ..models import SOURCE_ROW_NUM_COLUMN, SchemaColumn
 
 
 async def get_schema(ctx: Context) -> dict:
@@ -43,6 +43,7 @@ async def get_schema(ctx: Context) -> dict:
             warnings=[]
         ).model_dump()
         for col in schema_rows
+        if col[0] != SOURCE_ROW_NUM_COLUMN  # Hide internal identity column
     ]
 
     type_overrides = ctx.request_context.lifespan_context.get("type_overrides", {})

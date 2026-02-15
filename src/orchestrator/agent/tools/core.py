@@ -16,6 +16,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.db.connection import get_db_context
+from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN
 from src.services.audit_service import AuditService, EventType
 from src.services.column_mapping import (
     apply_mapping,
@@ -200,12 +201,20 @@ def _build_job_row_data(
                 row["service_code"] = service_code_override
 
     row_data = []
-    for i, row in enumerate(normalized_rows, start=1):
+    for idx, row in enumerate(normalized_rows, start=1):
+        # Extract source row identity set by _normalize_rows() from MCP response.
+        # Fallback to 1-based index if neither key exists — guarantees non-None.
+        source_row = (
+            row.pop("_row_number", None)
+            or row.pop(SOURCE_ROW_NUM_COLUMN, None)
+            or idx
+        )
+        row.pop("_checksum", None)  # Clean MCP metadata before serialization
         row_json = json.dumps(row, sort_keys=True, default=str)
         checksum = hashlib.md5(row_json.encode()).hexdigest()
         row_data.append(
             {
-                "row_number": i,
+                "row_number": source_row,
                 "row_checksum": checksum,
                 "order_data": row_json,
             }

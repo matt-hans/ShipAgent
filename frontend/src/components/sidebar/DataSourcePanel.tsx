@@ -15,6 +15,7 @@ import { RecentSourcesModal } from '@/components/RecentSourcesModal';
 import { toDataSourceColumns } from '@/components/sidebar/dataSourceMappers';
 import { HardDriveIcon, EyeIcon, EyeOffIcon } from '@/components/ui/icons';
 import { ShopifyIcon } from '@/components/ui/brand-icons';
+import { Switch } from '@/components/ui/switch';
 
 /** Extracts a display filename from a DataSourceInfo. */
 export function extractFileName(ds: DataSourceInfo): string | null {
@@ -31,6 +32,8 @@ export function DataSourceSection() {
     activeSourceType, setActiveSourceType,
     setActiveSourceInfo,
     cachedLocalConfig, setCachedLocalConfig,
+    interactiveShipping,
+    writeBackEnabled, setWriteBackEnabled,
   } = useAppState();
   const { state: externalState, connect: connectExternal } = useExternalSources();
   const [isConnecting, setIsConnecting] = React.useState(false);
@@ -474,6 +477,23 @@ export function DataSourceSection() {
               {isConnecting ? 'Reconnecting...' : 'Reconnect'}
             </button>
           </div>
+        </div>
+      )}
+
+      {/* === WRITE-BACK TOGGLE === */}
+      {activeSourceType && !interactiveShipping && (
+        <div className="flex items-center justify-between px-3 py-2 mt-1 rounded-md bg-card/50 border border-slate-800/50">
+          <label
+            htmlFor="write-back-toggle"
+            className="text-[11px] text-muted-foreground select-none"
+          >
+            Write back tracking
+          </label>
+          <Switch
+            id="write-back-toggle"
+            checked={writeBackEnabled}
+            onCheckedChange={setWriteBackEnabled}
+          />
         </div>
       )}
 

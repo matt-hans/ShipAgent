@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 from duckdb import DuckDBPyConnection
 
 from .base import BaseSourceAdapter
-from ..models import ImportResult, SchemaColumn
+from ..models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
 
 
 # Threshold for requiring WHERE clause (per CONTEXT.md)
@@ -224,11 +224,12 @@ class DatabaseAdapter(BaseSourceAdapter):
                 flags=re.IGNORECASE,
             )
 
-            # Create snapshot table
+            # Create snapshot table with identity tracking column
             conn.execute(
                 f"""
                 CREATE OR REPLACE TABLE imported_data AS
-                {modified_query}
+                SELECT ROW_NUMBER() OVER () AS {SOURCE_ROW_NUM_COLUMN}, sub.*
+                FROM ({modified_query}) AS sub
             """
             )
 
@@ -242,6 +243,7 @@ class DatabaseAdapter(BaseSourceAdapter):
                     warnings=[],
                 )
                 for col in schema_rows
+                if col[0] != SOURCE_ROW_NUM_COLUMN  # Hide internal identity column
             ]
 
             # Get row count
@@ -275,9 +277,11 @@ class DatabaseAdapter(BaseSourceAdapter):
                 "SELECT COUNT(*) FROM imported_data"
             ).fetchone()[0]
             columns = conn.execute("DESCRIBE imported_data").fetchall()
+            # Exclude internal _source_row_num from user-facing count
+            user_columns = [c for c in columns if c[0] != SOURCE_ROW_NUM_COLUMN]
             return {
                 "row_count": row_count,
-                "column_count": len(columns),
+                "column_count": len(user_columns),
                 "source_type": "database",
             }
         except Exception:
