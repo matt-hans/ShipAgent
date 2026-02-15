@@ -10,6 +10,7 @@ stdio connection, cached across requests.
 
 import logging
 import os
+import sys
 from typing import Any
 
 from mcp import StdioServerParameters
@@ -22,6 +23,19 @@ _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 _VENV_PYTHON = os.path.join(_PROJECT_ROOT, ".venv", "bin", "python3")
+
+
+def _get_python_command() -> str:
+    """Return the preferred Python interpreter for MCP subprocesses.
+
+    Prioritizes the project virtual environment to ensure all MCP
+    subprocesses use the same dependency set as the backend.
+    Falls back to the current interpreter when .venv Python is missing
+    (e.g. in worktrees or CI environments).
+    """
+    if os.path.exists(_VENV_PYTHON):
+        return _VENV_PYTHON
+    return sys.executable
 
 
 class ExternalSourcesMCPClient:
@@ -50,7 +64,7 @@ class ExternalSourcesMCPClient:
             Configured StdioServerParameters.
         """
         return StdioServerParameters(
-            command=_VENV_PYTHON,
+            command=_get_python_command(),
             args=["-m", "src.mcp.external_sources.server"],
             env={
                 "PYTHONPATH": _PROJECT_ROOT,
@@ -155,6 +169,19 @@ class ExternalSourcesMCPClient:
         """
         return await self._mcp.call_tool(
             "get_order", {"platform": platform, "order_id": order_id}
+        )
+
+    async def get_shop_info(self, platform: str) -> dict[str, Any]:
+        """Get shop/store metadata from a connected platform.
+
+        Args:
+            platform: Platform identifier (e.g., 'shopify').
+
+        Returns:
+            Dict with success, platform, and shop metadata.
+        """
+        return await self._mcp.call_tool(
+            "get_shop_info", {"platform": platform}
         )
 
     async def update_tracking(

@@ -137,14 +137,11 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
     )
 
 
-_SHOPIFY_API_VERSION = "2024-01"
-
-
 async def _get_shipper_info() -> dict[str, str]:
     """Get shipper information from Shopify or environment.
 
     Checks if Shopify is connected via the ExternalSourcesMCPClient gateway.
-    If connected, fetches shop details via Shopify API for shipper address.
+    If connected, fetches shop details via the get_shop_info MCP tool.
     Falls back to environment variables if Shopify is unavailable.
 
     Returns:
@@ -174,24 +171,15 @@ async def _get_shipper_info() -> dict[str, str]:
                 shopify_connected = result.get("success", False)
 
             if shopify_connected:
-                import httpx
-
-                async with httpx.AsyncClient() as http_client:
-                    response = await http_client.get(
-                        f"https://{shopify_domain}/admin/api/{_SHOPIFY_API_VERSION}/shop.json",
-                        headers={
-                            "X-Shopify-Access-Token": shopify_token,
-                            "Content-Type": "application/json",
-                        },
-                    )
-                    if response.status_code == 200:
-                        shop_info = response.json().get("shop", {})
-                        if shop_info:
-                            logger.info(
-                                "Using shipper info from Shopify store: %s",
-                                shop_info.get("name"),
-                            )
-                            return build_shipper_from_shop(shop_info)
+                shop_result = await ext.get_shop_info("shopify")
+                if shop_result.get("success"):
+                    shop_info = shop_result.get("shop", {})
+                    if shop_info:
+                        logger.info(
+                            "Using shipper info from Shopify store: %s",
+                            shop_info.get("name"),
+                        )
+                        return build_shipper_from_shop(shop_info)
         except Exception as e:
             logger.warning("Failed to get shop info from Shopify: %s", e)
 

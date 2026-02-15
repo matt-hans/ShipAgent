@@ -23,9 +23,6 @@ from src.services.gateway_provider import get_external_sources_client
 
 router = APIRouter(prefix="/platforms", tags=["platforms"])
 
-# Shopify Admin API version — kept in sync with ShopifyClient.API_VERSION
-_SHOPIFY_API_VERSION = "2024-01"
-
 
 # === Request/Response Schemas ===
 
@@ -283,22 +280,12 @@ async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
                 error=result.get("error", "Authentication failed - check credentials"),
             )
 
-        # Get shop name from Shopify API
+        # Get shop name via gateway
         store_name = None
         try:
-            import httpx
-
-            async with httpx.AsyncClient() as http_client:
-                response = await http_client.get(
-                    f"https://{store_domain}/admin/api/{_SHOPIFY_API_VERSION}/shop.json",
-                    headers={
-                        "X-Shopify-Access-Token": access_token,
-                        "Content-Type": "application/json",
-                    },
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    store_name = data.get("shop", {}).get("name")
+            shop_result = await ext.get_shop_info("shopify")
+            if shop_result.get("success"):
+                store_name = shop_result.get("shop", {}).get("name")
         except Exception:
             pass
 

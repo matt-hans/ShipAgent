@@ -398,6 +398,54 @@ async def get_order(
         }
 
 
+async def get_shop_info(platform: str, ctx: Context) -> dict:
+    """Get shop/store metadata from a connected platform.
+
+    Returns store details such as name, address, and contact info.
+    Currently supported for Shopify only.
+
+    Args:
+        platform: Platform identifier (e.g., 'shopify').
+
+    Returns:
+        Dictionary with:
+        - success: True if shop info retrieved
+        - shop: Shop metadata dict (name, address, etc.)
+        - error: Error message if failed
+    """
+    await ctx.info(f"Getting shop info from {platform}")
+
+    lifespan_ctx = _get_lifespan_context(ctx)
+    clients = lifespan_ctx.get("clients", {})
+
+    client = clients.get(platform)
+    if client is None:
+        return {
+            "success": False,
+            "platform": platform,
+            "error": f"Platform {platform} not connected.",
+        }
+
+    if not hasattr(client, "get_shop_info"):
+        return {
+            "success": False,
+            "platform": platform,
+            "error": f"get_shop_info not supported for {platform}.",
+        }
+
+    try:
+        shop = await client.get_shop_info()
+        if shop is None:
+            return {
+                "success": False,
+                "platform": platform,
+                "error": "Failed to retrieve shop info.",
+            }
+        return {"success": True, "platform": platform, "shop": shop}
+    except Exception as e:
+        return {"success": False, "platform": platform, "error": str(e)}
+
+
 async def update_tracking(
     platform: str,
     order_id: str,
