@@ -358,6 +358,8 @@ export interface BatchFailedEvent {
     error_code: string;
     error_message: string;
     processed: number;
+    duties_taxes_cents?: number;
+    international_row_count?: number;
   };
 }
 

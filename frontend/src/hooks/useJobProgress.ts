@@ -226,6 +226,8 @@ export function useJobProgress(
             ...prev,
             status: 'failed',
             processed: typedEvent.data.processed,
+            dutiesTaxesCents: typedEvent.data.duties_taxes_cents ?? prev.dutiesTaxesCents,
+            internationalCount: typedEvent.data.international_row_count ?? prev.internationalCount,
             error: {
               code: typedEvent.data.error_code,
               message: typedEvent.data.error_message,
