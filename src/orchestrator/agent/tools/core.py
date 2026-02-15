@@ -253,9 +253,6 @@ def _normalize_rows_for_shipping(rows: list[dict[str, Any]]) -> list[dict[str, A
                     out["ship_to_name"] = value
                     break
 
-        if not out.get("ship_to_country"):
-            out["ship_to_country"] = "US"
-
         if out.get("service_code"):
             out["service_code"] = translate_service_name(str(out["service_code"]))
         elif row.get("service"):

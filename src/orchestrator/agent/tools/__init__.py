@@ -320,6 +320,14 @@ def get_all_tool_definitions(
                         "description": "Recipient country code (default US).",
                         "default": "US",
                     },
+                    "ship_to_attention_name": {
+                        "type": "string",
+                        "description": "Recipient attention name (required for international).",
+                    },
+                    "shipment_description": {
+                        "type": "string",
+                        "description": "Description of goods, max 35 chars (required for international).",
+                    },
                     "service": {
                         "type": "string",
                         "description": "UPS service name or code (default Ground).",
@@ -351,7 +359,6 @@ def get_all_tool_definitions(
                     "ship_to_name",
                     "ship_to_address1",
                     "ship_to_city",
-                    "ship_to_state",
                     "ship_to_zip",
                     "command",
                 ],
