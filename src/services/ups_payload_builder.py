@@ -19,6 +19,8 @@ Example:
 import re
 from typing import Any
 
+from src.services.ups_service_codes import resolve_service_code
+
 
 def normalize_phone(phone: str | None) -> str:
     """Normalize phone number to digits only.
@@ -341,74 +343,6 @@ def build_packages(order_data: dict[str, Any]) -> list[dict[str, Any]]:
         package["declaredValue"] = float(declared_value)
 
     return [package]
-
-
-def resolve_service_code(raw_value: str | None, default: str = "03") -> str:
-    """Resolve a service value to a UPS numeric service code.
-
-    Accepts either a numeric code directly (e.g. "03") or a
-    human-readable name (e.g. "Ground", "Next Day Air").
-
-    Args:
-        raw_value: Service code or name string.
-        default: Default service code ("03" = Ground).
-
-    Returns:
-        UPS service code string.
-    """
-    if not raw_value:
-        return default
-
-    stripped = raw_value.strip()
-
-    # Already a valid numeric code
-    if stripped.isdigit():
-        return stripped
-
-    # Map human-readable names to UPS codes (case-insensitive)
-    service_name_map: dict[str, str] = {
-        # Ground
-        "ground": "03",
-        "ups ground": "03",
-        # Next Day Air
-        "next day air": "01",
-        "ups next day air": "01",
-        "next day": "01",
-        "overnight": "01",
-        "express": "01",
-        "nda": "01",
-        # 2nd Day Air
-        "2nd day air": "02",
-        "ups 2nd day air": "02",
-        "2 day": "02",
-        "two day": "02",
-        "second day air": "02",
-        # 3 Day Select
-        "3 day select": "12",
-        "ups 3 day select": "12",
-        "3 day": "12",
-        "three day": "12",
-        # Next Day Air Saver
-        "next day air saver": "13",
-        "ups next day air saver": "13",
-        "nda saver": "13",
-        "saver": "13",
-        # Next Day Air Early
-        "next day air early": "14",
-        "ups next day air early": "14",
-        "next day air early am": "14",
-        "early am": "14",
-        # 2nd Day Air A.M.
-        "2nd day air am": "59",
-        "ups 2nd day air am": "59",
-        "2 day am": "59",
-        "second day air am": "59",
-        # UPS Standard (primarily Canada/Mexico)
-        "standard": "11",
-        "ups standard": "11",
-    }
-
-    return service_name_map.get(stripped.lower(), default)
 
 
 def get_service_code(order_data: dict[str, Any], default: str = "03") -> str:
