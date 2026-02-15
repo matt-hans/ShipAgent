@@ -41,6 +41,7 @@ UPS_ERROR_MAP: dict[str, str] = {
     "ELICITATION_DECLINED": "E-2012",
     "ELICITATION_CANCELLED": "E-2012",
     "ELICITATION_INVALID_RESPONSE": "E-4010",
+    "ELICITATION_FAILED": "E-4010",
 }
 
 # Additional UPS error messages that require pattern matching

@@ -1725,7 +1725,6 @@ dependencies = [
     { name = "sse-starlette" },
     { name = "ups-mcp" },
     { name = "uvicorn" },
-    { name = "zipstream-ng" },
 ]
 
 [package.optional-dependencies]
@@ -1756,9 +1755,8 @@ requires-dist = [
     { name = "sqlalchemy", specifier = ">=2.0" },
     { name = "sqlglot", specifier = ">=26.0.0" },
     { name = "sse-starlette", specifier = ">=2.0.0" },
-    { name = "ups-mcp", git = "https://github.com/matt-hans/ups-mcp.git?rev=54124bc69d75fde6f0f16d49b924bdb286c25b87" },
+    { name = "ups-mcp", git = "https://github.com/matt-hans/ups-mcp.git?rev=bfb0a99cd208259b5ab3b512a74edf03b28d1acc" },
     { name = "uvicorn", specifier = ">=0.23.0" },
-    { name = "zipstream-ng", specifier = ">=1.7.0" },
 ]
 provides-extras = ["dev"]
 
@@ -1905,7 +1903,7 @@ wheels = [
 [[package]]
 name = "ups-mcp"
 version = "1.1.0"
-source = { git = "https://github.com/matt-hans/ups-mcp.git?rev=54124bc69d75fde6f0f16d49b924bdb286c25b87#54124bc69d75fde6f0f16d49b924bdb286c25b87" }
+source = { git = "https://github.com/matt-hans/ups-mcp.git?rev=bfb0a99cd208259b5ab3b512a74edf03b28d1acc#bfb0a99cd208259b5ab3b512a74edf03b28d1acc" }
 dependencies = [
     { name = "mcp", extra = ["cli"] },
     { name = "python-dotenv" },
@@ -2036,13 +2034,4 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e3/02/0f2892c661036d50ede074e376733dca2ae7c6eb617489437771209d4180/zipp-3.23.0.tar.gz", hash = "sha256:a07157588a12518c9d4034df3fbbee09c814741a33ff63c05fa29d26a2404166", size = 25547, upload-time = "2025-06-08T17:06:39.4Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2e/54/647ade08bf0db230bfea292f893923872fd20be6ac6f53b2b936ba839d75/zipp-3.23.0-py3-none-any.whl", hash = "sha256:071652d6115ed432f5ce1d34c336c0adfd6a884660d1e9712a256d3d3bd4b14e", size = 10276, upload-time = "2025-06-08T17:06:38.034Z" },
-]
-
-[[package]]
-name = "zipstream-ng"
-version = "1.9.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/11/f2/690a35762cf8366ce6f3b644805de970bd6a897ca44ce74184c7b2bc94e7/zipstream_ng-1.9.0.tar.gz", hash = "sha256:a0d94030822d137efbf80dfdc680603c42f804696f41147bb3db895df667daea", size = 37963, upload-time = "2025-08-29T01:03:36.323Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/62/c2da1c495291a52e561257d017585e08906d288035d025ccf636f6b9a266/zipstream_ng-1.9.0-py3-none-any.whl", hash = "sha256:31dc2cf617abdbf28d44f2e08c0d14c8eee2ea0ec26507a7e4d5d5f97c564b7a", size = 24852, upload-time = "2025-08-29T01:03:35.046Z" },
 ]
