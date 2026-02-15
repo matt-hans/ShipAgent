@@ -31,6 +31,8 @@ export interface JobProgressState {
   totalCostCents: number;
   /** Total duties and taxes in cents (international shipments). */
   dutiesTaxesCents?: number;
+  /** Number of international rows in the batch. */
+  internationalCount?: number;
   /** Current job status. */
   status: JobStatus;
   /** Error information if the batch failed. */
@@ -124,6 +126,8 @@ export function useJobProgress(
           successful: data.successful_rows,
           failed: data.failed_rows,
           totalCostCents: data.total_cost_cents ?? 0,
+          dutiesTaxesCents: data.total_duties_taxes_cents ?? undefined,
+          internationalCount: data.international_row_count ?? undefined,
           status: data.status,
           error: null,
           rowFailures: [],
@@ -211,6 +215,8 @@ export function useJobProgress(
             processed: typedEvent.data.total_rows,
             successful: typedEvent.data.successful,
             totalCostCents: typedEvent.data.total_cost_cents,
+            dutiesTaxesCents: typedEvent.data.duties_taxes_cents ?? prev.dutiesTaxesCents,
+            internationalCount: typedEvent.data.international_row_count ?? prev.internationalCount,
             currentRow: null,
           }));
           break;

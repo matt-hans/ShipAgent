@@ -24,6 +24,8 @@ export interface ProgressData {
   successful: number;
   failed: number;
   totalCostCents: number;
+  dutiesTaxesCents?: number;
+  internationalCount?: number;
   rowFailures: RowFailureInfo[];
 }
 
@@ -50,6 +52,8 @@ export function ProgressDisplay({ jobId, onComplete, onFailed }: {
         successful: progress.successful,
         failed: progress.failed,
         totalCostCents: progress.totalCostCents,
+        dutiesTaxesCents: progress.dutiesTaxesCents,
+        internationalCount: progress.internationalCount,
         rowFailures: progress.rowFailures,
       });
     }
@@ -63,6 +67,8 @@ export function ProgressDisplay({ jobId, onComplete, onFailed }: {
         successful: progress.successful,
         failed: progress.failed,
         totalCostCents: progress.totalCostCents,
+        dutiesTaxesCents: progress.dutiesTaxesCents,
+        internationalCount: progress.internationalCount,
         rowFailures: progress.rowFailures,
       });
     }

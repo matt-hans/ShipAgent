@@ -161,6 +161,8 @@ class SSEProgressObserver:
         total_rows: int,
         successful: int,
         total_cost_cents: int,
+        duties_taxes_cents: int = 0,
+        international_row_count: int = 0,
     ) -> None:
         """Handle batch completed event.
 
@@ -169,6 +171,8 @@ class SSEProgressObserver:
             total_rows: Total number of rows in the batch.
             successful: Number of rows successfully processed.
             total_cost_cents: Total cost of all shipments in cents.
+            duties_taxes_cents: Total duties and taxes in cents.
+            international_row_count: Number of international rows.
         """
         await self._emit(
             job_id,
@@ -178,6 +182,8 @@ class SSEProgressObserver:
                 "total_rows": total_rows,
                 "successful": successful,
                 "total_cost_cents": total_cost_cents,
+                "duties_taxes_cents": duties_taxes_cents,
+                "international_row_count": international_row_count,
             },
         )
 
