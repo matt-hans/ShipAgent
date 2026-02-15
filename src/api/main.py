@@ -8,6 +8,7 @@ when available.
 import logging
 import os
 import sys
+import warnings
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -71,12 +72,15 @@ def _ensure_agent_sdk_available() -> None:
             "Start the backend with ./scripts/start-backend.sh "
             "or install deps with .venv/bin/python -m pip install -e '.[dev]'."
         ) from exc
+    sdk_version = getattr(claude_agent_sdk, "__version__", "unknown")
+    logger.info("Claude Agent SDK version: %s", sdk_version)
 
 
 @app.on_event("startup")
 def startup_event() -> None:
     """Initialize database on startup."""
     _ensure_agent_sdk_available()
+    warnings.filterwarnings("default", category=DeprecationWarning, module="claude_agent_sdk")
     init_db()
     allow_multi_worker = os.environ.get("SHIPAGENT_ALLOW_MULTI_WORKER", "false").lower()
     if allow_multi_worker not in {"1", "true", "yes", "on"}:
@@ -93,10 +97,8 @@ def startup_event() -> None:
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     """Clean up shared async resources on shutdown."""
-    from src.orchestrator.agent.tools.core import shutdown_cached_ups_client
     from src.services.gateway_provider import shutdown_gateways
 
-    await shutdown_cached_ups_client()
     await shutdown_gateways()
 
 

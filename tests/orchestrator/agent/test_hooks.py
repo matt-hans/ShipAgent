@@ -674,6 +674,35 @@ class TestCreateHookMatchers:
         assert "PreToolUse" in matchers
 
 
+class TestLogToStderr:
+    """Tests for _log_to_stderr fallback behavior."""
+
+    def test_log_to_stderr_broken_pipe_routes_validation_to_warning(self):
+        """Validation messages route to logger.warning when stderr is broken."""
+        from unittest.mock import patch, MagicMock
+        from src.orchestrator.agent.hooks import _log_to_stderr
+
+        with patch("src.orchestrator.agent.hooks.sys") as mock_sys:
+            mock_sys.stderr = MagicMock()
+            mock_sys.stderr.write = MagicMock(side_effect=BrokenPipeError)
+            # Make print raise BrokenPipeError by patching stderr
+            with patch("builtins.print", side_effect=BrokenPipeError):
+                with patch("src.orchestrator.agent.hooks.logger") as mock_logger:
+                    _log_to_stderr("[VALIDATION] Pre-hook checking: test_tool")
+                    mock_logger.warning.assert_called_once()
+                    assert "stderr unavailable" in mock_logger.warning.call_args[0][0]
+
+    def test_log_to_stderr_broken_pipe_routes_audit_to_debug(self):
+        """Non-validation messages route to logger.debug when stderr is broken."""
+        from unittest.mock import patch, MagicMock
+        from src.orchestrator.agent.hooks import _log_to_stderr
+
+        with patch("builtins.print", side_effect=BrokenPipeError):
+            with patch("src.orchestrator.agent.hooks.logger") as mock_logger:
+                _log_to_stderr("[AUDIT] some log message")
+                mock_logger.debug.assert_called_once()
+
+
 class TestInteractiveShippingHookEnforcement:
     """Tests for deterministic create_shipment gating by interactive_shipping."""
 

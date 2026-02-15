@@ -39,8 +39,8 @@ These rules are non-negotiable. Violating them creates architectural debt that u
 **Phases 1-6:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent Integration, Batch Execution)
 **SDK Orchestration Redesign:** COMPLETE — Claude SDK is the sole orchestration path via `/api/v1/conversations/` endpoints
 **Interactive Shipping:** COMPLETE — ad-hoc single-shipment creation with preview gate and auto-populated shipper config
-**International Shipping:** IN PLANNING — design document for CA/MX phase exists, implementation pending
-**Test Count:** 1013+ test functions across 81 test files
+**International Shipping:** COMPLETE — US→CA/MX lane validation, commodity handling, customs forms, batch + interactive integration. Gated by `INTERNATIONAL_ENABLED_LANES` env var.
+**Test Count:** 1241 test functions across 75 test files
 **UPS MCP Hybrid:** COMPLETE — agent uses ups-mcp as stdio MCP server for interactive tools; BatchEngine uses UPSMCPClient (programmatic MCP over stdio) for deterministic batch execution
 
 ## Architecture
@@ -283,7 +283,7 @@ src/
 │   │   ├── server.py           # FastMCP server with stdio transport
 │   │   ├── models.py           # Canonical: SchemaColumn, ImportResult, RowData
 │   │   ├── adapters/           # Pluggable: base.py, csv, excel, db, edi adapters
-│   │   ├── tools/              # import, schema, query, checksum, writeback, edi tools
+│   │   ├── tools/              # import, schema, query, checksum, commodity, writeback, edi tools
 │   │   └── edi/                # X12 + EDIFACT parsers
 │   └── external_sources/       # External platform MCP
 │       ├── server.py, tools.py # Platform MCP server + tools
@@ -366,7 +366,7 @@ See [MCP Gateway Architecture](#mcp-gateway-architecture) for the full connectiv
 
 ### BatchEngine (`src/services/batch_engine.py`)
 
-Unified preview + execution with concurrent `asyncio.gather` + semaphore (`BATCH_CONCURRENCY` env, default 5). Per-row state writes for crash recovery. SSE events for real-time progress.
+Unified preview + execution with concurrent `asyncio.gather` + semaphore (`BATCH_CONCURRENCY` env, default 5). Per-row state writes for crash recovery. SSE events for real-time progress. Integrated write-back to CSV/Excel sources and external platforms for tracking number persistence.
 
 ### AgentSessionManager (`src/services/agent_session_manager.py`)
 
@@ -540,7 +540,7 @@ All extensions MUST integrate through the agent's tool/MCP architecture AND foll
 
 ## Roadmap (Agent Capabilities)
 
-- **P0 — International Shipping (CA/MX)**: Design complete, implementation pending. `international_rules.py` + payload builder enrichment.
+- **P0 — International Shipping (CA/MX)**: COMPLETE — lane validation, commodity tools, customs forms, payload builder enrichment, batch + interactive.
 - **P1 — Multi-Carrier (FedEx, USPS)**: New MCP servers per carrier, `compare_carriers` tool. Not started.
 - **P1 — Address Book**: Persistent profiles, `resolve_address` tool. Not started.
 - **P2 — Google Sheets, Webhooks**: New adapters/tools. Not started.

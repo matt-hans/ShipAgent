@@ -127,6 +127,23 @@ class MCPClient:
         """Whether the MCP session is currently connected."""
         return self._session is not None
 
+    async def check_health(self) -> bool:
+        """Lightweight health check — calls list_tools() to verify responsiveness.
+
+        Returns False on any failure rather than raising, making it safe
+        for monitoring paths.
+
+        Returns:
+            True if the connection is alive and responsive.
+        """
+        if self._session is None:
+            return False
+        try:
+            await self._session.list_tools()
+            return True
+        except Exception:
+            return False
+
     @property
     def retry_attempts_total(self) -> int:
         """Total number of retry sleeps performed by this client."""

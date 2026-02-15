@@ -17,7 +17,6 @@ from src.orchestrator.agent.tools.core import (
     _emit_preview_ready,
     _enrich_preview_rows,
     _get_ups_client,
-    _reset_ups_client,
     shutdown_cached_ups_client,
 )
 from src.orchestrator.agent.tools.data import (
@@ -1067,44 +1066,23 @@ def test_preview_data_normalization():
 
 @pytest.mark.asyncio
 async def test_cached_ups_client_reused():
-    """_get_ups_client returns the same connected instance until reset."""
+    """_get_ups_client delegates to gateway_provider and returns the same instance."""
     mock_client = AsyncMock()
-    mock_client.is_connected = False
+    mock_client.is_connected = True
 
-    async def _connect() -> None:
-        mock_client.is_connected = True
-
-    mock_client.connect = AsyncMock(return_value=None)
-    mock_client.disconnect = AsyncMock(return_value=None)
-    mock_client.connect.side_effect = _connect
-
-    await _reset_ups_client()
-    try:
-        with patch(
-            "src.orchestrator.agent.tools.core._build_ups_client",
-            return_value=mock_client,
-        ):
-            c1 = await _get_ups_client()
-            c2 = await _get_ups_client()
-    finally:
-        await _reset_ups_client()
+    with patch(
+        "src.services.gateway_provider.get_ups_gateway",
+        new=AsyncMock(return_value=mock_client),
+    ):
+        c1 = await _get_ups_client()
+        c2 = await _get_ups_client()
 
     assert c1 is c2
-    assert mock_client.connect.await_count == 1
+    assert c1 is mock_client
 
 
 @pytest.mark.asyncio
-async def test_shutdown_cached_ups_client_disconnects():
-    """shutdown_cached_ups_client disconnects and clears cached instance."""
-    mock_client = AsyncMock()
-    mock_client.connect = AsyncMock(return_value=None)
-    mock_client.disconnect = AsyncMock(return_value=None)
-
-    await _reset_ups_client()
-    with patch(
-        "src.orchestrator.agent.tools.core._build_ups_client", return_value=mock_client
-    ):
-        await _get_ups_client()
+async def test_shutdown_cached_ups_client_is_noop():
+    """shutdown_cached_ups_client is a no-op (lifecycle managed by gateway_provider)."""
+    # Should not raise or do anything
     await shutdown_cached_ups_client()
-
-    mock_client.disconnect.assert_awaited_once()

@@ -184,6 +184,12 @@ async def _process_agent_message(session_id: str, content: str) -> None:
     """
     queue = _get_event_queue(session_id)
     session = _session_manager.get_or_create_session(session_id)
+
+    if session.terminating:
+        logger.info("Skipping message for terminating session %s", session_id)
+        await queue.put({"event": "done", "data": {}})
+        return
+
     started_at = time.perf_counter()
     first_event_at: float | None = None
     first_event_source = ""
@@ -429,6 +435,10 @@ async def send_message(
     if session_id not in _session_manager.list_sessions():
         raise HTTPException(status_code=404, detail="Session not found")
 
+    session = _session_manager.get_session(session_id)
+    if session is not None and session.terminating:
+        raise HTTPException(status_code=409, detail="Session is being terminated")
+
     # Store user message in history
     _session_manager.add_message(session_id, "user", payload.content)
 
@@ -509,6 +519,11 @@ async def delete_conversation(session_id: str) -> Response:
     Returns:
         204 No Content.
     """
+    # Mark session as terminating to prevent concurrent message processing
+    session = _session_manager.get_session(session_id)
+    if session is not None:
+        session.terminating = True
+
     # Stop prewarm and agent before removing session
     await _session_manager.cancel_session_prewarm_task(session_id)
     await _session_manager.stop_session_agent(session_id)

@@ -31,6 +31,27 @@ async def test_get_data_gateway_returns_same_instance():
 
 
 @pytest.mark.asyncio
+async def test_get_ups_gateway_singleton():
+    """Provider must return the same UPSMCPClient on repeated calls."""
+    import src.services.gateway_provider as provider
+
+    # Reset module state
+    provider._ups_gateway = None
+
+    mock_instance = AsyncMock()
+    mock_instance.is_connected = True
+    mock_instance.connect = AsyncMock()
+
+    with patch.object(provider, "_build_ups_gateway", return_value=mock_instance):
+        gw1 = await provider.get_ups_gateway()
+        gw2 = await provider.get_ups_gateway()
+        assert gw1 is gw2, "Must return the same singleton instance"
+
+    # Clean up
+    provider._ups_gateway = None
+
+
+@pytest.mark.asyncio
 async def test_get_external_sources_client_returns_same_instance():
     """Provider must return the same ExternalSourcesMCPClient on repeated calls."""
     import src.services.gateway_provider as provider

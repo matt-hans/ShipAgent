@@ -204,19 +204,41 @@ class TestDeleteConversation:
         mock_cancel.assert_awaited_once_with(session_id)
 
 
+class TestTerminatingSessionGuard:
+    """Tests for session terminating race condition guard."""
+
+    def test_send_message_to_terminating_session_returns_409(self):
+        """Sending to a terminating session returns 409 Conflict."""
+        create_resp = client.post("/api/v1/conversations/")
+        session_id = create_resp.json()["session_id"]
+
+        # Mark the session as terminating
+        from src.api.routes.conversations import _session_manager
+        session = _session_manager.get_session(session_id)
+        assert session is not None
+        session.terminating = True
+
+        response = client.post(
+            f"/api/v1/conversations/{session_id}/messages",
+            json={"content": "test"},
+        )
+        assert response.status_code == 409
+        assert "terminated" in response.json()["detail"].lower() or "terminating" in response.json()["detail"].lower()
+
+        # Clean up
+        session.terminating = False
+        _session_manager.remove_session(session_id)
+
+
 @pytest.mark.asyncio
-async def test_shutdown_event_calls_cached_ups_cleanup():
-    """API shutdown hook tears down cached UPS MCP client."""
-    try:
-        import importlib
-
-        tools_core = importlib.import_module("src.orchestrator.agent.tools.core")
-    except ModuleNotFoundError:
-        pytest.skip("claude_agent_sdk not available in this test environment")
-
+async def test_shutdown_event_calls_gateway_shutdown():
+    """API shutdown hook tears down all gateway clients."""
     from src.api.main import shutdown_event
 
-    with patch.object(tools_core, "shutdown_cached_ups_client", new=AsyncMock()) as mock_shutdown:
+    with patch(
+        "src.services.gateway_provider.shutdown_gateways",
+        new=AsyncMock(),
+    ) as mock_shutdown:
         await shutdown_event()
         mock_shutdown.assert_awaited_once()
 

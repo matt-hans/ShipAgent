@@ -5,11 +5,9 @@ UPS client cache, row normalization utilities, and preview helpers.
 All tool handler submodules import from here.
 """
 
-import asyncio
 import hashlib
 import json
 import logging
-import os
 import re
 from collections.abc import Callable
 from typing import Any
@@ -23,16 +21,14 @@ from src.services.column_mapping import (
     auto_map_columns,
     validate_mapping,
 )
+from src.services.gateway_provider import get_data_gateway, get_external_sources_client  # noqa: F401
+from src.services.job_service import JobService
 from src.services.ups_service_codes import (
     SERVICE_ALIASES,
     SERVICE_CODE_NAMES,
     ServiceCode,
     translate_service_name,
 )
-from src.services.job_service import JobService
-
-# Re-export gateway accessors for tool handler convenience
-from src.services.gateway_provider import get_data_gateway, get_external_sources_client
 
 logger = logging.getLogger(__name__)
 
@@ -283,68 +279,20 @@ def _command_explicitly_requests_service(command: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Shared UPS MCP Client (module-level cache)
+# Shared UPS MCP Client (delegated to gateway_provider)
 # ---------------------------------------------------------------------------
-
-_ups_client: Any | None = None
-_ups_client_lock = asyncio.Lock()
-
-
-def _build_ups_client() -> Any:
-    """Build a UPSMCPClient configured from environment variables."""
-    from src.services.ups_mcp_client import UPSMCPClient
-
-    base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
-    environment = "test" if "wwwcie" in base_url else "production"
-
-    return UPSMCPClient(
-        client_id=os.environ.get("UPS_CLIENT_ID", ""),
-        client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
-        environment=environment,
-        account_number=os.environ.get("UPS_ACCOUNT_NUMBER", ""),
-    )
 
 
 async def _get_ups_client() -> Any:
-    """Get the cached UPSMCPClient, creating it lazily if needed."""
-    global _ups_client
+    """Get the singleton UPSMCPClient via gateway_provider."""
+    from src.services.gateway_provider import get_ups_gateway
 
-    if _ups_client is not None:
-        connected = getattr(_ups_client, "is_connected", False)
-        if isinstance(connected, bool) and connected:
-            return _ups_client
-
-    async with _ups_client_lock:
-        if _ups_client is not None:
-            connected = getattr(_ups_client, "is_connected", False)
-            if isinstance(connected, bool) and connected:
-                return _ups_client
-            await _ups_client.connect()
-            return _ups_client
-        client = _build_ups_client()
-        await client.connect()
-        _ups_client = client
-        return _ups_client
-
-
-async def _reset_ups_client() -> None:
-    """Tear down and clear the cached UPSMCPClient."""
-    global _ups_client
-
-    async with _ups_client_lock:
-        if _ups_client is None:
-            return
-        try:
-            await _ups_client.disconnect()
-        except Exception as e:
-            logger.warning("Failed to disconnect cached UPS client: %s", e)
-        finally:
-            _ups_client = None
+    return await get_ups_gateway()
 
 
 async def shutdown_cached_ups_client() -> None:
-    """Shutdown hook for FastAPI app lifecycle."""
-    await _reset_ups_client()
+    """No-op — UPS lifecycle managed by gateway_provider.shutdown_gateways()."""
+    pass
 
 
 # ---------------------------------------------------------------------------

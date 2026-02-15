@@ -396,7 +396,10 @@ def _log_to_stderr(message: str) -> None:
     except (BrokenPipeError, OSError):
         # In daemonized/reloaded environments stderr may be closed; logging
         # should never break hook execution.
-        logger.debug("Dropped stderr hook log: %s", message)
+        if "[VALIDATION]" in message or "[ERROR" in message:
+            logger.warning("stderr unavailable, hook message: %s", message)
+        else:
+            logger.debug("Dropped stderr hook log: %s", message)
 
 
 # =============================================================================
