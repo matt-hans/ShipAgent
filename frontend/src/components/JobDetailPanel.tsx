@@ -469,7 +469,7 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
                 </div>
                 <div className="flex justify-between text-xs font-mono">
                   <span className="text-slate-400">
-                    {progress.processed} / {progress.total} rows
+                    {progress.processed} / {progress.total} shipments
                   </span>
                   <span className="text-slate-400">
                     {progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0}%
@@ -633,9 +633,9 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">
-                Shipment Rows
+                Shipments
               </p>
-              <p className="text-[10px] font-mono text-slate-500">{rows.length} rows</p>
+              <p className="text-[10px] font-mono text-slate-500">{rows.length} shipments</p>
             </div>
 
             {isLoading ? (
@@ -645,7 +645,7 @@ export function JobDetailPanel({ job, onBack }: JobDetailPanelProps) {
                 <div className="h-10 bg-slate-800 rounded shimmer" />
               </div>
             ) : rows.length === 0 ? (
-              <p className="text-xs text-slate-500 text-center py-8">No rows found</p>
+              <p className="text-xs text-slate-500 text-center py-8">No shipments found</p>
             ) : (
               <div className="rounded-md border border-slate-800 overflow-hidden">
                 {rows.map((row) => (

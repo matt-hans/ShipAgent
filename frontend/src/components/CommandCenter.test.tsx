@@ -62,7 +62,7 @@ function buildBaseConversation(overrides: Record<string, unknown> = {}) {
     isProcessing: false,
     isCreatingSession: false,
     sendMessage: vi.fn(),
-    reset: vi.fn(async () => {}),
+    reset: vi.fn(async () => { }),
     clearEvents: vi.fn(),
     ...overrides,
   };
@@ -84,7 +84,7 @@ describe('CommandCenter interactive mode UX', () => {
   it('renders interactive mode banner and hides source/settings banner', () => {
     render(<CommandCenter activeJob={null} />);
 
-    expect(screen.queryByText('Interactive Shipping (Ad-hoc)')).not.toBeNull();
+    expect(screen.queryByText('Single Shipment (Ad-hoc)')).not.toBeNull();
     expect(screen.queryByText('Batch commands disabled')).not.toBeNull();
     expect(screen.queryByText('Shopify')).toBeNull();
     expect(screen.queryByTitle('Shipment settings')).toBeNull();
@@ -93,7 +93,7 @@ describe('CommandCenter interactive mode UX', () => {
   it('shows ad-hoc welcome content only in interactive mode even when source is connected', () => {
     render(<CommandCenter activeJob={null} />);
 
-    expect(screen.queryByText('Interactive Shipping')).not.toBeNull();
+    expect(screen.queryByText('Single Shipment')).not.toBeNull();
     expect(
       screen.queryByText(/Ship a 5lb box to John Smith/i)
     ).not.toBeNull();
@@ -130,7 +130,7 @@ describe('CommandCenter interactive mode UX', () => {
   it('resets session on mode switch and clears conversation + preview', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const clearConversation = vi.fn();
-    const reset = vi.fn(async () => {});
+    const reset = vi.fn(async () => { });
 
     mockAppState = buildBaseAppState({
       interactiveShipping: false,
