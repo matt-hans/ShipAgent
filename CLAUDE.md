@@ -114,6 +114,10 @@ src/
 │   ├── job_service.py          # Job state machine, row tracking
 │   ├── audit_service.py        # Audit logging with redaction
 │   ├── data_source_service.py  # Data source import + auto-save hooks
+│   ├── data_source_gateway.py  # DataSourceGateway protocol + typed adapter
+│   ├── data_source_mcp_client.py # DataSourceMCPClient — async data source via MCP stdio
+│   ├── external_sources_mcp_client.py # ExternalSourcesMCPClient — async platform via MCP stdio
+│   ├── gateway_provider.py     # Centralized singleton factory for MCP client gateways
 │   ├── saved_data_source_service.py # Saved source CRUD (list, upsert, delete, reconnect)
 │   └── write_back_utils.py     # Atomic CSV/Excel write-back utilities
 ├── mcp/
@@ -155,7 +159,12 @@ src/
     ├── agent/                  # Claude Agent SDK integration (primary orchestration)
     │   ├── client.py           # OrchestrationAgent — SDK agent with streaming
     │   ├── system_prompt.py    # Unified system prompt builder (domain knowledge + tools)
-    │   ├── tools_v2.py         # Deterministic SDK tools (query, preview, execute, etc.)
+    │   ├── tools/              # Deterministic SDK tools (split by concern)
+    │   │   ├── __init__.py     # Tool registry — get_all_tool_definitions()
+    │   │   ├── core.py         # Shared internals (EventEmitterBridge, UPS client cache, helpers)
+    │   │   ├── data.py         # Data source + platform tool handlers
+    │   │   ├── pipeline.py     # Batch pipeline tool handlers (create, preview, execute)
+    │   │   └── interactive.py  # Interactive shipment tool handler
     │   ├── config.py           # Agent configuration
     │   └── hooks.py            # Lifecycle hooks
     └── batch/                  # Batch orchestration
@@ -173,15 +182,22 @@ frontend/
 │   ├── components/
 │   │   ├── CommandCenter.tsx       # Main chat UI (messages, preview, progress, artifacts)
 │   │   ├── command-center/
-│   │   │   └── presentation.tsx    # Presentation layer (icons, messages, PreviewCard, ProgressDisplay, CompletionArtifact, ToolCallChip)
+│   │   │   ├── messages.tsx        # Message rendering (WelcomeMessage, ActiveSourceBanner, MessageBubble)
+│   │   │   ├── PreviewCard.tsx     # Shipment preview with expandable rows, cost estimates
+│   │   │   ├── ProgressDisplay.tsx # Live batch execution progress with per-row failures
+│   │   │   ├── CompletionArtifact.tsx # Inline card for completed batches
+│   │   │   └── ToolCallChip.tsx    # Collapsible chip showing active agent tool calls
 │   │   ├── JobDetailPanel.tsx      # Full job detail view (from sidebar click)
 │   │   ├── LabelPreview.tsx        # PDF label viewer modal (react-pdf)
 │   │   ├── RecentSourcesModal.tsx  # Saved sources browser (search, filter, reconnect, bulk delete)
 │   │   ├── sidebar/
-│   │   │   ├── panels.tsx          # DataSourceSection + JobHistorySection components
+│   │   │   ├── DataSourcePanel.tsx # Data source switching, file upload, DB connection, Shopify
+│   │   │   ├── JobHistoryPanel.tsx # Job list with search, filters, delete, printer access
 │   │   │   └── dataSourceMappers.ts # Column-to-ColumnMetadata mapping helpers
-│   │   ├── ui/                     # shadcn/ui primitives
+│   │   ├── ui/                     # shadcn/ui primitives + consolidated icons
 │   │   │   ├── ShipAgentLogo.tsx   # Custom logo components
+│   │   │   ├── icons.tsx           # Consolidated SVG icon components
+│   │   │   ├── brand-icons.tsx     # Platform brand icons (Shopify, SAP, Oracle, WooCommerce)
 │   │   │   ├── button.tsx, input.tsx, card.tsx, progress.tsx
 │   │   │   ├── dialog.tsx, alert.tsx, scroll-area.tsx
 │   │   │   └── ...
@@ -231,7 +247,15 @@ Async UPS client communicating via MCP stdio protocol. Replaces the deprecated `
 
 ### MCPClient (`src/services/mcp_client.py`)
 
-Generic reusable async MCP client with connection lifecycle management, JSON response parsing, and configurable retry with exponential backoff. Used by `UPSMCPClient` and designed for future carrier integrations (FedEx, USPS).
+Generic reusable async MCP client with connection lifecycle management, JSON response parsing, and configurable retry with exponential backoff. Used by `UPSMCPClient`, `DataSourceMCPClient`, and `ExternalSourcesMCPClient`.
+
+### DataSourceGateway (`src/services/data_source_gateway.py`)
+
+Protocol-based abstraction for data source operations. `DataSourceMCPClient` implements this protocol, providing import, schema inspection, query, and disconnect operations via MCP stdio transport. The `gateway_provider.py` module provides centralized singleton access.
+
+### ExternalSourcesMCPClient (`src/services/external_sources_mcp_client.py`)
+
+Async client for external platform operations (Shopify connect/disconnect, order fetching) via MCP stdio transport. Singleton managed by `gateway_provider.py`.
 
 ### BatchEngine (`src/services/batch_engine.py`)
 
@@ -284,17 +308,17 @@ The main UI is an agent-driven conversational chat interface powered by `useConv
 | Component | File | Purpose |
 |-----------|------|---------|
 | `CommandCenter` | `CommandCenter.tsx` | Main chat: messages, preview cards, progress, completion artifacts |
-| `CompletionArtifact` | `command-center/presentation.tsx` | Inline card for completed batches (green/amber/red border, label access) |
-| `PreviewCard` | `command-center/presentation.tsx` | Shipment preview with expandable rows, cost estimates, warnings, Confirm/Cancel |
-| `ProgressDisplay` | `command-center/presentation.tsx` | Live batch execution progress with per-row failures |
-| `ToolCallChip` | `command-center/presentation.tsx` | Collapsible chip showing active agent tool calls |
-| `ActiveSourceBanner` | `command-center/presentation.tsx` | Banner showing currently connected data source |
-| `WelcomeMessage` | `command-center/presentation.tsx` | Initial welcome with example commands |
+| `CompletionArtifact` | `command-center/CompletionArtifact.tsx` | Inline card for completed batches (green/amber/red border, label access) |
+| `PreviewCard` | `command-center/PreviewCard.tsx` | Shipment preview with expandable rows, cost estimates, warnings, Confirm/Cancel |
+| `ProgressDisplay` | `command-center/ProgressDisplay.tsx` | Live batch execution progress with per-row failures |
+| `ToolCallChip` | `command-center/ToolCallChip.tsx` | Collapsible chip showing active agent tool calls |
+| `ActiveSourceBanner` | `command-center/messages.tsx` | Banner showing currently connected data source |
+| `WelcomeMessage` | `command-center/messages.tsx` | Initial welcome with example commands |
 | `LabelPreview` | `LabelPreview.tsx` | PDF modal viewer (react-pdf), opens as overlay |
 | `JobDetailPanel` | `JobDetailPanel.tsx` | Full job detail view (triggered from sidebar click) |
 | `RecentSourcesModal` | `RecentSourcesModal.tsx` | Saved source browser with search, type filters, one-click reconnect, bulk delete |
-| `DataSourceSection` | `sidebar/panels.tsx` | Data source switching, file upload, DB connection, Shopify integration |
-| `JobHistorySection` | `sidebar/panels.tsx` | Job list with search, filters, delete, printer access |
+| `DataSourceSection` | `sidebar/DataSourcePanel.tsx` | Data source switching, file upload, DB connection, Shopify integration |
+| `JobHistorySection` | `sidebar/JobHistoryPanel.tsx` | Job list with search, filters, delete, printer access |
 | `Sidebar` | `layout/Sidebar.tsx` | Sidebar shell delegating to DataSourceSection + JobHistorySection |
 
 ### State Management
@@ -485,9 +509,9 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 
 - CSS classes: `card-premium`, `btn-primary`, `btn-secondary`, `badge-*` (success/error/info/warning)
 - Design system in `index.css`: OKLCH color space, custom animations, platform-specific colors (Shopify, WooCommerce, SAP, Oracle)
-- Icons are inline SVG components defined in `presentation.tsx` and `panels.tsx` (no external icon library)
-- Presentation components (PreviewCard, ProgressDisplay, CompletionArtifact, etc.) live in `command-center/presentation.tsx`
-- Sidebar panels (DataSourceSection, JobHistorySection) live in `sidebar/panels.tsx`
+- Icons consolidated in `ui/icons.tsx` (general) and `ui/brand-icons.tsx` (platform logos)
+- Presentation components split into individual files: `command-center/PreviewCard.tsx`, `ProgressDisplay.tsx`, `CompletionArtifact.tsx`, `ToolCallChip.tsx`, `messages.tsx`
+- Sidebar panels split: `sidebar/DataSourcePanel.tsx` and `sidebar/JobHistoryPanel.tsx`
 - shadcn/ui primitives in `components/ui/` (button, input, card, dialog, alert, progress, scroll-area)
 - Job list refresh: `jobListVersion` counter + `refreshJobList()` in AppState
 - Labels stored on disk, paths in `JobRow.label_path`

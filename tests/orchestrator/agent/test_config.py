@@ -17,7 +17,6 @@ from src.orchestrator.agent.config import (
     _get_python_command,
     create_mcp_servers_config,
     get_data_mcp_config,
-    get_shopify_mcp_config,
     get_ups_mcp_config,
 )
 
@@ -82,77 +81,17 @@ class TestDataMCPConfig:
         assert isinstance(config["env"], dict)
 
 
-class TestShopifyMCPConfig:
-    """Tests for Shopify MCP configuration."""
-
-    def test_command_is_npx(self):
-        """Shopify MCP should use npx to run shopify-mcp."""
-        config = get_shopify_mcp_config()
-        assert config["command"] == "npx"
-
-    def test_args_specify_shopify_mcp(self):
-        """Args should specify shopify-mcp package."""
-        config = get_shopify_mcp_config()
-        assert "shopify-mcp" in config["args"]
-        assert "--accessToken" in config["args"]
-        assert "--domain" in config["args"]
-
-    def test_config_has_required_keys(self):
-        """Config should have command, args, and env keys."""
-        config = get_shopify_mcp_config()
-        assert "command" in config
-        assert "args" in config
-        assert "env" in config
-
-    def test_env_passes_shopify_credentials(self):
-        """Environment should pass Shopify credential env vars via args."""
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test_token_123")
-            mp.setenv("SHOPIFY_STORE_DOMAIN", "test-store.myshopify.com")
-
-            config = get_shopify_mcp_config()
-
-            # Credentials are passed as args, not env vars
-            assert "shpat_test_token_123" in config["args"]
-            assert "test-store.myshopify.com" in config["args"]
-
-    def test_env_has_path(self):
-        """Environment should include PATH for npx to work."""
-        config = get_shopify_mcp_config()
-        assert "PATH" in config["env"]
-
-    def test_missing_credentials_still_returns_config(self):
-        """Config should still be returned even if credentials are missing."""
-        with pytest.MonkeyPatch.context() as mp:
-            mp.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
-            mp.delenv("SHOPIFY_STORE_DOMAIN", raising=False)
-
-            config = get_shopify_mcp_config()
-
-            # Should still return a valid config structure
-            assert "command" in config
-            assert "args" in config
-            assert "env" in config
-
-    def test_args_is_list(self):
-        """Args should be a list."""
-        config = get_shopify_mcp_config()
-        assert isinstance(config["args"], list)
-
-    def test_env_is_dict(self):
-        """Env should be a dict."""
-        config = get_shopify_mcp_config()
-        assert isinstance(config["env"], dict)
-
 
 class TestUPSMCPConfig:
     """Tests for UPS MCP configuration."""
 
-    def test_command_is_venv_python(self):
-        """UPS MCP should use venv Python to run local fork."""
+    def test_command_is_python_interpreter(self):
+        """UPS MCP should use a valid Python interpreter."""
         config = get_ups_mcp_config()
-        assert config["command"].endswith("python3")
-        assert ".venv/bin/python3" in config["command"]
+        cmd = config["command"]
+        # Must be either the venv python or sys.executable fallback
+        assert "python" in cmd, f"Expected a python interpreter, got: {cmd}"
+        assert cmd == _get_python_command()
 
     def test_args_run_as_module(self):
         """Args should run ups_mcp as a Python module."""
@@ -251,11 +190,10 @@ class TestCreateMCPServersConfig:
     """Tests for the combined MCP servers configuration."""
 
     def test_returns_dict_with_all_servers(self):
-        """Should return config for data, shopify, external, and ups servers."""
+        """Should return config for data, external, and ups servers."""
         config = create_mcp_servers_config()
         assert isinstance(config, dict)
         assert "data" in config
-        assert "shopify" in config
         assert "external" in config
         assert "ups" in config
 
@@ -285,15 +223,10 @@ class TestCreateMCPServersConfig:
         config = create_mcp_servers_config()
         assert config["external"]["command"] == _get_python_command()
 
-    def test_shopify_uses_npx(self):
-        """Shopify server should use npx command."""
+    def test_ups_uses_preferred_python(self):
+        """UPS server should use the preferred Python command."""
         config = create_mcp_servers_config()
-        assert config["shopify"]["command"] == "npx"
-
-    def test_ups_uses_venv_python(self):
-        """UPS server should use venv Python command."""
-        config = create_mcp_servers_config()
-        assert config["ups"]["command"].endswith("python3")
+        assert config["ups"]["command"] == _get_python_command()
 
     def test_ups_config_is_valid(self):
         """UPS config should have required keys."""
@@ -302,14 +235,6 @@ class TestCreateMCPServersConfig:
         assert "command" in ups_config
         assert "args" in ups_config
         assert "env" in ups_config
-
-    def test_shopify_config_is_valid(self):
-        """Shopify config should have required keys."""
-        config = create_mcp_servers_config()
-        shopify_config = config["shopify"]
-        assert "command" in shopify_config
-        assert "args" in shopify_config
-        assert "env" in shopify_config
 
     def test_returns_new_dict_each_call(self):
         """Each call should return a fresh dict (not cached)."""

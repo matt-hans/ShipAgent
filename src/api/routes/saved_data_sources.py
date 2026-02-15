@@ -2,7 +2,7 @@
 
 Provides endpoints for listing, reconnecting, and deleting saved
 data source connections. Sources are auto-saved on every successful
-import via DataSourceService hooks.
+import via gateway hooks.
 
 All endpoints use /api/v1/saved-sources prefix.
 """
@@ -19,7 +19,7 @@ from src.api.schemas import (
     SavedDataSourceResponse,
 )
 from src.db.connection import get_db
-from src.services.data_source_service import DataSourceService
+from src.services.gateway_provider import get_data_gateway
 from src.services.saved_data_source_service import SavedDataSourceService
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ async def reconnect_saved_source(
     if not source:
         raise HTTPException(status_code=404, detail="Saved source not found")
 
-    svc = DataSourceService.get_instance()
+    gw = await get_data_gateway()
 
     try:
         if source.source_type == "csv":
@@ -104,14 +104,14 @@ async def reconnect_saved_source(
                 raise HTTPException(
                     status_code=400, detail="No file path stored for this CSV source"
                 )
-            result = await svc.import_csv(file_path=source.file_path)
+            result = await gw.import_csv(file_path=source.file_path)
 
         elif source.source_type == "excel":
             if not source.file_path:
                 raise HTTPException(
                     status_code=400, detail="No file path stored for this Excel source"
                 )
-            result = await svc.import_excel(
+            result = await gw.import_excel(
                 file_path=source.file_path, sheet=source.sheet_name
             )
 
@@ -122,7 +122,7 @@ async def reconnect_saved_source(
                     detail="connection_string is required to reconnect database sources",
                 )
             query = source.db_query or "SELECT * FROM shipments"
-            result = await svc.import_database(
+            result = await gw.import_database(
                 connection_string=payload.connection_string, query=query
             )
 
@@ -138,9 +138,9 @@ async def reconnect_saved_source(
 
         return {
             "status": "connected",
-            "source_type": result.source_type,
-            "row_count": result.row_count,
-            "column_count": len(result.columns),
+            "source_type": result.get("source_type", source.source_type),
+            "row_count": result.get("row_count", 0),
+            "column_count": len(result.get("columns", [])),
         }
 
     except FileNotFoundError as e:

@@ -37,20 +37,20 @@ class TestCreateConversation:
 
     def test_create_conversation_schedules_prewarm_when_source_exists(self):
         """Prewarm task is scheduled when an active source is available."""
-        mock_source_info = MagicMock()
-        mock_source_info.source_type = "csv"
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"active": True, "source_type": "csv"}
+        )
 
         with (
             patch(
-                "src.services.data_source_service.DataSourceService.get_instance",
-            ) as mock_get_instance,
+                "src.services.gateway_provider.get_data_gateway_if_connected",
+                return_value=mock_gw,
+            ),
             patch(
                 "src.api.routes.conversations.asyncio.create_task",
             ) as mock_create_task,
         ):
-            mock_svc = MagicMock()
-            mock_svc.get_source_info.return_value = mock_source_info
-            mock_get_instance.return_value = mock_svc
             mock_task = MagicMock()
             mock_task.done.return_value = False
             def _fake_create_task(coro):
@@ -66,21 +66,20 @@ class TestCreateConversation:
 
     def test_create_conversation_skips_prewarm_in_interactive_mode(self):
         """Interactive sessions should not schedule prewarm even when source exists."""
-        mock_source_info = MagicMock()
-        mock_source_info.source_type = "csv"
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"active": True, "source_type": "csv"}
+        )
 
         with (
             patch(
-                "src.services.data_source_service.DataSourceService.get_instance",
-            ) as mock_get_instance,
+                "src.services.gateway_provider.get_data_gateway_if_connected",
+                return_value=mock_gw,
+            ),
             patch(
                 "src.api.routes.conversations.asyncio.create_task",
             ) as mock_create_task,
         ):
-            mock_svc = MagicMock()
-            mock_svc.get_source_info.return_value = mock_source_info
-            mock_get_instance.return_value = mock_svc
-
             response = client.post(
                 "/api/v1/conversations/",
                 json={"interactive_shipping": True},
@@ -211,13 +210,13 @@ async def test_shutdown_event_calls_cached_ups_cleanup():
     try:
         import importlib
 
-        tools_v2 = importlib.import_module("src.orchestrator.agent.tools_v2")
+        tools_core = importlib.import_module("src.orchestrator.agent.tools.core")
     except ModuleNotFoundError:
         pytest.skip("claude_agent_sdk not available in this test environment")
 
     from src.api.main import shutdown_event
 
-    with patch.object(tools_v2, "shutdown_cached_ups_client", new=AsyncMock()) as mock_shutdown:
+    with patch.object(tools_core, "shutdown_cached_ups_client", new=AsyncMock()) as mock_shutdown:
         await shutdown_event()
         mock_shutdown.assert_awaited_once()
 
@@ -255,13 +254,13 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
     mock_source_info.row_count = 1
     mock_source_info.columns = []
 
-    mock_svc = MagicMock()
-    mock_svc.get_source_info.return_value = mock_source_info
+    mock_gw = AsyncMock()
+    mock_gw.get_source_info_typed = AsyncMock(return_value=mock_source_info)
 
     with (
         patch(
-            "src.services.data_source_service.DataSourceService.get_instance",
-            return_value=mock_svc,
+            "src.services.gateway_provider.get_data_gateway",
+            new=AsyncMock(return_value=mock_gw),
         ),
         patch(
             "src.api.routes.conversations._ensure_agent",
@@ -279,8 +278,8 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
 
 
 @pytest.mark.asyncio
-async def test_interactive_mode_skips_shopify_auto_import():
-    """Interactive sessions should not attempt Shopify auto-import."""
+async def test_process_message_uses_gateway_for_source_info():
+    """_process_agent_message uses DataSourceGateway (not DataSourceService)."""
     from src.api.routes import conversations as conversations_mod
     conversations = importlib.reload(conversations_mod)
 
@@ -292,12 +291,17 @@ async def test_interactive_mode_skips_shopify_auto_import():
             if False:
                 yield {}
 
-    session_id = "interactive-auto-import-test"
+    session_id = "gateway-usage-test"
     session = conversations._session_manager.get_or_create_session(session_id)
-    session.interactive_shipping = True
 
-    mock_svc = MagicMock()
-    mock_svc.get_source_info.return_value = None
+    mock_source_info = MagicMock()
+    mock_source_info.source_type = "csv"
+    mock_source_info.file_path = "/tmp/orders.csv"
+    mock_source_info.row_count = 1
+    mock_source_info.columns = []
+
+    mock_gw = AsyncMock()
+    mock_gw.get_source_info_typed = AsyncMock(return_value=mock_source_info)
 
     async def _fake_ensure_agent(sess, _source_info):
         sess.agent = _FakeAgent()
@@ -306,13 +310,9 @@ async def test_interactive_mode_skips_shopify_auto_import():
 
     with (
         patch(
-            "src.services.data_source_service.DataSourceService.get_instance",
-            return_value=mock_svc,
+            "src.services.gateway_provider.get_data_gateway",
+            new=AsyncMock(return_value=mock_gw),
         ),
-        patch(
-            "src.api.routes.conversations._try_auto_import_shopify",
-            new=AsyncMock(),
-        ) as mock_auto_import,
         patch(
             "src.api.routes.conversations._ensure_agent",
             new=AsyncMock(side_effect=_fake_ensure_agent),
@@ -320,6 +320,6 @@ async def test_interactive_mode_skips_shopify_auto_import():
     ):
         await conversations._process_agent_message(session_id, "Ship one package")
 
-    mock_auto_import.assert_not_awaited()
+    mock_gw.get_source_info_typed.assert_awaited_once()
     conversations._session_manager.remove_session(session_id)
     conversations._event_queues.pop(session_id, None)

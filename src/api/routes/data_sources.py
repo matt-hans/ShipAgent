@@ -1,7 +1,11 @@
 """API routes for local data source management.
 
-Provides endpoints for importing, querying, and disconnecting
+Provides REST API endpoints for importing, querying, and disconnecting
 local data sources (CSV, Excel, Database).
+
+All routes are thin HTTP-to-MCP adapters delegating to the
+DataSourceMCPClient via gateway_provider. No direct DataSourceService
+imports or local state management.
 
 All endpoints use /api/v1/data-sources prefix.
 """
@@ -19,7 +23,7 @@ from src.api.schemas import (
     DataSourceImportResponse,
     DataSourceStatusResponse,
 )
-from src.services.data_source_service import DataSourceService
+from src.services.gateway_provider import get_data_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +47,7 @@ async def import_data_source(
     Returns:
         Import result with schema, row count, and status.
     """
-    svc = DataSourceService.get_instance()
+    gw = await get_data_gateway()
 
     try:
         if payload.type == "csv":
@@ -52,7 +56,7 @@ async def import_data_source(
                     status_code=400,
                     detail="file_path is required for CSV import",
                 )
-            result = await svc.import_csv(
+            result = await gw.import_csv(
                 file_path=payload.file_path,
                 delimiter=payload.delimiter,
             )
@@ -63,7 +67,7 @@ async def import_data_source(
                     status_code=400,
                     detail="file_path is required for Excel import",
                 )
-            result = await svc.import_excel(
+            result = await gw.import_excel(
                 file_path=payload.file_path,
                 sheet=payload.sheet,
             )
@@ -74,7 +78,7 @@ async def import_data_source(
                     status_code=400,
                     detail="connection_string and query are required for database import",
                 )
-            result = await svc.import_database(
+            result = await gw.import_database(
                 connection_string=payload.connection_string,
                 query=payload.query,
             )
@@ -85,20 +89,20 @@ async def import_data_source(
                 detail=f"Unsupported data source type: {payload.type}",
             )
 
-        # result is an ImportResult Pydantic model from the adapter
+        # result is a dict from MCP tool (model_dump() of ImportResult)
         columns = [
             DataSourceColumnInfo(
-                name=col.name,
-                type=col.type,
-                nullable=col.nullable,
+                name=col["name"],
+                type=col["type"],
+                nullable=col.get("nullable", True),
             )
-            for col in result.columns
+            for col in result.get("columns", [])
         ]
 
         return DataSourceImportResponse(
             status="connected",
-            source_type=result.source_type,
-            row_count=result.row_count,
+            source_type=result.get("source_type", payload.type),
+            row_count=result.get("row_count", 0),
             columns=columns,
         )
 
@@ -174,27 +178,27 @@ async def upload_data_source(
         await file.close()
 
     file_path = str(dest)
-    svc = DataSourceService.get_instance()
+    gw = await get_data_gateway()
 
     try:
         if source_type == "csv":
-            result = await svc.import_csv(file_path=file_path)
+            result = await gw.import_csv(file_path=file_path)
         else:
-            result = await svc.import_excel(file_path=file_path)
+            result = await gw.import_excel(file_path=file_path)
 
         columns = [
             DataSourceColumnInfo(
-                name=col.name,
-                type=col.type,
-                nullable=col.nullable,
+                name=col["name"],
+                type=col["type"],
+                nullable=col.get("nullable", True),
             )
-            for col in result.columns
+            for col in result.get("columns", [])
         ]
 
         return DataSourceImportResponse(
             status="connected",
-            source_type=result.source_type,
-            row_count=result.row_count,
+            source_type=result.get("source_type", source_type),
+            row_count=result.get("row_count", 0),
             columns=columns,
         )
     except (FileNotFoundError, ValueError) as e:
@@ -224,26 +228,26 @@ async def get_data_source_status() -> DataSourceStatusResponse:
     Returns:
         Connection status with source type, row count, and schema.
     """
-    svc = DataSourceService.get_instance()
-    info = svc.get_source_info()
+    gw = await get_data_gateway()
+    info = await gw.get_source_info()
 
     if info is None:
         return DataSourceStatusResponse(connected=False)
 
     columns = [
         DataSourceColumnInfo(
-            name=col.name,
-            type=col.type,
-            nullable=col.nullable,
+            name=col["name"],
+            type=col["type"],
+            nullable=col.get("nullable", True),
         )
-        for col in info.columns
+        for col in info.get("columns", [])
     ]
 
     return DataSourceStatusResponse(
         connected=True,
-        source_type=info.source_type,
-        file_path=info.file_path,
-        row_count=info.row_count,
+        source_type=info.get("source_type"),
+        file_path=info.get("path"),
+        row_count=info.get("row_count", 0),
         columns=columns,
     )
 
@@ -255,8 +259,8 @@ async def disconnect_data_source() -> dict:
     Returns:
         Status confirmation.
     """
-    svc = DataSourceService.get_instance()
-    svc.disconnect()
+    gw = await get_data_gateway()
+    await gw.disconnect()
     return {"status": "disconnected"}
 
 
@@ -270,8 +274,8 @@ async def get_data_source_schema() -> dict:
     Raises:
         HTTPException: If no data source is connected.
     """
-    svc = DataSourceService.get_instance()
-    info = svc.get_source_info()
+    gw = await get_data_gateway()
+    info = await gw.get_source_info()
 
     if info is None:
         raise HTTPException(
@@ -282,12 +286,12 @@ async def get_data_source_schema() -> dict:
     return {
         "columns": [
             {
-                "name": col.name,
-                "type": col.type,
-                "nullable": col.nullable,
+                "name": col["name"],
+                "type": col["type"],
+                "nullable": col.get("nullable", True),
             }
-            for col in info.columns
+            for col in info.get("columns", [])
         ],
-        "row_count": info.row_count,
-        "source_type": info.source_type,
+        "row_count": info.get("row_count", 0),
+        "source_type": info.get("source_type"),
     }

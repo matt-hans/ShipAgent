@@ -93,9 +93,11 @@ def startup_event() -> None:
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
     """Clean up shared async resources on shutdown."""
-    from src.orchestrator.agent.tools_v2 import shutdown_cached_ups_client
+    from src.orchestrator.agent.tools.core import shutdown_cached_ups_client
+    from src.services.gateway_provider import shutdown_gateways
 
     await shutdown_cached_ups_client()
+    await shutdown_gateways()
 
 
 @app.exception_handler(ShipAgentError)

@@ -2,7 +2,7 @@
 
 Verifies the capabilities in client.py:
 - system_prompt parameter support
-- tools_v2 integration in orchestrator MCP
+- tools/ package integration in orchestrator MCP
 - process_message_stream() yielding event dicts (no history param)
 - include_partial_messages for real-time streaming
 - model configuration
@@ -97,10 +97,10 @@ class TestPartialMessageStreaming:
 
 
 class TestToolsV2Integration:
-    """Tests for tools_v2 integration in orchestrator MCP."""
+    """Tests for tools/ package integration in orchestrator MCP."""
 
     def test_options_include_v2_tools(self):
-        """Orchestrator MCP includes tools_v2 definitions."""
+        """Orchestrator MCP includes tool definitions from tools/ package."""
         agent = OrchestrationAgent()
         mcp_servers = agent._options.mcp_servers
         assert "orchestrator" in mcp_servers
@@ -357,12 +357,13 @@ class TestBackwardCompatibility:
         assert asyncio.iscoroutinefunction(agent.process_command)
 
     def test_mcp_servers_still_configured(self):
-        """All MCP servers (data, ups, orchestrator) still present."""
+        """Core MCP servers (ups, orchestrator) still present; data via gateway."""
         agent = OrchestrationAgent()
         servers = agent._options.mcp_servers
-        assert "data" in servers
         assert "ups" in servers
         assert "orchestrator" in servers
+        # Data MCP removed from agent — gateway_provider owns the singleton
+        assert "data" not in servers
 
     def test_hooks_still_configured(self):
         """Pre/Post hooks still configured."""

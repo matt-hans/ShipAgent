@@ -5,7 +5,6 @@ The configurations are used by ClaudeAgentOptions when initializing the agent.
 
 Configuration includes:
     - Data MCP: Python-based server for data source operations
-    - Shopify MCP: Node.js-based server for Shopify order retrieval (via npx)
     - External Sources MCP: Python-based unified gateway for external platforms
     - UPS MCP: UPS API server for shipping, rating, tracking, address validation
       (local fork, run as Python module via .venv)
@@ -17,8 +16,6 @@ Hybrid UPS architecture:
       for deterministic high-volume execution with per-row state tracking
 
 Environment Variables:
-    SHOPIFY_ACCESS_TOKEN: Admin API access token from custom app (required for Shopify MCP)
-    SHOPIFY_STORE_DOMAIN: Store domain e.g. mystore.myshopify.com (required for Shopify MCP)
     UPS_CLIENT_ID: UPS OAuth client ID (required for UPS MCP)
     UPS_CLIENT_SECRET: UPS OAuth client secret (required for UPS MCP)
     UPS_BASE_URL: UPS API base URL — used to derive environment (test vs production)
@@ -83,52 +80,6 @@ def get_data_mcp_config() -> MCPServerConfig:
         },
     )
 
-
-def get_shopify_mcp_config() -> MCPServerConfig:
-    """Get configuration for the Shopify MCP server.
-
-    The Shopify MCP runs via npx with stdio transport.
-    Credentials are passed as command line arguments.
-
-    Warnings are logged to stderr if required credentials are missing,
-    but configuration proceeds (the MCP will fail with a clear error).
-
-    Returns:
-        MCPServerConfig with npx command and shopify-mcp args
-
-    Environment Variables:
-        SHOPIFY_ACCESS_TOKEN: Required - Admin API access token from custom app
-        SHOPIFY_STORE_DOMAIN: Required - Store domain (e.g., mystore.myshopify.com)
-    """
-    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-    store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
-
-    # Check for required credentials and warn if missing
-    missing_vars = []
-    if not access_token:
-        missing_vars.append("SHOPIFY_ACCESS_TOKEN")
-    if not store_domain:
-        missing_vars.append("SHOPIFY_STORE_DOMAIN")
-
-    if missing_vars:
-        logger.warning(
-            "Missing Shopify credentials: %s. Shopify MCP will fail on startup.",
-            ", ".join(missing_vars),
-        )
-
-    return MCPServerConfig(
-        command="npx",
-        args=[
-            "shopify-mcp",
-            "--accessToken",
-            access_token or "",
-            "--domain",
-            store_domain or "",
-        ],
-        env={
-            "PATH": os.environ.get("PATH", ""),
-        },
-    )
 
 
 def get_ups_mcp_config() -> MCPServerConfig:
@@ -219,20 +170,17 @@ def create_mcp_servers_config() -> dict[str, MCPServerConfig]:
     suitable for passing to ClaudeAgentOptions.mcp_servers.
 
     Returns:
-        Dict with "data", "shopify", "external", and "ups" server configurations.
+        Dict with "data", "external", and "ups" server configurations.
 
     Example:
         >>> config = create_mcp_servers_config()
         >>> print(config["data"]["command"])
         "python3"
-        >>> print(config["shopify"]["command"])
-        "npx"
         >>> print(config["ups"]["args"])
         ["-m", "ups_mcp"]
     """
     return {
         "data": get_data_mcp_config(),
-        "shopify": get_shopify_mcp_config(),
         "external": get_external_sources_mcp_config(),
         "ups": get_ups_mcp_config(),
     }

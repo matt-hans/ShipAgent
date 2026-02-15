@@ -218,7 +218,7 @@ class TestValidateShippingInput:
         """Should allow data MCP tools."""
         result = await validate_shipping_input(
             {
-                "tool_name": "mcp__data__import_csv",
+                "tool_name": "import_csv",
                 "tool_input": {"path": "orders.csv"}
             },
             "test-id",
@@ -297,7 +297,7 @@ class TestValidateDataQuery:
         """Should allow queries with WHERE clause."""
         result = await validate_data_query(
             {
-                "tool_name": "mcp__data__query_data",
+                "tool_name": "query_data",
                 "tool_input": {"query": "SELECT * FROM orders WHERE state = 'CA'"}
             },
             "test-id",
@@ -311,7 +311,7 @@ class TestValidateDataQuery:
         """Should allow queries without WHERE (just warns)."""
         result = await validate_data_query(
             {
-                "tool_name": "mcp__data__query_data",
+                "tool_name": "query_data",
                 "tool_input": {"query": "SELECT * FROM orders"}
             },
             "test-id",
@@ -326,7 +326,7 @@ class TestValidateDataQuery:
         """Should allow non-query data tools."""
         result = await validate_data_query(
             {
-                "tool_name": "mcp__data__import_csv",
+                "tool_name": "import_csv",
                 "tool_input": {"path": "test.csv"}
             },
             "test-id",
@@ -340,7 +340,7 @@ class TestValidateDataQuery:
         """Should warn about dangerous SQL keywords."""
         result = await validate_data_query(
             {
-                "tool_name": "mcp__data__query_data",
+                "tool_name": "query_data",
                 "tool_input": {"query": "DELETE FROM orders"}
             },
             "test-id",
@@ -394,7 +394,7 @@ class TestValidatePreTool:
         """Should route query_data to validate_data_query."""
         result = await validate_pre_tool(
             {
-                "tool_name": "mcp__data__query_data",
+                "tool_name": "query_data",
                 "tool_input": {"query": "SELECT * FROM orders"}
             },
             "test-id",
@@ -408,7 +408,7 @@ class TestValidatePreTool:
     async def test_allows_other_tools(self):
         """Should allow tools that don't match specific validators."""
         result = await validate_pre_tool(
-            {"tool_name": "mcp__data__get_schema", "tool_input": {}},
+            {"tool_name": "get_schema", "tool_input": {}},
             "test-id",
             None
         )
@@ -424,7 +424,7 @@ class TestLogPostTool:
         """Post-hook should return empty dict (no flow modification)."""
         result = await log_post_tool(
             {
-                "tool_name": "mcp__data__get_schema",
+                "tool_name": "get_schema",
                 "tool_response": {"columns": ["id", "name"]}
             },
             "test-id",
@@ -452,7 +452,7 @@ class TestLogPostTool:
         """Should handle None responses."""
         result = await log_post_tool(
             {
-                "tool_name": "mcp__data__import_csv",
+                "tool_name": "import_csv",
                 "tool_response": None
             },
             "test-id",
@@ -615,14 +615,17 @@ class TestCreateHookMatchers:
         ]
         assert len(void_matchers) >= 1
 
-    def test_pretooluse_has_query_matcher(self):
-        """PreToolUse should have matcher for data query tools."""
+    def test_pretooluse_no_stale_data_query_matcher(self):
+        """PreToolUse should not have stale mcp__data__query matcher.
+
+        Data query validation is handled by the generic fallback (validate_pre_tool).
+        """
         matchers = create_hook_matchers()
-        query_matchers = [
+        stale_matchers = [
             m for m in matchers["PreToolUse"]
-            if m.matcher and "query" in m.matcher
+            if m.matcher and "mcp__data__" in m.matcher
         ]
-        assert len(query_matchers) >= 1
+        assert len(stale_matchers) == 0
 
     def test_posttooluse_applies_to_all(self):
         """PostToolUse should have matcher for all tools (None)."""
