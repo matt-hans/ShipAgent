@@ -218,6 +218,12 @@ class TestInteractiveShippingPromptConditioning:
         assert "Do NOT call" in prompt
         assert "mcp__ups__create_shipment" in prompt
 
+    def test_interactive_prompt_requires_service_parameter(self):
+        """Interactive prompt enforces explicit service parameter passing."""
+        prompt = build_system_prompt(interactive_shipping=True)
+        assert "ALWAYS pass this as the `service` parameter" in prompt
+        assert "NEVER omit the `service` parameter" in prompt
+
     def test_safety_rules_always_present(self):
         """Safety rules are present regardless of interactive flag."""
         prompt_off = build_system_prompt(interactive_shipping=False)
@@ -299,11 +305,14 @@ class TestInternationalShippingPrompt:
         lower = prompt.lower()
         assert "do not silently default" in lower
 
-    def test_international_section_hidden_in_interactive_mode(self, monkeypatch):
-        """International guidance hidden when interactive mode is active."""
+    def test_international_section_present_in_interactive_mode(self, monkeypatch):
+        """International guidance appears in interactive mode when lanes are configured."""
         monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "US-CA")
         prompt = build_system_prompt(interactive_shipping=True)
-        assert "## International Shipping" not in prompt
+        assert "## International Shipping" in prompt
+        assert "Interactive mode collection requirements" in prompt
+        assert "`commodities`" in prompt
+        assert "`reason_for_export`" in prompt
 
     def test_international_section_disabled_when_no_lanes(self, monkeypatch):
         """When no lanes configured, prompt says international is not enabled."""

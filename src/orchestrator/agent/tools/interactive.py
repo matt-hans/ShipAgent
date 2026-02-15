@@ -148,9 +148,13 @@ async def preview_interactive_shipment_tool(
     ship_to_address2 = _str(args.get("ship_to_address2"))
     ship_to_phone = _str(args.get("ship_to_phone"))
     ship_to_state = _str(args.get("ship_to_state"))
-    ship_to_country = _str(args.get("ship_to_country"), "US") or "US"
+    ship_to_country = (_str(args.get("ship_to_country"), "US") or "US").upper()
     ship_to_attention_name = _str(args.get("ship_to_attention_name"))
     shipment_description = _str(args.get("shipment_description"))
+    commodities = args.get("commodities")
+    invoice_currency_code = _str(args.get("invoice_currency_code")).upper()
+    invoice_monetary_value = _str(args.get("invoice_monetary_value"))
+    reason_for_export = _str(args.get("reason_for_export")).upper()
     service = _str(args.get("service"), "Ground")
     raw_packaging = args.get("packaging_type")
     packaging_type = str(raw_packaging).strip() if raw_packaging is not None else None
@@ -207,6 +211,22 @@ async def preview_interactive_shipment_tool(
         order_data["ship_to_attention_name"] = ship_to_attention_name
     if shipment_description:
         order_data["shipment_description"] = shipment_description[:35]
+    if isinstance(commodities, list) and commodities:
+        order_data["commodities"] = commodities
+    if invoice_currency_code:
+        order_data["invoice_currency_code"] = invoice_currency_code
+    if invoice_monetary_value:
+        order_data["invoice_monetary_value"] = invoice_monetary_value
+    if reason_for_export:
+        order_data["reason_for_export"] = reason_for_export
+
+    if ship_to_country not in ("US", ""):
+        shipper_attention_name = _str(os.environ.get("SHIPPER_ATTENTION_NAME"))
+        shipper_phone = _str(os.environ.get("SHIPPER_PHONE"))
+        if shipper_attention_name:
+            order_data["shipper_attention_name"] = shipper_attention_name
+        if shipper_phone:
+            order_data["shipper_phone"] = shipper_phone
 
     # Create Job with interactive flag
     try:

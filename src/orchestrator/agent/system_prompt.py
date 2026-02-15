@@ -139,7 +139,7 @@ You do NOT need to ask for shipper details, account number, or billing informati
 **Gather from the user:**
 1. Recipient name
 2. Recipient address (street, city, state, ZIP)
-3. Service preference (optional — defaults to UPS Ground)
+3. Service preference — ALWAYS pass this as the `service` parameter. If the user says "Ground" or does not mention a service, pass "Ground". If they say "overnight", "Next Day Air", "2nd Day Air", "3 Day Select", etc., pass that exact name. NEVER omit the `service` parameter.
 4. Package weight in lbs (optional — defaults to 1.0)
 5. Recipient phone (optional)
 
@@ -270,15 +270,33 @@ deterministically (e.g., SQL validation, column mapping, payload building).
 - After preview is ready, you must NOT call additional tools until the user confirms or cancels.
 """
 
-    # International shipping guidance — only in batch mode
+    # International shipping guidance (batch and interactive modes)
     international_section = ""
-    if not interactive_shipping:
-        enabled_lanes = os.environ.get("INTERNATIONAL_ENABLED_LANES", "")
-        if enabled_lanes:
-            lanes_list = ", ".join(
-                lane.strip() for lane in enabled_lanes.split(",") if lane.strip()
-            )
-            international_section = f"""
+    enabled_lanes = os.environ.get("INTERNATIONAL_ENABLED_LANES", "")
+    if enabled_lanes:
+        lanes_list = ", ".join(
+            lane.strip() for lane in enabled_lanes.split(",") if lane.strip()
+        )
+        interactive_specific_guidance = ""
+        if interactive_shipping:
+            interactive_specific_guidance = """
+Interactive mode collection requirements:
+- ALWAYS pass `ship_to_country` for non-US destinations and collect recipient phone + attention name.
+- Collect and pass `commodities` items with description, commodity_code, origin_country, quantity, and unit_value.
+- Collect and pass `invoice_currency_code`, `invoice_monetary_value`, and `reason_for_export` when required.
+- For CA/MX shipments, prefer international service codes (07, 08, 11, 54, 65) instead of domestic service codes.
+"""
+
+        country_filter_examples = """
+Country-based filter examples:
+- "ship Canadian orders": ship_to_country = 'CA'
+- "orders going to Mexico": ship_to_country = 'MX'
+- "international orders": ship_to_country != 'US' AND ship_to_country != 'PR'
+"""
+        if interactive_shipping:
+            country_filter_examples = ""
+
+        international_section = f"""
 ## International Shipping
 
 **Enabled lanes:** {lanes_list}
@@ -294,14 +312,10 @@ When the user ships to CA or MX:
 - Use an international service code (07, 08, 11, 54, or 65). Domestic codes (01, 02, 03, 12, 13) are rejected.
 - If the user says "standard" without qualification, ask whether they mean UPS Ground (domestic) or UPS Standard (international). Do NOT silently default.
 - Never silently default ship_to_country to "US". If country is missing, ask the user.
-
-Country-based filter examples:
-- "ship Canadian orders": ship_to_country = 'CA'
-- "orders going to Mexico": ship_to_country = 'MX'
-- "international orders": ship_to_country != 'US' AND ship_to_country != 'PR'
+{interactive_specific_guidance}{country_filter_examples}
 """
-        else:
-            international_section = """
+    else:
+        international_section = """
 ## International Shipping
 
 International shipping is not currently enabled. The INTERNATIONAL_ENABLED_LANES environment

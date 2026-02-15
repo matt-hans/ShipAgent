@@ -62,6 +62,38 @@ class TestInteractiveToolSchema:
         required = preview_def["input_schema"]["required"]
         assert "ship_to_state" not in required
 
+    def test_interactive_schema_service_field_no_default(self):
+        """Service schema should avoid defaulting to improve LLM extraction behavior."""
+        from src.orchestrator.agent.tools import get_all_tool_definitions
+
+        defs = get_all_tool_definitions(interactive_shipping=True)
+        preview_def = next(d for d in defs if d["name"] == "preview_interactive_shipment")
+        service = preview_def["input_schema"]["properties"]["service"]
+        assert "default" not in service
+        assert "ALWAYS extract and pass" in service["description"]
+
+    def test_interactive_schema_has_international_fields(self):
+        """Interactive schema includes commodity/invoice/export inputs."""
+        from src.orchestrator.agent.tools import get_all_tool_definitions
+
+        defs = get_all_tool_definitions(interactive_shipping=True)
+        preview_def = next(d for d in defs if d["name"] == "preview_interactive_shipment")
+        props = preview_def["input_schema"]["properties"]
+
+        assert "commodities" in props
+        assert "invoice_currency_code" in props
+        assert "invoice_monetary_value" in props
+        assert "reason_for_export" in props
+
+        commodity_item = props["commodities"]["items"]
+        assert commodity_item["required"] == [
+            "description",
+            "commodity_code",
+            "origin_country",
+            "quantity",
+            "unit_value",
+        ]
+
 
 class TestCoreServiceCodeNames:
     """Verify SERVICE_CODE_NAMES in core.py includes international codes."""

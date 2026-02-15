@@ -352,6 +352,155 @@ class TestPreviewInteractiveShipment:
         assert result["isError"] is False
 
     @pytest.mark.asyncio
+    async def test_explicit_service_is_passed_to_preview_engine(self):
+        """Explicit service preference resolves to service_code for preview()."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        mock_preview_result = {
+            "job_id": "svc-test",
+            "total_rows": 1,
+            "preview_rows": [
+                {
+                    "row_number": 1,
+                    "recipient_name": "John Smith",
+                    "city_state": "Austin, TX",
+                    "estimated_cost_cents": 1500,
+                    "warnings": [],
+                }
+            ],
+            "additional_rows": 0,
+            "total_estimated_cost_cents": 1500,
+        }
+
+        created_job = MagicMock()
+        created_job.id = "svc-test"
+        mock_job_service = MagicMock()
+        mock_job_service.create_job.return_value = created_job
+        mock_job_service.create_rows.return_value = [MagicMock()]
+        mock_job_service.get_rows.return_value = [MagicMock()]
+
+        mock_engine = AsyncMock()
+        mock_engine.preview.return_value = mock_preview_result
+
+        env = {
+            "UPS_ACCOUNT_NUMBER": "TEST123",
+            "SHIPPER_NAME": "Test",
+            "SHIPPER_ADDRESS1": "123 Main",
+            "SHIPPER_CITY": "LA",
+            "SHIPPER_STATE": "CA",
+            "SHIPPER_ZIP": "90001",
+        }
+
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
+            patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
+            patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
+        ):
+            mock_db_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_db_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = await preview_interactive_shipment_tool(
+                self._base_args(service="Next Day Air")
+            )
+
+        assert result["isError"] is False
+        assert mock_engine.preview.await_args.kwargs["service_code"] == "01"
+
+    @pytest.mark.asyncio
+    async def test_international_fields_added_to_order_data(self):
+        """Interactive args include commodity/invoice/export fields on stored row data."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        mock_preview_result = {
+            "job_id": "intl-fields-test",
+            "total_rows": 1,
+            "preview_rows": [
+                {
+                    "row_number": 1,
+                    "recipient_name": "John Smith",
+                    "city_state": "Toronto, ON",
+                    "estimated_cost_cents": 2500,
+                    "warnings": [],
+                }
+            ],
+            "additional_rows": 0,
+            "total_estimated_cost_cents": 2500,
+        }
+
+        created_job = MagicMock()
+        created_job.id = "intl-fields-test"
+        mock_job_service = MagicMock()
+        mock_job_service.create_job.return_value = created_job
+        mock_job_service.create_rows.return_value = [MagicMock()]
+        mock_job_service.get_rows.return_value = [MagicMock()]
+
+        mock_engine = AsyncMock()
+        mock_engine.preview.return_value = mock_preview_result
+
+        commodities = [
+            {
+                "description": "Coffee Beans",
+                "commodity_code": "090111",
+                "origin_country": "CO",
+                "quantity": 2,
+                "unit_value": "25.00",
+            }
+        ]
+
+        env = {
+            "UPS_ACCOUNT_NUMBER": "TEST123",
+            "SHIPPER_NAME": "Test",
+            "SHIPPER_ADDRESS1": "123 Main",
+            "SHIPPER_CITY": "LA",
+            "SHIPPER_STATE": "CA",
+            "SHIPPER_ZIP": "90001",
+            "SHIPPER_ATTENTION_NAME": "Warehouse Desk",
+            "SHIPPER_PHONE": "2125557890",
+        }
+
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
+            patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
+            patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
+            patch(
+                "src.orchestrator.agent.tools.interactive._build_job_row_data",
+                side_effect=lambda rows: rows,
+            ) as mock_build,
+        ):
+            mock_db_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_db_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = await preview_interactive_shipment_tool(
+                self._base_args(
+                    ship_to_country="ca",
+                    ship_to_attention_name="Jane Doe",
+                    ship_to_phone="4165551234",
+                    service="UPS Standard",
+                    shipment_description="Coffee beans for resale",
+                    commodities=commodities,
+                    invoice_currency_code="usd",
+                    invoice_monetary_value="50.00",
+                    reason_for_export="sale",
+                )
+            )
+
+        assert result["isError"] is False
+        order_data = mock_build.call_args[0][0][0]
+        assert order_data["ship_to_country"] == "CA"
+        assert order_data["commodities"] == commodities
+        assert order_data["invoice_currency_code"] == "USD"
+        assert order_data["invoice_monetary_value"] == "50.00"
+        assert order_data["reason_for_export"] == "SALE"
+        assert order_data["shipper_attention_name"] == "Warehouse Desk"
+        assert order_data["shipper_phone"] == "2125557890"
+
+    @pytest.mark.asyncio
     async def test_creates_job_with_interactive_flag(self):
         """Job created with is_interactive=True and shipper_json set."""
         from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
