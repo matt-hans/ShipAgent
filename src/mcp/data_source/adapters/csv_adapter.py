@@ -81,15 +81,19 @@ class CSVAdapter(BaseSourceAdapter):
         # - sample_size=-1: Scan entire file for accurate type detection
         # - ignore_errors=true: Mixed types become VARCHAR instead of failing
         # - null_padding=true: Handle rows with fewer columns gracefully
+        # Escape single quotes for SQL injection prevention
+        safe_path = file_path.replace("'", "''")
+        safe_delim = delimiter.replace("'", "''")
+
         conn.execute(f"""
             CREATE OR REPLACE TABLE _raw_import AS
             SELECT * FROM read_csv(
-                '{file_path}',
+                '{safe_path}',
                 auto_detect = true,
                 sample_size = -1,
                 ignore_errors = true,
                 null_padding = true,
-                delim = '{delimiter}',
+                delim = '{safe_delim}',
                 header = {str(header).lower()}
             )
         """)
