@@ -921,9 +921,13 @@ def validate_international_readiness(
             "InvoiceLineTotal.MonetaryValue",
         )
 
+    # Extract commodities early — used by both requires_commodities and currency checks.
+    # Must be assigned before either block to avoid UnboundLocalError when
+    # requires_invoice_line_total=True but requires_commodities=False (e.g., US→PR).
+    commodities = order_data.get("commodities") or []
+
     # Commodities
     if requirements.requires_commodities:
-        commodities = order_data.get("commodities")
         if not commodities or not isinstance(commodities, list) or len(commodities) == 0:
             errors.append(ValidationError(
                 machine_code="MISSING_COMMODITIES",
@@ -2253,7 +2257,109 @@ class TestBatchPreviewResponseInternationalAggregates:
         assert resp.international_row_count == 0
 ```
 
-**Step 6: Run tests**
+**Step 6: Write route-level test with seeded JobRows**
+
+The schema tests above prove the response models accept international fields. This test proves the actual `/jobs/{job_id}/preview` route handler reads `destination_country`, `duties_taxes_cents`, and `charge_breakdown` from seeded `JobRow` objects and returns them correctly in the JSON response.
+
+Add to `tests/api/test_preview_international.py`:
+
+```python
+import uuid
+
+from fastapi.testclient import TestClient
+
+from src.api.main import app
+from src.db.connection import get_db
+from src.db.models import Job, JobRow
+
+
+class TestPreviewRouteInternationalWiring:
+    """P1: True route-level test — seeds DB rows with international data
+    and asserts the /jobs/{id}/preview response contains them."""
+
+    def setup_method(self):
+        self.client = TestClient(app)
+        self.db = next(get_db())
+        self.job_id = str(uuid.uuid4())
+
+        # Seed a job
+        job = Job(
+            id=self.job_id, name="intl-test", original_command="test",
+            status="pending",
+        )
+        self.db.add(job)
+
+        # Seed a domestic row
+        domestic_row = JobRow(
+            job_id=self.job_id, row_number=1, row_checksum="abc1",
+            status="pending", cost_cents=1550,
+            order_data=json.dumps({
+                "ship_to_name": "John Doe",
+                "ship_to_city": "Los Angeles", "ship_to_state": "CA",
+                "service_code": "03",
+            }),
+        )
+        self.db.add(domestic_row)
+
+        # Seed an international row with charge_breakdown
+        intl_breakdown = json.dumps({
+            "version": "1.0",
+            "transportationCharges": {"monetaryValue": "45.50", "currencyCode": "USD"},
+            "dutiesAndTaxes": {"monetaryValue": "12.00", "currencyCode": "USD"},
+        })
+        intl_row = JobRow(
+            job_id=self.job_id, row_number=2, row_checksum="abc2",
+            status="pending", cost_cents=5750,
+            destination_country="CA", duties_taxes_cents=1200,
+            charge_breakdown=intl_breakdown,
+            order_data=json.dumps({
+                "ship_to_name": "Jane Doe",
+                "ship_to_city": "Toronto", "ship_to_state": "ON",
+                "service_code": "11",
+            }),
+        )
+        self.db.add(intl_row)
+        self.db.commit()
+
+    def teardown_method(self):
+        # Clean up seeded data
+        self.db.query(JobRow).filter(JobRow.job_id == self.job_id).delete()
+        self.db.query(Job).filter(Job.id == self.job_id).delete()
+        self.db.commit()
+        self.db.close()
+
+    def test_preview_returns_international_fields(self):
+        """GET /jobs/{id}/preview must include destination_country, duties, breakdown."""
+        resp = self.client.get(f"/api/v1/jobs/{self.job_id}/preview")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Row 1: domestic — no international fields
+        row1 = data["preview_rows"][0]
+        assert row1["row_number"] == 1
+        assert row1.get("destination_country") is None
+        assert row1.get("duties_taxes_cents") is None
+        assert row1.get("charge_breakdown") is None
+
+        # Row 2: international — all fields present
+        row2 = data["preview_rows"][1]
+        assert row2["row_number"] == 2
+        assert row2["destination_country"] == "CA"
+        assert row2["duties_taxes_cents"] == 1200
+        assert row2["charge_breakdown"]["version"] == "1.0"
+        assert row2["charge_breakdown"]["dutiesAndTaxes"]["monetaryValue"] == "12.00"
+
+    def test_preview_returns_international_aggregates(self):
+        """Batch-level aggregates must include duties total and intl count."""
+        resp = self.client.get(f"/api/v1/jobs/{self.job_id}/preview")
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["total_duties_taxes_cents"] == 1200
+        assert data["international_row_count"] == 1
+```
+
+**Step 7: Run tests**
 
 Run: `python3 -m pytest tests/api/test_preview_international.py -v`
 Expected: ALL PASS
@@ -2632,25 +2738,11 @@ mcp.tool()(import_commodities)
 mcp.tool()(get_commodities_bulk)
 ```
 
-**Step 5: Run tests**
+**Step 5: Wire the commodity hydration seam**
 
-Run: `python3 -m pytest tests/mcp/test_commodity_tools.py -v`
-Expected: ALL PASS (9 tests — 7 commodity + 2 seam)
+The MCP tools above handle DuckDB-level operations. The BatchEngine needs a way to call `get_commodities_bulk` through the gateway chain. Add methods to `DataSourceGateway` and `DataSourceMCPClient` now (before the commit) so everything ships together.
 
-**Step 6: Commit**
-
-```bash
-git add src/mcp/data_source/tools/commodity_tools.py src/mcp/data_source/server.py \
-    src/services/data_source_gateway.py src/services/data_source_mcp_client.py \
-    tests/mcp/test_commodity_tools.py
-git commit -m "feat: add commodity import/query tools with full hydration seam"
-```
-
-**Step 7: Wire the commodity hydration seam (P0 — execution blocker)**
-
-The MCP tools above handle DuckDB-level operations. The BatchEngine needs a way to call `get_commodities_bulk` through the gateway chain. Add methods to `DataSourceGateway`, `DataSourceMCPClient`, and register a helper on `BatchEngine`.
-
-**7a. Add to `DataSourceGateway` protocol** (`src/services/data_source_gateway.py`):
+**5a. Add to `DataSourceGateway` protocol** (`src/services/data_source_gateway.py`):
 
 ```python
     async def get_commodities_bulk(
@@ -2668,7 +2760,7 @@ The MCP tools above handle DuckDB-level operations. The BatchEngine needs a way 
         ...
 ```
 
-**7b. Add to `DataSourceMCPClient`** (`src/services/data_source_mcp_client.py`):
+**5b. Add to `DataSourceMCPClient`** (`src/services/data_source_mcp_client.py`):
 
 ```python
     async def get_commodities_bulk(
@@ -2693,7 +2785,7 @@ The MCP tools above handle DuckDB-level operations. The BatchEngine needs a way 
         } if result else {}
 ```
 
-**7c. Write tests for the seam:**
+**5c. Write tests for the seam:**
 
 Add to `tests/mcp/test_commodity_tools.py`:
 
@@ -2712,6 +2804,22 @@ class TestGatewaySeam:
         client = DataSourceMCPClient.__new__(DataSourceMCPClient)
         assert hasattr(client, "get_commodities_bulk")
         assert callable(getattr(client, "get_commodities_bulk"))
+```
+
+**Step 6: Run tests**
+
+Run: `python3 -m pytest tests/mcp/test_commodity_tools.py -v`
+Expected: ALL PASS (9 tests — 7 commodity + 2 seam)
+
+**Step 7: Commit**
+
+All commodity tools, gateway protocol extension, MCP client implementation, and tests ship together in one commit:
+
+```bash
+git add src/mcp/data_source/tools/commodity_tools.py src/mcp/data_source/server.py \
+    src/services/data_source_gateway.py src/services/data_source_mcp_client.py \
+    tests/mcp/test_commodity_tools.py
+git commit -m "feat: add commodity import/query tools with full hydration seam"
 ```
 
 **Design note:** The existing `imported_data` table and all 50+ hardcoded references to it are **NOT modified**. The commodity pipeline uses a parallel `imported_commodities` table with its own import/query tools. The `query_data` MCP tool already allows arbitrary SQL, so the agent can JOIN the two tables if needed. This avoids touching the adapter protocol or breaking existing flows.
@@ -2804,7 +2912,9 @@ if requirements.not_shippable_reason:
     continue
 ```
 
-2. Add `_get_commodities_bulk()` helper to BatchEngine (P0 — completes the hydration seam from Task 11):
+2. Add `_get_commodities_bulk()` helper to BatchEngine (P0 — completes the hydration seam from Task 11).
+
+**Gateway resolution strategy:** BatchEngine already imports `get_data_gateway` from `src.services.gateway_provider` (line 29 of `batch_engine.py`). The helper resolves the gateway at call time via `get_data_gateway()` — no `__init__` changes needed, and no new constructor parameter required at any call site (preview route, agent tools, etc.).
 
 ```python
     async def _get_commodities_bulk(
@@ -2812,9 +2922,10 @@ if requirements.not_shippable_reason:
     ) -> dict[int | str, list[dict]]:
         """Fetch commodities for orders via the data source gateway.
 
-        Delegates to DataSourceGateway.get_commodities_bulk() which calls
-        the MCP get_commodities_bulk tool. Returns empty dict if gateway
-        doesn't support commodities (pre-international code path).
+        Resolves the process-global DataSourceMCPClient via get_data_gateway()
+        (already imported at module level). Delegates to its
+        get_commodities_bulk() method which calls the MCP tool.
+        Returns empty dict on any failure (non-critical for batch flow).
 
         Args:
             order_ids: List of order IDs to retrieve commodities for.
@@ -2823,7 +2934,8 @@ if requirements.not_shippable_reason:
             Dict mapping order_id → list of commodity dicts.
         """
         try:
-            return await self._gateway.get_commodities_bulk(order_ids)
+            gateway = await get_data_gateway()
+            return await gateway.get_commodities_bulk(order_ids)
         except Exception as e:
             logger.warning("Commodity fetch failed (non-critical): %s", e)
             return {}
@@ -3220,3 +3332,12 @@ git commit -m "test: add domestic regression test verifying no behavioral change
 | 12 | P1 | "standard" alias in payload builder `resolve_service_code()` at line 407 | Added step 8 to Task 6: remove bare `"standard": "11"` from `resolve_service_code()` internal map | Task 6 |
 | 13 | P2 | MCP tool registration uses `mcp.tool(func)` but server uses `mcp.tool()(func)` | Fixed registration to `mcp.tool()(import_commodities)` / `mcp.tool()(get_commodities_bulk)` | Task 11 |
 | 14 | P2 | E-2017 currency mismatch error defined but no validator enforces it | Added currency mismatch check to `validate_international_readiness()` + test `test_currency_mismatch_e2017` | Task 3 |
+
+### Round 3
+
+| # | Severity | Issue | Resolution | Task |
+|---|----------|-------|------------|------|
+| 15 | P0 | `self._gateway` never introduced in BatchEngine — `_get_commodities_bulk()` would fail | Changed helper to resolve gateway at call time via `await get_data_gateway()` (already imported at module level); no `__init__` changes needed | Task 12 |
+| 16 | P1 | Preview route test validates schema objects only, not actual route handler path | Added `TestPreviewRouteInternationalWiring` with seeded `JobRow` objects, `TestClient`, and assertions on `/api/v1/jobs/{id}/preview` JSON response | Task 8 |
+| 17 | P1 | `commodities` variable referenced before assignment when `requires_invoice_line_total=True` but `requires_commodities=False` | Extracted `commodities = order_data.get("commodities") or []` before both blocks | Task 3 |
+| 18 | P2 | Task 11 commit (Step 6) includes gateway files but seam wiring (Step 7) comes after | Restructured: seam wiring is now Step 5 (before tests and commit), commit is Step 7 | Task 11 |
