@@ -1212,6 +1212,49 @@ async def test_schedule_pickup_tool_handles_malformed_args():
 
 
 @pytest.mark.asyncio
+async def test_schedule_pickup_tool_emits_enriched_result():
+    """schedule_pickup_tool includes address/contact in pickup_result event."""
+    mock_ups = AsyncMock()
+    mock_ups.schedule_pickup.return_value = {"success": True, "prn": "2929602E9CP"}
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
+
+        result = await schedule_pickup_tool(
+            {
+                "pickup_date": "20260217",
+                "ready_time": "0900",
+                "close_time": "1700",
+                "address_line": "123 Main St",
+                "city": "Dallas",
+                "state": "TX",
+                "postal_code": "75201",
+                "country_code": "US",
+                "contact_name": "John Smith",
+                "phone_number": "214-555-1234",
+                "confirmed": True,
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    payload = captured[0][1]
+    assert payload["prn"] == "2929602E9CP"
+    assert payload["address_line"] == "123 Main St"
+    assert payload["city"] == "Dallas"
+    assert payload["contact_name"] == "John Smith"
+    assert payload["pickup_date"] == "20260217"
+
+
+@pytest.mark.asyncio
 async def test_cancel_pickup_tool_success():
     """cancel_pickup_tool returns _ok envelope and emits pickup_result event."""
     mock_ups = AsyncMock()
