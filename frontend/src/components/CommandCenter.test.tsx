@@ -283,3 +283,126 @@ describe('CommandCenter interactive mode UX', () => {
     });
   });
 });
+
+describe('CommandCenter v2 event routing', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    mockAppState = buildBaseAppState({ interactiveShipping: false });
+    mockConversation = buildBaseConversation();
+  });
+
+  it('routes pickup_result event to addMessage with pickup metadata', async () => {
+    const addMessage = vi.fn();
+    mockAppState = buildBaseAppState({ interactiveShipping: false, addMessage });
+    mockConversation = buildBaseConversation({
+      sessionId: 'sess-1',
+      events: [{
+        id: 'evt-1',
+        type: 'pickup_result',
+        data: { action: 'scheduled', success: true, prn: 'PRN123' },
+        timestamp: new Date(),
+      }],
+    });
+
+    render(<CommandCenter activeJob={null} />);
+
+    await waitFor(() => {
+      expect(addMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          role: 'system',
+          metadata: expect.objectContaining({
+            action: 'pickup_result',
+            pickup: expect.objectContaining({ action: 'scheduled', prn: 'PRN123' }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it('routes location_result event to addMessage with location metadata', async () => {
+    const addMessage = vi.fn();
+    mockAppState = buildBaseAppState({ interactiveShipping: false, addMessage });
+    mockConversation = buildBaseConversation({
+      sessionId: 'sess-1',
+      events: [{
+        id: 'evt-2',
+        type: 'location_result',
+        data: { action: 'locations', success: true, locations: [{ id: 'LOC1', address: {}, phone: '555' }] },
+        timestamp: new Date(),
+      }],
+    });
+
+    render(<CommandCenter activeJob={null} />);
+
+    await waitFor(() => {
+      expect(addMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            action: 'location_result',
+            location: expect.objectContaining({
+              locations: expect.arrayContaining([expect.objectContaining({ id: 'LOC1' })]),
+            }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it('routes landed_cost_result event to addMessage with landedCost metadata', async () => {
+    const addMessage = vi.fn();
+    mockAppState = buildBaseAppState({ interactiveShipping: false, addMessage });
+    mockConversation = buildBaseConversation({
+      sessionId: 'sess-1',
+      events: [{
+        id: 'evt-3',
+        type: 'landed_cost_result',
+        data: { action: 'landed_cost', success: true, totalLandedCost: '45.23', currencyCode: 'USD', items: [] },
+        timestamp: new Date(),
+      }],
+    });
+
+    render(<CommandCenter activeJob={null} />);
+
+    await waitFor(() => {
+      expect(addMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            action: 'landed_cost_result',
+            landedCost: expect.objectContaining({ totalLandedCost: '45.23', currencyCode: 'USD' }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it('routes paperless_result event to addMessage with paperless metadata', async () => {
+    const addMessage = vi.fn();
+    mockAppState = buildBaseAppState({ interactiveShipping: false, addMessage });
+    mockConversation = buildBaseConversation({
+      sessionId: 'sess-1',
+      events: [{
+        id: 'evt-4',
+        type: 'paperless_result',
+        data: { action: 'uploaded', success: true, documentId: 'DOC-1' },
+        timestamp: new Date(),
+      }],
+    });
+
+    render(<CommandCenter activeJob={null} />);
+
+    await waitFor(() => {
+      expect(addMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            action: 'paperless_result',
+            paperless: expect.objectContaining({ action: 'uploaded', documentId: 'DOC-1' }),
+          }),
+        }),
+      );
+    });
+  });
+});
