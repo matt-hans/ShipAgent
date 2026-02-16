@@ -28,6 +28,7 @@ from src.orchestrator.agent.tools.data import (
 from src.orchestrator.agent.tools.documents import (
     delete_paperless_document_tool,
     push_document_to_shipment_tool,
+    request_document_upload_tool,
     upload_paperless_document_tool,
 )
 from src.orchestrator.agent.tools.interactive import (
@@ -486,35 +487,57 @@ def get_all_tool_definitions(
         # UPS MCP v2 — Paperless document tools
         # ---------------------------------------------------------------
         {
+            "name": "request_document_upload",
+            "description": (
+                "Show an upload form in the chat for the user to attach a customs/trade document. "
+                "Use this instead of asking for file paths. After the user attaches a file, "
+                "you will receive a [DOCUMENT_ATTACHED] message — then call upload_paperless_document."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Message displayed above the upload form.",
+                    },
+                    "suggested_document_type": {
+                        "type": "string",
+                        "description": "Pre-select a document type code (e.g. '002' for Commercial Invoice).",
+                    },
+                },
+                "required": [],
+            },
+            "handler": _bind_bridge(request_document_upload_tool, bridge),
+        },
+        {
             "name": "upload_paperless_document",
             "description": (
                 "Upload a customs/trade document to UPS Forms History "
-                "for paperless customs clearance."
+                "for paperless customs clearance. If the user attached a file "
+                "via the upload form, file data is automatically available — "
+                "only document_type is required."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "file_content_base64": {
                         "type": "string",
-                        "description": "Base64-encoded file content.",
+                        "description": "Base64-encoded file content. Auto-loaded from upload form when available.",
                     },
                     "file_name": {
                         "type": "string",
-                        "description": "File name (e.g., 'invoice.pdf').",
+                        "description": "File name (e.g., 'invoice.pdf'). Auto-loaded from upload form when available.",
                     },
                     "file_format": {
                         "type": "string",
-                        "description": "File format (pdf, doc, xls, etc.).",
+                        "description": "File format (pdf, doc, xls, etc.). Auto-loaded from upload form when available.",
                     },
                     "document_type": {
                         "type": "string",
                         "description": "UPS document type code ('002'=invoice, '003'=CO, etc.).",
                     },
                 },
-                "required": [
-                    "file_content_base64", "file_name",
-                    "file_format", "document_type",
-                ],
+                "required": ["document_type"],
             },
             "handler": _bind_bridge(upload_paperless_document_tool, bridge),
         },
@@ -632,7 +655,8 @@ def get_all_tool_definitions(
         # v2 tools — work independently of data source
         "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
         "find_locations", "get_service_center_facilities",
-        "upload_paperless_document", "push_document_to_shipment", "delete_paperless_document",
+        "request_document_upload", "upload_paperless_document",
+        "push_document_to_shipment", "delete_paperless_document",
         "get_landed_cost",
         "track_package",
     }

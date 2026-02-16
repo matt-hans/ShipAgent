@@ -15,6 +15,7 @@ Endpoints:
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -22,17 +23,19 @@ import time
 from typing import AsyncGenerator
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from sse_starlette.sse import EventSourceResponse
 
 from src.api.schemas_conversations import (
+    DOCUMENT_TYPE_LABELS,
     ConversationHistoryMessage,
     ConversationHistoryResponse,
     CreateConversationRequest,
     CreateConversationResponse,
     SendMessageRequest,
     SendMessageResponse,
+    UploadDocumentResponse,
 )
 from src.services.agent_session_manager import AgentSessionManager
 
@@ -129,6 +132,7 @@ async def _ensure_agent(
     agent = OrchestrationAgent(
         system_prompt=system_prompt,
         interactive_shipping=session.interactive_shipping,
+        session_id=session.session_id,
     )
     await agent.start()
 
@@ -446,6 +450,101 @@ async def send_message(
     background_tasks.add_task(_process_agent_message, session_id, payload.content)
 
     return SendMessageResponse(status="accepted", session_id=session_id)
+
+
+# UPS paperless document upload — allowed file extensions.
+_ALLOWED_EXTENSIONS = {"pdf", "doc", "docx", "xls", "xlsx", "gif", "jpg", "jpeg", "png", "tif"}
+# UPS max file size: 10 MB.
+_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
+
+
+@router.post(
+    "/{session_id}/upload-document",
+    response_model=UploadDocumentResponse,
+)
+async def upload_document(
+    session_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    document_type: str = Form(...),
+    notes: str = Form(""),
+) -> UploadDocumentResponse:
+    """Upload a customs/trade document for paperless processing.
+
+    Accepts a binary file via multipart form, validates format and size,
+    base64-encodes server-side, stages the data in the attachment store,
+    and triggers the agent with a structured ``[DOCUMENT_ATTACHED]`` message.
+
+    Args:
+        session_id: Conversation session ID.
+        file: Uploaded file (multipart).
+        document_type: UPS document type code (e.g. '002').
+        notes: Optional notes to include in the agent message.
+        background_tasks: FastAPI background task manager.
+
+    Returns:
+        UploadDocumentResponse with file metadata.
+
+    Raises:
+        HTTPException: 404 if session not found, 409 if terminating,
+            400 if file format/size invalid.
+    """
+    from src.services import attachment_store
+
+    # Validate session exists
+    if session_id not in _session_manager.list_sessions():
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = _session_manager.get_session(session_id)
+    if session is not None and session.terminating:
+        raise HTTPException(status_code=409, detail="Session is being terminated")
+
+    # Validate file extension
+    file_name = file.filename or "document"
+    ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+    if ext not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file format '{ext}'. Allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))}",
+        )
+
+    # Read and validate file size
+    file_bytes = await file.read()
+    if len(file_bytes) > _MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File exceeds 10 MB limit ({len(file_bytes):,} bytes).",
+        )
+
+    # Base64-encode server-side (never enters LLM context)
+    file_content_base64 = base64.b64encode(file_bytes).decode("ascii")
+
+    # Stage attachment for the tool handler
+    attachment_store.stage(session_id, {
+        "file_content_base64": file_content_base64,
+        "file_name": file_name,
+        "file_format": ext,
+        "document_type": document_type,
+        "file_size_bytes": len(file_bytes),
+    })
+
+    # Build agent message
+    doc_type_label = DOCUMENT_TYPE_LABELS.get(document_type, f"Type {document_type}")
+    notes_suffix = f" Notes: {notes}" if notes.strip() else ""
+    agent_message = (
+        f"[DOCUMENT_ATTACHED: {file_name} ({ext}, {doc_type_label})]{notes_suffix}"
+    )
+
+    # Store in conversation history and trigger agent processing
+    _session_manager.add_message(session_id, "user", agent_message)
+    background_tasks.add_task(_process_agent_message, session_id, agent_message)
+
+    return UploadDocumentResponse(
+        success=True,
+        file_name=file_name,
+        file_format=ext,
+        file_size_bytes=len(file_bytes),
+    )
 
 
 @router.get("/{session_id}/stream")

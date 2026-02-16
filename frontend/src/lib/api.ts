@@ -349,6 +349,7 @@ export async function bulkDeleteSavedSources(
 import type {
   CreateConversationResponse,
   SendMessageResponse,
+  UploadDocumentResponse,
 } from '@/types/api';
 
 /**
@@ -385,6 +386,35 @@ export async function sendConversationMessage(
     body: JSON.stringify({ content }),
   });
   return parseResponse<SendMessageResponse>(response);
+}
+
+/**
+ * Upload a customs/trade document for paperless processing.
+ *
+ * Server-side base64 encoding — binary file never enters LLM context.
+ *
+ * @param sessionId - Conversation session ID.
+ * @param file - The file selected via file picker.
+ * @param documentType - UPS document type code (e.g. '002').
+ * @param notes - Optional notes for the agent.
+ * @returns Upload result with file metadata.
+ */
+export async function uploadDocument(
+  sessionId: string,
+  file: File,
+  documentType: string,
+  notes?: string,
+): Promise<UploadDocumentResponse> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('document_type', documentType);
+  if (notes) formData.append('notes', notes);
+
+  const response = await fetch(
+    `${API_BASE}/conversations/${sessionId}/upload-document`,
+    { method: 'POST', body: formData },
+  );
+  return parseResponse<UploadDocumentResponse>(response);
 }
 
 /**

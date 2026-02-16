@@ -355,12 +355,15 @@ configuration by an administrator.
 
 ## Paperless Customs Documents
 
-- Use `upload_paperless_document` to upload customs/trade documents (PDF, DOC, XLS, etc.)
-- Document type codes: "002" (commercial invoice), "003" (certificate of origin), "011" (packing list)
+- When a user wants to upload a customs document, call `request_document_upload` to show the upload form
+- NEVER ask users for file paths or try to read files yourself
+- After the user attaches a file, you will receive a [DOCUMENT_ATTACHED] message
+- Then call `upload_paperless_document` with the appropriate document_type — file data is auto-loaded from the attachment
+- Document type codes: "002" (commercial invoice), "003" (certificate of origin), "006" (packing list), "011" (weight certificate)
 - After upload, capture the DocumentID from the response
 - Use `push_document_to_shipment` to attach a document to a shipment using the tracking number
 - Use `delete_paperless_document` to remove a document from UPS Forms History
-- Chained workflow: upload document → create shipment → push document to shipment
+- Chained workflow: request_document_upload → user attaches → upload_paperless_document → create shipment → push_document_to_shipment
 
 ## Package Tracking
 

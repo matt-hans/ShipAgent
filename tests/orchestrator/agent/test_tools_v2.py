@@ -841,7 +841,8 @@ def test_tool_definitions_filtered_for_interactive_mode():
         "get_job_status", "get_platform_status", "preview_interactive_shipment",
         "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
         "find_locations", "get_service_center_facilities",
-        "upload_paperless_document", "push_document_to_shipment", "delete_paperless_document",
+        "request_document_upload", "upload_paperless_document",
+        "push_document_to_shipment", "delete_paperless_document",
         "get_landed_cost", "track_package",
     }
     assert names == expected
@@ -1559,23 +1560,16 @@ async def test_upload_paperless_document_tool_emits_event():
 
 
 @pytest.mark.asyncio
-async def test_upload_paperless_document_tool_handles_malformed_args():
-    """upload_paperless_document_tool returns _err for TypeError from bad args."""
-    mock_ups = AsyncMock()
-    mock_ups.upload_document.side_effect = TypeError("missing required arg")
+async def test_upload_paperless_document_tool_handles_missing_file():
+    """upload_paperless_document_tool returns _err when no file is available."""
+    from src.orchestrator.agent.tools.documents import (
+        upload_paperless_document_tool,
+    )
 
-    with patch(
-        "src.orchestrator.agent.tools.documents._get_ups_client",
-        return_value=mock_ups,
-    ):
-        from src.orchestrator.agent.tools.documents import (
-            upload_paperless_document_tool,
-        )
-
-        result = await upload_paperless_document_tool({})
+    result = await upload_paperless_document_tool({"document_type": "002"})
 
     assert result["isError"] is True
-    assert "Unexpected error" in result["content"][0]["text"]
+    assert "No document attached" in result["content"][0]["text"]
 
 
 @pytest.mark.asyncio

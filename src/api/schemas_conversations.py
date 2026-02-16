@@ -6,6 +6,20 @@ conversation flow that replaces the legacy command endpoint.
 
 from pydantic import BaseModel, Field
 
+# UPS document type code → human-readable label mapping.
+DOCUMENT_TYPE_LABELS: dict[str, str] = {
+    "002": "Commercial Invoice",
+    "003": "Certificate of Origin",
+    "004": "NAFTA Certificate",
+    "005": "Partial Invoice",
+    "006": "Packing List",
+    "007": "Customer Generated Forms",
+    "008": "Air Freight Invoice",
+    "009": "Proforma Invoice",
+    "010": "SED",
+    "011": "Weight Certificate",
+}
+
 
 class CreateConversationRequest(BaseModel):
     """Optional request body for creating a conversation session.
@@ -56,3 +70,12 @@ class ConversationHistoryResponse(BaseModel):
 
     session_id: str
     messages: list[ConversationHistoryMessage]
+
+
+class UploadDocumentResponse(BaseModel):
+    """Response for the upload-document endpoint."""
+
+    success: bool
+    file_name: str
+    file_format: str
+    file_size_bytes: int
