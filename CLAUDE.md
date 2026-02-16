@@ -40,8 +40,8 @@ These rules are non-negotiable. Violating them creates architectural debt that u
 **SDK Orchestration Redesign:** COMPLETE — Claude SDK is the sole orchestration path via `/api/v1/conversations/` endpoints
 **Interactive Shipping:** COMPLETE — ad-hoc single-shipment creation with preview gate and auto-populated shipper config
 **International Shipping:** COMPLETE — US→CA/MX lane validation, commodity handling, customs forms, batch + interactive integration. Gated by `INTERNATIONAL_ENABLED_LANES` env var.
-**Test Count:** 1310 test functions across 77 test files
-**UPS MCP v2 Integration:** COMPLETE — 18 UPS tools (7 original + 11 new) across 6 domains. Agent uses ups-mcp as stdio MCP server; BatchEngine uses UPSMCPClient (programmatic MCP over stdio). New tools: pickup (6), paperless (3), locator (1), landed cost (1). Frontend: domain-colored cards (pickup/purple, locator/teal, paperless/amber, landed-cost/indigo).
+**Test Count:** 1320 test functions across 77 test files
+**UPS MCP v2 Integration:** COMPLETE — 18 UPS tools (7 original + 11 new) across 6 domains. Agent uses ups-mcp as stdio MCP server with v2 tools available in both batch and interactive modes; BatchEngine uses UPSMCPClient (programmatic MCP over stdio). New tools: pickup (6), paperless (3), locator (1), landed cost (1). Frontend: domain-colored cards (pickup/purple, locator/teal, paperless/amber, landed-cost/indigo, tracking/blue).
 
 ## Architecture
 
@@ -79,7 +79,7 @@ User → Browser UI (React) → FastAPI REST API → Conversation SSE Route
 | Component | Technology | Role in Agent Architecture |
 |-----------|------------|---------------------------|
 | **OrchestrationAgent** | Claude Agent SDK | Primary orchestrator — interprets intent, coordinates all operations via deterministic tools |
-| **Agent Tools** | Python (4 modules) | Deterministic execution layer — data ops, pipeline ops, interactive ops |
+| **Agent Tools** | Python (9 modules) | Deterministic execution layer — data ops, pipeline ops, interactive ops, pickup, locator, paperless, landed cost, tracking |
 | **Agent Hooks** | Pre/PostToolUse | Validation + audit — enforce business rules before/after tool execution |
 | **Agent Session Manager** | Python | Per-conversation lifecycle — session isolation, agent persistence, prewarm |
 | **Data Source MCP** | FastMCP + DuckDB (stdio) | Data connectivity — CSV, Excel, DB, EDI abstracted behind SQL interface |
@@ -94,7 +94,7 @@ User → Browser UI (React) → FastAPI REST API → Conversation SSE Route
 
 ### Agent Tool Architecture
 
-The agent's tools are split into 8 modules by concern:
+The agent's tools are split into 9 modules by concern:
 
 | Module | File | Tools | Purpose |
 |--------|------|-------|---------|
@@ -106,8 +106,9 @@ The agent's tools are split into 8 modules by concern:
 | **Locator** | `tools/locator.py` | `find_locations_tool` | UPS location search — Access Points, retail stores, service centers |
 | **Paperless** | `tools/paperless.py` | `upload_document_tool`, `push_document_tool`, `delete_document_tool` | Paperless customs — upload, attach, delete trade documents |
 | **Landed Cost** | `tools/landed_cost.py` | `get_landed_cost_tool` | International landed cost — duties, taxes, fees estimation |
+| **Tracking** | `tools/tracking.py` | `track_package_tool` | UPS tracking — track package with mismatch detection |
 
-Tool registration: `get_all_tool_definitions()` in `tools/__init__.py` assembles all definitions. In interactive mode, only status tools + `preview_interactive_shipment` are exposed; batch/data/v2 tools are hidden. New v2 tools (pickup, locator, paperless, landed cost) are batch-mode only in the orchestrator registry — the agent can still call them directly via MCP auto-discovery in both modes.
+Tool registration: `get_all_tool_definitions()` in `tools/__init__.py` assembles all definitions. In interactive mode, only status tools + `preview_interactive_shipment` are exposed; batch/data/v2 tools are hidden. V2 tools (pickup, locator, paperless, landed cost, tracking) are available in both batch and interactive modes via the orchestrator registry and MCP auto-discovery.
 
 ### Agent Hook System
 
@@ -119,6 +120,7 @@ Pre/PostToolUse hooks enforce business rules without modifying the agent flow:
 | `validate_void_shipment` | `mcp__ups__void_shipment` | Requires tracking number or shipment ID |
 | `schedule_pickup_hook()` | `mcp__ups__schedule_pickup` | Safety gate — pickup is a financial commitment, requires confirmation context |
 | `cancel_pickup_hook()` | `mcp__ups__cancel_pickup` | Safety gate — pickup cancellation is irreversible |
+| `validate_track_package` | `mcp__ups__track_package` | Forces orchestrator wrapper for tracking event emission |
 | `validate_pre_tool` | All tools (fallback) | Routes to specific validators by tool name |
 | `log_post_tool` | All tools (post) | Audit logging to stderr |
 | `detect_error_response` | All tools (post) | Error detection and warning |
@@ -144,24 +146,7 @@ Mode switching resets the conversation session (deletes old session, creates new
 
 ### Agent Safety Model
 
-Safety is enforced at three layers — structural, behavioral, and procedural:
-
-**Structural (compile-time):**
-- Tool registry filtering: `get_all_tool_definitions(interactive_shipping=True)` returns only 3 tools; batch/data tools physically absent from the agent's toolset
-- Session isolation: each conversation gets its own `AgentSession` with independent history and agent instance
-- Gateway singletons: MCP client lifecycles managed centrally, not per-request
-
-**Behavioral (runtime hooks):**
-- `create_shipping_hook()`: Closure-based mode enforcement — `mcp__ups__create_shipment` is denied in BOTH modes (batch must use pipeline; interactive must use preview tool)
-- `validate_void_shipment`: Requires tracking number before allowing void
-- `validate_pre_tool`: Routes all tool calls through validation dispatch
-- `detect_error_response` + `log_post_tool`: Post-execution audit trail on stderr
-
-**Procedural (agent prompt rules):**
-- Mandatory preview before any execution — the agent is instructed to NEVER auto-execute
-- Frontend `confirmJob()` is the only path to batch execution — the agent cannot trigger it
-- Ambiguous commands trigger clarifying questions, never guesses
-- Error responses include E-XXXX codes with suggested remediation
+Three layers: **Structural** (tool registry filtering hides tools by mode; session isolation; gateway singletons), **Behavioral** (hooks: `create_shipping_hook()` denies direct `create_shipment` in both modes; `validate_void_shipment` requires tracking number; `detect_error_response` + `log_post_tool` for audit), **Procedural** (mandatory preview before execution; `confirmJob()` is the only execution path; ambiguous commands trigger clarification; E-XXXX error codes).
 
 ### Canonical Data Models
 
@@ -180,41 +165,7 @@ All integration constants, enums, and defaults are centralized in dedicated modu
 
 ### MCP Gateway Architecture
 
-All external connectivity flows through MCP (Model Context Protocol) servers over stdio transport. There are **two distinct paths** — understanding this split is critical for extending the system:
-
-**Path 1 — Agent MCP Servers (interactive, SDK-managed):**
-The `OrchestrationAgent` spawns MCP servers as stdio child processes via the Claude Agent SDK. The SDK manages their lifecycle (start, tool discovery, shutdown). Currently only **UPS MCP** runs this way — the agent calls tools like `mcp__ups__rate_shipment` directly in its reasoning loop.
-
-**Path 2 — Programmatic MCP Clients (batch + data, gateway-managed):**
-The `gateway_provider.py` singleton factory manages process-global MCP client instances. Agent tools call these gateways directly (not through the SDK's MCP layer). This is the path for data operations and batch execution.
-
-```
-┌─────────────────────────────────────────────────────┐
-│  gateway_provider.py — Singleton Factory            │
-│                                                     │
-│  get_data_gateway()       → DataSourceMCPClient     │
-│  get_external_sources_client() → ExtSourcesMCPClient│
-│  shutdown_gateways()      → disconnect all          │
-└─────────────────────────────────────────────────────┘
-         ↓ inherits from
-┌─────────────────────────────────────────────────────┐
-│  MCPClient (base) — 315 lines                       │
-│  - stdio subprocess spawn via StdioServerParameters  │
-│  - Retry with exponential backoff                    │
-│  - JSON response parsing + error classification      │
-│  - Connection health check + auto-reconnect          │
-└─────────────────────────────────────────────────────┘
-         ↓ specialized into
-┌──────────────────┬──────────────────┬───────────────┐
-│ DataSourceMCPClt │ ExtSourcesMCPClt │ UPSMCPClient  │
-│ (457 lines)      │ (241 lines)      │ (703 lines)   │
-│ import, query,   │ connect, fetch,  │ rate, ship,   │
-│ write-back,      │ shop info,       │ void, validate│
-│ commodities      │ tracking update  │ + retry rules │
-└──────────────────┴──────────────────┴───────────────┘
-```
-
-**MCP Server Ownership:**
+Two distinct MCP paths — **Agent MCP** (interactive, SDK-managed) and **Programmatic MCP** (batch + data, gateway-managed via `gateway_provider.py` singletons):
 
 | MCP Server | Spawned By | Lifecycle | Path |
 |------------|------------|-----------|------|
@@ -223,20 +174,9 @@ The `gateway_provider.py` singleton factory manages process-global MCP client in
 | **Data Source MCP** | `DataSourceMCPClient` singleton | Process-global, lazy init | Agent tools call `get_data_gateway()` |
 | **External Sources MCP** | `ExternalSourcesMCPClient` singleton | Process-global, lazy init | Agent tools call `get_external_sources_client()` |
 
-**Gateway lifecycle:** Singletons use double-checked locking with `asyncio.Lock`. Created on first access, reused across requests, disconnected via `shutdown_gateways()` in FastAPI's shutdown event (`src/api/main.py`).
+All clients inherit from `MCPClient` (base) with retry + exponential backoff. Gateway singletons use double-checked locking with `asyncio.Lock`, disconnected via `shutdown_gateways()` in `src/api/main.py`.
 
-**Extending with a new MCP server:**
-1. Build the MCP server (FastMCP + stdio transport) in `src/mcp/<name>/`
-2. Create an MCP client wrapper extending `MCPClient` in `src/services/<name>_mcp_client.py`
-3. Add a singleton getter to `gateway_provider.py` following the `get_data_gateway()` pattern
-4. If the agent needs interactive access: add stdio config to `src/orchestrator/agent/config.py`
-5. If batch needs programmatic access: use the client directly via `async with` context manager
-6. Register canonical constants in `src/services/<name>_constants.py`
-
-**UPS retry strategy (batch path):**
-- Non-mutating ops (rate, validate, track): 2 retries, 0.2s base delay with exponential backoff
-- Mutating ops (create_shipment, void): 0 retries to prevent duplicate shipments
-- Transport failures: reconnect + 1 replay (non-mutating only)
+**UPS retry strategy (batch):** Non-mutating ops: 2 retries, 0.2s exponential backoff. Mutating ops: 0 retries (prevent duplicates). Transport failures: reconnect + 1 replay (non-mutating only).
 
 ## Source Structure
 
@@ -307,7 +247,7 @@ src/
     ├── agent/                  # Claude Agent SDK integration (PRIMARY ORCHESTRATION PATH)
     │   ├── client.py           # OrchestrationAgent — SDK agent with streaming + MCP coordination
     │   ├── system_prompt.py    # Dynamic system prompt builder (domain knowledge + data schema)
-    │   ├── tools/              # Deterministic SDK tools (split by concern — 8 modules)
+    │   ├── tools/              # Deterministic SDK tools (split by concern — 9 modules)
     │   │   ├── __init__.py     # Tool registry — get_all_tool_definitions()
     │   │   ├── core.py         # EventEmitterBridge, row cache, bridge binding helpers
     │   │   ├── data.py         # Data source + platform tool handlers
@@ -316,7 +256,8 @@ src/
     │   │   ├── pickup.py       # UPS pickup operations (schedule, cancel, rate, status, divisions, facilities)
     │   │   ├── locator.py      # UPS location search (find_locations_tool)
     │   │   ├── paperless.py    # Paperless customs (upload, push, delete document tools)
-    │   │   └── landed_cost.py  # Landed cost estimation (get_landed_cost_tool)
+    │   │   ├── landed_cost.py  # Landed cost estimation (get_landed_cost_tool)
+    │   │   └── tracking.py     # UPS package tracking (track_package_tool)
     │   ├── config.py           # MCP server configuration factory (Data, External, UPS)
     │   └── hooks.py            # Pre/PostToolUse validation hooks (mode enforcement, audit)
     └── batch/                  # Batch orchestration
@@ -330,7 +271,7 @@ frontend/src/
 ├── App.tsx, main.tsx, index.css    # Entry point + design system (OKLCH, DM Sans, Instrument Serif)
 ├── components/
 │   ├── CommandCenter.tsx           # Main chat UI — SSE event orchestration, preview/progress/completion
-│   ├── command-center/             # PreviewCard, ProgressDisplay, CompletionArtifact, ToolCallChip, messages, PickupCard, LocationCard, LandedCostCard, PaperlessCard
+│   ├── command-center/             # PreviewCard, ProgressDisplay, CompletionArtifact, ToolCallChip, messages, PickupCard, LocationCard, LandedCostCard, PaperlessCard, TrackingCard
 │   ├── sidebar/                    # DataSourcePanel, JobHistoryPanel
 │   ├── ui/                         # shadcn/ui primitives + icons.tsx + brand-icons.tsx
 │   └── layout/                     # Sidebar, Header (with interactive shipping toggle)
@@ -358,34 +299,15 @@ Key features:
 
 ### UPS MCP Server (local fork: `matt-hans/ups-mcp`)
 
-Runs as a stdio child process via `.venv/bin/python3 -m ups_mcp`, providing the agent with interactive access to 18 UPS tools across 6 domains. Installed as editable package from pinned commit.
+Stdio child process (`.venv/bin/python3 -m ups_mcp`), editable install from pinned commit. 18 tools across 6 domains:
+- **Shipping**: `rate_shipment`, `create_shipment`, `void_shipment`, `recover_label`
+- **Address/Transit**: `validate_address`, `track_package`, `get_time_in_transit`
+- **Landed Cost**: `get_landed_cost_quote`
+- **Paperless**: `upload_paperless_document`, `push_document_to_shipment`, `delete_paperless_document`
+- **Locator**: `find_locations`
+- **Pickup**: `rate_pickup`, `schedule_pickup`, `cancel_pickup`, `get_pickup_status`, `get_political_divisions`, `get_service_center_facilities`
 
-| MCP Tool | Domain | Purpose |
-|----------|--------|---------|
-| `rate_shipment` | Rating | Get shipping rate or compare rates across services |
-| `create_shipment` | Shipping | Create shipment with label generation |
-| `void_shipment` | Shipping | Cancel an existing shipment |
-| `validate_address` | Address | Validate U.S. and Puerto Rico addresses |
-| `track_package` | Tracking | Track shipment status and delivery estimates |
-| `recover_label` | Shipping | Recover previously generated shipping labels |
-| `get_time_in_transit` | Transit | Estimate delivery timeframes |
-| `get_landed_cost_quote` | Landed Cost | Calculate duties, taxes, and fees for international shipments |
-| `upload_paperless_document` | Paperless | Upload customs/trade documents to UPS Forms History |
-| `push_document_to_shipment` | Paperless | Attach uploaded document to a shipment |
-| `delete_paperless_document` | Paperless | Remove document from Forms History |
-| `find_locations` | Locator | Find UPS Access Points, retail stores, and service locations |
-| `rate_pickup` | Pickup | Get cost estimate for scheduled pickup |
-| `schedule_pickup` | Pickup | Schedule carrier pickup at specified address/time |
-| `cancel_pickup` | Pickup | Cancel a previously scheduled pickup |
-| `get_pickup_status` | Pickup | Check pending pickup status for account |
-| `get_political_divisions` | Pickup | List states/provinces for a country |
-| `get_service_center_facilities` | Pickup | Find UPS service center drop-off locations |
-
-**Interactive mode policy (AD-1):** New v2 tools (8–18) are auto-discovered by the SDK. The interactive mode tool registry remains unchanged at 3 orchestrator tools. The agent calls new UPS tools directly via MCP auto-discovery in both modes.
-
-### MCP Clients and Gateway Provider
-
-See [MCP Gateway Architecture](#mcp-gateway-architecture) for the full connectivity model. Key files: `MCPClient` (base, 315 lines), `UPSMCPClient` (batch path, 703 lines), `DataSourceMCPClient` (457 lines), `ExternalSourcesMCPClient` (241 lines), `gateway_provider.py` (singleton factory, 93 lines).
+**Tool availability:** V2 tools (pickup, locator, paperless, landed cost, tracking) are registered in the orchestrator and available in both batch and interactive modes via MCP auto-discovery and the tool registry.
 
 ### BatchEngine (`src/services/batch_engine.py`)
 
@@ -528,7 +450,7 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 
 - Design system in `index.css`: OKLCH colors, DM Sans / Instrument Serif / JetBrains Mono typography
 - CSS classes: `card-premium`, `btn-primary`, `btn-secondary`, `badge-*`, `card-domain-*`
-- Domain colors (OKLCH): shipping/green(145), pickup/purple(300), locator/teal(185), paperless/amber(85), landed-cost/indigo(265)
+- Domain colors (OKLCH): shipping/green(145), pickup/purple(300), locator/teal(185), paperless/amber(85), landed-cost/indigo(265), tracking/blue(230)
 - Icons: `ui/icons.tsx` (general), `ui/brand-icons.tsx` (platform logos)
 - shadcn/ui primitives in `components/ui/`
 - Labels stored on disk, paths in `JobRow.label_path`; `order_data` as JSON text in `JobRow.order_data`
@@ -552,15 +474,14 @@ These are hard-won fixes — do not revert:
 
 ## Extension Points
 
-All extensions MUST integrate through the agent's tool/MCP architecture AND follow the canonical data model pattern:
+All extensions MUST integrate through agent tools/MCP and follow canonical data model patterns:
 
-- **New Carrier (e.g., FedEx, USPS)**: (1) Create canonical modules: `fedex_constants.py` + `fedex_service_codes.py` in `src/services/` following the UPS pattern. (2) Build as an MCP server (stdio). (3) Add MCP client wrapper following `UPSMCPClient` pattern. (4) Register carrier tools in the agent's tool registry. **Never hardcode carrier constants in tools or builders — import from the canonical module.**
-- **New Data Source Adapter**: Implement `BaseSourceAdapter` in `src/mcp/data_source/adapters/`, register in the Data Source MCP server. Must produce `ImportResult` with `SchemaColumn` metadata.
-- **New Platform Integration**: Add client in `src/mcp/external_sources/clients/`, register in External Sources MCP server. Must normalize to `ExternalOrder` canonical schema.
-- **New Agent Tool**: Add handler in appropriate tool module (`data.py`, `pipeline.py`, `interactive.py`), register in `tools/__init__.py`. Import all constants from canonical modules — no inline magic numbers.
-- **New Batch Capability**: Extend `BatchEngine` with new execution mode, expose via pipeline tool
-- **Template Filters**: Register in Filter Registry for custom Jinja2 logistics filters
-- **Observers**: Subscribe to BatchEngine SSE events for notifications/webhooks
+- **New Carrier**: Create `<carrier>_constants.py` + `<carrier>_service_codes.py` in `src/services/`, build MCP server (stdio), add client wrapper, register tools. Never hardcode constants.
+- **New Data Source**: Implement `BaseSourceAdapter` in `src/mcp/data_source/adapters/`. Must produce `ImportResult` with `SchemaColumn`.
+- **New Platform**: Add client in `src/mcp/external_sources/clients/`. Must normalize to `ExternalOrder`.
+- **New Agent Tool**: Add handler in appropriate tool module, register in `tools/__init__.py`. Import constants from canonical modules.
+- **New Batch Capability**: Extend `BatchEngine`, expose via pipeline tool.
+- **Filters/Observers**: Register Jinja2 filters in Filter Registry; subscribe to BatchEngine SSE events.
 
 ## Roadmap (Agent Capabilities)
 
@@ -572,10 +493,4 @@ All extensions MUST integrate through the agent's tool/MCP architecture AND foll
 
 ## Boundaries
 
-ShipAgent is a **shipping orchestration agent**, not a general commerce platform. These boundaries are intentional — they keep the agent focused and the architecture clean:
-
-- **Read-only for orders**: The agent reads from data sources and platforms but never modifies source orders (except write-back of tracking numbers)
-- **No inventory management**: Out of scope — shipping is the domain, not warehouse management
-- **No payment processing**: Shipping costs are billed to the UPS account, not processed by ShipAgent
-- **No customer communication**: The agent doesn't send emails/SMS to end customers — that's the platform's job
-- **UPS only (for now)**: Multi-carrier is on the roadmap but MVP is UPS-only via the `ups-mcp` server
+Shipping orchestration only — read-only for orders (except tracking write-back), no inventory management, no payment processing, no customer communication, UPS-only (multi-carrier on roadmap).

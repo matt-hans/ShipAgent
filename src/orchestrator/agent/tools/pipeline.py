@@ -406,7 +406,7 @@ async def get_landed_cost_tool(
         result = await client.get_landed_cost(**args)
         payload = {"action": "landed_cost", "success": True, **result}
         _emit_event("landed_cost_result", payload, bridge=bridge)
-        return _ok({"success": True, "action": "landed_cost", **result})
+        return _ok("Landed cost estimate displayed.")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
