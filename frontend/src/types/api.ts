@@ -624,10 +624,12 @@ export type AgentEventType =
   | 'agent_message'
   | 'agent_message_delta'
   | 'preview_ready'
+  | 'pickup_preview'
   | 'pickup_result'
   | 'location_result'
   | 'landed_cost_result'
   | 'paperless_result'
+  | 'tracking_result'
   | 'confirmation_needed'
   | 'execution_progress'
   | 'completion'
@@ -674,7 +676,19 @@ export interface PickupResult {
   action: 'scheduled' | 'cancelled' | 'rated' | 'status';
   success: boolean;
   prn?: string;
-  charges?: Array<{ chargeAmount: string; chargeCode: string }>;
+  // Enriched completion fields (present when action === 'scheduled')
+  address_line?: string;
+  city?: string;
+  state?: string;
+  postal_code?: string;
+  country_code?: string;
+  pickup_date?: string;
+  ready_time?: string;
+  close_time?: string;
+  contact_name?: string;
+  phone_number?: string;
+  grand_total?: string;
+  charges?: Array<{ chargeAmount: string; chargeCode: string; chargeLabel: string }>;
   pickups?: Array<{ pickupDate: string; prn: string }>;
 }
 
@@ -713,4 +727,39 @@ export interface PaperlessResult {
   action: 'uploaded' | 'pushed' | 'deleted';
   success: boolean;
   documentId?: string;
+}
+
+/** Package tracking result from SSE stream. */
+export interface TrackingResult {
+  action: 'tracked';
+  success: boolean;
+  trackingNumber: string;
+  mismatch?: boolean;
+  requestedNumber?: string;
+  currentStatus?: string;
+  statusDescription?: string;
+  deliveryDate?: string;
+  activities?: Array<{
+    date: string;
+    time: string;
+    location: string;
+    status: string;
+  }>;
+}
+
+/** Pickup preview data emitted before scheduling for user confirmation. */
+export interface PickupPreview {
+  address_line: string;
+  city: string;
+  state: string;
+  postal_code: string;
+  country_code: string;
+  pickup_date: string;
+  ready_time: string;
+  close_time: string;
+  pickup_type: string;
+  contact_name: string;
+  phone_number: string;
+  charges: Array<{ chargeCode: string; chargeLabel: string; chargeAmount: string }>;
+  grand_total: string;
 }
