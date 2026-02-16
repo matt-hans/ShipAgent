@@ -666,6 +666,7 @@ class UPSMCPClient:
         country_code: str,
         radius: float = 15.0,
         unit_of_measure: str = "MI",
+        max_results: int = 10,
     ) -> dict[str, Any]:
         """Find nearby UPS locations (Access Points, retail, etc.).
 
@@ -678,6 +679,7 @@ class UPSMCPClient:
             country_code: Country code.
             radius: Search radius (default 15.0).
             unit_of_measure: "MI" or "KM" (default "MI").
+            max_results: Maximum locations to return (1-50, default 10).
 
         Returns:
             Normalised dict with: success, locations.
@@ -695,6 +697,7 @@ class UPSMCPClient:
                 "country_code": country_code,
                 "radius": radius,
                 "unit_of_measure": unit_of_measure,
+                "max_results": max_results,
             })
         except MCPToolError as e:
             raise self._translate_error(e) from e

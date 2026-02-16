@@ -32,7 +32,7 @@ dependencies = [
     "sse-starlette>=2.0.0",
     "pypdf>=4.0.0",
     # UPS MCP Python fork (pinned to v2 with 18 tools: shipping, tracking, pickup, locator, paperless, landed cost)
-    "ups-mcp @ git+https://github.com/matt-hans/ups-mcp.git@616626f816752e3d5b02cb6da329ad8f8ae8a5e9",
+    "ups-mcp @ git+https://github.com/matt-hans/ups-mcp.git@74c6b54a89366234d9703dffd9bcdd08ce6f1f7f",
 ]
 
 [project.optional-dependencies]

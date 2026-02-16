@@ -26,6 +26,7 @@ UPS_ERROR_MAP: dict[str, str] = {
     "120502": "E-2004",  # Invalid dimensions
     # Rate errors
     "111210": "E-3004",  # Rate not available
+    "111212": "E-3004",  # Package type unavailable for selected service
     # Authentication errors
     "250001": "E-5001",  # Invalid credentials
     "250002": "E-5001",  # Authentication failed
@@ -68,6 +69,7 @@ UPS_MESSAGE_PATTERNS: dict[str, str] = {
     "export control": "E-3006",
     "commercial invoice": "E-3006",
     "duty": "E-3006",
+    "package type is unavailable": "E-3004",
     # UPS MCP v2 — Domain patterns
     "no locations found": "E-3009",
     "no pdf found": "E-3007",
