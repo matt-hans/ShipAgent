@@ -23,9 +23,10 @@ export function parseRefinedName(name: string | undefined): { base: string; refi
 }
 
 /** Inline card for completed batches (green/amber/red border, label access). */
-export function CompletionArtifact({ message, onViewLabels }: {
+export function CompletionArtifact({ message, onViewLabels, onSendMessage }: {
   message: ConversationMessage;
   onViewLabels: (jobId: string) => void;
+  onSendMessage?: (text: string) => void;
 }) {
   const meta = message.metadata?.completion;
   const jobId = message.metadata?.jobId;
@@ -113,6 +114,15 @@ export function CompletionArtifact({ message, onViewLabels }: {
         >
           <DownloadIcon className="w-3.5 h-3.5" />
           <span>View Labels (PDF)</span>
+        </button>
+      )}
+
+      {!allFailed && meta.successful > 0 && onSendMessage && (
+        <button
+          onClick={() => onSendMessage("Schedule a pickup for today's shipments")}
+          className="w-full btn-secondary py-2 flex items-center justify-center gap-2 text-sm card-domain-pickup border"
+        >
+          Schedule Pickup
         </button>
       )}
     </div>
