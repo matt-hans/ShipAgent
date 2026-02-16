@@ -778,3 +778,146 @@ class TestUPSMCPReconnectBehavior:
             await ups_client._call("create_shipment", {"request_body": {"x": 1}})
 
         assert mock_mcp_client.call_tool.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Pickup methods (Task 8)
+# ---------------------------------------------------------------------------
+
+
+class TestSchedulePickup:
+    """Test schedule_pickup() method and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_schedule_pickup_calls_correct_tool(self, ups_client, mock_mcp_client):
+        """schedule_pickup must call MCP tool 'schedule_pickup'."""
+        mock_mcp_client.call_tool.return_value = {
+            "PickupCreationResponse": {"PRN": "2929602E9CP"}
+        }
+        result = await ups_client.schedule_pickup(
+            pickup_date="20260220", ready_time="0900", close_time="1700",
+            address_line="123 Main St", city="Austin", state="TX",
+            postal_code="78701", country_code="US",
+            contact_name="John Smith", phone_number="5125551234",
+        )
+        assert result["success"] is True
+        assert result["prn"] == "2929602E9CP"
+        call_args = mock_mcp_client.call_tool.call_args
+        assert call_args[0][0] == "schedule_pickup"
+
+    @pytest.mark.asyncio
+    async def test_schedule_pickup_uses_mutating_retry(self, ups_client, mock_mcp_client):
+        """schedule_pickup must NOT retry (mutating operation)."""
+        mock_mcp_client.call_tool.return_value = {
+            "PickupCreationResponse": {"PRN": "X"}
+        }
+        await ups_client.schedule_pickup(
+            pickup_date="20260220", ready_time="0900", close_time="1700",
+            address_line="123 Main St", city="Austin", state="TX",
+            postal_code="78701", country_code="US",
+            contact_name="John", phone_number="512555",
+        )
+        mock_mcp_client.call_tool.assert_awaited_once_with(
+            "schedule_pickup",
+            {
+                "pickup_date": "20260220", "ready_time": "0900", "close_time": "1700",
+                "address_line": "123 Main St", "city": "Austin", "state": "TX",
+                "postal_code": "78701", "country_code": "US",
+                "contact_name": "John", "phone_number": "512555",
+            },
+            max_retries=0,
+            base_delay=1.0,
+        )
+
+
+class TestCancelPickup:
+    """Test cancel_pickup() method and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_cancel_pickup_by_prn(self, ups_client, mock_mcp_client):
+        """cancel_pickup with PRN calls correct tool."""
+        mock_mcp_client.call_tool.return_value = {
+            "PickupCancelResponse": {"Status": {"Code": "1"}}
+        }
+        result = await ups_client.cancel_pickup(cancel_by="prn", prn="2929602E9CP")
+        assert result["success"] is True
+        assert result["status"] == "cancelled"
+
+
+class TestRatePickup:
+    """Test rate_pickup() method and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_rate_pickup_returns_charges(self, ups_client, mock_mcp_client):
+        """rate_pickup returns estimated charges."""
+        mock_mcp_client.call_tool.return_value = {
+            "PickupRateResponse": {
+                "RateResult": {
+                    "ChargeDetail": [{"ChargeAmount": "5.50", "ChargeCode": "C"}],
+                    "GrandTotalOfAllCharge": "5.50",
+                }
+            }
+        }
+        result = await ups_client.rate_pickup(
+            pickup_type="oncall", address_line="123 Main", city="Austin",
+            state="TX", postal_code="78701", country_code="US",
+            pickup_date="20260220", ready_time="0900", close_time="1700",
+        )
+        assert result["success"] is True
+        assert "charges" in result
+
+    @pytest.mark.asyncio
+    async def test_rate_pickup_uses_read_only_retry(self, ups_client, mock_mcp_client):
+        """rate_pickup uses read-only retry policy."""
+        mock_mcp_client.call_tool.return_value = {
+            "PickupRateResponse": {"RateResult": {"GrandTotalOfAllCharge": "0"}}
+        }
+        await ups_client.rate_pickup(
+            pickup_type="oncall", address_line="x", city="x",
+            state="TX", postal_code="78701", country_code="US",
+            pickup_date="20260220", ready_time="0900", close_time="1700",
+        )
+        mock_mcp_client.call_tool.assert_awaited_once()
+        call_kwargs = mock_mcp_client.call_tool.call_args
+        assert call_kwargs[1]["max_retries"] == 2
+        assert call_kwargs[1]["base_delay"] == 0.2
+
+
+class TestGetPickupStatus:
+    """Test get_pickup_status() method and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_get_pickup_status(self, ups_client, mock_mcp_client):
+        """get_pickup_status returns pending pickups."""
+        mock_mcp_client.call_tool.return_value = {
+            "PickupPendingStatusResponse": {
+                "PendingStatus": [{"PickupDate": "20260220", "PRN": "ABC123"}]
+            }
+        }
+        result = await ups_client.get_pickup_status(pickup_type="oncall")
+        assert result["success"] is True
+        assert "pickups" in result
+
+
+class TestPickupRetryClassification:
+    """Test that retry classification constants exist and are correct."""
+
+    def test_read_only_tools_exist(self, ups_client):
+        """_READ_ONLY_TOOLS class attribute exists with expected tools."""
+        assert hasattr(UPSMCPClient, "_READ_ONLY_TOOLS")
+        assert "rate_pickup" in UPSMCPClient._READ_ONLY_TOOLS
+        assert "get_pickup_status" in UPSMCPClient._READ_ONLY_TOOLS
+
+    def test_mutating_tools_exist(self, ups_client):
+        """_MUTATING_TOOLS class attribute exists with expected tools."""
+        assert hasattr(UPSMCPClient, "_MUTATING_TOOLS")
+        assert "schedule_pickup" in UPSMCPClient._MUTATING_TOOLS
+        assert "cancel_pickup" in UPSMCPClient._MUTATING_TOOLS
+
+    def test_original_tools_still_classified(self, ups_client):
+        """Original tools remain in the classification sets."""
+        assert "rate_shipment" in UPSMCPClient._READ_ONLY_TOOLS
+        assert "validate_address" in UPSMCPClient._READ_ONLY_TOOLS
+        assert "track_package" in UPSMCPClient._READ_ONLY_TOOLS
+        assert "create_shipment" in UPSMCPClient._MUTATING_TOOLS
+        assert "void_shipment" in UPSMCPClient._MUTATING_TOOLS
