@@ -118,6 +118,7 @@ class UPSMCPClient:
                 "CLIENT_ID": self._client_id,
                 "CLIENT_SECRET": self._client_secret,
                 "ENVIRONMENT": self._environment,
+                "UPS_ACCOUNT_NUMBER": self._account_number,
                 "UPS_MCP_SPECS_DIR": specs_dir,
                 "PATH": os.environ.get("PATH", ""),
             },

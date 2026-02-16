@@ -87,8 +87,9 @@ def get_ups_mcp_config() -> MCPServerConfig:
 
     The UPS MCP runs as a Python module from the local ups-mcp fork
     (installed as editable package in .venv) with stdio transport.
-    It provides 7 tools: track_package, validate_address, rate_shipment,
-    create_shipment, void_shipment, recover_label, get_time_in_transit.
+    It provides 18 tools: track_package, validate_address, rate_shipment,
+    create_shipment, void_shipment, recover_label, get_time_in_transit,
+    plus v2 tools for pickup, locator, landed cost, paperless, and reference data.
 
     This gives the agent interactive access to UPS operations. The deterministic
     batch path (BatchEngine + UPSMCPClient) uses the same local fork for
@@ -132,6 +133,7 @@ def get_ups_mcp_config() -> MCPServerConfig:
             "CLIENT_ID": client_id or "",
             "CLIENT_SECRET": client_secret or "",
             "ENVIRONMENT": environment,
+            "UPS_ACCOUNT_NUMBER": os.environ.get("UPS_ACCOUNT_NUMBER", ""),
             "UPS_MCP_SPECS_DIR": specs_dir,
             "PATH": os.environ.get("PATH", ""),
         },

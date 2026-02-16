@@ -241,3 +241,23 @@ class TestCreateMCPServersConfig:
         config1 = create_mcp_servers_config()
         config2 = create_mcp_servers_config()
         assert config1 is not config2
+
+
+class TestUPSMCPConfigAccountNumber:
+    """Tests for UPS_ACCOUNT_NUMBER in MCP subprocess config."""
+
+    def test_ups_mcp_config_includes_account_number(self, monkeypatch):
+        """UPS MCP subprocess env must include UPS_ACCOUNT_NUMBER."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "test-id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "test-secret")
+        monkeypatch.setenv("UPS_ACCOUNT_NUMBER", "ABC123")
+        config = get_ups_mcp_config()
+        assert config["env"]["UPS_ACCOUNT_NUMBER"] == "ABC123"
+
+    def test_ups_mcp_config_account_number_defaults_empty(self, monkeypatch):
+        """UPS_ACCOUNT_NUMBER defaults to empty string when not set."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "test-id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "test-secret")
+        monkeypatch.delenv("UPS_ACCOUNT_NUMBER", raising=False)
+        config = get_ups_mcp_config()
+        assert config["env"]["UPS_ACCOUNT_NUMBER"] == ""
