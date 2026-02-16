@@ -165,6 +165,51 @@ class TestValidateInternationalReadiness:
             codes = [e.machine_code for e in errors]
             assert "INVALID_HS_CODE" in codes
 
+    def test_hs_code_with_periods_is_normalized(self):
+        """HS codes with periods (standard tariff notation) are stripped to digits."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            comm = {"description": "Bearings", "commodity_code": "8482.10",
+                    "origin_country": "US", "quantity": 1, "unit_value": "25.00"}
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_phone": "6045551234",
+                "ship_to_attention_name": "Jane",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme",
+                "shipment_description": "Bearings",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "25.00",
+                "commodities": [comm],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "INVALID_HS_CODE" not in codes
+            # Verify write-back: commodity_code should now be digits-only
+            assert comm["commodity_code"] == "848210"
+
+    def test_hs_code_with_hyphens_is_normalized(self):
+        """HS codes with hyphens are stripped to digits."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            comm = {"description": "Parts", "commodity_code": "8487-90-00",
+                    "origin_country": "US", "quantity": 2, "unit_value": "10.00"}
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_phone": "6045551234",
+                "ship_to_attention_name": "Jane",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme",
+                "shipment_description": "Parts",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "20.00",
+                "commodities": [comm],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "INVALID_HS_CODE" not in codes
+            assert comm["commodity_code"] == "84879000"
+
     def test_currency_mismatch_e2017(self):
         """P2: E-2017 must fire when commodity currency differs from invoice currency."""
         with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):

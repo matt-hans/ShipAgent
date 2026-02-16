@@ -166,9 +166,7 @@ export function InteractiveModeBanner() {
   return (
     <div className="flex items-center gap-2 px-4 py-1.5 border-b border-amber-500/20 bg-amber-500/5">
       <span className="w-1.5 h-1.5 rounded-full bg-amber-400 flex-shrink-0" />
-      <span className="text-xs font-medium text-amber-200">Single Shipment (Ad-hoc)</span>
-      <span className="text-amber-700">&middot;</span>
-      <span className="text-[10px] font-mono text-amber-300/90">Batch commands disabled</span>
+      <span className="text-xs font-medium text-amber-200">Single Shipment</span>
     </div>
   );
 }
@@ -191,7 +189,7 @@ export function WelcomeMessage({
   ];
 
   const interactiveExamples = [
-    { text: 'Ship a 5lb box to John Smith at 123 Main St, Springfield IL 62704 via Ground', desc: 'Single ad-hoc shipment' },
+    { text: 'Ship a 5lb box to John Smith at 123 Main St, Springfield IL 62704 via Ground', desc: 'Single shipment' },
     { text: 'Create a Next Day Air shipment to 456 Oak Ave, Austin TX 78701', desc: 'Express shipment' },
   ];
 

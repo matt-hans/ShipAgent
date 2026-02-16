@@ -84,16 +84,16 @@ describe('CommandCenter interactive mode UX', () => {
   it('renders interactive mode banner and hides source/settings banner', () => {
     render(<CommandCenter activeJob={null} />);
 
-    expect(screen.queryByText('Single Shipment (Ad-hoc)')).not.toBeNull();
-    expect(screen.queryByText('Batch commands disabled')).not.toBeNull();
+    // "Single Shipment" appears in both banner and welcome heading
+    expect(screen.queryAllByText('Single Shipment').length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText('Shopify')).toBeNull();
     expect(screen.queryByTitle('Shipment settings')).toBeNull();
   });
 
-  it('shows ad-hoc welcome content only in interactive mode even when source is connected', () => {
+  it('shows single shipment welcome content only in interactive mode even when source is connected', () => {
     render(<CommandCenter activeJob={null} />);
 
-    expect(screen.queryByText('Single Shipment')).not.toBeNull();
+    expect(screen.queryAllByText('Single Shipment').length).toBeGreaterThanOrEqual(1);
     expect(
       screen.queryByText(/Ship a 5lb box to John Smith/i)
     ).not.toBeNull();
@@ -110,7 +110,7 @@ describe('CommandCenter interactive mode UX', () => {
       screen.queryByPlaceholderText('Describe one shipment from scratch...')
     ).not.toBeNull();
     expect(
-      screen.queryByText(/Ad-hoc mode — provide shipment details/i)
+      screen.queryByText(/Provide shipment details and ShipAgent will handle the rest/i)
     ).not.toBeNull();
 
     mockAppState = buildBaseAppState({
@@ -123,7 +123,7 @@ describe('CommandCenter interactive mode UX', () => {
       screen.queryByPlaceholderText('Describe one shipment from scratch...')
     ).not.toBeNull();
     expect(
-      screen.queryByText(/Ad-hoc mode — provide shipment details/i)
+      screen.queryByText(/Provide shipment details and ShipAgent will handle the rest/i)
     ).not.toBeNull();
   });
 

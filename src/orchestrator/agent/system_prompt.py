@@ -90,7 +90,7 @@ def build_system_prompt(
     if interactive_shipping:
         data_section = (
             "Interactive shipping mode is active. "
-            "Single ad-hoc shipment creation is enabled and data-source schema context "
+            "Single shipment creation is enabled and data-source schema context "
             "is intentionally hidden in this mode. If the user requests batch or "
             "data-source-driven shipping, instruct them to turn Interactive Shipping off."
         )
@@ -131,7 +131,7 @@ Interactive mode is active:
 - Collect shipment details conversationally from the user.
 """
         workflow_section = """
-### Interactive Ad-hoc Mode (Exclusive)
+### Interactive Single Shipment Mode
 
 Interactive Shipping is enabled for single-shipment creation only.
 
@@ -284,6 +284,7 @@ deterministically (e.g., SQL validation, column mapping, payload building).
             interactive_specific_guidance = """
 Interactive mode collection requirements:
 - ALWAYS pass `ship_to_country` for non-US destinations and collect recipient phone + attention name.
+- Do NOT ask for shipper phone or attention name — these are auto-populated from environment configuration.
 - Collect and pass `commodities` items with description, commodity_code, origin_country, quantity, and unit_value.
 - Collect and pass `invoice_currency_code`, `invoice_monetary_value`, and `reason_for_export` when required.
 - For CA/MX shipments, prefer international service codes (07, 08, 11, 54, 65) instead of domestic service codes.
@@ -305,7 +306,7 @@ Country-based filter examples:
 
 International shipments require additional fields beyond domestic:
 - **Recipient phone** and **attention name** (required)
-- **Shipper phone** and **attention name** (required)
+- Shipper phone and attention name are auto-populated from configuration — do NOT ask the user for these
 - **Description of goods** (max 35 chars, required for customs)
 - **Commodity data** (HS tariff code, origin country, quantity, unit value per item)
 - **InvoiceLineTotal** (currency + monetary value — required for US→CA)

@@ -693,7 +693,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
           {/* Help text - single line */}
           <p className="text-[10px] font-mono text-slate-500 mt-1.5">
             {interactiveShipping
-              ? 'Ad-hoc mode — provide shipment details; ShipAgent will ask for missing fields'
+              ? 'Provide shipment details and ShipAgent will handle the rest'
               : hasDataSource
                 ? 'Describe what you want to ship in natural language'
                 : 'Tracking, pickup, location, and landed cost tools available without a data source'} · Press <kbd className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700">Enter</kbd> to send
