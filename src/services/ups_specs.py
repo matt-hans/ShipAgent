@@ -30,6 +30,11 @@ def ensure_ups_specs_dir() -> str:
     mapping = {
         "Rating.yaml": _SOURCE_DOCS_DIR / "rating.yaml",
         "Shipping.yaml": _SOURCE_DOCS_DIR / "shipping.yaml",
+        # Optional specs — skipped if source file doesn't exist
+        "LandedCost.yaml": _SOURCE_DOCS_DIR / "landed_cost.yaml",
+        "Paperless.yaml": _SOURCE_DOCS_DIR / "paperless.yaml",
+        "Locator.yaml": _SOURCE_DOCS_DIR / "locator.yaml",
+        "Pickup.yaml": _SOURCE_DOCS_DIR / "pickup.yaml",
     }
     for target_name, source_path in mapping.items():
         if not source_path.exists():
