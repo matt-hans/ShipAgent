@@ -1544,3 +1544,97 @@ async def test_delete_paperless_document_tool_error():
 
     assert result["isError"] is True
     assert "E-3006" in result["content"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# UPS MCP v2 — Landed cost tool handler (pipeline.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_landed_cost_tool_emits_event():
+    """get_landed_cost_tool emits landed_cost_result on success."""
+    mock_ups = AsyncMock()
+    mock_ups.get_landed_cost.return_value = {
+        "success": True,
+        "totalLandedCost": "45.23",
+        "currencyCode": "USD",
+        "items": [
+            {"commodityId": "1", "duties": "12.50", "taxes": "7.73", "fees": "0.00"}
+        ],
+    }
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pipeline._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pipeline import get_landed_cost_tool
+
+        result = await get_landed_cost_tool(
+            {
+                "currency_code": "USD",
+                "export_country_code": "US",
+                "import_country_code": "GB",
+                "commodities": [{"price": 25.00, "quantity": 2}],
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["totalLandedCost"] == "45.23"
+
+    assert len(captured) == 1
+    assert captured[0][0] == "landed_cost_result"
+    assert captured[0][1]["totalLandedCost"] == "45.23"
+
+
+@pytest.mark.asyncio
+async def test_get_landed_cost_tool_error():
+    """get_landed_cost_tool returns _err on UPSServiceError."""
+    from src.services.errors import UPSServiceError
+
+    mock_ups = AsyncMock()
+    mock_ups.get_landed_cost.side_effect = UPSServiceError(
+        code="E-3001", message="service unavailable"
+    )
+
+    with patch(
+        "src.orchestrator.agent.tools.pipeline._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pipeline import get_landed_cost_tool
+
+        result = await get_landed_cost_tool(
+            {
+                "currency_code": "USD",
+                "export_country_code": "US",
+                "import_country_code": "GB",
+                "commodities": [],
+            },
+        )
+
+    assert result["isError"] is True
+    assert "E-3001" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_get_landed_cost_tool_handles_malformed_args():
+    """get_landed_cost_tool returns _err for TypeError from bad model args."""
+    mock_ups = AsyncMock()
+    mock_ups.get_landed_cost.side_effect = TypeError("missing required arg")
+
+    with patch(
+        "src.orchestrator.agent.tools.pipeline._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pipeline import get_landed_cost_tool
+
+        result = await get_landed_cost_tool({})
+
+    assert result["isError"] is True
+    assert "Unexpected error" in result["content"][0]["text"]
