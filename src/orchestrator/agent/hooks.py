@@ -39,6 +39,7 @@ __all__ = [
     "create_shipping_hook",
     "validate_schedule_pickup",
     "validate_cancel_pickup",
+    "validate_track_package",
 ]
 
 logger = logging.getLogger(__name__)
@@ -462,6 +463,36 @@ async def validate_cancel_pickup(
     )
 
 
+async def validate_track_package(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """Deny direct MCP track_package calls — force orchestrator wrapper.
+
+    The orchestrator wrapper ``track_package_tool`` emits a
+    ``tracking_result`` event for the frontend TrackingCard and
+    performs mismatch detection. The direct MCP tool bypasses
+    both of these.
+
+    Args:
+        input_data: Contains 'tool_name' and 'tool_input' keys.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context from Claude Agent SDK.
+
+    Returns:
+        hookSpecificOutput with denial.
+    """
+    _log_to_stderr(
+        f"[VALIDATION] Pre-hook DENYING direct track_package | ID: {tool_use_id}"
+    )
+    return _deny_with_reason(
+        "Direct mcp__ups__track_package is not allowed. "
+        "Use the track_package orchestrator tool instead, which emits "
+        "tracking result events for the UI."
+    )
+
+
 # =============================================================================
 # Hook Factory — Instance-Scoped Enforcement
 # =============================================================================
@@ -558,6 +589,10 @@ def create_hook_matchers(
             HookMatcher(
                 matcher="mcp__ups__cancel_pickup",
                 hooks=[validate_cancel_pickup],
+            ),
+            HookMatcher(
+                matcher="mcp__ups__track_package",
+                hooks=[validate_track_package],
             ),
             HookMatcher(
                 matcher=None,

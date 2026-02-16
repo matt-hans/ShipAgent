@@ -41,7 +41,7 @@ async def upload_paperless_document_tool(
         doc_id = result.get("documentId", "")
         payload = {"action": "uploaded", "success": True, "documentId": doc_id}
         _emit_event("paperless_result", payload, bridge=bridge)
-        return _ok({"success": True, "action": "uploaded", "documentId": doc_id})
+        return _ok(f"Document uploaded. ID: {doc_id}")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
@@ -68,7 +68,7 @@ async def push_document_to_shipment_tool(
         result = await client.push_document(**args)
         payload = {"action": "pushed", "success": True, **result}
         _emit_event("paperless_result", payload, bridge=bridge)
-        return _ok({"success": True, "action": "pushed"})
+        return _ok("Document attached to shipment.")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
@@ -94,7 +94,7 @@ async def delete_paperless_document_tool(
         result = await client.delete_document(**args)
         payload = {"action": "deleted", "success": True, **result}
         _emit_event("paperless_result", payload, bridge=bridge)
-        return _ok({"success": True, "action": "deleted"})
+        return _ok("Document deleted.")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:

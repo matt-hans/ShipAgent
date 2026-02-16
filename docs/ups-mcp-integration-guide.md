@@ -87,9 +87,9 @@ Eighteen tools are available from the UPS MCP server (v2):
 | 17 | `get_political_divisions` | Pickup | Yes | Yes | `get_political_divisions()` | List states/provinces for a country |
 | 18 | `get_service_center_facilities` | Pickup | Yes | Yes | `get_service_center_facilities()` | Find service center drop-off locations |
 
-**Interactive path (AD-1 policy):** New v2 tools (8–18) are auto-discovered by the SDK. In ShipAgent's orchestrator, new tools are registered for **batch mode only** — the interactive mode tool registry remains unchanged at 3 tools (`preview_interactive_shipment`, `get_job_status`, `get_platform_status`). The agent can call new UPS tools directly via MCP in both modes.
+**Tool availability (AD-1 updated):** V2 tools (8–18) plus `track_package` are registered in the orchestrator and available in **both batch and interactive modes**. These tools work independently of data sources (tracking, pickup, location, landed cost, paperless). The interactive mode registry includes all v2 tools alongside the original 3 tools. Hooks enforce that direct MCP calls (`mcp__ups__track_package`, `mcp__ups__create_shipment`, etc.) route through orchestrator wrappers for event emission and safety gates.
 
-**Batch path:** Tools 8–18 are wrapped in `UPSMCPClient` with named methods, response normalizers, and retry policies. The orchestrator tool registry includes 10 new tool definitions for batch mode.
+**Batch path:** Tools 8–18 are wrapped in `UPSMCPClient` with named methods, response normalizers, and retry policies. The orchestrator tool registry includes 11 new tool definitions (10 v2 + track_package).
 
 ---
 

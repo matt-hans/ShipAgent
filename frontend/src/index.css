@@ -57,6 +57,7 @@
   --color-domain-locator: oklch(0.75 0.15 185);
   --color-domain-paperless: oklch(0.78 0.15 85);
   --color-domain-landed-cost: oklch(0.65 0.18 265);
+  --color-domain-tracking: oklch(0.70 0.15 230);
 
   /* Status colors */
   --color-success: oklch(0.65 0.2 150);
@@ -327,6 +328,9 @@
   }
   .card-domain-landed-cost {
     border-color: var(--color-domain-landed-cost);
+  }
+  .card-domain-tracking {
+    border-color: var(--color-domain-tracking);
   }
 
   /* Message styles */
