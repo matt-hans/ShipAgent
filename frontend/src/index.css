@@ -51,6 +51,13 @@
   --color-sap: oklch(0.5 0.16 220);
   --color-oracle: oklch(0.55 0.2 25);
 
+  /* Domain colors (UPS MCP v2) */
+  --color-domain-shipping: oklch(0.75 0.18 145);
+  --color-domain-pickup: oklch(0.70 0.18 300);
+  --color-domain-locator: oklch(0.75 0.15 185);
+  --color-domain-paperless: oklch(0.78 0.15 85);
+  --color-domain-landed-cost: oklch(0.65 0.18 265);
+
   /* Status colors */
   --color-success: oklch(0.65 0.2 150);
   --color-warning: oklch(0.75 0.18 85);
@@ -303,6 +310,23 @@
   .card-premium {
     @apply rounded-lg bg-card border border-border p-4;
     @apply shadow-sm;
+  }
+
+  /* Domain card borders (UPS MCP v2) */
+  .card-domain-shipping {
+    border-color: var(--color-domain-shipping);
+  }
+  .card-domain-pickup {
+    border-color: var(--color-domain-pickup);
+  }
+  .card-domain-locator {
+    border-color: var(--color-domain-locator);
+  }
+  .card-domain-paperless {
+    border-color: var(--color-domain-paperless);
+  }
+  .card-domain-landed-cost {
+    border-color: var(--color-domain-landed-cost);
   }
 
   /* Message styles */
