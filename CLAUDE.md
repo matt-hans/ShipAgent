@@ -40,8 +40,8 @@ These rules are non-negotiable. Violating them creates architectural debt that u
 **SDK Orchestration Redesign:** COMPLETE — Claude SDK is the sole orchestration path via `/api/v1/conversations/` endpoints
 **Interactive Shipping:** COMPLETE — ad-hoc single-shipment creation with preview gate and auto-populated shipper config
 **International Shipping:** COMPLETE — US→CA/MX lane validation, commodity handling, customs forms, batch + interactive integration. Gated by `INTERNATIONAL_ENABLED_LANES` env var.
-**Test Count:** 1241 test functions across 75 test files
-**UPS MCP Hybrid:** COMPLETE — agent uses ups-mcp as stdio MCP server for interactive tools; BatchEngine uses UPSMCPClient (programmatic MCP over stdio) for deterministic batch execution
+**Test Count:** 1310 test functions across 77 test files
+**UPS MCP v2 Integration:** COMPLETE — 18 UPS tools (7 original + 11 new) across 6 domains. Agent uses ups-mcp as stdio MCP server; BatchEngine uses UPSMCPClient (programmatic MCP over stdio). New tools: pickup (6), paperless (3), locator (1), landed cost (1). Frontend: domain-colored cards (pickup/purple, locator/teal, paperless/amber, landed-cost/indigo).
 
 ## Architecture
 
@@ -83,7 +83,7 @@ User → Browser UI (React) → FastAPI REST API → Conversation SSE Route
 | **Agent Hooks** | Pre/PostToolUse | Validation + audit — enforce business rules before/after tool execution |
 | **Agent Session Manager** | Python | Per-conversation lifecycle — session isolation, agent persistence, prewarm |
 | **Data Source MCP** | FastMCP + DuckDB (stdio) | Data connectivity — CSV, Excel, DB, EDI abstracted behind SQL interface |
-| **UPS MCP** | `ups-mcp` local fork (stdio) | Carrier connectivity — 7 UPS tools (ship, rate, track, validate, void, recover, transit) |
+| **UPS MCP** | `ups-mcp` local fork (stdio) | Carrier connectivity — 18 UPS tools across 6 domains (shipping, rating, tracking, pickup, locator, paperless, landed cost) |
 | **UPS MCP Client** | MCPClient (stdio) | Programmatic batch connectivity — deterministic UPS calls for high-volume execution |
 | **External Sources MCP** | FastMCP (stdio) | Platform connectivity — Shopify, WooCommerce, SAP, Oracle |
 | **Batch Engine** | Python | Batch execution — concurrent preview/execute with per-row state tracking |
@@ -94,7 +94,7 @@ User → Browser UI (React) → FastAPI REST API → Conversation SSE Route
 
 ### Agent Tool Architecture
 
-The agent's tools are split into 4 modules by concern:
+The agent's tools are split into 8 modules by concern:
 
 | Module | File | Tools | Purpose |
 |--------|------|-------|---------|
@@ -102,8 +102,12 @@ The agent's tools are split into 4 modules by concern:
 | **Data** | `tools/data.py` | `get_source_info`, `get_schema`, `fetch_rows`, `validate_filter_syntax`, `connect_shopify`, `get_platform_status` | Data source operations — querying, filtering, platform integration |
 | **Pipeline** | `tools/pipeline.py` | `ship_command_pipeline`, `create_job`, `add_rows_to_job`, `batch_preview`, `batch_execute`, `get_job_status` | Batch shipping workflow — the core pipeline from command to labels |
 | **Interactive** | `tools/interactive.py` | `preview_interactive_shipment` | Ad-hoc single-shipment creation (interactive mode only) |
+| **Pickup** | `tools/pickup.py` | `schedule_pickup_tool`, `cancel_pickup_tool`, `rate_pickup_tool`, `get_pickup_status_tool`, `get_political_divisions_tool`, `get_service_center_facilities_tool` | UPS pickup operations — schedule, cancel, rate, status, reference lookups |
+| **Locator** | `tools/locator.py` | `find_locations_tool` | UPS location search — Access Points, retail stores, service centers |
+| **Paperless** | `tools/paperless.py` | `upload_document_tool`, `push_document_tool`, `delete_document_tool` | Paperless customs — upload, attach, delete trade documents |
+| **Landed Cost** | `tools/landed_cost.py` | `get_landed_cost_tool` | International landed cost — duties, taxes, fees estimation |
 
-Tool registration: `get_all_tool_definitions()` in `tools/__init__.py` assembles all definitions. In interactive mode, only status tools + `preview_interactive_shipment` are exposed; batch/data tools are hidden.
+Tool registration: `get_all_tool_definitions()` in `tools/__init__.py` assembles all definitions. In interactive mode, only status tools + `preview_interactive_shipment` are exposed; batch/data/v2 tools are hidden. New v2 tools (pickup, locator, paperless, landed cost) are batch-mode only in the orchestrator registry — the agent can still call them directly via MCP auto-discovery in both modes.
 
 ### Agent Hook System
 
@@ -113,6 +117,8 @@ Pre/PostToolUse hooks enforce business rules without modifying the agent flow:
 |------|---------|---------|
 | `create_shipping_hook()` | `mcp__ups__create_shipment` | Mode-aware enforcement — blocks direct shipment creation in BOTH modes (batch must use pipeline; interactive must use preview tool) |
 | `validate_void_shipment` | `mcp__ups__void_shipment` | Requires tracking number or shipment ID |
+| `schedule_pickup_hook()` | `mcp__ups__schedule_pickup` | Safety gate — pickup is a financial commitment, requires confirmation context |
+| `cancel_pickup_hook()` | `mcp__ups__cancel_pickup` | Safety gate — pickup cancellation is irreversible |
 | `validate_pre_tool` | All tools (fallback) | Routes to specific validators by tool name |
 | `log_post_tool` | All tools (post) | Audit logging to stderr |
 | `detect_error_response` | All tools (post) | Error detection and warning |
@@ -301,12 +307,16 @@ src/
     ├── agent/                  # Claude Agent SDK integration (PRIMARY ORCHESTRATION PATH)
     │   ├── client.py           # OrchestrationAgent — SDK agent with streaming + MCP coordination
     │   ├── system_prompt.py    # Dynamic system prompt builder (domain knowledge + data schema)
-    │   ├── tools/              # Deterministic SDK tools (split by concern)
+    │   ├── tools/              # Deterministic SDK tools (split by concern — 8 modules)
     │   │   ├── __init__.py     # Tool registry — get_all_tool_definitions()
     │   │   ├── core.py         # EventEmitterBridge, row cache, bridge binding helpers
     │   │   ├── data.py         # Data source + platform tool handlers
     │   │   ├── pipeline.py     # Batch pipeline tool handlers (ship_command_pipeline fast path)
-    │   │   └── interactive.py  # Interactive shipment tool handler (preview_interactive_shipment)
+    │   │   ├── interactive.py  # Interactive shipment tool handler (preview_interactive_shipment)
+    │   │   ├── pickup.py       # UPS pickup operations (schedule, cancel, rate, status, divisions, facilities)
+    │   │   ├── locator.py      # UPS location search (find_locations_tool)
+    │   │   ├── paperless.py    # Paperless customs (upload, push, delete document tools)
+    │   │   └── landed_cost.py  # Landed cost estimation (get_landed_cost_tool)
     │   ├── config.py           # MCP server configuration factory (Data, External, UPS)
     │   └── hooks.py            # Pre/PostToolUse validation hooks (mode enforcement, audit)
     └── batch/                  # Batch orchestration
@@ -320,7 +330,7 @@ frontend/src/
 ├── App.tsx, main.tsx, index.css    # Entry point + design system (OKLCH, DM Sans, Instrument Serif)
 ├── components/
 │   ├── CommandCenter.tsx           # Main chat UI — SSE event orchestration, preview/progress/completion
-│   ├── command-center/             # PreviewCard, ProgressDisplay, CompletionArtifact, ToolCallChip, messages
+│   ├── command-center/             # PreviewCard, ProgressDisplay, CompletionArtifact, ToolCallChip, messages, PickupCard, LocationCard, LandedCostCard, PaperlessCard
 │   ├── sidebar/                    # DataSourcePanel, JobHistoryPanel
 │   ├── ui/                         # shadcn/ui primitives + icons.tsx + brand-icons.tsx
 │   └── layout/                     # Sidebar, Header (with interactive shipping toggle)
@@ -348,17 +358,30 @@ Key features:
 
 ### UPS MCP Server (local fork: `matt-hans/ups-mcp`)
 
-Runs as a stdio child process via `.venv/bin/python3 -m ups_mcp`, providing the agent with interactive access to 7 UPS tools. Installed as editable package from pinned commit.
+Runs as a stdio child process via `.venv/bin/python3 -m ups_mcp`, providing the agent with interactive access to 18 UPS tools across 6 domains. Installed as editable package from pinned commit.
 
-| MCP Tool | Purpose |
-|----------|---------|
-| `rate_shipment` | Get shipping rate or compare rates across services |
-| `create_shipment` | Create shipment with label generation |
-| `void_shipment` | Cancel an existing shipment |
-| `validate_address` | Validate U.S. and Puerto Rico addresses |
-| `track_package` | Track shipment status and delivery estimates |
-| `recover_label` | Recover previously generated shipping labels |
-| `get_time_in_transit` | Estimate delivery timeframes |
+| MCP Tool | Domain | Purpose |
+|----------|--------|---------|
+| `rate_shipment` | Rating | Get shipping rate or compare rates across services |
+| `create_shipment` | Shipping | Create shipment with label generation |
+| `void_shipment` | Shipping | Cancel an existing shipment |
+| `validate_address` | Address | Validate U.S. and Puerto Rico addresses |
+| `track_package` | Tracking | Track shipment status and delivery estimates |
+| `recover_label` | Shipping | Recover previously generated shipping labels |
+| `get_time_in_transit` | Transit | Estimate delivery timeframes |
+| `get_landed_cost_quote` | Landed Cost | Calculate duties, taxes, and fees for international shipments |
+| `upload_paperless_document` | Paperless | Upload customs/trade documents to UPS Forms History |
+| `push_document_to_shipment` | Paperless | Attach uploaded document to a shipment |
+| `delete_paperless_document` | Paperless | Remove document from Forms History |
+| `find_locations` | Locator | Find UPS Access Points, retail stores, and service locations |
+| `rate_pickup` | Pickup | Get cost estimate for scheduled pickup |
+| `schedule_pickup` | Pickup | Schedule carrier pickup at specified address/time |
+| `cancel_pickup` | Pickup | Cancel a previously scheduled pickup |
+| `get_pickup_status` | Pickup | Check pending pickup status for account |
+| `get_political_divisions` | Pickup | List states/provinces for a country |
+| `get_service_center_facilities` | Pickup | Find UPS service center drop-off locations |
+
+**Interactive mode policy (AD-1):** New v2 tools (8–18) are auto-discovered by the SDK. The interactive mode tool registry remains unchanged at 3 orchestrator tools. The agent calls new UPS tools directly via MCP auto-discovery in both modes.
 
 ### MCP Clients and Gateway Provider
 
@@ -480,9 +503,9 @@ pytest tests/services/test_ups_payload_builder.py -v  # Payload builder + consta
 
 Format: `E-XXXX` with category prefixes:
 - `E-1xxx`: Data errors
-- `E-2xxx`: Validation errors
-- `E-3xxx`: UPS API errors
-- `E-4xxx`: System errors
+- `E-2xxx`: Validation errors (includes E-2020–E-2025 for MCP elicitation errors)
+- `E-3xxx`: UPS API errors (includes E-3006–E-3009 for paperless/pickup/locator errors)
+- `E-4xxx`: System errors (includes E-4001–E-4002, E-4011–E-4012 for user cancellation and safety gates)
 - `E-5xxx`: Authentication errors
 
 ### Currency
@@ -504,7 +527,8 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 ### Frontend Patterns
 
 - Design system in `index.css`: OKLCH colors, DM Sans / Instrument Serif / JetBrains Mono typography
-- CSS classes: `card-premium`, `btn-primary`, `btn-secondary`, `badge-*`
+- CSS classes: `card-premium`, `btn-primary`, `btn-secondary`, `badge-*`, `card-domain-*`
+- Domain colors (OKLCH): shipping/green(145), pickup/purple(300), locator/teal(185), paperless/amber(85), landed-cost/indigo(265)
 - Icons: `ui/icons.tsx` (general), `ui/brand-icons.tsx` (platform logos)
 - shadcn/ui primitives in `components/ui/`
 - Labels stored on disk, paths in `JobRow.label_path`; `order_data` as JSON text in `JobRow.order_data`
