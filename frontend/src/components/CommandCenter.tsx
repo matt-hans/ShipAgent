@@ -7,7 +7,7 @@ import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
 import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows } from '@/lib/api';
 import { useConversation } from '@/hooks/useConversation';
-import type { Job, BatchPreview, PickupResult, LocationResult, LandedCostResult, PaperlessResult } from '@/types/api';
+import type { Job, BatchPreview, PickupResult, PickupPreview, LocationResult, LandedCostResult, PaperlessResult, TrackingResult } from '@/types/api';
 import { LabelPreview } from '@/components/LabelPreview';
 import { JobDetailPanel } from '@/components/JobDetailPanel';
 import { SendIcon, StopIcon, EditIcon } from '@/components/ui/icons';
@@ -16,9 +16,12 @@ import { ProgressDisplay } from '@/components/command-center/ProgressDisplay';
 import { CompletionArtifact } from '@/components/command-center/CompletionArtifact';
 import { ToolCallChip } from '@/components/command-center/ToolCallChip';
 import { PickupCard } from '@/components/command-center/PickupCard';
+import { PickupPreviewCard } from '@/components/command-center/PickupPreviewCard';
+import { PickupCompletionCard } from '@/components/command-center/PickupCompletionCard';
 import { LocationCard } from '@/components/command-center/LocationCard';
 import { LandedCostCard } from '@/components/command-center/LandedCostCard';
 import { PaperlessCard } from '@/components/command-center/PaperlessCard';
+import { TrackingCard } from '@/components/command-center/TrackingCard';
 import {
   ActiveSourceBanner,
   InteractiveModeBanner,
@@ -51,7 +54,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
-  const canInput = hasDataSource || interactiveShipping;
+  const canInput = true;
 
   // Agent-driven conversation hook
   const conv = useConversation();
@@ -64,6 +67,8 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const [showLabelPreview, setShowLabelPreview] = React.useState(false);
   const [labelPreviewJobId, setLabelPreviewJobId] = React.useState<string | null>(null);
   const [isRefining, setIsRefining] = React.useState(false);
+  const [pickupPreview, setPickupPreview] = React.useState<PickupPreview | null>(null);
+  const [isPickupConfirming, setIsPickupConfirming] = React.useState(false);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -110,6 +115,8 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       setCurrentJobId(null);
       setExecutingJobId(null);
       setIsRefining(false);
+      setPickupPreview(null);
+      setIsPickupConfirming(false);
       setShowLabelPreview(false);
       setLabelPreviewJobId(null);
       setIsResettingSession(false);
@@ -206,30 +213,50 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
           content: `Error: ${msg}`,
           metadata: { action: 'error' },
         });
+      } else if (event.type === 'pickup_preview') {
+        const previewData = event.data as unknown as PickupPreview;
+        setPickupPreview(previewData);
+        addMessage({
+          role: 'system',
+          content: '',
+          metadata: { action: 'pickup_preview' as any, pickupPreview: previewData },
+        });
+        suppressNextMessageRef.current = true;
       } else if (event.type === 'pickup_result') {
         addMessage({
           role: 'system',
           content: '',
           metadata: { action: 'pickup_result', pickup: event.data as unknown as PickupResult },
         });
+        suppressNextMessageRef.current = true;
       } else if (event.type === 'location_result') {
         addMessage({
           role: 'system',
           content: '',
           metadata: { action: 'location_result', location: event.data as unknown as LocationResult },
         });
+        suppressNextMessageRef.current = true;
       } else if (event.type === 'landed_cost_result') {
         addMessage({
           role: 'system',
           content: '',
           metadata: { action: 'landed_cost_result', landedCost: event.data as unknown as LandedCostResult },
         });
+        suppressNextMessageRef.current = true;
       } else if (event.type === 'paperless_result') {
         addMessage({
           role: 'system',
           content: '',
           metadata: { action: 'paperless_result', paperless: event.data as unknown as PaperlessResult },
         });
+        suppressNextMessageRef.current = true;
+      } else if (event.type === 'tracking_result') {
+        addMessage({
+          role: 'system',
+          content: '',
+          metadata: { action: 'tracking_result', tracking: event.data as unknown as TrackingResult },
+        });
+        suppressNextMessageRef.current = true;
       }
     }
   }, [conv.events, addMessage, refreshJobList, currentJobId, preview, executingJobId]);
@@ -402,9 +429,33 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                     }}
                   />
                 </div>
+              ) : message.metadata?.action === 'pickup_preview' && message.metadata.pickupPreview ? (
+                <div key={message.id} className="pl-11">
+                  <PickupPreviewCard
+                    data={message.metadata.pickupPreview}
+                    onConfirm={async () => {
+                      setIsPickupConfirming(true);
+                      try {
+                        await conv.sendMessage('Confirmed. Schedule the pickup.', interactiveShipping);
+                      } finally {
+                        setIsPickupConfirming(false);
+                        setPickupPreview(null);
+                      }
+                    }}
+                    onCancel={() => {
+                      setPickupPreview(null);
+                      addMessage({ role: 'system', content: 'Pickup cancelled.' });
+                    }}
+                    isConfirming={isPickupConfirming}
+                  />
+                </div>
               ) : message.metadata?.action === 'pickup_result' && message.metadata.pickup ? (
                 <div key={message.id} className="pl-11">
-                  <PickupCard data={message.metadata.pickup} />
+                  {message.metadata.pickup.action === 'scheduled' ? (
+                    <PickupCompletionCard data={message.metadata.pickup} />
+                  ) : (
+                    <PickupCard data={message.metadata.pickup} />
+                  )}
                 </div>
               ) : message.metadata?.action === 'location_result' && message.metadata.location ? (
                 <div key={message.id} className="pl-11">
@@ -417,6 +468,10 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
               ) : message.metadata?.action === 'paperless_result' && message.metadata.paperless ? (
                 <div key={message.id} className="pl-11">
                   <PaperlessCard data={message.metadata.paperless} />
+                </div>
+              ) : message.metadata?.action === 'tracking_result' && message.metadata.tracking ? (
+                <div key={message.id} className="pl-11">
+                  <TrackingCard data={message.metadata.tracking} />
                 </div>
               ) : message.role === 'user' ? (
                 <UserMessage key={message.id} message={message} />
@@ -578,13 +633,13 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                   interactiveShipping
                     ? 'Describe one shipment from scratch...'
                     : !hasDataSource
-                        ? 'Connect a data source to begin...'
+                        ? 'Track a package, find locations, or connect a data source...'
                         : 'Enter a shipping command...'
                 }
-                disabled={!canInput || isProcessing || !!preview || !!executingJobId || isResettingSession}
+                disabled={!canInput || isProcessing || !!preview || !!executingJobId || !!pickupPreview || isResettingSession}
                 className={cn(
                   'input-command pr-12',
-                  (!canInput || isProcessing || !!preview || !!executingJobId || isResettingSession) && 'opacity-50 cursor-not-allowed'
+                  (!canInput || isProcessing || !!preview || !!executingJobId || !!pickupPreview || isResettingSession) && 'opacity-50 cursor-not-allowed'
                 )}
               />
 
@@ -598,10 +653,10 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
 
             <button
               onClick={handleSubmit}
-              disabled={!inputValue.trim() || !canInput || isProcessing || !!preview || !!executingJobId || isResettingSession}
+              disabled={!inputValue.trim() || !canInput || isProcessing || !!preview || !!executingJobId || !!pickupPreview || isResettingSession}
               className={cn(
                 'btn-primary px-4',
-                (!inputValue.trim() || !canInput || isProcessing || !!preview || !!executingJobId || isResettingSession) && 'opacity-50 cursor-not-allowed'
+                (!inputValue.trim() || !canInput || isProcessing || !!preview || !!executingJobId || !!pickupPreview || isResettingSession) && 'opacity-50 cursor-not-allowed'
               )}
             >
               {isProcessing ? (
@@ -620,7 +675,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
               ? 'Ad-hoc mode — provide shipment details; ShipAgent will ask for missing fields'
               : hasDataSource
                 ? 'Describe what you want to ship in natural language'
-                : 'Connect a data source from the sidebar'} · Press <kbd className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700">Enter</kbd> to send
+                : 'Tracking, pickup, location, and landed cost tools available without a data source'} · Press <kbd className="px-1 py-0.5 rounded bg-slate-800 border border-slate-700">Enter</kbd> to send
           </p>
         </div>
       </div>
