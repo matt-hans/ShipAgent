@@ -25,8 +25,21 @@ from src.orchestrator.agent.tools.data import (
     get_source_info_tool,
     validate_filter_syntax_tool,
 )
+from src.orchestrator.agent.tools.documents import (
+    delete_paperless_document_tool,
+    push_document_to_shipment_tool,
+    upload_paperless_document_tool,
+)
 from src.orchestrator.agent.tools.interactive import (
     preview_interactive_shipment_tool,
+)
+from src.orchestrator.agent.tools.pickup import (
+    cancel_pickup_tool,
+    find_locations_tool,
+    get_pickup_status_tool,
+    get_service_center_facilities_tool,
+    rate_pickup_tool,
+    schedule_pickup_tool,
 )
 from src.orchestrator.agent.tools.pipeline import (
     add_rows_to_job_tool,
@@ -34,6 +47,7 @@ from src.orchestrator.agent.tools.pipeline import (
     batch_preview_tool,
     create_job_tool,
     get_job_status_tool,
+    get_landed_cost_tool,
     ship_command_pipeline_tool,
 )
 
@@ -275,6 +289,288 @@ def get_all_tool_definitions(
                 "properties": {},
             },
             "handler": _bind_bridge(connect_shopify_tool, bridge),
+        },
+        # ---------------------------------------------------------------
+        # UPS MCP v2 — Pickup tools (batch mode only)
+        # ---------------------------------------------------------------
+        {
+            "name": "schedule_pickup",
+            "description": (
+                "Schedule a UPS carrier pickup. This is a financial commitment — "
+                "always confirm with the user first."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pickup_date": {
+                        "type": "string",
+                        "description": "Pickup date in YYYYMMDD format.",
+                    },
+                    "ready_time": {
+                        "type": "string",
+                        "description": "Ready time in HHMM 24-hour format.",
+                    },
+                    "close_time": {
+                        "type": "string",
+                        "description": "Close time in HHMM 24-hour format.",
+                    },
+                    "address_line": {
+                        "type": "string",
+                        "description": "Pickup street address.",
+                    },
+                    "city": {"type": "string", "description": "City."},
+                    "state": {"type": "string", "description": "State/province code."},
+                    "postal_code": {"type": "string", "description": "Postal/ZIP code."},
+                    "country_code": {"type": "string", "description": "Country code."},
+                    "contact_name": {"type": "string", "description": "Contact name."},
+                    "phone_number": {"type": "string", "description": "Contact phone."},
+                },
+                "required": [
+                    "pickup_date", "ready_time", "close_time",
+                    "address_line", "city", "state", "postal_code",
+                    "country_code", "contact_name", "phone_number",
+                ],
+            },
+            "handler": _bind_bridge(schedule_pickup_tool, bridge),
+        },
+        {
+            "name": "cancel_pickup",
+            "description": "Cancel a previously scheduled UPS pickup.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "cancel_by": {
+                        "type": "string",
+                        "description": "'prn' to cancel by PRN, 'account' for most recent.",
+                        "enum": ["prn", "account"],
+                    },
+                    "prn": {
+                        "type": "string",
+                        "description": "Pickup Request Number (required when cancel_by='prn').",
+                    },
+                },
+                "required": ["cancel_by"],
+            },
+            "handler": _bind_bridge(cancel_pickup_tool, bridge),
+        },
+        {
+            "name": "rate_pickup",
+            "description": "Get a cost estimate for a scheduled UPS pickup before committing.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pickup_type": {
+                        "type": "string",
+                        "description": "Pickup type.",
+                        "enum": ["oncall", "smart", "both"],
+                    },
+                    "address_line": {"type": "string", "description": "Pickup address."},
+                    "city": {"type": "string", "description": "City."},
+                    "state": {"type": "string", "description": "State/province code."},
+                    "postal_code": {"type": "string", "description": "Postal/ZIP code."},
+                    "country_code": {"type": "string", "description": "Country code."},
+                    "pickup_date": {"type": "string", "description": "Date YYYYMMDD."},
+                    "ready_time": {"type": "string", "description": "Ready time HHMM."},
+                    "close_time": {"type": "string", "description": "Close time HHMM."},
+                },
+                "required": [
+                    "pickup_type", "address_line", "city", "state",
+                    "postal_code", "country_code", "pickup_date",
+                    "ready_time", "close_time",
+                ],
+            },
+            "handler": _bind_bridge(rate_pickup_tool, bridge),
+        },
+        {
+            "name": "get_pickup_status",
+            "description": "Get pending pickup status for the UPS account.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "pickup_type": {
+                        "type": "string",
+                        "description": "Pickup type.",
+                        "enum": ["oncall", "smart", "both"],
+                    },
+                    "account_number": {
+                        "type": "string",
+                        "description": "UPS account number (optional, uses env fallback).",
+                    },
+                },
+                "required": ["pickup_type"],
+            },
+            "handler": _bind_bridge(get_pickup_status_tool, bridge),
+        },
+        # ---------------------------------------------------------------
+        # UPS MCP v2 — Location tools (batch mode only)
+        # ---------------------------------------------------------------
+        {
+            "name": "find_locations",
+            "description": (
+                "Find nearby UPS Access Points, retail stores, and service locations."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "location_type": {
+                        "type": "string",
+                        "description": "Type of location to search.",
+                        "enum": ["access_point", "retail", "general", "services"],
+                    },
+                    "address_line": {"type": "string", "description": "Street address."},
+                    "city": {"type": "string", "description": "City."},
+                    "state": {"type": "string", "description": "State/province code."},
+                    "postal_code": {"type": "string", "description": "Postal/ZIP code."},
+                    "country_code": {"type": "string", "description": "Country code."},
+                    "radius": {
+                        "type": "number",
+                        "description": "Search radius (default 15 miles).",
+                        "default": 15.0,
+                    },
+                    "unit_of_measure": {
+                        "type": "string",
+                        "description": "Distance unit.",
+                        "enum": ["MI", "KM"],
+                        "default": "MI",
+                    },
+                },
+                "required": [
+                    "location_type", "address_line", "city",
+                    "state", "postal_code", "country_code",
+                ],
+            },
+            "handler": _bind_bridge(find_locations_tool, bridge),
+        },
+        {
+            "name": "get_service_center_facilities",
+            "description": "Find UPS service center drop-off locations.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string", "description": "City."},
+                    "state": {"type": "string", "description": "State/province code."},
+                    "postal_code": {"type": "string", "description": "Postal/ZIP code."},
+                    "country_code": {"type": "string", "description": "Country code."},
+                },
+                "required": ["city", "state", "postal_code", "country_code"],
+            },
+            "handler": _bind_bridge(get_service_center_facilities_tool, bridge),
+        },
+        # ---------------------------------------------------------------
+        # UPS MCP v2 — Paperless document tools (batch mode only)
+        # ---------------------------------------------------------------
+        {
+            "name": "upload_paperless_document",
+            "description": (
+                "Upload a customs/trade document to UPS Forms History "
+                "for paperless customs clearance."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "file_content_base64": {
+                        "type": "string",
+                        "description": "Base64-encoded file content.",
+                    },
+                    "file_name": {
+                        "type": "string",
+                        "description": "File name (e.g., 'invoice.pdf').",
+                    },
+                    "file_format": {
+                        "type": "string",
+                        "description": "File format (pdf, doc, xls, etc.).",
+                    },
+                    "document_type": {
+                        "type": "string",
+                        "description": "UPS document type code ('002'=invoice, '003'=CO, etc.).",
+                    },
+                },
+                "required": [
+                    "file_content_base64", "file_name",
+                    "file_format", "document_type",
+                ],
+            },
+            "handler": _bind_bridge(upload_paperless_document_tool, bridge),
+        },
+        {
+            "name": "push_document_to_shipment",
+            "description": "Attach a previously uploaded document to a shipment.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "document_id": {
+                        "type": "string",
+                        "description": "Document ID from upload_paperless_document.",
+                    },
+                    "shipment_identifier": {
+                        "type": "string",
+                        "description": "1Z tracking number from create_shipment.",
+                    },
+                },
+                "required": ["document_id", "shipment_identifier"],
+            },
+            "handler": _bind_bridge(push_document_to_shipment_tool, bridge),
+        },
+        {
+            "name": "delete_paperless_document",
+            "description": "Delete a document from UPS Forms History.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "document_id": {
+                        "type": "string",
+                        "description": "Document ID from upload_paperless_document.",
+                    },
+                },
+                "required": ["document_id"],
+            },
+            "handler": _bind_bridge(delete_paperless_document_tool, bridge),
+        },
+        # ---------------------------------------------------------------
+        # UPS MCP v2 — Landed cost tool (batch mode only)
+        # ---------------------------------------------------------------
+        {
+            "name": "get_landed_cost",
+            "description": (
+                "Estimate duties, taxes, and fees for an international shipment. "
+                "Useful for pre-flight cost estimation before shipping."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "currency_code": {
+                        "type": "string",
+                        "description": "ISO currency code (e.g., 'USD', 'EUR').",
+                    },
+                    "export_country_code": {
+                        "type": "string",
+                        "description": "Origin country code (e.g., 'US').",
+                    },
+                    "import_country_code": {
+                        "type": "string",
+                        "description": "Destination country code (e.g., 'GB').",
+                    },
+                    "commodities": {
+                        "type": "array",
+                        "description": "Commodity items with price, quantity, and optional hs_code.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "price": {"type": "number"},
+                                "quantity": {"type": "integer"},
+                                "hs_code": {"type": "string"},
+                                "description": {"type": "string"},
+                            },
+                            "required": ["price", "quantity"],
+                        },
+                    },
+                },
+                "required": [
+                    "currency_code", "export_country_code",
+                    "import_country_code", "commodities",
+                ],
+            },
+            "handler": _bind_bridge(get_landed_cost_tool, bridge),
         },
     ]
 
