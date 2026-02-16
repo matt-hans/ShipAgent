@@ -4,12 +4,109 @@
 
 **Goal:** Integrate 11 new UPS MCP tools (18 total) into ShipAgent across backend foundation, batch wrapping, and frontend card components.
 
-**Architecture:** Three-phase layered rollout. Phase 1 updates config, specs, error codes, system prompt, and hooks to enable all new tools interactively. Phase 2 wraps 8 tools in UPSMCPClient with normalizers and registers them as agent tools. Phase 3 adds domain-colored card components to the frontend.
+**Architecture:** Three-phase layered rollout. Phase 1 updates config, specs, error codes, system prompt, and hooks to enable all new tools interactively via MCP auto-discovery. Phase 2 wraps batch-eligible tools in UPSMCPClient with normalizers and registers deterministic agent tools. Phase 3 adds domain-colored card components to the frontend with explicit event producers.
 
 **Tech Stack:** Python (FastAPI, Claude Agent SDK), TypeScript (React, Tailwind CSS v4, OKLCH colors)
 
 **Design Doc:** `docs/plans/2026-02-15-ups-mcp-v2-integration-design.md`
 **UPS MCP Integration Guide:** `docs/ups-mcp-integration-guide.md`
+
+---
+
+## Architecture Decisions (AD)
+
+These decisions resolve ambiguities identified during plan review. Each is referenced by tasks that depend on it.
+
+### AD-1: Interactive Mode Exposure Model → `interactive-exclusive`
+
+**Decision:** The interactive mode tool registry keeps its existing 3-tool contract: `{get_job_status, get_platform_status, preview_interactive_shipment}`. New v2 orchestrator tools (`schedule_pickup`, `rate_pickup`, `get_landed_cost`, etc.) are registered in **batch mode only**.
+
+**Rationale:** The interactive mode's purpose is ad-hoc single-shipment creation. Its 3-tool limit is structural enforcement (not a bug). The agent in interactive mode can still access new UPS capabilities directly via MCP auto-discovery (`mcp__ups__schedule_pickup`, `mcp__ups__find_locations`, etc.) — the SDK exposes all MCP tools regardless of orchestrator tool filtering. Orchestrator-level tool handlers (which wrap UPSMCPClient for batch processing) don't belong in interactive mode.
+
+**Impact:**
+- `get_all_tool_definitions(interactive_shipping=True)` continues to return exactly 3 tools
+- Existing test `test_tool_definitions_filtered_for_interactive_mode` (line 840) remains unchanged
+- System prompt updates (Task 6) guide the agent to use MCP tools directly in interactive mode
+- No changes to `tools/__init__.py` interactive filtering logic
+
+### AD-2: Event Producer Contract → Explicit Bridge Emission
+
+**Decision:** Each new tool handler that produces frontend-visible results MUST emit a typed event via `_emit_event()` through the `EventEmitterBridge`, following the established `preview_ready` pattern. The event type string and payload schema are defined in a contract matrix below.
+
+**Event Contract Matrix:**
+
+| Event Type | Producer File:Function | Trigger | Payload Schema |
+|------------|----------------------|---------|----------------|
+| `pickup_result` | `tools/pickup.py:schedule_pickup_tool` | After successful `UPSMCPClient.schedule_pickup()` | `{action: "scheduled"\|"cancelled"\|"rated"\|"status", prn?: str, charges?: list, pickups?: list, success: bool}` |
+| `location_result` | `tools/pickup.py:find_locations_tool` | After successful `UPSMCPClient.find_locations()` | `{locations: list[{id, address, phone, hours}], search_type: str, radius: float}` |
+| `landed_cost_result` | `tools/pipeline.py:get_landed_cost_tool` | After successful `UPSMCPClient.get_landed_cost()` | `{totalLandedCost: str, currencyCode: str, items: list[{commodityId, duties, taxes, fees}]}` |
+| `paperless_result` | `tools/documents.py:upload_paperless_document_tool` | After successful upload/push/delete | `{action: "uploaded"\|"pushed"\|"deleted", documentId?: str, success: bool}` |
+
+Each emission follows the same pattern as `_emit_preview_ready()` (`core.py:341-362`):
+1. Call `_emit_event(event_type, payload, bridge=bridge)` to send to SSE queue
+2. Return `_ok({...slim_payload...})` to send to the LLM (slim version without large arrays)
+
+### AD-3: Tool Naming Convention → Canonical Name Matrix
+
+**Decision:** Every tool has exactly one canonical name per layer. No aliases. All plan references use these exact names.
+
+| MCP Tool (SDK auto-discovery) | UPSMCPClient Method | Orchestrator Tool (agent tool registry) | SSE Event Type |
+|-------------------------------|--------------------|-----------------------------------------|----------------|
+| `mcp__ups__rate_pickup` | `rate_pickup()` | `rate_pickup` | `pickup_result` |
+| `mcp__ups__schedule_pickup` | `schedule_pickup()` | `schedule_pickup` | `pickup_result` |
+| `mcp__ups__cancel_pickup` | `cancel_pickup()` | `cancel_pickup` | `pickup_result` |
+| `mcp__ups__get_pickup_status` | `get_pickup_status()` | `get_pickup_status` | `pickup_result` |
+| `mcp__ups__find_locations` | `find_locations()` | `find_locations` | `location_result` |
+| `mcp__ups__get_landed_cost_quote` | `get_landed_cost()` | `get_landed_cost` | `landed_cost_result` |
+| `mcp__ups__upload_paperless_document` | `upload_document()` | `upload_paperless_document` | `paperless_result` |
+| `mcp__ups__push_document_to_shipment` | `push_document()` | `push_document_to_shipment` | `paperless_result` |
+| `mcp__ups__delete_paperless_document` | `delete_document()` | `delete_paperless_document` | `paperless_result` |
+| `mcp__ups__get_political_divisions` | — (interactive only) | — | — |
+| `mcp__ups__get_service_center_facilities` | `get_service_center_facilities()` | `get_service_center_facilities` | `location_result` |
+
+### AD-4: Tool Response Envelope → `_ok()` / `_err()` Only
+
+**Decision:** All new tool handlers MUST return via `_ok(data)` or `_err(message)` from `core.py:108-135`. This produces the MCP envelope format `{"isError": bool, "content": [{"type": "text", "text": "..."}]}`. Tests assert against this envelope, not against raw dicts.
+
+**Existing test pattern** (test_tools_v2.py:64):
+```python
+assert result["isError"] is False
+data = json.loads(result["content"][0]["text"])
+assert data["source_type"] == "csv"
+```
+
+All new tests follow this pattern exactly.
+
+### AD-5: Safety Hook Namespace Clarification
+
+**Decision:** The `validate_schedule_pickup` hook targets the **MCP tool** name `mcp__ups__schedule_pickup` (which the agent calls in interactive mode via MCP auto-discovery). The deterministic orchestrator tool `schedule_pickup` (registered in `tools/__init__.py`) does NOT need a hook because it goes through `UPSMCPClient` which already validates inputs programmatically.
+
+Both namespaces are covered:
+- MCP path (interactive): Hook on `mcp__ups__schedule_pickup` blocks calls without required fields
+- Orchestrator path (batch): `UPSMCPClient.schedule_pickup()` validates programmatically; tool handler catches `UPSServiceError`
+
+### AD-6: Error Code Migration Strategy
+
+**Decision:** Remap `ELICITATION_DECLINED` from `E-2012` → `E-4011` and `ELICITATION_CANCELLED` from `E-2012` → `E-4012`. This is a deliberate semantic correction: these are user-action outcomes (SYSTEM category), not validation errors (VALIDATION category).
+
+**Breaking tests to update (4 total):**
+1. `tests/errors/test_ups_translation.py:46` — `assert code == "E-2012"` → `assert code == "E-4011"`
+2. `tests/errors/test_ups_translation.py:54` — `assert code == "E-2012"` → `assert code == "E-4012"`
+3. `tests/errors/test_ups_translation.py:96` — Update to use `ELICITATION_DECLINED` → `E-4011` context
+4. `tests/services/test_ups_mcp_client.py:499` — `assert exc_info.value.code == "E-2012"` → `assert exc_info.value.code == "E-4012"`
+
+**E-2012 definition is preserved** in registry.py — it may still be used for other cancelled-operation contexts. No definition is deleted.
+
+### AD-7: Test File Organization → Centralized
+
+**Decision:** New tool handler tests go into the existing `tests/orchestrator/agent/test_tools_v2.py` file, not into new files under `tests/orchestrator/agent/tools/`. This matches the current repo convention where all tool tests are centralized in one file.
+
+New tests are added as clearly delimited sections:
+```python
+# ---------------------------------------------------------------------------
+# UPS MCP v2 — Pickup tool handlers
+# ---------------------------------------------------------------------------
+```
 
 ---
 
@@ -308,17 +405,79 @@ git commit -m "feat: register UPS MCP v2 error codes (E-2020–E-2022, E-3007–
 
 ---
 
-### Task 4: Map new error codes in translation layer
+### Task 4: Map new error codes in translation layer + migrate existing tests
+
+**Depends on:** Task 3
+**Resolves:** Finding 5 (error code migration impact)
 
 **Files:**
 - Modify: `src/errors/ups_translation.py:37-64`
 - Modify: `src/services/ups_mcp_client.py:680-703` (reason-based routing)
-- Test: `tests/errors/test_ups_translation.py`
+- Modify: `tests/errors/test_ups_translation.py:40-96` (migrate 3 existing tests)
+- Modify: `tests/services/test_ups_mcp_client.py:485-499` (migrate 1 existing test)
+- Test: `tests/errors/test_ups_translation.py` (new v2 tests)
 
-**Step 1: Write the failing test**
+**Step 1: Migrate existing tests first (AD-6 breaking changes)**
+
+Update 4 existing tests that assert `E-2012` for elicitation codes:
 
 ```python
-# tests/errors/test_ups_translation.py — add to existing
+# tests/errors/test_ups_translation.py — MODIFY existing tests
+
+# Line 40-46: Change E-2012 → E-4011
+def test_elicitation_declined_maps_to_e4011(self):
+    """ELICITATION_DECLINED -> E-4011 (user action, not validation)."""
+    code, msg, _ = translate_ups_error(
+        "ELICITATION_DECLINED",
+        "User declined the form",
+    )
+    assert code == "E-4011"
+
+# Line 48-54: Change E-2012 → E-4012
+def test_elicitation_cancelled_maps_to_e4012(self):
+    """ELICITATION_CANCELLED -> E-4012 (user action, not validation)."""
+    code, _, _ = translate_ups_error(
+        "ELICITATION_CANCELLED",
+        "User cancelled the form",
+    )
+    assert code == "E-4012"
+
+# Line 90-96: Update to use E-4011 context
+def test_e4011_template_with_ups_message(self):
+    """E-4011 message template reflects user decline."""
+    _, msg, _ = translate_ups_error(
+        "ELICITATION_DECLINED",
+        "User declined the form",
+    )
+    assert "declined" in msg.lower() or "cancelled" in msg.lower()
+```
+
+```python
+# tests/services/test_ups_mcp_client.py — MODIFY existing test
+
+# Line 485-499: Change E-2012 → E-4012
+@pytest.mark.asyncio
+async def test_elicitation_cancelled_maps_to_e4012(self, ups_client, mock_mcp_client):
+    """ELICITATION_CANCELLED -> E-4012."""
+    mock_mcp_client.call_tool.side_effect = MCPToolError(
+        tool_name="create_shipment",
+        error_text=json.dumps({
+            "code": "ELICITATION_CANCELLED",
+            "message": "User cancelled the form",
+            "missing": [],
+        }),
+    )
+
+    with pytest.raises(UPSServiceError) as exc_info:
+        await ups_client.create_shipment(request_body={})
+
+    assert exc_info.value.code == "E-4012"
+```
+
+**Step 2: Write the new v2 failing tests**
+
+```python
+# tests/errors/test_ups_translation.py — add NEW tests
 import pytest
 from src.errors.ups_translation import translate_ups_error
 
@@ -344,28 +503,46 @@ def test_v2_message_pattern_no_pdf():
     """'no pdf found' pattern maps to E-3007."""
     sa_code, msg, _ = translate_ups_error(None, "No PDF found for given documentId")
     assert sa_code == "E-3007"
+
+
+def test_v2_malformed_request_ambiguous_payer():
+    """MALFORMED_REQUEST with reason 'ambiguous_payer' maps to E-2022."""
+    # The _translate_error in ups_mcp_client routes by reason before calling translate_ups_error.
+    # Test the synthetic code that _translate_error generates.
+    sa_code, _, _ = translate_ups_error("MALFORMED_REQUEST_AMBIGUOUS", "ambiguous payer")
+    assert sa_code == "E-2022"
+
+
+def test_v2_malformed_request_structure():
+    """MALFORMED_REQUEST with reason 'malformed_structure' maps to E-2021."""
+    sa_code, _, _ = translate_ups_error("MALFORMED_REQUEST_STRUCTURE", "bad structure")
+    assert sa_code == "E-2021"
 ```
 
-**Step 2: Run test to verify it fails**
+**Step 3: Run all tests to verify — migrated tests fail (code still maps to E-2012), new tests fail (codes not mapped)**
 
-Run: `pytest tests/errors/test_ups_translation.py -k "v2_" -v`
-Expected: FAIL — new codes not in UPS_ERROR_MAP
+Run: `pytest tests/errors/test_ups_translation.py tests/services/test_ups_mcp_client.py -k "elicitation or v2_" -v`
+Expected: FAIL on all
 
-**Step 3: Write minimal implementation**
+**Step 4: Write implementation**
 
 In `src/errors/ups_translation.py`:
 
-Update `UPS_ERROR_MAP` (after line 44):
+Update `UPS_ERROR_MAP` — change existing entries and add new ones:
 ```python
-    # UPS MCP v2 — Elicitation user actions
-    "ELICITATION_DECLINED": "E-4011",   # Override: was E-2012
-    "ELICITATION_CANCELLED": "E-4012",  # Override: was E-2012
+    # UPS MCP v2 — Elicitation user actions (migrated from E-2012)
+    "ELICITATION_DECLINED": "E-4011",
+    "ELICITATION_CANCELLED": "E-4012",
     # UPS MCP v2 — Domain-specific codes
     "9590022": "E-3007",    # Paperless: document not found
     "190102": "E-3008",     # Pickup: timing error
+    # UPS MCP v2 — MALFORMED_REQUEST reason-based routing (synthetic codes from _translate_error)
+    "MALFORMED_REQUEST": "E-2021",               # Generic malformed
+    "MALFORMED_REQUEST_AMBIGUOUS": "E-2022",      # Ambiguous payer
+    "MALFORMED_REQUEST_STRUCTURE": "E-2021",      # Malformed structure
 ```
 
-Update `UPS_MESSAGE_PATTERNS` (after line 63):
+Update `UPS_MESSAGE_PATTERNS`:
 ```python
     "no locations found": "E-3009",
     "no pdf found": "E-3007",
@@ -376,38 +553,41 @@ Then update `_translate_error()` in `src/services/ups_mcp_client.py` to route `M
 ```python
         # Route MALFORMED_REQUEST by reason for finer error codes
         if ups_code == "MALFORMED_REQUEST":
+            reason = parsed.get("reason", "")
             if reason == "ambiguous_payer":
                 ups_code = "MALFORMED_REQUEST_AMBIGUOUS"
             elif reason == "malformed_structure":
                 ups_code = "MALFORMED_REQUEST_STRUCTURE"
 ```
 
-And add to `UPS_ERROR_MAP`:
-```python
-    "MALFORMED_REQUEST": "E-2021",               # Generic malformed
-    "MALFORMED_REQUEST_AMBIGUOUS": "E-2022",      # Ambiguous payer
-    "MALFORMED_REQUEST_STRUCTURE": "E-2021",      # Malformed structure
-```
+**Step 5: Run all tests to verify they pass**
 
-**Step 4: Run test to verify it passes**
+Run: `pytest tests/errors/test_ups_translation.py tests/services/test_ups_mcp_client.py -k "elicitation or v2_" -v`
+Expected: ALL PASS
 
-Run: `pytest tests/errors/test_ups_translation.py -k "v2_" -v`
-Expected: PASS
+**Step 6: Run full test suite to verify no regressions**
 
-**Step 5: Commit**
+Run: `pytest tests/errors/ tests/services/test_ups_mcp_client.py -v -k "not stream and not sse"`
+Expected: ALL PASS
+
+**Step 7: Commit**
 
 ```bash
-git add src/errors/ups_translation.py src/services/ups_mcp_client.py tests/errors/test_ups_translation.py
-git commit -m "feat: map UPS MCP v2 error codes in translation layer"
+git add src/errors/ups_translation.py src/services/ups_mcp_client.py tests/errors/test_ups_translation.py tests/services/test_ups_mcp_client.py
+git commit -m "feat: map UPS MCP v2 error codes + migrate elicitation codes from E-2012 to E-4011/E-4012"
 ```
 
 ---
 
-### Task 5: Add schedule_pickup safety hook
+### Task 5: Add schedule_pickup safety hook (MCP namespace)
+
+**Resolves:** Finding 4 (hook namespace mismatch)
 
 **Files:**
 - Modify: `src/orchestrator/agent/hooks.py:464-505`
 - Test: `tests/orchestrator/agent/test_hooks.py`
+
+**Important (AD-5):** This hook targets `mcp__ups__schedule_pickup` — the MCP tool name the agent calls in interactive mode via SDK auto-discovery. The orchestrator tool `schedule_pickup` (registered in Task 13) goes through `UPSMCPClient` which validates programmatically, so it doesn't need a separate hook.
 
 **Step 1: Write the failing test**
 
@@ -421,7 +601,7 @@ def test_schedule_pickup_hook_matcher_exists():
     matchers = create_hook_matchers(interactive_shipping=False)
     pre_matchers = matchers["PreToolUse"]
     pickup_matchers = [m for m in pre_matchers if m.matcher == "mcp__ups__schedule_pickup"]
-    assert len(pickup_matchers) == 1, "Missing schedule_pickup hook matcher"
+    assert len(pickup_matchers) == 1, "Missing mcp__ups__schedule_pickup hook matcher"
 
 
 @pytest.mark.asyncio
@@ -561,12 +741,14 @@ Expected: PASS
 
 ```bash
 git add src/orchestrator/agent/hooks.py tests/orchestrator/agent/test_hooks.py
-git commit -m "feat: add schedule_pickup safety gate hook"
+git commit -m "feat: add schedule_pickup safety gate hook (mcp__ups__schedule_pickup)"
 ```
 
 ---
 
 ### Task 6: Update system prompt with new domain workflows
+
+**Resolves:** AD-1 (interactive mode uses MCP auto-discovery, not orchestrator tools)
 
 **Files:**
 - Modify: `src/orchestrator/agent/system_prompt.py:326-351`
@@ -613,11 +795,14 @@ def test_system_prompt_includes_political_divisions():
     assert "political_divisions" in prompt or "Political Divisions" in prompt
 
 
-def test_system_prompt_interactive_mode_includes_new_domains():
-    """Interactive mode prompt also includes new domain guidance."""
+def test_system_prompt_interactive_mode_mentions_mcp_tools():
+    """Interactive mode prompt guides agent to use MCP tools directly."""
     prompt = build_system_prompt(interactive_shipping=True)
+    # Interactive mode should reference MCP tool names for direct agent use
     assert "Pickup" in prompt
     assert "Landed Cost" in prompt or "landed_cost" in prompt
+    # Should NOT reference orchestrator tool names (those are batch-only)
+    # The agent uses mcp__ups__schedule_pickup etc. via MCP auto-discovery
 ```
 
 **Step 2: Run test to verify it fails**
@@ -627,7 +812,7 @@ Expected: FAIL — new domain sections missing
 
 **Step 3: Write minimal implementation**
 
-In `src/orchestrator/agent/system_prompt.py`, add new domain sections before the return statement at line 326. Insert a new `ups_capabilities_section` variable built from the new domain guidance:
+In `src/orchestrator/agent/system_prompt.py`, add new domain sections before the return statement at line 326. Insert a new `ups_v2_section` variable:
 
 ```python
     # UPS MCP v2 — Additional capabilities (both modes)
@@ -673,7 +858,17 @@ In `src/orchestrator/agent/system_prompt.py`, add new domain sections before the
 """
 ```
 
-Insert this into the return string between `{international_section}` and the `## Connected Data Source` heading.
+Insert this into the return string between `{international_section}` and the `## Connected Data Source` heading:
+
+```python
+    return f"""You are ShipAgent, ...
+
+{service_table}
+{international_section}
+{ups_v2_section}
+## Connected Data Source
+...
+```
 
 **Step 4: Run test to verify it passes**
 
@@ -689,28 +884,33 @@ git commit -m "feat: add UPS MCP v2 domain workflow guidance to system prompt"
 
 ---
 
-### Task 7: Update .env.example
+### Task 7: Update .env.example comments
+
+**Resolves:** Finding 9 (UPS_ACCOUNT_NUMBER already exists, reframe as comment update)
 
 **Files:**
-- Modify: `.env.example`
+- Modify: `.env.example:22`
 
-**Step 1: No test needed for docs-only change**
+**Step 1: No test needed for comment-only change**
 
-**Step 2: Update .env.example**
+**Step 2: Update the comment above UPS_ACCOUNT_NUMBER**
 
-Add/update the `UPS_ACCOUNT_NUMBER` entry to clarify it's now recommended:
-
+Change line 22 area from:
 ```bash
-# UPS Account Number — recommended for pickup scheduling, paperless docs,
-# landed cost quotes, and shipment billing. Falls back to empty if not set.
-UPS_ACCOUNT_NUMBER=your_account_number
+UPS_ACCOUNT_NUMBER=your_ups_account_number
+```
+To:
+```bash
+# UPS Account Number — required for pickup scheduling, paperless docs,
+# landed cost quotes, and shipment billing. Most v2 tools use this as fallback.
+UPS_ACCOUNT_NUMBER=your_ups_account_number
 ```
 
 **Step 3: Commit**
 
 ```bash
 git add .env.example
-git commit -m "docs: document UPS_ACCOUNT_NUMBER as recommended in .env.example"
+git commit -m "docs: clarify UPS_ACCOUNT_NUMBER usage for v2 tools in .env.example"
 ```
 
 ---
@@ -796,32 +996,15 @@ async def test_get_pickup_status(ups_client):
 @pytest.mark.asyncio
 async def test_schedule_pickup_retry_policy(ups_client):
     """schedule_pickup must NOT retry (mutating operation)."""
-    ups_client._mcp.call_tool = AsyncMock(return_value={
-        "PickupCreationResponse": {"PRN": "TEST"}
-    })
-    await ups_client.schedule_pickup(
-        pickup_date="20260220", ready_time="0900", close_time="1700",
-        address_line="123 Main", city="Austin", state="TX",
-        postal_code="78701", country_code="US",
-        contact_name="John", phone_number="5125551234",
-    )
-    call_kwargs = ups_client._mcp.call_tool.call_args[1]
-    assert call_kwargs["max_retries"] == 0
+    # Verify schedule_pickup is in the mutating tool set
+    assert "schedule_pickup" not in ups_client._READ_ONLY_TOOLS
+    assert "schedule_pickup" in ups_client._MUTATING_TOOLS
 
 
 @pytest.mark.asyncio
 async def test_rate_pickup_retry_policy(ups_client):
     """rate_pickup uses read-only retry policy."""
-    ups_client._mcp.call_tool = AsyncMock(return_value={
-        "PickupRateResponse": {"RateResult": {"GrandTotalOfAllCharge": "5.50"}}
-    })
-    await ups_client.rate_pickup(
-        pickup_type="oncall", address_line="123", city="Austin",
-        state="TX", postal_code="78701", country_code="US",
-        pickup_date="20260220", ready_time="0900", close_time="1700",
-    )
-    call_kwargs = ups_client._mcp.call_tool.call_args[1]
-    assert call_kwargs["max_retries"] == 2
+    assert "rate_pickup" in ups_client._READ_ONLY_TOOLS
 ```
 
 Note: The `ups_client` fixture should be defined in conftest.py or at top of file — a connected UPSMCPClient with mocked `_mcp`.
@@ -833,38 +1016,27 @@ Expected: FAIL — methods don't exist
 
 **Step 3: Write minimal implementation**
 
-Add 4 public methods and 4 normalizers to `src/services/ups_mcp_client.py`. Also update `_call()` at line 309 to include new read-only tools in the fast-retry set:
+Add 4 public methods and 4 normalizers to `src/services/ups_mcp_client.py`. Also update the retry classification sets:
 
 ```python
-# Update line 309:
-if tool_name in {
+# Promote to class-level constants for testability
+_READ_ONLY_TOOLS = frozenset({
     "rate_shipment", "validate_address", "track_package",
     "rate_pickup", "get_pickup_status", "get_landed_cost_quote",
     "find_locations", "get_political_divisions", "get_service_center_facilities",
-}:
+})
+
+_MUTATING_TOOLS = frozenset({
+    "create_shipment", "void_shipment", "schedule_pickup", "cancel_pickup",
+    "upload_paperless_document", "push_document_to_shipment", "delete_paperless_document",
+})
 ```
 
-And update lines 321, 333-334 to include new mutating tools:
-
-```python
-# Update line 321:
-if (
-    tool_name in {"create_shipment", "void_shipment", "schedule_pickup", "cancel_pickup",
-                   "upload_paperless_document", "push_document_to_shipment", "delete_paperless_document"}
-    and self._is_safe_mutating_retry_error(e.error_text)
-):
-```
-
-```python
-# Update line 333:
-is_non_mutating = tool_name in {
-    "rate_shipment", "validate_address", "track_package",
-    "rate_pickup", "get_pickup_status", "get_landed_cost_quote",
-    "find_locations", "get_political_divisions", "get_service_center_facilities",
-}
-```
-
-The 4 pickup methods follow the existing pattern (see `void_shipment` for mutating, `validate_address` for read-only). Full method code is in the design doc section 3.1.
+The 4 pickup methods follow the existing pattern (see `void_shipment` for mutating, `validate_address` for read-only). Each method:
+1. Calls `self._call(tool_name, args)` with appropriate retry policy
+2. Normalizes the UPS response into a clean dict
+3. Returns `{"success": True, ...normalized_fields}`
+4. Raises `UPSServiceError` on failure (caught by `_call()`)
 
 **Step 4: Run test to verify it passes**
 
@@ -880,7 +1052,7 @@ git commit -m "feat: add pickup methods to UPSMCPClient (schedule, cancel, rate,
 
 ---
 
-### Task 9: Add landed cost + paperless methods to UPSMCPClient
+### Task 9: Add landed cost + paperless + locator methods to UPSMCPClient
 
 **Files:**
 - Modify: `src/services/ups_mcp_client.py`
@@ -889,7 +1061,7 @@ git commit -m "feat: add pickup methods to UPSMCPClient (schedule, cancel, rate,
 **Step 1: Write the failing tests**
 
 ```python
-# tests/services/test_ups_mcp_client.py — add landed cost + paperless tests
+# tests/services/test_ups_mcp_client.py — add landed cost + paperless + locator tests
 @pytest.mark.asyncio
 async def test_get_landed_cost(ups_client):
     """get_landed_cost returns duty/tax breakdown."""
@@ -953,76 +1125,133 @@ async def test_delete_document(ups_client):
 
 
 @pytest.mark.asyncio
+async def test_find_locations(ups_client):
+    """find_locations returns location list."""
+    ups_client._mcp.call_tool = AsyncMock(return_value={
+        "LocatorResponse": {
+            "SearchResults": {
+                "DropLocation": [
+                    {"LocationID": "L1", "AddressKeyFormat": {"AddressLine": "123 Main"}}
+                ]
+            }
+        }
+    })
+    result = await ups_client.find_locations(
+        location_type="retail", address_line="123 Main",
+        city="Austin", state="TX", postal_code="78701", country_code="US",
+    )
+    assert result["success"] is True
+    assert len(result["locations"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_service_center_facilities(ups_client):
+    """get_service_center_facilities returns facility list."""
+    ups_client._mcp.call_tool = AsyncMock(return_value={
+        "ServiceCenterResponse": {
+            "ServiceCenterList": [{"FacilityName": "UPS Store #1234"}]
+        }
+    })
+    result = await ups_client.get_service_center_facilities(
+        city="Austin", state="TX", postal_code="78701", country_code="US",
+    )
+    assert result["success"] is True
+    assert "facilities" in result
+
+
+@pytest.mark.asyncio
 async def test_upload_document_no_retry(ups_client):
     """upload_document must NOT retry (mutating)."""
-    ups_client._mcp.call_tool = AsyncMock(return_value={
-        "UploadResponse": {"FormsHistoryDocumentID": {"DocumentID": "T"}}
-    })
-    await ups_client.upload_document(
-        file_content_base64="dGVzdA==", file_name="test.pdf",
-        file_format="pdf", document_type="002",
-    )
-    call_kwargs = ups_client._mcp.call_tool.call_args[1]
-    assert call_kwargs["max_retries"] == 0
+    assert "upload_paperless_document" in ups_client._MUTATING_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_find_locations_uses_read_only_retry(ups_client):
+    """find_locations uses read-only retry policy."""
+    assert "find_locations" in ups_client._READ_ONLY_TOOLS
 ```
 
 **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/services/test_ups_mcp_client.py -k "landed_cost or document" -v`
+Run: `pytest tests/services/test_ups_mcp_client.py -k "landed_cost or document or locations or facilities" -v`
 Expected: FAIL — methods don't exist
 
 **Step 3: Write minimal implementation**
 
-Add 4 public methods + 4 normalizers following the same pattern as Task 8.
+Add 6 public methods + 6 normalizers following the same pattern as Task 8.
 
 **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/services/test_ups_mcp_client.py -k "landed_cost or document" -v`
+Run: `pytest tests/services/test_ups_mcp_client.py -k "landed_cost or document or locations or facilities" -v`
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
 git add src/services/ups_mcp_client.py tests/services/test_ups_mcp_client.py
-git commit -m "feat: add landed cost + paperless methods to UPSMCPClient"
+git commit -m "feat: add landed cost, paperless, locator methods to UPSMCPClient"
 ```
 
 ---
 
-### Task 10: Create pickup agent tool handlers
+### Task 10: Create pickup + locator agent tool handlers with event emission
+
+**Depends on:** Task 8
+**Resolves:** Finding 2 (event producer gap), Finding 3 (response envelope contract)
 
 **Files:**
 - Create: `src/orchestrator/agent/tools/pickup.py`
-- Test: `tests/orchestrator/agent/tools/test_pickup.py`
+- Test: `tests/orchestrator/agent/test_tools_v2.py` (add new section per AD-7)
 
 **Step 1: Write the failing tests**
 
+Tests use the `_ok()/_err()` envelope (AD-4) and verify event emission (AD-2):
+
 ```python
-# tests/orchestrator/agent/tools/test_pickup.py
-import pytest
-from unittest.mock import AsyncMock, patch
+# tests/orchestrator/agent/test_tools_v2.py — add new section
+
+# ---------------------------------------------------------------------------
+# UPS MCP v2 — Pickup tool handlers
+# ---------------------------------------------------------------------------
+
 
 @pytest.mark.asyncio
 async def test_schedule_pickup_tool_success():
-    """schedule_pickup_tool returns PRN on success."""
+    """schedule_pickup_tool returns _ok envelope and emits pickup_result event."""
     mock_ups = AsyncMock()
     mock_ups.schedule_pickup.return_value = {"success": True, "prn": "ABC123"}
+
+    bridge = EventEmitterBridge()
+    captured = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
 
     with patch("src.orchestrator.agent.tools.pickup._get_ups_client", return_value=mock_ups):
         from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
         result = await schedule_pickup_tool(
-            pickup_date="20260220", ready_time="0900", close_time="1700",
-            address_line="123 Main", city="Austin", state="TX",
-            postal_code="78701", country_code="US",
-            contact_name="John", phone_number="5125551234",
+            {
+                "pickup_date": "20260220", "ready_time": "0900", "close_time": "1700",
+                "address_line": "123 Main", "city": "Austin", "state": "TX",
+                "postal_code": "78701", "country_code": "US",
+                "contact_name": "John", "phone_number": "5125551234",
+            },
+            bridge=bridge,
         )
-    assert result["status"] == "ok"
-    assert result["prn"] == "ABC123"
+
+    # Verify _ok envelope
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["prn"] == "ABC123"
+
+    # Verify event emission (AD-2)
+    assert len(captured) == 1
+    assert captured[0][0] == "pickup_result"
+    assert captured[0][1]["action"] == "scheduled"
+    assert captured[0][1]["prn"] == "ABC123"
 
 
 @pytest.mark.asyncio
 async def test_schedule_pickup_tool_error():
-    """schedule_pickup_tool returns error on failure."""
+    """schedule_pickup_tool returns _err envelope on failure."""
     from src.services.errors import UPSServiceError
     mock_ups = AsyncMock()
     mock_ups.schedule_pickup.side_effect = UPSServiceError(code="E-3008", message="timing error")
@@ -1030,115 +1259,430 @@ async def test_schedule_pickup_tool_error():
     with patch("src.orchestrator.agent.tools.pickup._get_ups_client", return_value=mock_ups):
         from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
         result = await schedule_pickup_tool(
-            pickup_date="20260220", ready_time="0900", close_time="1700",
-            address_line="123 Main", city="Austin", state="TX",
-            postal_code="78701", country_code="US",
-            contact_name="John", phone_number="5125551234",
+            {
+                "pickup_date": "20260220", "ready_time": "0900", "close_time": "1700",
+                "address_line": "123 Main", "city": "Austin", "state": "TX",
+                "postal_code": "78701", "country_code": "US",
+                "contact_name": "John", "phone_number": "5125551234",
+            },
         )
-    assert result["status"] == "error"
-    assert "E-3008" in result["code"]
+
+    # Verify _err envelope
+    assert result["isError"] is True
+    assert "E-3008" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_find_locations_tool_emits_location_result():
+    """find_locations_tool emits location_result event with results."""
+    mock_ups = AsyncMock()
+    mock_ups.find_locations.return_value = {
+        "success": True,
+        "locations": [{"id": "L1", "address": {"line": "123 Main"}}],
+    }
+
+    bridge = EventEmitterBridge()
+    captured = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch("src.orchestrator.agent.tools.pickup._get_ups_client", return_value=mock_ups):
+        from src.orchestrator.agent.tools.pickup import find_locations_tool
+        result = await find_locations_tool(
+            {
+                "location_type": "retail",
+                "address_line": "123 Main", "city": "Austin",
+                "state": "TX", "postal_code": "78701", "country_code": "US",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    assert captured[0][0] == "location_result"
+    assert len(captured[0][1]["locations"]) == 1
 ```
 
 **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/orchestrator/agent/tools/test_pickup.py -v`
+Run: `pytest tests/orchestrator/agent/test_tools_v2.py -k "schedule_pickup_tool or find_locations_tool" -v`
 Expected: FAIL — module doesn't exist
 
 **Step 3: Write minimal implementation**
 
-Create `src/orchestrator/agent/tools/pickup.py` with 4 handler functions following the pattern in `pipeline.py`. Each handler:
-1. Gets the UPSMCPClient via `_get_ups_client()` (from `core.py`)
-2. Calls the appropriate client method
-3. Returns `_ok(result)` on success
-4. Catches `UPSServiceError` and returns `_err(code, message, remediation)`
+Create `src/orchestrator/agent/tools/pickup.py` with handler functions. Each handler:
+1. Accepts `(args: dict, bridge: EventEmitterBridge | None = None)`
+2. Gets `UPSMCPClient` via `_get_ups_client()` from `core.py`
+3. Calls the appropriate client method
+4. Emits typed event via `_emit_event(event_type, payload, bridge=bridge)` (AD-2)
+5. Returns `_ok({...slim_data...})` — slim version for LLM context
+6. Catches `UPSServiceError` and returns `_err(f"[{e.code}] {e.message}")` (AD-4)
+
+```python
+"""Pickup and location tool handlers for the orchestration agent.
+
+Handles: schedule_pickup, cancel_pickup, rate_pickup, get_pickup_status,
+find_locations, get_service_center_facilities.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from src.orchestrator.agent.tools.core import (
+    EventEmitterBridge,
+    _emit_event,
+    _err,
+    _get_ups_client,
+    _ok,
+)
+from src.services.errors import UPSServiceError
+
+
+async def schedule_pickup_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
+    """Schedule a UPS pickup and emit pickup_result event."""
+    try:
+        client = await _get_ups_client()
+        result = await client.schedule_pickup(**args)
+        payload = {"action": "scheduled", "success": True, **result}
+        _emit_event("pickup_result", payload, bridge=bridge)
+        return _ok({"prn": result.get("prn"), "success": True, "action": "scheduled"})
+    except UPSServiceError as e:
+        return _err(f"[{e.code}] {e.message}")
+
+# ... similar for cancel_pickup_tool, rate_pickup_tool, get_pickup_status_tool,
+# find_locations_tool, get_service_center_facilities_tool
+```
 
 **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/orchestrator/agent/tools/test_pickup.py -v`
+Run: `pytest tests/orchestrator/agent/test_tools_v2.py -k "schedule_pickup_tool or find_locations_tool" -v`
 Expected: PASS
 
 **Step 5: Commit**
 
 ```bash
-git add src/orchestrator/agent/tools/pickup.py tests/orchestrator/agent/tools/test_pickup.py
-git commit -m "feat: add pickup agent tool handlers"
+git add src/orchestrator/agent/tools/pickup.py tests/orchestrator/agent/test_tools_v2.py
+git commit -m "feat: add pickup + locator agent tool handlers with event emission"
 ```
 
 ---
 
-### Task 11: Create paperless document agent tool handlers
+### Task 11: Create paperless document agent tool handlers with event emission
+
+**Depends on:** Task 9
+**Resolves:** Finding 2 (event producer gap)
 
 **Files:**
 - Create: `src/orchestrator/agent/tools/documents.py`
-- Test: `tests/orchestrator/agent/tools/test_documents.py`
+- Test: `tests/orchestrator/agent/test_tools_v2.py` (add new section per AD-7)
 
-Same pattern as Task 10 but for upload_paperless_document_tool, push_document_to_shipment_tool, delete_paperless_document_tool.
+**Step 1: Write the failing tests**
 
-**Step 1–5:** Follow the same TDD cycle as Task 10.
+```python
+# tests/orchestrator/agent/test_tools_v2.py — add new section
 
-**Commit:**
+# ---------------------------------------------------------------------------
+# UPS MCP v2 — Paperless document tool handlers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upload_paperless_document_tool_emits_event():
+    """upload_paperless_document_tool emits paperless_result on success."""
+    mock_ups = AsyncMock()
+    mock_ups.upload_document.return_value = {
+        "success": True, "documentId": "DOC-123",
+    }
+
+    bridge = EventEmitterBridge()
+    captured = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch("src.orchestrator.agent.tools.documents._get_ups_client", return_value=mock_ups):
+        from src.orchestrator.agent.tools.documents import upload_paperless_document_tool
+        result = await upload_paperless_document_tool(
+            {
+                "file_content_base64": "dGVzdA==",
+                "file_name": "invoice.pdf",
+                "file_format": "pdf",
+                "document_type": "002",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["documentId"] == "DOC-123"
+
+    assert len(captured) == 1
+    assert captured[0][0] == "paperless_result"
+    assert captured[0][1]["action"] == "uploaded"
+    assert captured[0][1]["documentId"] == "DOC-123"
+```
+
+**Step 2–4:** Same TDD cycle as Task 10.
+
+Create `src/orchestrator/agent/tools/documents.py` with 3 handlers (upload, push, delete). Each follows the same pattern: call UPSMCPClient → emit `paperless_result` event → return `_ok()`.
+
+**Step 5: Commit**
+
 ```bash
-git add src/orchestrator/agent/tools/documents.py tests/orchestrator/agent/tools/test_documents.py
-git commit -m "feat: add paperless document agent tool handlers"
+git add src/orchestrator/agent/tools/documents.py tests/orchestrator/agent/test_tools_v2.py
+git commit -m "feat: add paperless document agent tool handlers with event emission"
 ```
 
 ---
 
-### Task 12: Add landed cost tool handler to pipeline
+### Task 12: Add landed cost tool handler to pipeline with event emission
+
+**Depends on:** Task 9
+**Resolves:** Finding 2 (event producer gap), Finding 6 (naming: canonical name is `get_landed_cost`)
 
 **Files:**
 - Modify: `src/orchestrator/agent/tools/pipeline.py`
-- Test: `tests/orchestrator/agent/tools/test_pipeline.py`
-
-Add `get_landed_cost_tool` handler to the existing pipeline module. Same TDD pattern.
-
-**Commit:**
-```bash
-git add src/orchestrator/agent/tools/pipeline.py tests/orchestrator/agent/tools/test_pipeline.py
-git commit -m "feat: add landed cost tool handler to pipeline module"
-```
-
----
-
-### Task 13: Register all new tools in __init__.py
-
-**Files:**
-- Modify: `src/orchestrator/agent/tools/__init__.py:19-38` (imports), `53-280` (definitions)
-- Test: `tests/orchestrator/agent/tools/test_init.py`
+- Test: `tests/orchestrator/agent/test_tools_v2.py` (add to existing)
 
 **Step 1: Write the failing test**
 
 ```python
-# tests/orchestrator/agent/tools/test_init.py — add to existing
-from src.orchestrator.agent.tools import get_all_tool_definitions
+# tests/orchestrator/agent/test_tools_v2.py — add
+
+@pytest.mark.asyncio
+async def test_get_landed_cost_tool_emits_event():
+    """get_landed_cost_tool emits landed_cost_result on success."""
+    mock_ups = AsyncMock()
+    mock_ups.get_landed_cost.return_value = {
+        "success": True,
+        "totalLandedCost": "45.23",
+        "currencyCode": "USD",
+        "items": [{"commodityId": "1", "duties": "12.50", "taxes": "7.73", "fees": "0.00"}],
+    }
+
+    bridge = EventEmitterBridge()
+    captured = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch("src.orchestrator.agent.tools.pipeline._get_ups_client", return_value=mock_ups):
+        from src.orchestrator.agent.tools.pipeline import get_landed_cost_tool
+        result = await get_landed_cost_tool(
+            {
+                "currency_code": "USD",
+                "export_country_code": "US",
+                "import_country_code": "GB",
+                "commodities": [{"price": 25.00, "quantity": 2}],
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    assert captured[0][0] == "landed_cost_result"
+    assert captured[0][1]["totalLandedCost"] == "45.23"
+```
+
+**Step 2–4:** Same TDD cycle.
+
+Add `get_landed_cost_tool` to `pipeline.py` following the same pattern.
+
+**Step 5: Commit**
+
+```bash
+git add src/orchestrator/agent/tools/pipeline.py tests/orchestrator/agent/test_tools_v2.py
+git commit -m "feat: add landed cost tool handler to pipeline with event emission"
+```
+
+---
+
+### Task 13: Register all new tools in __init__.py (batch mode only)
+
+**Depends on:** Tasks 10, 11, 12
+**Resolves:** Finding 1 (interactive mode architecture), Finding 6 (naming consistency)
+
+**Files:**
+- Modify: `src/orchestrator/agent/tools/__init__.py:19-38` (imports), `53-280` (definitions)
+- Test: `tests/orchestrator/agent/test_tools_v2.py` (add to existing)
+
+**Step 1: Write the failing test**
+
+```python
+# tests/orchestrator/agent/test_tools_v2.py — add
 
 def test_v2_tools_registered_batch_mode():
-    """All UPS MCP v2 tool definitions appear in batch mode."""
+    """All UPS MCP v2 orchestrator tools appear in batch mode."""
     defs = get_all_tool_definitions()
     names = {d["name"] for d in defs}
     expected_v2 = {
         "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
+        "find_locations", "get_service_center_facilities",
         "upload_paperless_document", "push_document_to_shipment", "delete_paperless_document",
         "get_landed_cost",
     }
     assert expected_v2.issubset(names), f"Missing: {expected_v2 - names}"
 
 
-def test_v2_tools_registered_interactive_mode():
-    """UPS MCP v2 tools also available in interactive mode."""
+def test_v2_tools_not_in_interactive_mode():
+    """Interactive mode MUST NOT include v2 orchestrator tools (AD-1).
+
+    The agent accesses new UPS tools via MCP auto-discovery
+    (mcp__ups__schedule_pickup etc.), not via orchestrator tool registry.
+    The interactive allowlist stays at exactly 3 tools.
+    """
     defs = get_all_tool_definitions(interactive_shipping=True)
     names = {d["name"] for d in defs}
-    # Pickup and landed cost should be in interactive mode
-    assert "schedule_pickup" in names
-    assert "get_landed_cost" in names
+    # Existing contract — exactly 3 tools
+    assert names == {"get_job_status", "get_platform_status", "preview_interactive_shipment"}
+    # Explicitly verify no v2 tools leaked in
+    v2_tools = {
+        "schedule_pickup", "cancel_pickup", "rate_pickup",
+        "find_locations", "get_landed_cost", "upload_paperless_document",
+    }
+    assert not names.intersection(v2_tools), f"v2 tools leaked into interactive mode: {names & v2_tools}"
 ```
 
-**Step 2–5:** Add imports from `pickup.py` and `documents.py`, add 8 tool definitions to the `definitions` list, each with name, description, input_schema, and handler. Ensure they're included in both interactive and batch modes.
+**Step 2: Run test to verify it fails**
 
-**Commit:**
+Run: `pytest tests/orchestrator/agent/test_tools_v2.py -k "v2_tools" -v`
+Expected: `test_v2_tools_registered_batch_mode` FAILS (tools not registered); `test_v2_tools_not_in_interactive_mode` PASSES (since tools aren't there yet — serves as regression guard)
+
+**Step 3: Write minimal implementation**
+
+Add imports from `pickup.py` and `documents.py` to `__init__.py`, add 10 tool definitions to the `definitions` list. Each follows the existing pattern with name, description, input_schema, and handler bound to bridge.
+
+**Critical: Do NOT modify the interactive mode filtering** at line 281-286. The existing `interactive_allowed` set stays as-is:
+```python
+interactive_allowed = {"get_job_status", "get_platform_status", "preview_interactive_shipment"}
+```
+
+New tools are appended to `definitions` before the interactive filter runs, so they're automatically available in batch mode and automatically excluded from interactive mode.
+
+**Step 4: Run ALL tool tests to verify**
+
+Run: `pytest tests/orchestrator/agent/test_tools_v2.py -v`
+Expected: ALL PASS — including existing `test_tool_definitions_filtered_for_interactive_mode` (line 836-840)
+
+**Step 5: Commit**
+
 ```bash
-git add src/orchestrator/agent/tools/__init__.py tests/orchestrator/agent/tools/test_init.py
-git commit -m "feat: register 8 UPS MCP v2 tools in agent tool registry"
+git add src/orchestrator/agent/tools/__init__.py tests/orchestrator/agent/test_tools_v2.py
+git commit -m "feat: register 10 UPS MCP v2 tools in batch mode (interactive unchanged per AD-1)"
+```
+
+---
+
+### Task 13.5: End-to-end integration tests (pickup + landed cost flows)
+
+**Depends on:** Tasks 10, 12, 13
+**Resolves:** Recommendation 5 (add integration tests before frontend)
+
+**Files:**
+- Test: `tests/orchestrator/agent/test_tools_v2.py` (add integration section)
+
+**Step 1: Write integration tests**
+
+```python
+# tests/orchestrator/agent/test_tools_v2.py — add integration section
+
+# ---------------------------------------------------------------------------
+# UPS MCP v2 — Integration: tool call → event emission → payload verification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_e2e_pickup_flow_tool_to_event():
+    """End-to-end: schedule_pickup_tool → pickup_result event with correct payload."""
+    mock_ups = AsyncMock()
+    mock_ups.schedule_pickup.return_value = {"success": True, "prn": "E2E-PRN-123"}
+
+    bridge = EventEmitterBridge()
+    captured_events = []
+    bridge.callback = lambda et, d: captured_events.append((et, d))
+
+    with patch("src.orchestrator.agent.tools.pickup._get_ups_client", return_value=mock_ups):
+        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
+        tool_result = await schedule_pickup_tool(
+            {
+                "pickup_date": "20260301", "ready_time": "0800", "close_time": "1800",
+                "address_line": "456 Oak Ave", "city": "Dallas", "state": "TX",
+                "postal_code": "75201", "country_code": "US",
+                "contact_name": "Jane Doe", "phone_number": "2145551234",
+            },
+            bridge=bridge,
+        )
+
+    # Verify tool returned _ok envelope to LLM
+    assert tool_result["isError"] is False
+    llm_data = json.loads(tool_result["content"][0]["text"])
+    assert llm_data["prn"] == "E2E-PRN-123"
+    assert llm_data["action"] == "scheduled"
+
+    # Verify SSE event emitted with full payload
+    assert len(captured_events) == 1
+    event_type, event_data = captured_events[0]
+    assert event_type == "pickup_result"
+    assert event_data["action"] == "scheduled"
+    assert event_data["prn"] == "E2E-PRN-123"
+    assert event_data["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_e2e_landed_cost_flow_tool_to_event():
+    """End-to-end: get_landed_cost_tool → landed_cost_result event with breakdown."""
+    mock_ups = AsyncMock()
+    mock_ups.get_landed_cost.return_value = {
+        "success": True,
+        "totalLandedCost": "87.50",
+        "currencyCode": "USD",
+        "items": [
+            {"commodityId": "1", "duties": "25.00", "taxes": "12.50", "fees": "0.00"},
+            {"commodityId": "2", "duties": "30.00", "taxes": "20.00", "fees": "0.00"},
+        ],
+    }
+
+    bridge = EventEmitterBridge()
+    captured_events = []
+    bridge.callback = lambda et, d: captured_events.append((et, d))
+
+    with patch("src.orchestrator.agent.tools.pipeline._get_ups_client", return_value=mock_ups):
+        from src.orchestrator.agent.tools.pipeline import get_landed_cost_tool
+        tool_result = await get_landed_cost_tool(
+            {
+                "currency_code": "USD",
+                "export_country_code": "US",
+                "import_country_code": "GB",
+                "commodities": [
+                    {"price": 50.00, "quantity": 1, "hs_code": "6109.10"},
+                    {"price": 75.00, "quantity": 1, "hs_code": "6110.20"},
+                ],
+            },
+            bridge=bridge,
+        )
+
+    # Verify tool returned _ok envelope to LLM
+    assert tool_result["isError"] is False
+    llm_data = json.loads(tool_result["content"][0]["text"])
+    assert llm_data["totalLandedCost"] == "87.50"
+
+    # Verify SSE event emitted with full breakdown
+    assert len(captured_events) == 1
+    event_type, event_data = captured_events[0]
+    assert event_type == "landed_cost_result"
+    assert event_data["totalLandedCost"] == "87.50"
+    assert len(event_data["items"]) == 2
+```
+
+**Step 2: Run tests**
+
+Run: `pytest tests/orchestrator/agent/test_tools_v2.py -k "e2e_" -v`
+Expected: PASS (since producers were implemented in Tasks 10/12)
+
+**Step 3: Commit**
+
+```bash
+git add tests/orchestrator/agent/test_tools_v2.py
+git commit -m "test: add end-to-end integration tests for pickup + landed cost flows"
 ```
 
 ---
@@ -1150,7 +1694,24 @@ git commit -m "feat: register 8 UPS MCP v2 tools in agent tool registry"
 **Files:**
 - Modify: `frontend/src/index.css`
 
-Add OKLCH domain color variables and utility classes. No automated test — visual verification.
+Add OKLCH domain color variables and utility classes:
+
+```css
+/* Domain colors (UPS MCP v2) */
+--color-domain-shipping: oklch(0.75 0.18 145);    /* Green — existing */
+--color-domain-pickup: oklch(0.70 0.18 300);       /* Purple */
+--color-domain-locator: oklch(0.75 0.15 185);      /* Teal */
+--color-domain-paperless: oklch(0.78 0.15 85);     /* Amber */
+--color-domain-landed-cost: oklch(0.65 0.18 265);  /* Indigo */
+
+/* Domain card border utilities */
+.card-domain-pickup { border-color: var(--color-domain-pickup); }
+.card-domain-locator { border-color: var(--color-domain-locator); }
+.card-domain-paperless { border-color: var(--color-domain-paperless); }
+.card-domain-landed-cost { border-color: var(--color-domain-landed-cost); }
+```
+
+No automated test — visual verification.
 
 **Commit:**
 ```bash
@@ -1160,17 +1721,86 @@ git commit -m "feat: add domain-specific OKLCH colors for pickup, locator, paper
 
 ---
 
-### Task 15: Add new TypeScript types
+### Task 15: Add new TypeScript types and update AgentEventType
+
+**Resolves:** Finding 8 (AgentEventType union not updated)
 
 **Files:**
-- Modify: `frontend/src/types/api.ts`
+- Modify: `frontend/src/types/api.ts:620-632` (AgentEventType union)
+- Modify: `frontend/src/types/api.ts` (new result interfaces)
 
-Add `PickupResult`, `LocationResult`, `LandedCostResult`, `PaperlessResult` interfaces as specified in the design doc.
+Add 4 new event types to the `AgentEventType` union (line 620-632):
+
+```typescript
+export type AgentEventType =
+  | 'agent_thinking'
+  | 'tool_call'
+  | 'tool_result'
+  | 'agent_message'
+  | 'agent_message_delta'
+  | 'preview_ready'
+  | 'pickup_result'          // NEW
+  | 'location_result'        // NEW
+  | 'landed_cost_result'     // NEW
+  | 'paperless_result'       // NEW
+  | 'confirmation_needed'
+  | 'execution_progress'
+  | 'completion'
+  | 'error'
+  | 'done'
+  | 'ping';
+```
+
+Add result interfaces matching the event contract matrix (AD-2):
+
+```typescript
+/** Pickup operation result from SSE stream. */
+export interface PickupResult {
+  action: 'scheduled' | 'cancelled' | 'rated' | 'status';
+  success: boolean;
+  prn?: string;
+  charges?: Array<{ chargeAmount: string; chargeCode: string }>;
+  pickups?: Array<{ pickupDate: string; prn: string }>;
+}
+
+/** Location search result from SSE stream. */
+export interface LocationResult {
+  locations: Array<{
+    id: string;
+    address: Record<string, string>;
+    phone?: string;
+    hours?: Record<string, string>;
+  }>;
+  search_type: string;
+  radius: number;
+}
+
+/** Landed cost estimation result from SSE stream. */
+export interface LandedCostResult {
+  totalLandedCost: string;
+  currencyCode: string;
+  items: Array<{
+    commodityId: string;
+    duties: string;
+    taxes: string;
+    fees: string;
+  }>;
+}
+
+/** Paperless document operation result from SSE stream. */
+export interface PaperlessResult {
+  action: 'uploaded' | 'pushed' | 'deleted';
+  success: boolean;
+  documentId?: string;
+}
+```
+
+Run: `cd frontend && npx tsc --noEmit` to verify type correctness.
 
 **Commit:**
 ```bash
 git add frontend/src/types/api.ts
-git commit -m "feat: add TypeScript types for UPS MCP v2 tool results"
+git commit -m "feat: add TypeScript types and AgentEventType variants for UPS MCP v2"
 ```
 
 ---
@@ -1180,7 +1810,7 @@ git commit -m "feat: add TypeScript types for UPS MCP v2 tool results"
 **Files:**
 - Create: `frontend/src/components/command-center/PickupCard.tsx`
 
-Renders 4 variants (rate, schedule, cancel, status) with purple domain borders.
+Renders 4 variants (scheduled, cancelled, rated, status) with purple domain border (`card-domain-pickup`). Accepts `PickupResult` as props.
 
 **Commit:**
 ```bash
@@ -1195,7 +1825,7 @@ git commit -m "feat: add PickupCard component with domain-colored variants"
 **Files:**
 - Create: `frontend/src/components/command-center/LocationCard.tsx`
 
-Renders location search results with teal domain border.
+Renders location search results with teal domain border (`card-domain-locator`). Accepts `LocationResult` as props. Shows address, phone, hours for each location.
 
 **Commit:**
 ```bash
@@ -1210,7 +1840,7 @@ git commit -m "feat: add LocationCard component for UPS location search results"
 **Files:**
 - Create: `frontend/src/components/command-center/LandedCostCard.tsx`
 
-Renders duty/tax breakdown with indigo domain border.
+Renders duty/tax/fees breakdown with indigo domain border (`card-domain-landed-cost`). Accepts `LandedCostResult` as props. Shows per-commodity breakdown table + total.
 
 **Commit:**
 ```bash
@@ -1225,7 +1855,7 @@ git commit -m "feat: add LandedCostCard component for international cost breakdo
 **Files:**
 - Create: `frontend/src/components/command-center/PaperlessCard.tsx`
 
-Renders document operation results with amber domain border.
+Renders document operation results with amber domain border (`card-domain-paperless`). Accepts `PaperlessResult` as props. Shows action (uploaded/pushed/deleted) + document ID.
 
 **Commit:**
 ```bash
@@ -1235,13 +1865,90 @@ git commit -m "feat: add PaperlessCard component for paperless document operatio
 
 ---
 
-### Task 20: Wire SSE event routing + CompletionArtifact pickup button
+### Task 20: Wire SSE event routing in CommandCenter + CompletionArtifact pickup button
+
+**Depends on:** Tasks 15-19
+**Resolves:** Finding 2 (event routing now has producers from Tasks 10-12)
 
 **Files:**
-- Modify: `frontend/src/components/CommandCenter.tsx`
+- Modify: `frontend/src/components/CommandCenter.tsx:147-207`
 - Modify: `frontend/src/components/command-center/CompletionArtifact.tsx`
 
-Add routing for `pickup_result`, `location_result`, `landed_cost_result`, `paperless_result`, `pickup_available` events. Add "Schedule Pickup" button to CompletionArtifact.
+**Step 1: Add event routing**
+
+In `CommandCenter.tsx`, add routing branches after the `preview_ready` handler (line 165-196):
+
+```typescript
+// After the existing preview_ready handler...
+} else if (event.type === 'pickup_result') {
+    const pickupData = event.data as unknown as PickupResult;
+    addMessage({
+        role: 'system',
+        content: '',
+        metadata: { action: 'pickup_result', data: pickupData },
+    });
+} else if (event.type === 'location_result') {
+    const locationData = event.data as unknown as LocationResult;
+    addMessage({
+        role: 'system',
+        content: '',
+        metadata: { action: 'location_result', data: locationData },
+    });
+} else if (event.type === 'landed_cost_result') {
+    const costData = event.data as unknown as LandedCostResult;
+    addMessage({
+        role: 'system',
+        content: '',
+        metadata: { action: 'landed_cost_result', data: costData },
+    });
+} else if (event.type === 'paperless_result') {
+    const paperlessData = event.data as unknown as PaperlessResult;
+    addMessage({
+        role: 'system',
+        content: '',
+        metadata: { action: 'paperless_result', data: paperlessData },
+    });
+```
+
+**Step 2: Add card rendering**
+
+In the message rendering section of CommandCenter (where `action === 'preview'` routes to `<PreviewCard>`), add:
+
+```typescript
+{msg.metadata?.action === 'pickup_result' && (
+    <PickupCard data={msg.metadata.data as PickupResult} />
+)}
+{msg.metadata?.action === 'location_result' && (
+    <LocationCard data={msg.metadata.data as LocationResult} />
+)}
+{msg.metadata?.action === 'landed_cost_result' && (
+    <LandedCostCard data={msg.metadata.data as LandedCostResult} />
+)}
+{msg.metadata?.action === 'paperless_result' && (
+    <PaperlessCard data={msg.metadata.data as PaperlessResult} />
+)}
+```
+
+**Step 3: Add CompletionArtifact pickup button**
+
+In `CompletionArtifact.tsx`, add a "Schedule Pickup" button with purple styling that sends a pickup scheduling command through the conversation:
+
+```typescript
+{/* Show pickup suggestion when batch completes with successes */}
+{completionData.successful_count > 0 && (
+    <button
+        className="btn-secondary card-domain-pickup"
+        onClick={() => onSendMessage?.("Schedule a pickup for today's shipments")}
+    >
+        Schedule Pickup
+    </button>
+)}
+```
+
+**Step 4: Run type check**
+
+Run: `cd frontend && npx tsc --noEmit`
+Expected: PASS
 
 **Commit:**
 ```bash
@@ -1257,7 +1964,11 @@ git commit -m "feat: wire UPS MCP v2 event routing and pickup button in Completi
 - Modify: `docs/ups-mcp-integration-guide.md`
 - Modify: `CLAUDE.md`
 
-Update the integration guide tool inventory table from 7 to 18 tools. Update CLAUDE.md project status and tool counts.
+Update the integration guide tool inventory table from 7 to 18 tools. Update CLAUDE.md:
+- UPS MCP server tool count: 7 → 18
+- Add new tool names to the MCP tool table
+- Note error code additions (E-2020–E-2022, E-3007–E-3009, E-4011–E-4012)
+- Document the interactive mode policy (AD-1): new tools available via MCP auto-discovery, not orchestrator registry
 
 **Commit:**
 ```bash
