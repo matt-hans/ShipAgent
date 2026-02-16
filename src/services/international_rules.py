@@ -302,15 +302,18 @@ def validate_international_readiness(
                         message=f"Commodity {i+1} is missing a description.",
                         field_path=f"InternationalForms.Product[{i}].Description",
                     ))
-                hs = comm.get("commodity_code", "")
-                if hs and not re.match(r"^\d{6,10}$", str(hs)):
+                hs_raw = comm.get("commodity_code", "")
+                hs = re.sub(r"\D", "", str(hs_raw)) if hs_raw else ""
+                if hs:
+                    comm["commodity_code"] = hs  # Write back normalized value
+                if hs_raw and (not hs or not re.match(r"^\d{6,10}$", hs)):
                     errors.append(ValidationError(
                         machine_code="INVALID_HS_CODE",
-                        message=f"Commodity {i+1} has invalid HS code '{hs}'. Must be 6-10 digits.",
+                        message=f"Commodity {i+1} has invalid HS code '{hs_raw}'. Must be 6-10 digits.",
                         field_path=f"InternationalForms.Product[{i}].CommodityCode",
                         error_code="E-2014",
                     ))
-                elif not hs:
+                elif not hs_raw:
                     errors.append(ValidationError(
                         machine_code="MISSING_HS_CODE",
                         message=f"Commodity {i+1} is missing HS tariff code.",

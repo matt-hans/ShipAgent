@@ -76,13 +76,13 @@ def test_prompt_without_source_shows_no_connection():
 
 
 def test_prompt_without_source_interactive_does_not_demand_connection():
-    """When interactive=True and no source, prompt allows ad-hoc shipments without demanding a connection."""
+    """When interactive=True and no source, prompt allows single shipments without demanding a connection."""
     prompt = build_system_prompt(source_info=None, interactive_shipping=True)
     lower = prompt.lower()
     # Should mention interactive mode is active
     assert "interactive shipping mode is active" in lower
-    # Should allow single ad-hoc shipments
-    assert "ad-hoc shipments" in lower or "single ad-hoc" in lower
+    # Should allow single shipment creation
+    assert "single shipment creation" in lower
     # Should NOT contain the blanket "ask the user to connect" instruction
     assert "ask the user to connect a csv" not in lower
 
@@ -151,9 +151,9 @@ def test_prompt_returns_string():
 
 
 def test_prompt_contains_direct_single_shipment_section_when_interactive():
-    """System prompt includes the exclusive interactive ad-hoc section when interactive=True."""
+    """System prompt includes the interactive single shipment section when interactive=True."""
     prompt = build_system_prompt(interactive_shipping=True)
-    assert "Interactive Ad-hoc Mode (Exclusive)" in prompt
+    assert "Interactive Single Shipment Mode" in prompt
     assert "preview_interactive_shipment" in prompt
 
 
@@ -166,20 +166,20 @@ class TestInteractiveShippingPromptConditioning:
     def test_interactive_sections_included_when_true(self):
         """Direct shipment + validation sections present when interactive=True."""
         prompt = build_system_prompt(interactive_shipping=True)
-        assert "Interactive Ad-hoc Mode (Exclusive)" in prompt
+        assert "Interactive Single Shipment Mode" in prompt
         assert "preview_interactive_shipment" in prompt
 
     def test_interactive_sections_omitted_when_false(self):
         """Direct shipment + validation sections absent when interactive=False."""
         prompt = build_system_prompt(interactive_shipping=False)
         assert "Direct Single-Shipment Commands" not in prompt
-        assert "Interactive Ad-hoc Mode (Exclusive)" not in prompt
+        assert "Interactive Single Shipment Mode" not in prompt
 
     def test_interactive_sections_omitted_by_default(self):
         """Default (no flag) omits interactive sections."""
         prompt = build_system_prompt()
         assert "Direct Single-Shipment Commands" not in prompt
-        assert "Interactive Ad-hoc Mode (Exclusive)" not in prompt
+        assert "Interactive Single Shipment Mode" not in prompt
 
     def test_exclusive_mode_policy_when_true(self):
         """Interactive prompt explicitly enforces exclusive ad-hoc mode."""
