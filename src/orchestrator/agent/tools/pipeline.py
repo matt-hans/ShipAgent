@@ -19,6 +19,7 @@ from src.orchestrator.agent.tools.core import (
     _build_job_row_data,
     _command_explicitly_requests_service,
     _consume_fetched_rows,
+    _emit_event,
     _emit_preview_ready,
     _enrich_preview_rows,
     _enrich_preview_rows_from_map,
@@ -30,6 +31,7 @@ from src.orchestrator.agent.tools.core import (
     _store_fetched_rows,
     get_data_gateway,
 )
+from src.services.errors import UPSServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -381,3 +383,32 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         logger.error("batch_execute_tool failed: %s", e)
         return _err(f"Batch execution failed: {e}")
+
+
+async def get_landed_cost_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
+    """Estimate duties, taxes, and fees for an international shipment.
+
+    Emits a landed_cost_result event to the frontend.
+
+    Args:
+        args: Dict with currency_code, export_country_code,
+              import_country_code, commodities, and optional kwargs.
+        bridge: Event bridge for SSE emission.
+
+    Returns:
+        Tool response with landed cost breakdown, or error envelope.
+    """
+    try:
+        client = await _get_ups_client()
+        result = await client.get_landed_cost(**args)
+        payload = {"action": "landed_cost", "success": True, **result}
+        _emit_event("landed_cost_result", payload, bridge=bridge)
+        return _ok({"success": True, "action": "landed_cost", **result})
+    except UPSServiceError as e:
+        return _err(f"[{e.code}] {e.message}")
+    except Exception as e:
+        logger.exception("Unexpected error in get_landed_cost_tool")
+        return _err(f"Unexpected error: {e}")
