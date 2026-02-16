@@ -624,6 +624,10 @@ export type AgentEventType =
   | 'agent_message'
   | 'agent_message_delta'
   | 'preview_ready'
+  | 'pickup_result'
+  | 'location_result'
+  | 'landed_cost_result'
+  | 'paperless_result'
   | 'confirmation_needed'
   | 'execution_progress'
   | 'completion'
@@ -661,4 +665,52 @@ export interface ShopifyEnvStatus {
   store_name: string | null;
   /** Error message if validation failed */
   error: string | null;
+}
+
+// === UPS MCP v2 Domain Result Types ===
+
+/** Pickup operation result from SSE stream. */
+export interface PickupResult {
+  action: 'scheduled' | 'cancelled' | 'rated' | 'status';
+  success: boolean;
+  prn?: string;
+  charges?: Array<{ chargeAmount: string; chargeCode: string }>;
+  pickups?: Array<{ pickupDate: string; prn: string }>;
+}
+
+/** Location search result from SSE stream. */
+export interface LocationResult {
+  action: 'locations' | 'service_centers';
+  success: boolean;
+  locations?: Array<{
+    id: string;
+    address: Record<string, string>;
+    phone?: string;
+    hours?: Record<string, string>;
+  }>;
+  facilities?: Array<{
+    name: string;
+    address: string;
+  }>;
+}
+
+/** Landed cost estimation result from SSE stream. */
+export interface LandedCostResult {
+  action: 'landed_cost';
+  success: boolean;
+  totalLandedCost: string;
+  currencyCode: string;
+  items: Array<{
+    commodityId: string;
+    duties: string;
+    taxes: string;
+    fees: string;
+  }>;
+}
+
+/** Paperless document operation result from SSE stream. */
+export interface PaperlessResult {
+  action: 'uploaded' | 'pushed' | 'deleted';
+  success: boolean;
+  documentId?: string;
 }
