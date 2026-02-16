@@ -674,6 +674,78 @@ class TestCreateHookMatchers:
         assert "PreToolUse" in matchers
 
 
+class TestValidateSchedulePickup:
+    """Tests for schedule_pickup safety hook (AD-5)."""
+
+    def test_schedule_pickup_hook_matcher_exists(self):
+        """Hook matchers must include mcp__ups__schedule_pickup."""
+        matchers = create_hook_matchers(interactive_shipping=False)
+        pre_matchers = matchers["PreToolUse"]
+        pickup_matchers = [
+            m for m in pre_matchers if m.matcher == "mcp__ups__schedule_pickup"
+        ]
+        assert len(pickup_matchers) == 1, "Missing mcp__ups__schedule_pickup hook matcher"
+
+    @pytest.mark.asyncio
+    async def test_schedule_pickup_hook_validates_required_fields(self):
+        """schedule_pickup hook denies when pickup_date is missing."""
+        from src.orchestrator.agent.hooks import validate_schedule_pickup
+
+        result = await validate_schedule_pickup(
+            {"tool_name": "mcp__ups__schedule_pickup", "tool_input": {}},
+            "test-id",
+            None,
+        )
+        # Should deny — missing required fields
+        assert result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+
+    @pytest.mark.asyncio
+    async def test_schedule_pickup_hook_allows_valid_input(self):
+        """schedule_pickup hook allows when required fields present."""
+        from src.orchestrator.agent.hooks import validate_schedule_pickup
+
+        result = await validate_schedule_pickup(
+            {
+                "tool_name": "mcp__ups__schedule_pickup",
+                "tool_input": {
+                    "pickup_date": "20260220",
+                    "ready_time": "0900",
+                    "close_time": "1700",
+                    "address_line": "123 Main St",
+                    "city": "Austin",
+                    "state": "TX",
+                    "postal_code": "78701",
+                    "country_code": "US",
+                    "contact_name": "John Smith",
+                    "phone_number": "5125551234",
+                },
+            },
+            "test-id",
+            None,
+        )
+        assert result == {}  # Allowed
+
+    @pytest.mark.asyncio
+    async def test_schedule_pickup_hook_denies_partial_fields(self):
+        """schedule_pickup hook denies when only some required fields present."""
+        from src.orchestrator.agent.hooks import validate_schedule_pickup
+
+        result = await validate_schedule_pickup(
+            {
+                "tool_name": "mcp__ups__schedule_pickup",
+                "tool_input": {
+                    "pickup_date": "20260220",
+                    "ready_time": "0900",
+                    # Missing close_time, address, city, state, etc.
+                },
+            },
+            "test-id",
+            None,
+        )
+        assert result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+        assert "close_time" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+
 class TestLogToStderr:
     """Tests for _log_to_stderr fallback behavior."""
 
