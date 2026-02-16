@@ -1689,3 +1689,91 @@ def test_v2_tools_not_in_interactive_mode():
     assert not names.intersection(v2_tools), (
         f"v2 tools leaked into interactive mode: {names & v2_tools}"
     )
+
+
+# ---------------------------------------------------------------------------
+# UPS MCP v2 — Integration: tool call → event emission → payload verification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_e2e_pickup_flow_tool_to_event():
+    """End-to-end: schedule_pickup_tool → pickup_result event with correct payload."""
+    mock_ups = AsyncMock()
+    mock_ups.schedule_pickup.return_value = {"success": True, "prn": "E2E-PRN-123"}
+
+    bridge = EventEmitterBridge()
+    captured_events: list[tuple[str, dict]] = []
+    bridge.callback = lambda et, d: captured_events.append((et, d))
+
+    with patch("src.orchestrator.agent.tools.pickup._get_ups_client", return_value=mock_ups):
+        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
+        tool_result = await schedule_pickup_tool(
+            {
+                "pickup_date": "20260301", "ready_time": "0800", "close_time": "1800",
+                "address_line": "456 Oak Ave", "city": "Dallas", "state": "TX",
+                "postal_code": "75201", "country_code": "US",
+                "contact_name": "Jane Doe", "phone_number": "2145551234",
+            },
+            bridge=bridge,
+        )
+
+    # Verify tool returned _ok envelope to LLM
+    assert tool_result["isError"] is False
+    llm_data = json.loads(tool_result["content"][0]["text"])
+    assert llm_data["prn"] == "E2E-PRN-123"
+    assert llm_data["action"] == "scheduled"
+
+    # Verify SSE event emitted with full payload
+    assert len(captured_events) == 1
+    event_type, event_data = captured_events[0]
+    assert event_type == "pickup_result"
+    assert event_data["action"] == "scheduled"
+    assert event_data["prn"] == "E2E-PRN-123"
+    assert event_data["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_e2e_landed_cost_flow_tool_to_event():
+    """End-to-end: get_landed_cost_tool → landed_cost_result event with breakdown."""
+    mock_ups = AsyncMock()
+    mock_ups.get_landed_cost.return_value = {
+        "success": True,
+        "totalLandedCost": "87.50",
+        "currencyCode": "USD",
+        "items": [
+            {"commodityId": "1", "duties": "25.00", "taxes": "12.50", "fees": "0.00"},
+            {"commodityId": "2", "duties": "30.00", "taxes": "20.00", "fees": "0.00"},
+        ],
+    }
+
+    bridge = EventEmitterBridge()
+    captured_events: list[tuple[str, dict]] = []
+    bridge.callback = lambda et, d: captured_events.append((et, d))
+
+    with patch("src.orchestrator.agent.tools.pipeline._get_ups_client", return_value=mock_ups):
+        from src.orchestrator.agent.tools.pipeline import get_landed_cost_tool
+        tool_result = await get_landed_cost_tool(
+            {
+                "currency_code": "USD",
+                "export_country_code": "US",
+                "import_country_code": "GB",
+                "commodities": [
+                    {"price": 50.00, "quantity": 1, "hs_code": "6109.10"},
+                    {"price": 75.00, "quantity": 1, "hs_code": "6110.20"},
+                ],
+            },
+            bridge=bridge,
+        )
+
+    # Verify tool returned _ok envelope to LLM
+    assert tool_result["isError"] is False
+    llm_data = json.loads(tool_result["content"][0]["text"])
+    assert llm_data["totalLandedCost"] == "87.50"
+
+    # Verify SSE event emitted with full breakdown
+    assert len(captured_events) == 1
+    event_type, event_data = captured_events[0]
+    assert event_type == "landed_cost_result"
+    assert event_data["totalLandedCost"] == "87.50"
+    assert len(event_data["items"]) == 2
