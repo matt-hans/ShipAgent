@@ -74,6 +74,20 @@ class UPSMCPClient:
         _mcp: Underlying generic MCPClient instance.
     """
 
+    # Retry classification: read-only tools get fast retries;
+    # mutating tools get zero retries to prevent side effects.
+    _READ_ONLY_TOOLS: frozenset[str] = frozenset({
+        "rate_shipment", "validate_address", "track_package",
+        "rate_pickup", "get_pickup_status", "get_landed_cost_quote",
+        "find_locations", "get_political_divisions", "get_service_center_facilities",
+    })
+
+    _MUTATING_TOOLS: frozenset[str] = frozenset({
+        "create_shipment", "void_shipment", "schedule_pickup", "cancel_pickup",
+        "upload_paperless_document", "push_document_to_shipment",
+        "delete_paperless_document",
+    })
+
     def __init__(
         self,
         client_id: str,
@@ -284,6 +298,169 @@ class UPSMCPClient:
 
         return self._normalize_address_response(raw)
 
+    # ── Pickup methods ─────────────────────────────────────────────────
+
+    async def schedule_pickup(
+        self,
+        pickup_date: str,
+        ready_time: str,
+        close_time: str,
+        address_line: str,
+        city: str,
+        state: str,
+        postal_code: str,
+        country_code: str,
+        contact_name: str,
+        phone_number: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Schedule a UPS carrier pickup.
+
+        Args:
+            pickup_date: Pickup date (YYYYMMDD).
+            ready_time: Earliest ready time (HHMM, 24-hour).
+            close_time: Latest close time (HHMM, 24-hour).
+            address_line: Street address.
+            city: City name.
+            state: State/province code.
+            postal_code: Postal/ZIP code.
+            country_code: Country code (e.g., "US").
+            contact_name: Contact person name.
+            phone_number: Contact phone number.
+            **kwargs: Additional optional parameters forwarded to MCP tool.
+
+        Returns:
+            Normalised dict with: success, prn.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        args = {
+            "pickup_date": pickup_date,
+            "ready_time": ready_time,
+            "close_time": close_time,
+            "address_line": address_line,
+            "city": city,
+            "state": state,
+            "postal_code": postal_code,
+            "country_code": country_code,
+            "contact_name": contact_name,
+            "phone_number": phone_number,
+            **kwargs,
+        }
+        try:
+            raw = await self._call("schedule_pickup", args)
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return self._normalize_schedule_pickup_response(raw)
+
+    async def cancel_pickup(
+        self,
+        cancel_by: str,
+        prn: str = "",
+    ) -> dict[str, Any]:
+        """Cancel a previously scheduled pickup.
+
+        Args:
+            cancel_by: "prn" to cancel by PRN, "account" for most recent.
+            prn: Pickup Request Number (required when cancel_by="prn").
+
+        Returns:
+            Normalised dict with: success, status.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        args: dict[str, Any] = {"cancel_by": cancel_by}
+        if prn:
+            args["prn"] = prn
+        try:
+            raw = await self._call("cancel_pickup", args)
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return {"success": True, "status": "cancelled"}
+
+    async def rate_pickup(
+        self,
+        pickup_type: str,
+        address_line: str,
+        city: str,
+        state: str,
+        postal_code: str,
+        country_code: str,
+        pickup_date: str,
+        ready_time: str,
+        close_time: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Get a pickup cost estimate.
+
+        Args:
+            pickup_type: "oncall", "smart", or "both".
+            address_line: Street address.
+            city: City name.
+            state: State/province code.
+            postal_code: Postal/ZIP code.
+            country_code: Country code.
+            pickup_date: Pickup date (YYYYMMDD).
+            ready_time: Earliest ready time (HHMM).
+            close_time: Latest close time (HHMM).
+            **kwargs: Additional optional parameters.
+
+        Returns:
+            Normalised dict with: success, charges, grandTotal.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        args = {
+            "pickup_type": pickup_type,
+            "address_line": address_line,
+            "city": city,
+            "state": state,
+            "postal_code": postal_code,
+            "country_code": country_code,
+            "pickup_date": pickup_date,
+            "ready_time": ready_time,
+            "close_time": close_time,
+            **kwargs,
+        }
+        try:
+            raw = await self._call("rate_pickup", args)
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return self._normalize_rate_pickup_response(raw)
+
+    async def get_pickup_status(
+        self,
+        pickup_type: str,
+        account_number: str = "",
+    ) -> dict[str, Any]:
+        """Get pending pickup status for the account.
+
+        Args:
+            pickup_type: "oncall", "smart", or "both".
+            account_number: UPS account number (optional, uses env fallback).
+
+        Returns:
+            Normalised dict with: success, pickups.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        args: dict[str, Any] = {"pickup_type": pickup_type}
+        if account_number:
+            args["account_number"] = account_number
+        try:
+            raw = await self._call("get_pickup_status", args)
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return self._normalize_pickup_status_response(raw)
+
     # ── Internal helpers ───────────────────────────────────────────────
 
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -307,7 +484,7 @@ class UPSMCPClient:
 
         # Faster retries for non-mutating requests. Mutating operations
         # intentionally avoid tool-level retries to prevent side effects.
-        if tool_name in {"rate_shipment", "validate_address", "track_package"}:
+        if tool_name in self._READ_ONLY_TOOLS:
             retry_kwargs = {"max_retries": 2, "base_delay": 0.2}
         else:
             retry_kwargs = {"max_retries": 0, "base_delay": 1.0}
@@ -319,7 +496,7 @@ class UPSMCPClient:
             # retry for known upstream gateway outages where UPS never
             # actually processed the request (e.g., "no healthy upstream").
             if (
-                tool_name in {"create_shipment", "void_shipment"}
+                tool_name in self._MUTATING_TOOLS
                 and self._is_safe_mutating_retry_error(e.error_text)
             ):
                 logger.warning(
@@ -331,9 +508,7 @@ class UPSMCPClient:
                 return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
             raise
         except Exception as e:
-            is_non_mutating = tool_name in {
-                "rate_shipment", "validate_address", "track_package",
-            }
+            is_non_mutating = tool_name in self._READ_ONLY_TOOLS
             # For non-mutating operations, treat ANY non-MCPToolError as a
             # transport failure worth reconnecting for.  This handles stale
             # subprocess connections (anyio ClosedResourceError, etc.) that
@@ -615,6 +790,76 @@ class UPSMCPClient:
                 "code": status.get("Code", ""),
                 "description": status.get("Description", ""),
             },
+        }
+
+    # ── Pickup response normalisation ─────────────────────────────────
+
+    def _normalize_schedule_pickup_response(self, raw: dict) -> dict[str, Any]:
+        """Extract PRN from raw UPS pickup creation response.
+
+        Args:
+            raw: Raw UPS PickupCreationResponse dict.
+
+        Returns:
+            Normalised response dict with success and prn.
+        """
+        creation = raw.get("PickupCreationResponse", {})
+        prn = creation.get("PRN", "")
+        return {
+            "success": True,
+            "prn": prn,
+        }
+
+    def _normalize_rate_pickup_response(self, raw: dict) -> dict[str, Any]:
+        """Extract charges from raw UPS pickup rate response.
+
+        Args:
+            raw: Raw UPS PickupRateResponse dict.
+
+        Returns:
+            Normalised response dict with success, charges, and grandTotal.
+        """
+        rate_result = raw.get("PickupRateResponse", {}).get("RateResult", {})
+        charge_detail = rate_result.get("ChargeDetail", [])
+        if isinstance(charge_detail, dict):
+            charge_detail = [charge_detail]
+        grand_total = rate_result.get("GrandTotalOfAllCharge", "0")
+        charges = [
+            {
+                "amount": c.get("ChargeAmount", "0"),
+                "code": c.get("ChargeCode", ""),
+            }
+            for c in charge_detail
+        ]
+        return {
+            "success": True,
+            "charges": charges,
+            "grandTotal": grand_total,
+        }
+
+    def _normalize_pickup_status_response(self, raw: dict) -> dict[str, Any]:
+        """Extract pending pickups from raw UPS pickup status response.
+
+        Args:
+            raw: Raw UPS PickupPendingStatusResponse dict.
+
+        Returns:
+            Normalised response dict with success and pickups list.
+        """
+        status_resp = raw.get("PickupPendingStatusResponse", {})
+        pending = status_resp.get("PendingStatus", [])
+        if isinstance(pending, dict):
+            pending = [pending]
+        pickups = [
+            {
+                "pickupDate": p.get("PickupDate", ""),
+                "prn": p.get("PRN", ""),
+            }
+            for p in pending
+        ]
+        return {
+            "success": True,
+            "pickups": pickups,
         }
 
     # ── Error translation ──────────────────────────────────────────────
