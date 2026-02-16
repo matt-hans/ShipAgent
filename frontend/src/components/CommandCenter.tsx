@@ -15,7 +15,6 @@ import { PreviewCard, InteractivePreviewCard, type ConfirmOptions } from '@/comp
 import { ProgressDisplay } from '@/components/command-center/ProgressDisplay';
 import { CompletionArtifact } from '@/components/command-center/CompletionArtifact';
 import { ToolCallChip } from '@/components/command-center/ToolCallChip';
-import { PickupCard } from '@/components/command-center/PickupCard';
 import { PickupPreviewCard } from '@/components/command-center/PickupPreviewCard';
 import { PickupCompletionCard } from '@/components/command-center/PickupCompletionCard';
 import { LocationCard } from '@/components/command-center/LocationCard';
@@ -451,11 +450,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                 </div>
               ) : message.metadata?.action === 'pickup_result' && message.metadata.pickup ? (
                 <div key={message.id} className="pl-11">
-                  {message.metadata.pickup.action === 'scheduled' ? (
-                    <PickupCompletionCard data={message.metadata.pickup} />
-                  ) : (
-                    <PickupCard data={message.metadata.pickup} />
-                  )}
+                  <PickupCompletionCard data={message.metadata.pickup} />
                 </div>
               ) : message.metadata?.action === 'location_result' && message.metadata.location ? (
                 <div key={message.id} className="pl-11">
