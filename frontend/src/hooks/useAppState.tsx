@@ -9,7 +9,14 @@
  */
 
 import * as React from 'react';
-import type { Job, DataSourceInfo } from '@/types/api';
+import type {
+  Job,
+  DataSourceInfo,
+  PickupResult,
+  LocationResult,
+  LandedCostResult,
+  PaperlessResult,
+} from '@/types/api';
 
 /** Warning row handling preference, persisted in localStorage. */
 type WarningPreference = 'ask' | 'ship-all' | 'skip-warnings';
@@ -38,7 +45,9 @@ interface ConversationMessage {
   timestamp: Date;
   metadata?: {
     jobId?: string;
-    action?: 'preview' | 'execute' | 'complete' | 'error' | 'elicit';
+    action?:
+      | 'preview' | 'execute' | 'complete' | 'error' | 'elicit'
+      | 'pickup_result' | 'location_result' | 'landed_cost_result' | 'paperless_result';
     preview?: {
       rowCount: number;
       estimatedCost: number;
@@ -72,6 +81,11 @@ interface ConversationMessage {
         errorMessage: string;
       }>;
     };
+    // UPS MCP v2 domain card payloads
+    pickup?: PickupResult;
+    location?: LocationResult;
+    landedCost?: LandedCostResult;
+    paperless?: PaperlessResult;
   };
 }
 
