@@ -209,6 +209,50 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         message_template="UPS customs validation failed: {ups_message}",
         remediation="Review commodity descriptions, HS codes, and declared values for accuracy.",
     ),
+    # UPS MCP v2 — Structured validation errors (E-2020 – E-2022)
+    "E-2020": ErrorCode(
+        code="E-2020",
+        category=ErrorCategory.VALIDATION,
+        title="Missing Required Fields",
+        message_template="Missing {count} required field(s): {fields}",
+        remediation="Provide the missing fields listed above. Check your data source column mapping.",
+    ),
+    "E-2021": ErrorCode(
+        code="E-2021",
+        category=ErrorCategory.VALIDATION,
+        title="Malformed Request Structure",
+        message_template="Request body has structural errors: {ups_message}",
+        remediation="Check that the request body matches the expected UPS API format.",
+    ),
+    "E-2022": ErrorCode(
+        code="E-2022",
+        category=ErrorCategory.VALIDATION,
+        title="Ambiguous Billing",
+        message_template="Multiple billing objects found in ShipmentCharge. Only one payer type allowed.",
+        remediation="Use exactly one of: BillShipper, BillReceiver, or BillThirdParty per charge.",
+    ),
+    # UPS MCP v2 — Domain-specific UPS API errors (E-3007 – E-3009)
+    "E-3007": ErrorCode(
+        code="E-3007",
+        category=ErrorCategory.UPS_API,
+        title="Document Not Found",
+        message_template="Paperless document not found or expired: {ups_message}",
+        remediation="The document may have expired. Re-upload the document and try again.",
+    ),
+    "E-3008": ErrorCode(
+        code="E-3008",
+        category=ErrorCategory.UPS_API,
+        title="Pickup Timing Error",
+        message_template="Pickup scheduling failed: {ups_message}",
+        remediation="Check that the pickup date is in the future and within UPS scheduling windows.",
+    ),
+    "E-3009": ErrorCode(
+        code="E-3009",
+        category=ErrorCategory.UPS_API,
+        title="No Locations Found",
+        message_template="No UPS locations found for the given search criteria.",
+        remediation="Try expanding the search radius or adjusting the address.",
+    ),
     # System errors (E-4xxx)
     "E-4001": ErrorCode(
         code="E-4001",
@@ -244,6 +288,21 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         # disabled because create_shipment may have side effects.
         # See _ups_is_retryable() which returns False for this code.
         is_retryable=True,
+    ),
+    # UPS MCP v2 — Elicitation user actions (E-4011 – E-4012)
+    "E-4011": ErrorCode(
+        code="E-4011",
+        category=ErrorCategory.SYSTEM,
+        title="Elicitation Declined",
+        message_template="User declined to provide required information.",
+        remediation="The operation was cancelled because required fields were not provided.",
+    ),
+    "E-4012": ErrorCode(
+        code="E-4012",
+        category=ErrorCategory.SYSTEM,
+        title="Elicitation Cancelled",
+        message_template="User cancelled the operation.",
+        remediation="The operation was cancelled by the user.",
     ),
     # Auth errors (E-5xxx)
     "E-5001": ErrorCode(
