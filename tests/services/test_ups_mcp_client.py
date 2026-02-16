@@ -1096,3 +1096,83 @@ class TestGetServiceCenterFacilities:
         assert fac["name"] == "UPS Store #1234"
         assert "Austin" in fac["address"]
         assert "TX" in fac["address"]
+
+
+class TestTrackPackage:
+    """Test track_package() method."""
+
+    @pytest.mark.asyncio
+    async def test_track_package_calls_mcp(self, ups_client, mock_mcp_client):
+        """track_package calls MCP with correct tool name and args."""
+        mock_mcp_client.call_tool.return_value = {
+            "trackResponse": {
+                "shipment": [{
+                    "package": [{
+                        "trackingNumber": "1Z999AA10123456784",
+                        "currentStatus": {"code": "D", "description": "Delivered"},
+                    }],
+                }],
+            },
+        }
+        result = await ups_client.track_package(tracking_number="1Z999AA10123456784")
+        mock_mcp_client.call_tool.assert_awaited_once_with(
+            "track_package",
+            {"inquiryNumber": "1Z999AA10123456784"},
+            max_retries=2,
+            base_delay=0.2,
+        )
+        assert "trackResponse" in result
+
+    @pytest.mark.asyncio
+    async def test_track_package_translates_error(self, ups_client, mock_mcp_client):
+        """track_package raises UPSServiceError on MCPToolError."""
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="track_package",
+            error_text="Tracking error: invalid number",
+        )
+        with pytest.raises(UPSServiceError):
+            await ups_client.track_package(tracking_number="INVALID")
+
+
+# ---------------------------------------------------------------------------
+# Pickup charge label tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rate_pickup_includes_charge_labels():
+    """_normalize_rate_pickup_response maps charge codes to human labels."""
+    raw = {
+        "PickupRateResponse": {
+            "RateResult": {
+                "ChargeDetail": [
+                    {"ChargeCode": "B", "ChargeAmount": "9.65"},
+                    {"ChargeCode": "S", "ChargeAmount": "0.00"},
+                ],
+                "GrandTotalOfAllCharge": "9.65",
+            }
+        }
+    }
+    client = UPSMCPClient.__new__(UPSMCPClient)
+    result = client._normalize_rate_pickup_response(raw)
+    assert result["charges"][0]["chargeLabel"] == "Base Charge"
+    assert result["charges"][1]["chargeLabel"] == "Surcharge"
+    assert result["grandTotal"] == "9.65"
+
+
+@pytest.mark.asyncio
+async def test_rate_pickup_unknown_charge_code_uses_code_as_label():
+    """_normalize_rate_pickup_response falls back to chargeCode for unknown codes."""
+    raw = {
+        "PickupRateResponse": {
+            "RateResult": {
+                "ChargeDetail": [
+                    {"ChargeCode": "Z", "ChargeAmount": "1.00"},
+                ],
+                "GrandTotalOfAllCharge": "1.00",
+            }
+        }
+    }
+    client = UPSMCPClient.__new__(UPSMCPClient)
+    result = client._normalize_rate_pickup_response(raw)
+    assert result["charges"][0]["chargeLabel"] == "Z"

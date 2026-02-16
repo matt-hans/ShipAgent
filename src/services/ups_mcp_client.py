@@ -13,6 +13,7 @@ Example:
 import json
 import logging
 import os
+import sys
 import asyncio
 from typing import Any
 
@@ -25,10 +26,30 @@ from src.services.ups_specs import ensure_ups_specs_dir
 
 logger = logging.getLogger(__name__)
 
+# Human-readable labels for UPS pickup charge codes.
+PICKUP_CHARGE_LABELS: dict[str, str] = {
+    "B": "Base Charge",
+    "S": "Surcharge",
+    "T": "Tax",
+    "R": "Residential Surcharge",
+    "F": "Fuel Surcharge",
+}
+
 # Resolve the venv Python binary for spawning UPS MCP as a subprocess.
 # The local fork of ups-mcp is installed as an editable package in the venv.
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _VENV_PYTHON = os.path.join(_PROJECT_ROOT, ".venv", "bin", "python3")
+
+
+def _get_python_command() -> str:
+    """Return the preferred Python interpreter for MCP subprocesses.
+
+    Prefers the venv python3 if it exists (local dev), otherwise
+    falls back to sys.executable (CI, containers, system Python).
+    """
+    if os.path.exists(_VENV_PYTHON):
+        return _VENV_PYTHON
+    return sys.executable
 
 
 def _ups_is_retryable(error_text: str) -> bool:
@@ -126,7 +147,7 @@ class UPSMCPClient:
         """
         specs_dir = ensure_ups_specs_dir()
         return StdioServerParameters(
-            command=_VENV_PYTHON,
+            command=_get_python_command(),
             args=["-m", "ups_mcp"],
             env={
                 "CLIENT_ID": self._client_id,
@@ -297,6 +318,27 @@ class UPSMCPClient:
             raise self._translate_error(e) from e
 
         return self._normalize_address_response(raw)
+
+    async def track_package(self, tracking_number: str) -> dict[str, Any]:
+        """Track a package by tracking number.
+
+        Args:
+            tracking_number: UPS tracking number.
+
+        Returns:
+            Raw UPS tracking response dict.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        try:
+            raw = await self._call("track_package", {
+                "inquiryNumber": tracking_number,
+            })
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return raw
 
     # ── Pickup methods ─────────────────────────────────────────────────
 
@@ -1048,7 +1090,7 @@ class UPSMCPClient:
             raw: Raw UPS PickupRateResponse dict.
 
         Returns:
-            Normalised response dict with success, charges, and grandTotal.
+            Normalised response dict with success, charges (with labels), and grandTotal.
         """
         rate_result = raw.get("PickupRateResponse", {}).get("RateResult", {})
         charge_detail = rate_result.get("ChargeDetail", [])
@@ -1059,6 +1101,9 @@ class UPSMCPClient:
             {
                 "chargeAmount": c.get("ChargeAmount", "0"),
                 "chargeCode": c.get("ChargeCode", ""),
+                "chargeLabel": PICKUP_CHARGE_LABELS.get(
+                    c.get("ChargeCode", ""), c.get("ChargeCode", "")
+                ),
             }
             for c in charge_detail
         ]
