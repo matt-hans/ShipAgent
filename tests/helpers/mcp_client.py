@@ -100,7 +100,26 @@ class MCPTestClient:
         if "error" in response:
             raise RuntimeError(f"Tool call failed: {response['error']}")
 
-        return response.get("result", {})
+        result = response.get("result", {})
+
+        # Tool-level errors (isError flag in CallToolResult)
+        if result.get("isError"):
+            error_text = ""
+            for item in result.get("content", []):
+                if item.get("type") == "text":
+                    error_text = item.get("text", "")
+                    break
+            raise RuntimeError(f"Tool error: {error_text}")
+
+        # Unwrap content[0].text -> JSON parse -> return dict
+        for item in result.get("content", []):
+            if item.get("type") == "text":
+                try:
+                    return json.loads(item["text"])
+                except (json.JSONDecodeError, KeyError):
+                    return {"raw_text": item.get("text", "")}
+
+        return result
 
     async def list_tools(self) -> list[dict[str, Any]]:
         """List available tools from the MCP server.
@@ -143,12 +162,16 @@ class MCPTestClient:
         self._process.stdin.flush()
 
         # Read response (blocking - should use asyncio for production)
-        response_line = self._process.stdout.readline()
-        if not response_line:
-            stderr = self._process.stderr.read() if self._process.stderr else ""
-            raise RuntimeError(f"No response from server. stderr: {stderr}")
+        # Read response (blocking - should use asyncio for production)
+        while True:
+            response_line = self._process.stdout.readline()
+            if not response_line:
+                stderr = self._process.stderr.read() if self._process.stderr else ""
+                raise RuntimeError(f"No response from server. stderr: {stderr}")
 
-        return json.loads(response_line)
+            parsed = json.loads(response_line)
+            if "id" in parsed and parsed["id"] == self._request_id:
+                return parsed
 
     async def kill_hard(self) -> None:
         """Kill the server process immediately (for crash recovery tests)."""

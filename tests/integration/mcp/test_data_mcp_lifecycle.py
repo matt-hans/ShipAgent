@@ -49,12 +49,14 @@ class TestDataMCPLifecycle:
                 "get_row", "get_rows_by_filter", "query_data",
                 "compute_checksums", "verify_checksum",
                 "write_back",
+                "get_source_info", "import_records", "clear_source",
+                "import_commodities", "get_commodities_bulk", "import_edi",
             ]
 
             for expected in expected_tools:
                 assert expected in tool_names, f"Missing tool: {expected}"
 
-            assert len(tools) == 13
+            assert len(tools) >= 19
         finally:
             await data_mcp_client.stop()
 

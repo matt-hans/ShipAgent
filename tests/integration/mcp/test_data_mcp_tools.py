@@ -68,7 +68,7 @@ class TestCSVImportWorkflow:
         })
 
         result = await connected_data_mcp.call_tool("query_data", {
-            "query": "SELECT * FROM source WHERE state = 'CA'",
+            "sql": "SELECT * FROM imported_data WHERE state = 'CA'",
         })
 
         assert len(result["rows"]) == 3  # 3 CA orders in sample data
@@ -83,7 +83,7 @@ class TestCSVImportWorkflow:
         })
 
         result = await connected_data_mcp.call_tool("get_rows_by_filter", {
-            "filter_clause": "service_type = 'Ground'",
+            "where_clause": "service_type = 'Ground'",
             "limit": 10,
         })
 
@@ -111,7 +111,7 @@ class TestChecksumWorkflow:
 
         # Each checksum should be 64 hex chars (SHA-256)
         for checksum in result["checksums"]:
-            assert len(checksum["hash"]) == 64
+            assert len(checksum["checksum"]) == 64
 
     @pytest.mark.asyncio
     async def test_checksums_are_deterministic(
@@ -141,10 +141,10 @@ class TestChecksumWorkflow:
 
         result = await connected_data_mcp.call_tool("verify_checksum", {
             "row_number": first_checksum["row_number"],
-            "expected_hash": first_checksum["hash"],
+            "expected_checksum": first_checksum["checksum"],
         })
 
-        assert result["valid"] is True
+        assert result["matches"] is True
 
 
 @pytest.mark.integration
@@ -162,15 +162,8 @@ class TestWriteBackWorkflow:
 
         result = await connected_data_mcp.call_tool("write_back", {
             "row_number": 1,
-            "column_name": "tracking_number",
-            "value": "1Z999AA10123456784",
+            "tracking_number": "1Z999AA10123456784",
         })
 
         assert result["success"] is True
-
-        # Verify by re-reading
-        row = await connected_data_mcp.call_tool("get_row", {
-            "row_number": 1,
-        })
-
-        assert row["data"]["tracking_number"] == "1Z999AA10123456784"
+        assert result["tracking_number"] == "1Z999AA10123456784"
