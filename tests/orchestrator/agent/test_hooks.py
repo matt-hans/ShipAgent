@@ -675,7 +675,7 @@ class TestCreateHookMatchers:
 
 
 class TestValidateSchedulePickup:
-    """Tests for schedule_pickup safety hook (AD-5)."""
+    """Tests for schedule_pickup safety hook — deterministic denial."""
 
     def test_schedule_pickup_hook_matcher_exists(self):
         """Hook matchers must include mcp__ups__schedule_pickup."""
@@ -687,8 +687,8 @@ class TestValidateSchedulePickup:
         assert len(pickup_matchers) == 1, "Missing mcp__ups__schedule_pickup hook matcher"
 
     @pytest.mark.asyncio
-    async def test_schedule_pickup_hook_validates_required_fields(self):
-        """schedule_pickup hook denies when pickup_date is missing."""
+    async def test_schedule_pickup_hook_always_denies(self):
+        """Direct mcp__ups__schedule_pickup is unconditionally denied."""
         from src.orchestrator.agent.hooks import validate_schedule_pickup
 
         result = await validate_schedule_pickup(
@@ -696,12 +696,12 @@ class TestValidateSchedulePickup:
             "test-id",
             None,
         )
-        # Should deny — missing required fields
         assert result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+        assert "orchestrator tool" in result["hookSpecificOutput"]["permissionDecisionReason"]
 
     @pytest.mark.asyncio
-    async def test_schedule_pickup_hook_allows_valid_input(self):
-        """schedule_pickup hook allows when required fields present."""
+    async def test_schedule_pickup_hook_denies_even_with_valid_input(self):
+        """Direct path denied even when all required fields present."""
         from src.orchestrator.agent.hooks import validate_schedule_pickup
 
         result = await validate_schedule_pickup(
@@ -723,27 +723,33 @@ class TestValidateSchedulePickup:
             "test-id",
             None,
         )
-        assert result == {}  # Allowed
+        assert result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+
+
+class TestValidateCancelPickup:
+    """Tests for cancel_pickup safety hook — deterministic denial."""
+
+    def test_cancel_pickup_hook_matcher_exists(self):
+        """Hook matchers must include mcp__ups__cancel_pickup."""
+        matchers = create_hook_matchers(interactive_shipping=False)
+        pre_matchers = matchers["PreToolUse"]
+        cancel_matchers = [
+            m for m in pre_matchers if m.matcher == "mcp__ups__cancel_pickup"
+        ]
+        assert len(cancel_matchers) == 1, "Missing mcp__ups__cancel_pickup hook matcher"
 
     @pytest.mark.asyncio
-    async def test_schedule_pickup_hook_denies_partial_fields(self):
-        """schedule_pickup hook denies when only some required fields present."""
-        from src.orchestrator.agent.hooks import validate_schedule_pickup
+    async def test_cancel_pickup_hook_always_denies(self):
+        """Direct mcp__ups__cancel_pickup is unconditionally denied."""
+        from src.orchestrator.agent.hooks import validate_cancel_pickup
 
-        result = await validate_schedule_pickup(
-            {
-                "tool_name": "mcp__ups__schedule_pickup",
-                "tool_input": {
-                    "pickup_date": "20260220",
-                    "ready_time": "0900",
-                    # Missing close_time, address, city, state, etc.
-                },
-            },
+        result = await validate_cancel_pickup(
+            {"tool_name": "mcp__ups__cancel_pickup", "tool_input": {}},
             "test-id",
             None,
         )
         assert result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
-        assert "close_time" in result["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "orchestrator tool" in result["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 class TestLogToStderr:

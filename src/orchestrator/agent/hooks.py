@@ -38,6 +38,7 @@ __all__ = [
     "create_hook_matchers",
     "create_shipping_hook",
     "validate_schedule_pickup",
+    "validate_cancel_pickup",
 ]
 
 logger = logging.getLogger(__name__)
@@ -408,11 +409,12 @@ async def validate_schedule_pickup(
     tool_use_id: str | None,
     context: Any,
 ) -> dict[str, Any]:
-    """Validate schedule_pickup inputs before execution.
+    """Deny direct MCP schedule_pickup calls — force orchestrator wrapper.
 
-    Checks for required fields: pickup_date, ready_time, close_time,
-    address_line, city, state, postal_code, country_code, contact_name,
-    phone_number. Denies if critical fields are missing.
+    Scheduling a pickup is a financial commitment.  The orchestrator
+    wrapper ``schedule_pickup_tool`` enforces a ``confirmed=True`` gate
+    that the direct MCP tool cannot.  This hook deterministically denies
+    the direct path so the agent is forced through the safe wrapper.
 
     Args:
         input_data: Contains 'tool_name' and 'tool_input' keys.
@@ -420,32 +422,44 @@ async def validate_schedule_pickup(
         context: Hook context from Claude Agent SDK.
 
     Returns:
-        Empty dict to allow, or hookSpecificOutput with denial to block.
+        hookSpecificOutput with denial.
     """
-    tool_input = input_data.get("tool_input", {})
     _log_to_stderr(
-        f"[VALIDATION] Pre-hook checking: schedule_pickup | ID: {tool_use_id}"
+        f"[VALIDATION] Pre-hook DENYING direct schedule_pickup | ID: {tool_use_id}"
+    )
+    return _deny_with_reason(
+        "Direct mcp__ups__schedule_pickup is not allowed. "
+        "Use the schedule_pickup orchestrator tool instead, which enforces "
+        "user confirmation before committing."
     )
 
-    required = [
-        "pickup_date",
-        "ready_time",
-        "close_time",
-        "address_line",
-        "city",
-        "state",
-        "postal_code",
-        "country_code",
-        "contact_name",
-        "phone_number",
-    ]
-    missing = [f for f in required if not tool_input.get(f)]
-    if missing:
-        return _deny_with_reason(
-            f"Missing required pickup fields: {', '.join(missing)}. "
-            "Collect these details from the user before scheduling."
-        )
-    return {}
+
+async def validate_cancel_pickup(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """Deny direct MCP cancel_pickup calls — force orchestrator wrapper.
+
+    Cancelling a pickup is irreversible.  The orchestrator wrapper
+    ``cancel_pickup_tool`` enforces a ``confirmed=True`` gate.
+
+    Args:
+        input_data: Contains 'tool_name' and 'tool_input' keys.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context from Claude Agent SDK.
+
+    Returns:
+        hookSpecificOutput with denial.
+    """
+    _log_to_stderr(
+        f"[VALIDATION] Pre-hook DENYING direct cancel_pickup | ID: {tool_use_id}"
+    )
+    return _deny_with_reason(
+        "Direct mcp__ups__cancel_pickup is not allowed. "
+        "Use the cancel_pickup orchestrator tool instead, which enforces "
+        "user confirmation before committing."
+    )
 
 
 # =============================================================================
@@ -540,6 +554,10 @@ def create_hook_matchers(
             HookMatcher(
                 matcher="mcp__ups__schedule_pickup",
                 hooks=[validate_schedule_pickup],
+            ),
+            HookMatcher(
+                matcher="mcp__ups__cancel_pickup",
+                hooks=[validate_cancel_pickup],
             ),
             HookMatcher(
                 matcher=None,
