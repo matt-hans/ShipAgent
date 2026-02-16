@@ -98,7 +98,7 @@ class TestQueryErrors:
         """Querying without importing data should fail."""
         with pytest.raises(RuntimeError, match="no.*source|import"):
             await connected_data_mcp.call_tool("query_data", {
-                "query": "SELECT * FROM source",
+                "sql": "SELECT * FROM imported_data",
             })
 
     @pytest.mark.asyncio
@@ -113,7 +113,7 @@ class TestQueryErrors:
         # Attempt DROP TABLE injection
         with pytest.raises(RuntimeError):
             await connected_data_mcp.call_tool("query_data", {
-                "query": "SELECT * FROM source; DROP TABLE source;--",
+                "sql": "SELECT * FROM imported_data; DROP TABLE imported_data;--",
             })
 
     @pytest.mark.asyncio
@@ -127,7 +127,7 @@ class TestQueryErrors:
 
         with pytest.raises(RuntimeError, match="syntax|parse|invalid"):
             await connected_data_mcp.call_tool("query_data", {
-                "query": "SELECTT * FROMM source",
+                "sql": "SELECTT * FROMM imported_data",
             })
 
 
@@ -147,7 +147,7 @@ class TestChecksumErrors:
         with pytest.raises(RuntimeError, match="row|not found|invalid"):
             await connected_data_mcp.call_tool("verify_checksum", {
                 "row_number": 9999,
-                "expected_hash": "abc123",
+                "expected_checksum": "abc123",
             })
 
     @pytest.mark.asyncio
@@ -161,7 +161,7 @@ class TestChecksumErrors:
 
         result = await connected_data_mcp.call_tool("verify_checksum", {
             "row_number": 1,
-            "expected_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "expected_checksum": "0000000000000000000000000000000000000000000000000000000000000000",
         })
 
-        assert result["valid"] is False
+        assert result["matches"] is False
