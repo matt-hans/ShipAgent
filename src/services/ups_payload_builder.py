@@ -863,7 +863,7 @@ def build_ups_rate_payload(
     ups_packages = []
     for pkg in packages:
         ups_pkg: dict[str, Any] = {
-            "PackagingType": {"Code": pkg.get("packagingType", DEFAULT_PACKAGING_CODE.value)},
+            "Packaging": {"Code": pkg.get("packagingType", DEFAULT_PACKAGING_CODE.value)},
             "PackageWeight": {
                 "UnitOfMeasurement": {"Code": UPS_WEIGHT_UNIT},
                 "Weight": str(float(pkg.get("weight", DEFAULT_PACKAGE_WEIGHT_LBS))),
