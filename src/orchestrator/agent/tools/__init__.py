@@ -713,7 +713,11 @@ def get_all_tool_definitions(
                     },
                     "shipment_description": {
                         "type": "string",
-                        "description": "Description of goods, max 35 chars (required for international).",
+                        "description": "Description of goods, max 35 chars (required for international). Also accepts 'description' as alias.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Alias for shipment_description — description of goods for customs.",
                     },
                     "service": {
                         "type": "string",

@@ -38,7 +38,12 @@ from src.services.ups_constants import (
     UPS_REFERENCE_MAX_LEN,
     UPS_WEIGHT_UNIT,
 )
-from src.services.ups_service_codes import ServiceCode, resolve_service_code
+from src.services.ups_service_codes import (
+    SUPPORTED_INTERNATIONAL_SERVICES,
+    ServiceCode,
+    resolve_service_code,
+    upgrade_to_international,
+)
 
 
 def normalize_phone(phone: str | None) -> str:
@@ -464,6 +469,13 @@ def build_shipment_request(
     if service_code is None:
         service_code = get_service_code(order_data)
 
+    # Safety net: auto-upgrade domestic service codes for international destinations.
+    # Callers should already upgrade via batch_engine / interactive tool, but this
+    # guarantees correctness regardless of call path.
+    origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
+    dest_country = order_data.get("ship_to_country", "") or origin_country
+    service_code = upgrade_to_international(service_code, origin_country, dest_country)
+
     # Build reference from order ID/number
     reference = order_data.get("order_number") or order_data.get("order_id") or ""
 
@@ -499,8 +511,6 @@ def build_shipment_request(
     # --- International enrichment ---
     from src.services.international_rules import get_requirements
 
-    origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
-    dest_country = order_data.get("ship_to_country", "") or origin_country
     requirements = get_requirements(origin_country, dest_country, service_code)
 
     if requirements.not_shippable_reason:
@@ -714,6 +724,14 @@ def build_ups_api_payload(
             }
         ups_packages.append(ups_pkg)
 
+    # MerchandiseDescription — required by UPS for certain international
+    # destinations (e.g., Mexico). Populate from shipment description on
+    # every package so the payload is universally valid.
+    merch_desc = simplified.get("description", "")
+    if merch_desc and service_code in SUPPORTED_INTERNATIONAL_SERVICES:
+        for ups_pkg in ups_packages:
+            ups_pkg["Description"] = str(merch_desc)[:UPS_ADDRESS_MAX_LEN]
+
     # Build Shipment
     shipment: dict[str, Any] = {
         "Shipper": ups_shipper,
@@ -886,6 +904,12 @@ def build_ups_rate_payload(
                 "MonetaryValue": str(pkg["declaredValue"]),
             }
         ups_packages.append(ups_pkg)
+
+    # Package-level description for international (required by some destinations)
+    merch_desc = simplified.get("description", "")
+    if merch_desc and service_code in SUPPORTED_INTERNATIONAL_SERVICES:
+        for ups_pkg in ups_packages:
+            ups_pkg["Description"] = str(merch_desc)[:UPS_ADDRESS_MAX_LEN]
 
     shipment: dict[str, Any] = {
         "Shipper": ups_shipper,

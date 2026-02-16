@@ -133,18 +133,23 @@ DOMESTIC_ONLY_SERVICES: frozenset[str] = frozenset({
     "12",  # 3 Day Select
     "13",  # Next Day Air Saver
     "14",  # Next Day Air Early
+    "59",  # 2nd Day Air A.M.
 })
 
 
 # Domestic → international equivalent mapping for auto-upgrade
 DOMESTIC_TO_INTERNATIONAL: dict[str, str] = {
-    "03": "11",  # Ground → UPS Standard
+    "03": "65",  # Ground → Worldwide Saver (global default)
     "01": "07",  # Next Day Air → Worldwide Express
     "02": "08",  # 2nd Day Air → Worldwide Expedited
     "12": "65",  # 3 Day Select → Worldwide Saver
     "13": "65",  # Next Day Air Saver → Worldwide Saver
     "14": "54",  # Next Day Air Early → Worldwide Express Plus
+    "59": "08",  # 2nd Day Air A.M. → Worldwide Expedited
 }
+
+# Destinations where UPS Standard (11) is the preferred economy service
+_STANDARD_DESTINATIONS: frozenset[str] = frozenset({"CA", "MX"})
 
 
 def upgrade_to_international(
@@ -153,8 +158,8 @@ def upgrade_to_international(
     """Auto-upgrade a domestic service code to its international equivalent.
 
     When the destination is international and the service code is domestic-only,
-    maps it to the closest international service. Returns the original code if
-    already international or if the shipment is domestic.
+    maps it to the closest international service. Ground (03) maps to UPS
+    Standard (11) for CA/MX and Worldwide Saver (65) for all other destinations.
 
     Args:
         service_code: UPS service code (e.g., "03").
@@ -166,9 +171,12 @@ def upgrade_to_international(
     """
     if origin.upper() == destination.upper():
         return service_code
-    if service_code in DOMESTIC_TO_INTERNATIONAL:
-        return DOMESTIC_TO_INTERNATIONAL[service_code]
-    return service_code
+    if service_code not in DOMESTIC_TO_INTERNATIONAL:
+        return service_code
+    # Ground → UPS Standard for CA/MX, Worldwide Saver for rest of world
+    if service_code == "03" and destination.upper() in _STANDARD_DESTINATIONS:
+        return "11"
+    return DOMESTIC_TO_INTERNATIONAL[service_code]
 
 
 def resolve_service_code(raw_value: str | None, default: str = "03") -> str:

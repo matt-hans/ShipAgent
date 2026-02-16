@@ -164,10 +164,18 @@ class TestNumericConstants:
 class TestUpgradeToInternational:
     """Test domestic→international service code auto-upgrade."""
 
-    def test_ground_upgrades_to_standard(self):
-        """Ground (03) → UPS Standard (11) for international."""
+    def test_ground_upgrades_to_standard_for_ca(self):
+        """Ground (03) → UPS Standard (11) for CA/MX."""
         from src.services.ups_service_codes import upgrade_to_international
-        assert upgrade_to_international("03", "US", "GB") == "11"
+        assert upgrade_to_international("03", "US", "CA") == "11"
+        assert upgrade_to_international("03", "US", "MX") == "11"
+
+    def test_ground_upgrades_to_saver_for_global(self):
+        """Ground (03) → Worldwide Saver (65) for non-CA/MX destinations."""
+        from src.services.ups_service_codes import upgrade_to_international
+        assert upgrade_to_international("03", "US", "GB") == "65"
+        assert upgrade_to_international("03", "US", "DE") == "65"
+        assert upgrade_to_international("03", "US", "JP") == "65"
 
     def test_next_day_air_upgrades_to_worldwide_express(self):
         """Next Day Air (01) → Worldwide Express (07) for international."""
@@ -185,11 +193,81 @@ class TestUpgradeToInternational:
         assert upgrade_to_international("07", "US", "GB") == "07"
         assert upgrade_to_international("11", "US", "CA") == "11"
 
+    def test_second_day_air_am_upgrades_to_worldwide_expedited(self):
+        """2nd Day Air A.M. (59) → Worldwide Expedited (08) for international."""
+        from src.services.ups_service_codes import upgrade_to_international
+        assert upgrade_to_international("59", "US", "GB") == "08"
+        assert upgrade_to_international("59", "US", "CA") == "08"
+
     def test_all_domestic_codes_have_mapping(self):
         """Every domestic-only code has an international equivalent."""
         from src.services.ups_service_codes import DOMESTIC_TO_INTERNATIONAL, DOMESTIC_ONLY_SERVICES
         for code in DOMESTIC_ONLY_SERVICES:
             assert code in DOMESTIC_TO_INTERNATIONAL, f"No international mapping for {code}"
+
+
+class TestBuildShipmentRequestUpgrade:
+    """Test build_shipment_request auto-upgrades domestic service codes."""
+
+    _SHIPPER = {
+        "name": "Shipper",
+        "addressLine1": "100 Main St",
+        "city": "New York",
+        "stateProvinceCode": "NY",
+        "postalCode": "10001",
+        "countryCode": "US",
+    }
+
+    def test_ground_auto_upgraded_for_gb(self, monkeypatch):
+        """build_shipment_request upgrades Ground → Worldwide Saver for US→GB."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "*")
+        from src.services.ups_payload_builder import build_shipment_request
+
+        order_data = {
+            "ship_to_name": "Test",
+            "ship_to_address1": "123 High St",
+            "ship_to_city": "London",
+            "ship_to_postal_code": "SW1A 1AA",
+            "ship_to_country": "GB",
+            "service_code": "03",
+            "weight": 1.0,
+        }
+        result = build_shipment_request(order_data, self._SHIPPER, service_code="03")
+        assert result["serviceCode"] == "65"
+
+    def test_ground_auto_upgraded_for_ca(self, monkeypatch):
+        """build_shipment_request upgrades Ground → Standard for US→CA."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "*")
+        from src.services.ups_payload_builder import build_shipment_request
+
+        order_data = {
+            "ship_to_name": "Test",
+            "ship_to_address1": "123 Test St",
+            "ship_to_city": "Toronto",
+            "ship_to_state": "ON",
+            "ship_to_postal_code": "M5V 2T6",
+            "ship_to_country": "CA",
+            "service_code": "03",
+            "weight": 1.0,
+        }
+        result = build_shipment_request(order_data, self._SHIPPER, service_code="03")
+        assert result["serviceCode"] == "11"
+
+    def test_domestic_not_upgraded(self):
+        """build_shipment_request keeps Ground for domestic US→US."""
+        from src.services.ups_payload_builder import build_shipment_request
+
+        order_data = {
+            "ship_to_name": "Test",
+            "ship_to_address1": "456 Elm St",
+            "ship_to_city": "Chicago",
+            "ship_to_state": "IL",
+            "ship_to_postal_code": "60601",
+            "ship_to_country": "US",
+            "weight": 1.0,
+        }
+        result = build_shipment_request(order_data, self._SHIPPER, service_code="03")
+        assert result["serviceCode"] == "03"
 
 
 class TestLabelConstants:

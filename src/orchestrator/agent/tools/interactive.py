@@ -151,7 +151,7 @@ async def preview_interactive_shipment_tool(
     ship_to_state = _str(args.get("ship_to_state"))
     ship_to_country = (_str(args.get("ship_to_country"), DEFAULT_ORIGIN_COUNTRY) or DEFAULT_ORIGIN_COUNTRY).upper()
     ship_to_attention_name = _str(args.get("ship_to_attention_name"))
-    shipment_description = _str(args.get("shipment_description"))
+    shipment_description = _str(args.get("shipment_description")) or _str(args.get("description"))
     commodities = args.get("commodities")
     invoice_currency_code = _str(args.get("invoice_currency_code")).upper()
     invoice_monetary_value = _str(args.get("invoice_monetary_value"))
@@ -192,6 +192,12 @@ async def preview_interactive_shipment_tool(
     service_code = resolve_service_code(service)
     shipper_country = os.environ.get("SHIPPER_COUNTRY", DEFAULT_ORIGIN_COUNTRY).upper()
     service_code = upgrade_to_international(service_code, shipper_country, ship_to_country)
+
+    # Auto-derive shipment_description from commodities if not provided
+    if not shipment_description and isinstance(commodities, list) and commodities:
+        first_desc = _str(commodities[0].get("description") if isinstance(commodities[0], dict) else None)
+        if first_desc:
+            shipment_description = first_desc[:UPS_ADDRESS_MAX_LEN]
 
     # Construct order_data with canonical keys.
     order_data: dict[str, Any] = {
