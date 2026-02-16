@@ -46,10 +46,65 @@ class TestGetRequirements:
         assert req.is_international is False  # PR is US territory
         assert req.requires_invoice_line_total is True
 
-    def test_unsupported_lane_returns_not_shippable(self):
-        req = get_requirements("US", "GB", "07")
-        assert req.not_shippable_reason is not None
-        assert "not" in req.not_shippable_reason.lower()
+    def test_feature_flag_rejects_unlisted_lane(self):
+        """Lane not in INTERNATIONAL_ENABLED_LANES is rejected."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            req = get_requirements("US", "GB", "07")
+            assert req.not_shippable_reason is not None
+            assert "not enabled" in req.not_shippable_reason.lower()
+
+    def test_wildcard_enables_all_lanes(self):
+        """Wildcard * enables any international lane."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "*"}, clear=False):
+            for dest in ("GB", "JP", "AU", "DE"):
+                req = get_requirements("US", dest, "07")
+                assert req.not_shippable_reason is None, f"US→{dest} rejected with wildcard"
+                assert req.is_international is True
+
+    def test_wildcard_enables_non_us_origin(self):
+        """Wildcard enables non-US origin lanes too."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "*"}, clear=False):
+            req = get_requirements("DE", "FR", "07")
+            assert req.not_shippable_reason is None
+            assert req.is_international is True
+
+    def test_ups_letter_exemption(self):
+        """UPS Letter (packaging 01) reduces requirements."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "*"}, clear=False):
+            req = get_requirements("US", "GB", "07", packaging_code="01")
+            assert req.is_international is True
+            assert req.requires_description is False
+            assert req.requires_international_forms is False
+            assert req.requires_commodities is False
+            assert req.requires_shipper_contact is True
+            assert req.requires_recipient_contact is True
+
+    def test_eu_to_eu_standard_exemption(self):
+        """EU-to-EU Standard (service 11) reduces requirements."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "*"}, clear=False):
+            req = get_requirements("DE", "FR", "11")
+            assert req.is_international is True
+            assert req.requires_description is False
+            assert req.requires_international_forms is False
+            assert req.requires_commodities is False
+            assert req.requires_shipper_contact is True
+
+    def test_eu_to_eu_non_standard_full_requirements(self):
+        """EU-to-EU with non-Standard service requires full documentation."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "*"}, clear=False):
+            req = get_requirements("DE", "FR", "07")
+            assert req.is_international is True
+            assert req.requires_description is True
+            assert req.requires_international_forms is True
+            assert req.requires_commodities is True
+
+    def test_eu_to_non_eu_full_requirements(self):
+        """EU to non-EU requires full documentation."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "*"}, clear=False):
+            req = get_requirements("DE", "US", "07")
+            assert req.is_international is True
+            assert req.requires_description is True
+            assert req.requires_international_forms is True
 
     def test_invalid_service_for_lane(self):
         with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
@@ -255,3 +310,10 @@ class TestLaneEnabled:
             assert is_lane_enabled("US", "CA") is True
             assert is_lane_enabled("US", "MX") is True
             assert is_lane_enabled("US", "GB") is False
+
+    def test_wildcard_enables_all(self):
+        """Wildcard * enables any lane."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "*"}, clear=False):
+            assert is_lane_enabled("US", "GB") is True
+            assert is_lane_enabled("DE", "FR") is True
+            assert is_lane_enabled("JP", "AU") is True

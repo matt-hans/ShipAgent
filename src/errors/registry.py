@@ -148,7 +148,7 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         category=ErrorCategory.VALIDATION,
         title="Unsupported Shipping Lane",
         message_template="Unsupported shipping lane: {origin} to {destination}.",
-        remediation="Currently supported lanes: US to CA, US to MX. Contact support for other destinations.",
+        remediation="Check that the lane is enabled via INTERNATIONAL_ENABLED_LANES (use * for all destinations).",
     ),
     "E-2016": ErrorCode(
         code="E-2016",
@@ -230,6 +230,17 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         title="Ambiguous Billing",
         message_template="Multiple billing objects found in ShipmentCharge. Only one payer type allowed.",
         remediation="Use exactly one of: BillShipper, BillReceiver, or BillThirdParty per charge.",
+    ),
+    "E-2023": ErrorCode(
+        code="E-2023",
+        category=ErrorCategory.VALIDATION,
+        title="Structural Fields Required",
+        message_template="International shipment requires structural data: {ups_message}",
+        remediation=(
+            "This shipment requires complex structured data (InternationalForms, Product arrays) "
+            "that cannot be collected via simple prompts. Provide the data in your source file "
+            "or use the batch path with full commodity and customs information."
+        ),
     ),
     # UPS MCP v2 — Domain-specific UPS API errors (E-3007 – E-3009)
     "E-3007": ErrorCode(

@@ -101,10 +101,18 @@ class TestMixedBatchValidation:
             assert "domestic-only" in req.not_shippable_reason.lower()
 
     def test_unsupported_lane_rejected(self):
-        """Unsupported lane (e.g., US→GB) is rejected."""
-        req = get_requirements("US", "GB", "07")
-        assert req.not_shippable_reason is not None
-        assert "not currently supported" in req.not_shippable_reason.lower()
+        """Unlisted lane (e.g., US→GB with specific lanes) is rejected."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            req = get_requirements("US", "GB", "07")
+            assert req.not_shippable_reason is not None
+            assert "not enabled" in req.not_shippable_reason.lower()
+
+    def test_wildcard_enables_all_destinations(self):
+        """Wildcard * enables US→GB and other destinations."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "*"}, clear=False):
+            req = get_requirements("US", "GB", "07")
+            assert req.not_shippable_reason is None
+            assert req.is_international is True
 
     def test_valid_international_row_passes(self):
         """Fully valid international row produces no errors."""

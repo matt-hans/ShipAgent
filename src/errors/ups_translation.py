@@ -50,6 +50,8 @@ UPS_ERROR_MAP: dict[str, str] = {
     # UPS MCP v2 — MALFORMED_REQUEST reason-based routing (synthetic codes)
     "MALFORMED_REQUEST_AMBIGUOUS": "E-2022",  # Ambiguous payer
     "MALFORMED_REQUEST_STRUCTURE": "E-2021",  # Malformed structure
+    # UPS MCP preflight — structural fields required for complex structures
+    "STRUCTURAL_FIELDS_REQUIRED": "E-2023",
     # International/customs UPS error codes
     "CUSTOMS_MISSING_DATA": "E-2013",
     "CUSTOMS_INVALID_HS": "E-2014",

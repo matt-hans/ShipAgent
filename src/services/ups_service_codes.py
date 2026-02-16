@@ -136,6 +136,41 @@ DOMESTIC_ONLY_SERVICES: frozenset[str] = frozenset({
 })
 
 
+# Domestic → international equivalent mapping for auto-upgrade
+DOMESTIC_TO_INTERNATIONAL: dict[str, str] = {
+    "03": "11",  # Ground → UPS Standard
+    "01": "07",  # Next Day Air → Worldwide Express
+    "02": "08",  # 2nd Day Air → Worldwide Expedited
+    "12": "65",  # 3 Day Select → Worldwide Saver
+    "13": "65",  # Next Day Air Saver → Worldwide Saver
+    "14": "54",  # Next Day Air Early → Worldwide Express Plus
+}
+
+
+def upgrade_to_international(
+    service_code: str, origin: str, destination: str,
+) -> str:
+    """Auto-upgrade a domestic service code to its international equivalent.
+
+    When the destination is international and the service code is domestic-only,
+    maps it to the closest international service. Returns the original code if
+    already international or if the shipment is domestic.
+
+    Args:
+        service_code: UPS service code (e.g., "03").
+        origin: Origin country code (e.g., "US").
+        destination: Destination country code (e.g., "GB").
+
+    Returns:
+        International service code if upgrade needed, otherwise original.
+    """
+    if origin.upper() == destination.upper():
+        return service_code
+    if service_code in DOMESTIC_TO_INTERNATIONAL:
+        return DOMESTIC_TO_INTERNATIONAL[service_code]
+    return service_code
+
+
 def resolve_service_code(raw_value: str | None, default: str = "03") -> str:
     """Resolve a service value to a UPS numeric service code.
 
