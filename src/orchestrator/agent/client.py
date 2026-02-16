@@ -135,6 +135,7 @@ class OrchestrationAgent:
         permission_mode: str = "acceptEdits",
         model: str | None = None,
         interactive_shipping: bool = False,
+        session_id: str | None = None,
     ) -> None:
         """Initialize the Orchestration Agent.
 
@@ -146,11 +147,14 @@ class OrchestrationAgent:
                 ANTHROPIC_MODEL) env var, else Haiku 4.5.
             interactive_shipping: Whether interactive single-shipment mode is
                 enabled. Passed to hook factory for deterministic enforcement.
+            session_id: Conversation session ID. Passed to emitter bridge so
+                tool handlers can look up session-scoped attachment data.
         """
         self._system_prompt = system_prompt
         self._model = model or DEFAULT_MODEL
         self._interactive_shipping = interactive_shipping
         self.emitter_bridge = EventEmitterBridge()
+        self.emitter_bridge.session_id = session_id
         self._options = self._create_options(max_turns, permission_mode)
         self._client: Optional[ClaudeSDKClient] = None
         self._started = False

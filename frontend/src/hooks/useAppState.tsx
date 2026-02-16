@@ -17,6 +17,7 @@ import type {
   LocationResult,
   LandedCostResult,
   PaperlessResult,
+  PaperlessUploadPrompt,
   TrackingResult,
 } from '@/types/api';
 
@@ -49,7 +50,8 @@ interface ConversationMessage {
     jobId?: string;
     action?:
       | 'preview' | 'execute' | 'complete' | 'error' | 'elicit'
-      | 'pickup_preview' | 'pickup_result' | 'location_result' | 'landed_cost_result' | 'paperless_result'
+      | 'pickup_preview' | 'pickup_result' | 'location_result' | 'landed_cost_result'
+      | 'paperless_upload_prompt' | 'paperless_result'
       | 'tracking_result';
     preview?: {
       rowCount: number;
@@ -89,6 +91,7 @@ interface ConversationMessage {
     pickupPreview?: PickupPreview;
     location?: LocationResult;
     landedCost?: LandedCostResult;
+    paperlessUpload?: PaperlessUploadPrompt;
     paperless?: PaperlessResult;
     tracking?: TrackingResult;
   };

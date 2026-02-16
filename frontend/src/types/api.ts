@@ -628,6 +628,7 @@ export type AgentEventType =
   | 'pickup_result'
   | 'location_result'
   | 'landed_cost_result'
+  | 'paperless_upload_prompt'
   | 'paperless_result'
   | 'tracking_result'
   | 'confirmation_needed'
@@ -722,11 +723,31 @@ export interface LandedCostResult {
   }>;
 }
 
+/** Upload prompt event data emitted by request_document_upload tool. */
+export interface PaperlessUploadPrompt {
+  accepted_formats: string[];
+  document_types: { code: string; label: string }[];
+  prompt: string;
+  suggested_document_type?: string;
+}
+
+/** Response from the upload-document endpoint. */
+export interface UploadDocumentResponse {
+  success: boolean;
+  file_name: string;
+  file_format: string;
+  file_size_bytes: number;
+}
+
 /** Paperless document operation result from SSE stream. */
 export interface PaperlessResult {
   action: 'uploaded' | 'pushed' | 'deleted';
   success: boolean;
   documentId?: string;
+  fileName?: string;
+  fileFormat?: string;
+  documentType?: string;
+  fileSizeBytes?: number;
 }
 
 /** Package tracking result from SSE stream. */

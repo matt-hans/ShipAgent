@@ -7,7 +7,7 @@ import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
 import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows } from '@/lib/api';
 import { useConversation } from '@/hooks/useConversation';
-import type { Job, BatchPreview, PickupResult, PickupPreview, LocationResult, LandedCostResult, PaperlessResult, TrackingResult } from '@/types/api';
+import type { Job, BatchPreview, PickupResult, PickupPreview, LocationResult, LandedCostResult, PaperlessResult, PaperlessUploadPrompt, TrackingResult } from '@/types/api';
 import { LabelPreview } from '@/components/LabelPreview';
 import { JobDetailPanel } from '@/components/JobDetailPanel';
 import { SendIcon, StopIcon, EditIcon } from '@/components/ui/icons';
@@ -20,6 +20,7 @@ import { PickupCompletionCard } from '@/components/command-center/PickupCompleti
 import { LocationCard } from '@/components/command-center/LocationCard';
 import { LandedCostCard } from '@/components/command-center/LandedCostCard';
 import { PaperlessCard } from '@/components/command-center/PaperlessCard';
+import { PaperlessUploadCard } from '@/components/command-center/PaperlessUploadCard';
 import { TrackingCard } from '@/components/command-center/TrackingCard';
 import {
   ActiveSourceBanner,
@@ -242,6 +243,16 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
           metadata: { action: 'landed_cost_result', landedCost: event.data as unknown as LandedCostResult },
         });
         suppressNextMessageRef.current = true;
+      } else if (event.type === 'paperless_upload_prompt') {
+        addMessage({
+          role: 'system',
+          content: '',
+          metadata: {
+            action: 'paperless_upload_prompt',
+            paperlessUpload: event.data as unknown as PaperlessUploadPrompt,
+          },
+        });
+        suppressNextMessageRef.current = true;
       } else if (event.type === 'paperless_result') {
         addMessage({
           role: 'system',
@@ -459,6 +470,21 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
               ) : message.metadata?.action === 'landed_cost_result' && message.metadata.landedCost ? (
                 <div key={message.id} className="pl-11">
                   <LandedCostCard data={message.metadata.landedCost} />
+                </div>
+              ) : message.metadata?.action === 'paperless_upload_prompt' && message.metadata.paperlessUpload ? (
+                <div key={message.id} className="pl-11">
+                  <PaperlessUploadCard
+                    data={message.metadata.paperlessUpload}
+                    sessionId={conv.sessionId ?? ''}
+                    onUploadComplete={() => {
+                      // Upload card transitions to completed state.
+                      // Agent will process the attachment and emit paperless_result.
+                    }}
+                    onCancel={() => {
+                      addMessage({ role: 'system', content: 'Document upload cancelled.' });
+                    }}
+                    disabled={conv.isProcessing}
+                  />
                 </div>
               ) : message.metadata?.action === 'paperless_result' && message.metadata.paperless ? (
                 <div key={message.id} className="pl-11">
