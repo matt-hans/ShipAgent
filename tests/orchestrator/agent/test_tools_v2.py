@@ -1638,3 +1638,54 @@ async def test_get_landed_cost_tool_handles_malformed_args():
 
     assert result["isError"] is True
     assert "Unexpected error" in result["content"][0]["text"]
+
+
+# ---------------------------------------------------------------------------
+# UPS MCP v2 — Tool registration (Task 13)
+# ---------------------------------------------------------------------------
+
+
+def test_v2_tools_registered_batch_mode():
+    """All UPS MCP v2 orchestrator tools appear in batch mode."""
+    defs = get_all_tool_definitions()
+    names = {d["name"] for d in defs}
+    expected_v2 = {
+        "schedule_pickup",
+        "cancel_pickup",
+        "rate_pickup",
+        "get_pickup_status",
+        "find_locations",
+        "get_service_center_facilities",
+        "upload_paperless_document",
+        "push_document_to_shipment",
+        "delete_paperless_document",
+        "get_landed_cost",
+    }
+    assert expected_v2.issubset(names), f"Missing: {expected_v2 - names}"
+
+
+def test_v2_tools_not_in_interactive_mode():
+    """Interactive mode MUST NOT include v2 orchestrator tools (AD-1).
+
+    The agent accesses new UPS tools via MCP auto-discovery
+    (mcp__ups__schedule_pickup etc.), not via orchestrator tool registry.
+    The interactive allowlist stays at exactly 3 tools.
+    """
+    defs = get_all_tool_definitions(interactive_shipping=True)
+    names = {d["name"] for d in defs}
+    assert names == {
+        "get_job_status",
+        "get_platform_status",
+        "preview_interactive_shipment",
+    }
+    v2_tools = {
+        "schedule_pickup",
+        "cancel_pickup",
+        "rate_pickup",
+        "find_locations",
+        "get_landed_cost",
+        "upload_paperless_document",
+    }
+    assert not names.intersection(v2_tools), (
+        f"v2 tools leaked into interactive mode: {names & v2_tools}"
+    )
