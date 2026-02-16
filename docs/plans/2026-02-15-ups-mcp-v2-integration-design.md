@@ -69,25 +69,27 @@ These are **optional** — if source files don't exist in `docs/`, create minima
 | E-2020 | VALIDATION | Missing Required Fields (Structured) | `"Missing {count} required field(s): {fields}"` | `"Provide the missing fields listed above. Check your data source column mapping."` |
 | E-2021 | VALIDATION | Malformed Request Structure | `"Request body has structural errors: {reason}"` | `"Check that the request body matches the expected format."` |
 | E-2022 | VALIDATION | Ambiguous Billing | `"Multiple billing objects found in ShipmentCharge. Only one payer type allowed."` | `"Use exactly one of: BillShipper, BillReceiver, or BillThirdParty per charge."` |
-| E-3006 | UPS_API | Document Not Found | `"Paperless document not found or expired: {ups_message}"` | `"The document may have expired. Re-upload the document and try again."` |
-| E-3007 | UPS_API | Pickup Timing Error | `"Pickup scheduling failed: {ups_message}"` | `"Check that the pickup date is in the future and within UPS scheduling windows."` |
-| E-3008 | UPS_API | No Locations Found | `"No UPS locations found for the given search criteria."` | `"Try expanding the search radius or adjusting the address."` |
-| E-4001 | SYSTEM | Elicitation Declined | `"User declined to provide required information."` | `"The operation was cancelled because required fields were not provided."` |
-| E-4002 | SYSTEM | Elicitation Cancelled | `"User cancelled the operation."` | `"The operation was cancelled by the user."` |
+| E-3007 | UPS_API | Document Not Found | `"Paperless document not found or expired: {ups_message}"` | `"The document may have expired. Re-upload the document and try again."` |
+| E-3008 | UPS_API | Pickup Timing Error | `"Pickup scheduling failed: {ups_message}"` | `"Check that the pickup date is in the future and within UPS scheduling windows."` |
+| E-3009 | UPS_API | No Locations Found | `"No UPS locations found for the given search criteria."` | `"Try expanding the search radius or adjusting the address."` |
+| E-4011 | SYSTEM | Elicitation Declined | `"User declined to provide required information."` | `"The operation was cancelled because required fields were not provided."` |
+| E-4012 | SYSTEM | Elicitation Cancelled | `"User cancelled the operation."` | `"The operation was cancelled by the user."` |
+
+> **Note:** E-4011/E-4012 replace the original E-4001/E-4002 from initial design — per AD-6 in the implementation plan, these are remapped from the previous E-2012 catch-all. E-3007/E-3008/E-3009 replace the original E-3006/E-3007/E-3008 numbering. See implementation plan AD-6 for migration details.
 
 **File:** `src/errors/ups_translation.py` — New mappings:
 
 ```python
 # Add to UPS_ERROR_MAP:
 "MALFORMED_REQUEST": "E-2021",      # Split by reason in _translate_error
-"9590022": "E-3006",                # Paperless document not found
-"190102": "E-3007",                 # Pickup timing
-"ELICITATION_DECLINED": "E-4001",   # User declined
-"ELICITATION_CANCELLED": "E-4002",  # User cancelled
+"9590022": "E-3007",                # Paperless document not found
+"190102": "E-3008",                 # Pickup timing
+"ELICITATION_DECLINED": "E-4011",   # User declined (remapped from E-2012 per AD-6)
+"ELICITATION_CANCELLED": "E-4012",  # User cancelled (remapped from E-2012 per AD-6)
 
 # Add to UPS_MESSAGE_PATTERNS:
-"no locations found": "E-3008",
-"no pdf found": "E-3006",
+"no locations found": "E-3009",
+"no pdf found": "E-3007",
 ```
 
 **File:** `src/services/ups_mcp_client.py` — Update `_translate_error()`:
@@ -438,7 +440,7 @@ interface PaperlessResult {
 |---|------|--------|:------:|
 | 1 | `src/orchestrator/agent/config.py` | Add `UPS_ACCOUNT_NUMBER` to env dict | Minimal |
 | 2 | `src/services/ups_specs.py` | Add 4 optional spec file references | Low |
-| 3 | `src/errors/registry.py` | Register 8 new E-codes (E-2020–E-2022, E-3006–E-3008, E-4001–E-4002) | Low |
+| 3 | `src/errors/registry.py` | Register 8 new E-codes (E-2020–E-2022, E-3007–E-3009, E-4011–E-4012) | Low |
 | 4 | `src/errors/ups_translation.py` | Map new error codes + message patterns | Low |
 | 5 | `src/services/ups_mcp_client.py` | Update `_translate_error()` for MALFORMED_REQUEST reason parsing | Low |
 | 6 | `src/orchestrator/agent/system_prompt.py` | Add 5 new workflow sections for new domains | Medium |
