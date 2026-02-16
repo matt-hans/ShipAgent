@@ -1385,3 +1385,162 @@ async def test_get_service_center_facilities_tool_success():
     assert len(captured) == 1
     assert captured[0][0] == "location_result"
     assert captured[0][1]["action"] == "service_centers"
+
+
+# ---------------------------------------------------------------------------
+# UPS MCP v2 — Paperless document tool handlers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upload_paperless_document_tool_emits_event():
+    """upload_paperless_document_tool emits paperless_result on success."""
+    mock_ups = AsyncMock()
+    mock_ups.upload_document.return_value = {
+        "success": True,
+        "documentId": "DOC-123",
+    }
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.documents._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.documents import (
+            upload_paperless_document_tool,
+        )
+
+        result = await upload_paperless_document_tool(
+            {
+                "file_content_base64": "dGVzdA==",
+                "file_name": "invoice.pdf",
+                "file_format": "pdf",
+                "document_type": "002",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["documentId"] == "DOC-123"
+
+    assert len(captured) == 1
+    assert captured[0][0] == "paperless_result"
+    assert captured[0][1]["action"] == "uploaded"
+    assert captured[0][1]["documentId"] == "DOC-123"
+
+
+@pytest.mark.asyncio
+async def test_upload_paperless_document_tool_handles_malformed_args():
+    """upload_paperless_document_tool returns _err for TypeError from bad args."""
+    mock_ups = AsyncMock()
+    mock_ups.upload_document.side_effect = TypeError("missing required arg")
+
+    with patch(
+        "src.orchestrator.agent.tools.documents._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.documents import (
+            upload_paperless_document_tool,
+        )
+
+        result = await upload_paperless_document_tool({})
+
+    assert result["isError"] is True
+    assert "Unexpected error" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_push_document_to_shipment_tool_success():
+    """push_document_to_shipment_tool emits paperless_result on success."""
+    mock_ups = AsyncMock()
+    mock_ups.push_document.return_value = {"success": True}
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.documents._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.documents import (
+            push_document_to_shipment_tool,
+        )
+
+        result = await push_document_to_shipment_tool(
+            {
+                "document_id": "DOC-123",
+                "shipment_identifier": "1Z999AA10123456784",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["success"] is True
+
+    assert len(captured) == 1
+    assert captured[0][0] == "paperless_result"
+    assert captured[0][1]["action"] == "pushed"
+
+
+@pytest.mark.asyncio
+async def test_delete_paperless_document_tool_success():
+    """delete_paperless_document_tool emits paperless_result on success."""
+    mock_ups = AsyncMock()
+    mock_ups.delete_document.return_value = {"success": True}
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.documents._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.documents import (
+            delete_paperless_document_tool,
+        )
+
+        result = await delete_paperless_document_tool(
+            {"document_id": "DOC-123"},
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["success"] is True
+
+    assert len(captured) == 1
+    assert captured[0][0] == "paperless_result"
+    assert captured[0][1]["action"] == "deleted"
+
+
+@pytest.mark.asyncio
+async def test_delete_paperless_document_tool_error():
+    """delete_paperless_document_tool returns _err on UPSServiceError."""
+    from src.services.errors import UPSServiceError
+
+    mock_ups = AsyncMock()
+    mock_ups.delete_document.side_effect = UPSServiceError(
+        code="E-3006", message="document not found"
+    )
+
+    with patch(
+        "src.orchestrator.agent.tools.documents._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.documents import (
+            delete_paperless_document_tool,
+        )
+
+        result = await delete_paperless_document_tool(
+            {"document_id": "DOC-GONE"},
+        )
+
+    assert result["isError"] is True
+    assert "E-3006" in result["content"][0]["text"]
