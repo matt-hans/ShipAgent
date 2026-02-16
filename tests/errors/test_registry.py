@@ -18,6 +18,7 @@ from src.errors.registry import ErrorCategory, get_error
         ("E-3007", ErrorCategory.UPS_API, "Document Not Found"),
         ("E-3008", ErrorCategory.UPS_API, "Pickup Timing Error"),
         ("E-3009", ErrorCategory.UPS_API, "No Locations Found"),
+        ("E-3010", ErrorCategory.UPS_API, "CIE Service Unavailable"),
         ("E-4011", ErrorCategory.SYSTEM, "Missing Required Fields"),
         ("E-4012", ErrorCategory.SYSTEM, "Elicitation Cancelled"),
     ],

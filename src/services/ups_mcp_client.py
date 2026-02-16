@@ -548,9 +548,41 @@ class UPSMCPClient:
         try:
             raw = await self._call("get_landed_cost_quote", args)
         except MCPToolError as e:
+            if self._is_cie_infrastructure_error(str(e)):
+                raise UPSServiceError(
+                    code="E-3010",
+                    message=(
+                        "UPS CIE Landed Cost service is unavailable "
+                        "(internal infrastructure error). "
+                        "Switch to production environment or retry later."
+                    ),
+                ) from e
             raise self._translate_error(e) from e
 
         return self._normalize_landed_cost_response(raw)
+
+    @staticmethod
+    def _is_cie_infrastructure_error(error_text: str) -> bool:
+        """Detect UPS CIE internal infrastructure failures.
+
+        The CIE Landed Cost backend sometimes fails with an HTTP 500
+        containing an Azure AD OAuth renewal stack trace
+        (``CIEOauth2RouteBuilder.renewAuth`` against
+        ``login.microsoftonline.com``).  This is a UPS-side issue
+        that no client-side fix can resolve.
+
+        Args:
+            error_text: Raw error text from the MCP tool response.
+
+        Returns:
+            True when the error matches the known CIE infrastructure pattern.
+        """
+        lower = error_text.lower()
+        return (
+            "login.microsoftonline.com" in lower
+            or "cieoauth2routebuilder" in lower
+            or "httpoperationfailedexception" in lower
+        )
 
     # ── Paperless document methods ─────────────────────────────────────
 
@@ -1152,31 +1184,45 @@ class UPSMCPClient:
     def _normalize_landed_cost_response(self, raw: dict) -> dict[str, Any]:
         """Extract landed cost from raw UPS response.
 
+        The UPS Landed Cost API returns a flat structure with ``shipment``
+        at the top level (not nested under a wrapper key).  Per-commodity
+        fields use ``commodityDuty``, ``commodityVAT``, and
+        ``totalCommodityTaxesAndFees``; the shipment-level total is
+        ``grandTotal``.
+
         Args:
             raw: Raw UPS LandedCostResponse dict.
 
         Returns:
-            Normalised response dict with success, totalLandedCost, items.
+            Normalised response dict with success, totalLandedCost,
+            currencyCode, totalDuties, totalVAT, totalBrokerageFees,
+            and per-commodity items.
         """
-        shipment = raw.get("LandedCostResponse", {}).get("shipment", {})
-        total = shipment.get("totalLandedCost", "0")
+        # UPS returns shipment at top level (production verified).
+        shipment = raw.get("shipment", {})
+        grand_total = shipment.get("grandTotal", 0)
         currency = shipment.get("currencyCode", "USD")
+
         items_raw = shipment.get("shipmentItems", [])
         if isinstance(items_raw, dict):
             items_raw = [items_raw]
         items = [
             {
                 "commodityId": item.get("commodityId", ""),
-                "duties": item.get("duties", "0"),
-                "taxes": item.get("taxes", "0"),
-                "fees": item.get("fees", "0"),
+                "duties": str(item.get("commodityDuty", 0)),
+                "taxes": str(item.get("commodityVAT", 0)),
+                "fees": str(item.get("totalCommodityTaxesAndFees", 0)),
+                "hsCode": item.get("hsCode", ""),
             }
             for item in items_raw
         ]
         return {
             "success": True,
-            "totalLandedCost": total,
+            "totalLandedCost": str(grand_total),
             "currencyCode": currency,
+            "totalDuties": str(shipment.get("totalDuties", 0)),
+            "totalVAT": str(shipment.get("totalVAT", 0)),
+            "totalBrokerageFees": str(shipment.get("totalBrokerageFees", 0)),
             "items": items,
         }
 

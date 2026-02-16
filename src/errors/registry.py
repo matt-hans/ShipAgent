@@ -253,6 +253,18 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
         message_template="No UPS locations found for the given search criteria.",
         remediation="Try expanding the search radius or adjusting the address.",
     ),
+    "E-3010": ErrorCode(
+        code="E-3010",
+        category=ErrorCategory.UPS_API,
+        title="CIE Service Unavailable",
+        message_template="UPS CIE environment does not support this API: {ups_message}",
+        remediation=(
+            "The UPS Customer Integration Environment (CIE) has an internal "
+            "infrastructure issue for this API. Switch to the production "
+            "environment (set ENVIRONMENT=production) or contact UPS developer "
+            "support."
+        ),
+    ),
     # System errors (E-4xxx)
     "E-4001": ErrorCode(
         code="E-4001",

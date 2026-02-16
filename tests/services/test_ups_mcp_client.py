@@ -935,17 +935,37 @@ class TestGetLandedCost:
 
     @pytest.mark.asyncio
     async def test_get_landed_cost(self, ups_client, mock_mcp_client):
-        """get_landed_cost returns duty/tax breakdown."""
+        """get_landed_cost returns duty/tax breakdown from real UPS response shape."""
         mock_mcp_client.call_tool.return_value = {
-            "LandedCostResponse": {
-                "shipment": {
-                    "totalLandedCost": "45.23",
-                    "currencyCode": "USD",
-                    "shipmentItems": [
-                        {"commodityId": "1", "duties": "12.50", "taxes": "7.73", "fees": "0.00"}
-                    ],
-                }
-            }
+            "shipment": {
+                "currencyCode": "USD",
+                "id": "test-shipment-1",
+                "brokerageFeeItems": [
+                    {"chargeName": "Disbursement Fee", "chargeAmount": 16.8},
+                ],
+                "totalBrokerageFees": 16.8,
+                "totalDuties": 12.50,
+                "totalCommodityLevelTaxesAndFees": 0,
+                "totalShipmentLevelTaxesAndFees": 0,
+                "totalVAT": 7.73,
+                "totalDutyandTax": 20.23,
+                "grandTotal": 37.03,
+                "importCountryCode": "GB",
+                "shipmentItems": [
+                    {
+                        "commodityId": "1",
+                        "commodityDuty": 12.50,
+                        "totalCommodityTaxesAndFees": 0,
+                        "commodityVAT": 7.73,
+                        "totalCommodityDutyandTax": 20.23,
+                        "commodityCurrencyCode": "USD",
+                        "isCalculable": True,
+                        "hsCode": "4009320020",
+                    }
+                ],
+            },
+            "alversion": 1,
+            "transID": "test-123",
         }
         result = await ups_client.get_landed_cost(
             currency_code="USD", export_country_code="US",
@@ -953,14 +973,22 @@ class TestGetLandedCost:
             commodities=[{"price": 25.00, "quantity": 2}],
         )
         assert result["success"] is True
-        assert result["totalLandedCost"] == "45.23"
+        assert result["totalLandedCost"] == "37.03"
+        assert result["currencyCode"] == "USD"
+        assert result["totalDuties"] == "12.5"
+        assert result["totalVAT"] == "7.73"
+        assert result["totalBrokerageFees"] == "16.8"
         assert len(result["items"]) == 1
+        assert result["items"][0]["duties"] == "12.5"
+        assert result["items"][0]["taxes"] == "7.73"
+        assert result["items"][0]["fees"] == "0"
+        assert result["items"][0]["hsCode"] == "4009320020"
 
     @pytest.mark.asyncio
     async def test_get_landed_cost_uses_read_only_retry(self, ups_client, mock_mcp_client):
         """get_landed_cost uses read-only retry policy."""
         mock_mcp_client.call_tool.return_value = {
-            "LandedCostResponse": {"shipment": {"totalLandedCost": "0", "shipmentItems": []}}
+            "shipment": {"grandTotal": 0, "shipmentItems": []},
         }
         await ups_client.get_landed_cost(
             currency_code="USD", export_country_code="US",
@@ -968,6 +996,31 @@ class TestGetLandedCost:
         )
         call_kwargs = mock_mcp_client.call_tool.call_args
         assert call_kwargs[1]["max_retries"] == 2
+
+    @pytest.mark.asyncio
+    async def test_get_landed_cost_cie_infrastructure_error(self, ups_client, mock_mcp_client):
+        """get_landed_cost raises E-3010 for CIE infrastructure failures."""
+        from src.services.errors import UPSServiceError
+
+        mock_mcp_client.call_tool.side_effect = MCPToolError(
+            tool_name="get_landed_cost_quote",
+            error_text=(
+                'ToolError: {"status_code": 500, "code": "500", '
+                '"message": "UPS API returned HTTP 500", '
+                '"details": {"raw": "org.apache.camel.http.common.'
+                'HttpOperationFailedException: HTTP operation failed invoking '
+                'https://login.microsoftonline.com/e7520e4d/oauth2/v2.0/token '
+                'with statusCode: 401"}}'
+            ),
+        )
+        with pytest.raises(UPSServiceError) as exc_info:
+            await ups_client.get_landed_cost(
+                currency_code="GBP", export_country_code="US",
+                import_country_code="GB",
+                commodities=[{"price": 125, "quantity": 24}],
+            )
+        assert exc_info.value.code == "E-3010"
+        assert "CIE" in exc_info.value.message
 
 
 # ---------------------------------------------------------------------------
