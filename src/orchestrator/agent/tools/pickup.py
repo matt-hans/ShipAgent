@@ -27,14 +27,25 @@ async def schedule_pickup_tool(
 ) -> dict[str, Any]:
     """Schedule a UPS pickup and emit pickup_result event.
 
+    Requires ``confirmed=True`` in args as a safety gate — scheduling a
+    pickup is a financial commitment.  The agent must first present
+    pickup details to the user and obtain explicit confirmation before
+    calling this tool with ``confirmed=True``.
+
     Args:
         args: Dict with pickup_date, ready_time, close_time, address fields,
-              contact_name, phone_number, and optional kwargs.
+              contact_name, phone_number, confirmed flag, and optional kwargs.
         bridge: Event bridge for SSE emission.
 
     Returns:
         Tool response with PRN on success, or error envelope.
     """
+    if not args.pop("confirmed", False):
+        return _err(
+            "Safety gate: schedule_pickup requires explicit user confirmation. "
+            "Present pickup details to the user first, then call again with "
+            "confirmed=True."
+        )
     try:
         client = await _get_ups_client()
         result = await client.schedule_pickup(**args)
@@ -54,13 +65,23 @@ async def cancel_pickup_tool(
 ) -> dict[str, Any]:
     """Cancel a previously scheduled pickup and emit pickup_result event.
 
+    Requires ``confirmed=True`` in args as a safety gate — cancelling a
+    pickup is irreversible.
+
     Args:
-        args: Dict with cancel_by ("prn" or "account") and optional prn.
+        args: Dict with cancel_by ("prn" or "account"), optional prn,
+              and confirmed flag.
         bridge: Event bridge for SSE emission.
 
     Returns:
         Tool response with cancellation status, or error envelope.
     """
+    if not args.pop("confirmed", False):
+        return _err(
+            "Safety gate: cancel_pickup requires explicit user confirmation. "
+            "Present cancellation details to the user first, then call again "
+            "with confirmed=True."
+        )
     try:
         client = await _get_ups_client()
         cancel_by = args.get("cancel_by", "prn")

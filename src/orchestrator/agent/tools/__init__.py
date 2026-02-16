@@ -297,7 +297,7 @@ def get_all_tool_definitions(
             "name": "schedule_pickup",
             "description": (
                 "Schedule a UPS carrier pickup. This is a financial commitment — "
-                "always confirm with the user first."
+                "always confirm with the user first, then set confirmed=true."
             ),
             "input_schema": {
                 "type": "object",
@@ -324,18 +324,26 @@ def get_all_tool_definitions(
                     "country_code": {"type": "string", "description": "Country code."},
                     "contact_name": {"type": "string", "description": "Contact name."},
                     "phone_number": {"type": "string", "description": "Contact phone."},
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Must be true. Set only after the user explicitly confirms.",
+                    },
                 },
                 "required": [
                     "pickup_date", "ready_time", "close_time",
                     "address_line", "city", "state", "postal_code",
                     "country_code", "contact_name", "phone_number",
+                    "confirmed",
                 ],
             },
             "handler": _bind_bridge(schedule_pickup_tool, bridge),
         },
         {
             "name": "cancel_pickup",
-            "description": "Cancel a previously scheduled UPS pickup.",
+            "description": (
+                "Cancel a previously scheduled UPS pickup. This is irreversible — "
+                "confirm with the user first, then set confirmed=true."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -348,8 +356,12 @@ def get_all_tool_definitions(
                         "type": "string",
                         "description": "Pickup Request Number (required when cancel_by='prn').",
                     },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "Must be true. Set only after the user explicitly confirms.",
+                    },
                 },
-                "required": ["cancel_by"],
+                "required": ["cancel_by", "confirmed"],
             },
             "handler": _bind_bridge(cancel_pickup_tool, bridge),
         },

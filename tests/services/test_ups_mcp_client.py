@@ -865,6 +865,8 @@ class TestRatePickup:
         )
         assert result["success"] is True
         assert "charges" in result
+        assert result["charges"][0]["chargeAmount"] == "5.50"
+        assert result["charges"][0]["chargeCode"] == "C"
 
     @pytest.mark.asyncio
     async def test_rate_pickup_uses_read_only_retry(self, ups_client, mock_mcp_client):
@@ -1069,14 +1071,28 @@ class TestGetServiceCenterFacilities:
 
     @pytest.mark.asyncio
     async def test_get_service_center_facilities(self, ups_client, mock_mcp_client):
-        """get_service_center_facilities returns facility list."""
+        """get_service_center_facilities returns normalised facility list."""
         mock_mcp_client.call_tool.return_value = {
             "ServiceCenterResponse": {
-                "ServiceCenterList": [{"FacilityName": "UPS Store #1234"}]
+                "ServiceCenterList": [
+                    {
+                        "FacilityName": "UPS Store #1234",
+                        "FacilityAddress": {
+                            "AddressLine": "123 Main St",
+                            "City": "Austin",
+                            "StateProvinceCode": "TX",
+                            "PostalCode": "78701",
+                        },
+                    }
+                ]
             }
         }
         result = await ups_client.get_service_center_facilities(
             city="Austin", state="TX", postal_code="78701", country_code="US",
         )
         assert result["success"] is True
-        assert "facilities" in result
+        assert len(result["facilities"]) == 1
+        fac = result["facilities"][0]
+        assert fac["name"] == "UPS Store #1234"
+        assert "Austin" in fac["address"]
+        assert "TX" in fac["address"]
