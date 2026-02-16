@@ -111,8 +111,10 @@ def build_system_prompt(
             )
         else:
             data_section = (
-                "No data source connected. Ask the user to connect a CSV, Excel, "
-                "or database source first."
+                "No data source connected. The user can still use tracking, pickup, "
+                "location finder, landed cost, and paperless document tools without a "
+                "data source. For batch shipping commands, ask the user to connect a "
+                "CSV, Excel, or database source first."
             )
 
     filter_rules_section = ""
@@ -327,13 +329,14 @@ configuration by an administrator.
     ups_v2_section = """
 ## UPS Pickup Scheduling
 
-- Use `rate_pickup` to estimate pickup cost BEFORE scheduling
-- Use `schedule_pickup` to book a carrier pickup — this is a FINANCIAL COMMITMENT, always confirm with the user first
-- Capture the PRN (Pickup Request Number) from the response — needed for cancellation
-- Use `cancel_pickup` with the PRN to cancel a scheduled pickup
-- Use `get_pickup_status` to check pending pickups for the account
-- After batch execution completes with successful shipments, SUGGEST scheduling a pickup
-- Use `get_service_center_facilities` to suggest drop-off alternatives when pickup is not suitable
+- WORKFLOW: When user requests a pickup, call `rate_pickup` with ALL details (address, date, times, contact_name, phone_number). This displays a preview card with Confirm/Cancel buttons.
+- After the user confirms via the preview card, call `schedule_pickup` with the SAME details + confirmed=true.
+- Do NOT call schedule_pickup without first calling rate_pickup — the preview card is mandatory.
+- Capture the PRN (Pickup Request Number) from the schedule response — needed for cancellation.
+- Use `cancel_pickup` with the PRN to cancel a scheduled pickup.
+- Use `get_pickup_status` to check pending pickups for the account.
+- After batch execution completes with successful shipments, SUGGEST scheduling a pickup.
+- Use `get_service_center_facilities` to suggest drop-off alternatives when pickup is not suitable.
 - Pickup date format: YYYYMMDD. Times: HHMM (24-hour). ready_time must be before close_time.
 
 ## UPS Location Finder
@@ -358,6 +361,13 @@ configuration by an administrator.
 - Use `push_document_to_shipment` to attach a document to a shipment using the tracking number
 - Use `delete_paperless_document` to remove a document from UPS Forms History
 - Chained workflow: upload document → create shipment → push document to shipment
+
+## Package Tracking
+
+- Use `track_package` to track a UPS package by tracking number.
+- The tool validates that the response matches the requested tracking number.
+- If mismatch detected (common in sandbox), the tool will flag it in the result.
+- No data source or prior shipment is required — the user just needs a tracking number.
 
 ## Reference Data
 

@@ -50,6 +50,7 @@ from src.orchestrator.agent.tools.pipeline import (
     get_landed_cost_tool,
     ship_command_pipeline_tool,
 )
+from src.orchestrator.agent.tools.tracking import track_package_tool
 
 
 def get_all_tool_definitions(
@@ -291,7 +292,7 @@ def get_all_tool_definitions(
             "handler": _bind_bridge(connect_shopify_tool, bridge),
         },
         # ---------------------------------------------------------------
-        # UPS MCP v2 — Pickup tools (batch mode only)
+        # UPS MCP v2 — Pickup tools
         # ---------------------------------------------------------------
         {
             "name": "schedule_pickup",
@@ -367,7 +368,13 @@ def get_all_tool_definitions(
         },
         {
             "name": "rate_pickup",
-            "description": "Get a cost estimate for a scheduled UPS pickup before committing.",
+            "description": (
+                "Rate a UPS pickup and display the preview card. ALWAYS call this BEFORE "
+                "schedule_pickup. Collects address, contact, and schedule details, gets "
+                "the rate estimate, and displays a preview card to the user with Confirm/"
+                "Cancel buttons. Include contact_name and phone_number in the args so "
+                "they appear in the preview."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -384,6 +391,8 @@ def get_all_tool_definitions(
                     "pickup_date": {"type": "string", "description": "Date YYYYMMDD."},
                     "ready_time": {"type": "string", "description": "Ready time HHMM."},
                     "close_time": {"type": "string", "description": "Close time HHMM."},
+                    "contact_name": {"type": "string", "description": "Contact name for the pickup."},
+                    "phone_number": {"type": "string", "description": "Contact phone number."},
                 },
                 "required": [
                     "pickup_type", "address_line", "city", "state",
@@ -414,7 +423,7 @@ def get_all_tool_definitions(
             "handler": _bind_bridge(get_pickup_status_tool, bridge),
         },
         # ---------------------------------------------------------------
-        # UPS MCP v2 — Location tools (batch mode only)
+        # UPS MCP v2 — Location tools
         # ---------------------------------------------------------------
         {
             "name": "find_locations",
@@ -469,7 +478,7 @@ def get_all_tool_definitions(
             "handler": _bind_bridge(get_service_center_facilities_tool, bridge),
         },
         # ---------------------------------------------------------------
-        # UPS MCP v2 — Paperless document tools (batch mode only)
+        # UPS MCP v2 — Paperless document tools
         # ---------------------------------------------------------------
         {
             "name": "upload_paperless_document",
@@ -539,8 +548,30 @@ def get_all_tool_definitions(
             "handler": _bind_bridge(delete_paperless_document_tool, bridge),
         },
         # ---------------------------------------------------------------
-        # UPS MCP v2 — Landed cost tool (batch mode only)
+        # UPS MCP v2 — Tracking tool
         # ---------------------------------------------------------------
+        {
+            "name": "track_package",
+            "description": (
+                "Track a UPS package by tracking number. Returns current status "
+                "and activity history. Detects sandbox tracking number mismatches."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "tracking_number": {
+                        "type": "string",
+                        "description": "UPS tracking number (e.g., 1Z999AA10123456784).",
+                    },
+                },
+                "required": ["tracking_number"],
+            },
+            "handler": _bind_bridge(track_package_tool, bridge),
+        },
+        # ---------------------------------------------------------------
+        # UPS MCP v2 — Landed cost tool
+        # ---------------------------------------------------------------
+
         {
             "name": "get_landed_cost",
             "description": (
@@ -589,8 +620,17 @@ def get_all_tool_definitions(
     if not interactive_shipping:
         return definitions
 
-    # In interactive mode, expose only status tools + interactive preview
-    interactive_allowed = {"get_job_status", "get_platform_status", "preview_interactive_shipment"}
+    # In interactive mode, expose status tools + interactive preview + v2 tools.
+    # v2 tools work independently of data sources and are useful in both modes.
+    interactive_allowed = {
+        "get_job_status", "get_platform_status", "preview_interactive_shipment",
+        # v2 tools — work independently of data source
+        "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
+        "find_locations", "get_service_center_facilities",
+        "upload_paperless_document", "push_document_to_shipment", "delete_paperless_document",
+        "get_landed_cost",
+        "track_package",
+    }
     interactive_defs = [d for d in definitions if d["name"] in interactive_allowed]
 
     # Add the preview_interactive_shipment tool definition
