@@ -64,19 +64,32 @@ ShipAgent consumes UPS MCP tools through two independent paths:
 
 ## 2. Current Tool Inventory
 
-Seven tools are currently available from the UPS MCP server:
+Eighteen tools are available from the UPS MCP server (v2):
 
-| Tool | Interactive | Batch | UPSMCPClient Method | Purpose |
-|------|:-----------:|:-----:|---------------------|---------|
-| `rate_shipment` | Yes | Yes | `get_rate()` | Get shipping cost estimate |
-| `create_shipment` | Yes | Yes | `create_shipment()` | Create shipment + generate label |
-| `void_shipment` | Yes | Yes | `void_shipment()` | Cancel an existing shipment |
-| `validate_address` | Yes | Yes | `validate_address()` | Validate/correct addresses |
-| `track_package` | Yes | No | — | Track shipment status |
-| `recover_label` | Yes | No | — | Recover previously generated labels |
-| `get_time_in_transit` | Yes | No | — | Estimate delivery timeframes |
+| # | Tool | Domain | Interactive | Batch | UPSMCPClient Method | Purpose |
+|---|------|--------|:-----------:|:-----:|---------------------|---------|
+| 1 | `rate_shipment` | Rating | Yes | Yes | `get_rate()` | Get shipping cost estimate |
+| 2 | `create_shipment` | Shipping | Yes | Yes | `create_shipment()` | Create shipment + generate label |
+| 3 | `void_shipment` | Shipping | Yes | Yes | `void_shipment()` | Cancel an existing shipment |
+| 4 | `validate_address` | Address | Yes | Yes | `validate_address()` | Validate/correct addresses |
+| 5 | `track_package` | Tracking | Yes | No | — | Track shipment status |
+| 6 | `recover_label` | Shipping | Yes | No | — | Recover previously generated labels |
+| 7 | `get_time_in_transit` | Transit | Yes | No | — | Estimate delivery timeframes |
+| 8 | `get_landed_cost_quote` | Landed Cost | Yes | Yes | `get_landed_cost()` | Calculate duties/taxes/fees for international shipments |
+| 9 | `upload_paperless_document` | Paperless | Yes | Yes | `upload_document()` | Upload customs/trade documents |
+| 10 | `push_document_to_shipment` | Paperless | Yes | Yes | `push_document()` | Attach document to shipment |
+| 11 | `delete_paperless_document` | Paperless | Yes | Yes | `delete_document()` | Remove document from Forms History |
+| 12 | `find_locations` | Locator | Yes | Yes | `find_locations()` | Find UPS Access Points and retail stores |
+| 13 | `rate_pickup` | Pickup | Yes | Yes | `rate_pickup()` | Get pickup cost estimate |
+| 14 | `schedule_pickup` | Pickup | Yes | Yes | `schedule_pickup()` | Schedule carrier pickup |
+| 15 | `cancel_pickup` | Pickup | Yes | Yes | `cancel_pickup()` | Cancel a scheduled pickup |
+| 16 | `get_pickup_status` | Pickup | Yes | Yes | `get_pickup_status()` | Check pending pickup status |
+| 17 | `get_political_divisions` | Pickup | Yes | Yes | `get_political_divisions()` | List states/provinces for a country |
+| 18 | `get_service_center_facilities` | Pickup | Yes | Yes | `get_service_center_facilities()` | Find service center drop-off locations |
 
-Tools used only in the interactive path (track, recover, time-in-transit) require zero ShipAgent code changes when updated in the MCP server — the SDK auto-discovers them.
+**Interactive path (AD-1 policy):** New v2 tools (8–18) are auto-discovered by the SDK. In ShipAgent's orchestrator, new tools are registered for **batch mode only** — the interactive mode tool registry remains unchanged at 3 tools (`preview_interactive_shipment`, `get_job_status`, `get_platform_status`). The agent can call new UPS tools directly via MCP in both modes.
+
+**Batch path:** Tools 8–18 are wrapped in `UPSMCPClient` with named methods, response normalizers, and retry policies. The orchestrator tool registry includes 10 new tool definitions for batch mode.
 
 ---
 
