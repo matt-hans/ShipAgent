@@ -325,3 +325,46 @@ class TestInternationalShippingPrompt:
         monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "US-CA")
         prompt = build_system_prompt(interactive_shipping=False)
         assert "07, 08, 11, 54, or 65" in prompt
+
+
+# --- UPS MCP v2 domain workflow prompt tests ---
+
+
+class TestUPSMCPv2DomainGuidance:
+    """Tests for UPS MCP v2 domain workflow sections in system prompt."""
+
+    def test_system_prompt_includes_pickup_guidance(self):
+        """System prompt must include pickup scheduling workflow."""
+        prompt = build_system_prompt()
+        assert "Pickup" in prompt
+        assert "schedule_pickup" in prompt or "Schedule Pickup" in prompt
+        assert "PRN" in prompt
+
+    def test_system_prompt_includes_locator_guidance(self):
+        """System prompt must include location finder guidance."""
+        prompt = build_system_prompt()
+        assert "find_locations" in prompt or "Location" in prompt
+        assert "Access Point" in prompt or "access_point" in prompt
+
+    def test_system_prompt_includes_landed_cost_guidance(self):
+        """System prompt must include landed cost estimation guidance."""
+        prompt = build_system_prompt()
+        assert "Landed Cost" in prompt or "landed_cost" in prompt
+        assert "duties" in prompt.lower()
+
+    def test_system_prompt_includes_paperless_guidance(self):
+        """System prompt must include paperless document workflow."""
+        prompt = build_system_prompt()
+        assert "Paperless" in prompt or "paperless" in prompt
+        assert "DocumentID" in prompt or "document_id" in prompt
+
+    def test_system_prompt_includes_political_divisions(self):
+        """System prompt must mention political divisions reference tool."""
+        prompt = build_system_prompt()
+        assert "political_divisions" in prompt or "Political Divisions" in prompt
+
+    def test_system_prompt_interactive_mode_mentions_v2_domains(self):
+        """Interactive mode prompt includes v2 domain guidance."""
+        prompt = build_system_prompt(interactive_shipping=True)
+        assert "Pickup" in prompt
+        assert "Landed Cost" in prompt or "landed_cost" in prompt
