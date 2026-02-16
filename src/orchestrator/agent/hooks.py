@@ -37,6 +37,7 @@ __all__ = [
     "detect_error_response",
     "create_hook_matchers",
     "create_shipping_hook",
+    "validate_schedule_pickup",
 ]
 
 logger = logging.getLogger(__name__)
@@ -402,6 +403,51 @@ def _log_to_stderr(message: str) -> None:
             logger.debug("Dropped stderr hook log: %s", message)
 
 
+async def validate_schedule_pickup(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """Validate schedule_pickup inputs before execution.
+
+    Checks for required fields: pickup_date, ready_time, close_time,
+    address_line, city, state, postal_code, country_code, contact_name,
+    phone_number. Denies if critical fields are missing.
+
+    Args:
+        input_data: Contains 'tool_name' and 'tool_input' keys.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context from Claude Agent SDK.
+
+    Returns:
+        Empty dict to allow, or hookSpecificOutput with denial to block.
+    """
+    tool_input = input_data.get("tool_input", {})
+    _log_to_stderr(
+        f"[VALIDATION] Pre-hook checking: schedule_pickup | ID: {tool_use_id}"
+    )
+
+    required = [
+        "pickup_date",
+        "ready_time",
+        "close_time",
+        "address_line",
+        "city",
+        "state",
+        "postal_code",
+        "country_code",
+        "contact_name",
+        "phone_number",
+    ]
+    missing = [f for f in required if not tool_input.get(f)]
+    if missing:
+        return _deny_with_reason(
+            f"Missing required pickup fields: {', '.join(missing)}. "
+            "Collect these details from the user before scheduling."
+        )
+    return {}
+
+
 # =============================================================================
 # Hook Factory — Instance-Scoped Enforcement
 # =============================================================================
@@ -490,6 +536,10 @@ def create_hook_matchers(
             HookMatcher(
                 matcher="mcp__ups__void_shipment",
                 hooks=[validate_void_shipment],
+            ),
+            HookMatcher(
+                matcher="mcp__ups__schedule_pickup",
+                hooks=[validate_schedule_pickup],
             ),
             HookMatcher(
                 matcher=None,
