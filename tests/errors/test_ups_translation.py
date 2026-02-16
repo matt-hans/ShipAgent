@@ -90,12 +90,15 @@ class TestTemplateFormatting:
         assert "Ambiguous payer configuration" in msg
 
     def test_e4011_template_with_ups_message(self):
-        """E-4011 message template reflects user decline."""
+        """E-4011 message template reflects missing required fields."""
         _, msg, _ = translate_ups_error(
             "ELICITATION_DECLINED",
             "User declined the form",
+            context={"count": "2", "fields": "Weight, Service code"},
         )
-        assert "declined" in msg.lower() or "cancelled" in msg.lower()
+        assert "missing" in msg.lower()
+        assert "2" in msg
+        assert "Weight" in msg
 
 
 class TestV2ErrorCodeMapping:
@@ -142,6 +145,24 @@ class TestV2ErrorCodeMapping:
             "MALFORMED_REQUEST_STRUCTURE", "bad structure"
         )
         assert sa_code == "E-2021"
+
+
+class TestRatingPackageTypeError:
+    """UPS error 111212 (package type unavailable) maps correctly."""
+
+    def test_111212_maps_to_e3004(self):
+        """UPS 111212 maps to E-3004 (service availability)."""
+        code, _, _ = translate_ups_error(
+            "111212", "The package type is unavailable for the selected service"
+        )
+        assert code == "E-3004"
+
+    def test_package_type_unavailable_pattern(self):
+        """Pattern 'package type is unavailable' maps to E-3004."""
+        code, _, _ = translate_ups_error(
+            None, "Package type is unavailable for Ground service"
+        )
+        assert code == "E-3004"
 
 
 class TestRegressionExistingMappings:

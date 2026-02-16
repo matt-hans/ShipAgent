@@ -94,17 +94,19 @@ async def import_records(
     db.execute("DROP TABLE IF EXISTS imported_data")
 
     # Build CREATE TABLE from first record's keys
+    # Include _source_row_num as identity column for row tracking (matching CSV adapter)
+    from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN
     columns = list(records[0].keys())
     col_defs = ", ".join(f'"{col}" VARCHAR' for col in columns)
-    db.execute(f"CREATE TABLE imported_data ({col_defs})")
+    db.execute(f"CREATE TABLE imported_data ({SOURCE_ROW_NUM_COLUMN} INTEGER, {col_defs})")
 
-    # Insert records
-    placeholders = ", ".join(["?"] * len(columns))
+    # Insert records with sequential row numbers
+    placeholders = ", ".join(["?"] * (len(columns) + 1))  # +1 for _source_row_num
     col_names = ", ".join(f'"{c}"' for c in columns)
-    insert_sql = f"INSERT INTO imported_data ({col_names}) VALUES ({placeholders})"
+    insert_sql = f"INSERT INTO imported_data ({SOURCE_ROW_NUM_COLUMN}, {col_names}) VALUES ({placeholders})"
 
-    for record in records:
-        values = [str(record.get(col, "")) if record.get(col) is not None else None for col in columns]
+    for idx, record in enumerate(records, start=1):
+        values = [idx] + [str(record.get(col, "")) if record.get(col) is not None else None for col in columns]
         db.execute(insert_sql, values)
 
     row_count = db.execute("SELECT COUNT(*) FROM imported_data").fetchone()[0]

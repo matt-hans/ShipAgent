@@ -454,6 +454,11 @@ def get_all_tool_definitions(
                         "enum": ["MI", "KM"],
                         "default": "MI",
                     },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum locations to return (1-50, default 10).",
+                        "default": 10,
+                    },
                 },
                 "required": [
                     "location_type", "address_line", "city",
