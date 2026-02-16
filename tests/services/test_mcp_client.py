@@ -9,6 +9,7 @@ from src.services.mcp_client import (
     MCPClient,
     MCPConnectionError,
     MCPToolError,
+    _auto_decline_elicitation,
     _default_is_retryable,
 )
 
@@ -433,3 +434,77 @@ class TestDefaultIsRetryable:
     def test_non_retryable_patterns(self, text: str):
         """Validation and auth errors are not retryable."""
         assert _default_is_retryable(text) is False
+
+
+# ---------------------------------------------------------------------------
+# Elicitation callback tests
+# ---------------------------------------------------------------------------
+
+
+class TestElicitationCallback:
+    """Test elicitation_callback support on MCPClient."""
+
+    @pytest.mark.asyncio
+    async def test_auto_decline_returns_elicit_result(self):
+        """_auto_decline_elicitation returns ElicitResult(action='decline')."""
+        result = await _auto_decline_elicitation(None, None)
+        assert result.action == "decline"
+
+    @pytest.mark.asyncio
+    async def test_elicitation_callback_forwarded_to_session(self):
+        """elicitation_callback is passed through to ClientSession."""
+        mock_session = AsyncMock()
+        mock_read = MagicMock()
+        mock_write = MagicMock()
+
+        with patch("src.services.mcp_client.stdio_client") as mock_stdio, \
+             patch("src.services.mcp_client.ClientSession") as MockSession:
+
+            mock_stdio_ctx = AsyncMock()
+            mock_stdio_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
+            mock_stdio_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_stdio.return_value = mock_stdio_ctx
+
+            mock_session_ctx = AsyncMock()
+            mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session_ctx.__aexit__ = AsyncMock(return_value=None)
+            MockSession.return_value = mock_session_ctx
+
+            client = MCPClient(
+                _make_server_params(),
+                elicitation_callback=_auto_decline_elicitation,
+            )
+            await client.connect()
+            await client.disconnect()
+
+        MockSession.assert_called_once()
+        call_kwargs = MockSession.call_args
+        assert call_kwargs.kwargs.get("elicitation_callback") is _auto_decline_elicitation
+
+    @pytest.mark.asyncio
+    async def test_none_callback_omits_kwarg(self):
+        """None elicitation_callback does not pass kwarg to ClientSession."""
+        mock_session = AsyncMock()
+        mock_read = MagicMock()
+        mock_write = MagicMock()
+
+        with patch("src.services.mcp_client.stdio_client") as mock_stdio, \
+             patch("src.services.mcp_client.ClientSession") as MockSession:
+
+            mock_stdio_ctx = AsyncMock()
+            mock_stdio_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
+            mock_stdio_ctx.__aexit__ = AsyncMock(return_value=None)
+            mock_stdio.return_value = mock_stdio_ctx
+
+            mock_session_ctx = AsyncMock()
+            mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_session_ctx.__aexit__ = AsyncMock(return_value=None)
+            MockSession.return_value = mock_session_ctx
+
+            client = MCPClient(_make_server_params())
+            await client.connect()
+            await client.disconnect()
+
+        MockSession.assert_called_once()
+        call_kwargs = MockSession.call_args
+        assert "elicitation_callback" not in call_kwargs.kwargs

@@ -293,9 +293,9 @@ ERROR_REGISTRY: dict[str, ErrorCode] = {
     "E-4011": ErrorCode(
         code="E-4011",
         category=ErrorCategory.SYSTEM,
-        title="Elicitation Declined",
-        message_template="User declined to provide required information.",
-        remediation="The operation was cancelled because required fields were not provided.",
+        title="Missing Required Fields",
+        message_template="Missing {count} required field(s): {fields}",
+        remediation="Provide the missing fields listed above and retry the operation.",
     ),
     "E-4012": ErrorCode(
         code="E-4012",

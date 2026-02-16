@@ -809,6 +809,25 @@ class TestBuildUpsRatePayload:
         assert shipment["Service"]["Code"] == "03"
         assert shipment["Shipper"]["ShipperNumber"] == "X"
 
+    def test_rate_packaging_key_name(self):
+        """Rate payload uses 'Packaging' key (not 'PackagingType')."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_rate_payload(simplified, account_number="X")
+        pkg = result["RateRequest"]["Shipment"]["Package"][0]
+        assert "Packaging" in pkg
+        assert "PackagingType" not in pkg
+        assert pkg["Packaging"]["Code"] == "02"
+
 
 # ── Helper to build minimal simplified payloads ──
 

@@ -21,7 +21,12 @@ from mcp import StdioServerParameters
 
 from src.errors.ups_translation import translate_ups_error
 from src.services.errors import UPSServiceError
-from src.services.mcp_client import MCPClient, MCPConnectionError, MCPToolError
+from src.services.mcp_client import (
+    MCPClient,
+    MCPConnectionError,
+    MCPToolError,
+    _auto_decline_elicitation,
+)
 from src.services.ups_specs import ensure_ups_specs_dir
 
 logger = logging.getLogger(__name__)
@@ -136,6 +141,7 @@ class UPSMCPClient:
             max_retries=self._max_retries,
             base_delay=1.0,
             is_retryable=_ups_is_retryable,
+            elicitation_callback=_auto_decline_elicitation,
         )
         self._reconnect_count = 0
 

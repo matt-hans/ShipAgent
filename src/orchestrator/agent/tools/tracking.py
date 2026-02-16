@@ -125,7 +125,13 @@ async def track_package_tool(
         # paraphrase the same info as redundant text.
         summary = f"Tracking result displayed for {returned_number or tracking_number}."
         if mismatch:
-            summary += f" Note: sandbox returned {returned_number} instead of {tracking_number}."
+            summary += (
+                f" Note: UPS returned tracking data for {returned_number} "
+                f"instead of the requested {tracking_number}. In the sandbox "
+                f"(CIE), this happens because the test environment returns "
+                f"fixed sample data. In production, this may indicate the "
+                f"tracking number was corrected or re-assigned by UPS."
+            )
         return _ok(summary)
 
     except UPSServiceError as e:

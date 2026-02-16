@@ -83,3 +83,6 @@ uploads/
 repomix-output.xml
 
 .cache
+
+*.db-shm
+*.db-wal

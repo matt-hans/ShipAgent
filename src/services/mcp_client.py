@@ -83,6 +83,27 @@ def _default_is_retryable(error_text: str) -> bool:
     return any(p in lower for p in _DEFAULT_RETRYABLE_PATTERNS)
 
 
+async def _auto_decline_elicitation(context: Any, params: Any) -> Any:
+    """Auto-decline elicitation requests from MCP servers.
+
+    Used by programmatic MCP clients where no user is available to
+    provide missing field values. The MCP server will translate
+    this into an ELICITATION_DECLINED error with structured missing
+    field metadata.
+
+    Args:
+        context: MCP request context (unused).
+        params: Elicitation request parameters (unused).
+
+    Returns:
+        ElicitResult with action='decline'.
+    """
+    from mcp.types import ElicitResult
+
+    logger.debug("Auto-declining MCP elicitation request")
+    return ElicitResult(action="decline")
+
+
 class MCPClient:
     """Generic async MCP client with retry logic.
 
@@ -103,6 +124,7 @@ class MCPClient:
         max_retries: int = 3,
         base_delay: float = 1.0,
         is_retryable: Callable[[str], bool] | None = None,
+        elicitation_callback: Any | None = None,  # TODO: tighten type when MCP SDK stabilizes ElicitationCallback
     ) -> None:
         """Initialize MCP client.
 
@@ -112,11 +134,15 @@ class MCPClient:
             base_delay: Base delay in seconds (doubles each retry).
             is_retryable: Optional callback to classify errors. Defaults to
                 matching 429, 503, 502, rate limit, timeout, connection.
+            elicitation_callback: Optional callback for MCP elicitation requests.
+                When provided, ClientSession declares ElicitationCapability.
+                Use ``_auto_decline_elicitation`` for programmatic clients.
         """
         self._server_params = server_params
         self._max_retries = max_retries
         self._base_delay = base_delay
         self._is_retryable = is_retryable or _default_is_retryable
+        self._elicitation_callback = elicitation_callback
         self._session: ClientSession | None = None
         self._stdio_context: Any = None
         self._session_context: Any = None
@@ -177,7 +203,12 @@ class MCPClient:
             await self._cleanup()
             self._stdio_context = stdio_client(self._server_params)
             read_stream, write_stream = await self._stdio_context.__aenter__()
-            self._session_context = ClientSession(read_stream, write_stream)
+            session_kwargs: dict[str, Any] = {}
+            if self._elicitation_callback is not None:
+                session_kwargs["elicitation_callback"] = self._elicitation_callback
+            self._session_context = ClientSession(
+                read_stream, write_stream, **session_kwargs,
+            )
             self._session = await self._session_context.__aenter__()
             await self._session.initialize()
             logger.info(
