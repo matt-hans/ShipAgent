@@ -680,8 +680,15 @@ class UPSMCPClient:
             fallback_fields = (ups_message or "unspecified fields")[:200]
             context = {"count": "0", "fields": fallback_fields}
 
-        # Preserve MCP reason field for diagnostics (P2 feedback)
+        # Route MALFORMED_REQUEST by reason for finer error codes
         reason = error_data.get("reason")
+        if ups_code == "MALFORMED_REQUEST" and reason:
+            if reason == "ambiguous_payer":
+                ups_code = "MALFORMED_REQUEST_AMBIGUOUS"
+            elif reason == "malformed_structure":
+                ups_code = "MALFORMED_REQUEST_STRUCTURE"
+
+        # Preserve MCP reason field for diagnostics (P2 feedback)
         if reason and isinstance(reason, str):
             ups_message = f"{ups_message} (reason: {reason})"
 

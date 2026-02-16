@@ -482,8 +482,8 @@ class TestTranslateErrorMCPPreflight:
         assert "Ambiguous payer" in exc_info.value.message
 
     @pytest.mark.asyncio
-    async def test_elicitation_cancelled_maps_to_e2012(self, ups_client, mock_mcp_client):
-        """ELICITATION_CANCELLED -> E-2012."""
+    async def test_elicitation_cancelled_maps_to_e4012(self, ups_client, mock_mcp_client):
+        """ELICITATION_CANCELLED -> E-4012."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
             error_text=json.dumps({
@@ -496,7 +496,7 @@ class TestTranslateErrorMCPPreflight:
         with pytest.raises(UPSServiceError) as exc_info:
             await ups_client.create_shipment(request_body={})
 
-        assert exc_info.value.code == "E-2012"
+        assert exc_info.value.code == "E-4012"
 
     @pytest.mark.asyncio
     async def test_elicitation_invalid_response_maps_to_e4010(self, ups_client, mock_mcp_client):
@@ -559,15 +559,15 @@ class TestMalformedRequestReasonPreservation:
             await ups_client.create_shipment(request_body={})
 
         err = exc_info.value
-        assert err.code == "E-2011"
+        assert err.code == "E-2022"  # Routed to Ambiguous Billing via reason
         assert err.details is not None
         assert err.details.get("reason") == "ambiguous_payer"
-        # Reason should be explicitly appended to message for diagnostics
-        assert "(reason: ambiguous_payer)" in err.message
+        # E-2022 has a fixed template; reason is preserved in details only
+        assert "billing" in err.message.lower() or "payer" in err.message.lower()
 
     @pytest.mark.asyncio
     async def test_malformed_request_reason_malformed_structure(self, ups_client, mock_mcp_client):
-        """MALFORMED_REQUEST with malformed_structure reason."""
+        """MALFORMED_REQUEST with malformed_structure reason routes to E-2021."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
             error_text=json.dumps({
@@ -582,7 +582,7 @@ class TestMalformedRequestReasonPreservation:
             await ups_client.create_shipment(request_body={})
 
         err = exc_info.value
-        assert err.code == "E-2011"
+        assert err.code == "E-2021"  # Routed to Malformed Structure via reason
         assert err.details.get("reason") == "malformed_structure"
         assert "(reason: malformed_structure)" in err.message
 

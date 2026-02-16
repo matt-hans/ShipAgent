@@ -38,10 +38,17 @@ UPS_ERROR_MAP: dict[str, str] = {
     "ELICITATION_UNSUPPORTED": "E-2010",
     "INCOMPLETE_SHIPMENT": "E-2010",
     "MALFORMED_REQUEST": "E-2011",
-    "ELICITATION_DECLINED": "E-2012",
-    "ELICITATION_CANCELLED": "E-2012",
     "ELICITATION_INVALID_RESPONSE": "E-4010",
     "ELICITATION_FAILED": "E-4010",
+    # UPS MCP v2 — Elicitation user actions (migrated from E-2012)
+    "ELICITATION_DECLINED": "E-4011",
+    "ELICITATION_CANCELLED": "E-4012",
+    # UPS MCP v2 — Domain-specific codes
+    "9590022": "E-3007",  # Paperless: document not found
+    "190102": "E-3008",  # Pickup: timing error
+    # UPS MCP v2 — MALFORMED_REQUEST reason-based routing (synthetic codes)
+    "MALFORMED_REQUEST_AMBIGUOUS": "E-2022",  # Ambiguous payer
+    "MALFORMED_REQUEST_STRUCTURE": "E-2021",  # Malformed structure
     # International/customs UPS error codes
     "CUSTOMS_MISSING_DATA": "E-2013",
     "CUSTOMS_INVALID_HS": "E-2014",
@@ -61,6 +68,9 @@ UPS_MESSAGE_PATTERNS: dict[str, str] = {
     "export control": "E-3006",
     "commercial invoice": "E-3006",
     "duty": "E-3006",
+    # UPS MCP v2 — Domain patterns
+    "no locations found": "E-3009",
+    "no pdf found": "E-3007",
 }
 
 

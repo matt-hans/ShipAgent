@@ -5,6 +5,8 @@ MALFORMED_REQUEST, ELICITATION_DECLINED, ELICITATION_CANCELLED,
 ELICITATION_INVALID_RESPONSE) and regressions for existing mappings.
 """
 
+import pytest
+
 from src.errors.ups_translation import translate_ups_error
 
 
@@ -37,21 +39,21 @@ class TestMCPPreflightCodeMapping:
         )
         assert code == "E-2011"
 
-    def test_elicitation_declined_maps_to_e2012(self):
-        """ELICITATION_DECLINED -> E-2012."""
+    def test_elicitation_declined_maps_to_e4011(self):
+        """ELICITATION_DECLINED -> E-4011 (user action, not validation)."""
         code, _, _ = translate_ups_error(
             "ELICITATION_DECLINED",
             "User declined the form",
         )
-        assert code == "E-2012"
+        assert code == "E-4011"
 
-    def test_elicitation_cancelled_maps_to_e2012(self):
-        """ELICITATION_CANCELLED -> E-2012."""
+    def test_elicitation_cancelled_maps_to_e4012(self):
+        """ELICITATION_CANCELLED -> E-4012 (user action, not validation)."""
         code, _, _ = translate_ups_error(
             "ELICITATION_CANCELLED",
             "User cancelled the form",
         )
-        assert code == "E-2012"
+        assert code == "E-4012"
 
     def test_elicitation_invalid_response_maps_to_e4010(self):
         """ELICITATION_INVALID_RESPONSE -> E-4010."""
@@ -87,13 +89,59 @@ class TestTemplateFormatting:
         )
         assert "Ambiguous payer configuration" in msg
 
-    def test_e2012_template_with_ups_message(self):
-        """E-2012 template fills {ups_message}."""
+    def test_e4011_template_with_ups_message(self):
+        """E-4011 message template reflects user decline."""
         _, msg, _ = translate_ups_error(
             "ELICITATION_DECLINED",
             "User declined the form",
         )
-        assert "User declined the form" in msg
+        assert "declined" in msg.lower() or "cancelled" in msg.lower()
+
+
+class TestV2ErrorCodeMapping:
+    """New UPS MCP v2 error codes map to correct ShipAgent codes."""
+
+    @pytest.mark.parametrize(
+        "ups_code,expected_sa_code",
+        [
+            ("9590022", "E-3007"),
+            ("190102", "E-3008"),
+            ("ELICITATION_DECLINED", "E-4011"),
+            ("ELICITATION_CANCELLED", "E-4012"),
+        ],
+    )
+    def test_v2_error_code_mapping(self, ups_code, expected_sa_code):
+        """New UPS MCP v2 error codes map to correct ShipAgent codes."""
+        sa_code, msg, remediation = translate_ups_error(ups_code, "test error")
+        assert sa_code == expected_sa_code
+
+    def test_v2_message_pattern_no_locations(self):
+        """'no locations found' pattern maps to E-3009."""
+        sa_code, msg, _ = translate_ups_error(
+            None, "No locations found for this area"
+        )
+        assert sa_code == "E-3009"
+
+    def test_v2_message_pattern_no_pdf(self):
+        """'no pdf found' pattern maps to E-3007."""
+        sa_code, msg, _ = translate_ups_error(
+            None, "No PDF found for given documentId"
+        )
+        assert sa_code == "E-3007"
+
+    def test_v2_malformed_request_ambiguous_payer(self):
+        """MALFORMED_REQUEST_AMBIGUOUS maps to E-2022."""
+        sa_code, _, _ = translate_ups_error(
+            "MALFORMED_REQUEST_AMBIGUOUS", "ambiguous payer"
+        )
+        assert sa_code == "E-2022"
+
+    def test_v2_malformed_request_structure(self):
+        """MALFORMED_REQUEST_STRUCTURE maps to E-2021."""
+        sa_code, _, _ = translate_ups_error(
+            "MALFORMED_REQUEST_STRUCTURE", "bad structure"
+        )
+        assert sa_code == "E-2021"
 
 
 class TestRegressionExistingMappings:
