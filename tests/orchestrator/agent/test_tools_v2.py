@@ -1086,3 +1086,302 @@ async def test_shutdown_cached_ups_client_is_noop():
     """shutdown_cached_ups_client is a no-op (lifecycle managed by gateway_provider)."""
     # Should not raise or do anything
     await shutdown_cached_ups_client()
+
+
+# ---------------------------------------------------------------------------
+# UPS MCP v2 — Pickup tool handlers
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_schedule_pickup_tool_success():
+    """schedule_pickup_tool returns _ok envelope and emits pickup_result event."""
+    mock_ups = AsyncMock()
+    mock_ups.schedule_pickup.return_value = {"success": True, "prn": "ABC123"}
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
+
+        result = await schedule_pickup_tool(
+            {
+                "pickup_date": "20260220",
+                "ready_time": "0900",
+                "close_time": "1700",
+                "address_line": "123 Main",
+                "city": "Austin",
+                "state": "TX",
+                "postal_code": "78701",
+                "country_code": "US",
+                "contact_name": "John",
+                "phone_number": "5125551234",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["prn"] == "ABC123"
+    assert data["success"] is True
+
+    assert len(captured) == 1
+    assert captured[0][0] == "pickup_result"
+    assert captured[0][1]["action"] == "scheduled"
+    assert captured[0][1]["prn"] == "ABC123"
+
+
+@pytest.mark.asyncio
+async def test_schedule_pickup_tool_error():
+    """schedule_pickup_tool returns _err envelope on UPSServiceError."""
+    from src.services.errors import UPSServiceError
+
+    mock_ups = AsyncMock()
+    mock_ups.schedule_pickup.side_effect = UPSServiceError(
+        code="E-3007", message="timing error"
+    )
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
+
+        result = await schedule_pickup_tool(
+            {
+                "pickup_date": "20260220",
+                "ready_time": "0900",
+                "close_time": "1700",
+                "address_line": "123 Main",
+                "city": "Austin",
+                "state": "TX",
+                "postal_code": "78701",
+                "country_code": "US",
+                "contact_name": "John",
+                "phone_number": "5125551234",
+            },
+        )
+
+    assert result["isError"] is True
+    assert "E-3007" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_schedule_pickup_tool_handles_malformed_args():
+    """schedule_pickup_tool returns _err for TypeError from bad model args."""
+    mock_ups = AsyncMock()
+    mock_ups.schedule_pickup.side_effect = TypeError("missing required arg")
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
+
+        result = await schedule_pickup_tool({})
+
+    assert result["isError"] is True
+    assert "Unexpected error" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_cancel_pickup_tool_success():
+    """cancel_pickup_tool returns _ok envelope and emits pickup_result event."""
+    mock_ups = AsyncMock()
+    mock_ups.cancel_pickup.return_value = {"success": True, "status": "cancelled"}
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import cancel_pickup_tool
+
+        result = await cancel_pickup_tool(
+            {"cancel_by": "prn", "prn": "ABC123"},
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["success"] is True
+
+    assert len(captured) == 1
+    assert captured[0][0] == "pickup_result"
+    assert captured[0][1]["action"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_rate_pickup_tool_success():
+    """rate_pickup_tool returns _ok envelope and emits pickup_result event."""
+    mock_ups = AsyncMock()
+    mock_ups.rate_pickup.return_value = {
+        "success": True,
+        "grandTotalOfAllCharge": "5.50",
+    }
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import rate_pickup_tool
+
+        result = await rate_pickup_tool(
+            {
+                "pickup_type": "oncall",
+                "address_line": "123 Main",
+                "city": "Austin",
+                "state": "TX",
+                "postal_code": "78701",
+                "country_code": "US",
+                "pickup_date": "20260220",
+                "ready_time": "0900",
+                "close_time": "1700",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["success"] is True
+
+    assert len(captured) == 1
+    assert captured[0][0] == "pickup_result"
+    assert captured[0][1]["action"] == "rated"
+
+
+@pytest.mark.asyncio
+async def test_get_pickup_status_tool_success():
+    """get_pickup_status_tool returns _ok envelope and emits pickup_result event."""
+    mock_ups = AsyncMock()
+    mock_ups.get_pickup_status.return_value = {
+        "success": True,
+        "pickups": [{"prn": "ABC123", "status": "Pending"}],
+    }
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import get_pickup_status_tool
+
+        result = await get_pickup_status_tool(
+            {"pickup_type": "oncall"},
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["success"] is True
+
+    assert len(captured) == 1
+    assert captured[0][0] == "pickup_result"
+    assert captured[0][1]["action"] == "status"
+
+
+@pytest.mark.asyncio
+async def test_find_locations_tool_emits_location_result():
+    """find_locations_tool emits location_result event with results."""
+    mock_ups = AsyncMock()
+    mock_ups.find_locations.return_value = {
+        "success": True,
+        "locations": [{"id": "L1", "address": {"line": "123 Main"}}],
+    }
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import find_locations_tool
+
+        result = await find_locations_tool(
+            {
+                "location_type": "retail",
+                "address_line": "123 Main",
+                "city": "Austin",
+                "state": "TX",
+                "postal_code": "78701",
+                "country_code": "US",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    assert captured[0][0] == "location_result"
+    assert len(captured[0][1]["locations"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_find_locations_tool_handles_malformed_args():
+    """find_locations_tool returns _err for TypeError from bad model args."""
+    mock_ups = AsyncMock()
+    mock_ups.find_locations.side_effect = TypeError("missing required arg")
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import find_locations_tool
+
+        result = await find_locations_tool({})
+
+    assert result["isError"] is True
+    assert "Unexpected error" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_get_service_center_facilities_tool_success():
+    """get_service_center_facilities_tool returns _ok and emits location_result."""
+    mock_ups = AsyncMock()
+    mock_ups.get_service_center_facilities.return_value = {
+        "success": True,
+        "facilities": [{"name": "UPS Store", "address": "456 Oak Ave"}],
+    }
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import (
+            get_service_center_facilities_tool,
+        )
+
+        result = await get_service_center_facilities_tool(
+            {
+                "city": "Austin",
+                "state": "TX",
+                "postal_code": "78701",
+                "country_code": "US",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    assert captured[0][0] == "location_result"
+    assert captured[0][1]["action"] == "service_centers"
