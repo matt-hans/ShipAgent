@@ -183,6 +183,89 @@ This document contains curated prompts designed to showcase ShipAgent's full cap
 
 ---
 
+## Demo 4b: International Shipping — Global Coverage (VERIFIED 2026-02-16)
+
+**Setup:** Ensure `INTERNATIONAL_ENABLED_LANES=*` is set in `.env` and backend is restarted. Toggle "Single Shipment" mode.
+
+**Key Feature — Automatic Service Upgrade:** The system automatically upgrades domestic service codes to international equivalents based on destination:
+- **Canada/Mexico** → UPS Standard (service code 11)
+- **All other international** → UPS Worldwide Saver (service code 65)
+
+This means you can say "use Ground" and the system will automatically select the correct international service.
+
+### Prompt 13a — Canada (North America) — VERIFIED
+
+> Ship a 2kg package to Sophie Martin at 555 Rue Sherbrooke Ouest, Montreal QC H3A 1E8, Canada. Contains software media (HS code 852349) worth $95. Phone: +1 514 555 1234
+
+**What it demonstrates:** US → Canada lane with UPS Standard service. Full customs documentation with HS codes and declared value in USD.
+
+**Expected result:** UPS Standard, ~$37 cost, international label with customs forms
+
+**Verified on:** 2026-02-16 — $37.29
+
+---
+
+### Prompt 13b — Mexico (North America) — VERIFIED
+
+> Ship a 4kg package to Carlos Rodriguez at 200 Paseo de la Reforma, Mexico City 06600, Mexico. Contains automotive parts (HS code 870899) worth $320. Phone: +52 55 1234 5678
+
+**What it demonstrates:** US → Mexico lane with UPS Standard service. Mexico shipments require package-level merchandise description (automatically added by the system).
+
+**Expected result:** UPS Standard, ~$105 cost, international label with customs forms
+
+**Verified on:** 2026-02-16 — $105.23
+
+---
+
+### Prompt 13c — United Kingdom (Europe) — VERIFIED
+
+> Ship a 2kg package to Elizabeth Taylor at 100 Piccadilly, London W1J 7NT, United Kingdom. Contains books (HS code 490199) worth $75. Phone: +44 20 7493 0800
+
+**What it demonstrates:** US → UK lane with automatic service upgrade to UPS Worldwide Saver. No explicit service specification needed — the system detects the destination and selects the appropriate international service.
+
+**Expected result:** UPS Worldwide Saver, ~$308 cost, international label with customs forms
+
+**Verified on:** 2026-02-16 — $307.75
+
+---
+
+### Prompt 13d — Germany (Europe) — VERIFIED
+
+> Ship a 3kg package to Franz Becker at 50 Unter den Linden, Berlin 10117, Germany. Contains mechanical parts (HS code 848790) worth $150. Phone: +49 30 1234 5678
+
+**What it demonstrates:** US → Germany lane with UPS Worldwide Saver. Validates full EU coverage with proper HS code handling and customs documentation.
+
+**Expected result:** UPS Worldwide Saver, ~$342 cost, international label with customs forms
+
+**Verified on:** 2026-02-16 — $341.98
+
+---
+
+### Prompt 13e — Asia-Pacific (Template)
+
+> Ship a 2kg package to [recipient name] at [address], Tokyo, Japan. Contains [description] (HS code [code]) worth $[value]. Phone: [phone]
+
+**What it demonstrates:** US → Asia Pacific lanes follow the same pattern — automatic upgrade to UPS Worldwide Saver.
+
+**Expected result:** UPS Worldwide Saver, cost varies by destination
+
+**Note:** Not yet verified in CIE — use production credentials for full global coverage.
+
+---
+
+### International Shipping Summary Table
+
+| Destination | Service Used | CIE Status | Verified Cost |
+|-------------|--------------|------------|---------------|
+| Canada (CA) | UPS Standard (11) | ✅ Working | $37.29 |
+| Mexico (MX) | UPS Standard (11) | ✅ Working | $105.23 |
+| United Kingdom (GB) | UPS Worldwide Saver (65) | ✅ Working | $307.75 |
+| Germany (DE) | UPS Worldwide Saver (65) | ✅ Working | $341.98 |
+| Other EU | UPS Worldwide Saver (65) | ✅ Expected | Varies |
+| Asia Pacific | UPS Worldwide Saver (65) | ✅ Expected | Varies |
+
+---
+
 ## Demo 5: Pickup Scheduling
 
 **Setup:** Pickup can be scheduled after batch completion (via "Schedule Pickup" button on completion card) or standalone via conversational command.
@@ -307,16 +390,22 @@ This document contains curated prompts designed to showcase ShipAgent's full cap
 2. **Follow with Prompt 3** — keyword search across descriptions is visually impressive
 3. **Switch to Excel Prompt 8** — same prompt, same results, different source = "wow" moment
 4. **End with Shopify Prompt 11** — live data with complex conditions is the strongest batch demo
-5. **Switch to Interactive Mode** — show Prompt 12 (domestic) and Prompt 13 (international) for conversational shipping
-6. **Show Pickup Integration** — use Prompt 14 to schedule pickup after batch completion
-7. **Demonstrate Tracking** — use Prompt 17 to show real-time package tracking
-8. **Show Paperless Upload** — use Prompt 18 to demonstrate customs document upload
+5. **Switch to Interactive Mode** — show Prompt 12 (domestic) for conversational shipping
+6. **Show International Coverage** — run Prompts 13a through 13d to demonstrate global shipping:
+   - **Canada (13a)** — quick $37 shipment, shows North America coverage
+   - **Mexico (13b)** — $105 shipment, demonstrates Mexico-specific handling
+   - **UK (13c)** — $308 shipment, shows automatic service upgrade to Saver
+   - **Germany (13d)** — $342 shipment, confirms full EU coverage
+7. **Show Pickup Integration** — use Prompt 14 to schedule pickup after batch completion
+8. **Demonstrate Tracking** — use Prompt 17 to show real-time package tracking
+9. **Show Paperless Upload** — use Prompt 18 to demonstrate customs document upload
 
 **Key talking points at each step:**
 
 - **Preview step**: Point out the row count, total cost estimate, and zero warnings — the system got it right on the first try
 - **Confirm step**: Emphasize the safety gate — nothing ships without explicit confirmation
 - **Completion artifact**: Show the inline label access — labels are immediately available, no separate download step
+- **International demos**: Highlight the automatic service upgrade — Ground automatically becomes Standard for CA/MX or Worldwide Saver for EU
 - **Pickup button**: Highlight the "Schedule Pickup" button for seamless post-shipment logistics
 - **TrackingCard**: Show the activity timeline and expected delivery date
 - **PaperlessCard**: Show the file upload flow with document type selection and Document ID confirmation
@@ -338,11 +427,14 @@ The user's natural language is parsed by the Claude agent, which generates a SQL
 | Excel Batch | 2 prompts | 10 shipments | 100% |
 | Shopify Batch | 3 prompts | 46 shipments | 100% |
 | Interactive Domestic | 1 prompt | 1 shipment | 100% |
-| Interactive International | 1 prompt | 1 shipment | 100% |
+| Interactive International (CA) | 1 prompt | 1 shipment | 100% |
+| Interactive International (MX) | 1 prompt | 1 shipment | 100% |
+| Interactive International (UK) | 1 prompt | 1 shipment | 100% |
+| Interactive International (DE) | 1 prompt | 1 shipment | 100% |
 | Pickup Scheduling | 2 prompts | 2 pickups | 100% |
 | Package Tracking | 1 prompt | 1 track | 100% |
 | Paperless Upload | 1 prompt | 1 document | 100% |
-| **Total** | **17 prompts** | **115+ operations** | **100%** |
+| **Total** | **21 prompts** | **118+ operations** | **100%** |
 
 Every result was independently verified against the raw data source before and after execution.
 
@@ -353,7 +445,9 @@ Every result was independently verified against the raw data source before and a
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Shipping (Domestic) | ✅ Working | Full functionality |
-| Shipping (International) | ✅ Working | US → CA/MX lanes verified |
+| Shipping (International CA/MX) | ✅ Working | US → Canada/Mexico verified — UPS Standard |
+| Shipping (International EU) | ✅ Working | US → UK/Germany verified — UPS Worldwide Saver |
+| Shipping (International Other) | ✅ Expected | Other lanes should work — use production for full coverage |
 | Rating | ✅ Working | All service codes |
 | Tracking | ✅ Working | May show sandbox mismatch warning |
 | Pickup | ✅ Working | Schedule, cancel, status |
@@ -366,6 +460,26 @@ For production demos, use production UPS credentials to avoid CIE limitations.
 ---
 
 ## Troubleshooting
+
+### International Shipping Not Enabled
+- Error: "International shipping to XX is not enabled"
+- Fix: Add `INTERNATIONAL_ENABLED_LANES=*` to `.env`
+- Restart backend after changing environment variables
+
+### Domestic Service Used for International
+- Error: "Service '03' is domestic-only and cannot be used for US to XX"
+- Fix: The system automatically upgrades domestic services to international equivalents
+- If this error appears, the auto-upgrade failed — check `ups_service_codes.py`
+
+### Mexico MerchandiseDescription Error
+- Error: "A package in a Mexico shipment must have a Merchandise Description"
+- Fix: The system automatically adds package-level description for Mexico
+- If this error appears, check `ups_payload_builder.py` for the description logic
+
+### Description of Goods Required
+- Error: "Description of goods is required for international shipments"
+- Fix: Provide a description in your command or let the agent elicit it
+- The system has a 3-layer fallback: explicit description → description alias → commodity description
 
 ### "No locations found" in Locator
 - CIE has limited city coverage
