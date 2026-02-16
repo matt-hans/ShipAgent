@@ -461,6 +461,237 @@ class UPSMCPClient:
 
         return self._normalize_pickup_status_response(raw)
 
+    # ── Landed cost methods ────────────────────────────────────────────
+
+    async def get_landed_cost(
+        self,
+        currency_code: str,
+        export_country_code: str,
+        import_country_code: str,
+        commodities: list[dict[str, Any]],
+        shipment_type: str = "Sale",
+        account_number: str = "",
+    ) -> dict[str, Any]:
+        """Estimate duties, taxes, and fees for an international shipment.
+
+        Args:
+            currency_code: ISO currency code (e.g., "USD").
+            export_country_code: Origin country code (e.g., "US").
+            import_country_code: Destination country code (e.g., "GB").
+            commodities: List of commodity dicts (price, quantity, hs_code).
+            shipment_type: Shipment type (default "Sale").
+            account_number: UPS account number (optional, uses env fallback).
+
+        Returns:
+            Normalised dict with: success, totalLandedCost, currencyCode, items.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        args: dict[str, Any] = {
+            "currency_code": currency_code,
+            "export_country_code": export_country_code,
+            "import_country_code": import_country_code,
+            "commodities": commodities,
+            "shipment_type": shipment_type,
+        }
+        if account_number:
+            args["account_number"] = account_number
+        try:
+            raw = await self._call("get_landed_cost_quote", args)
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return self._normalize_landed_cost_response(raw)
+
+    # ── Paperless document methods ─────────────────────────────────────
+
+    async def upload_document(
+        self,
+        file_content_base64: str,
+        file_name: str,
+        file_format: str,
+        document_type: str,
+        shipper_number: str = "",
+    ) -> dict[str, Any]:
+        """Upload a customs/trade document to UPS Forms History.
+
+        Args:
+            file_content_base64: Base64-encoded file content.
+            file_name: File name (e.g., "invoice.pdf").
+            file_format: File format (pdf, doc, xls, etc.).
+            document_type: UPS document type code ("002", "003", etc.).
+            shipper_number: Shipper number (optional, uses env fallback).
+
+        Returns:
+            Normalised dict with: success, documentId.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        args: dict[str, Any] = {
+            "file_content_base64": file_content_base64,
+            "file_name": file_name,
+            "file_format": file_format,
+            "document_type": document_type,
+        }
+        if shipper_number:
+            args["shipper_number"] = shipper_number
+        try:
+            raw = await self._call("upload_paperless_document", args)
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return self._normalize_upload_response(raw)
+
+    async def push_document(
+        self,
+        document_id: str,
+        shipment_identifier: str,
+        shipment_type: str = "1",
+        shipper_number: str = "",
+    ) -> dict[str, Any]:
+        """Attach a previously uploaded document to a shipment.
+
+        Args:
+            document_id: Document ID from upload_document response.
+            shipment_identifier: 1Z tracking number.
+            shipment_type: "1" for forward, "2" for return.
+            shipper_number: Shipper number (optional, uses env fallback).
+
+        Returns:
+            Normalised dict with: success.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        args: dict[str, Any] = {
+            "document_id": document_id,
+            "shipment_identifier": shipment_identifier,
+            "shipment_type": shipment_type,
+        }
+        if shipper_number:
+            args["shipper_number"] = shipper_number
+        try:
+            await self._call("push_document_to_shipment", args)
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return {"success": True}
+
+    async def delete_document(
+        self,
+        document_id: str,
+        shipper_number: str = "",
+    ) -> dict[str, Any]:
+        """Delete a document from UPS Forms History.
+
+        Args:
+            document_id: Document ID from upload_document response.
+            shipper_number: Shipper number (optional, uses env fallback).
+
+        Returns:
+            Normalised dict with: success.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        args: dict[str, Any] = {"document_id": document_id}
+        if shipper_number:
+            args["shipper_number"] = shipper_number
+        try:
+            await self._call("delete_paperless_document", args)
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return {"success": True}
+
+    # ── Locator methods ────────────────────────────────────────────────
+
+    async def find_locations(
+        self,
+        location_type: str,
+        address_line: str,
+        city: str,
+        state: str,
+        postal_code: str,
+        country_code: str,
+        radius: float = 15.0,
+        unit_of_measure: str = "MI",
+    ) -> dict[str, Any]:
+        """Find nearby UPS locations (Access Points, retail, etc.).
+
+        Args:
+            location_type: "access_point", "retail", "general", or "services".
+            address_line: Street address.
+            city: City name.
+            state: State/province code.
+            postal_code: Postal/ZIP code.
+            country_code: Country code.
+            radius: Search radius (default 15.0).
+            unit_of_measure: "MI" or "KM" (default "MI").
+
+        Returns:
+            Normalised dict with: success, locations.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        try:
+            raw = await self._call("find_locations", {
+                "location_type": location_type,
+                "address_line": address_line,
+                "city": city,
+                "state": state,
+                "postal_code": postal_code,
+                "country_code": country_code,
+                "radius": radius,
+                "unit_of_measure": unit_of_measure,
+            })
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return self._normalize_locations_response(raw)
+
+    async def get_service_center_facilities(
+        self,
+        city: str,
+        state: str,
+        postal_code: str,
+        country_code: str,
+        pickup_pieces: int = 1,
+        container_code: str = "03",
+    ) -> dict[str, Any]:
+        """Find UPS service center drop-off locations.
+
+        Args:
+            city: City name.
+            state: State/province code.
+            postal_code: Postal/ZIP code.
+            country_code: Country code.
+            pickup_pieces: Number of pieces (default 1).
+            container_code: Container code (default "03").
+
+        Returns:
+            Normalised dict with: success, facilities.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        try:
+            raw = await self._call("get_service_center_facilities", {
+                "city": city,
+                "state": state,
+                "postal_code": postal_code,
+                "country_code": country_code,
+                "pickup_pieces": pickup_pieces,
+                "container_code": container_code,
+            })
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
+
+        return self._normalize_service_center_response(raw)
+
     # ── Internal helpers ───────────────────────────────────────────────
 
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -860,6 +1091,104 @@ class UPSMCPClient:
         return {
             "success": True,
             "pickups": pickups,
+        }
+
+    # ── Landed cost + paperless + locator normalisation ────────────────
+
+    def _normalize_landed_cost_response(self, raw: dict) -> dict[str, Any]:
+        """Extract landed cost from raw UPS response.
+
+        Args:
+            raw: Raw UPS LandedCostResponse dict.
+
+        Returns:
+            Normalised response dict with success, totalLandedCost, items.
+        """
+        shipment = raw.get("LandedCostResponse", {}).get("shipment", {})
+        total = shipment.get("totalLandedCost", "0")
+        currency = shipment.get("currencyCode", "USD")
+        items_raw = shipment.get("shipmentItems", [])
+        if isinstance(items_raw, dict):
+            items_raw = [items_raw]
+        items = [
+            {
+                "commodityId": item.get("commodityId", ""),
+                "duties": item.get("duties", "0"),
+                "taxes": item.get("taxes", "0"),
+                "fees": item.get("fees", "0"),
+            }
+            for item in items_raw
+        ]
+        return {
+            "success": True,
+            "totalLandedCost": total,
+            "currencyCode": currency,
+            "items": items,
+        }
+
+    def _normalize_upload_response(self, raw: dict) -> dict[str, Any]:
+        """Extract document ID from raw UPS upload response.
+
+        Args:
+            raw: Raw UPS UploadResponse dict.
+
+        Returns:
+            Normalised response dict with success and documentId.
+        """
+        upload = raw.get("UploadResponse", {})
+        doc_id = (
+            upload
+            .get("FormsHistoryDocumentID", {})
+            .get("DocumentID", "")
+        )
+        return {
+            "success": True,
+            "documentId": doc_id,
+        }
+
+    def _normalize_locations_response(self, raw: dict) -> dict[str, Any]:
+        """Extract locations from raw UPS locator response.
+
+        Args:
+            raw: Raw UPS LocatorResponse dict.
+
+        Returns:
+            Normalised response dict with success and locations list.
+        """
+        search = raw.get("LocatorResponse", {}).get("SearchResults", {})
+        drop_locs = search.get("DropLocation", [])
+        if isinstance(drop_locs, dict):
+            drop_locs = [drop_locs]
+        locations = [
+            {
+                "id": loc.get("LocationID", ""),
+                "address": loc.get("AddressKeyFormat", {}),
+                "phone": loc.get("PhoneNumber", ""),
+                "hours": loc.get("OperatingHours", {}),
+            }
+            for loc in drop_locs
+        ]
+        return {
+            "success": True,
+            "locations": locations,
+        }
+
+    def _normalize_service_center_response(self, raw: dict) -> dict[str, Any]:
+        """Extract service center facilities from raw UPS response.
+
+        Args:
+            raw: Raw UPS ServiceCenterResponse dict.
+
+        Returns:
+            Normalised response dict with success and facilities list.
+        """
+        center = raw.get("ServiceCenterResponse", {})
+        facilities_raw = center.get("ServiceCenterList", [])
+        if isinstance(facilities_raw, dict):
+            facilities_raw = [facilities_raw]
+        return {
+            "success": True,
+            "facilities": facilities_raw,
         }
 
     # ── Error translation ──────────────────────────────────────────────

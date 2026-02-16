@@ -921,3 +921,162 @@ class TestPickupRetryClassification:
         assert "track_package" in UPSMCPClient._READ_ONLY_TOOLS
         assert "create_shipment" in UPSMCPClient._MUTATING_TOOLS
         assert "void_shipment" in UPSMCPClient._MUTATING_TOOLS
+
+
+# ---------------------------------------------------------------------------
+# Landed cost methods (Task 9)
+# ---------------------------------------------------------------------------
+
+
+class TestGetLandedCost:
+    """Test get_landed_cost() method and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_get_landed_cost(self, ups_client, mock_mcp_client):
+        """get_landed_cost returns duty/tax breakdown."""
+        mock_mcp_client.call_tool.return_value = {
+            "LandedCostResponse": {
+                "shipment": {
+                    "totalLandedCost": "45.23",
+                    "currencyCode": "USD",
+                    "shipmentItems": [
+                        {"commodityId": "1", "duties": "12.50", "taxes": "7.73", "fees": "0.00"}
+                    ],
+                }
+            }
+        }
+        result = await ups_client.get_landed_cost(
+            currency_code="USD", export_country_code="US",
+            import_country_code="GB",
+            commodities=[{"price": 25.00, "quantity": 2}],
+        )
+        assert result["success"] is True
+        assert result["totalLandedCost"] == "45.23"
+        assert len(result["items"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_landed_cost_uses_read_only_retry(self, ups_client, mock_mcp_client):
+        """get_landed_cost uses read-only retry policy."""
+        mock_mcp_client.call_tool.return_value = {
+            "LandedCostResponse": {"shipment": {"totalLandedCost": "0", "shipmentItems": []}}
+        }
+        await ups_client.get_landed_cost(
+            currency_code="USD", export_country_code="US",
+            import_country_code="GB", commodities=[],
+        )
+        call_kwargs = mock_mcp_client.call_tool.call_args
+        assert call_kwargs[1]["max_retries"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Paperless document methods (Task 9)
+# ---------------------------------------------------------------------------
+
+
+class TestUploadDocument:
+    """Test upload_document() method and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_upload_document(self, ups_client, mock_mcp_client):
+        """upload_document returns DocumentID."""
+        mock_mcp_client.call_tool.return_value = {
+            "UploadResponse": {
+                "FormsHistoryDocumentID": {"DocumentID": "2013-12-04-00.15.33.207814"}
+            }
+        }
+        result = await ups_client.upload_document(
+            file_content_base64="dGVzdA==", file_name="invoice.pdf",
+            file_format="pdf", document_type="002",
+        )
+        assert result["success"] is True
+        assert result["documentId"] == "2013-12-04-00.15.33.207814"
+
+    @pytest.mark.asyncio
+    async def test_upload_document_no_retry(self, ups_client, mock_mcp_client):
+        """upload_document must NOT retry (mutating)."""
+        assert "upload_paperless_document" in UPSMCPClient._MUTATING_TOOLS
+
+
+class TestPushDocument:
+    """Test push_document() method and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_push_document(self, ups_client, mock_mcp_client):
+        """push_document links document to shipment."""
+        mock_mcp_client.call_tool.return_value = {
+            "PushToImageRepositoryResponse": {"FormsHistoryDocumentID": {"DocumentID": "TEST"}}
+        }
+        result = await ups_client.push_document(
+            document_id="TEST", shipment_identifier="1Z123",
+        )
+        assert result["success"] is True
+
+
+class TestDeleteDocument:
+    """Test delete_document() method and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_delete_document(self, ups_client, mock_mcp_client):
+        """delete_document removes from Forms History."""
+        mock_mcp_client.call_tool.return_value = {
+            "DeleteResponse": {"Status": "Success"}
+        }
+        result = await ups_client.delete_document(document_id="TEST")
+        assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Locator methods (Task 9)
+# ---------------------------------------------------------------------------
+
+
+class TestFindLocations:
+    """Test find_locations() method and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_find_locations(self, ups_client, mock_mcp_client):
+        """find_locations returns location list."""
+        mock_mcp_client.call_tool.return_value = {
+            "LocatorResponse": {
+                "SearchResults": {
+                    "DropLocation": [
+                        {
+                            "LocationID": "L1",
+                            "AddressKeyFormat": {"AddressLine": "123 Main"},
+                            "PhoneNumber": "555-1234",
+                            "OperatingHours": {"StandardHours": {"DayOfWeek": []}},
+                        }
+                    ]
+                }
+            }
+        }
+        result = await ups_client.find_locations(
+            location_type="retail", address_line="123 Main",
+            city="Austin", state="TX", postal_code="78701", country_code="US",
+        )
+        assert result["success"] is True
+        assert len(result["locations"]) == 1
+        assert result["locations"][0]["id"] == "L1"
+
+    @pytest.mark.asyncio
+    async def test_find_locations_uses_read_only_retry(self, ups_client, mock_mcp_client):
+        """find_locations uses read-only retry policy."""
+        assert "find_locations" in UPSMCPClient._READ_ONLY_TOOLS
+
+
+class TestGetServiceCenterFacilities:
+    """Test get_service_center_facilities() method and normalization."""
+
+    @pytest.mark.asyncio
+    async def test_get_service_center_facilities(self, ups_client, mock_mcp_client):
+        """get_service_center_facilities returns facility list."""
+        mock_mcp_client.call_tool.return_value = {
+            "ServiceCenterResponse": {
+                "ServiceCenterList": [{"FacilityName": "UPS Store #1234"}]
+            }
+        }
+        result = await ups_client.get_service_center_facilities(
+            city="Austin", state="TX", postal_code="78701", country_code="US",
+        )
+        assert result["success"] is True
+        assert "facilities" in result
