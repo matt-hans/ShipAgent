@@ -715,11 +715,15 @@ export interface LandedCostResult {
   success: boolean;
   totalLandedCost: string;
   currencyCode: string;
+  totalDuties?: string;
+  totalVAT?: string;
+  totalBrokerageFees?: string;
   items: Array<{
     commodityId: string;
     duties: string;
     taxes: string;
     fees: string;
+    hsCode?: string;
   }>;
 }
 
