@@ -16,11 +16,12 @@ from datetime import date
 from src.services.ups_constants import (
     DEFAULT_CURRENCY_CODE,
     DEFAULT_FORM_TYPE,
-    SUPPORTED_SHIPPING_LANES,
+    EU_MEMBER_STATES,
+    PackagingCode,
 )
 
 
-RULE_VERSION = "1.0.0"
+RULE_VERSION = "2.0.0"
 
 # UPS international service codes
 SUPPORTED_INTERNATIONAL_SERVICES: frozenset[str] = frozenset({
@@ -111,13 +112,54 @@ def is_lane_enabled(origin: str, destination: str) -> bool:
     if not enabled:
         return False
     lanes = {lane.strip().upper() for lane in enabled.split(",")}
+    if "*" in lanes:
+        return True
     return f"{origin.upper()}-{destination.upper()}" in lanes
+
+
+def _is_ups_letter(packaging_code: str | None) -> bool:
+    """Check if the packaging type is UPS Letter.
+
+    UPS Letter (code "01") is exempt from description, forms, and commodity
+    requirements on international shipments.
+
+    Args:
+        packaging_code: UPS packaging type code, or None.
+
+    Returns:
+        True if packaging is UPS Letter.
+    """
+    return packaging_code == PackagingCode.LETTER.value
+
+
+def _is_eu_to_eu_standard(
+    origin: str, destination: str, service_code: str,
+) -> bool:
+    """Check if shipment qualifies for EU-to-EU Standard exemption.
+
+    EU-to-EU shipments using UPS Standard (code "11") do not require
+    customs documentation (description, forms, commodities).
+
+    Args:
+        origin: Origin country code (uppercase).
+        destination: Destination country code (uppercase).
+        service_code: UPS service code.
+
+    Returns:
+        True if both countries are EU members and service is Standard.
+    """
+    return (
+        origin in EU_MEMBER_STATES
+        and destination in EU_MEMBER_STATES
+        and service_code == "11"
+    )
 
 
 def get_requirements(
     origin: str,
     destination: str,
     service_code: str,
+    packaging_code: str | None = None,
 ) -> RequirementSet:
     """Get international shipping requirements for a lane and service.
 
@@ -125,6 +167,7 @@ def get_requirements(
         origin: Origin country code (e.g., US).
         destination: Destination country code (e.g., CA).
         service_code: UPS service code (e.g., 11).
+        packaging_code: UPS packaging type code (e.g., "01" for Letter).
 
     Returns:
         RequirementSet with all field requirements for this lane.
@@ -149,17 +192,7 @@ def get_requirements(
             supported_services=list(DOMESTIC_ONLY_SERVICES | SUPPORTED_INTERNATIONAL_SERVICES),
         )
 
-    # International: check if lane is supported
-    if lane_key not in SUPPORTED_SHIPPING_LANES:
-        return RequirementSet(
-            is_international=True,
-            not_shippable_reason=(
-                f"Shipping lane {origin} to {destination} is not currently supported. "
-                f"Supported lanes: {', '.join(sorted(SUPPORTED_SHIPPING_LANES))}."
-            ),
-        )
-
-    # P0 KILL SWITCH: Enforce feature flag BEFORE checking service codes.
+    # KILL SWITCH: Feature flag is the sole international gate.
     # If lane is not enabled via INTERNATIONAL_ENABLED_LANES env var,
     # return not_shippable immediately. This is the production safety gate.
     if not is_lane_enabled(origin, destination):
@@ -167,7 +200,7 @@ def get_requirements(
             is_international=True,
             not_shippable_reason=(
                 f"International shipping to {destination} is not enabled. "
-                f"Set INTERNATIONAL_ENABLED_LANES to include {lane_key} to enable."
+                f"Set INTERNATIONAL_ENABLED_LANES to include {lane_key} (or * for all) to enable."
             ),
         )
 
@@ -191,7 +224,37 @@ def get_requirements(
             ),
         )
 
-    # Valid international lane + service
+    # UPS Letter exemption: no description, forms, or commodities required
+    if _is_ups_letter(packaging_code):
+        return RequirementSet(
+            is_international=True,
+            requires_description=False,
+            requires_shipper_contact=True,
+            requires_recipient_contact=True,
+            requires_invoice_line_total=lane_key in INVOICE_LINE_TOTAL_LANES,
+            requires_international_forms=False,
+            requires_commodities=False,
+            supported_services=list(SUPPORTED_INTERNATIONAL_SERVICES),
+            currency_code=DEFAULT_CURRENCY_CODE,
+            form_type=DEFAULT_FORM_TYPE,
+        )
+
+    # EU-to-EU Standard exemption: no description, forms, or commodities required
+    if _is_eu_to_eu_standard(origin, destination, service_code):
+        return RequirementSet(
+            is_international=True,
+            requires_description=False,
+            requires_shipper_contact=True,
+            requires_recipient_contact=True,
+            requires_invoice_line_total=lane_key in INVOICE_LINE_TOTAL_LANES,
+            requires_international_forms=False,
+            requires_commodities=False,
+            supported_services=list(SUPPORTED_INTERNATIONAL_SERVICES),
+            currency_code=DEFAULT_CURRENCY_CODE,
+            form_type=DEFAULT_FORM_TYPE,
+        )
+
+    # Standard international: full requirements
     return RequirementSet(
         is_international=True,
         requires_description=True,

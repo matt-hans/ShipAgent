@@ -160,8 +160,7 @@ class TestInternationalPreviewValidation:
         assert len(result["preview_rows"]) == 1
         row_info = result["preview_rows"][0]
         assert "rate_error" in row_info
-        assert "not currently supported" in row_info["rate_error"].lower() or \
-               "not supported" in row_info["rate_error"].lower()
+        assert "not enabled" in row_info["rate_error"].lower()
 
     @pytest.mark.asyncio
     async def test_preview_disabled_lane_marks_error(self, engine, monkeypatch):
@@ -261,8 +260,7 @@ class TestInternationalExecuteValidation:
         assert result["failed"] == 1
         assert result["successful"] == 0
         assert row.status == "failed"
-        assert "not currently supported" in row.error_message.lower() or \
-               "not supported" in row.error_message.lower()
+        assert "not enabled" in row.error_message.lower()
 
     @pytest.mark.asyncio
     async def test_execute_stores_destination_country(self, engine):

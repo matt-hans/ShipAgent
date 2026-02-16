@@ -27,7 +27,7 @@ from src.services.ups_payload_builder import (
     build_ups_api_payload,
     build_ups_rate_payload,
 )
-from src.services.ups_service_codes import ServiceCode
+from src.services.ups_service_codes import ServiceCode, upgrade_to_international
 from src.services.errors import UPSServiceError
 from src.services.gateway_provider import get_data_gateway, get_external_sources_client
 from src.services.international_rules import get_requirements, validate_international_readiness
@@ -172,6 +172,7 @@ class BatchEngine:
                     dest_country = order_data.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
                     eff_service = service_code or order_data.get("service_code", ServiceCode.GROUND.value)
                     origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
+                    eff_service = upgrade_to_international(eff_service, origin_country, dest_country)
                     requirements = get_requirements(origin_country, dest_country, eff_service)
 
                     if requirements.not_shippable_reason:
@@ -195,7 +196,7 @@ class BatchEngine:
                     simplified = build_shipment_request(
                         order_data=order_data,
                         shipper=shipper,
-                        service_code=service_code,
+                        service_code=eff_service,
                     )
                     rate_payload = build_ups_rate_payload(
                         simplified,
@@ -371,6 +372,7 @@ class BatchEngine:
                     dest_country = order_data.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
                     eff_service = service_code or order_data.get("service_code", ServiceCode.GROUND.value)
                     origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
+                    eff_service = upgrade_to_international(eff_service, origin_country, dest_country)
                     requirements = get_requirements(origin_country, dest_country, eff_service)
 
                     if requirements.not_shippable_reason:
@@ -394,7 +396,7 @@ class BatchEngine:
                     simplified = build_shipment_request(
                         order_data=order_data,
                         shipper=shipper,
-                        service_code=service_code,
+                        service_code=eff_service,
                     )
 
                     api_payload = build_ups_api_payload(

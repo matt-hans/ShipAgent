@@ -140,7 +140,34 @@ DEFAULT_LABEL_WIDTH = "4"
 
 
 # ---------------------------------------------------------------------------
-# Supported shipping lanes
+# International form types
 # ---------------------------------------------------------------------------
 
-SUPPORTED_SHIPPING_LANES: frozenset[str] = frozenset({"US-CA", "US-MX"})
+INTERNATIONAL_FORM_TYPES: dict[str, str] = {
+    "01": "Invoice",
+    "03": "CO (Certificate of Origin)",
+    "04": "NAFTA/USMCA Certificate of Origin",
+    "05": "Partial Invoice",
+    "06": "Packinglist",
+    "07": "Customer Generated Forms",
+    "08": "Air Freight Packing List",
+    "09": "CN22 Form",
+    "10": "UPS Premium Care Form",
+    "11": "EEI (Electronic Export Information)",
+}
+
+REASON_FOR_EXPORT_VALUES: frozenset[str] = frozenset({
+    "SALE", "GIFT", "SAMPLE", "RETURN", "REPAIR", "INTERCOMPANYDATA",
+})
+
+# EU member states (post-Brexit, 27 members — excludes GB, NO, CH)
+EU_MEMBER_STATES: frozenset[str] = frozenset({
+    "AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR",
+    "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL",
+    "PL", "PT", "RO", "SK", "SI", "ES", "SE",
+})
+
+# Form types that require Product[] (commodity-level data)
+FORMS_REQUIRING_PRODUCTS: frozenset[str] = frozenset({
+    "01", "03", "04", "05", "06", "08", "11",
+})

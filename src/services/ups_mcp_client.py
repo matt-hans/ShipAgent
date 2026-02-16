@@ -65,10 +65,11 @@ def _ups_is_retryable(error_text: str) -> bool:
 
     Note: MCP preflight codes (ELICITATION_UNSUPPORTED, INCOMPLETE_SHIPMENT,
     MALFORMED_REQUEST, ELICITATION_DECLINED, ELICITATION_CANCELLED,
-    ELICITATION_INVALID_RESPONSE) intentionally do NOT match any pattern
-    below, so they are never auto-retried. E-4010 ``is_retryable=True`` in
-    the error registry is user-facing guidance only; runtime auto-retry is
-    disabled because ``create_shipment`` may have side effects.
+    ELICITATION_INVALID_RESPONSE, STRUCTURAL_FIELDS_REQUIRED) intentionally
+    do NOT match any pattern below, so they are never auto-retried.
+    E-4010 ``is_retryable=True`` in the error registry is user-facing
+    guidance only; runtime auto-retry is disabled because
+    ``create_shipment`` may have side effects.
 
     Args:
         error_text: Raw error text from the MCP tool response.
@@ -1394,6 +1395,13 @@ class UPSMCPClient:
         if ups_code == "ELICITATION_INVALID_RESPONSE":
             logger.warning(
                 "Elicitation integration conflict for create_shipment: %s",
+                ups_message[:200],
+            )
+
+        # Log structural fields required — indicates complex data needed
+        if ups_code == "STRUCTURAL_FIELDS_REQUIRED":
+            logger.warning(
+                "UPS MCP requires structural data (InternationalForms/Product): %s",
                 ups_message[:200],
             )
 

@@ -123,7 +123,7 @@ async def preview_interactive_shipment_tool(
         build_shipper,
         resolve_packaging_code,
     )
-    from src.services.ups_service_codes import resolve_service_code
+    from src.services.ups_service_codes import resolve_service_code, upgrade_to_international
 
     # Safe coercion: None -> "", non-string -> str, then strip
     def _str(val: Any, default: str = "") -> str:
@@ -188,8 +188,10 @@ async def preview_interactive_shipment_tool(
             if v:
                 shipper[k] = v
 
-    # Resolve service code
+    # Resolve service code, auto-upgrade for international destinations
     service_code = resolve_service_code(service)
+    shipper_country = os.environ.get("SHIPPER_COUNTRY", DEFAULT_ORIGIN_COUNTRY).upper()
+    service_code = upgrade_to_international(service_code, shipper_country, ship_to_country)
 
     # Construct order_data with canonical keys.
     order_data: dict[str, Any] = {

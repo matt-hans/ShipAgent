@@ -326,6 +326,19 @@ class TestInternationalShippingPrompt:
         prompt = build_system_prompt(interactive_shipping=False)
         assert "07, 08, 11, 54, or 65" in prompt
 
+    def test_wildcard_shows_all_destinations(self, monkeypatch):
+        """Wildcard * displays 'All international destinations' in prompt."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "*")
+        prompt = build_system_prompt(interactive_shipping=False)
+        assert "All international destinations" in prompt
+
+    def test_exemption_documentation_in_prompt(self, monkeypatch):
+        """Prompt includes UPS Letter and EU-to-EU exemption documentation."""
+        monkeypatch.setenv("INTERNATIONAL_ENABLED_LANES", "*")
+        prompt = build_system_prompt(interactive_shipping=False)
+        assert "UPS Letter" in prompt
+        assert "EU-to-EU" in prompt
+
 
 # --- UPS MCP v2 domain workflow prompt tests ---
 

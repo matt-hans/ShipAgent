@@ -7,9 +7,12 @@ from src.services.ups_constants import (
     DEFAULT_ORIGIN_COUNTRY,
     DEFAULT_PACKAGE_WEIGHT_LBS,
     DEFAULT_PACKAGING_CODE,
+    EU_MEMBER_STATES,
+    FORMS_REQUIRING_PRODUCTS,
     GRAMS_PER_LB,
+    INTERNATIONAL_FORM_TYPES,
     PACKAGING_ALIASES,
-    SUPPORTED_SHIPPING_LANES,
+    REASON_FOR_EXPORT_VALUES,
     UPS_ADDRESS_MAX_LEN,
     UPS_DIMENSION_UNIT,
     UPS_PHONE_MAX_DIGITS,
@@ -74,24 +77,47 @@ class TestPackagingAliases:
         assert "ups express box" in PACKAGING_ALIASES
 
 
-class TestSupportedShippingLanes:
-    """Test SUPPORTED_SHIPPING_LANES."""
+class TestInternationalConstants:
+    """Test international shipping constants."""
 
-    def test_is_frozenset(self):
-        """Test it's a frozenset (immutable)."""
-        assert isinstance(SUPPORTED_SHIPPING_LANES, frozenset)
+    def test_eu_member_states_has_27_members(self):
+        """Test EU has exactly 27 member states (post-Brexit)."""
+        assert len(EU_MEMBER_STATES) == 27
 
-    def test_non_empty(self):
-        """Test at least one lane is defined."""
-        assert len(SUPPORTED_SHIPPING_LANES) > 0
+    def test_eu_includes_major_countries(self):
+        """Test major EU countries are present."""
+        for code in ("DE", "FR", "IT", "ES", "NL", "PL", "SE"):
+            assert code in EU_MEMBER_STATES, f"{code} missing from EU_MEMBER_STATES"
 
-    def test_contains_us_ca(self):
-        """Test US-CA lane is supported."""
-        assert "US-CA" in SUPPORTED_SHIPPING_LANES
+    def test_eu_excludes_gb(self):
+        """Test GB is not in EU (post-Brexit)."""
+        assert "GB" not in EU_MEMBER_STATES
 
-    def test_contains_us_mx(self):
-        """Test US-MX lane is supported."""
-        assert "US-MX" in SUPPORTED_SHIPPING_LANES
+    def test_eu_excludes_non_eu_european(self):
+        """Test non-EU European countries are excluded."""
+        for code in ("NO", "CH"):
+            assert code not in EU_MEMBER_STATES, f"{code} should not be in EU_MEMBER_STATES"
+
+    def test_international_form_types_is_dict(self):
+        """Test INTERNATIONAL_FORM_TYPES is a non-empty dict."""
+        assert isinstance(INTERNATIONAL_FORM_TYPES, dict)
+        assert len(INTERNATIONAL_FORM_TYPES) > 0
+
+    def test_form_type_01_is_invoice(self):
+        """Test form type 01 maps to Invoice."""
+        assert "01" in INTERNATIONAL_FORM_TYPES
+        assert "Invoice" in INTERNATIONAL_FORM_TYPES["01"]
+
+    def test_reason_for_export_values_non_empty(self):
+        """Test REASON_FOR_EXPORT_VALUES is a non-empty frozenset."""
+        assert isinstance(REASON_FOR_EXPORT_VALUES, frozenset)
+        assert "SALE" in REASON_FOR_EXPORT_VALUES
+        assert "GIFT" in REASON_FOR_EXPORT_VALUES
+
+    def test_forms_requiring_products_non_empty(self):
+        """Test FORMS_REQUIRING_PRODUCTS includes invoice form type."""
+        assert isinstance(FORMS_REQUIRING_PRODUCTS, frozenset)
+        assert "01" in FORMS_REQUIRING_PRODUCTS
 
 
 class TestNumericConstants:
@@ -133,6 +159,37 @@ class TestNumericConstants:
     def test_default_origin_country(self):
         """Test default origin country is US."""
         assert DEFAULT_ORIGIN_COUNTRY == "US"
+
+
+class TestUpgradeToInternational:
+    """Test domestic→international service code auto-upgrade."""
+
+    def test_ground_upgrades_to_standard(self):
+        """Ground (03) → UPS Standard (11) for international."""
+        from src.services.ups_service_codes import upgrade_to_international
+        assert upgrade_to_international("03", "US", "GB") == "11"
+
+    def test_next_day_air_upgrades_to_worldwide_express(self):
+        """Next Day Air (01) → Worldwide Express (07) for international."""
+        from src.services.ups_service_codes import upgrade_to_international
+        assert upgrade_to_international("01", "US", "DE") == "07"
+
+    def test_domestic_stays_unchanged(self):
+        """Domestic shipments keep their service code."""
+        from src.services.ups_service_codes import upgrade_to_international
+        assert upgrade_to_international("03", "US", "US") == "03"
+
+    def test_international_code_stays_unchanged(self):
+        """Already-international codes are not changed."""
+        from src.services.ups_service_codes import upgrade_to_international
+        assert upgrade_to_international("07", "US", "GB") == "07"
+        assert upgrade_to_international("11", "US", "CA") == "11"
+
+    def test_all_domestic_codes_have_mapping(self):
+        """Every domestic-only code has an international equivalent."""
+        from src.services.ups_service_codes import DOMESTIC_TO_INTERNATIONAL, DOMESTIC_ONLY_SERVICES
+        for code in DOMESTIC_ONLY_SERVICES:
+            assert code in DOMESTIC_TO_INTERNATIONAL, f"No international mapping for {code}"
 
 
 class TestLabelConstants:

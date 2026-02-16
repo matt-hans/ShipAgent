@@ -276,9 +276,13 @@ deterministically (e.g., SQL validation, column mapping, payload building).
     international_section = ""
     enabled_lanes = os.environ.get("INTERNATIONAL_ENABLED_LANES", "")
     if enabled_lanes:
-        lanes_list = ", ".join(
-            lane.strip() for lane in enabled_lanes.split(",") if lane.strip()
-        )
+        lanes_stripped = [lane.strip() for lane in enabled_lanes.split(",") if lane.strip()]
+        is_wildcard = "*" in lanes_stripped
+        if is_wildcard:
+            lanes_display = "All international destinations"
+        else:
+            lanes_display = ", ".join(lanes_stripped)
+
         interactive_specific_guidance = ""
         if interactive_shipping:
             interactive_specific_guidance = """
@@ -287,22 +291,30 @@ Interactive mode collection requirements:
 - Do NOT ask for shipper phone or attention name — these are auto-populated from environment configuration.
 - Collect and pass `commodities` items with description, commodity_code, origin_country, quantity, and unit_value.
 - Collect and pass `invoice_currency_code`, `invoice_monetary_value`, and `reason_for_export` when required.
-- For CA/MX shipments, prefer international service codes (07, 08, 11, 54, 65) instead of domestic service codes.
+- When the user ships internationally, prefer international service codes (07, 08, 11, 54, 65) instead of domestic service codes.
 """
 
         country_filter_examples = """
 Country-based filter examples:
 - "ship Canadian orders": ship_to_country = 'CA'
 - "orders going to Mexico": ship_to_country = 'MX'
+- "orders going to UK": ship_to_country = 'GB'
+- "European orders": ship_to_country IN ('DE', 'FR', 'IT', 'ES', 'NL')
 - "international orders": ship_to_country != 'US' AND ship_to_country != 'PR'
 """
         if interactive_shipping:
             country_filter_examples = ""
 
+        exemptions_section = """
+**Exemptions** (reduced requirements — no description, forms, or commodities needed):
+- **UPS Letter** (packaging code "01"): Only contacts and InvoiceLineTotal (where applicable) required.
+- **EU-to-EU Standard** (both countries in EU, service code "11"): Only contacts required.
+"""
+
         international_section = f"""
 ## International Shipping
 
-**Enabled lanes:** {lanes_list}
+**Enabled destinations:** {lanes_display}
 
 International shipments require additional fields beyond domestic:
 - **Recipient phone** and **attention name** (required)
@@ -310,8 +322,8 @@ International shipments require additional fields beyond domestic:
 - **Description of goods** (max 35 chars, required for customs)
 - **Commodity data** (HS tariff code, origin country, quantity, unit value per item)
 - **InvoiceLineTotal** (currency + monetary value — required for US→CA)
-
-When the user ships to CA or MX:
+{exemptions_section}
+When the user ships internationally:
 - Use an international service code (07, 08, 11, 54, or 65). Domestic codes (01, 02, 03, 12, 13) are rejected.
 - If the user says "standard" without qualification, ask whether they mean UPS Ground (domestic) or UPS Standard (international). Do NOT silently default.
 - Never silently default ship_to_country to "US". If country is missing, ask the user.
@@ -321,9 +333,10 @@ When the user ships to CA or MX:
         international_section = """
 ## International Shipping
 
-International shipping is not currently enabled. The INTERNATIONAL_ENABLED_LANES environment
-variable is not set. If a user asks about international shipping, inform them that it requires
-configuration by an administrator.
+International shipping is not currently enabled. Set INTERNATIONAL_ENABLED_LANES=* in the
+environment to enable all international destinations, or set specific lanes (e.g., US-CA,US-MX).
+If a user asks about international shipping, inform them that it requires configuration by an
+administrator.
 """
 
     # UPS MCP v2 — Additional capabilities (both modes)
