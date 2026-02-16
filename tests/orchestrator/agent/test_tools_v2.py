@@ -834,10 +834,17 @@ def test_tool_definitions_have_unique_names():
 
 
 def test_tool_definitions_filtered_for_interactive_mode():
-    """Interactive mode exposes only non-batch orchestrator status tools."""
+    """Interactive mode exposes status tools + interactive preview + v2 tools."""
     defs = get_all_tool_definitions(interactive_shipping=True)
     names = {d["name"] for d in defs}
-    assert names == {"get_job_status", "get_platform_status", "preview_interactive_shipment"}
+    expected = {
+        "get_job_status", "get_platform_status", "preview_interactive_shipment",
+        "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
+        "find_locations", "get_service_center_facilities",
+        "upload_paperless_document", "push_document_to_shipment", "delete_paperless_document",
+        "get_landed_cost", "track_package",
+    }
+    assert names == expected
 
 
 def test_tool_definitions_unfiltered_when_interactive_disabled():
@@ -1127,9 +1134,8 @@ async def test_schedule_pickup_tool_success():
         )
 
     assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["prn"] == "ABC123"
-    assert data["success"] is True
+    text = json.loads(result["content"][0]["text"])
+    assert "ABC123" in text  # Minimal summary contains PRN
 
     assert len(captured) == 1
     assert captured[0][0] == "pickup_result"
@@ -1227,8 +1233,8 @@ async def test_cancel_pickup_tool_success():
         )
 
     assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["success"] is True
+    text = json.loads(result["content"][0]["text"])
+    assert "cancelled" in text.lower()
 
     assert len(captured) == 1
     assert captured[0][0] == "pickup_result"
@@ -1247,11 +1253,12 @@ async def test_cancel_pickup_tool_safety_gate():
 
 @pytest.mark.asyncio
 async def test_rate_pickup_tool_success():
-    """rate_pickup_tool returns _ok envelope and emits pickup_result event."""
+    """rate_pickup_tool returns _ok envelope and emits pickup_preview event."""
     mock_ups = AsyncMock()
     mock_ups.rate_pickup.return_value = {
         "success": True,
-        "grandTotalOfAllCharge": "5.50",
+        "grandTotal": "5.50",
+        "charges": [{"chargeAmount": "5.50", "chargeCode": "B", "chargeLabel": "Base Charge"}],
     }
 
     bridge = EventEmitterBridge()
@@ -1280,12 +1287,61 @@ async def test_rate_pickup_tool_success():
         )
 
     assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["success"] is True
+    text = json.loads(result["content"][0]["text"])
+    assert "rate" in text.lower()
 
     assert len(captured) == 1
-    assert captured[0][0] == "pickup_result"
-    assert captured[0][1]["action"] == "rated"
+    assert captured[0][0] == "pickup_preview"
+
+
+@pytest.mark.asyncio
+async def test_rate_pickup_tool_emits_pickup_preview_event():
+    """rate_pickup_tool emits pickup_preview (not pickup_result) with all input details."""
+    mock_ups = AsyncMock()
+    mock_ups.rate_pickup.return_value = {
+        "success": True,
+        "charges": [
+            {"chargeAmount": "9.65", "chargeCode": "B", "chargeLabel": "Base Charge"},
+        ],
+        "grandTotal": "9.65",
+    }
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import rate_pickup_tool
+
+        result = await rate_pickup_tool(
+            {
+                "pickup_type": "oncall",
+                "address_line": "123 Main St",
+                "city": "Dallas",
+                "state": "TX",
+                "postal_code": "75201",
+                "country_code": "US",
+                "pickup_date": "20260217",
+                "ready_time": "0900",
+                "close_time": "1700",
+                "contact_name": "John Smith",
+                "phone_number": "214-555-1234",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    assert captured[0][0] == "pickup_preview"
+    payload = captured[0][1]
+    assert payload["address_line"] == "123 Main St"
+    assert payload["city"] == "Dallas"
+    assert payload["contact_name"] == "John Smith"
+    assert payload["grand_total"] == "9.65"
+    assert payload["charges"][0]["chargeLabel"] == "Base Charge"
 
 
 @pytest.mark.asyncio
@@ -1313,8 +1369,8 @@ async def test_get_pickup_status_tool_success():
         )
 
     assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["success"] is True
+    text = json.loads(result["content"][0]["text"])
+    assert "status" in text.lower()
 
     assert len(captured) == 1
     assert captured[0][0] == "pickup_result"
@@ -1450,8 +1506,8 @@ async def test_upload_paperless_document_tool_emits_event():
         )
 
     assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["documentId"] == "DOC-123"
+    text = json.loads(result["content"][0]["text"])
+    assert "DOC-123" in text
 
     assert len(captured) == 1
     assert captured[0][0] == "paperless_result"
@@ -1506,8 +1562,8 @@ async def test_push_document_to_shipment_tool_success():
         )
 
     assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["success"] is True
+    text = json.loads(result["content"][0]["text"])
+    assert "attached" in text.lower() or "shipment" in text.lower()
 
     assert len(captured) == 1
     assert captured[0][0] == "paperless_result"
@@ -1538,8 +1594,8 @@ async def test_delete_paperless_document_tool_success():
         )
 
     assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["success"] is True
+    text = json.loads(result["content"][0]["text"])
+    assert "deleted" in text.lower()
 
     assert len(captured) == 1
     assert captured[0][0] == "paperless_result"
@@ -1611,8 +1667,8 @@ async def test_get_landed_cost_tool_emits_event():
         )
 
     assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["totalLandedCost"] == "45.23"
+    text = json.loads(result["content"][0]["text"])
+    assert "Landed cost estimate displayed" in text
 
     assert len(captured) == 1
     assert captured[0][0] == "landed_cost_result"
@@ -1690,31 +1746,37 @@ def test_v2_tools_registered_batch_mode():
     assert expected_v2.issubset(names), f"Missing: {expected_v2 - names}"
 
 
-def test_v2_tools_not_in_interactive_mode():
-    """Interactive mode MUST NOT include v2 orchestrator tools (AD-1).
+def test_v2_tools_available_in_interactive_mode():
+    """Interactive mode includes v2 orchestrator tools (AD-1 updated).
 
-    The agent accesses new UPS tools via MCP auto-discovery
-    (mcp__ups__schedule_pickup etc.), not via orchestrator tool registry.
-    The interactive allowlist stays at exactly 3 tools.
+    V2 tools work independently of data sources and should be
+    accessible in both batch and interactive modes.
     """
     defs = get_all_tool_definitions(interactive_shipping=True)
     names = {d["name"] for d in defs}
-    assert names == {
-        "get_job_status",
-        "get_platform_status",
-        "preview_interactive_shipment",
-    }
+    # Original 3 tools
+    assert "get_job_status" in names
+    assert "get_platform_status" in names
+    assert "preview_interactive_shipment" in names
+    # v2 tools now included
     v2_tools = {
         "schedule_pickup",
         "cancel_pickup",
         "rate_pickup",
+        "get_pickup_status",
         "find_locations",
-        "get_landed_cost",
+        "get_service_center_facilities",
         "upload_paperless_document",
+        "push_document_to_shipment",
+        "delete_paperless_document",
+        "get_landed_cost",
+        "track_package",
     }
-    assert not names.intersection(v2_tools), (
-        f"v2 tools leaked into interactive mode: {names & v2_tools}"
-    )
+    assert v2_tools.issubset(names), f"Missing v2 tools: {v2_tools - names}"
+    # Batch-only tools NOT included
+    assert "ship_command_pipeline" not in names
+    assert "batch_preview" not in names
+    assert "fetch_rows" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -1745,11 +1807,10 @@ async def test_e2e_pickup_flow_tool_to_event():
             bridge=bridge,
         )
 
-    # Verify tool returned _ok envelope to LLM
+    # Verify tool returned minimal _ok envelope to LLM
     assert tool_result["isError"] is False
-    llm_data = json.loads(tool_result["content"][0]["text"])
-    assert llm_data["prn"] == "E2E-PRN-123"
-    assert llm_data["action"] == "scheduled"
+    llm_text = json.loads(tool_result["content"][0]["text"])
+    assert "E2E-PRN-123" in llm_text
 
     # Verify SSE event emitted with full payload
     assert len(captured_events) == 1
@@ -1793,10 +1854,10 @@ async def test_e2e_landed_cost_flow_tool_to_event():
             bridge=bridge,
         )
 
-    # Verify tool returned _ok envelope to LLM
+    # Verify tool returned minimal _ok envelope to LLM
     assert tool_result["isError"] is False
-    llm_data = json.loads(tool_result["content"][0]["text"])
-    assert llm_data["totalLandedCost"] == "87.50"
+    llm_text = json.loads(tool_result["content"][0]["text"])
+    assert "Landed cost estimate displayed" in llm_text
 
     # Verify SSE event emitted with full breakdown
     assert len(captured_events) == 1
@@ -1804,3 +1865,180 @@ async def test_e2e_landed_cost_flow_tool_to_event():
     assert event_type == "landed_cost_result"
     assert event_data["totalLandedCost"] == "87.50"
     assert len(event_data["items"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# UPS MCP v2 — Tracking tool handler
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_track_package_tool_matching_response():
+    """track_package_tool emits tracking_result event with matching tracking number."""
+    mock_ups = AsyncMock()
+    mock_ups.track_package.return_value = {
+        "trackResponse": {
+            "shipment": [{
+                "package": [{
+                    "trackingNumber": "1Z999AA10123456784",
+                    "currentStatus": {"code": "D", "description": "Delivered"},
+                    "deliveryDate": [{"date": "20260215"}],
+                    "activity": [
+                        {
+                            "date": "20260215",
+                            "time": "143000",
+                            "location": {"address": {"city": "Austin", "stateProvince": "TX", "countryCode": "US"}},
+                            "status": {"description": "Delivered"},
+                        },
+                        {
+                            "date": "20260214",
+                            "time": "081500",
+                            "location": {"address": {"city": "Dallas", "stateProvince": "TX", "countryCode": "US"}},
+                            "status": {"description": "In Transit"},
+                        },
+                    ],
+                }],
+            }],
+        },
+    }
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda et, d: captured.append((et, d))
+
+    with patch(
+        "src.orchestrator.agent.tools.tracking._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.tracking import track_package_tool
+
+        result = await track_package_tool(
+            {"tracking_number": "1Z999AA10123456784"},
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    text = json.loads(result["content"][0]["text"])
+    assert "1Z999AA10123456784" in text  # Minimal summary contains tracking number
+
+    # Verify event emitted with full details
+    assert len(captured) == 1
+    assert captured[0][0] == "tracking_result"
+    assert captured[0][1]["action"] == "tracked"
+    assert captured[0][1]["trackingNumber"] == "1Z999AA10123456784"
+    assert captured[0][1]["statusDescription"] == "Delivered"
+    assert len(captured[0][1]["activities"]) == 2
+    assert captured[0][1]["deliveryDate"] == "20260215"
+    assert "mismatch" not in captured[0][1]  # No mismatch key when matching
+
+
+@pytest.mark.asyncio
+async def test_track_package_tool_mismatch_detection():
+    """track_package_tool flags mismatch when UPS returns different tracking number."""
+    mock_ups = AsyncMock()
+    mock_ups.track_package.return_value = {
+        "trackResponse": {
+            "shipment": [{
+                "package": [{
+                    "trackingNumber": "1ZSANDBOX000000001",
+                    "currentStatus": {"code": "IT", "description": "In Transit"},
+                    "activity": [],
+                }],
+            }],
+        },
+    }
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda et, d: captured.append((et, d))
+
+    with patch(
+        "src.orchestrator.agent.tools.tracking._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.tracking import track_package_tool
+
+        result = await track_package_tool(
+            {"tracking_number": "1Z999AA10123456784"},
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    text = json.loads(result["content"][0]["text"])
+    assert "1ZSANDBOX000000001" in text  # Minimal summary contains returned number
+    assert "sandbox" in text.lower()  # Mismatch note present
+
+    # Event should include mismatch flag
+    assert len(captured) == 1
+    assert captured[0][1]["mismatch"] is True
+    assert captured[0][1]["requestedNumber"] == "1Z999AA10123456784"
+    assert captured[0][1]["trackingNumber"] == "1ZSANDBOX000000001"
+
+
+@pytest.mark.asyncio
+async def test_track_package_tool_error_handling():
+    """track_package_tool returns _err envelope on UPSServiceError."""
+    from src.services.errors import UPSServiceError
+
+    mock_ups = AsyncMock()
+    mock_ups.track_package.side_effect = UPSServiceError(
+        code="E-3001", message="tracking unavailable"
+    )
+
+    with patch(
+        "src.orchestrator.agent.tools.tracking._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.tracking import track_package_tool
+
+        result = await track_package_tool(
+            {"tracking_number": "1Z999AA10123456784"},
+        )
+
+    assert result["isError"] is True
+    assert "E-3001" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_track_package_tool_missing_tracking_number():
+    """track_package_tool returns _err when tracking_number is empty."""
+    from src.orchestrator.agent.tools.tracking import track_package_tool
+
+    result = await track_package_tool({})
+    assert result["isError"] is True
+    assert "Missing required parameter" in result["content"][0]["text"]
+
+    result2 = await track_package_tool({"tracking_number": "  "})
+    assert result2["isError"] is True
+
+
+def test_track_package_registered_in_definitions():
+    """track_package appears in the tool definitions."""
+    defs = get_all_tool_definitions()
+    names = {d["name"] for d in defs}
+    assert "track_package" in names
+
+
+# ---------------------------------------------------------------------------
+# Python interpreter fallback
+# ---------------------------------------------------------------------------
+
+
+def test_python_command_fallback():
+    """_get_python_command returns sys.executable when .venv doesn't exist."""
+    import sys
+
+    with patch("os.path.exists", return_value=False):
+        from src.services.ups_mcp_client import _get_python_command
+
+        result = _get_python_command()
+        assert result == sys.executable
+
+
+def test_python_command_prefers_venv():
+    """_get_python_command returns venv python when it exists."""
+    with patch("os.path.exists", return_value=True):
+        from src.services.ups_mcp_client import _get_python_command, _VENV_PYTHON
+
+        result = _get_python_command()
+        assert result == _VENV_PYTHON

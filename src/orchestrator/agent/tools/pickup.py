@@ -51,7 +51,8 @@ async def schedule_pickup_tool(
         result = await client.schedule_pickup(**args)
         payload = {"action": "scheduled", "success": True, **result}
         _emit_event("pickup_result", payload, bridge=bridge)
-        return _ok({"prn": result.get("prn"), "success": True, "action": "scheduled"})
+        prn = result.get("prn", "unknown")
+        return _ok(f"Pickup scheduled successfully. PRN: {prn}")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
@@ -89,7 +90,7 @@ async def cancel_pickup_tool(
         result = await client.cancel_pickup(cancel_by=cancel_by, prn=prn)
         payload = {"action": "cancelled", "success": True, **result}
         _emit_event("pickup_result", payload, bridge=bridge)
-        return _ok({"success": True, "action": "cancelled"})
+        return _ok("Pickup cancelled successfully.")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
@@ -101,11 +102,16 @@ async def rate_pickup_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
 ) -> dict[str, Any]:
-    """Get a pickup cost estimate and emit pickup_result event.
+    """Get a pickup cost estimate and emit pickup_preview event.
+
+    Emits a ``pickup_preview`` event containing the full pickup details
+    (address, schedule, contact) alongside the rate charges, so the
+    frontend can render a rich preview card with Confirm/Cancel buttons.
 
     Args:
         args: Dict with pickup_type, address fields, pickup_date,
-              ready_time, close_time, and optional kwargs.
+              ready_time, close_time, contact_name, phone_number,
+              and optional kwargs.
         bridge: Event bridge for SSE emission.
 
     Returns:
@@ -113,10 +119,32 @@ async def rate_pickup_tool(
     """
     try:
         client = await _get_ups_client()
+        # Extract input details before passing to client
+        input_details = {
+            "pickup_type": args.get("pickup_type", "oncall"),
+            "address_line": args.get("address_line", ""),
+            "city": args.get("city", ""),
+            "state": args.get("state", ""),
+            "postal_code": args.get("postal_code", ""),
+            "country_code": args.get("country_code", "US"),
+            "pickup_date": args.get("pickup_date", ""),
+            "ready_time": args.get("ready_time", ""),
+            "close_time": args.get("close_time", ""),
+            "contact_name": args.get("contact_name", ""),
+            "phone_number": args.get("phone_number", ""),
+        }
         result = await client.rate_pickup(**args)
-        payload = {"action": "rated", "success": True, **result}
-        _emit_event("pickup_result", payload, bridge=bridge)
-        return _ok({"success": True, "action": "rated", **result})
+        # Emit pickup_preview with all details + rate
+        payload = {
+            **input_details,
+            "charges": result.get("charges", []),
+            "grand_total": result.get("grandTotal", "0"),
+        }
+        _emit_event("pickup_preview", payload, bridge=bridge)
+        return _ok(
+            "Pickup rate estimate displayed. Waiting for user to confirm or cancel "
+            "via the preview card. Do NOT call schedule_pickup until the user confirms."
+        )
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
@@ -147,7 +175,7 @@ async def get_pickup_status_tool(
         )
         payload = {"action": "status", "success": True, **result}
         _emit_event("pickup_result", payload, bridge=bridge)
-        return _ok({"success": True, "action": "status", **result})
+        return _ok("Pickup status displayed.")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
@@ -173,7 +201,7 @@ async def find_locations_tool(
         result = await client.find_locations(**args)
         payload = {"action": "locations", "success": True, **result}
         _emit_event("location_result", payload, bridge=bridge)
-        return _ok({"success": True, "action": "locations", **result})
+        return _ok("Location results displayed.")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
@@ -199,7 +227,7 @@ async def get_service_center_facilities_tool(
         result = await client.get_service_center_facilities(**args)
         payload = {"action": "service_centers", "success": True, **result}
         _emit_event("location_result", payload, bridge=bridge)
-        return _ok({"success": True, "action": "service_centers", **result})
+        return _ok("Service center results displayed.")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:
