@@ -12,10 +12,12 @@ import * as React from 'react';
 import type {
   Job,
   DataSourceInfo,
+  PickupPreview,
   PickupResult,
   LocationResult,
   LandedCostResult,
   PaperlessResult,
+  TrackingResult,
 } from '@/types/api';
 
 /** Warning row handling preference, persisted in localStorage. */
@@ -47,7 +49,8 @@ interface ConversationMessage {
     jobId?: string;
     action?:
       | 'preview' | 'execute' | 'complete' | 'error' | 'elicit'
-      | 'pickup_result' | 'location_result' | 'landed_cost_result' | 'paperless_result';
+      | 'pickup_preview' | 'pickup_result' | 'location_result' | 'landed_cost_result' | 'paperless_result'
+      | 'tracking_result';
     preview?: {
       rowCount: number;
       estimatedCost: number;
@@ -83,9 +86,11 @@ interface ConversationMessage {
     };
     // UPS MCP v2 domain card payloads
     pickup?: PickupResult;
+    pickupPreview?: PickupPreview;
     location?: LocationResult;
     landedCost?: LandedCostResult;
     paperless?: PaperlessResult;
+    tracking?: TrackingResult;
   };
 }
 
