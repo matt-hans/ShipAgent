@@ -548,12 +548,12 @@ Update `UPS_MESSAGE_PATTERNS`:
     "no pdf found": "E-3007",
 ```
 
-Then update `_translate_error()` in `src/services/ups_mcp_client.py` to route `MALFORMED_REQUEST` by reason. Around line 683-685, expand the reason handling:
+Then update `_translate_error()` in `src/services/ups_mcp_client.py` to route `MALFORMED_REQUEST` by reason. Around line 683-685, expand the reason handling. Note: the local variable is `error_data` (line 637), NOT `parsed`:
 
 ```python
         # Route MALFORMED_REQUEST by reason for finer error codes
         if ups_code == "MALFORMED_REQUEST":
-            reason = parsed.get("reason", "")
+            reason = error_data.get("reason", "")
             if reason == "ambiguous_payer":
                 ups_code = "MALFORMED_REQUEST_AMBIGUOUS"
             elif reason == "malformed_structure":
@@ -1316,6 +1316,7 @@ Create `src/orchestrator/agent/tools/pickup.py` with handler functions. Each han
 4. Emits typed event via `_emit_event(event_type, payload, bridge=bridge)` (AD-2)
 5. Returns `_ok({...slim_data...})` — slim version for LLM context
 6. Catches `UPSServiceError` and returns `_err(f"[{e.code}] {e.message}")` (AD-4)
+7. **Catches generic `Exception` as fallback** — model-generated args commonly produce `TypeError`/`ValueError` from missing/extra params. Return `_err(...)` to avoid crashing the agent turn.
 
 ```python
 """Pickup and location tool handlers for the orchestration agent.
@@ -1326,6 +1327,7 @@ find_locations, get_service_center_facilities.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from src.orchestrator.agent.tools.core import (
@@ -1336,6 +1338,8 @@ from src.orchestrator.agent.tools.core import (
     _ok,
 )
 from src.services.errors import UPSServiceError
+
+logger = logging.getLogger(__name__)
 
 
 async def schedule_pickup_tool(
@@ -1351,10 +1355,33 @@ async def schedule_pickup_tool(
         return _ok({"prn": result.get("prn"), "success": True, "action": "scheduled"})
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
+    except Exception as e:
+        logger.exception("Unexpected error in schedule_pickup_tool")
+        return _err(f"Unexpected error: {e}")
 
 # ... similar for cancel_pickup_tool, rate_pickup_tool, get_pickup_status_tool,
 # find_locations_tool, get_service_center_facilities_tool
+# ALL handlers MUST include the generic except Exception fallback.
 ```
+
+**Generic exception test requirement (add to test section for each handler file):**
+
+```python
+@pytest.mark.asyncio
+async def test_schedule_pickup_tool_handles_malformed_args():
+    """Tool returns _err for TypeError/ValueError from bad model args."""
+    mock_ups = AsyncMock()
+    mock_ups.schedule_pickup.side_effect = TypeError("missing required arg")
+
+    with patch("src.orchestrator.agent.tools.pickup._get_ups_client", return_value=mock_ups):
+        from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
+        result = await schedule_pickup_tool({})  # missing required fields
+
+    assert result["isError"] is True
+    assert "Unexpected error" in result["content"][0]["text"]
+```
+
+Add similar `_handles_malformed_args` tests for `find_locations_tool`, `upload_paperless_document_tool`, and `get_landed_cost_tool` (one per handler file).
 
 **Step 4: Run test to verify it passes**
 
@@ -1425,7 +1452,7 @@ async def test_upload_paperless_document_tool_emits_event():
 
 **Step 2–4:** Same TDD cycle as Task 10.
 
-Create `src/orchestrator/agent/tools/documents.py` with 3 handlers (upload, push, delete). Each follows the same pattern: call UPSMCPClient → emit `paperless_result` event → return `_ok()`.
+Create `src/orchestrator/agent/tools/documents.py` with 3 handlers (upload, push, delete). Each follows the same pattern: call UPSMCPClient → emit `paperless_result` event → return `_ok()`. **All handlers MUST include generic `except Exception` fallback** (same pattern as Task 10 — catches `TypeError`/`ValueError` from malformed model args, returns `_err(...)`).
 
 **Step 5: Commit**
 
@@ -1485,7 +1512,7 @@ async def test_get_landed_cost_tool_emits_event():
 
 **Step 2–4:** Same TDD cycle.
 
-Add `get_landed_cost_tool` to `pipeline.py` following the same pattern.
+Add `get_landed_cost_tool` to `pipeline.py` following the same pattern. **Must include generic `except Exception` fallback** (same pattern as Task 10).
 
 **Step 5: Commit**
 
@@ -1805,6 +1832,94 @@ git commit -m "feat: add TypeScript types and AgentEventType variants for UPS MC
 
 ---
 
+### Task 15.5: Update ConversationMessage metadata type contract
+
+**Resolves:** Finding 1 (metadata type contract missing for new event cards)
+
+**Files:**
+- Modify: `frontend/src/hooks/useAppState.tsx:34-76`
+
+The current `ConversationMessage.metadata` type only allows `action: 'preview' | 'execute' | 'complete' | 'error' | 'elicit'` (line 41) and has no typed payload field for v2 card data. Task 20 will fail `tsc --noEmit` unless this type is widened first.
+
+**Step 1: Update the metadata action union and add typed payload fields**
+
+In `frontend/src/hooks/useAppState.tsx`, update the `ConversationMessage` interface:
+
+```typescript
+interface ConversationMessage {
+  id: string;
+  role: 'user' | 'system';
+  content: string;
+  timestamp: Date;
+  metadata?: {
+    jobId?: string;
+    action?:
+      | 'preview' | 'execute' | 'complete' | 'error' | 'elicit'       // existing
+      | 'pickup_result' | 'location_result' | 'landed_cost_result' | 'paperless_result';  // v2
+    preview?: {
+      rowCount: number;
+      estimatedCost: number;
+      warnings: number;
+    };
+    progress?: {
+      total: number;
+      processed: number;
+      successful: number;
+      failed: number;
+    };
+    elicitation?: {
+      questions: Array<{
+        id: string;
+        question: string;
+        options: string[];
+      }>;
+    };
+    completion?: {
+      command: string;
+      jobName?: string;
+      totalRows: number;
+      successful: number;
+      failed: number;
+      totalCostCents: number;
+      dutiesTaxesCents?: number;
+      internationalCount?: number;
+      rowFailures?: Array<{
+        rowNumber: number;
+        errorCode: string;
+        errorMessage: string;
+      }>;
+    };
+    // UPS MCP v2 domain card payloads (typed imports from api.ts)
+    pickup?: import('@/types/api').PickupResult;
+    location?: import('@/types/api').LocationResult;
+    landedCost?: import('@/types/api').LandedCostResult;
+    paperless?: import('@/types/api').PaperlessResult;
+  };
+}
+```
+
+Key changes:
+1. `action` union expanded with 4 new variants matching AD-3 event types
+2. 4 new optional typed payload fields (`pickup`, `location`, `landedCost`, `paperless`) using `import()` types from `api.ts` (defined in Task 15)
+3. Existing fields untouched
+
+**Step 2: Export the ConversationMessage type** (already exported — verify)
+
+The `ConversationMessage` type is already imported by `CompletionArtifact.tsx:9` and `CommandCenter.tsx`. No export change needed.
+
+**Step 3: Run type check**
+
+Run: `cd frontend && npx tsc --noEmit`
+Expected: PASS (new fields are all optional; no existing code breaks)
+
+**Commit:**
+```bash
+git add frontend/src/hooks/useAppState.tsx
+git commit -m "feat: expand ConversationMessage metadata with v2 domain card types"
+```
+
+---
+
 ### Task 16: Create PickupCard component
 
 **Files:**
@@ -1867,85 +1982,119 @@ git commit -m "feat: add PaperlessCard component for paperless document operatio
 
 ### Task 20: Wire SSE event routing in CommandCenter + CompletionArtifact pickup button
 
-**Depends on:** Tasks 15-19
+**Depends on:** Tasks 15, 15.5, 16-19
 **Resolves:** Finding 2 (event routing now has producers from Tasks 10-12)
 
 **Files:**
 - Modify: `frontend/src/components/CommandCenter.tsx:147-207`
 - Modify: `frontend/src/components/command-center/CompletionArtifact.tsx`
 
-**Step 1: Add event routing**
+**Step 1: Add event routing (uses typed metadata from Task 15.5)**
 
-In `CommandCenter.tsx`, add routing branches after the `preview_ready` handler (line 165-196):
-
-```typescript
-// After the existing preview_ready handler...
-} else if (event.type === 'pickup_result') {
-    const pickupData = event.data as unknown as PickupResult;
-    addMessage({
-        role: 'system',
-        content: '',
-        metadata: { action: 'pickup_result', data: pickupData },
-    });
-} else if (event.type === 'location_result') {
-    const locationData = event.data as unknown as LocationResult;
-    addMessage({
-        role: 'system',
-        content: '',
-        metadata: { action: 'location_result', data: locationData },
-    });
-} else if (event.type === 'landed_cost_result') {
-    const costData = event.data as unknown as LandedCostResult;
-    addMessage({
-        role: 'system',
-        content: '',
-        metadata: { action: 'landed_cost_result', data: costData },
-    });
-} else if (event.type === 'paperless_result') {
-    const paperlessData = event.data as unknown as PaperlessResult;
-    addMessage({
-        role: 'system',
-        content: '',
-        metadata: { action: 'paperless_result', data: paperlessData },
-    });
-```
+In `CommandCenter.tsx`, add routing branches after the `preview_ready` handler (line 165-196). These are detailed in Step 3 below, which supersedes this step. See Step 3 for the exact code using typed metadata fields (`metadata.pickup`, `metadata.location`, etc.) instead of a generic `data` field.
 
 **Step 2: Add card rendering**
 
-In the message rendering section of CommandCenter (where `action === 'preview'` routes to `<PreviewCard>`), add:
+In the message rendering section of `CommandCenter.tsx` (around line 363-378, inside the `conversation.map()` block), add new action branches. The current code checks `message.metadata?.action === 'complete'` for `CompletionArtifact`. Add similar branches for the 4 new actions, using the typed payload fields from Task 15.5:
 
 ```typescript
-{msg.metadata?.action === 'pickup_result' && (
-    <PickupCard data={msg.metadata.data as PickupResult} />
-)}
-{msg.metadata?.action === 'location_result' && (
-    <LocationCard data={msg.metadata.data as LocationResult} />
-)}
-{msg.metadata?.action === 'landed_cost_result' && (
-    <LandedCostCard data={msg.metadata.data as LandedCostResult} />
-)}
-{msg.metadata?.action === 'paperless_result' && (
-    <PaperlessCard data={msg.metadata.data as PaperlessResult} />
-)}
+// After the CompletionArtifact branch (line 373) and before the user/system message branches:
+) : message.metadata?.action === 'pickup_result' && message.metadata.pickup ? (
+    <div key={message.id} className="pl-11">
+        <PickupCard data={message.metadata.pickup} />
+    </div>
+) : message.metadata?.action === 'location_result' && message.metadata.location ? (
+    <div key={message.id} className="pl-11">
+        <LocationCard data={message.metadata.location} />
+    </div>
+) : message.metadata?.action === 'landed_cost_result' && message.metadata.landedCost ? (
+    <div key={message.id} className="pl-11">
+        <LandedCostCard data={message.metadata.landedCost} />
+    </div>
+) : message.metadata?.action === 'paperless_result' && message.metadata.paperless ? (
+    <div key={message.id} className="pl-11">
+        <PaperlessCard data={message.metadata.paperless} />
+    </div>
 ```
 
-**Step 3: Add CompletionArtifact pickup button**
+Note: These use the typed `metadata.pickup`, `metadata.location`, etc. fields from Task 15.5 — NOT `metadata.data as unknown`. This is type-safe and avoids casts.
 
-In `CompletionArtifact.tsx`, add a "Schedule Pickup" button with purple styling that sends a pickup scheduling command through the conversation:
+**Step 3: Update event routing to populate typed metadata fields**
+
+Update the event routing in Step 1 to use the typed metadata fields instead of a generic `data` field:
 
 ```typescript
-{/* Show pickup suggestion when batch completes with successes */}
-{completionData.successful_count > 0 && (
-    <button
-        className="btn-secondary card-domain-pickup"
-        onClick={() => onSendMessage?.("Schedule a pickup for today's shipments")}
-    >
-        Schedule Pickup
-    </button>
-)}
+} else if (event.type === 'pickup_result') {
+    addMessage({
+        role: 'system',
+        content: '',
+        metadata: { action: 'pickup_result', pickup: event.data as PickupResult },
+    });
+} else if (event.type === 'location_result') {
+    addMessage({
+        role: 'system',
+        content: '',
+        metadata: { action: 'location_result', location: event.data as LocationResult },
+    });
+} else if (event.type === 'landed_cost_result') {
+    addMessage({
+        role: 'system',
+        content: '',
+        metadata: { action: 'landed_cost_result', landedCost: event.data as LandedCostResult },
+    });
+} else if (event.type === 'paperless_result') {
+    addMessage({
+        role: 'system',
+        content: '',
+        metadata: { action: 'paperless_result', paperless: event.data as PaperlessResult },
+    });
 ```
 
-**Step 4: Run type check**
+**Step 4: Add pickup CTA to CompletionArtifact**
+
+In `CompletionArtifact.tsx`, the component currently accepts `{ message, onViewLabels }` (line 26). Two changes:
+
+**4a. Add `onSendMessage` prop to the component signature (line 26):**
+
+```typescript
+export function CompletionArtifact({ message, onViewLabels, onSendMessage }: {
+  message: ConversationMessage;
+  onViewLabels: (jobId: string) => void;
+  onSendMessage?: (text: string) => void;
+}) {
+```
+
+**4b. Add pickup button AFTER the "View Labels" button (after line 117), using existing `meta.successful` field (NOT `completionData.successful_count`):**
+
+```typescript
+      {!allFailed && meta.successful > 0 && onSendMessage && (
+        <button
+          onClick={() => onSendMessage("Schedule a pickup for today's shipments")}
+          className="w-full btn-secondary py-2 flex items-center justify-center gap-2 text-sm card-domain-pickup border"
+        >
+          Schedule Pickup
+        </button>
+      )}
+```
+
+**4c. Update the call site in `CommandCenter.tsx` (line 366-372) to pass `onSendMessage`:**
+
+```typescript
+<CompletionArtifact
+    message={message}
+    onViewLabels={(jobId) => {
+      setLabelPreviewJobId(jobId);
+      setShowLabelPreview(true);
+    }}
+    onSendMessage={(text) => {
+      setInputValue(text);
+    }}
+/>
+```
+
+Note: Uses `setInputValue` to populate the chat input rather than auto-sending, so the user can review/edit before submitting.
+
+**Step 5: Run type check**
 
 Run: `cd frontend && npx tsc --noEmit`
 Expected: PASS
@@ -1954,6 +2103,144 @@ Expected: PASS
 ```bash
 git add frontend/src/components/CommandCenter.tsx frontend/src/components/command-center/CompletionArtifact.tsx
 git commit -m "feat: wire UPS MCP v2 event routing and pickup button in CompletionArtifact"
+```
+
+---
+
+### Task 20.5: Add frontend regression tests for new event routing
+
+**Resolves:** Finding 6 (no test coverage for new UI event branches)
+**Depends on:** Tasks 15.5, 20
+
+**Files:**
+- Modify: `frontend/src/components/CommandCenter.test.tsx`
+
+Add one test per new event action to verify the event routing in `CommandCenter.tsx` correctly processes SSE events into conversation messages with typed metadata. Follow the existing Vitest + testing-library pattern in `CommandCenter.test.tsx`.
+
+**Step 1: Add tests for all 4 new event actions**
+
+```typescript
+// In CommandCenter.test.tsx, add a new describe block:
+
+describe('CommandCenter v2 event routing', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    mockAppState = buildBaseAppState({ interactiveShipping: false });
+    mockConversation = buildBaseConversation();
+  });
+
+  it('routes pickup_result event to PickupCard', async () => {
+    const addMessage = vi.fn();
+    mockAppState = buildBaseAppState({ interactiveShipping: false, addMessage });
+    mockConversation = buildBaseConversation({
+      sessionId: 'sess-1',
+      events: [{
+        id: 'evt-1',
+        type: 'pickup_result',
+        data: { action: 'scheduled', success: true, prn: 'PRN123' },
+      }],
+    });
+
+    render(<CommandCenter activeJob={null} />);
+
+    await waitFor(() => {
+      expect(addMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          role: 'system',
+          metadata: expect.objectContaining({
+            action: 'pickup_result',
+            pickup: expect.objectContaining({ action: 'scheduled', prn: 'PRN123' }),
+          }),
+        }),
+      );
+    });
+  });
+
+  it('routes location_result event to LocationCard', async () => {
+    const addMessage = vi.fn();
+    mockAppState = buildBaseAppState({ interactiveShipping: false, addMessage });
+    mockConversation = buildBaseConversation({
+      sessionId: 'sess-1',
+      events: [{
+        id: 'evt-2',
+        type: 'location_result',
+        data: { locations: [{ id: 'LOC1', address: {}, phone: '555' }], search_type: 'retail', radius: 15 },
+      }],
+    });
+
+    render(<CommandCenter activeJob={null} />);
+
+    await waitFor(() => {
+      expect(addMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({ action: 'location_result' }),
+        }),
+      );
+    });
+  });
+
+  it('routes landed_cost_result event to LandedCostCard', async () => {
+    const addMessage = vi.fn();
+    mockAppState = buildBaseAppState({ interactiveShipping: false, addMessage });
+    mockConversation = buildBaseConversation({
+      sessionId: 'sess-1',
+      events: [{
+        id: 'evt-3',
+        type: 'landed_cost_result',
+        data: { totalLandedCost: '45.23', currencyCode: 'USD', items: [] },
+      }],
+    });
+
+    render(<CommandCenter activeJob={null} />);
+
+    await waitFor(() => {
+      expect(addMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({ action: 'landed_cost_result' }),
+        }),
+      );
+    });
+  });
+
+  it('routes paperless_result event to PaperlessCard', async () => {
+    const addMessage = vi.fn();
+    mockAppState = buildBaseAppState({ interactiveShipping: false, addMessage });
+    mockConversation = buildBaseConversation({
+      sessionId: 'sess-1',
+      events: [{
+        id: 'evt-4',
+        type: 'paperless_result',
+        data: { action: 'uploaded', success: true, documentId: 'DOC-1' },
+      }],
+    });
+
+    render(<CommandCenter activeJob={null} />);
+
+    await waitFor(() => {
+      expect(addMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({ action: 'paperless_result' }),
+        }),
+      );
+    });
+  });
+});
+```
+
+**Step 2: Run tests**
+
+Run: `cd frontend && npx vitest run src/components/CommandCenter.test.tsx`
+Expected: ALL PASS
+
+**Step 3: Commit**
+
+```bash
+git add frontend/src/components/CommandCenter.test.tsx
+git commit -m "test: add regression tests for v2 event routing in CommandCenter"
 ```
 
 ---
