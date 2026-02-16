@@ -1057,8 +1057,8 @@ class UPSMCPClient:
         grand_total = rate_result.get("GrandTotalOfAllCharge", "0")
         charges = [
             {
-                "amount": c.get("ChargeAmount", "0"),
-                "code": c.get("ChargeCode", ""),
+                "chargeAmount": c.get("ChargeAmount", "0"),
+                "chargeCode": c.get("ChargeCode", ""),
             }
             for c in charge_detail
         ]
@@ -1176,6 +1176,9 @@ class UPSMCPClient:
     def _normalize_service_center_response(self, raw: dict) -> dict[str, Any]:
         """Extract service center facilities from raw UPS response.
 
+        Normalises each facility into ``{name, address}`` to match
+        the frontend ``LocationResult.facilities`` contract.
+
         Args:
             raw: Raw UPS ServiceCenterResponse dict.
 
@@ -1186,9 +1189,30 @@ class UPSMCPClient:
         facilities_raw = center.get("ServiceCenterList", [])
         if isinstance(facilities_raw, dict):
             facilities_raw = [facilities_raw]
+        facilities = []
+        for fac in facilities_raw:
+            name = fac.get("FacilityName", fac.get("name", ""))
+            addr_obj = fac.get("FacilityAddress", {})
+            if isinstance(addr_obj, str):
+                address = addr_obj
+            elif isinstance(addr_obj, dict):
+                parts = [
+                    addr_obj.get("AddressLine", ""),
+                    ", ".join(
+                        p for p in [
+                            addr_obj.get("City", ""),
+                            addr_obj.get("StateProvinceCode", ""),
+                        ] if p
+                    ),
+                    addr_obj.get("PostalCode", ""),
+                ]
+                address = " ".join(p for p in parts if p)
+            else:
+                address = str(addr_obj) if addr_obj else ""
+            facilities.append({"name": name, "address": address})
         return {
             "success": True,
-            "facilities": facilities_raw,
+            "facilities": facilities,
         }
 
     # ── Error translation ──────────────────────────────────────────────

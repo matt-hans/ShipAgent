@@ -210,25 +210,25 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         addMessage({
           role: 'system',
           content: '',
-          metadata: { action: 'pickup_result', pickup: event.data as PickupResult },
+          metadata: { action: 'pickup_result', pickup: event.data as unknown as PickupResult },
         });
       } else if (event.type === 'location_result') {
         addMessage({
           role: 'system',
           content: '',
-          metadata: { action: 'location_result', location: event.data as LocationResult },
+          metadata: { action: 'location_result', location: event.data as unknown as LocationResult },
         });
       } else if (event.type === 'landed_cost_result') {
         addMessage({
           role: 'system',
           content: '',
-          metadata: { action: 'landed_cost_result', landedCost: event.data as LandedCostResult },
+          metadata: { action: 'landed_cost_result', landedCost: event.data as unknown as LandedCostResult },
         });
       } else if (event.type === 'paperless_result') {
         addMessage({
           role: 'system',
           content: '',
-          metadata: { action: 'paperless_result', paperless: event.data as PaperlessResult },
+          metadata: { action: 'paperless_result', paperless: event.data as unknown as PaperlessResult },
         });
       }
     }

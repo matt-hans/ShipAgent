@@ -1121,6 +1121,7 @@ async def test_schedule_pickup_tool_success():
                 "country_code": "US",
                 "contact_name": "John",
                 "phone_number": "5125551234",
+                "confirmed": True,
             },
             bridge=bridge,
         )
@@ -1134,6 +1135,20 @@ async def test_schedule_pickup_tool_success():
     assert captured[0][0] == "pickup_result"
     assert captured[0][1]["action"] == "scheduled"
     assert captured[0][1]["prn"] == "ABC123"
+
+
+@pytest.mark.asyncio
+async def test_schedule_pickup_tool_safety_gate():
+    """schedule_pickup_tool rejects when confirmed is missing or False."""
+    from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
+
+    result = await schedule_pickup_tool({"pickup_date": "20260220"})
+    assert result["isError"] is True
+    assert "Safety gate" in result["content"][0]["text"]
+
+    result2 = await schedule_pickup_tool({"pickup_date": "20260220", "confirmed": False})
+    assert result2["isError"] is True
+    assert "Safety gate" in result2["content"][0]["text"]
 
 
 @pytest.mark.asyncio
@@ -1164,6 +1179,7 @@ async def test_schedule_pickup_tool_error():
                 "country_code": "US",
                 "contact_name": "John",
                 "phone_number": "5125551234",
+                "confirmed": True,
             },
         )
 
@@ -1183,7 +1199,7 @@ async def test_schedule_pickup_tool_handles_malformed_args():
     ):
         from src.orchestrator.agent.tools.pickup import schedule_pickup_tool
 
-        result = await schedule_pickup_tool({})
+        result = await schedule_pickup_tool({"confirmed": True})
 
     assert result["isError"] is True
     assert "Unexpected error" in result["content"][0]["text"]
@@ -1206,7 +1222,7 @@ async def test_cancel_pickup_tool_success():
         from src.orchestrator.agent.tools.pickup import cancel_pickup_tool
 
         result = await cancel_pickup_tool(
-            {"cancel_by": "prn", "prn": "ABC123"},
+            {"cancel_by": "prn", "prn": "ABC123", "confirmed": True},
             bridge=bridge,
         )
 
@@ -1217,6 +1233,16 @@ async def test_cancel_pickup_tool_success():
     assert len(captured) == 1
     assert captured[0][0] == "pickup_result"
     assert captured[0][1]["action"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_cancel_pickup_tool_safety_gate():
+    """cancel_pickup_tool rejects when confirmed is missing or False."""
+    from src.orchestrator.agent.tools.pickup import cancel_pickup_tool
+
+    result = await cancel_pickup_tool({"cancel_by": "prn", "prn": "ABC123"})
+    assert result["isError"] is True
+    assert "Safety gate" in result["content"][0]["text"]
 
 
 @pytest.mark.asyncio
@@ -1714,6 +1740,7 @@ async def test_e2e_pickup_flow_tool_to_event():
                 "address_line": "456 Oak Ave", "city": "Dallas", "state": "TX",
                 "postal_code": "75201", "country_code": "US",
                 "contact_name": "Jane Doe", "phone_number": "2145551234",
+                "confirmed": True,
             },
             bridge=bridge,
         )
