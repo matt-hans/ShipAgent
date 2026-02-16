@@ -7,7 +7,7 @@ import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
 import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows } from '@/lib/api';
 import { useConversation } from '@/hooks/useConversation';
-import type { Job, BatchPreview } from '@/types/api';
+import type { Job, BatchPreview, PickupResult, LocationResult, LandedCostResult, PaperlessResult } from '@/types/api';
 import { LabelPreview } from '@/components/LabelPreview';
 import { JobDetailPanel } from '@/components/JobDetailPanel';
 import { SendIcon, StopIcon, EditIcon } from '@/components/ui/icons';
@@ -15,6 +15,10 @@ import { PreviewCard, InteractivePreviewCard, type ConfirmOptions } from '@/comp
 import { ProgressDisplay } from '@/components/command-center/ProgressDisplay';
 import { CompletionArtifact } from '@/components/command-center/CompletionArtifact';
 import { ToolCallChip } from '@/components/command-center/ToolCallChip';
+import { PickupCard } from '@/components/command-center/PickupCard';
+import { LocationCard } from '@/components/command-center/LocationCard';
+import { LandedCostCard } from '@/components/command-center/LandedCostCard';
+import { PaperlessCard } from '@/components/command-center/PaperlessCard';
 import {
   ActiveSourceBanner,
   InteractiveModeBanner,
@@ -202,6 +206,30 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
           content: `Error: ${msg}`,
           metadata: { action: 'error' },
         });
+      } else if (event.type === 'pickup_result') {
+        addMessage({
+          role: 'system',
+          content: '',
+          metadata: { action: 'pickup_result', pickup: event.data as PickupResult },
+        });
+      } else if (event.type === 'location_result') {
+        addMessage({
+          role: 'system',
+          content: '',
+          metadata: { action: 'location_result', location: event.data as LocationResult },
+        });
+      } else if (event.type === 'landed_cost_result') {
+        addMessage({
+          role: 'system',
+          content: '',
+          metadata: { action: 'landed_cost_result', landedCost: event.data as LandedCostResult },
+        });
+      } else if (event.type === 'paperless_result') {
+        addMessage({
+          role: 'system',
+          content: '',
+          metadata: { action: 'paperless_result', paperless: event.data as PaperlessResult },
+        });
       }
     }
   }, [conv.events, addMessage, refreshJobList, currentJobId, preview, executingJobId]);
@@ -369,7 +397,26 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                       setLabelPreviewJobId(jobId);
                       setShowLabelPreview(true);
                     }}
+                    onSendMessage={(text) => {
+                      setInputValue(text);
+                    }}
                   />
+                </div>
+              ) : message.metadata?.action === 'pickup_result' && message.metadata.pickup ? (
+                <div key={message.id} className="pl-11">
+                  <PickupCard data={message.metadata.pickup} />
+                </div>
+              ) : message.metadata?.action === 'location_result' && message.metadata.location ? (
+                <div key={message.id} className="pl-11">
+                  <LocationCard data={message.metadata.location} />
+                </div>
+              ) : message.metadata?.action === 'landed_cost_result' && message.metadata.landedCost ? (
+                <div key={message.id} className="pl-11">
+                  <LandedCostCard data={message.metadata.landedCost} />
+                </div>
+              ) : message.metadata?.action === 'paperless_result' && message.metadata.paperless ? (
+                <div key={message.id} className="pl-11">
+                  <PaperlessCard data={message.metadata.paperless} />
                 </div>
               ) : message.role === 'user' ? (
                 <UserMessage key={message.id} message={message} />
