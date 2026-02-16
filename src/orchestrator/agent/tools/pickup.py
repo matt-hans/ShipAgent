@@ -25,12 +25,12 @@ async def schedule_pickup_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
 ) -> dict[str, Any]:
-    """Schedule a UPS pickup and emit pickup_result event.
+    """Schedule a UPS pickup and emit enriched pickup_result event.
 
     Requires ``confirmed=True`` in args as a safety gate — scheduling a
     pickup is a financial commitment.  The agent must first present
-    pickup details to the user and obtain explicit confirmation before
-    calling this tool with ``confirmed=True``.
+    pickup details to the user via rate_pickup and obtain explicit
+    confirmation before calling this tool with ``confirmed=True``.
 
     Args:
         args: Dict with pickup_date, ready_time, close_time, address fields,
@@ -46,12 +46,30 @@ async def schedule_pickup_tool(
             "Present pickup details to the user first, then call again with "
             "confirmed=True."
         )
+    # Capture input details for enriched completion event
+    input_details = {
+        "address_line": args.get("address_line", ""),
+        "city": args.get("city", ""),
+        "state": args.get("state", ""),
+        "postal_code": args.get("postal_code", ""),
+        "country_code": args.get("country_code", "US"),
+        "pickup_date": args.get("pickup_date", ""),
+        "ready_time": args.get("ready_time", ""),
+        "close_time": args.get("close_time", ""),
+        "contact_name": args.get("contact_name", ""),
+        "phone_number": args.get("phone_number", ""),
+    }
     try:
         client = await _get_ups_client()
         result = await client.schedule_pickup(**args)
-        payload = {"action": "scheduled", "success": True, **result}
-        _emit_event("pickup_result", payload, bridge=bridge)
         prn = result.get("prn", "unknown")
+        payload = {
+            "action": "scheduled",
+            "success": True,
+            "prn": prn,
+            **input_details,
+        }
+        _emit_event("pickup_result", payload, bridge=bridge)
         return _ok(f"Pickup scheduled successfully. PRN: {prn}")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
