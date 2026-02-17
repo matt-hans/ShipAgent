@@ -61,6 +61,15 @@ def compile_filter_spec(
             f"Expected {spec.schema_signature!r}, got {runtime_schema_signature!r}.",
         )
 
+    # Pre-flight structural checks (before compilation)
+    condition_count = _count_conditions(spec.root)
+    max_conditions = STRUCTURAL_LIMITS["max_conditions"]
+    if condition_count > max_conditions:
+        raise FilterCompilationError(
+            FilterErrorCode.STRUCTURAL_LIMIT_EXCEEDED,
+            f"Filter has {condition_count} conditions, exceeding maximum {max_conditions}.",
+        )
+
     # Mutable state for tree walk
     param_counter = [0]  # mutable int via list
     params: list = []
@@ -72,12 +81,21 @@ def compile_filter_spec(
     where_sql = _compile_group(
         canonicalized_root,
         schema_columns,
+        column_types,
         param_counter,
         params,
         columns_used,
         explanation_parts,
         depth=0,
     )
+
+    # Post-flight structural check
+    max_total_params = STRUCTURAL_LIMITS["max_total_params"]
+    if len(params) > max_total_params:
+        raise FilterCompilationError(
+            FilterErrorCode.STRUCTURAL_LIMIT_EXCEEDED,
+            f"Filter produces {len(params)} parameters, exceeding maximum {max_total_params}.",
+        )
 
     return CompiledFilter(
         where_sql=where_sql,
@@ -132,6 +150,7 @@ def _canonicalize_group(group: FilterGroup) -> FilterGroup:
 def _compile_group(
     group: FilterGroup,
     schema_columns: set[str],
+    column_types: dict[str, str],
     param_counter: list[int],
     params: list,
     columns_used: set[str],
@@ -143,6 +162,7 @@ def _compile_group(
     Args:
         group: The filter group to compile.
         schema_columns: Valid column names.
+        column_types: Mapping of column name to DuckDB type string.
         param_counter: Mutable parameter index counter.
         params: Accumulator for parameter values.
         columns_used: Accumulator for referenced columns.
@@ -166,13 +186,15 @@ def _compile_group(
     for child in group.conditions:
         if isinstance(child, FilterCondition):
             sql = _compile_condition(
-                child, schema_columns, param_counter, params, columns_used, explanation_parts
+                child, schema_columns, column_types,
+                param_counter, params, columns_used, explanation_parts,
             )
             fragments.append(sql)
         elif isinstance(child, FilterGroup):
             sql = _compile_group(
                 child,
                 schema_columns,
+                column_types,
                 param_counter,
                 params,
                 columns_used,
@@ -196,6 +218,7 @@ def _compile_group(
 def _compile_condition(
     cond: FilterCondition,
     schema_columns: set[str],
+    column_types: dict[str, str],
     param_counter: list[int],
     params: list,
     columns_used: set[str],
@@ -206,6 +229,7 @@ def _compile_condition(
     Args:
         cond: The condition to compile.
         schema_columns: Valid column names.
+        column_types: Mapping of column name to DuckDB type string.
         param_counter: Mutable parameter index counter.
         params: Accumulator for parameter values.
         columns_used: Accumulator for referenced columns.
@@ -215,7 +239,7 @@ def _compile_condition(
         SQL fragment string.
 
     Raises:
-        FilterCompilationError: On unknown column, empty IN list, etc.
+        FilterCompilationError: On unknown column, empty IN list, type mismatch, etc.
     """
     # Validate column
     if cond.column not in schema_columns:
@@ -224,6 +248,9 @@ def _compile_condition(
             f"Column {cond.column!r} not found in schema. "
             f"Available: {sorted(schema_columns)}.",
         )
+
+    # Type-check operator/column compatibility
+    _check_operator_type_compat(cond.column, cond.operator, column_types)
 
     columns_used.add(cond.column)
     col = f'"{cond.column}"'
@@ -266,6 +293,13 @@ def _compile_condition(
                 FilterErrorCode.EMPTY_IN_LIST,
                 f"IN operator on {cond.column!r} has no values.",
             )
+        max_in = STRUCTURAL_LIMITS["max_in_cardinality"]
+        if len(cond.operands) > max_in:
+            raise FilterCompilationError(
+                FilterErrorCode.STRUCTURAL_LIMIT_EXCEEDED,
+                f"IN list on {cond.column!r} has {len(cond.operands)} values, "
+                f"exceeding maximum {max_in}.",
+            )
         # Sort operands for determinism
         sorted_operands = sorted(cond.operands, key=lambda o: str(o.value))
         placeholders = []
@@ -282,6 +316,13 @@ def _compile_condition(
             raise FilterCompilationError(
                 FilterErrorCode.EMPTY_IN_LIST,
                 f"NOT IN operator on {cond.column!r} has no values.",
+            )
+        max_in = STRUCTURAL_LIMITS["max_in_cardinality"]
+        if len(cond.operands) > max_in:
+            raise FilterCompilationError(
+                FilterErrorCode.STRUCTURAL_LIMIT_EXCEEDED,
+                f"NOT IN list on {cond.column!r} has {len(cond.operands)} values, "
+                f"exceeding maximum {max_in}.",
             )
         sorted_operands = sorted(cond.operands, key=lambda o: str(o.value))
         placeholders = []
@@ -350,6 +391,84 @@ def _compile_condition(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _count_conditions(
+    node: Union[FilterGroup, FilterCondition, SemanticReference],
+) -> int:
+    """Count total leaf conditions in the AST.
+
+    Args:
+        node: Root node to count from.
+
+    Returns:
+        Total number of FilterCondition leaves.
+    """
+    if isinstance(node, FilterCondition):
+        return 1
+    if isinstance(node, FilterGroup):
+        return sum(_count_conditions(c) for c in node.conditions)
+    return 0  # SemanticReference
+
+
+# Operators that require numeric or date columns (ordering comparisons)
+_ORDERING_OPS = {
+    FilterOperator.gt, FilterOperator.gte,
+    FilterOperator.lt, FilterOperator.lte,
+    FilterOperator.between,
+}
+
+# Operators that require string columns (pattern matching)
+_STRING_OPS = {
+    FilterOperator.contains_ci,
+    FilterOperator.starts_with_ci,
+    FilterOperator.ends_with_ci,
+}
+
+# DuckDB types considered numeric
+_NUMERIC_TYPES = {"INTEGER", "BIGINT", "DOUBLE", "FLOAT", "DECIMAL", "NUMERIC", "HUGEINT"}
+
+# DuckDB types compatible with ordering operators
+_ORDERABLE_TYPES = _NUMERIC_TYPES | {"DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE"}
+
+# DuckDB types compatible with string pattern operators
+_STRING_TYPES = {"VARCHAR", "TEXT", "STRING"}
+
+
+def _check_operator_type_compat(
+    column: str,
+    operator: FilterOperator,
+    column_types: dict[str, str],
+) -> None:
+    """Check operator/column type compatibility.
+
+    Silently passes if column type is unknown (not in column_types dict).
+
+    Args:
+        column: Column name.
+        operator: The filter operator being applied.
+        column_types: Mapping of column name to DuckDB type string.
+
+    Raises:
+        FilterCompilationError: On type mismatch.
+    """
+    col_type = column_types.get(column, "").upper()
+    if not col_type:
+        return  # Unknown type — skip check
+
+    if operator in _ORDERING_OPS and col_type not in _ORDERABLE_TYPES:
+        raise FilterCompilationError(
+            FilterErrorCode.TYPE_MISMATCH,
+            f"Operator {operator.value!r} requires a numeric or date column, "
+            f"but {column!r} has type {col_type!r}.",
+        )
+
+    if operator in _STRING_OPS and col_type not in _STRING_TYPES:
+        raise FilterCompilationError(
+            FilterErrorCode.TYPE_MISMATCH,
+            f"Operator {operator.value!r} requires a string column, "
+            f"but {column!r} has type {col_type!r}.",
+        )
 
 
 def _next_param(param_counter: list[int], params: list, value: object) -> int:
