@@ -8,13 +8,21 @@ import hashlib
 import json
 import logging
 import os
+import re
+import time
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
 from src.db.connection import get_db_context
-from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN
 from src.services.job_service import JobService
+from src.services.filter_constants import (
+    BUSINESS_PREDICATES,
+    REGIONS,
+    REGION_ALIASES,
+    STATE_ABBREVIATIONS,
+    normalize_term,
+)
 from src.services.ups_service_codes import translate_service_name
 
 from src.orchestrator.agent.tools.core import (
@@ -28,15 +36,133 @@ from src.orchestrator.agent.tools.core import (
     _enrich_preview_rows_from_map,
     _err,
     _get_ups_client,
-    _normalize_rows_for_shipping,
     _ok,
     _persist_job_source_signature,
-    _store_fetched_rows,
     get_data_gateway,
 )
 from src.services.errors import UPSServiceError
 
 logger = logging.getLogger(__name__)
+
+_FILTER_QUALIFIER_TERMS = frozenset(
+    set(REGION_ALIASES.keys())
+    | {
+        "company",
+        "companies",
+        "business",
+        "recipient",
+        "where",
+        "unfulfilled",
+        "fulfilled",
+        "pending",
+        "cancelled",
+        "canceled",
+    }
+)
+_NUMERIC_QUALIFIER_PATTERNS = (
+    " over ",
+    " under ",
+    " between ",
+    " greater than ",
+    " less than ",
+    " more than ",
+    " at least ",
+    " at most ",
+    " above ",
+    " below ",
+)
+_STATE_NAME_PATTERN = re.compile(
+    r"\b(" + "|".join(sorted(map(re.escape, STATE_ABBREVIATIONS.keys()), key=len, reverse=True)) + r")\b"
+)
+
+
+def _command_implies_filter(command: str) -> bool:
+    """Return True when the command clearly contains filter qualifiers."""
+    normalized = f" {' '.join(normalize_term(command).split())} "
+    if any(term in normalized for term in _FILTER_QUALIFIER_TERMS):
+        return True
+    if any(pattern in normalized for pattern in _NUMERIC_QUALIFIER_PATTERNS):
+        return True
+    if _STATE_NAME_PATTERN.search(normalized):
+        return True
+    return False
+
+
+def _is_confirmation_response(message: str | None) -> bool:
+    """True for short confirmation replies (yes/proceed/confirm)."""
+    if not message:
+        return False
+    return message.strip().lower() in {
+        "yes", "y", "ok", "okay", "confirm", "proceed", "continue", "go ahead",
+    }
+
+
+def _should_force_fast_path(bridge: EventEmitterBridge | None) -> bool:
+    """Force ship_command_pipeline when shipping intent is active in session context."""
+    if bridge is None:
+        return False
+    msg = bridge.last_user_message
+    if not msg:
+        return False
+    text = msg.strip().lower()
+    if "ship" in text or "shipment" in text:
+        return True
+    return _is_confirmation_response(msg) and bool(bridge.last_shipping_command)
+
+
+def _iter_conditions(group: Any) -> list[Any]:
+    """Flatten FilterGroup tree into a list of FilterCondition nodes."""
+    conditions: list[Any] = []
+    stack = [group]
+    while stack:
+        node = stack.pop()
+        for child in getattr(node, "conditions", []):
+            if hasattr(child, "column") and hasattr(child, "operator"):
+                conditions.append(child)
+            elif hasattr(child, "conditions"):
+                stack.append(child)
+    return conditions
+
+
+def _expected_region_from_command(command: str) -> str | None:
+    """Return canonical region key referenced in command text, if any."""
+    normalized = normalize_term(command)
+    for alias, region_key in REGION_ALIASES.items():
+        if alias in normalized:
+            return region_key
+    return None
+
+
+def _spec_includes_region(spec: Any, region_key: str) -> bool:
+    """Check whether resolved spec contains a condition matching region states."""
+    expected = {s.upper() for s in REGIONS.get(region_key, [])}
+    for cond in _iter_conditions(spec.root):
+        op = str(getattr(cond, "operator", ""))
+        raw_values = [getattr(o, "value", None) for o in getattr(cond, "operands", [])]
+        values = {str(v).upper() for v in raw_values if isinstance(v, str)}
+        if op.endswith("in_") or op.endswith("in"):
+            if values and values.issubset(expected) and values:
+                return True
+        if op.endswith("eq") and len(values) == 1 and next(iter(values)) in expected:
+            return True
+    return False
+
+
+def _command_requests_business_filter(command: str) -> bool:
+    """Detect business/company qualifier in command text."""
+    normalized = normalize_term(command)
+    return any(t in normalized for t in ("company", "companies", "business"))
+
+
+def _spec_includes_business_filter(spec: Any) -> bool:
+    """Check whether resolved spec includes BUSINESS_RECIPIENT-like predicate."""
+    patterns = BUSINESS_PREDICATES["BUSINESS_RECIPIENT"]["target_column_patterns"]
+    for cond in _iter_conditions(spec.root):
+        op = str(getattr(cond, "operator", ""))
+        column = str(getattr(cond, "column", "")).lower()
+        if op.endswith("is_not_blank") and any(p in column for p in patterns):
+            return True
+    return False
 
 
 async def create_job_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -83,6 +209,11 @@ async def add_rows_to_job_tool(
 
     if not job_id:
         return _err("job_id is required")
+    if _should_force_fast_path(bridge):
+        return _err(
+            "For shipping execution commands, do not use add_rows_to_job. "
+            "Use ship_command_pipeline with a resolved filter_spec."
+        )
     if fetch_id:
         cached_rows = _consume_fetched_rows(fetch_id, bridge=bridge)
         if cached_rows is None:
@@ -254,6 +385,12 @@ async def ship_command_pipeline_tool(
             "Use resolve_filter_intent to create a filter, or set "
             "all_rows=true to ship everything."
         )
+    if all_rows and _command_implies_filter(command):
+        return _err(
+            "all_rows=true is not allowed when the command contains filters "
+            "(e.g., regions or business/company qualifiers). Resolve and pass "
+            "a filter_spec via resolve_filter_intent."
+        )
 
     limit = int(args.get("limit", 250))
     job_name = str(args.get("job_name") or command or "Shipping Job")
@@ -277,23 +414,44 @@ async def ship_command_pipeline_tool(
     # Compile filter or use all-rows path
     filter_explanation = ""
     filter_audit: dict[str, Any] = {}
+    gw = await get_data_gateway()
+    source_info = await gw.get_source_info()
+    if source_info is None:
+        return _err("No data source connected.")
+    if not isinstance(source_info, dict):
+        logger.warning(
+            "ship_command_pipeline expected dict source_info, got %s; "
+            "proceeding without schema metadata",
+            type(source_info).__name__,
+        )
+        source_info = {}
+    raw_signature = source_info.get("signature", "")
+    schema_signature = raw_signature if isinstance(raw_signature, str) else ""
 
     if filter_spec_raw:
         # Compile FilterSpec → parameterized SQL
-        gw = await get_data_gateway()
-        source_info = await gw.get_source_info()
-        if source_info is None:
-            return _err("No data source connected.")
-
         columns = source_info.get("columns", [])
         schema_columns = {col["name"] for col in columns}
         column_types = {col["name"]: col["type"] for col in columns}
-        schema_signature = source_info.get("signature", "")
 
         try:
             spec = ResolvedFilterSpec(**filter_spec_raw)
         except Exception as e:
             return _err(f"Invalid filter_spec structure: {e}")
+
+        expected_region = _expected_region_from_command(command)
+        if expected_region and not _spec_includes_region(spec, expected_region):
+            return _err(
+                f"Filter mismatch: command references region '{expected_region}' "
+                "but filter_spec does not include a matching state filter. "
+                "Re-run resolve_filter_intent with the correct region semantic key."
+            )
+        if _command_requests_business_filter(command) and not _spec_includes_business_filter(spec):
+            return _err(
+                "Filter mismatch: command requests companies/business recipients, "
+                "but filter_spec does not include a business/company predicate. "
+                "Re-run resolve_filter_intent and include BUSINESS_RECIPIENT."
+            )
 
         try:
             compiled = compile_filter_spec(
@@ -330,7 +488,6 @@ async def ship_command_pipeline_tool(
         params = []
         filter_explanation = "All rows (no filter applied)"
 
-    gw = await get_data_gateway()
     try:
         fetched_rows = await gw.get_rows_by_filter(
             where_sql=where_sql,
@@ -350,6 +507,7 @@ async def ship_command_pipeline_tool(
     account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
     shipper = build_shipper()
     ups = await _get_ups_client()
+    row_map: dict[int, dict[str, Any]] = {}
 
     try:
         with get_db_context() as db:
@@ -357,12 +515,23 @@ async def ship_command_pipeline_tool(
             job = job_service.create_job(name=job_name, original_command=command)
             await _persist_job_source_signature(job.id, db)
             try:
+                mapping_started = time.perf_counter()
+                row_payload = _build_job_row_data(
+                    fetched_rows,
+                    service_code_override=service_code,
+                    schema_fingerprint=schema_signature,
+                )
+                logger.info(
+                    "mapping_resolution_timing marker=job_row_data_ready "
+                    "job_id=%s rows=%d fingerprint=%s elapsed=%.3f",
+                    job.id,
+                    len(fetched_rows),
+                    schema_signature[:12] if schema_signature else "",
+                    time.perf_counter() - mapping_started,
+                )
                 job_service.create_rows(
                     job.id,
-                    _build_job_row_data(
-                        fetched_rows,
-                        service_code_override=service_code,
-                    ),
+                    row_payload,
                 )
             except Exception as e:
                 # Cleanup orphan job when rows fail to persist.
@@ -390,6 +559,12 @@ async def ship_command_pipeline_tool(
                     shipper=shipper,
                     service_code=service_code,
                 )
+                for db_row in db_rows:
+                    try:
+                        parsed = json.loads(db_row.order_data) if db_row.order_data else {}
+                    except (TypeError, json.JSONDecodeError):
+                        parsed = {}
+                    row_map[db_row.row_number] = parsed
             except Exception as e:
                 logger.error(
                     "ship_command_pipeline preview failed for %s: %s", job.id, e
@@ -400,17 +575,6 @@ async def ship_command_pipeline_tool(
         return _err(f"Failed to create job: {e}")
 
     preview_rows = result.get("preview_rows", [])
-    normalized_rows = _normalize_rows_for_shipping(fetched_rows)
-    if service_code:
-        for row in normalized_rows:
-            if isinstance(row, dict):
-                row["service_code"] = service_code
-    # Key row_map by source row number to match JobRow.row_number.
-    # Check both _row_number and _source_row_num for compatibility.
-    row_map = {}
-    for idx, row in enumerate(normalized_rows, start=1):
-        key = row.get("_row_number") or row.get(SOURCE_ROW_NUM_COLUMN) or idx
-        row_map[key] = row
     _enrich_preview_rows_from_map(preview_rows, row_map)
     rows_with_warnings = sum(1 for row in preview_rows if row.get("warnings"))
     result["rows_with_warnings"] = rows_with_warnings
@@ -449,6 +613,11 @@ async def batch_preview_tool(
     job_id = args.get("job_id", "")
     if not job_id:
         return _err("job_id is required")
+    if _should_force_fast_path(bridge):
+        return _err(
+            "For shipping execution commands, do not use batch_preview directly. "
+            "Use ship_command_pipeline with a resolved filter_spec."
+        )
 
     try:
         result = await _run_batch_preview(job_id)

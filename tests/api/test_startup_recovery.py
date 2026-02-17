@@ -9,10 +9,12 @@ Verifies that on startup:
 6. UPS client is disconnected after recovery completes
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.db.models import JobStatus
 from src.api.main import run_startup_recovery
 
 
@@ -233,3 +235,52 @@ class TestStartupRecovery:
 
         mock_ups_client.connect.assert_called_once()
         mock_ups_client.disconnect.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reaper_deletes_stale_empty_pending_jobs(self) -> None:
+        """Startup reaper should delete old pending jobs with zero rows."""
+        stale_job = MagicMock()
+        stale_job.id = "job-stale"
+        stale_job.created_at = (
+            datetime.now(timezone.utc) - timedelta(hours=24)
+        ).isoformat()
+
+        mock_db = MagicMock()
+        mock_js = MagicMock()
+        mock_js.get_rows.return_value = []
+        mock_js.delete_job.return_value = True
+
+        def _list_jobs(status=None, limit=50, offset=0):
+            if status == JobStatus.pending:
+                return [stale_job]
+            return []
+
+        mock_js.list_jobs.side_effect = _list_jobs
+
+        with patch("src.api.main.BatchEngine.cleanup_staging", return_value=0):
+            await run_startup_recovery(mock_db, mock_js)
+
+        mock_js.delete_job.assert_called_once_with("job-stale")
+
+    @pytest.mark.asyncio
+    async def test_reaper_keeps_recent_pending_jobs(self) -> None:
+        """Recent pending jobs should not be reaped."""
+        fresh_job = MagicMock()
+        fresh_job.id = "job-fresh"
+        fresh_job.created_at = datetime.now(timezone.utc).isoformat()
+
+        mock_db = MagicMock()
+        mock_js = MagicMock()
+        mock_js.get_rows.return_value = []
+
+        def _list_jobs(status=None, limit=50, offset=0):
+            if status == JobStatus.pending:
+                return [fresh_job]
+            return []
+
+        mock_js.list_jobs.side_effect = _list_jobs
+
+        with patch("src.api.main.BatchEngine.cleanup_staging", return_value=0):
+            await run_startup_recovery(mock_db, mock_js)
+
+        mock_js.delete_job.assert_not_called()

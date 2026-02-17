@@ -37,6 +37,7 @@ from src.services.errors import UPSServiceError
 from src.services.gateway_provider import get_data_gateway, get_external_sources_client
 from src.services.idempotency import generate_idempotency_key
 from src.services.international_rules import get_requirements, validate_international_readiness
+from src.services.label_storage import LabelStorage, build_label_storage
 from src.services.mcp_client import MCPConnectionError
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,7 @@ class BatchEngine:
         db_session: Any,
         account_number: str,
         labels_dir: str | None = None,
+        label_storage: LabelStorage | None = None,
     ) -> None:
         """Initialize batch engine.
 
@@ -99,6 +101,7 @@ class BatchEngine:
         self._labels_dir = labels_dir or os.environ.get(
             "UPS_LABELS_OUTPUT_DIR", str(DEFAULT_LABELS_DIR)
         )
+        self._label_storage = label_storage or build_label_storage(self._labels_dir)
 
     @staticmethod
     def _resolve_concurrency() -> int:
@@ -110,6 +113,20 @@ class BatchEngine:
             logger.warning("Invalid BATCH_CONCURRENCY=%r, defaulting to 5", raw)
             return 5
         return max(1, value)
+
+    @staticmethod
+    def _resolve_timeout_seconds(env_key: str, default: float) -> float:
+        """Resolve a positive timeout value from env with safe fallback."""
+        raw = os.environ.get(env_key, str(default))
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("Invalid %s=%r, defaulting to %.1f", env_key, raw, default)
+            return default
+        if value <= 0:
+            logger.warning("Non-positive %s=%r, defaulting to %.1f", env_key, raw, default)
+            return default
+        return value
 
     async def preview(
         self,
@@ -136,6 +153,12 @@ class BatchEngine:
         # Use same concurrency setting as execute for consistent performance.
         max_concurrent = self._resolve_concurrency()
         semaphore = asyncio.Semaphore(max_concurrent)
+        rate_timeout_s = self._resolve_timeout_seconds(
+            "BATCH_PREVIEW_RATE_TIMEOUT_SECONDS", 8.0,
+        )
+        commodity_timeout_s = self._resolve_timeout_seconds(
+            "BATCH_COMMODITY_PREFETCH_TIMEOUT_SECONDS", 3.0,
+        )
 
         preview_rows: list[dict[str, Any]] = []
         total_cost_cents = 0
@@ -150,9 +173,21 @@ class BatchEngine:
             for r in rows:
                 try:
                     od = self._parse_order_data(r)
-                    oid = od.get("order_id") or od.get("order_number")
-                    if oid:
-                        order_ids.append(str(oid))
+                    dest_country = od.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
+                    eff_service = service_code or od.get(
+                        "service_code", ServiceCode.GROUND.value,
+                    )
+                    origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
+                    eff_service = upgrade_to_international(
+                        eff_service, origin_country, dest_country,
+                    )
+                    requirements = get_requirements(
+                        origin_country, dest_country, eff_service,
+                    )
+                    if requirements.requires_commodities and not od.get("commodities"):
+                        oid = od.get("order_id") or od.get("order_number")
+                        if oid:
+                            order_ids.append(str(oid))
                 except Exception as e:
                     logger.warning(
                         "Skipping commodity lookup for row %s (parse error): %s",
@@ -161,8 +196,16 @@ class BatchEngine:
                     )
             if order_ids:
                 try:
-                    raw = await self._get_commodities_bulk(order_ids)
+                    raw = await asyncio.wait_for(
+                        self._get_commodities_bulk(order_ids),
+                        timeout=commodity_timeout_s,
+                    )
                     commodity_cache = {str(k): v for k, v in raw.items()}
+                except TimeoutError:
+                    logger.warning(
+                        "Commodity bulk fetch timed out after %.1fs (non-critical)",
+                        commodity_timeout_s,
+                    )
                 except Exception as e:
                     logger.warning("Commodity bulk fetch failed (non-critical): %s", e)
 
@@ -212,11 +255,24 @@ class BatchEngine:
                         simplified,
                         account_number=self._account_number,
                     )
-                    rate_result = await self._ups.get_rate(request_body=rate_payload)
+                    rate_result = await asyncio.wait_for(
+                        self._ups.get_rate(request_body=rate_payload),
+                        timeout=rate_timeout_s,
+                    )
                     amount = rate_result.get("totalCharges", {}).get(
                         "monetaryValue", "0"
                     )
                     cost_cents = _dollars_to_cents(amount)
+                except TimeoutError:
+                    rate_error = (
+                        f"[E-3006] Preview rate timeout after {rate_timeout_s:.1f}s "
+                        "while calling UPS rate service."
+                    )
+                    logger.warning(
+                        "Preview rate timed out for row %s after %.1fs",
+                        row.row_number,
+                        rate_timeout_s,
+                    )
                 except UPSServiceError as e:
                     logger.warning(
                         "Rate quote failed for row %s: %s", row.row_number, e
@@ -337,7 +393,14 @@ class BatchEngine:
         """
         max_concurrent = self._resolve_concurrency()
         semaphore = asyncio.Semaphore(max_concurrent)
+        # Serialize writes because this engine uses one shared SQLAlchemy Session
+        # across concurrent tasks; it also protects SQLite from write contention.
+        # Removing this lock requires per-task sessions/transactions first.
         db_lock = asyncio.Lock()
+        counters_lock = asyncio.Lock()
+        commodity_timeout_s = self._resolve_timeout_seconds(
+            "BATCH_COMMODITY_PREFETCH_TIMEOUT_SECONDS", 3.0,
+        )
 
         successful = 0
         failed = 0
@@ -353,9 +416,21 @@ class BatchEngine:
             for r in pending_rows:
                 try:
                     od = self._parse_order_data(r)
-                    oid = od.get("order_id") or od.get("order_number")
-                    if oid:
-                        order_ids.append(str(oid))
+                    dest_country = od.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
+                    eff_service = service_code or od.get(
+                        "service_code", ServiceCode.GROUND.value,
+                    )
+                    origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
+                    eff_service = upgrade_to_international(
+                        eff_service, origin_country, dest_country,
+                    )
+                    requirements = get_requirements(
+                        origin_country, dest_country, eff_service,
+                    )
+                    if requirements.requires_commodities and not od.get("commodities"):
+                        oid = od.get("order_id") or od.get("order_number")
+                        if oid:
+                            order_ids.append(str(oid))
                 except Exception as e:
                     logger.warning(
                         "Skipping commodity lookup for row %s (parse error): %s",
@@ -364,8 +439,16 @@ class BatchEngine:
                     )
             if order_ids:
                 try:
-                    raw = await self._get_commodities_bulk(order_ids)
+                    raw = await asyncio.wait_for(
+                        self._get_commodities_bulk(order_ids),
+                        timeout=commodity_timeout_s,
+                    )
                     exec_commodity_cache = {str(k): v for k, v in raw.items()}
+                except TimeoutError:
+                    logger.warning(
+                        "Commodity bulk fetch timed out after %.1fs (non-critical)",
+                        commodity_timeout_s,
+                    )
                 except Exception as e:
                     logger.warning("Commodity bulk fetch failed (non-critical): %s", e)
 
@@ -557,6 +640,7 @@ class BatchEngine:
                             row.processed_at = datetime.now(UTC).isoformat()
                             self._db.commit()
 
+                        async with counters_lock:
                             successful += 1
                             total_cost_cents += cost_cents
                             if tracking_number:
@@ -564,7 +648,10 @@ class BatchEngine:
                                     "tracking_number": tracking_number,
                                     "shipped_at": row.processed_at or "",
                                 }
-                                # Enqueue durable write-back task (survives crashes)
+
+                        if tracking_number:
+                            # Enqueue durable write-back task (survives crashes)
+                            async with db_lock:
                                 enqueue_write_back(
                                     self._db,
                                     job_id=job_id,
@@ -573,14 +660,14 @@ class BatchEngine:
                                     shipped_at=row.processed_at or "",
                                 )
 
-                            if on_progress:
-                                await on_progress(
-                                    "row_completed",
-                                    job_id=job_id,
-                                    row_number=row.row_number,
-                                    tracking_number=tracking_number,
-                                    cost_cents=cost_cents,
-                                )
+                        if on_progress:
+                            await on_progress(
+                                "row_completed",
+                                job_id=job_id,
+                                row_number=row.row_number,
+                                tracking_number=tracking_number,
+                                cost_cents=cost_cents,
+                            )
 
                         logger.info(
                             "Row %d completed: tracking=%s, cost=%d cents",
@@ -624,17 +711,17 @@ class BatchEngine:
                                 row.error_message = str(e)
                                 self._db.commit()
 
-                    async with db_lock:
+                    async with counters_lock:
                         failed += 1
 
-                        if on_progress:
-                            await on_progress(
-                                "row_failed",
-                                job_id=job_id,
-                                row_number=row.row_number,
-                                error_code=getattr(e, "code", "E-4001"),
-                                error_message=str(e),
-                            )
+                    if on_progress:
+                        await on_progress(
+                            "row_failed",
+                            job_id=job_id,
+                            row_number=row.row_number,
+                            error_code=getattr(e, "code", "E-4001"),
+                            error_message=str(e),
+                        )
 
                     logger.error("Row %d failed: %s", row.row_number, e)
 
@@ -897,21 +984,15 @@ class BatchEngine:
             row_number: 1-based row number within the job
 
         Returns:
-            Absolute path to saved label file
+            Label storage reference (local path or object URI)
         """
-        labels_dir = Path(self._labels_dir)
-        labels_dir.mkdir(parents=True, exist_ok=True)
-
-        # Use job_id prefix + row_number to guarantee unique filenames
-        # even when UPS sandbox returns the same tracking number for all rows
-        job_prefix = job_id[:8] if job_id else "unknown"
-        filename = f"{job_prefix}_row{row_number:03d}_{tracking_number}.pdf"
-        filepath = labels_dir / filename
-
         pdf_bytes = base64.b64decode(base64_data)
-        filepath.write_bytes(pdf_bytes)
-
-        return str(filepath)
+        return self._label_storage.save_final(
+            tracking_number=tracking_number,
+            pdf_bytes=pdf_bytes,
+            job_id=job_id,
+            row_number=row_number,
+        )
 
     def _save_label_staged(
         self,
@@ -934,19 +1015,15 @@ class BatchEngine:
             row_number: 1-based row number within the job.
 
         Returns:
-            Absolute path to the staged label file.
+            Staged label reference (local path or object URI).
         """
-        staging_dir = Path(self._labels_dir) / "staging" / job_id
-        staging_dir.mkdir(parents=True, exist_ok=True)
-
-        job_prefix = job_id[:8] if job_id else "unknown"
-        filename = f"{job_prefix}_row{row_number:03d}_{tracking_number}.pdf"
-        staging_path = staging_dir / filename
-
         pdf_bytes = base64.b64decode(base64_data)
-        staging_path.write_bytes(pdf_bytes)
-
-        return str(staging_path)
+        return self._label_storage.save_staged(
+            tracking_number=tracking_number,
+            pdf_bytes=pdf_bytes,
+            job_id=job_id,
+            row_number=row_number,
+        )
 
     def _promote_label(self, staging_path: str) -> str:
         """Atomically move label from staging to final location.
@@ -959,14 +1036,17 @@ class BatchEngine:
             staging_path: Path to the staged label file.
 
         Returns:
-            Absolute path to the final label file.
+            Final label reference (local path or object URI).
         """
-        staging = Path(staging_path)
-        final_dir = Path(self._labels_dir)
-        final_dir.mkdir(parents=True, exist_ok=True)
-        final_path = final_dir / staging.name
-        os.rename(str(staging), str(final_path))
-        return str(final_path)
+        return self._label_storage.promote(staging_path)
+
+    def _label_exists(self, ref: str) -> bool:
+        """Return True when a label reference exists in configured storage."""
+        try:
+            return self._label_storage.exists(ref)
+        except Exception as e:
+            logger.warning("Label existence check failed for %s: %s", ref, e)
+            return False
 
     @staticmethod
     def cleanup_staging(
@@ -986,6 +1066,18 @@ class BatchEngine:
         Returns:
             Number of orphaned staging files removed.
         """
+        backend = os.environ.get("LABEL_STORAGE_BACKEND", "local").strip().lower()
+        if backend not in {"", "local"}:
+            s3_prefix = os.environ.get("LABEL_STORAGE_S3_PREFIX", "labels").strip("/")
+            staging_prefix = f"{s3_prefix}/staging/" if s3_prefix else "staging/"
+            logger.info(
+                "Skipping local staging cleanup for LABEL_STORAGE_BACKEND=%s. "
+                "Configure object expiration for '%s'.",
+                backend,
+                staging_prefix,
+            )
+            return 0
+
         base = Path(labels_dir) if labels_dir else DEFAULT_LABELS_DIR
         staging_root = base / "staging"
         if not staging_root.exists():
@@ -1069,7 +1161,7 @@ class BatchEngine:
                     if returned_number:
                         # UPS confirms shipment exists — verify local artifacts
                         missing_artifacts: list[str] = []
-                        if not row.label_path or not os.path.exists(row.label_path):
+                        if not row.label_path or not self._label_exists(row.label_path):
                             missing_artifacts.append("label_path")
                         if row.cost_cents is None:
                             missing_artifacts.append("cost_cents")

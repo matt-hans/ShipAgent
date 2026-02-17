@@ -71,3 +71,17 @@ async def test_get_external_sources_client_returns_same_instance():
 
     # Clean up
     provider._ext_sources_client = None
+
+
+@pytest.mark.asyncio
+async def test_shutdown_gateways_invalidates_mapping_cache():
+    """shutdown_gateways should always invalidate mapping cache first."""
+    import src.services.gateway_provider as provider
+
+    provider._data_gateway = None
+    provider._ext_sources_client = None
+    provider._ups_gateway = None
+
+    with patch.object(provider, "invalidate_mapping_cache") as mock_invalidate:
+        await provider.shutdown_gateways()
+        mock_invalidate.assert_called_once_with()

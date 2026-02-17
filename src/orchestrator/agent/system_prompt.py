@@ -19,6 +19,25 @@ from src.services.filter_constants import BUSINESS_PREDICATES, REGIONS
 
 # International service codes for labeling
 _INTERNATIONAL_SERVICES = frozenset({"07", "08", "11", "54", "65"})
+_MAX_SCHEMA_SAMPLES = 5
+
+
+def _resolve_sample_char_limit() -> int:
+    """Resolve prompt sample truncation length with safe fallback."""
+    raw = os.environ.get("SYSTEM_PROMPT_SAMPLE_MAX_CHARS", "50")
+    try:
+        value = int(raw)
+    except ValueError:
+        return 50
+    return max(10, value)
+
+
+def _format_schema_sample(value: object, max_chars: int) -> str:
+    """Render a sample value with truncation to control prompt growth."""
+    rendered = repr(value)
+    if len(rendered) <= max_chars:
+        return rendered
+    return f"{rendered[:max_chars - 3]}..."
 
 
 def _build_service_table() -> str:
@@ -62,11 +81,15 @@ def _build_schema_section(
     lines.append(f"Row count: {source_info.row_count}")
     lines.append("")
     lines.append("Columns:")
+    max_chars = _resolve_sample_char_limit()
     for col in source_info.columns:
         nullable = "nullable" if col.nullable else "not null"
         samples = column_samples.get(col.name) if column_samples else None
         if samples:
-            sample_str = ", ".join(repr(s) for s in samples[:5])
+            sample_str = ", ".join(
+                _format_schema_sample(sample, max_chars)
+                for sample in samples[:_MAX_SCHEMA_SAMPLES]
+            )
             lines.append(f"  - {col.name} ({col.type}, {nullable}) — samples: {sample_str}")
         else:
             lines.append(f"  - {col.name} ({col.type}, {nullable})")
@@ -294,6 +317,8 @@ For straightforward shipping commands (for example: "ship all CA orders via Grou
 Important:
 - `ship_command_pipeline` fetches rows internally. Do NOT call `fetch_rows` first.
 - Do NOT chain `create_job`, `add_rows_to_job`, and `batch_preview` when this fast path applies.
+- For shipping execution requests, NEVER use `fetch_rows` directly. It is exploratory-only.
+- NEVER use `all_rows=true` when the command includes qualifiers like regions or business/company terms.
 
 If `ship_command_pipeline` returns an error:
 - FilterSpec compilation error: fix the intent and retry once.
@@ -302,7 +327,8 @@ If `ship_command_pipeline` returns an error:
 
 ### Complex / Exploratory Commands (fallback path)
 
-When the request is ambiguous, exploratory, or not a straightforward shipping command:
+Use this path only for data-inspection requests (show/list/find/count), not for executing shipments.
+If the user asks to ship, use `ship_command_pipeline`.
 
 1. Check data source
 2. Build FilterIntent and call `resolve_filter_intent`

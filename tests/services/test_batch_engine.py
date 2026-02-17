@@ -1,5 +1,6 @@
 """Tests for consolidated batch engine."""
 
+import asyncio
 import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -582,6 +583,99 @@ class TestBatchEnginePreview:
         )
         assert result["total_rows"] == 1
         assert len(result["preview_rows"]) == 1
+
+    async def test_preview_skips_commodity_prefetch_for_domestic_rows(
+        self, mock_ups_service, mock_db_session
+    ):
+        """Domestic rows should not trigger commodity prefetch."""
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="ABC123",
+        )
+        engine._get_commodities_bulk = AsyncMock(return_value={})  # type: ignore[attr-defined]
+
+        rows = [
+            MagicMock(
+                id="row-1",
+                row_number=1,
+                order_data=json.dumps(
+                    {
+                        "order_id": "1001",
+                        "ship_to_name": "John",
+                        "ship_to_address1": "123 Main",
+                        "ship_to_city": "LA",
+                        "ship_to_state": "CA",
+                        "ship_to_postal_code": "90001",
+                        "ship_to_country": "US",
+                        "weight": 2.0,
+                    }
+                ),
+            ),
+        ]
+
+        shipper = {
+            "name": "Store",
+            "addressLine1": "456 Oak",
+            "city": "SF",
+            "stateProvinceCode": "CA",
+            "postalCode": "94102",
+            "countryCode": "US",
+        }
+
+        await engine.preview(job_id="job-domestic", rows=rows, shipper=shipper)
+        engine._get_commodities_bulk.assert_not_called()  # type: ignore[attr-defined]
+
+    async def test_preview_rate_timeout_degrades_to_warning(
+        self, mock_ups_service, mock_db_session, monkeypatch
+    ):
+        """Slow UPS rate calls should timeout and return row warnings quickly."""
+        monkeypatch.setenv("BATCH_PREVIEW_RATE_TIMEOUT_SECONDS", "0.01")
+
+        async def _slow_rate(*args, **kwargs):
+            await asyncio.sleep(0.05)
+            return {
+                "success": True,
+                "totalCharges": {"monetaryValue": "15.50", "currencyCode": "USD"},
+            }
+
+        mock_ups_service.get_rate = AsyncMock(side_effect=_slow_rate)
+
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="ABC123",
+        )
+
+        rows = [
+            MagicMock(
+                id="row-1",
+                row_number=1,
+                order_data=json.dumps(
+                    {
+                        "ship_to_name": "John",
+                        "ship_to_address1": "123 Main",
+                        "ship_to_city": "LA",
+                        "ship_to_state": "CA",
+                        "ship_to_postal_code": "90001",
+                        "weight": 2.0,
+                    }
+                ),
+            ),
+        ]
+        shipper = {
+            "name": "Store",
+            "addressLine1": "456 Oak",
+            "city": "SF",
+            "stateProvinceCode": "CA",
+            "postalCode": "94102",
+            "countryCode": "US",
+        }
+
+        result = await engine.preview(job_id="job-timeout", rows=rows, shipper=shipper)
+        first = result["preview_rows"][0]
+        assert "rate_error" in first
+        assert "timeout" in first["rate_error"].lower()
 
 
 class TestBatchEngineExternalWriteBack:

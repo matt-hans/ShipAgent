@@ -13,6 +13,7 @@ from typing import Any
 from mcp import StdioServerParameters
 
 from src.services.mcp_client import MCPClient
+from src.services.mapping_cache import invalidate as invalidate_mapping_cache
 
 
 # -- Gateway-local DTOs (no dependency on legacy DataSourceService) -----------
@@ -35,6 +36,7 @@ class DataSourceInfo:
     file_path: str | None = None
     columns: list[SchemaColumnInfo] = field(default_factory=list)
     row_count: int = 0
+    signature: str | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +49,15 @@ _VENV_PYTHON = os.path.join(_PROJECT_ROOT, ".venv", "bin", "python3")
 def _get_python_command() -> str:
     """Return the preferred Python interpreter for MCP subprocesses.
 
+    Honors MCP_PYTHON_PATH when explicitly configured.
     Prioritizes the project virtual environment to ensure all MCP
     subprocesses use the same dependency set as the backend.
     Falls back to the current interpreter when .venv Python is missing
     (e.g. in worktrees or CI environments).
     """
+    override = os.environ.get("MCP_PYTHON_PATH", "").strip()
+    if override:
+        return override
     if os.path.exists(_VENV_PYTHON):
         return _VENV_PYTHON
     return sys.executable
@@ -111,6 +117,43 @@ class DataSourceMCPClient:
         if not self._mcp.is_connected:
             await self.connect()
 
+    @staticmethod
+    def _is_transport_error(error: Exception) -> bool:
+        """Classify transport/session failures that warrant reconnect."""
+        name = type(error).__name__
+        if name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}:
+            return True
+        text = str(error).lower()
+        patterns = (
+            "broken pipe",
+            "connection reset",
+            "closed resource",
+            "broken resource",
+            "end of stream",
+            "session not initialized",
+            "transport",
+            "connection closed",
+        )
+        return any(p in text for p in patterns)
+
+    async def _call_tool(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Call MCP tool with one reconnect retry on transport failures."""
+        await self._ensure_connected()
+        try:
+            return await self._mcp.call_tool(name, args)
+        except Exception as e:
+            if not self._is_transport_error(e):
+                raise
+            logger.warning(
+                "Data Source MCP transport failure during '%s', reconnecting once: %s [%s]",
+                name,
+                e,
+                type(e).__name__,
+            )
+            await self.disconnect_mcp()
+            await self.connect()
+            return await self._mcp.call_tool(name, args)
+
     # -- Import operations -------------------------------------------------
 
     async def import_csv(
@@ -120,10 +163,10 @@ class DataSourceMCPClient:
 
         Auto-saves source metadata for future reconnection on success.
         """
-        await self._ensure_connected()
-        result = await self._mcp.call_tool("import_csv", {
+        result = await self._call_tool("import_csv", {
             "file_path": file_path, "delimiter": delimiter, "header": header,
         })
+        invalidate_mapping_cache()
         self._auto_save_csv(
             file_path, result.get("row_count", 0), len(result.get("columns", []))
         )
@@ -136,11 +179,11 @@ class DataSourceMCPClient:
 
         Auto-saves source metadata for future reconnection on success.
         """
-        await self._ensure_connected()
         args: dict[str, Any] = {"file_path": file_path, "header": header}
         if sheet:
             args["sheet"] = sheet
-        result = await self._mcp.call_tool("import_excel", args)
+        result = await self._call_tool("import_excel", args)
+        invalidate_mapping_cache()
         self._auto_save_excel(
             file_path, sheet, result.get("row_count", 0), len(result.get("columns", []))
         )
@@ -153,12 +196,12 @@ class DataSourceMCPClient:
 
         Auto-saves source display metadata (no credentials) for future reconnection.
         """
-        await self._ensure_connected()
-        result = await self._mcp.call_tool("import_database", {
+        result = await self._call_tool("import_database", {
             "connection_string": connection_string,
             "query": query,
             "schema": schema,
         })
+        invalidate_mapping_cache()
         self._auto_save_database(
             connection_string, query,
             result.get("row_count", 0), len(result.get("columns", [])),
@@ -169,11 +212,12 @@ class DataSourceMCPClient:
         self, records: list[dict[str, Any]], source_label: str
     ) -> dict[str, Any]:
         """Import flat dicts as active data source."""
-        await self._ensure_connected()
-        return await self._mcp.call_tool("import_records", {
+        result = await self._call_tool("import_records", {
             "records": records,
             "source_label": source_label,
         })
+        invalidate_mapping_cache()
+        return result
 
     # -- Query operations --------------------------------------------------
 
@@ -182,8 +226,7 @@ class DataSourceMCPClient:
 
         Returns None if no source is active.
         """
-        await self._ensure_connected()
-        result = await self._mcp.call_tool("get_source_info", {})
+        result = await self._call_tool("get_source_info", {})
         if not result.get("active", False):
             return None
         return result
@@ -214,6 +257,7 @@ class DataSourceMCPClient:
             file_path=info.get("path"),
             columns=columns,
             row_count=info.get("row_count", 0),
+            signature=info.get("signature"),
         )
 
     async def get_source_signature(self) -> dict[str, Any] | None:
@@ -234,8 +278,7 @@ class DataSourceMCPClient:
 
     async def get_schema(self) -> dict[str, Any]:
         """Get column schema of active data source."""
-        await self._ensure_connected()
-        return await self._mcp.call_tool("get_schema", {})
+        return await self._call_tool("get_schema", {})
 
     async def get_rows_by_filter(
         self,
@@ -275,7 +318,6 @@ class DataSourceMCPClient:
         MCP returns {rows:[{row_number, data, checksum}]}.
         This method normalizes to flat dicts with _row_number and _checksum.
         """
-        await self._ensure_connected()
         effective_sql = where_sql
         # Normalize None/empty to "1=1" so the MCP tool's
         # "WHERE {where_sql}" template doesn't break.
@@ -288,7 +330,7 @@ class DataSourceMCPClient:
         }
         if query_params:
             tool_args["params"] = query_params
-        result = await self._mcp.call_tool("get_rows_by_filter", tool_args)
+        result = await self._call_tool("get_rows_by_filter", tool_args)
         raw_rows = result.get("rows", [])
         return {
             "rows": self._normalize_rows(raw_rows),
@@ -304,15 +346,13 @@ class DataSourceMCPClient:
         Returns:
             Dict mapping column names to lists of sample values.
         """
-        await self._ensure_connected()
-        return await self._mcp.call_tool(
+        return await self._call_tool(
             "get_column_samples", {"max_samples": max_samples}
         )
 
     async def query_data(self, sql: str) -> dict[str, Any]:
         """Execute a SELECT query against active data source."""
-        await self._ensure_connected()
-        return await self._mcp.call_tool("query_data", {"sql": sql})
+        return await self._call_tool("query_data", {"sql": sql})
 
     # -- Write-back --------------------------------------------------------
 
@@ -332,8 +372,7 @@ class DataSourceMCPClient:
         Raises:
             Exception: On MCP tool call failure.
         """
-        await self._ensure_connected()
-        await self._mcp.call_tool("write_back", {
+        await self._call_tool("write_back", {
             "row_number": row_number,
             "tracking_number": tracking_number,
             "shipped_at": shipped_at,
@@ -353,14 +392,13 @@ class DataSourceMCPClient:
         Returns:
             Dict with success_count, failure_count, errors.
         """
-        await self._ensure_connected()
         success_count = 0
         failure_count = 0
         errors: list[dict[str, Any]] = []
 
         for row_number, data in updates.items():
             try:
-                await self._mcp.call_tool("write_back", {
+                await self._call_tool("write_back", {
                     "row_number": row_number,
                     "tracking_number": data["tracking_number"],
                     "shipped_at": data.get("shipped_at"),
@@ -389,8 +427,7 @@ class DataSourceMCPClient:
         Returns:
             Dict mapping order_id to list of commodity dicts.
         """
-        await self._ensure_connected()
-        result = await self._mcp.call_tool("get_commodities_bulk", {
+        result = await self._call_tool("get_commodities_bulk", {
             "order_ids": order_ids,
         })
         if not result:
@@ -413,20 +450,18 @@ class DataSourceMCPClient:
         and clears the current_source metadata. Mirrors the existing
         DataSourceService.disconnect() behavior.
         """
-        await self._ensure_connected()
-        await self._mcp.call_tool("clear_source", {})
+        await self._call_tool("clear_source", {})
+        invalidate_mapping_cache()
 
     async def list_sheets(self, file_path: str) -> dict[str, Any]:
         """List sheets in an Excel file."""
-        await self._ensure_connected()
-        return await self._mcp.call_tool("list_sheets", {"file_path": file_path})
+        return await self._call_tool("list_sheets", {"file_path": file_path})
 
     async def list_tables(
         self, connection_string: str, schema: str = "public"
     ) -> dict[str, Any]:
         """List tables in a database."""
-        await self._ensure_connected()
-        return await self._mcp.call_tool("list_tables", {
+        return await self._call_tool("list_tables", {
             "connection_string": connection_string, "schema": schema,
         })
 

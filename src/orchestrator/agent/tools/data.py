@@ -28,6 +28,38 @@ from src.orchestrator.models.filter_spec import (
 logger = logging.getLogger(__name__)
 
 
+def _looks_like_shipping_request(message: str | None) -> bool:
+    """Heuristic: detect direct shipping intents vs exploratory data analysis."""
+    if not message:
+        return False
+    text = message.strip().lower()
+    if not text or text.startswith("[document_attached"):
+        return False
+    if "do not ship" in text or "don't ship" in text:
+        return False
+    if "ship" not in text and "shipment" not in text:
+        return False
+    exploratory_prefixes = (
+        "show",
+        "list",
+        "find",
+        "count",
+        "how many",
+        "which",
+        "what",
+    )
+    return not any(text.startswith(prefix) for prefix in exploratory_prefixes)
+
+
+def _is_confirmation_response(message: str | None) -> bool:
+    """True for short confirmation replies (yes/proceed/confirm)."""
+    if not message:
+        return False
+    return message.strip().lower() in {
+        "yes", "y", "ok", "okay", "confirm", "proceed", "continue", "go ahead",
+    }
+
+
 async def get_source_info_tool(args: dict[str, Any]) -> dict[str, Any]:
     """Get metadata about the currently connected data source.
 
@@ -101,6 +133,20 @@ async def fetch_rows_tool(
         return _err(
             "where_clause is not accepted. Use resolve_filter_intent "
             "to create a filter_spec."
+        )
+
+    # Deterministic routing: shipping commands should use the fast pipeline,
+    # not fetch_rows/create_job/add_rows fallback steps.
+    if bridge is not None and (
+        _looks_like_shipping_request(bridge.last_user_message)
+        or (
+            _is_confirmation_response(bridge.last_user_message)
+            and bool(bridge.last_shipping_command)
+        )
+    ):
+        return _err(
+            "fetch_rows is for exploratory data inspection. For shipping commands, "
+            "use ship_command_pipeline with a resolved filter_spec."
         )
 
     filter_spec_raw = args.get("filter_spec")

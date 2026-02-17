@@ -208,6 +208,22 @@ async def test_add_rows_to_job_uses_fetch_id_cache():
 
 
 @pytest.mark.asyncio
+async def test_add_rows_to_job_rejects_shipping_confirmation_context():
+    """add_rows_to_job is blocked for shipping confirmation turns; force fast path."""
+    bridge = EventEmitterBridge()
+    bridge.last_user_message = "yes"
+    bridge.last_shipping_command = "Ship all orders in the Northeast."
+
+    result = await add_rows_to_job_tool(
+        {"job_id": "job-123", "rows": [{"order_id": 1}]},
+        bridge=bridge,
+    )
+
+    assert result["isError"] is True
+    assert "ship_command_pipeline" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
 async def test_add_rows_to_job_auto_maps_csv_columns_to_canonical_order_data():
     """CSV-style headers are normalized to ship_to_* fields before persistence."""
     rows = [
@@ -254,6 +270,47 @@ async def test_add_rows_to_job_auto_maps_csv_columns_to_canonical_order_data():
     assert order_data["ship_to_postal_code"] == "90001"
     assert order_data["ship_to_country"] == "US"
     assert order_data["service_code"] == "03"
+
+
+@pytest.mark.asyncio
+async def test_add_rows_to_job_does_not_overwrite_existing_canonical_values():
+    """Mapped values should only fill missing canonical keys, not overwrite existing ones."""
+    rows = [
+        {
+            "ship_to_name": "Canonical Recipient",
+            "Name": "Mapped Recipient",
+            "Address": "123 Main St",
+            "City": "Los Angeles",
+            "State": "CA",
+            "ZIP": "90001",
+            "Country": "US",
+            "Weight": 2.5,
+        }
+    ]
+    captured_row_data: list[dict[str, Any]] = []
+
+    with patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx:
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        with patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS:
+
+            def _capture(job_id, row_data):
+                captured_row_data.extend(row_data)
+                return [MagicMock()]
+
+            MockJS.return_value.create_rows.side_effect = _capture
+            result = await add_rows_to_job_tool(
+                {
+                    "job_id": "job-123",
+                    "rows": rows,
+                }
+            )
+
+    assert result["isError"] is False
+    order_data = json.loads(captured_row_data[0]["order_data"])
+    assert order_data["ship_to_name"] == "Canonical Recipient"
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +412,128 @@ async def test_ship_command_pipeline_success_with_all_rows():
 
 
 @pytest.mark.asyncio
+async def test_ship_command_pipeline_threads_schema_fingerprint_to_build_job_row_data():
+    """Pipeline passes source signature to row normalization/build path."""
+    fetched_rows = [{"order_id": "1", "service_code": "03"}]
+    preview_result = {
+        "job_id": "job-fp",
+        "total_rows": 1,
+        "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
+        "total_estimated_cost_cents": 1000,
+    }
+
+    with (
+        patch("src.orchestrator.agent.tools.pipeline.get_data_gateway") as mock_gw_fn,
+        patch(
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch("src.services.ups_payload_builder.build_shipper", return_value={"name": "Store"}),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
+        patch(
+            "src.orchestrator.agent.tools.pipeline._build_job_row_data",
+            return_value=[
+                {
+                    "row_number": 1,
+                    "row_checksum": "abc",
+                    "order_data": json.dumps({"service_code": "03"}),
+                }
+            ],
+        ) as mock_build,
+    ):
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info.return_value = {
+            "source_type": "csv",
+            "row_count": 1,
+            "columns": [{"name": "order_id", "type": "VARCHAR", "nullable": True}],
+            "signature": "sig-thread-test",
+        }
+        mock_gw.get_rows_by_filter.return_value = fetched_rows
+        mock_gw_fn.return_value = mock_gw
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-fp"
+        MockJS.return_value.create_job.return_value = mock_job
+        MockJS.return_value.get_rows.return_value = [
+            MagicMock(row_number=1, order_data=json.dumps({"service_code": "03"})),
+        ]
+
+        MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
+
+        result = await ship_command_pipeline_tool(
+            {"command": "Ship all orders", "all_rows": True}
+        )
+
+    assert result["isError"] is False
+    mock_build.assert_called_once()
+    kwargs = mock_build.call_args.kwargs
+    assert kwargs["schema_fingerprint"] == "sig-thread-test"
+
+
+@pytest.mark.asyncio
+async def test_ship_command_pipeline_enriches_preview_from_persisted_job_rows():
+    """Preview row enrichment should use persisted order_data, not fetched_rows re-normalization."""
+    fetched_rows = [{"order_id": "1", "service_code": "01"}]
+    preview_result = {
+        "job_id": "job-row-map",
+        "total_rows": 1,
+        "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
+        "total_estimated_cost_cents": 1000,
+    }
+
+    with (
+        patch("src.orchestrator.agent.tools.pipeline.get_data_gateway") as mock_gw_fn,
+        patch(
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch("src.services.ups_payload_builder.build_shipper", return_value={"name": "Store"}),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
+    ):
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info.return_value = {
+            "source_type": "csv",
+            "row_count": 1,
+            "columns": [{"name": "order_id", "type": "VARCHAR", "nullable": True}],
+            "signature": "sig-row-map",
+        }
+        mock_gw.get_rows_by_filter.return_value = fetched_rows
+        mock_gw_fn.return_value = mock_gw
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-row-map"
+        mock_job_service = MockJS.return_value
+        mock_job_service.create_job.return_value = mock_job
+        mock_job_service.get_rows.return_value = [
+            MagicMock(row_number=1, order_data=json.dumps({"service_code": "03"})),
+        ]
+        mock_job_service.create_rows.return_value = [MagicMock()]
+
+        MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
+
+        result = await ship_command_pipeline_tool(
+            {"command": "Ship all orders", "all_rows": True}
+        )
+
+    assert result["isError"] is False
+    assert preview_result["preview_rows"][0]["service"] == "UPS Ground"
+
+
+@pytest.mark.asyncio
 async def test_ship_command_pipeline_applies_explicit_service_override_to_rows():
     """Explicit service request is persisted so execute matches preview."""
     fetched_rows = [
@@ -409,7 +588,7 @@ async def test_ship_command_pipeline_applies_explicit_service_override_to_rows()
 
         result = await ship_command_pipeline_tool(
             {
-                "command": "ship all california orders via UPS Ground",
+                "command": "ship all orders via UPS Ground",
                 "service_code": "03",
                 "all_rows": True,
             }
@@ -481,7 +660,7 @@ async def test_ship_command_pipeline_ignores_implicit_service_code_default():
 
         result = await ship_command_pipeline_tool(
             {
-                "command": "ship all california orders",
+                "command": "ship all orders",
                 # Simulates agent filling an implicit default even though user did not.
                 "service_code": "03",
                 "all_rows": True,
@@ -680,6 +859,18 @@ async def test_batch_preview_returns_preview_data():
     assert data["total_estimated_cost_cents"] == 3500
     assert "preview_rows" not in data
     assert "STOP HERE" in data["message"]
+
+
+@pytest.mark.asyncio
+async def test_batch_preview_rejects_shipping_confirmation_context():
+    """batch_preview is blocked for shipping confirmation turns; force fast path."""
+    bridge = EventEmitterBridge()
+    bridge.last_user_message = "yes"
+    bridge.last_shipping_command = "Ship all orders in the Northeast."
+
+    result = await batch_preview_tool({"job_id": "test-job"}, bridge=bridge)
+    assert result["isError"] is True
+    assert "ship_command_pipeline" in result["content"][0]["text"]
 
 
 @pytest.mark.asyncio

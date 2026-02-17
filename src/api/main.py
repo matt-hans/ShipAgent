@@ -10,6 +10,7 @@ import os
 import sys
 import warnings
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -64,6 +65,58 @@ def _ensure_agent_sdk_available() -> None:
     logger.info("Claude Agent SDK version: %s", sdk_version)
 
 
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    """Parse ISO8601 timestamp to UTC datetime."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _reap_orphan_pending_jobs(job_service: object) -> int:
+    """Delete stale pending jobs with zero rows (crash leftovers)."""
+    from src.services.job_service import JobService
+
+    js: JobService = job_service  # type: ignore[assignment]
+    raw_hours = os.environ.get("ORPHAN_JOB_REAPER_HOURS", "6")
+    try:
+        max_age_hours = float(raw_hours)
+    except ValueError:
+        max_age_hours = 6.0
+    if max_age_hours <= 0:
+        return 0
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    try:
+        pending_jobs = js.list_jobs(status=JobStatus.pending, limit=500)
+    except Exception as e:
+        logger.warning("Failed listing pending jobs for orphan reaper: %s", e)
+        return 0
+
+    deleted = 0
+    for job in pending_jobs:
+        created_at = _parse_iso_timestamp(getattr(job, "created_at", None))
+        if created_at is None or created_at > cutoff:
+            continue
+        try:
+            rows = js.get_rows(job.id)
+        except Exception:
+            continue
+        if rows:
+            continue
+        try:
+            if js.delete_job(job.id):
+                deleted += 1
+        except Exception as e:
+            logger.warning("Failed deleting orphan pending job %s: %s", job.id, e)
+    return deleted
+
+
 async def run_startup_recovery(db: object, job_service: object) -> None:
     """Run crash recovery on startup: recover in-flight rows, then clean staging.
 
@@ -82,6 +135,14 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
     from src.services.job_service import JobService
 
     js: JobService = job_service  # type: ignore[assignment]
+
+    # 0. Reap stale zero-row pending jobs (created before crash, never populated).
+    try:
+        deleted_orphans = _reap_orphan_pending_jobs(js)
+        if deleted_orphans:
+            logger.info("Orphan pending jobs reaped: %d", deleted_orphans)
+    except Exception as e:
+        logger.warning("Orphan pending job reaper failed (non-blocking): %s", e)
 
     # 1. Find interrupted jobs (running or paused)
     interrupted: list = []
@@ -183,6 +244,13 @@ async def lifespan(app: FastAPI):
             "to suppress this warning."
         )
 
+    queue_mode = os.environ.get("CONVERSATION_TASK_QUEUE_MODE", "memory").lower()
+    if queue_mode in {"", "memory", "in-memory", "in_memory"}:
+        logger.warning(
+            "Conversation task queue mode is in-memory; pending agent responses "
+            "are not crash-durable. Use an external queue for hard-failure durability."
+        )
+
     # Run crash recovery (non-blocking — failures logged, not propagated)
     try:
         with get_db_context() as db:
@@ -194,6 +262,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # --- Shutdown ---
+    await conversations.shutdown_conversation_runtime()
     await shutdown_gateways()
 
 

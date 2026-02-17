@@ -20,9 +20,9 @@ This document contains curated prompts designed to showcase ShipAgent's full cap
 
 ### Prompt 1 — Multi-State with Weight and Value Filters
 
-> Ship all orders going to California, Texas, or Florida where the weight is over 10 pounds and the declared value is above $200 — use Ground for everything
+> Ship all orders going to California, Texas, or Florida where the weight is over 10 pounds and the declared value is above $200
 
-**What it demonstrates:** Triple-state OR filter combined with numeric threshold conditions on two different columns. The agent generates a compound SQL WHERE clause with `state IN ('CA', 'TX', 'FL') AND weight_lbs > 10 AND declared_value > 200`.
+**What it demonstrates:** Triple-state OR filter combined with numeric threshold conditions on two different columns. The agent generates a compound SQL WHERE clause with `state IN ('CA', 'TX', 'FL') AND weight_lbs > 10 AND declared_value > 200`. The agent uses the `service` column from the data source by default.
 
 **Expected result:** 5 shipments
 
@@ -40,9 +40,9 @@ This document contains curated prompts designed to showcase ShipAgent's full cap
 
 ### Prompt 3 — Keyword Search Across Descriptions
 
-> Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish — use Ground for everything
+> Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish
 
-**What it demonstrates:** Substring matching across a free-text description column using multiple ILIKE clauses with OR logic. Tests the agent's ability to parse a list of semantic keywords and generate the corresponding SQL.
+**What it demonstrates:** Substring matching across a free-text description column using multiple ILIKE clauses with OR logic. Tests the agent's ability to parse a list of semantic keywords and generate the corresponding SQL. Leveraging the `service` column from the CSV.
 
 **Expected result:** 7 shipments (coffee beans, Cajun spice blends, artisan cheese wheels, BBQ competition supplies, crawfish boil equipment)
 
@@ -50,9 +50,9 @@ This document contains curated prompts designed to showcase ShipAgent's full cap
 
 ### Prompt 4 — Business vs Personal with Geography
 
-> Ship all orders going to companies in the Northeast — that means New York, Massachusetts, Connecticut, Pennsylvania, New Jersey, and Maine — use 2nd Day Air
+> Ship all orders going to companies in the Northeast — that means New York, Massachusetts, Connecticut, Pennsylvania, New Jersey, and Maine
 
-**What it demonstrates:** The agent must understand "companies" means rows where the `company` column is NOT NULL, combine that with a 6-state geographic filter, and apply the correct UPS service code (02). Tests both null-checking and regional geography knowledge.
+**What it demonstrates:** The agent must understand "companies" means rows where the `company` column is NOT NULL, combine that with a 6-state geographic filter. Tests both null-checking and regional geography knowledge while respecting the `service` column.
 
 **Expected result:** 5 shipments to business recipients in the Northeast
 
@@ -60,9 +60,9 @@ This document contains curated prompts designed to showcase ShipAgent's full cap
 
 ### Prompt 5 — Dimensional Weight Logic
 
-> Ship all orders where any single dimension exceeds 24 inches — those are oversized packages and should go Ground
+> Ship all orders where any single dimension exceeds 24 inches — those are oversized packages
 
-**What it demonstrates:** The agent generates a compound OR across three dimension columns (`length_in > 24 OR width_in > 24 OR height_in > 24`). Tests understanding of physical package attributes and the concept of oversized shipments.
+**What it demonstrates:** The agent generates a compound OR across three dimension columns (`length_in > 24 OR width_in > 24 OR height_in > 24`). Tests understanding of physical package attributes and the concept of oversized shipments, using the predefined service.
 
 **Expected result:** 10 shipments with at least one oversized dimension
 
@@ -70,7 +70,7 @@ This document contains curated prompts designed to showcase ShipAgent's full cap
 
 ### Prompt 6 — Negative Filter with Value Threshold
 
-> Ship everything except orders going to California or New York, but only if the declared value is under $100 — use 3 Day Select
+> Ship everything except orders going to California or New York, but only if the declared value is under $100
 
 **What it demonstrates:** Exclusion filter (`state NOT IN ('CA', 'NY')`) combined with a ceiling value threshold. Tests the agent's ability to parse negation ("except") in natural language and combine it with additional conditions.
 
@@ -84,7 +84,9 @@ This document contains curated prompts designed to showcase ShipAgent's full cap
 
 ### Prompt 7 — Regional Exclusion with Weight Band
 
-> Ship all orders from New England states — Connecticut, Massachusetts, Vermont, New Hampshire, Maine, and Rhode Island — but only packages between 2 and 15 pounds, use Ground
+> Ship all orders from New England states — Connecticut, Massachusetts, Vermont, New Hampshire, Maine, and Rhode Island — but only packages between 2 and 15 pounds
+
+**What it demonstrates:** 6-state inclusion filter combined with a weight band (BETWEEN or double inequality). Tests geographic knowledge and range-based filtering from an Excel source.
 
 **What it demonstrates:** 6-state inclusion filter combined with a weight band (BETWEEN or double inequality). Tests geographic knowledge and range-based filtering from an Excel source.
 
@@ -94,7 +96,7 @@ This document contains curated prompts designed to showcase ShipAgent's full cap
 
 ### Prompt 8 — Semantic Product Search from Excel
 
-> Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish — use Ground for everything
+> Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish
 
 **What it demonstrates:** Identical prompt to CSV Demo Prompt 3, but run against the Excel adapter. Proves the agent produces the same correct results regardless of whether the data comes from CSV or Excel — true source-agnostic processing.
 
@@ -405,7 +407,7 @@ This means you can say "use Ground" and the system will automatically select the
 - **Preview step**: Point out the row count, total cost estimate, and zero warnings. Note the **Regional Intelligence**: "I asked for 'Northeast companies' and the system correctly identified those 6 states and filtered for business recipients automatically."
 - **Confirm step**: Emphasize the safety gate — nothing ships without explicit confirmation.
 - **Completion artifact**: Show the inline label access — labels are immediately available.
-- **International demos**: Highlight the automatic service upgrade — Ground automatically becomes Standard for CA/MX or Worldwide Saver for EU.
+- **International demos**: Highlight the automatic service upgrade — Ground automatically becomes Standard for CA/MX or Worldwide Saver for EU. Point out how for batch shipments, the agent respects the `service` column already defined in the CSV/Excel file, while also being able to override it if asked (as shown in Prompt 2).
 - **Logistics Lifecycle**: Point out how we move from Tracking an existing package to finding a nearby drop-off (Locator) and then scheduling a Pickup for our own outbound shipments.
 - **PaperlessCard**: Show the file upload flow with Document ID confirmation — eliminates the need for physical invoice pouches.
 - **Sidebar**: Note the job appears in history with full audit trail
@@ -521,7 +523,7 @@ Each phase demonstrates a distinct agentic capability. The sequence progresses f
 
 **Batch 1 — Geographic Reasoning + Business Logic (Prompt 4):**
 
-> Ship all orders going to the Northeast. Use 2nd Day Air
+> Ship all orders going to companies in the Northeast.
 
 **Agentic capability demonstrated:**
 - **Geographic expansion:** "Northeast" → 6 specific state codes (`state IN ('NY', 'MA', 'CT', 'PA', 'NJ', 'ME')`)
@@ -531,7 +533,7 @@ Each phase demonstrates a distinct agentic capability. The sequence progresses f
 **Expected:** 5 shipments to business recipients in the Northeast
 **Verified:** Yes (Prompt 4)
 
-**Talking point:** *"I said 'Northeast companies' — the agent expanded that into six states AND understood that 'companies' means filtering for business recipients with a company name on file. Three layers of reasoning from two words."*
+**Talking point:** *"I said 'Northeast companies' — the agent expanded that into six states AND understood that 'companies' means filtering for business recipients with a company name on file. It also automatically selected the correct shipping service directly from the data source."*
 
 → Scroll to cost summary → **Confirm & Execute** → View Labels → Scroll through labels → Close
 
@@ -539,7 +541,7 @@ Each phase demonstrates a distinct agentic capability. The sequence progresses f
 
 **Batch 2 — Semantic Keyword Intelligence (Prompt 3):**
 
-> Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish — use Ground for everything
+> Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish.
 
 **Agentic capability demonstrated:**
 - **Natural language → SQL:** Extracts 5 semantic food categories from conversational text
@@ -563,7 +565,7 @@ Each phase demonstrates a distinct agentic capability. The sequence progresses f
 
 **The "Wow Moment" — Same Prompt, Same Results (Prompt 8):**
 
-> Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish — use Ground for everything
+> Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish.
 
 **Agentic capability demonstrated:**
 - **Source agnosticism:** Identical natural language query against a completely different data adapter (Excel/openpyxl vs CSV/DuckDB) — zero prompt changes needed
@@ -572,7 +574,7 @@ Each phase demonstrates a distinct agentic capability. The sequence progresses f
 **Expected:** 7 shipments — **identical to CSV result**
 **Verified:** Yes (Prompt 8 = Prompt 3, same dataset)
 
-**Talking point:** *"Exact same prompt, exact same seven results, completely different file format. The agent doesn't care if your data lives in CSV, Excel, or a live Shopify store — it adapts to any source automatically. That's true source-agnostic processing."*
+**Talking point:** *"Exact same prompt, exact same seven results, completely different file format. The agent doesn't care if your data lives in CSV, Excel, or a live Shopify store — it adapts to any source and respects the shipping preferences already in your data automatically. That's true source-agnostic processing."*
 
 → Scroll to cost summary → **Confirm & Execute**
 
