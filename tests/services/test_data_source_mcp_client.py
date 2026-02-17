@@ -82,7 +82,7 @@ async def test_get_rows_normalizes_none_clause(client, mock_mcp):
     mock_mcp.call_tool.return_value = {"rows": [], "total_count": 0}
     await client.get_rows_by_filter(None)
     call_args = mock_mcp.call_tool.call_args[0]
-    assert call_args[1]["where_clause"] == "1=1"
+    assert call_args[1]["where_sql"] == "1=1"
 
 
 @pytest.mark.asyncio

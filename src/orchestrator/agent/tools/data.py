@@ -8,7 +8,7 @@ import logging
 import os
 from typing import Any
 
-import sqlglot
+
 
 from src.orchestrator.agent.tools.core import (
     EventEmitterBridge,
@@ -174,23 +174,6 @@ async def fetch_rows_tool(
     except Exception as e:
         logger.error("fetch_rows_tool failed: %s", e)
         return _err(f"Failed to fetch rows: {e}")
-
-
-async def validate_filter_syntax_tool(args: dict[str, Any]) -> dict[str, Any]:
-    """Validate SQL WHERE clause syntax using sqlglot.
-
-    Args:
-        args: Dict with 'where_clause' (str).
-
-    Returns:
-        Tool response with valid=True/False and optional error message.
-    """
-    where_clause = args.get("where_clause", "")
-    try:
-        sqlglot.parse(f"SELECT * FROM t WHERE {where_clause}")
-        return _ok({"valid": True, "where_clause": where_clause})
-    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError) as e:
-        return _ok({"valid": False, "error": str(e), "where_clause": where_clause})
 
 
 async def resolve_filter_intent_tool(

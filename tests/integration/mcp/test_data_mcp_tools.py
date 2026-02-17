@@ -83,7 +83,7 @@ class TestCSVImportWorkflow:
         })
 
         result = await connected_data_mcp.call_tool("get_rows_by_filter", {
-            "where_clause": "service_type = 'Ground'",
+            "where_sql": "service_type = 'Ground'",
             "limit": 10,
         })
 
