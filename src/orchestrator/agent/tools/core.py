@@ -347,17 +347,20 @@ def _emit_preview_ready(
 ) -> dict[str, Any]:
     """Emit preview SSE payload and return slim LLM tool payload."""
     _emit_event("preview_ready", result, bridge=bridge)
-    return _ok(
-        {
-            "status": "preview_ready",
-            "job_id": job_id_override or result.get("job_id"),
-            "total_rows": result.get("total_rows", 0),
-            "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
-            "rows_with_warnings": rows_with_warnings,
-            "message": (
-                "Preview card has been displayed to the user. STOP HERE. "
-                "Respond with one brief sentence asking the user to review "
-                "the preview and click Confirm or Cancel."
-            ),
-        }
-    )
+    response = {
+        "status": "preview_ready",
+        "job_id": job_id_override or result.get("job_id"),
+        "total_rows": result.get("total_rows", 0),
+        "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
+        "rows_with_warnings": rows_with_warnings,
+        "message": (
+            "Preview card has been displayed to the user. STOP HERE. "
+            "Respond with one brief sentence asking the user to review "
+            "the preview and click Confirm or Cancel."
+        ),
+    }
+    # Include filter metadata fields for transparency and audit
+    for key in ("filter_explanation", "compiled_filter", "filter_audit"):
+        if key in result:
+            response[key] = result[key]
+    return _ok(response)
