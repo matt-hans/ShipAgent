@@ -63,13 +63,20 @@ class DataSourceGateway(Protocol):
         ...
 
     async def get_rows_by_filter(
-        self, where_clause: str | None = None, limit: int = 100, offset: int = 0
+        self,
+        where_sql: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        params: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Get rows matching a SQL WHERE clause as flat dicts.
+        """Get rows matching a parameterized WHERE clause as flat dicts.
 
         Args:
-            where_clause: SQL WHERE condition, or None for all rows.
-                Gateway normalizes None to "1=1" before calling MCP tool.
+            where_sql: Parameterized WHERE condition ($1, $2 placeholders),
+                or None for all rows. Gateway normalizes None to "1=1".
+            limit: Maximum rows to return.
+            offset: Number of rows to skip.
+            params: Positional parameter values for $N placeholders.
         """
         ...
 

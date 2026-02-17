@@ -57,14 +57,50 @@ class TestDenyRawSqlInFilterTools:
         assert _is_denied(result)
 
     @pytest.mark.anyio
-    async def test_denies_nested_query_key(self):
-        """Denies nested query key."""
+    async def test_denies_top_level_query_key(self):
+        """Denies top-level query key."""
         result = await deny_raw_sql_in_filter_tools(
             {"tool_name": "resolve_filter_intent", "tool_input": {"query": "DROP TABLE"}},
             tool_use_id="test-3",
             context=None,
         )
         assert _is_denied(result)
+
+    @pytest.mark.anyio
+    async def test_denies_deeply_nested_where_clause(self):
+        """Denies where_clause buried inside nested dicts."""
+        result = await deny_raw_sql_in_filter_tools(
+            {
+                "tool_name": "ship_command_pipeline",
+                "tool_input": {
+                    "filter_spec": {
+                        "root": {
+                            "conditions": [{"where_clause": "state='CA'"}]
+                        }
+                    }
+                },
+            },
+            tool_use_id="test-3a",
+            context=None,
+        )
+        assert _is_denied(result)
+        assert "where_clause" in _denial_reason(result).lower()
+
+    @pytest.mark.anyio
+    async def test_denies_sql_in_list_of_dicts(self):
+        """Denies banned key inside a list of dicts."""
+        result = await deny_raw_sql_in_filter_tools(
+            {
+                "tool_name": "fetch_rows",
+                "tool_input": {
+                    "filters": [{"raw_sql": "1=1; DROP TABLE orders"}]
+                },
+            },
+            tool_use_id="test-3b",
+            context=None,
+        )
+        assert _is_denied(result)
+        assert "raw_sql" in _denial_reason(result).lower()
 
     @pytest.mark.anyio
     async def test_allows_filter_spec(self):
