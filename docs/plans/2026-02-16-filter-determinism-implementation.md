@@ -1393,7 +1393,7 @@ git commit -m "feat: add resolve_filter_intent tool handler"
 Create `tests/orchestrator/agent/test_pipeline_filter_spec.py` testing:
 - Pipeline accepts `filter_spec` and calls compiler, passes parameterized SQL to gateway
 - Pipeline **rejects** raw `where_clause` — returns error if `where_clause` is passed
-- Pipeline requires `filter_spec` when filtering is needed (no filter = ship all rows)
+- Pipeline requires `filter_spec` or explicit `all_rows=true` — rejects calls with neither
 - Compiled SQL + params are passed to gateway together
 - Audit metadata (`filter_explanation`, `compiled_filter`, `filter_audit`) is attached to preview result
 - `filter_audit` contains `spec_hash`, `compiled_hash`, `schema_signature`, `dict_version`
@@ -1409,8 +1409,8 @@ In `src/orchestrator/agent/tools/pipeline.py:173-260`, **hard cutover** — no l
 4. If `filter_spec` absent AND `all_rows` is explicitly `true`: ship all rows (`WHERE 1=1`) — but this **still requires the existing preview confirmation gate** (no silent all-rows execution)
 5. If `filter_spec` absent AND `all_rows` is absent or `false`: return `_err("Either filter_spec or all_rows=true is required. Use resolve_filter_intent to create a filter, or set all_rows=true to ship everything.")` — **never silently default to all rows**
 6. If `where_clause` is present in args: return `_err("where_clause is not accepted. Use resolve_filter_intent to create a filter_spec.")`
-6. Attach `filter_explanation`, `compiled_filter`, and `filter_audit` metadata to the result before calling `_emit_preview_ready()`
-7. Compute `compiled_hash` as SHA-256 of canonical JSON execution payload: `json.dumps({"where_sql": where_sql, "params": params}, sort_keys=True, default=str)` — params stay in execution order (sorting would hide meaningful order differences for non-commutative operators like `between`)
+7. Attach `filter_explanation`, `compiled_filter`, and `filter_audit` metadata to the result before calling `_emit_preview_ready()`
+8. Compute `compiled_hash` as SHA-256 of canonical JSON execution payload: `json.dumps({"where_sql": where_sql, "params": params}, sort_keys=True, default=str)` — params stay in execution order (sorting would hide meaningful order differences for non-commutative operators like `between`)
 
 Update `DataSourceMCPClient.get_rows_by_filter()` to rename `where_clause` to `where_sql` and accept `params`:
 
@@ -1445,7 +1445,7 @@ git commit -m "feat: update ship_command_pipeline to accept filter_spec"
 Test that `fetch_rows_tool()`:
 - Accepts `filter_spec`, compiles it, and passes parameterized query to gateway
 - **Rejects** `where_clause` — returns error if passed
-- Works without any filter (fetches all rows)
+- Requires `filter_spec` or explicit `all_rows=true` — rejects calls with neither
 
 **Step 2: Run test to verify it fails**
 
@@ -1581,9 +1581,17 @@ Create `tests/orchestrator/agent/test_filter_hooks.py` testing:
 5. **`deny_raw_sql_in_filter_tools`** does NOT trigger for unrelated tools (e.g., `create_job`)
 6. **`validate_intent_on_resolve`** denies invalid operator in intent
 7. **`validate_intent_on_resolve`** allows valid intent
-8. **Hook ordering/finality:** a denied payload CANNOT be later "allowed" by any downstream hook — verify deny is final
-9. **Scoped matcher priority:** deny hook fires on scoped tools only; does not interfere with unrelated tool chains
-10. **Deny precedence:** when `deny_raw_sql_in_filter_tools` returns deny, no subsequent PreToolUse hook for that tool call is evaluated
+8. **`validate_filter_spec_on_pipeline`** denies pipeline call with Tier-B spec but missing `resolution_token`
+9. **`validate_filter_spec_on_pipeline`** denies pipeline call with expired token (TTL exceeded)
+10. **`validate_filter_spec_on_pipeline`** denies pipeline call with tampered HMAC signature
+11. **`validate_filter_spec_on_pipeline`** denies pipeline call with token whose `resolved_spec_hash` doesn't match incoming `filter_spec`
+12. **`validate_filter_spec_on_pipeline`** denies pipeline call with token whose `schema_signature` doesn't match current source
+13. **`validate_filter_spec_on_pipeline`** denies pipeline call with token whose `dict_version` doesn't match current canonical dict
+14. **`validate_filter_spec_on_pipeline`** allows pipeline call with valid Tier-B token (all bindings match)
+15. **`validate_filter_spec_on_pipeline`** allows pipeline call with Tier-A-only spec (no token required)
+16. **Hook ordering/finality:** a denied payload CANNOT be later "allowed" by any downstream hook — verify deny is final
+17. **Scoped matcher priority:** deny hook fires on scoped tools only; does not interfere with unrelated tool chains
+18. **Deny precedence:** when `deny_raw_sql_in_filter_tools` returns deny, no subsequent PreToolUse hook for that tool call is evaluated
 
 **Step 2: Run test to verify it fails**
 
@@ -1611,7 +1619,20 @@ async def validate_filter_spec_on_pipeline(
     tool_use_id: str | None,
     context: Any,
 ) -> dict[str, Any]:
-    """Validate filter_spec structure on pipeline and fetch_rows."""
+    """Validate filter_spec structure and Tier-B token on pipeline and fetch_rows.
+
+    Enforcement checklist (all must pass or deny):
+    1. filter_spec is present and structurally valid (or all_rows=true)
+    2. If filter_spec contains Tier-B resolved terms (status was NEEDS_CONFIRMATION):
+       a. resolution_token MUST be present — deny if missing
+       b. HMAC signature is valid (not tampered)
+       c. Token TTL has not expired
+       d. Token session_id matches current session
+       e. Token schema_signature matches current source schema
+       f. Token dict_version matches current canonical dict version
+       g. Token resolved_spec_hash matches SHA-256 of incoming filter_spec
+    3. Schema signature in filter_spec matches current source
+    """
 
 async def validate_intent_on_resolve(
     input_data: dict[str, Any],
@@ -1633,6 +1654,34 @@ Expected: All tests PASS.
 ```bash
 git add src/orchestrator/agent/hooks.py tests/orchestrator/agent/test_filter_hooks.py
 git commit -m "feat: add deny_raw_sql and filter validation hooks"
+```
+
+**Step 6: Add `validate_filter_config()` startup validation**
+
+This step implements the startup-time secret validation referenced in Architectural Invariant #6. Without it, the token secret requirement is only enforced at first use (lazy getter), which is too late for production.
+
+- Create `src/orchestrator/filter_config.py` with:
+  ```python
+  def validate_filter_config() -> None:
+      """Validate required filter configuration at startup.
+
+      Called from FastAPI lifespan in src/api/main.py.
+      Raises FilterConfigError if FILTER_TOKEN_SECRET is not set.
+      """
+      import os
+      secret = os.environ.get("FILTER_TOKEN_SECRET")
+      if not secret:
+          raise FilterConfigError(
+              "FILTER_TOKEN_SECRET env var is required. "
+              "Set it to a stable secret (min 32 chars) for HMAC token signing."
+          )
+  ```
+- Modify `src/api/main.py` lifespan to call `validate_filter_config()` at startup (before agent session prewarm)
+- Test: `tests/orchestrator/test_filter_config.py` — verify `validate_filter_config()` raises when env var is missing, succeeds when set
+
+```bash
+git add src/orchestrator/filter_config.py src/api/main.py tests/orchestrator/test_filter_config.py
+git commit -m "feat: add validate_filter_config() startup check for FILTER_TOKEN_SECRET"
 ```
 
 ---
@@ -1920,7 +1969,9 @@ After all tasks are complete, verify:
 - [ ] Hook deny is final — denied payloads cannot be "allowed" by any downstream hook
 - [ ] Hook scoped matchers do not interfere with unrelated tool chains
 - [ ] All DuckDB execution paths use `db.execute(sql, params)` — no raw interpolation
-- [ ] `FILTER_TOKEN_SECRET` env var is required at startup (no random fallback)
+- [ ] `FILTER_TOKEN_SECRET` env var is required at startup via `validate_filter_config()` (no random fallback)
+- [ ] `validate_filter_spec_on_pipeline` enforces Tier-B token binding (HMAC, TTL, session, schema, dict version, spec hash)
+- [ ] Pipeline/fetch_rows with Tier-B spec but missing `resolution_token` is denied by hook
 
 ### Determinism Release Gate (Task 20 — must pass before merge)
 
