@@ -2052,11 +2052,33 @@ In `src/db/models.py`:
 class RowStatus(str, Enum):
     pending = "pending"
     in_flight = "in_flight"  # NEW: UPS call dispatched, awaiting response
-    processing = "processing"
     completed = "completed"
     failed = "failed"
     skipped = "skipped"
     needs_review = "needs_review"  # NEW: crash recovery — operator must resolve
+    # NOTE: `processing` is deliberately REMOVED. The legacy status was set by
+    # JobService.start_row() which predates the deterministic in_flight state
+    # machine. Its existence would allow an alternate row lifecycle that
+    # bypasses deterministic invariants. See cleanup steps below.
+```
+
+**State machine cleanup — remove legacy `processing` status:**
+
+The codebase currently has `RowStatus.processing` (`models.py:62`) set by `JobService.start_row()` (`job_service.py:399`). This status is **not used by BatchEngine** (which manages its own `pending → in_flight → completed/failed/needs_review` lifecycle) but its presence allows an alternate row lifecycle that could bypass the deterministic state machine.
+
+Remove/disable in this task:
+1. **Delete `processing` from `RowStatus` enum** (done above).
+2. **Delete `JobService.start_row()` method** (`job_service.py:399-414`). It is not called by BatchEngine — grep to confirm zero callers before deleting. If any callers exist outside the batch path, refactor them to use the in-flight state machine instead.
+3. **Add a test** that `RowStatus` does NOT contain `processing` and that `JobService` does NOT have a `start_row` attribute:
+```python
+def test_processing_status_removed():
+    """processing status is removed — no alternate lifecycle can bypass
+    the deterministic in_flight state machine."""
+    assert not hasattr(RowStatus, "processing")
+
+def test_start_row_removed():
+    """start_row() is removed — rows transition via in_flight, not processing."""
+    assert not hasattr(JobService, "start_row")
 ```
 
 Add columns to `JobRow`:
@@ -2437,9 +2459,33 @@ async def _process_row(row: Any) -> None:
             # Any exception must NOT mark row as "failed" — that would
             # allow a retry to create a duplicate. Use "needs_review" instead.
             try:
-                tracking_number = ...
-                label_path = self._save_label_staged(...)  # staging dir
-                cost_cents = ...
+                # Extract tracking number — prefer per-package TrackingNumber,
+                # fall back to ShipmentIdentificationNumber (UPS CIE env masks
+                # package-level numbers with "XXXX" placeholders).
+                # Source: batch_engine.py:410-417, ups_mcp_client.py:939-940
+                tracking_numbers = result.get("trackingNumbers", [])
+                tracking_number = tracking_numbers[0] if tracking_numbers else ""
+                if not tracking_number or "XXXX" in tracking_number:
+                    tracking_number = result.get(
+                        "shipmentIdentificationNumber", tracking_number
+                    )
+
+                # Save label to staging directory — NOT the final path yet.
+                # Source: batch_engine.py:420-428
+                label_path = ""
+                label_data_list = result.get("labelData", [])
+                if label_data_list and label_data_list[0]:
+                    label_path = self._save_label_staged(
+                        tracking_number,
+                        label_data_list[0],
+                        job_id=job_id,
+                        row_number=row.row_number,
+                    )
+
+                # Convert dollar string to integer cents — avoids float precision.
+                # Source: batch_engine.py:431-432
+                charges = result.get("totalCharges", {})
+                cost_cents = _dollars_to_cents(charges.get("monetaryValue", "0"))
 
                 # PHASE 2: Promote label FIRST, then commit
                 # Order matters for crash safety: if we commit first and
@@ -2860,8 +2906,83 @@ async def recover_in_flight_rows(
 ```
 
 Update `recovery.py`:
-- `check_interrupted_jobs()`: include `in_flight_count` and `needs_review_count` in `InterruptedJobInfo`.
-- Add `RecoveryChoice.REVIEW` option for operator to inspect `needs_review` rows before resuming.
+
+1. `check_interrupted_jobs()`: include `in_flight_count` and `needs_review_count` in `InterruptedJobInfo`.
+2. Add `RecoveryChoice.REVIEW` enum value and handler with concrete contract:
+
+```python
+class RecoveryChoice(str, Enum):
+    RESUME = "resume"
+    RESTART = "restart"
+    CANCEL = "cancel"
+    REVIEW = "review"  # NEW: inspect needs_review rows before deciding
+
+
+# In handle_recovery_choice():
+elif choice == RecoveryChoice.REVIEW:
+    # Return detailed row-level report for operator inspection.
+    # Does NOT change any row status — read-only operation.
+    all_rows = job_service.get_rows(job_id)
+    needs_review_rows = [
+        r for r in all_rows if r.status == "needs_review"
+    ]
+    in_flight_rows = [
+        r for r in all_rows if r.status == "in_flight"
+    ]
+
+    review_details: list[dict[str, Any]] = []
+    for r in needs_review_rows:
+        review_details.append({
+            "row_number": r.row_number,
+            "status": "needs_review",
+            "error_message": r.error_message or "",
+            "ups_tracking_number": r.ups_tracking_number or "",
+            "ups_shipment_id": r.ups_shipment_id or "",
+            "idempotency_key": r.idempotency_key or "",
+        })
+    for r in in_flight_rows:
+        review_details.append({
+            "row_number": r.row_number,
+            "status": "in_flight",
+            "recovery_attempt_count": r.recovery_attempt_count,
+            "ups_tracking_number": r.ups_tracking_number or "",
+            "idempotency_key": r.idempotency_key or "",
+        })
+
+    return {
+        "action": "review",
+        "job_id": job_id,
+        "needs_review_count": len(needs_review_rows),
+        "in_flight_count": len(in_flight_rows),
+        "rows": review_details,
+        "message": (
+            f"{len(needs_review_rows)} rows need review, "
+            f"{len(in_flight_rows)} rows still in-flight. "
+            "Use idempotency keys to look up shipments in UPS Quantum View. "
+            "After resolving, choose RESUME to continue or CANCEL to abort."
+        ),
+    }
+```
+
+**Input/output contract for `RecoveryChoice.REVIEW`:**
+- **Input:** `choice=RecoveryChoice.REVIEW`, `job_id`, `job_service`
+- **Output:** `{"action": "review", "job_id": str, "needs_review_count": int, "in_flight_count": int, "rows": list[RowDetail], "message": str}`
+- **Side effects:** None — purely read-only. Does not modify any row status.
+- **Caller flow:** After reviewing, caller picks `RESUME` (process remaining `pending` rows, skip `needs_review`/`in_flight`), `CANCEL` (abort job), or resolves individual rows manually then calls `RESUME`.
+
+Add test for the REVIEW path:
+
+```python
+def test_recovery_review_returns_detailed_row_report(self):
+    """RecoveryChoice.REVIEW returns per-row detail with idempotency keys,
+    error messages, and UPS identifiers for needs_review and in_flight rows.
+    Does not modify any row status (read-only)."""
+
+def test_recovery_review_then_resume_skips_resolved_rows(self):
+    """After REVIEW, operator resolves rows manually (e.g. void at UPS),
+    then calls RESUME. BatchEngine only processes pending rows —
+    needs_review rows are not auto-retried."""
+```
 
 **Step 4: Run tests**
 
@@ -2869,7 +2990,7 @@ Update `recovery.py`:
 
 ```bash
 git add src/services/batch_engine.py src/orchestrator/batch/recovery.py tests/orchestrator/batch/test_inflight_recovery.py
-git commit -m "feat: add in-flight row recovery with UPS tracking lookup"
+git commit -m "feat: add in-flight row recovery with UPS tracking lookup and review path"
 ```
 
 ---
