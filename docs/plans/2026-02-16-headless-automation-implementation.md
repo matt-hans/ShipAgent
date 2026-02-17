@@ -382,7 +382,17 @@ class DaemonConfig(BaseModel):
 
 
 class AutoConfirmRules(BaseModel):
-    """Rules for automatic job confirmation in headless mode."""
+    """Rules for automatic job confirmation in headless mode.
+
+    NOTE on address rules: In watchdog mode, address validation state is
+    not persisted on JobRow after preview. The watchdog reports addresses
+    as unverified (all_addresses_valid=False, has_address_warnings=True)
+    so these rules will BLOCK auto-confirm by default. Operators who
+    want headless auto-confirm should explicitly set
+    require_valid_addresses=false in their config, acknowledging that
+    address validation is handled at preview time by the agent, not
+    re-checked at auto-confirm time.
+    """
 
     enabled: bool = False
     max_cost_cents: int = 50000
@@ -3784,7 +3794,7 @@ async def _process_agent_message(session_id: str, content: str) -> None:
 
 **Step 6: Run tests to verify existing behavior is preserved**
 
-Run: `pytest tests/services/test_batch_executor.py tests/api/ -v -k "not stream and not sse"`
+Run: `pytest tests/services/test_batch_executor.py tests/services/test_conversation_handler.py tests/api/ -v -k "not stream and not sse"`
 Expected: All PASS.
 
 **Step 7: Commit**
@@ -4227,6 +4237,17 @@ class TestProcessWatchedFileEndToEnd:
         mock_db.query.return_value.filter.return_value.first.return_value = mock_job
         mock_db.query.return_value.filter.return_value.all.return_value = [mock_row]
 
+        # Mock load_config to return a config with require_valid_addresses=False.
+        # In watchdog mode, address validation is not persisted on JobRow, so
+        # preview_data reports all_addresses_valid=False. Operators who want
+        # auto-confirm must explicitly disable address rules in their config.
+        mock_global_config = MagicMock()
+        mock_global_config.auto_confirm = AutoConfirmRules(
+            enabled=True,
+            require_valid_addresses=False,  # Acknowledge watchdog limitation
+            allowed_services=[],            # No service whitelist
+        )
+
         with (
             patch("src.api.main._watchdog_service", watchdog_svc),
             patch("src.services.gateway_provider.get_data_gateway", new_callable=AsyncMock, return_value=mock_gw),
@@ -4234,6 +4255,7 @@ class TestProcessWatchedFileEndToEnd:
             patch("src.services.conversation_handler.ensure_agent", new_callable=AsyncMock),
             patch("src.services.batch_executor.execute_batch", new_callable=AsyncMock) as mock_exec,
             patch("src.db.connection.get_db", return_value=iter([mock_db])),
+            patch("src.cli.config.load_config", return_value=mock_global_config),
         ):
             from src.api.main import _process_watched_file
             await _process_watched_file(str(csv_file), config)
@@ -4874,18 +4896,22 @@ async def _process_watched_file(file_path: str, config) -> None:
                                 except (_json.JSONDecodeError, TypeError):
                                     pass
 
+                        # Address validation state is NOT persisted on JobRow.
+                        # We cannot verify addresses post-preview, so we must
+                        # report truthfully that we don't know. Setting these
+                        # to False/True triggers the require_valid_addresses
+                        # and allow_warnings rules if the operator has them
+                        # enabled — preventing silent bypass of safety checks.
+                        # Operators who want auto-confirm in watchdog mode
+                        # should explicitly set require_valid_addresses=false
+                        # in their config (acknowledging the limitation).
                         preview_data = {
                             "total_rows": len(rows),
                             "total_cost_cents": sum(row_costs),
                             "max_row_cost_cents": max(row_costs) if row_costs else 0,
                             "service_codes": list(service_codes_set),
-                            # Address validation is not persisted on JobRow.
-                            # Auto-confirm in headless mode trusts the agent's
-                            # preview (which already validated addresses).
-                            # Default to True/False so require_valid_addresses
-                            # and allow_warnings rules pass by default.
-                            "all_addresses_valid": True,
-                            "has_address_warnings": False,
+                            "all_addresses_valid": False,
+                            "has_address_warnings": True,
                         }
                         confirm_result = evaluate_auto_confirm(
                             rules=folder_rules,
@@ -5223,3 +5249,10 @@ git commit -m "docs: update CLAUDE.md with headless automation CLI architecture"
 | 2 | `test_conversation_handler` patches `src.services.conversation_handler.OrchestrationAgent` but `ensure_agent()` imports from `src.orchestrator.agent.client` | P1 | Changed all 2 patch targets from `"src.services.conversation_handler.OrchestrationAgent"` to `"src.orchestrator.agent.client.OrchestrationAgent"`. Patch intercepts the import at the definition site. |
 | 3 | Hash fixtures use `"None|interactive=False"` (uppercase N) but `compute_source_hash(None)` returns `"none"` (lowercase) | P1 | Changed all 5 occurrences from `"None|interactive=False"` to `"none|interactive=False"` to match `compute_source_hash()` which returns `"none"` for `None` input. |
 | 4 | Watchdog e2e tests call `_process_watched_file` without establishing `_watchdog_service` — function early-returns | P1 | Each of the 4 e2e tests now creates a `HotFolderService(configs=[...])` instance and patches `src.api.main._watchdog_service` with it. The global lock serialization test uses both configs so the single service owns the shared `processing_lock`. Class docstring updated to document this requirement. |
+
+## Review Findings Resolution — Round 6
+
+| # | Finding | Severity | Resolution |
+|---|---------|----------|------------|
+| 1 | Address-related auto-confirm rules silently bypassed in watchdog mode — `all_addresses_valid` hardcoded to `True`, `has_address_warnings` to `False` | P1 | **Fail-safe fix:** `preview_data` now reports `all_addresses_valid=False` and `has_address_warnings=True` (honest: we don't know). This means `require_valid_addresses=True` (the default) will **block** auto-confirm in watchdog mode. Operators must explicitly set `require_valid_addresses: false` in config to acknowledge the limitation. `AutoConfirmRules` docstring updated to document this semantic. Approved e2e test updated to mock `load_config` returning `require_valid_addresses=False`. |
+| 2 | Task 10 test-run command omits `test_conversation_handler.py` | P3 | Added `tests/services/test_conversation_handler.py` to the Step 6 verification command alongside `test_batch_executor.py`. |
