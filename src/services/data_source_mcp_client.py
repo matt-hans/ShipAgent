@@ -243,8 +243,6 @@ class DataSourceMCPClient:
         limit: int = 100,
         offset: int = 0,
         params: list[Any] | None = None,
-        *,
-        where_clause: str | None = None,
     ) -> list[dict[str, Any]]:
         """Get rows matching a parameterized WHERE clause, normalized to flat dicts.
 
@@ -253,14 +251,12 @@ class DataSourceMCPClient:
             limit: Maximum rows to return.
             offset: Number of rows to skip.
             params: Positional parameter values for $N placeholders.
-            where_clause: Deprecated alias for where_sql (backward compat).
 
         MCP returns {rows:[{row_number, data, checksum}]}.
         This method normalizes to flat dicts with _row_number and _checksum.
         """
         await self._ensure_connected()
-        # Backward compat: accept where_clause as alias for where_sql
-        effective_sql = where_sql or where_clause
+        effective_sql = where_sql
         # Normalize None/empty to "1=1" so the MCP tool's
         # "WHERE {where_sql}" template doesn't break.
         effective_sql = effective_sql if effective_sql and effective_sql.strip() else "1=1"

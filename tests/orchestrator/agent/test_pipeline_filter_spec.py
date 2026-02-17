@@ -266,3 +266,41 @@ class TestPipelineFilterSpec:
         assert "compiled_hash" in audit
         assert "schema_signature" in audit
         assert audit["schema_signature"] == "test_sig"
+
+    @pytest.mark.asyncio
+    async def test_pipeline_attaches_compiled_filter(self):
+        """Pipeline attaches compiled_filter (parameterized SQL) to response."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": "ship CA orders ground",
+                "filter_spec": _make_resolved_spec(),
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        # compiled_filter should be the parameterized WHERE SQL
+        assert "compiled_filter" in content
+        assert "$1" in content["compiled_filter"]
+
+    @pytest.mark.asyncio
+    async def test_pipeline_all_rows_omits_compiled_filter(self):
+        """Pipeline with all_rows=true does NOT attach compiled_filter."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": "ship everything",
+                "all_rows": True,
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert "compiled_filter" not in content

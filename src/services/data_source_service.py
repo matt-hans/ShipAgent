@@ -350,13 +350,19 @@ class DataSourceService:
         return self._source_info.columns
 
     async def get_rows_by_filter(
-        self, where_clause: str | None = None, limit: int = 250
+        self,
+        where_sql: str | None = None,
+        limit: int = 250,
+        offset: int = 0,
+        params: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Fetch rows from imported data, optionally filtered by SQL WHERE clause.
 
         Args:
-            where_clause: SQL WHERE clause (without 'WHERE' keyword). None for all rows.
+            where_sql: SQL WHERE clause (without 'WHERE' keyword). None for all rows.
             limit: Maximum number of rows to return.
+            offset: Number of rows to skip.
+            params: Unused — legacy DuckDB path does not support parameterized queries.
 
         Returns:
             List of row dictionaries.
@@ -369,11 +375,11 @@ class DataSourceService:
 
         query = "SELECT *, rowid + 1 AS _row_number FROM imported_data"
         if (
-            where_clause
-            and where_clause.strip()
-            and where_clause.strip() not in ("1=1", "TRUE")
+            where_sql
+            and where_sql.strip()
+            and where_sql.strip() not in ("1=1", "TRUE")
         ):
-            query += f" WHERE {where_clause}"
+            query += f" WHERE {where_sql}"
         query += f" LIMIT {limit}"
 
         try:
@@ -400,7 +406,7 @@ class DataSourceService:
         Raises:
             RuntimeError: If no data source is connected.
         """
-        return await self.get_rows_by_filter(where_clause=None, limit=limit)
+        return await self.get_rows_by_filter(where_sql=None, limit=limit)
 
     def get_source_info(self) -> DataSourceInfo | None:
         """Get info about the currently connected data source.

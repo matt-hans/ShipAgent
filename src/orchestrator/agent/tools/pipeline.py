@@ -420,6 +420,8 @@ async def ship_command_pipeline_tool(
         result["filter_explanation"] = filter_explanation
     if filter_audit:
         result["filter_audit"] = filter_audit
+    if filter_spec_raw:
+        result["compiled_filter"] = where_sql
 
     return _emit_preview_ready(
         result=result,

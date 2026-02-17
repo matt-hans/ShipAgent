@@ -515,6 +515,27 @@ _FILTER_SCOPED_TOOLS = frozenset({
 _BANNED_SQL_KEYS = frozenset({"where_clause", "sql", "query", "raw_sql"})
 
 
+def _find_banned_keys_recursive(obj: Any, banned: frozenset[str]) -> set[str]:
+    """Recursively search dicts/lists for banned key names.
+
+    Args:
+        obj: The object to traverse (dict, list, or scalar).
+        banned: Set of banned key names.
+
+    Returns:
+        Set of banned keys found at any nesting depth.
+    """
+    found: set[str] = set()
+    if isinstance(obj, dict):
+        found.update(banned & set(obj.keys()))
+        for value in obj.values():
+            found.update(_find_banned_keys_recursive(value, banned))
+    elif isinstance(obj, list):
+        for item in obj:
+            found.update(_find_banned_keys_recursive(item, banned))
+    return found
+
+
 async def deny_raw_sql_in_filter_tools(
     input_data: dict[str, Any],
     tool_use_id: str | None,
@@ -523,7 +544,7 @@ async def deny_raw_sql_in_filter_tools(
     """Deny raw SQL keys in filter-related tool payloads.
 
     Scoped to: resolve_filter_intent, ship_command_pipeline, fetch_rows.
-    Inspects payload for banned keys: where_clause, sql, query, raw_sql.
+    Recursively inspects payload for banned keys: where_clause, sql, query, raw_sql.
 
     Args:
         input_data: Contains 'tool_name' and 'tool_input' keys.
@@ -543,7 +564,7 @@ async def deny_raw_sql_in_filter_tools(
     if not isinstance(tool_input, dict):
         return {}
 
-    found_keys = _BANNED_SQL_KEYS & set(tool_input.keys())
+    found_keys = _find_banned_keys_recursive(tool_input, _BANNED_SQL_KEYS)
     if found_keys:
         _log_to_stderr(
             f"[FILTER ENFORCEMENT] DENYING raw SQL keys {found_keys} "
