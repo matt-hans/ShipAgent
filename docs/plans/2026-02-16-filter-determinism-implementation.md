@@ -1989,11 +1989,15 @@ A crash, network split, or process kill between lines 408 and 458 creates a ship
 
 ### Design Decisions
 
-1. **UPS `TransactionReference` is advisory-only** — UPS does not deduplicate based on it. We use it for post-hoc audit correlation, but our own dedup layer (local DB state + pre-retry tracking lookup) is the enforcement mechanism.
+1. **UPS `TransactionReference` is advisory-only** — UPS does not deduplicate based on it, and `track_package` only accepts UPS tracking numbers (not custom references). We use `TransactionReference.CustomerContext` strictly for post-hoc audit correlation in UPS Quantum View, not for programmatic dedup. Our dedup layer is local DB state only.
 2. **In-flight state is local-first.** Before calling UPS, write `in_flight` status + idempotency key to DB and commit. After UPS responds, update to `completed`/`failed` and commit. The in-flight window is bounded to the UPS API call duration only.
-3. **Pre-retry tracking lookup is the dedup mechanism.** When a row is `in_flight` on resume, query UPS `track_package` by the idempotency key (stored as `TransactionReference`). If UPS returns a valid tracking number, the shipment succeeded — skip re-creation and record the existing result.
-4. **Labels use a staging directory with atomic rename.** Write to `labels/staging/{job_id}/{row}.png`, then `os.rename()` to `labels/{tracking}.png` after DB commit. On crash, staging files are orphaned (harmless) and cleaned up on next startup.
+3. **Recovery uses a three-tier strategy based on available state.** When a row is `in_flight` on resume:
+   - **Tier 1 (has `ups_transaction_id`):** The UPS tracking number was stored before crash. Call `track_package(tracking_number=ups_transaction_id)` to verify the shipment still exists at UPS. If valid → mark `completed`. If invalid → mark `needs_review`.
+   - **Tier 2 (no tracking info):** The UPS call may or may not have succeeded — we cannot determine this programmatically because UPS does not support query-by-custom-reference. Mark as `needs_review` (never auto-retry — prevents duplicate shipments). Emit a recovery report with the idempotency key so the operator can check UPS Quantum View or shipping history.
+   - **Tier 3 (UPS lookup fails):** Network or API error during recovery. Leave as `in_flight` for manual resolution on next attempt.
+4. **Labels are promoted BEFORE the DB commit, not after.** Write to `labels/staging/{job_id}/{row}.png`, then `os.rename()` to final path, then commit the DB row with the final path. This ensures: if crash occurs after promote but before commit, the label exists at its final location and the in-flight row will be recovered normally. Startup cleanup only removes staging files for job directories that have no `in_flight` or `needs_review` rows.
 5. **Write-back uses a durable queue table.** Each successful row writes a `WriteBackTask` row to a new `write_back_queue` table. A background worker processes the queue. Partial failures are retried independently per row.
+6. **`needs_review` is a terminal status for safety.** Rows marked `needs_review` during crash recovery are never auto-retried. They require operator action (void duplicate at UPS or manually complete). The `get_job_status` tool reports `needs_review` count.
 
 ---
 
@@ -2016,9 +2020,14 @@ class TestRowStatusInFlight:
         assert hasattr(RowStatus, "in_flight")
         assert RowStatus.in_flight.value == "in_flight"
 
+    def test_needs_review_status_exists(self):
+        assert hasattr(RowStatus, "needs_review")
+        assert RowStatus.needs_review.value == "needs_review"
+
     def test_valid_status_transitions(self):
         """pending → in_flight → completed/failed is valid.
-        in_flight → pending is valid (retry reset).
+        in_flight → needs_review is valid (crash recovery, ambiguous).
+        in_flight → pending is NOT valid (never auto-retry ambiguous rows).
         pending → completed directly is NOT valid (must go through in_flight)."""
 ```
 
@@ -2043,6 +2052,7 @@ class RowStatus(str, Enum):
     completed = "completed"
     failed = "failed"
     skipped = "skipped"
+    needs_review = "needs_review"  # NEW: crash recovery — operator must resolve
 ```
 
 Add columns to `JobRow`:
@@ -2058,16 +2068,48 @@ ups_transaction_id: Mapped[Optional[str]] = mapped_column(
 
 Add index: `Index("idx_job_rows_idempotency", "idempotency_key")`
 
-**Step 4: Run tests**
+Also fix the `JobRow` docstring — change `row_checksum: SHA-256 hash` to `row_checksum: MD5 hash` (matches actual `core.py:211` implementation which uses `hashlib.md5`).
+
+**Step 4: Add schema migration for existing databases**
+
+In `src/db/connection.py`, add to the `row_migrations` list (after the existing `charge_breakdown` entry):
+
+```python
+    # Phase 8: Execution determinism columns
+    (
+        "idempotency_key",
+        "ALTER TABLE job_rows ADD COLUMN idempotency_key VARCHAR(200)",
+    ),
+    (
+        "ups_transaction_id",
+        "ALTER TABLE job_rows ADD COLUMN ups_transaction_id VARCHAR(50)",
+    ),
+```
+
+After the row migrations loop, add idempotency index creation:
+
+```python
+# Add idempotency index if column was just created
+if "idempotency_key" not in existing_rows:
+    try:
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS idx_job_rows_idempotency "
+            "ON job_rows (idempotency_key)"
+        ))
+    except OperationalError:
+        pass  # Index already exists
+```
+
+**Step 5: Run tests**
 
 Run: `pytest tests/db/test_row_inflight_status.py -v`
 Expected: All PASS.
 
-**Step 5: Commit**
+**Step 6: Commit**
 
 ```bash
-git add src/db/models.py tests/db/test_row_inflight_status.py
-git commit -m "feat: add in_flight status and idempotency columns to JobRow"
+git add src/db/models.py src/db/connection.py tests/db/test_row_inflight_status.py
+git commit -m "feat: add in_flight status, idempotency columns, and schema migration"
 ```
 
 ---
@@ -2124,7 +2166,8 @@ def generate_idempotency_key(job_id: str, row_number: int, row_checksum: str) ->
     Args:
         job_id: UUID of the parent job.
         row_number: 1-based row number in the job.
-        row_checksum: MD5 hash of the row's order_data JSON.
+        row_checksum: MD5 hash of the row's order_data JSON (per core.py:211;
+            note: models.py docstring incorrectly says SHA-256 — fix during Task 21).
 
     Returns:
         Idempotency key string: '{job_id}:{row_number}:{row_checksum}'.
@@ -2273,18 +2316,23 @@ async def _process_row(row: Any) -> None:
             label_path = self._save_label_staged(...)  # staging dir
             cost_cents = ...
 
-            # PHASE 2: Mark completed AFTER UPS success
+            # PHASE 2: Promote label FIRST, then commit
+            # Order matters for crash safety: if we commit first and crash
+            # before promote, startup cleanup deletes the staging file →
+            # completed row with no label. By promoting first:
+            # - Crash after promote but before commit: label at final path,
+            #   row still in_flight → recovery handles normally
+            # - Crash after commit: both label and DB are consistent
+            final_label_path = self._promote_label(label_path)
+
             async with db_lock:
                 row.tracking_number = tracking_number
-                row.label_path = label_path
+                row.label_path = final_label_path  # store FINAL path, not staging
                 row.cost_cents = cost_cents
                 row.ups_transaction_id = result.get("shipmentIdentificationNumber")
                 row.status = "completed"
                 row.processed_at = datetime.now(UTC).isoformat()
                 self._db.commit()
-
-                # Promote label from staging to final
-                self._promote_label(label_path)
 
                 # ... progress emission ...
 
@@ -2332,8 +2380,13 @@ class TestLabelStaging:
     def test_crash_before_promote_leaves_orphan_in_staging(self):
         """If promote never runs, staging file exists but final path does not."""
 
-    def test_cleanup_staging_removes_orphans(self):
-        """cleanup_staging() called at startup removes old staging dirs."""
+    def test_cleanup_staging_skips_jobs_with_in_flight_rows(self):
+        """cleanup_staging() does NOT delete staging files for jobs that have
+        in_flight or needs_review rows — those labels may be needed for recovery."""
+
+    def test_cleanup_staging_removes_orphans_for_completed_jobs(self):
+        """cleanup_staging() removes staging dirs only for jobs where all
+        rows are completed, failed, or skipped (no in_flight/needs_review)."""
 ```
 
 **Step 2: Run test to verify it fails**
@@ -2359,18 +2412,41 @@ def _promote_label(self, staging_path: str) -> str:
     return str(final_path)
 
 @staticmethod
-def cleanup_staging() -> int:
-    """Remove orphaned staging files. Called at startup."""
+def cleanup_staging(db) -> int:
+    """Remove orphaned staging files. Called at startup.
+
+    IMPORTANT: Only removes staging files for jobs where NO rows are
+    in_flight or needs_review. Those staging files may contain labels
+    for shipments that need recovery/operator resolution.
+
+    Args:
+        db: Database session to check row statuses.
+    """
     staging_root = LABELS_DIR / "staging"
     if not staging_root.exists():
         return 0
+
+    # Find job IDs that still have unresolved rows
+    from src.services.job_service import JobService
+    js = JobService(db)
+
     count = 0
     for job_dir in staging_root.iterdir():
-        if job_dir.is_dir():
-            for f in job_dir.iterdir():
-                f.unlink()
-                count += 1
-            job_dir.rmdir()
+        if not job_dir.is_dir():
+            continue
+        job_id = job_dir.name
+        # Check if this job has any in_flight or needs_review rows
+        rows = js.get_rows(job_id)
+        has_unresolved = any(
+            r.status in ("in_flight", "needs_review") for r in rows
+        )
+        if has_unresolved:
+            continue  # Preserve staging files for recovery
+
+        for f in job_dir.iterdir():
+            f.unlink()
+            count += 1
+        job_dir.rmdir()
     return count
 ```
 
@@ -2401,18 +2477,32 @@ class TestInFlightRecovery:
     def test_recovery_detects_in_flight_rows(self):
         """check_interrupted_jobs includes in_flight row count."""
 
-    def test_resume_queries_ups_for_in_flight_rows(self):
-        """On resume, each in_flight row triggers track_package with
-        the idempotency_key. If UPS returns a tracking number,
-        the row is completed without re-creating the shipment."""
+    def test_recovery_tier1_verifies_via_ups_transaction_id(self):
+        """Row has ups_transaction_id (tracking number stored before crash).
+        Recovery calls track_package(tracking_number=ups_transaction_id).
+        If UPS confirms → row marked completed."""
 
-    def test_resume_retries_in_flight_row_when_ups_has_no_record(self):
-        """If track_package returns no result for the idempotency_key,
-        the row is reset to pending for re-processing."""
+    def test_recovery_tier1_marks_needs_review_if_ups_rejects(self):
+        """Row has ups_transaction_id but track_package says invalid.
+        Row marked needs_review (do not auto-retry — may be a partial state)."""
 
-    def test_resume_handles_ups_lookup_failure_gracefully(self):
+    def test_recovery_tier2_marks_needs_review_when_no_tracking_info(self):
+        """Row is in_flight but has no ups_transaction_id.
+        Cannot determine if UPS created shipment (UPS doesn't support
+        query-by-custom-reference). Row marked needs_review.
+        Recovery report includes idempotency_key for operator lookup."""
+
+    def test_recovery_tier2_never_auto_retries(self):
+        """Rows without tracking info are NEVER reset to pending.
+        Auto-retry would risk duplicate shipments."""
+
+    def test_recovery_tier3_leaves_in_flight_on_lookup_failure(self):
         """If track_package fails (network error), the row stays in_flight
-        and recovery reports it for manual resolution."""
+        for resolution on next startup attempt."""
+
+    def test_recovery_report_includes_all_unresolved_rows(self):
+        """Recovery returns structured report with recovered, needs_review,
+        and unresolved counts plus per-row details for operator action."""
 ```
 
 **Step 2: Run test to verify it fails**
@@ -2424,46 +2514,101 @@ Add `recover_in_flight_rows()` to `batch_engine.py`:
 ```python
 async def recover_in_flight_rows(
     self, job_id: str, rows: list[Any],
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Recover rows stuck in 'in_flight' state after a crash.
 
-    For each in_flight row:
-    1. Query UPS track_package by idempotency_key
-    2. If tracking found → mark completed (shipment already created)
-    3. If no tracking → reset to pending (safe to retry)
-    4. If lookup fails → leave in_flight (manual resolution)
+    Three-tier recovery based on available state:
+
+    Tier 1 (has ups_transaction_id): UPS tracking number was stored before
+        crash. Call track_package(tracking_number=...) to verify. If valid →
+        complete. If invalid → needs_review.
+
+    Tier 2 (no tracking info): Cannot determine if UPS created shipment.
+        UPS does not support query-by-custom-reference, so we CANNOT
+        programmatically check. Mark needs_review (never auto-retry —
+        prevents duplicate shipments). Include idempotency_key in report
+        for operator to check UPS Quantum View.
+
+    Tier 3 (UPS lookup fails): Network/API error during verification.
+        Leave in_flight for next startup attempt.
 
     Returns:
-        {"recovered": N, "reset": N, "unresolved": N}
+        {
+            "recovered": N,       # Tier 1 success — verified at UPS
+            "needs_review": N,    # Tier 1 invalid + all Tier 2 rows
+            "unresolved": N,      # Tier 3 — left in_flight
+            "details": [          # Per-row report for operator
+                {"row_number": N, "action": "...", "idempotency_key": "..."},
+            ],
+        }
     """
     in_flight = [r for r in rows if r.status == "in_flight"]
-    recovered = reset = unresolved = 0
+    recovered = needs_review = unresolved = 0
+    details: list[dict[str, Any]] = []
 
     for row in in_flight:
-        try:
-            result = await self._ups.track_package(
-                inquiry_number=row.idempotency_key,
-            )
-            if result and result.get("trackingNumber"):
-                # Shipment exists at UPS — complete locally
-                row.tracking_number = result["trackingNumber"]
-                row.status = "completed"
-                row.processed_at = datetime.now(UTC).isoformat()
-                self._db.commit()
-                recovered += 1
-            else:
-                # No record at UPS — safe to retry
-                row.status = "pending"
-                row.idempotency_key = None
-                self._db.commit()
-                reset += 1
-        except Exception:
-            unresolved += 1
+        if row.ups_transaction_id:
+            # Tier 1: We have a UPS tracking number — verify it
+            try:
+                result = await self._ups.track_package(
+                    tracking_number=row.ups_transaction_id,
+                )
+                if result and result.get("trackingNumber"):
+                    # Shipment confirmed at UPS — complete locally
+                    row.tracking_number = row.ups_transaction_id
+                    row.status = "completed"
+                    row.processed_at = datetime.now(UTC).isoformat()
+                    self._db.commit()
+                    recovered += 1
+                    details.append({
+                        "row_number": row.row_number,
+                        "action": "recovered",
+                        "tracking_number": row.ups_transaction_id,
+                    })
+                else:
+                    # UPS doesn't recognize this tracking number
+                    row.status = "needs_review"
+                    self._db.commit()
+                    needs_review += 1
+                    details.append({
+                        "row_number": row.row_number,
+                        "action": "needs_review",
+                        "reason": "UPS returned invalid for stored transaction ID",
+                        "ups_transaction_id": row.ups_transaction_id,
+                        "idempotency_key": row.idempotency_key,
+                    })
+            except Exception as e:
+                # Tier 3: Lookup failed — leave in_flight
+                unresolved += 1
+                details.append({
+                    "row_number": row.row_number,
+                    "action": "unresolved",
+                    "reason": f"UPS lookup failed: {e}",
+                    "idempotency_key": row.idempotency_key,
+                })
+        else:
+            # Tier 2: No tracking info — ambiguous, mark for operator
+            row.status = "needs_review"
+            self._db.commit()
+            needs_review += 1
+            details.append({
+                "row_number": row.row_number,
+                "action": "needs_review",
+                "reason": "No UPS transaction ID — cannot verify programmatically",
+                "idempotency_key": row.idempotency_key,
+            })
 
-    return {"recovered": recovered, "reset": reset, "unresolved": unresolved}
+    return {
+        "recovered": recovered,
+        "needs_review": needs_review,
+        "unresolved": unresolved,
+        "details": details,
+    }
 ```
 
-Update `recovery.py` `check_interrupted_jobs()` to include `in_flight_count` in `InterruptedJobInfo`.
+Update `recovery.py`:
+- `check_interrupted_jobs()`: include `in_flight_count` and `needs_review_count` in `InterruptedJobInfo`.
+- Add `RecoveryChoice.REVIEW` option for operator to inspect `needs_review` rows before resuming.
 
 **Step 4: Run tests**
 
@@ -2525,6 +2670,39 @@ class WriteBackTask(Base):
     retry_count: Mapped[int] = mapped_column(default=0)
     max_retries: Mapped[int] = mapped_column(default=3)
     created_at: Mapped[str] = mapped_column(String(50), default=utc_now_iso)
+
+    # Prevent duplicate enqueue — same row can only have one active task
+    __table_args__ = (
+        UniqueConstraint("job_id", "row_number", name="uq_write_back_job_row"),
+        Index("idx_write_back_status", "status"),
+    )
+```
+
+**Schema migration for existing databases:** In `src/db/connection.py`, after the row migrations section, add table creation:
+
+```python
+# Create write_back_queue table if it doesn't exist (Phase 8)
+try:
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS write_back_queue (
+            id VARCHAR(36) PRIMARY KEY,
+            job_id VARCHAR(36) NOT NULL REFERENCES jobs(id),
+            row_number INTEGER NOT NULL,
+            tracking_number VARCHAR(50) NOT NULL,
+            shipped_at VARCHAR(50) NOT NULL,
+            status VARCHAR(20) DEFAULT 'pending',
+            retry_count INTEGER DEFAULT 0,
+            max_retries INTEGER DEFAULT 3,
+            created_at VARCHAR(50),
+            UNIQUE(job_id, row_number)
+        )
+    """))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_write_back_status "
+        "ON write_back_queue (status)"
+    ))
+except OperationalError:
+    pass  # Table already exists
 ```
 
 Create `src/services/write_back_worker.py`:
@@ -2571,11 +2749,19 @@ git commit -m "feat: add durable write-back queue with per-row retry"
 """Tests for startup recovery hooks."""
 
 class TestStartupRecovery:
-    def test_lifespan_calls_cleanup_staging(self):
-        """On startup, BatchEngine.cleanup_staging() removes orphaned labels."""
+    def test_lifespan_recovers_in_flight_rows_before_cleanup(self):
+        """On startup, recover_in_flight_rows() runs BEFORE cleanup_staging().
+        This ensures staging labels for unresolved rows are preserved."""
+
+    def test_lifespan_calls_cleanup_staging_with_db(self):
+        """cleanup_staging(db) skips jobs with in_flight/needs_review rows."""
 
     def test_lifespan_calls_process_write_back_queue(self):
         """On startup, pending write-back tasks from crashed sessions are processed."""
+
+    def test_lifespan_logs_recovery_report(self):
+        """If recovery finds needs_review rows, a warning is logged with
+        per-row details for operator action."""
 ```
 
 **Step 2: Run test to verify it fails**
@@ -2585,18 +2771,49 @@ class TestStartupRecovery:
 In `src/api/main.py`, add to the existing lifespan `async with` block:
 
 ```python
-# Execution determinism: cleanup and recovery
+# Execution determinism: recovery and cleanup
 from src.services.batch_engine import BatchEngine
-orphans = BatchEngine.cleanup_staging()
-if orphans:
-    logger.info("Cleaned up %d orphaned staging labels", orphans)
-
-# Process any pending write-back tasks from crashed sessions
 from src.services.write_back_worker import process_write_back_queue
+
 with get_db_context() as db:
+    # 1. Recover in-flight rows from crashed sessions
+    #    Must run BEFORE staging cleanup — recovery may need staging labels
+    from src.services.job_service import JobService
+    js = JobService(db)
+    interrupted = js.get_jobs_by_status(["running", "paused"])
+    for job in interrupted:
+        rows = js.get_rows(job.id)
+        in_flight = [r for r in rows if r.status == "in_flight"]
+        if in_flight:
+            ups = await get_ups_gateway()
+            engine = BatchEngine(db, ups)
+            recovery_result = await engine.recover_in_flight_rows(job.id, rows)
+            logger.info(
+                "Job %s recovery: %d recovered, %d needs_review, %d unresolved",
+                job.id,
+                recovery_result["recovered"],
+                recovery_result["needs_review"],
+                recovery_result["unresolved"],
+            )
+            if recovery_result["details"]:
+                logger.warning(
+                    "Rows requiring operator review for job %s: %s",
+                    job.id,
+                    recovery_result["details"],
+                )
+
+    # 2. Clean up orphaned staging labels (skips jobs with in_flight/needs_review)
+    orphans = BatchEngine.cleanup_staging(db)
+    if orphans:
+        logger.info("Cleaned up %d orphaned staging labels", orphans)
+
+    # 3. Process pending write-back tasks from crashed sessions
     wb_result = await process_write_back_queue(db, await get_data_gateway())
     if wb_result["processed"] > 0:
-        logger.info("Processed %d pending write-back tasks on startup", wb_result["processed"])
+        logger.info(
+            "Processed %d pending write-back tasks on startup",
+            wb_result["processed"],
+        )
 ```
 
 **Step 4: Run tests**
@@ -2625,14 +2842,24 @@ and replay-safe. This is the release gate for Phase 8.
 """
 
 class TestCrashSafeExecution:
-    def test_crash_after_ups_call_does_not_duplicate_on_retry(self):
-        """Simulate: create_shipment succeeds → crash before DB commit.
-        On retry: row is in_flight, UPS lookup finds tracking → row completed
-        without a second create_shipment call."""
+    def test_crash_after_ups_call_with_stored_tracking_recovers(self):
+        """Simulate: create_shipment succeeds → ups_transaction_id stored →
+        crash before final commit. On recovery: Tier 1 — track_package
+        verifies tracking number → row marked completed. No duplicate."""
 
-    def test_crash_before_ups_call_retries_cleanly(self):
+    def test_crash_after_ups_call_without_tracking_marks_needs_review(self):
+        """Simulate: create_shipment succeeds → crash before tracking stored.
+        On recovery: Tier 2 — no ups_transaction_id → row marked needs_review.
+        Never auto-retried (prevents duplicate shipments)."""
+
+    def test_crash_before_ups_call_marks_needs_review(self):
         """Simulate: row set to in_flight → crash before create_shipment.
-        On retry: UPS lookup finds nothing → row reset to pending → normal execution."""
+        On recovery: Tier 2 — no tracking info → needs_review (cannot
+        determine if UPS received the request or not)."""
+
+    def test_needs_review_rows_never_auto_retried(self):
+        """needs_review is terminal. Resume execution skips these rows.
+        Operator must explicitly resolve (void at UPS or manual complete)."""
 
     def test_concurrent_rows_maintain_independent_state(self):
         """With BATCH_CONCURRENCY=5, each row has independent in_flight state.
@@ -2646,11 +2873,19 @@ class TestWriteBackDurability:
         """Row 3 write-back fails → rows 1,2,4,5 succeed → row 3 retried on next cycle."""
 
 class TestLabelAtomicity:
-    def test_label_only_at_final_path_after_commit(self):
-        """Before DB commit: label in staging only. After commit: label at final path."""
+    def test_label_promoted_before_db_commit(self):
+        """Label is moved from staging to final path BEFORE the DB commit.
+        After promote + commit: label at final path, row.label_path = final path."""
 
-    def test_orphaned_staging_labels_cleaned_on_startup(self):
-        """Staging labels from crashed sessions are removed on next startup."""
+    def test_crash_after_promote_before_commit_preserves_label(self):
+        """If crash occurs after label promote but before DB commit:
+        label exists at final path, row is still in_flight.
+        Recovery handles the row; label is NOT lost."""
+
+    def test_orphaned_staging_labels_cleaned_only_for_resolved_jobs(self):
+        """Staging labels are removed only for jobs where all rows are
+        completed/failed/skipped. Jobs with in_flight/needs_review rows
+        keep their staging files for recovery."""
 ```
 
 **Step 2: Run tests**
@@ -2726,11 +2961,16 @@ After all tasks are complete, verify:
 - [ ] `pytest tests/api/test_startup_recovery.py -v` — all pass
 - [ ] `pytest tests/integration/test_execution_determinism.py -v` — all pass
 - [ ] No duplicate shipments on crash-retry (tested with injected failures)
-- [ ] In-flight rows recovered on process restart via UPS tracking lookup
-- [ ] Idempotency key included in UPS payload as `TransactionReference`
-- [ ] Labels only at final path after DB commit (staging dir for crash safety)
+- [ ] In-flight rows with `ups_transaction_id` recovered via `track_package(tracking_number=...)` (Tier 1)
+- [ ] In-flight rows without tracking info marked `needs_review` — never auto-retried (Tier 2)
+- [ ] Recovery report includes per-row details with idempotency keys for operator action
+- [ ] `needs_review` status is terminal — requires explicit operator resolution
+- [ ] Idempotency key included in UPS payload as `TransactionReference.CustomerContext` (audit only, not dedup)
+- [ ] Labels promoted to final path BEFORE DB commit (staging → rename → commit)
 - [ ] Write-back survives partial completion via durable queue
-- [ ] Orphaned staging labels cleaned on startup
+- [ ] Orphaned staging labels cleaned on startup (only for jobs without in_flight/needs_review rows)
+- [ ] Schema migration adds `idempotency_key`, `ups_transaction_id`, `needs_review` columns to existing DBs
+- [ ] Schema migration creates `write_back_queue` table on existing DBs
 
 ---
 
