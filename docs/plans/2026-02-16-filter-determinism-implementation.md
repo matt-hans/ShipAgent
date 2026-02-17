@@ -1990,7 +1990,7 @@ A crash, network split, or process kill between lines 408 and 458 creates a ship
 ### Design Decisions
 
 1. **UPS `TransactionReference` is advisory-only** — UPS does not deduplicate based on it, and `track_package` only accepts UPS tracking numbers (not custom references). We use `TransactionReference.CustomerContext` strictly for post-hoc audit correlation in UPS Quantum View, not for programmatic dedup. Our dedup layer is local DB state only.
-2. **In-flight state is local-first.** Before calling UPS, write `in_flight` status + idempotency key to DB and commit. After UPS responds, update to `completed`/`failed` and commit. The in-flight window is bounded to the UPS API call duration only.
+2. **In-flight state is local-first.** Before calling UPS, write `in_flight` status + idempotency key to DB and commit. After UPS responds, update to `completed`/`failed`/`needs_review` and commit. The in-flight window is bounded to the UPS API call duration only.
 3. **Recovery uses a three-tier strategy based on available state.** When a row is `in_flight` on resume:
    - **Tier 1 (has `ups_transaction_id`):** The UPS tracking number was stored before crash. Call `track_package(tracking_number=ups_transaction_id)` to verify the shipment still exists at UPS. If valid → mark `completed`. If invalid → mark `needs_review`.
    - **Tier 2 (no tracking info):** The UPS call may or may not have succeeded — we cannot determine this programmatically because UPS does not support query-by-custom-reference. Mark as `needs_review` (never auto-retry — prevents duplicate shipments). Emit a recovery report with the idempotency key so the operator can check UPS Quantum View or shipping history.
@@ -2266,9 +2266,23 @@ class TestInFlightStateMachine:
         it 'failed' — not leave it pending (which would cause ambiguous
         retry behavior)."""
 
-    def test_ups_rejection_marks_row_failed(self):
-        """If UPS create_shipment raises UPSServiceError (rejection),
-        row is marked failed. This is pre-side-effect — safe to retry."""
+    def test_ups_hard_rejection_marks_row_failed(self):
+        """UPSServiceError (translated from MCPToolError) means UPS processed
+        the request and returned isError. Hard rejection — no shipment created.
+        Row marked 'failed', safe to retry."""
+
+    def test_mcp_connection_error_marks_row_failed(self):
+        """MCPConnectionError means we couldn't reach the MCP server at all.
+        No side effect possible. Row marked 'failed', safe to retry."""
+
+    def test_transport_timeout_marks_needs_review(self):
+        """Generic Exception (TimeoutError, ClosedResourceError, etc.) from
+        create_shipment means the request MAY have reached UPS. Ambiguous —
+        row marked 'needs_review', never 'failed'."""
+
+    def test_transport_cancel_marks_needs_review(self):
+        """asyncio.CancelledError during create_shipment is ambiguous —
+        the request may have been sent. Row marked 'needs_review'."""
 
     def test_post_ups_failure_marks_needs_review_not_failed(self):
         """If UPS call succeeds but label staging/promote/commit fails,
@@ -2305,10 +2319,12 @@ With the two-phase commit:
          ├─ parse/validate/build error → failed (pre-side-effect, safe to retry)
          └─ success → in_flight (commit 1: set idempotency_key)
                        → create_shipment(idempotency_key)
-                          ├─ UPS rejects → failed (commit 2a: safe to retry)
+                          ├─ UPSServiceError (hard reject) → failed (safe to retry)
+                          ├─ MCPConnectionError (no reach) → failed (safe to retry)
+                          ├─ transport timeout/cancel (ambiguous) → needs_review
                           └─ UPS accepts → post-side-effect zone
-                              ├─ promote + commit succeeds → completed (commit 2b)
-                              └─ any local error → needs_review (commit 2c: never failed)
+                              ├─ promote + commit succeeds → completed
+                              └─ any local error → needs_review (never failed)
 ```
 
 Implementation:
@@ -2345,16 +2361,54 @@ async def _process_row(row: Any) -> None:
             # Everything BEFORE this line is pre-side-effect (safe to mark failed).
             # Everything AFTER this line is post-side-effect (UPS may have
             # created a shipment — MUST use needs_review, never failed).
+            #
+            # Error taxonomy (from ups_mcp_client.py + mcp_client.py):
+            #   UPSServiceError  → translated from MCPToolError → UPS received
+            #       the request and returned isError=True. Hard rejection.
+            #       No shipment created. Safe to mark 'failed'.
+            #   MCPConnectionError → could not reach MCP server at all.
+            #       No side effect. Safe to mark 'failed'.
+            #   Other Exception (transport: ClosedResourceError, TimeoutError,
+            #       asyncio.CancelledError, etc.) → for mutating tools,
+            #       ups_mcp_client._call() does NOT retry and re-raises.
+            #       Request MAY have reached UPS. AMBIGUOUS — must use
+            #       'needs_review', never 'failed'.
             try:
                 result = await self._ups.create_shipment(request_body=api_payload)
                 ups_call_succeeded = True
-            except (UPSServiceError, Exception) as e:
-                # UPS rejected the request — no shipment was created.
-                # Safe to mark failed (retryable without duplicate risk).
+            except UPSServiceError as e:
+                # Hard rejection — UPS processed request and returned error.
+                # No shipment was created. Safe to mark failed.
                 async with db_lock:
                     row.status = "failed"
-                    row.error_code = getattr(e, "code", "E-3005")
+                    row.error_code = e.code
                     row.error_message = str(e)
+                    self._db.commit()
+                raise  # re-raise to skip Phase 2
+            except MCPConnectionError as e:
+                # Could not reach the MCP server at all.
+                # No side effect. Safe to mark failed.
+                async with db_lock:
+                    row.status = "failed"
+                    row.error_code = "E-3001"
+                    row.error_message = str(e)
+                    self._db.commit()
+                raise  # re-raise to skip Phase 2
+            except Exception as e:
+                # Ambiguous transport failure (timeout, closed connection,
+                # cancelled, etc.). The request MAY have reached UPS and a
+                # shipment MAY exist. Mark needs_review — NEVER failed.
+                logger.error(
+                    "Ambiguous transport failure for row %d (job %s): %s [%s]. "
+                    "UPS may have created a shipment.",
+                    row.row_number, job_id, e, type(e).__name__,
+                )
+                async with db_lock:
+                    row.status = "needs_review"
+                    row.error_message = (
+                        f"Ambiguous transport error during create_shipment: "
+                        f"{type(e).__name__}: {e}"
+                    )
                     self._db.commit()
                 raise  # re-raise to skip Phase 2
 
@@ -2407,17 +2461,20 @@ async def _process_row(row: Any) -> None:
                         )
                     self._db.commit()
 
-        except (UPSServiceError, ValueError, Exception) as e:
+        except (UPSServiceError, MCPConnectionError, ValueError, Exception) as e:
             # Reaches here for:
             #   a) Pre-Phase-1 errors (parse, validation, payload build)
             #      — row is still 'pending', no UPS side effect
             #   b) Phase 1 commit failure — row may be 'pending' or 'in_flight'
-            #   c) Re-raised UPS call rejection — row already marked 'failed'
-            #      by the inner handler above
+            #   c) Re-raised UPS hard rejection (UPSServiceError) — row
+            #      already marked 'failed' by inner handler
+            #   d) Re-raised MCPConnectionError — row already marked 'failed'
+            #   e) Re-raised ambiguous transport error — row already marked
+            #      'needs_review' by inner handler
             #
-            # In all pre-UPS cases, mark 'failed' regardless of current
-            # status (pending or in_flight). This is safe because no
-            # shipment was created at UPS.
+            # Only mark 'failed' for pre-UPS cases where inner handlers
+            # haven't already set a terminal status. Check both
+            # ups_call_succeeded AND current row status to be safe.
             if not ups_call_succeeded:
                 async with db_lock:
                     if row.status in ("pending", "in_flight"):
@@ -3009,6 +3066,117 @@ git commit -m "test: add execution determinism acceptance tests (Phase 8 release
 
 ---
 
+### Task 30: Wire `needs_review` Into Job Status Reporting
+
+**Files:**
+- Modify: `src/services/job_service.py` (`get_job_summary`)
+- Modify: `src/orchestrator/agent/tools/pipeline.py` (`get_job_status_tool` — verify it passes through new field)
+- Create: `tests/services/test_job_summary_needs_review.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for needs_review count in job summary."""
+
+from src.db.models import RowStatus
+
+
+class TestJobSummaryNeedsReview:
+    def test_summary_includes_needs_review_count(self, db_with_job):
+        """get_job_summary() returns needs_review_count field."""
+        # Setup: create job with 1 completed, 1 failed, 1 needs_review row
+        svc = JobService(db_with_job)
+        summary = svc.get_job_summary(job_id)
+        assert "needs_review_count" in summary
+        assert summary["needs_review_count"] == 1
+
+    def test_summary_includes_in_flight_count(self, db_with_job):
+        """get_job_summary() returns in_flight_count field."""
+        svc = JobService(db_with_job)
+        summary = svc.get_job_summary(job_id)
+        assert "in_flight_count" in summary
+
+    def test_pending_count_excludes_needs_review_and_in_flight(self, db_with_job):
+        """pending_count = total_rows - processed - needs_review - in_flight."""
+        svc = JobService(db_with_job)
+        summary = svc.get_job_summary(job_id)
+        expected_pending = (
+            summary["total_rows"]
+            - summary["processed_rows"]
+            - summary["needs_review_count"]
+            - summary["in_flight_count"]
+        )
+        assert summary["pending_count"] == expected_pending
+
+    def test_get_job_status_tool_exposes_needs_review(self):
+        """get_job_status_tool returns needs_review_count from summary."""
+```
+
+**Step 2: Run test to verify it fails**
+
+Run: `pytest tests/services/test_job_summary_needs_review.py -v`
+Expected: FAIL — `needs_review_count` not in summary dict.
+
+**Step 3: Implement**
+
+In `src/services/job_service.py`, update `get_job_summary()` (around line 599-622):
+
+```python
+    # Calculate counts by status
+    needs_review_count = (
+        self.db.query(func.count(JobRow.id))
+        .filter(JobRow.job_id == job_id)
+        .filter(JobRow.status == "needs_review")
+        .scalar()
+    ) or 0
+
+    in_flight_count = (
+        self.db.query(func.count(JobRow.id))
+        .filter(JobRow.job_id == job_id)
+        .filter(JobRow.status == "in_flight")
+        .scalar()
+    ) or 0
+
+    # pending_count must exclude needs_review and in_flight
+    pending_count = (
+        job.total_rows
+        - job.processed_rows
+        - needs_review_count
+        - in_flight_count
+    )
+
+    return {
+        "total_rows": job.total_rows,
+        "processed_rows": job.processed_rows,
+        "successful_rows": job.successful_rows,
+        "failed_rows": job.failed_rows,
+        "pending_count": pending_count,
+        "needs_review_count": needs_review_count,
+        "in_flight_count": in_flight_count,
+        "total_cost_cents": total_cost_cents,
+        "status": job.status,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+    }
+```
+
+`get_job_status_tool` in `pipeline.py` already calls `svc.get_job_summary()` and returns the full dict via `_ok(summary)`, so the new fields are automatically exposed to the agent.
+
+**Step 4: Run tests**
+
+Run: `pytest tests/services/test_job_summary_needs_review.py -v`
+Expected: All PASS.
+
+**Step 5: Commit**
+
+```bash
+git add src/services/job_service.py tests/services/test_job_summary_needs_review.py
+git commit -m "feat: expose needs_review_count and in_flight_count in job summary"
+```
+
+---
+
 ## Verification Checklist
 
 After all tasks are complete, verify:
@@ -3068,12 +3236,17 @@ After all tasks are complete, verify:
 - [ ] `pytest tests/api/test_startup_recovery.py -v` — all pass
 - [ ] `pytest tests/integration/test_execution_determinism.py -v` — all pass
 - [ ] No duplicate shipments on crash-retry (tested with injected failures)
+- [ ] UPS hard rejection (`UPSServiceError`) → row `failed` (safe to retry)
+- [ ] UPS unreachable (`MCPConnectionError`) → row `failed` (safe to retry)
+- [ ] Ambiguous transport error (timeout, cancel, closed) → row `needs_review` (never `failed`)
 - [ ] In-flight rows with `ups_transaction_id` recovered via `track_package(tracking_number=...)` (Tier 1)
 - [ ] In-flight rows without tracking info marked `needs_review` — never auto-retried (Tier 2)
 - [ ] Recovery report includes per-row details with idempotency keys for operator action
 - [ ] `needs_review` status is terminal — requires explicit operator resolution
 - [ ] Idempotency key included in UPS payload as `TransactionReference.CustomerContext` (audit only, not dedup)
 - [ ] Labels promoted to final path BEFORE DB commit (staging → rename → commit)
+- [ ] `get_job_summary()` includes `needs_review_count` and `in_flight_count` fields
+- [ ] `pytest tests/services/test_job_summary_needs_review.py -v` — all pass
 - [ ] Write-back survives partial completion via durable queue
 - [ ] Orphaned staging labels cleaned on startup (only for jobs without in_flight/needs_review rows)
 - [ ] Schema migration adds `idempotency_key` and `ups_transaction_id` columns to existing `job_rows` tables (note: `needs_review` and `in_flight` are new values on the existing `status` column, not new columns)
@@ -3128,4 +3301,5 @@ Phase 8 (Execution Determinism)
   Task 27: Write-back queue + worker ◄───── Task 24
   Task 28: Startup recovery wiring ◄──────── Task 25, 26, 27
   Task 29: Execution determinism acceptance tests (release gate)
+  Task 30: Job status reporting for needs_review ◄── Task 21
 ```
