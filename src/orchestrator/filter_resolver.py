@@ -147,8 +147,9 @@ def resolve_filter_intent(
     unresolved_terms: list[UnresolvedTerm] = []
     child_statuses: list[ResolutionStatus] = []
 
-    # Check if we have a matching confirmed token
-    confirmed_spec = _find_confirmed_spec(session_confirmations, schema_signature)
+    # NOTE: Confirmation matching is done per-term inside _expand_tier_b
+    # (via _is_confirmed with semantic_term). There is NO global confirmation
+    # override — a confirmed Tier-B term does not auto-resolve other terms.
 
     resolved_root = _resolve_group(
         intent.root,
@@ -161,15 +162,8 @@ def resolve_filter_intent(
         child_statuses,
     )
 
-    # If we had a confirmed spec, mark all as RESOLVED
-    if confirmed_spec is not None:
-        # Use the confirmed spec's resolved data
-        status = ResolutionStatus.RESOLVED
-        pending_confirmations = []
-        unresolved_terms = []
-    else:
-        # Determine overall status from child statuses
-        status = _worst_status(child_statuses)
+    # Determine overall status from child statuses
+    status = _worst_status(child_statuses)
 
     # Canonicalize the resolved tree
     canonicalized_root = _canonicalize_group(resolved_root)
@@ -596,32 +590,6 @@ def _is_confirmed(
     return False
 
 
-def _find_confirmed_spec(
-    session_confirmations: dict[str, ResolvedFilterSpec],
-    schema_signature: str,
-    semantic_term: str | None = None,
-) -> ResolvedFilterSpec | None:
-    """Find a confirmed spec matching the current schema and term.
-
-    Args:
-        session_confirmations: Prior confirmed tokens {token → confirmed spec}.
-        schema_signature: Current schema hash.
-        semantic_term: If provided, only match confirmations for this term.
-
-    Returns:
-        The confirmed spec, or None.
-    """
-    for token, confirmed in session_confirmations.items():
-        if not _validate_resolution_token(token, schema_signature):
-            continue
-        if semantic_term is not None and confirmed.pending_confirmations:
-            confirmed_terms = {pc.term for pc in confirmed.pending_confirmations}
-            if semantic_term not in confirmed_terms:
-                continue
-        return confirmed
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Suggestion generation for Tier C
 # ---------------------------------------------------------------------------
@@ -725,7 +693,7 @@ def _generate_resolution_token(
 def _validate_resolution_token(
     token: str,
     schema_signature: str,
-) -> bool:
+) -> dict | None:
     """Validate an HMAC-signed resolution token.
 
     Args:
@@ -733,7 +701,8 @@ def _validate_resolution_token(
         schema_signature: Current schema hash to validate against.
 
     Returns:
-        True if the token is valid and not expired.
+        Decoded payload dict if valid, None otherwise. Callers can
+        inspect payload fields like 'resolution_status'.
     """
     try:
         secret = _get_token_secret()
@@ -741,26 +710,29 @@ def _validate_resolution_token(
 
         # Check expiry
         if time.time() > decoded.get("expires_at", 0):
-            return False
+            return None
 
         # Check schema signature
         if decoded.get("schema_signature") != schema_signature:
-            return False
+            return None
 
         # Verify HMAC signature
         signature = decoded.pop("signature", None)
         if signature is None:
-            return False
+            return None
 
         payload_json = json.dumps(decoded, sort_keys=True)
         expected = hmac.new(
             secret.encode(), payload_json.encode(), hashlib.sha256
         ).hexdigest()
 
-        return hmac.compare_digest(signature, expected)
+        if not hmac.compare_digest(signature, expected):
+            return None
+
+        return decoded
 
     except (json.JSONDecodeError, ValueError, KeyError):
-        return False
+        return None
 
 
 # ---------------------------------------------------------------------------

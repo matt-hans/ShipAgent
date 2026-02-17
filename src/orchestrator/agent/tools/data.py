@@ -21,6 +21,7 @@ from src.orchestrator.agent.tools.core import (
 from src.orchestrator.models.filter_spec import (
     FilterCompilationError,
     FilterIntent,
+    ResolvedFilterSpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -238,6 +239,116 @@ async def resolve_filter_intent_tool(
     except Exception as e:
         logger.error("resolve_filter_intent_tool failed: %s", e)
         return _err(f"Filter resolution failed: {e}")
+
+    return _ok(resolved.model_dump())
+
+
+async def confirm_filter_interpretation_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
+    """Confirm a Tier-B filter interpretation and re-resolve to RESOLVED.
+
+    After resolve_filter_intent returns NEEDS_CONFIRMATION, the agent
+    presents the pending_confirmations to the user. Once confirmed, the
+    agent calls this tool with the resolution_token and the original
+    intent. This tool:
+    1. Validates the token is genuine NEEDS_CONFIRMATION.
+    2. Stores the confirmed spec in session cache (bridge.confirmed_resolutions).
+    3. Re-resolves the intent with confirmations to produce a RESOLVED token.
+
+    Args:
+        args: Dict with 'resolution_token' (str) and 'intent' (FilterIntent dict).
+        bridge: Event emitter bridge (required for confirmation cache).
+
+    Returns:
+        Tool response with the re-resolved RESOLVED spec.
+    """
+    from src.orchestrator.filter_resolver import (
+        _validate_resolution_token,
+        resolve_filter_intent,
+    )
+
+    resolution_token = args.get("resolution_token")
+    intent_raw = args.get("intent")
+
+    if not resolution_token:
+        return _err("resolution_token is required.")
+    if not intent_raw:
+        return _err("intent is required (same FilterIntent used for resolve_filter_intent).")
+    if bridge is None:
+        return _err("Internal error: bridge not available for confirmation caching.")
+
+    # Get schema context
+    gw = await get_data_gateway()
+    source_info = await gw.get_source_info()
+    if source_info is None:
+        return _err("No data source connected.")
+
+    columns = source_info.get("columns", [])
+    schema_columns = {col["name"] for col in columns}
+    column_types = {col["name"]: col["type"] for col in columns}
+    schema_signature = source_info.get("signature", "")
+
+    # Validate the token is genuine and NEEDS_CONFIRMATION
+    token_payload = _validate_resolution_token(resolution_token, schema_signature)
+    if token_payload is None:
+        return _err(
+            "Invalid or expired resolution token. "
+            "Re-run resolve_filter_intent to get a fresh token."
+        )
+    token_status = token_payload.get("resolution_status", "")
+    if token_status != "NEEDS_CONFIRMATION":
+        return _err(
+            f"Token has status '{token_status}', not 'NEEDS_CONFIRMATION'. "
+            "Only NEEDS_CONFIRMATION tokens can be confirmed."
+        )
+
+    # Parse intent
+    try:
+        intent = FilterIntent(**intent_raw)
+    except Exception as e:
+        return _err(f"Invalid FilterIntent structure: {e}")
+
+    # Do a first resolve to get the spec with pending confirmations
+    # (we need the spec to store in confirmed_resolutions)
+    try:
+        initial_spec = resolve_filter_intent(
+            intent=intent,
+            schema_columns=schema_columns,
+            column_types=column_types,
+            schema_signature=schema_signature,
+            session_confirmations=None,
+        )
+    except FilterCompilationError as e:
+        return _err(f"[{e.code.value}] {e.message}")
+    except Exception as e:
+        logger.error("confirm_filter_interpretation re-resolve failed: %s", e)
+        return _err(f"Re-resolution failed: {e}")
+
+    # Store confirmed spec in session cache keyed by the original token
+    bridge.confirmed_resolutions[resolution_token] = initial_spec
+
+    # Re-resolve with the confirmations now in place
+    try:
+        resolved = resolve_filter_intent(
+            intent=intent,
+            schema_columns=schema_columns,
+            column_types=column_types,
+            schema_signature=schema_signature,
+            session_confirmations=bridge.confirmed_resolutions,
+        )
+    except FilterCompilationError as e:
+        return _err(f"[{e.code.value}] {e.message}")
+    except Exception as e:
+        logger.error("confirm_filter_interpretation_tool failed: %s", e)
+        return _err(f"Confirmation re-resolution failed: {e}")
+
+    if resolved.status.value != "RESOLVED":
+        return _err(
+            f"Re-resolution produced status '{resolved.status.value}' instead of "
+            "'RESOLVED'. There may be additional unresolved terms."
+        )
 
     return _ok(resolved.model_dump())
 

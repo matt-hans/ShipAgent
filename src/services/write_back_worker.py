@@ -45,6 +45,8 @@ def enqueue_write_back(
         row_number=row_number,
         tracking_number=tracking_number,
         shipped_at=shipped_at,
+        status="pending",
+        retry_count=0,
     )
     db.add(task)
     db.commit()
@@ -150,7 +152,7 @@ async def process_write_back_queue(
             task.status = "completed"
             processed += 1
         except Exception as e:
-            task.retry_count += 1
+            task.retry_count = (task.retry_count or 0) + 1
             if task.retry_count >= MAX_RETRIES:
                 task.status = "dead_letter"
                 dead_letter += 1
