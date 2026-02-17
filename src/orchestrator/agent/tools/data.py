@@ -77,21 +77,90 @@ async def fetch_rows_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
 ) -> dict[str, Any]:
-    """Fetch rows from the connected data source with optional SQL filter.
+    """Fetch rows from the connected data source using a compiled FilterSpec.
+
+    Accepts exactly one of filter_spec or all_rows=true. Rejects where_clause.
 
     Args:
-        args: Dict with optional 'where_clause' (str) and 'limit' (int).
+        args: Dict with 'filter_spec' (dict) or 'all_rows' (bool), optional 'limit' (int).
+        bridge: Optional event emitter bridge for row caching.
 
     Returns:
-        Tool response with matched rows and count.
+        Tool response with fetch_id, row count, and sample rows.
     """
-    gw = await get_data_gateway()
-    where_clause = args.get("where_clause")
+    from src.orchestrator.filter_compiler import compile_filter_spec
+    from src.orchestrator.models.filter_spec import (
+        FilterCompilationError,
+        ResolvedFilterSpec,
+    )
+
+    # Hard cutover: reject legacy where_clause
+    if "where_clause" in args:
+        return _err(
+            "where_clause is not accepted. Use resolve_filter_intent "
+            "to create a filter_spec."
+        )
+
+    filter_spec_raw = args.get("filter_spec")
+    all_rows = bool(args.get("all_rows", False))
+
+    # Exactly one of filter_spec or all_rows must be provided
+    if filter_spec_raw and all_rows:
+        return _err(
+            "Conflicting arguments: provide filter_spec OR all_rows=true, not both."
+        )
+    if not filter_spec_raw and not all_rows:
+        return _err(
+            "Either filter_spec or all_rows=true is required. "
+            "Use resolve_filter_intent to create a filter, or set "
+            "all_rows=true to fetch everything."
+        )
+
     limit = args.get("limit", 250)
     include_rows = bool(args.get("include_rows", False))
 
+    gw = await get_data_gateway()
+
+    if filter_spec_raw:
+        # Compile FilterSpec → parameterized SQL
+        source_info = await gw.get_source_info()
+        if source_info is None:
+            return _err("No data source connected.")
+
+        columns = source_info.get("columns", [])
+        schema_columns = {col["name"] for col in columns}
+        column_types = {col["name"]: col["type"] for col in columns}
+        schema_signature = source_info.get("signature", "")
+
+        try:
+            spec = ResolvedFilterSpec(**filter_spec_raw)
+        except Exception as e:
+            return _err(f"Invalid filter_spec structure: {e}")
+
+        try:
+            compiled = compile_filter_spec(
+                spec=spec,
+                schema_columns=schema_columns,
+                column_types=column_types,
+                runtime_schema_signature=schema_signature,
+            )
+        except FilterCompilationError as e:
+            return _err(f"[{e.code.value}] {e.message}")
+        except Exception as e:
+            logger.error("fetch_rows_tool compile failed: %s", e)
+            return _err(f"Filter compilation failed: {e}")
+
+        where_sql = compiled.where_sql
+        params = compiled.params
+    else:
+        # all_rows path
+        where_sql = "1=1"
+        params = []
+
     try:
-        rows = await gw.get_rows_by_filter(where_clause=where_clause, limit=limit)
+        rows = await gw.get_rows_by_filter(
+            where_sql=where_sql, limit=limit, params=params,
+        )
         fetch_id = _store_fetched_rows(rows, bridge=bridge)
         payload: dict[str, Any] = {
             "fetch_id": fetch_id,
