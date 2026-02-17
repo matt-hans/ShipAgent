@@ -2259,6 +2259,19 @@ class TestInFlightStateMachine:
         """Simulate crash between UPS call and DB commit.
         Row should remain 'in_flight' with idempotency_key set."""
 
+    def test_ups_rejection_marks_row_failed(self):
+        """If UPS create_shipment raises UPSServiceError (rejection),
+        row is marked failed. This is pre-side-effect — safe to retry."""
+
+    def test_post_ups_failure_marks_needs_review_not_failed(self):
+        """If UPS call succeeds but label staging/promote/commit fails,
+        row is marked needs_review — NOT failed. Marking failed would
+        allow retry to create a duplicate shipment."""
+
+    def test_post_ups_failure_preserves_partial_tracking_info(self):
+        """If post-UPS exception occurs, any available ups_transaction_id
+        from the UPS response is still written to the row for recovery."""
+
     def test_pending_to_completed_directly_is_rejected(self):
         """BatchEngine must not skip the in_flight state.
         A row going from pending to completed without in_flight is a bug."""
@@ -2279,7 +2292,10 @@ With the two-phase commit:
 ```
 [new]  pending → in_flight (commit 1: set idempotency_key, status='in_flight')
                 → create_shipment(idempotency_key)
-                → completed/failed (commit 2: set tracking, cost, status)
+                   ├─ UPS rejects → failed (commit 2a: safe to retry)
+                   └─ UPS accepts → post-side-effect zone
+                       ├─ promote + commit succeeds → completed (commit 2b)
+                       └─ any local error → needs_review (commit 2c: never failed)
 ```
 
 Implementation:
@@ -2308,41 +2324,86 @@ async def _process_row(row: Any) -> None:
                 idempotency_key=idem_key,
             )
 
-            # UPS call (side effect)
-            result = await self._ups.create_shipment(request_body=api_payload)
+            # --- UPS CALL BOUNDARY ---
+            # Everything BEFORE this line is pre-side-effect (safe to mark failed).
+            # Everything AFTER this line is post-side-effect (UPS may have
+            # created a shipment — MUST use needs_review, never failed).
+            ups_call_succeeded = False
+            try:
+                result = await self._ups.create_shipment(request_body=api_payload)
+                ups_call_succeeded = True
+            except (UPSServiceError, Exception) as e:
+                # UPS rejected the request — no shipment was created.
+                # Safe to mark failed (retryable without duplicate risk).
+                async with db_lock:
+                    row.status = "failed"
+                    row.error_code = getattr(e, "code", "E-3005")
+                    row.error_message = str(e)
+                    self._db.commit()
+                raise  # re-raise to skip Phase 2
 
-            # Extract results (unchanged)
-            tracking_number = ...
-            label_path = self._save_label_staged(...)  # staging dir
-            cost_cents = ...
+            # --- POST-UPS: side effect occurred ---
+            # From here on, UPS has (or may have) created a shipment.
+            # Any exception must NOT mark row as "failed" — that would
+            # allow a retry to create a duplicate. Use "needs_review" instead.
+            try:
+                tracking_number = ...
+                label_path = self._save_label_staged(...)  # staging dir
+                cost_cents = ...
 
-            # PHASE 2: Promote label FIRST, then commit
-            # Order matters for crash safety: if we commit first and crash
-            # before promote, startup cleanup deletes the staging file →
-            # completed row with no label. By promoting first:
-            # - Crash after promote but before commit: label at final path,
-            #   row still in_flight → recovery handles normally
-            # - Crash after commit: both label and DB are consistent
-            final_label_path = self._promote_label(label_path)
+                # PHASE 2: Promote label FIRST, then commit
+                # Order matters for crash safety: if we commit first and
+                # crash before promote, startup cleanup deletes the staging
+                # file → completed row with no label. By promoting first:
+                # - Crash after promote but before commit: label at final
+                #   path, row still in_flight → recovery handles normally
+                # - Crash after commit: both label and DB are consistent
+                final_label_path = self._promote_label(label_path)
 
-            async with db_lock:
-                row.tracking_number = tracking_number
-                row.label_path = final_label_path  # store FINAL path, not staging
-                row.cost_cents = cost_cents
-                row.ups_transaction_id = result.get("shipmentIdentificationNumber")
-                row.status = "completed"
-                row.processed_at = datetime.now(UTC).isoformat()
-                self._db.commit()
+                async with db_lock:
+                    row.tracking_number = tracking_number
+                    row.label_path = final_label_path  # FINAL path, not staging
+                    row.cost_cents = cost_cents
+                    row.ups_transaction_id = result.get(
+                        "shipmentIdentificationNumber"
+                    )
+                    row.status = "completed"
+                    row.processed_at = datetime.now(UTC).isoformat()
+                    self._db.commit()
 
-                # ... progress emission ...
+                    # ... progress emission ...
+
+            except Exception as post_e:
+                # Post-UPS failure: shipment may exist at UPS.
+                # Mark needs_review — NEVER failed (prevents duplicate on retry).
+                logger.error(
+                    "Post-UPS failure for row %d (job %s): %s. "
+                    "Shipment may exist at UPS — marking needs_review.",
+                    row.row_number, job_id, post_e,
+                )
+                async with db_lock:
+                    row.status = "needs_review"
+                    row.error_message = f"Post-UPS error: {post_e}"
+                    # Preserve any partial tracking info for recovery
+                    if hasattr(result, "get"):
+                        row.ups_transaction_id = result.get(
+                            "shipmentIdentificationNumber"
+                        )
+                    self._db.commit()
 
         except (UPSServiceError, ValueError, Exception) as e:
-            async with db_lock:
-                row.status = "failed"
-                row.error_code = getattr(e, "code", "E-3005")
-                row.error_message = str(e)
-                self._db.commit()
-                # ... error progress emission ...
+            # Only reaches here for pre-UPS errors (payload build, Phase 1
+            # commit, etc.) or the re-raised UPS call error above.
+            # Row is already marked failed by the inner handler if UPS
+            # rejected; for pre-UPS errors, mark failed here.
+            if not ups_call_succeeded:
+                async with db_lock:
+                    if row.status == "in_flight":
+                        row.status = "failed"
+                        row.error_code = getattr(e, "code", "E-4001")
+                        row.error_message = str(e)
+                        self._db.commit()
+            # ... error progress emission ...
 ```
 
 **Step 4: Run tests**
@@ -2550,12 +2611,22 @@ async def recover_in_flight_rows(
         if row.ups_transaction_id:
             # Tier 1: We have a UPS tracking number — verify it
             try:
-                result = await self._ups.track_package(
+                raw = await self._ups.track_package(
                     tracking_number=row.ups_transaction_id,
                 )
-                if result and result.get("trackingNumber"):
+                # Parse nested UPS tracking response (matches tracking.py:50-62):
+                #   raw["trackResponse"]["shipment"][0]["package"][0]["trackingNumber"]
+                shipment = raw.get("trackResponse", {}).get("shipment", [{}])
+                if isinstance(shipment, list):
+                    shipment = shipment[0] if shipment else {}
+                package = shipment.get("package", [{}])
+                if isinstance(package, list):
+                    package = package[0] if package else {}
+                returned_number = package.get("trackingNumber", "")
+
+                if returned_number:
                     # Shipment confirmed at UPS — complete locally
-                    row.tracking_number = row.ups_transaction_id
+                    row.tracking_number = returned_number
                     row.status = "completed"
                     row.processed_at = datetime.now(UTC).isoformat()
                     self._db.commit()
@@ -2731,8 +2802,8 @@ Modify `batch_engine.py` to call `enqueue_write_back()` per row instead of colle
 **Step 5: Commit**
 
 ```bash
-git add src/db/models.py src/services/write_back_worker.py tests/services/test_write_back_worker.py
-git commit -m "feat: add durable write-back queue with per-row retry"
+git add src/db/models.py src/db/connection.py src/services/write_back_worker.py tests/services/test_write_back_worker.py
+git commit -m "feat: add durable write-back queue with per-row retry and schema migration"
 ```
 
 ---
@@ -2772,22 +2843,36 @@ In `src/api/main.py`, add to the existing lifespan `async with` block:
 
 ```python
 # Execution determinism: recovery and cleanup
+import os
+from src.db.models import JobStatus
 from src.services.batch_engine import BatchEngine
+from src.services.job_service import JobService
 from src.services.write_back_worker import process_write_back_queue
 
 with get_db_context() as db:
-    # 1. Recover in-flight rows from crashed sessions
-    #    Must run BEFORE staging cleanup — recovery may need staging labels
-    from src.services.job_service import JobService
     js = JobService(db)
-    interrupted = js.get_jobs_by_status(["running", "paused"])
+
+    # 1. Recover in-flight rows from crashed sessions
+    #    Must run BEFORE staging cleanup — recovery may need staging labels.
+    #    list_jobs() accepts one status at a time, so query both running + paused.
+    interrupted: list = []
+    for st in (JobStatus.running, JobStatus.paused):
+        interrupted.extend(js.list_jobs(status=st, limit=500))
+
     for job in interrupted:
         rows = js.get_rows(job.id)
         in_flight = [r for r in rows if r.status == "in_flight"]
         if in_flight:
-            ups = await get_ups_gateway()
-            engine = BatchEngine(db, ups)
-            recovery_result = await engine.recover_in_flight_rows(job.id, rows)
+            ups_client = await get_ups_gateway()
+            account = os.environ.get("UPS_ACCOUNT_NUMBER", "")
+            engine = BatchEngine(
+                ups_service=ups_client,
+                db_session=db,
+                account_number=account,
+            )
+            recovery_result = await engine.recover_in_flight_rows(
+                job.id, rows,
+            )
             logger.info(
                 "Job %s recovery: %d recovered, %d needs_review, %d unresolved",
                 job.id,
