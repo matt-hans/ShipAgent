@@ -396,27 +396,6 @@ class JobService:
     # Row State Operations
     # =========================================================================
 
-    def start_row(self, row_id: str) -> JobRow:
-        """Mark a row as processing.
-
-        Args:
-            row_id: The UUID of the row to update.
-
-        Returns:
-            The updated JobRow object.
-
-        Raises:
-            ValueError: If row not found.
-        """
-        row = self.get_row(row_id)
-        if row is None:
-            raise ValueError(f"Row not found: {row_id}")
-
-        row.status = RowStatus.processing.value
-        self.db.commit()
-        self.db.refresh(row)
-        return row
-
     def complete_row(
         self,
         row_id: str,
@@ -596,8 +575,28 @@ class JobService:
         if job is None:
             raise ValueError(f"Job not found: {job_id}")
 
-        # Calculate pending count
-        pending_count = job.total_rows - job.processed_rows
+        # Calculate counts by status
+        needs_review_count = (
+            self.db.query(func.count(JobRow.id))
+            .filter(JobRow.job_id == job_id)
+            .filter(JobRow.status == RowStatus.needs_review.value)
+            .scalar()
+        ) or 0
+
+        in_flight_count = (
+            self.db.query(func.count(JobRow.id))
+            .filter(JobRow.job_id == job_id)
+            .filter(JobRow.status == RowStatus.in_flight.value)
+            .scalar()
+        ) or 0
+
+        # pending_count excludes needs_review and in_flight
+        pending_count = (
+            job.total_rows
+            - job.processed_rows
+            - needs_review_count
+            - in_flight_count
+        )
 
         # Calculate total cost from successful rows
         total_cost_result = (
@@ -614,6 +613,8 @@ class JobService:
             "successful_rows": job.successful_rows,
             "failed_rows": job.failed_rows,
             "pending_count": pending_count,
+            "needs_review_count": needs_review_count,
+            "in_flight_count": in_flight_count,
             "total_cost_cents": total_cost_cents,
             "status": job.status,
             "created_at": job.created_at,

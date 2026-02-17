@@ -64,36 +64,43 @@ async def get_row(row_number: int, ctx: Context) -> dict:
 
 
 async def get_rows_by_filter(
-    where_clause: str,
+    where_sql: str,
     ctx: Context,
     limit: int = 100,
     offset: int = 0,
+    params: list[Any] | None = None,
 ) -> dict:
-    """Get rows matching a SQL WHERE clause.
+    """Get rows matching a parameterized SQL WHERE clause.
 
     Args:
-        where_clause: SQL WHERE condition (without 'WHERE' keyword)
-            Example: "state = 'CA' AND weight > 5"
-        limit: Maximum rows to return (default: 100, max: 1000)
-        offset: Number of rows to skip (for pagination)
+        where_sql: Parameterized WHERE condition (without 'WHERE' keyword).
+            Uses $1, $2, ... placeholders for values.
+            Example: '"state" = $1 AND "weight" > $2'
+        limit: Maximum rows to return (default: 100, max: 1000).
+        offset: Number of rows to skip (for pagination).
+        params: Positional parameter values for $N placeholders.
+            Pass None or [] for queries without parameters (e.g., IS NULL).
 
     Returns:
         QueryResult with matching rows and checksums.
 
     Example:
-        >>> result = await get_rows_by_filter("state = 'CA'", ctx, limit=50)
+        >>> result = await get_rows_by_filter('"state" = $1', ctx, params=["CA"])
         >>> print(result["total_count"])
         150
     """
     db = ctx.request_context.lifespan_context["db"]
     type_overrides = ctx.request_context.lifespan_context.get("type_overrides", {})
 
+    # ALWAYS parameterized — normalize None to empty list
+    query_params = params if params is not None else []
+
     # Enforce limits
     limit = min(limit, 1000)
     if limit < 1:
         limit = 100
 
-    await ctx.info(f"Querying rows with filter: {where_clause}")
+    await ctx.info(f"Querying rows with filter: {where_sql}")
 
     # Get column names, excluding internal identity column
     schema = db.execute("DESCRIBE imported_data").fetchall()
@@ -109,20 +116,20 @@ async def get_rows_by_filter(
 
     select_clause = ", ".join(select_parts)
 
-    # Get total count first
-    total_count = db.execute(f"""
-        SELECT COUNT(*) FROM imported_data
-        WHERE {where_clause}
-    """).fetchone()[0]
+    # Get total count first — parameterized
+    total_count = db.execute(
+        f'SELECT COUNT(*) FROM imported_data WHERE {where_sql}',
+        query_params,
+    ).fetchone()[0]
 
     # Use persisted identity column for stable row identity across filters
     results = db.execute(f"""
         SELECT {SOURCE_ROW_NUM_COLUMN}, {select_clause}
         FROM imported_data
-        WHERE {where_clause}
+        WHERE {where_sql}
         ORDER BY {SOURCE_ROW_NUM_COLUMN}
         LIMIT {limit} OFFSET {offset}
-    """).fetchall()
+    """, query_params).fetchall()
 
     # Process results — identity column is the first column
     rows = []
