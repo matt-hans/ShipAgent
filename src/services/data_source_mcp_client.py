@@ -275,6 +275,20 @@ class DataSourceMCPClient:
         result = await self._mcp.call_tool("get_rows_by_filter", tool_args)
         return self._normalize_rows(result.get("rows", []))
 
+    async def get_column_samples(self, max_samples: int = 5) -> dict[str, list[Any]]:
+        """Get sample distinct values for each column.
+
+        Args:
+            max_samples: Maximum distinct values per column (default 5).
+
+        Returns:
+            Dict mapping column names to lists of sample values.
+        """
+        await self._ensure_connected()
+        return await self._mcp.call_tool(
+            "get_column_samples", {"max_samples": max_samples}
+        )
+
     async def query_data(self, sql: str) -> dict[str, Any]:
         """Execute a SELECT query against active data source."""
         await self._ensure_connected()
