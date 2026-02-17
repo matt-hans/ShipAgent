@@ -23,7 +23,7 @@ from src.orchestrator.agent.tools.data import (
     get_platform_status_tool,
     get_schema_tool,
     get_source_info_tool,
-    validate_filter_syntax_tool,
+    resolve_filter_intent_tool,
 )
 from src.orchestrator.agent.tools.documents import (
     delete_paperless_document_tool,
@@ -95,12 +95,20 @@ def get_all_tool_definitions(
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "where_clause": {
-                        "type": "string",
+                    "filter_spec": {
+                        "type": "object",
                         "description": (
-                            "Optional SQL WHERE clause without the 'WHERE' keyword. "
-                            "Omit to ship all rows."
+                            "Resolved FilterSpec from resolve_filter_intent. "
+                            "Provide this OR all_rows=true, not both."
                         ),
+                    },
+                    "all_rows": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true to ship all rows without filtering. "
+                            "Provide this OR filter_spec, not both."
+                        ),
+                        "default": False,
                     },
                     "command": {
                         "type": "string",
@@ -127,16 +135,27 @@ def get_all_tool_definitions(
         {
             "name": "fetch_rows",
             "description": (
-                "Fetch rows from the data source and return a compact fetch_id "
-                "reference for downstream tools. Avoid sending full row arrays "
-                "through model context unless explicitly needed."
+                "Fetch rows from the data source using a compiled FilterSpec. "
+                "Returns a compact fetch_id reference for downstream tools. "
+                "Provide filter_spec OR all_rows=true, not both."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "where_clause": {
-                        "type": "string",
-                        "description": "SQL WHERE clause without the 'WHERE' keyword. Omit for all rows.",
+                    "filter_spec": {
+                        "type": "object",
+                        "description": (
+                            "Resolved FilterSpec from resolve_filter_intent. "
+                            "Provide this OR all_rows=true, not both."
+                        ),
+                    },
+                    "all_rows": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true to fetch all rows without filtering. "
+                            "Provide this OR filter_spec, not both."
+                        ),
+                        "default": False,
                     },
                     "limit": {
                         "type": "integer",
@@ -156,19 +175,27 @@ def get_all_tool_definitions(
             "handler": _bind_bridge(fetch_rows_tool, bridge),
         },
         {
-            "name": "validate_filter_syntax",
-            "description": "Validate a SQL WHERE clause for syntax correctness before using it.",
+            "name": "resolve_filter_intent",
+            "description": (
+                "Resolve a structured FilterIntent into a concrete FilterSpec. "
+                "Takes a FilterIntent JSON, resolves semantic references "
+                "(regions, business predicates) against the active data source, "
+                "and returns a ResolvedFilterSpec with status and explanation."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "where_clause": {
-                        "type": "string",
-                        "description": "SQL WHERE clause to validate.",
+                    "intent": {
+                        "type": "object",
+                        "description": (
+                            "FilterIntent JSON with root FilterGroup containing "
+                            "conditions and/or semantic references."
+                        ),
                     },
                 },
-                "required": ["where_clause"],
+                "required": ["intent"],
             },
-            "handler": validate_filter_syntax_tool,
+            "handler": _bind_bridge(resolve_filter_intent_tool, bridge),
         },
         {
             "name": "create_job",
