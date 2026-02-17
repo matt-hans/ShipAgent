@@ -68,6 +68,22 @@ def test_prompt_includes_source_schema():
     assert "csv" in prompt.lower()
 
 
+def test_prompt_truncates_long_column_samples(monkeypatch):
+    """Long sample values should be truncated to control token usage."""
+    monkeypatch.setenv("SYSTEM_PROMPT_SAMPLE_MAX_CHARS", "30")
+    source = _make_source_info()
+    prompt = build_system_prompt(
+        source_info=source,
+        column_samples={
+            "customer_name": [
+                "A" * 120,
+            ],
+        },
+    )
+    assert "..." in prompt
+    assert "A" * 80 not in prompt
+
+
 def test_prompt_without_source_shows_no_connection():
     """System prompt indicates no data source when source_info is None."""
     prompt = build_system_prompt(source_info=None)

@@ -7,7 +7,7 @@ and that response normalization works as expected.
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from src.services.data_source_mcp_client import DataSourceMCPClient
+from src.services.data_source_mcp_client import DataSourceMCPClient, _get_python_command
 
 
 @pytest.fixture
@@ -17,6 +17,7 @@ def mock_mcp():
     mcp.call_tool = AsyncMock()
     mcp.is_connected = True
     mcp.connect = AsyncMock()
+    mcp.disconnect = AsyncMock()
     return mcp
 
 
@@ -35,11 +36,69 @@ async def test_import_csv(client, mock_mcp):
         "row_count": 50, "columns": [{"name": "id", "type": "INTEGER"}],
         "source_type": "csv", "warnings": [],
     }
-    result = await client.import_csv("/tmp/orders.csv")
-    assert result["row_count"] == 50
-    mock_mcp.call_tool.assert_called_once_with(
-        "import_csv", {"file_path": "/tmp/orders.csv", "delimiter": ",", "header": True}
-    )
+    with pytest.MonkeyPatch.context() as mp:
+        invalidate = MagicMock()
+        mp.setattr(
+            "src.services.data_source_mcp_client.invalidate_mapping_cache",
+            invalidate,
+        )
+        result = await client.import_csv("/tmp/orders.csv")
+        assert result["row_count"] == 50
+        mock_mcp.call_tool.assert_called_once_with(
+            "import_csv", {"file_path": "/tmp/orders.csv", "delimiter": ",", "header": True}
+        )
+        invalidate.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_import_excel_invalidates_mapping_cache(client, mock_mcp):
+    """import_excel should invalidate mapping cache after successful import."""
+    mock_mcp.call_tool.return_value = {
+        "row_count": 12, "columns": [{"name": "id", "type": "INTEGER"}],
+        "source_type": "excel", "warnings": [],
+    }
+    with pytest.MonkeyPatch.context() as mp:
+        invalidate = MagicMock()
+        mp.setattr(
+            "src.services.data_source_mcp_client.invalidate_mapping_cache",
+            invalidate,
+        )
+        result = await client.import_excel("/tmp/orders.xlsx", sheet="Sheet1")
+        assert result["row_count"] == 12
+        mock_mcp.call_tool.assert_called_once_with(
+            "import_excel",
+            {"file_path": "/tmp/orders.xlsx", "header": True, "sheet": "Sheet1"},
+        )
+        invalidate.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_import_database_invalidates_mapping_cache(client, mock_mcp):
+    """import_database should invalidate mapping cache after successful import."""
+    mock_mcp.call_tool.return_value = {
+        "row_count": 22, "columns": [{"name": "id", "type": "INTEGER"}],
+        "source_type": "database", "warnings": [],
+    }
+    with pytest.MonkeyPatch.context() as mp:
+        invalidate = MagicMock()
+        mp.setattr(
+            "src.services.data_source_mcp_client.invalidate_mapping_cache",
+            invalidate,
+        )
+        result = await client.import_database(
+            "postgres://u:p@localhost/db",
+            "SELECT * FROM orders",
+        )
+        assert result["row_count"] == 22
+        mock_mcp.call_tool.assert_called_once_with(
+            "import_database",
+            {
+                "connection_string": "postgres://u:p@localhost/db",
+                "query": "SELECT * FROM orders",
+                "schema": "public",
+            },
+        )
+        invalidate.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -134,8 +193,15 @@ async def test_get_source_signature(client, mock_mcp):
 async def test_disconnect_calls_clear_source(client, mock_mcp):
     """disconnect should call the clear_source MCP tool."""
     mock_mcp.call_tool.return_value = {"status": "disconnected"}
-    await client.disconnect()
-    mock_mcp.call_tool.assert_called_once_with("clear_source", {})
+    with pytest.MonkeyPatch.context() as mp:
+        invalidate = MagicMock()
+        mp.setattr(
+            "src.services.data_source_mcp_client.invalidate_mapping_cache",
+            invalidate,
+        )
+        await client.disconnect()
+        mock_mcp.call_tool.assert_called_once_with("clear_source", {})
+        invalidate.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -144,11 +210,62 @@ async def test_import_from_records(client, mock_mcp):
     mock_mcp.call_tool.return_value = {
         "row_count": 3, "source_type": "shopify", "columns": ["id", "name"],
     }
-    result = await client.import_from_records(
-        records=[{"id": "1"}, {"id": "2"}, {"id": "3"}],
-        source_label="shopify",
-    )
-    assert result["row_count"] == 3
-    mock_mcp.call_tool.assert_called_once_with(
-        "import_records", {"records": [{"id": "1"}, {"id": "2"}, {"id": "3"}], "source_label": "shopify"}
-    )
+    with pytest.MonkeyPatch.context() as mp:
+        invalidate = MagicMock()
+        mp.setattr(
+            "src.services.data_source_mcp_client.invalidate_mapping_cache",
+            invalidate,
+        )
+        result = await client.import_from_records(
+            records=[{"id": "1"}, {"id": "2"}, {"id": "3"}],
+            source_label="shopify",
+        )
+        assert result["row_count"] == 3
+        mock_mcp.call_tool.assert_called_once_with(
+            "import_records", {"records": [{"id": "1"}, {"id": "2"}, {"id": "3"}], "source_label": "shopify"}
+        )
+        invalidate.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_get_source_info_reconnects_once_on_transport_error(client, mock_mcp):
+    """Transport failures should trigger one reconnect and replay."""
+
+    class ClosedResourceError(Exception):
+        pass
+
+    async def _disconnect() -> None:
+        mock_mcp.is_connected = False
+
+    async def _connect() -> None:
+        mock_mcp.is_connected = True
+
+    mock_mcp.disconnect.side_effect = _disconnect
+    mock_mcp.connect.side_effect = _connect
+
+    mock_mcp.call_tool.side_effect = [
+        ClosedResourceError("closed resource"),
+        {"active": True, "source_type": "csv", "row_count": 7},
+    ]
+
+    result = await client.get_source_info()
+
+    assert result is not None
+    assert result["row_count"] == 7
+    assert mock_mcp.disconnect.await_count == 1
+    assert mock_mcp.connect.await_count == 1
+    assert mock_mcp.call_tool.await_count == 2
+
+
+def test_get_python_command_prefers_explicit_override(monkeypatch):
+    """MCP_PYTHON_PATH env should take precedence over venv/system detection."""
+    monkeypatch.setenv("MCP_PYTHON_PATH", "/opt/custom/python3")
+    assert _get_python_command() == "/opt/custom/python3"
+
+
+def test_get_python_command_ignores_blank_override(monkeypatch):
+    """Blank MCP_PYTHON_PATH should fall back to normal detection."""
+    monkeypatch.setenv("MCP_PYTHON_PATH", "   ")
+    resolved = _get_python_command()
+    assert isinstance(resolved, str)
+    assert resolved != ""

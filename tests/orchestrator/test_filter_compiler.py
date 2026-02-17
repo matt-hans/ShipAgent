@@ -22,7 +22,15 @@ from src.orchestrator.models.filter_spec import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-SCHEMA_COLS = {"state", "company", "name", "weight", "city", "zip_code"}
+SCHEMA_COLS = {
+    "state",
+    "company",
+    "name",
+    "weight",
+    "city",
+    "zip_code",
+    "total_price",
+}
 COL_TYPES = {
     "state": "VARCHAR",
     "company": "VARCHAR",
@@ -30,6 +38,7 @@ COL_TYPES = {
     "weight": "DOUBLE",
     "city": "VARCHAR",
     "zip_code": "VARCHAR",
+    "total_price": "VARCHAR",
 }
 SCHEMA_SIG = "test_schema_sig_abc123"
 
@@ -548,8 +557,44 @@ class TestFilterCompiler:
         result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
         assert '"weight" > $1' in result.where_sql
 
+    def test_ordering_on_numeric_like_varchar_passes(self):
+        """29. gt on numeric-like VARCHAR column uses TRY_CAST and numeric param."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[_cond("total_price", FilterOperator.gt, [_lit("$50")])],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert "TRY_CAST" in result.where_sql
+        assert '"total_price"' in result.where_sql
+        assert result.params == [50.0]
+
+    def test_between_on_numeric_like_varchar_passes(self):
+        """30. between on numeric-like VARCHAR column compiles with coerced params."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "total_price",
+                        FilterOperator.between,
+                        [_lit("50"), _lit("500")],
+                    )
+                ],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert "TRY_CAST" in result.where_sql
+        assert "BETWEEN $1 AND $2" in result.where_sql
+        assert result.params == [50.0, 500.0]
+
     def test_type_check_skipped_for_unknown_column_type(self):
-        """29. Type check is skipped if column has no type mapping."""
+        """31. Type check is skipped if column has no type mapping."""
         from src.orchestrator.filter_compiler import compile_filter_spec
 
         # Use empty column_types — should still compile

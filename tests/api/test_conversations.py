@@ -17,6 +17,22 @@ from src.api.main import app
 client = TestClient(app)
 
 
+def test_batch_heuristic_avoids_false_positive_for_personal_phrase():
+    """'ship orders to my brother' should not auto-switch to batch mode."""
+    from src.api.routes.conversations import _looks_like_batch_shipping_request
+
+    assert not _looks_like_batch_shipping_request("I want to ship orders to my brother")
+
+
+def test_batch_heuristic_detects_plural_filtered_command():
+    """Plural + filter cues should be treated as batch shipping."""
+    from src.api.routes.conversations import _looks_like_batch_shipping_request
+
+    assert _looks_like_batch_shipping_request(
+        "Ship orders to customers in CA where status is unfulfilled",
+    )
+
+
 class TestCreateConversation:
     """Tests for POST /api/v1/conversations/."""
 
@@ -231,11 +247,12 @@ class TestTerminatingSessionGuard:
 
 
 @pytest.mark.asyncio
-async def test_shutdown_event_calls_gateway_shutdown():
+async def test_shutdown_event_calls_gateway_shutdown(monkeypatch):
     """API lifespan shutdown phase tears down all gateway clients."""
     from src.api.main import lifespan
 
     mock_app = MagicMock()
+    monkeypatch.setenv("FILTER_TOKEN_SECRET", "x" * 40)
 
     with patch(
         "src.api.main._ensure_agent_sdk_available",
@@ -352,5 +369,192 @@ async def test_process_message_uses_gateway_for_source_info():
         await conversations._process_agent_message(session_id, "Ship one package")
 
     mock_gw.get_source_info_typed.assert_awaited_once()
+    conversations._session_manager.remove_session(session_id)
+    conversations._event_queues.pop(session_id, None)
+
+
+@pytest.mark.asyncio
+async def test_process_message_auto_switches_interactive_to_batch_for_batch_command():
+    """Interactive sessions auto-switch to batch mode for batch shipping commands."""
+    from src.api.routes import conversations as conversations_mod
+    conversations = importlib.reload(conversations_mod)
+
+    class _FakeAgent:
+        last_turn_count = 0
+        emitter_bridge = SimpleNamespace(callback=None)
+
+        async def process_message_stream(self, _content):
+            if False:
+                yield {}
+
+    session_id = "auto-switch-batch-mode"
+    session = conversations._session_manager.get_or_create_session(session_id)
+    session.interactive_shipping = True
+
+    mock_source_info = MagicMock()
+    mock_source_info.source_type = "csv"
+    mock_source_info.file_path = "/tmp/orders.csv"
+    mock_source_info.row_count = 100
+    mock_source_info.columns = []
+
+    mock_gw = AsyncMock()
+    mock_gw.get_source_info_typed = AsyncMock(return_value=mock_source_info)
+
+    observed_modes: list[bool] = []
+
+    async def _fake_ensure_agent(sess, _source_info):
+        observed_modes.append(sess.interactive_shipping)
+        sess.agent = _FakeAgent()
+        sess.agent_source_hash = "hash"
+        return True
+
+    with (
+        patch(
+            "src.services.gateway_provider.get_data_gateway",
+            new=AsyncMock(return_value=mock_gw),
+        ),
+        patch(
+            "src.api.routes.conversations._ensure_agent",
+            new=AsyncMock(side_effect=_fake_ensure_agent),
+        ),
+    ):
+        await conversations._process_agent_message(
+            session_id,
+            "Ship all orders going to companies in the Northeast.",
+        )
+
+    assert observed_modes == [False]
+    assert session.interactive_shipping is False
+    conversations._session_manager.remove_session(session_id)
+    conversations._event_queues.pop(session_id, None)
+
+
+@pytest.mark.asyncio
+async def test_process_message_suppresses_transient_messages_when_artifact_emitted(
+    monkeypatch,
+):
+    """Transient agent_message events are hidden when an artifact event is emitted."""
+    from src.api.routes import conversations as conversations_mod
+    conversations = importlib.reload(conversations_mod)
+
+    monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "true")
+
+    class _FakeAgent:
+        last_turn_count = 0
+        emitter_bridge = SimpleNamespace(callback=None)
+
+        async def process_message_stream(self, _content):
+            if self.emitter_bridge.callback:
+                self.emitter_bridge.callback(
+                    "preview_ready",
+                    {"job_id": "job-1", "total_rows": 1, "preview_rows": []},
+                )
+            yield {"event": "agent_message", "data": {"text": "Let me try one approach"}}
+            yield {"event": "agent_message", "data": {"text": "Let me try another approach"}}
+
+    session_id = "suppress-transient-preview"
+    conversations._session_manager.get_or_create_session(session_id)
+
+    mock_source_info = MagicMock()
+    mock_source_info.source_type = "csv"
+    mock_source_info.file_path = "/tmp/orders.csv"
+    mock_source_info.row_count = 10
+    mock_source_info.columns = []
+
+    mock_gw = AsyncMock()
+    mock_gw.get_source_info_typed = AsyncMock(return_value=mock_source_info)
+
+    async def _fake_ensure_agent(sess, _source_info):
+        sess.agent = _FakeAgent()
+        sess.agent_source_hash = "hash"
+        return True
+
+    with (
+        patch(
+            "src.services.gateway_provider.get_data_gateway",
+            new=AsyncMock(return_value=mock_gw),
+        ),
+        patch(
+            "src.api.routes.conversations._ensure_agent",
+            new=AsyncMock(side_effect=_fake_ensure_agent),
+        ),
+    ):
+        await conversations._process_agent_message(session_id, "Ship all orders")
+
+    queue = conversations._event_queues[session_id]
+    queued_events = []
+    while not queue.empty():
+        queued_events.append(await queue.get())
+
+    event_names = [event.get("event") for event in queued_events]
+    assert "preview_ready" in event_names
+    assert "agent_message" not in event_names
+
+    history = conversations._session_manager.get_history(session_id)
+    assert all(msg.get("role") != "assistant" for msg in history)
+
+    conversations._session_manager.remove_session(session_id)
+    conversations._event_queues.pop(session_id, None)
+
+
+@pytest.mark.asyncio
+async def test_process_message_keeps_final_message_when_no_artifact(monkeypatch):
+    """Without artifact events, only the final buffered agent message is emitted."""
+    from src.api.routes import conversations as conversations_mod
+    conversations = importlib.reload(conversations_mod)
+
+    monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "true")
+
+    class _FakeAgent:
+        last_turn_count = 0
+        emitter_bridge = SimpleNamespace(callback=None)
+
+        async def process_message_stream(self, _content):
+            yield {"event": "agent_message", "data": {"text": "First attempt"}}
+            yield {"event": "agent_message", "data": {"text": "Final answer"}}
+
+    session_id = "buffer-final-no-artifact"
+    conversations._session_manager.get_or_create_session(session_id)
+
+    mock_source_info = MagicMock()
+    mock_source_info.source_type = "csv"
+    mock_source_info.file_path = "/tmp/orders.csv"
+    mock_source_info.row_count = 10
+    mock_source_info.columns = []
+
+    mock_gw = AsyncMock()
+    mock_gw.get_source_info_typed = AsyncMock(return_value=mock_source_info)
+
+    async def _fake_ensure_agent(sess, _source_info):
+        sess.agent = _FakeAgent()
+        sess.agent_source_hash = "hash"
+        return True
+
+    with (
+        patch(
+            "src.services.gateway_provider.get_data_gateway",
+            new=AsyncMock(return_value=mock_gw),
+        ),
+        patch(
+            "src.api.routes.conversations._ensure_agent",
+            new=AsyncMock(side_effect=_fake_ensure_agent),
+        ),
+    ):
+        await conversations._process_agent_message(session_id, "hello")
+
+    queue = conversations._event_queues[session_id]
+    queued_events = []
+    while not queue.empty():
+        queued_events.append(await queue.get())
+
+    agent_messages = [e for e in queued_events if e.get("event") == "agent_message"]
+    assert len(agent_messages) == 1
+    assert agent_messages[0]["data"]["text"] == "Final answer"
+
+    history = conversations._session_manager.get_history(session_id)
+    assistant_history = [msg for msg in history if msg.get("role") == "assistant"]
+    assert len(assistant_history) == 1
+    assert assistant_history[0]["content"] == "Final answer"
+
     conversations._session_manager.remove_session(session_id)
     conversations._event_queues.pop(session_id, None)

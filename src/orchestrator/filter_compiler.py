@@ -9,6 +9,7 @@ See docs/plans/2026-02-16-filter-determinism-design.md Section 5.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Union
 
 from src.orchestrator.models.filter_spec import (
@@ -275,24 +276,44 @@ def _compile_condition(
         return f"{col} != ${idx}"
 
     elif op == FilterOperator.gt:
-        idx = _next_param(param_counter, params, _extract_value(cond.operands[0]))
+        idx = _next_param(
+            param_counter,
+            params,
+            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+        )
+        ordering_col = _ordering_column_sql(cond.column, column_types)
         explanation_parts.append(f"{cond.column} greater than {cond.operands[0].value}")
-        return f"{col} > ${idx}"
+        return f"{ordering_col} > ${idx}"
 
     elif op == FilterOperator.gte:
-        idx = _next_param(param_counter, params, _extract_value(cond.operands[0]))
+        idx = _next_param(
+            param_counter,
+            params,
+            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+        )
+        ordering_col = _ordering_column_sql(cond.column, column_types)
         explanation_parts.append(f"{cond.column} >= {cond.operands[0].value}")
-        return f"{col} >= ${idx}"
+        return f"{ordering_col} >= ${idx}"
 
     elif op == FilterOperator.lt:
-        idx = _next_param(param_counter, params, _extract_value(cond.operands[0]))
+        idx = _next_param(
+            param_counter,
+            params,
+            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+        )
+        ordering_col = _ordering_column_sql(cond.column, column_types)
         explanation_parts.append(f"{cond.column} less than {cond.operands[0].value}")
-        return f"{col} < ${idx}"
+        return f"{ordering_col} < ${idx}"
 
     elif op == FilterOperator.lte:
-        idx = _next_param(param_counter, params, _extract_value(cond.operands[0]))
+        idx = _next_param(
+            param_counter,
+            params,
+            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+        )
+        ordering_col = _ordering_column_sql(cond.column, column_types)
         explanation_parts.append(f"{cond.column} <= {cond.operands[0].value}")
-        return f"{col} <= ${idx}"
+        return f"{ordering_col} <= ${idx}"
 
     elif op == FilterOperator.in_:
         if not cond.operands:
@@ -381,12 +402,21 @@ def _compile_condition(
         return f"({col} IS NOT NULL AND {col} != ${idx})"
 
     elif op == FilterOperator.between:
-        idx_lo = _next_param(param_counter, params, _extract_value(cond.operands[0]))
-        idx_hi = _next_param(param_counter, params, _extract_value(cond.operands[1]))
+        idx_lo = _next_param(
+            param_counter,
+            params,
+            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+        )
+        idx_hi = _next_param(
+            param_counter,
+            params,
+            _extract_ordering_value(cond.operands[1], cond.column, column_types),
+        )
+        ordering_col = _ordering_column_sql(cond.column, column_types)
         explanation_parts.append(
             f"{cond.column} between {cond.operands[0].value} and {cond.operands[1].value}"
         )
-        return f"{col} BETWEEN ${idx_lo} AND ${idx_hi}"
+        return f"{ordering_col} BETWEEN ${idx_lo} AND ${idx_hi}"
 
     else:
         raise FilterCompilationError(
@@ -440,6 +470,17 @@ _ORDERABLE_TYPES = _NUMERIC_TYPES | {"DATE", "TIMESTAMP", "TIMESTAMP WITH TIME Z
 
 # DuckDB types compatible with string pattern operators
 _STRING_TYPES = {"VARCHAR", "TEXT", "STRING"}
+_NUMERIC_TEXT_HINTS = {
+    "amount",
+    "price",
+    "total",
+    "subtotal",
+    "cost",
+    "value",
+    "tax",
+    "discount",
+    "balance",
+}
 
 
 def _check_operator_type_compat(
@@ -466,7 +507,11 @@ def _check_operator_type_compat(
     # Normalize parameterized types: DECIMAL(10,2) → DECIMAL, VARCHAR(255) → VARCHAR
     col_type = raw_type.split("(")[0].strip()
 
-    if operator in _ORDERING_OPS and col_type not in _ORDERABLE_TYPES:
+    if operator in _ORDERING_OPS:
+        if col_type in _ORDERABLE_TYPES:
+            return
+        if _is_numeric_text_column(column, col_type):
+            return
         raise FilterCompilationError(
             FilterErrorCode.TYPE_MISMATCH,
             f"Operator {operator.value!r} requires a numeric or date column, "
@@ -479,6 +524,72 @@ def _check_operator_type_compat(
             f"Operator {operator.value!r} requires a string column, "
             f"but {column!r} has type {col_type!r}.",
         )
+
+
+def _is_numeric_text_column(column: str, col_type: str) -> bool:
+    """Return True when a string column is likely to contain numeric values."""
+    if col_type not in _STRING_TYPES:
+        return False
+    lowered = column.casefold()
+    return any(hint in lowered for hint in _NUMERIC_TEXT_HINTS)
+
+
+def _ordering_column_sql(column: str, column_types: dict[str, str]) -> str:
+    """Return SQL expression used for ordering comparisons on a column."""
+    col = f'"{column}"'
+    raw_type = column_types.get(column, "").upper()
+    col_type = raw_type.split("(")[0].strip() if raw_type else ""
+    if _is_numeric_text_column(column, col_type):
+        # Accept numeric-like text such as "$123.45" or "1,234.56".
+        return (
+            f"TRY_CAST(REPLACE(REPLACE(TRIM(COALESCE({col}, '')), '$', ''), ',', '') "
+            "AS DOUBLE)"
+        )
+    return col
+
+
+def _extract_ordering_value(
+    literal: TypedLiteral,
+    column: str,
+    column_types: dict[str, str],
+) -> object:
+    """Extract value for ordering operations with deterministic coercion."""
+    raw_type = column_types.get(column, "").upper()
+    col_type = raw_type.split("(")[0].strip() if raw_type else ""
+    value = _extract_value(literal)
+
+    if not _is_numeric_text_column(column, col_type):
+        return value
+    return _coerce_numeric_literal(value, column)
+
+
+def _coerce_numeric_literal(value: object, column: str) -> float:
+    """Coerce an operand into a float for numeric-text column comparison."""
+    if isinstance(value, bool):
+        raise FilterCompilationError(
+            FilterErrorCode.TYPE_MISMATCH,
+            f"Column {column!r} expects numeric literal for ordering comparison.",
+        )
+    if isinstance(value, (int, float, Decimal)):
+        return float(value)
+    if isinstance(value, str):
+        normalized = value.strip().replace(",", "").replace("$", "")
+        if not normalized:
+            raise FilterCompilationError(
+                FilterErrorCode.TYPE_MISMATCH,
+                f"Column {column!r} expects numeric literal for ordering comparison.",
+            )
+        try:
+            return float(normalized)
+        except ValueError as exc:
+            raise FilterCompilationError(
+                FilterErrorCode.TYPE_MISMATCH,
+                f"Column {column!r} expects numeric literal for ordering comparison.",
+            ) from exc
+    raise FilterCompilationError(
+        FilterErrorCode.TYPE_MISMATCH,
+        f"Column {column!r} expects numeric literal for ordering comparison.",
+    )
 
 
 def _next_param(param_counter: list[int], params: list, value: object) -> int:

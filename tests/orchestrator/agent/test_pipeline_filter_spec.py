@@ -229,6 +229,73 @@ class TestPipelineFilterSpec:
         assert call_kwargs["params"] == []
 
     @pytest.mark.asyncio
+    async def test_pipeline_rejects_all_rows_for_filtered_command(self):
+        """all_rows should be rejected when command includes clear filter terms."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        result = await ship_command_pipeline_tool({
+            "command": "Ship all orders going to companies in the Northeast.",
+            "all_rows": True,
+        })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "all_rows=true is not allowed" in content
+
+    @pytest.mark.asyncio
+    async def test_pipeline_rejects_all_rows_for_states_range_and_status(self):
+        """all_rows should be rejected for explicit states + numeric/status filters."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        result = await ship_command_pipeline_tool({
+            "command": (
+                "Ship all orders from customers in California, Texas, or New York "
+                "where the total is over $50 and under $500, but only the "
+                "unfulfilled ones using UPS Ground."
+            ),
+            "all_rows": True,
+        })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "all_rows=true is not allowed" in content
+
+    @pytest.mark.asyncio
+    async def test_pipeline_rejects_region_command_when_spec_missing_region(self):
+        """Command mentions Northeast but spec has non-region filter."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        p = _pipeline_patches(gw)
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": "Ship all orders in the Northeast.",
+                "filter_spec": _make_resolved_spec(),  # state = CA
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "Filter mismatch" in content
+        assert "region" in content.lower()
+
+    @pytest.mark.asyncio
+    async def test_pipeline_rejects_business_command_when_spec_missing_business(self):
+        """Command mentions companies but spec lacks BUSINESS_RECIPIENT predicate."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        p = _pipeline_patches(gw)
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": "Ship all company orders in CA.",
+                "filter_spec": _make_resolved_spec(),  # only state = CA
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "business/company predicate" in content
+
+    @pytest.mark.asyncio
     async def test_pipeline_attaches_filter_audit(self):
         """Pipeline attaches filter_audit metadata to preview event."""
         from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool

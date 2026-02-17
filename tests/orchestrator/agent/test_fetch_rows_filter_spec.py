@@ -207,3 +207,18 @@ class TestFetchRowsFilterSpec:
         assert content["row_count"] == 28
         assert content["total_count"] == 28
         assert content["returned_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_rejects_fetch_rows_for_shipping_intent(self):
+        """fetch_rows should reject direct shipping requests to force fast path."""
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.data import fetch_rows_tool
+
+        bridge = EventEmitterBridge()
+        bridge.last_user_message = "Ship all orders going to companies in the Northeast."
+
+        result = await fetch_rows_tool({"all_rows": True}, bridge=bridge)
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "ship_command_pipeline" in content
