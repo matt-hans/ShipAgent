@@ -427,3 +427,137 @@ class TestFilterCompiler:
         )
         result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
         assert len(result.explanation) > 0
+
+    # -------------------------------------------------------------------
+    # Structural limit enforcement (P1-4 additions)
+    # -------------------------------------------------------------------
+
+    def test_max_conditions_exceeded(self):
+        """22. More conditions than max_conditions raises STRUCTURAL_LIMIT_EXCEEDED."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+        from src.orchestrator.models.filter_spec import STRUCTURAL_LIMITS
+
+        max_conds = STRUCTURAL_LIMITS["max_conditions"]
+        # Build max_conds + 1 conditions
+        conditions = [
+            _cond("state", FilterOperator.eq, [_lit(f"S{i}")])
+            for i in range(max_conds + 1)
+        ]
+        spec = _make_spec(FilterGroup(logic="AND", conditions=conditions))
+
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert exc_info.value.code == FilterErrorCode.STRUCTURAL_LIMIT_EXCEEDED
+        assert "conditions" in exc_info.value.message.lower()
+
+    def test_max_conditions_at_limit_passes(self):
+        """23. Exactly max_conditions conditions is allowed."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+        from src.orchestrator.models.filter_spec import STRUCTURAL_LIMITS
+
+        max_conds = STRUCTURAL_LIMITS["max_conditions"]
+        conditions = [
+            _cond("state", FilterOperator.eq, [_lit(f"S{i}")])
+            for i in range(max_conds)
+        ]
+        spec = _make_spec(FilterGroup(logic="AND", conditions=conditions))
+
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert len(result.params) == max_conds
+
+    def test_in_cardinality_exceeded(self):
+        """24. IN list exceeding max_in_cardinality raises STRUCTURAL_LIMIT_EXCEEDED."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+        from src.orchestrator.models.filter_spec import STRUCTURAL_LIMITS
+
+        max_in = STRUCTURAL_LIMITS["max_in_cardinality"]
+        operands = [_lit(f"V{i}") for i in range(max_in + 1)]
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[_cond("state", FilterOperator.in_, operands)],
+            )
+        )
+
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert exc_info.value.code == FilterErrorCode.STRUCTURAL_LIMIT_EXCEEDED
+        assert "in" in exc_info.value.message.lower()
+
+    def test_not_in_cardinality_exceeded(self):
+        """25. NOT IN list exceeding max_in_cardinality raises STRUCTURAL_LIMIT_EXCEEDED."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+        from src.orchestrator.models.filter_spec import STRUCTURAL_LIMITS
+
+        max_in = STRUCTURAL_LIMITS["max_in_cardinality"]
+        operands = [_lit(f"V{i}") for i in range(max_in + 1)]
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[_cond("state", FilterOperator.not_in, operands)],
+            )
+        )
+
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert exc_info.value.code == FilterErrorCode.STRUCTURAL_LIMIT_EXCEEDED
+
+    def test_type_mismatch_ordering_on_string(self):
+        """26. gt/gte/lt/lte on a VARCHAR column raises TYPE_MISMATCH."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[_cond("state", FilterOperator.gt, [_lit("CA")])],
+            )
+        )
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert exc_info.value.code == FilterErrorCode.TYPE_MISMATCH
+
+    def test_type_mismatch_contains_on_numeric(self):
+        """27. contains_ci on a DOUBLE column raises TYPE_MISMATCH."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[_cond("weight", FilterOperator.contains_ci, [_lit("10")])],
+            )
+        )
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert exc_info.value.code == FilterErrorCode.TYPE_MISMATCH
+
+    def test_ordering_on_numeric_passes(self):
+        """28. gt on a DOUBLE column is allowed."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "weight", FilterOperator.gt,
+                        [TypedLiteral(type="number", value=10.0)],
+                    )
+                ],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert '"weight" > $1' in result.where_sql
+
+    def test_type_check_skipped_for_unknown_column_type(self):
+        """29. Type check is skipped if column has no type mapping."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        # Use empty column_types — should still compile
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[_cond("state", FilterOperator.gt, [_lit("CA")])],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, {}, SCHEMA_SIG)
+        assert '"state" > $1' in result.where_sql
