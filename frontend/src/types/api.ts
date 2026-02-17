@@ -278,6 +278,15 @@ export interface BatchPreview {
   weight_lbs?: number;
   packaging_type?: string;
   resolved_payload?: Record<string, unknown>;
+  // Filter transparency metadata (batch mode)
+  filter_explanation?: string;
+  compiled_filter?: string;
+  filter_audit?: {
+    spec_hash: string;
+    compiled_hash: string;
+    schema_signature: string;
+    dict_version: string;
+  };
 }
 
 // === Progress Types ===
