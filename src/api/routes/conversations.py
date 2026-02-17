@@ -125,9 +125,21 @@ async def _ensure_agent(
         except Exception as e:
             logger.warning("Error stopping old agent: %s", e)
 
+    # Fetch column samples for filter grounding (batch mode only).
+    column_samples: dict[str, list] | None = None
+    if source_info is not None and not session.interactive_shipping:
+        try:
+            from src.services.gateway_provider import get_data_gateway
+
+            gw_for_samples = await get_data_gateway()
+            column_samples = await gw_for_samples.get_column_samples(max_samples=5)
+        except Exception as e:
+            logger.warning("Failed to fetch column samples: %s", e)
+
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=session.interactive_shipping,
+        column_samples=column_samples,
     )
     agent = OrchestrationAgent(
         system_prompt=system_prompt,
@@ -251,6 +263,9 @@ async def _process_agent_message(session_id: str, content: str) -> None:
                 queue.put_nowait({"event": event_type, "data": data})
 
             session.agent.emitter_bridge.callback = _emit_to_queue
+            session.agent.emitter_bridge.confirmed_resolutions = (
+                session.confirmed_resolutions
+            )
             try:
                 # Process message — SDK maintains conversation context internally.
                 async for event in session.agent.process_message_stream(content):

@@ -221,13 +221,17 @@ async def resolve_filter_intent_tool(
     except Exception as e:
         return _err(f"Invalid FilterIntent structure: {e}")
 
-    # Resolve
+    # Resolve — pass session confirmations for Tier B bypass
+    session_confirmations = (
+        bridge.confirmed_resolutions if bridge is not None else None
+    )
     try:
         resolved = resolve_filter_intent(
             intent=intent,
             schema_columns=schema_columns,
             column_types=column_types,
             schema_signature=schema_signature,
+            session_confirmations=session_confirmations,
         )
     except FilterCompilationError as e:
         return _err(f"[{e.code.value}] {e.message}")

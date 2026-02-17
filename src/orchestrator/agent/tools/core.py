@@ -45,6 +45,7 @@ class EventEmitterBridge:
     def __init__(self) -> None:
         self.callback: Callable[[str, dict], None] | None = None
         self.session_id: str | None = None
+        self.confirmed_resolutions: dict[str, Any] = {}
         self._fetched_rows_cache: dict[str, list[dict[str, Any]]] = {}
         self._fetched_rows_order: list[str] = []
 
