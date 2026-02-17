@@ -8,7 +8,9 @@ when available.
 import logging
 import os
 import sys
+import time as _time
 import warnings
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -42,6 +44,10 @@ from src.errors import ShipAgentError
 # Frontend build directory
 FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
 logger = logging.getLogger(__name__)
+
+# Module-level state for health endpoint
+_startup_time: float = 0.0
+_watchdog_service = None  # Set by watchdog startup in lifespan
 
 # Create FastAPI app
 app = FastAPI(
@@ -79,6 +85,8 @@ def _ensure_agent_sdk_available() -> None:
 @app.on_event("startup")
 def startup_event() -> None:
     """Initialize database on startup."""
+    global _startup_time
+    _startup_time = _time.time()
     _ensure_agent_sdk_available()
     warnings.filterwarnings("default", category=DeprecationWarning, module="claude_agent_sdk")
     init_db()
@@ -140,12 +148,47 @@ app.include_router(conversations.router, prefix="/api/v1")
 
 @app.get("/health")
 def health_check() -> dict:
-    """Health check endpoint.
+    """Health check endpoint with system status.
+
+    Returns all fields required by the CLI HealthStatus contract:
+    status, version, uptime_seconds, active_jobs, watchdog_active, watch_folders.
 
     Returns:
-        Dictionary with health status.
+        Dictionary with health status and metrics.
     """
-    return {"status": "healthy"}
+    from src.db.connection import get_db as _get_db
+    from src.db.models import Job, JobStatus
+
+    uptime = int(_time.time() - _startup_time) if _startup_time else 0
+
+    # Count active (running) jobs
+    try:
+        db = next(_get_db())
+        active_jobs = db.query(Job).filter(Job.status == JobStatus.running.value).count()
+        db.close()
+    except Exception:
+        active_jobs = 0
+
+    # Version from package metadata (matches pyproject.toml)
+    try:
+        version = _pkg_version("shipagent")
+    except Exception:
+        version = "unknown"
+
+    # Watchdog status
+    watchdog_active = _watchdog_service is not None and getattr(_watchdog_service, "_observer", None) is not None
+    watch_folders: list[str] = []
+    if _watchdog_service and hasattr(_watchdog_service, "_configs"):
+        watch_folders = [c.path for c in _watchdog_service._configs]
+
+    return {
+        "status": "healthy",
+        "version": version,
+        "uptime_seconds": uptime,
+        "active_jobs": active_jobs,
+        "watchdog_active": watchdog_active,
+        "watch_folders": watch_folders,
+    }
 
 
 @app.get("/api")
