@@ -232,14 +232,23 @@ class TestTerminatingSessionGuard:
 
 @pytest.mark.asyncio
 async def test_shutdown_event_calls_gateway_shutdown():
-    """API shutdown hook tears down all gateway clients."""
-    from src.api.main import shutdown_event
+    """API lifespan shutdown phase tears down all gateway clients."""
+    from src.api.main import lifespan
+
+    mock_app = MagicMock()
 
     with patch(
+        "src.api.main._ensure_agent_sdk_available",
+    ), patch(
+        "src.api.main.init_db",
+    ), patch(
+        "src.api.main.run_startup_recovery", new=AsyncMock(),
+    ), patch(
         "src.services.gateway_provider.shutdown_gateways",
         new=AsyncMock(),
     ) as mock_shutdown:
-        await shutdown_event()
+        async with lifespan(mock_app):
+            pass  # simulate app running
         mock_shutdown.assert_awaited_once()
 
 
