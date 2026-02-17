@@ -116,6 +116,19 @@ class DataSourceGateway(Protocol):
         """
         ...
 
+    async def get_column_samples(
+        self, max_samples: int = 5
+    ) -> dict[str, list[Any]]:
+        """Get sample distinct values for each column.
+
+        Args:
+            max_samples: Maximum distinct values per column (default 5).
+
+        Returns:
+            Dict mapping column names to lists of sample values.
+        """
+        ...
+
     async def list_tables(
         self, connection_string: str, schema: str = "public"
     ) -> dict[str, Any]:

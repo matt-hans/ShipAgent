@@ -40,11 +40,15 @@ def _build_service_table() -> str:
     return "\n".join(lines)
 
 
-def _build_schema_section(source_info: DataSourceInfo) -> str:
+def _build_schema_section(
+    source_info: DataSourceInfo,
+    column_samples: dict[str, list] | None = None,
+) -> str:
     """Build the dynamic data source schema section.
 
     Args:
         source_info: Metadata about the connected data source.
+        column_samples: Optional sample values per column for filter grounding.
 
     Returns:
         Formatted string describing the source and its columns.
@@ -59,7 +63,12 @@ def _build_schema_section(source_info: DataSourceInfo) -> str:
     lines.append("Columns:")
     for col in source_info.columns:
         nullable = "nullable" if col.nullable else "not null"
-        lines.append(f"  - {col.name} ({col.type}, {nullable})")
+        samples = column_samples.get(col.name) if column_samples else None
+        if samples:
+            sample_str = ", ".join(repr(s) for s in samples[:5])
+            lines.append(f"  - {col.name} ({col.type}, {nullable}) — samples: {sample_str}")
+        else:
+            lines.append(f"  - {col.name} ({col.type}, {nullable})")
     return "\n".join(lines)
 
 
@@ -136,6 +145,7 @@ BUSINESS_RECIPIENT, PERSONAL_RECIPIENT, and all US state names (e.g., "californi
 def build_system_prompt(
     source_info: DataSourceInfo | None = None,
     interactive_shipping: bool = False,
+    column_samples: dict[str, list] | None = None,
 ) -> str:
     """Build the complete system prompt for the orchestration agent.
 
@@ -166,7 +176,7 @@ def build_system_prompt(
             "data-source-driven shipping, instruct them to turn Interactive Shipping off."
         )
     elif source_info is not None:
-        data_section = _build_schema_section(source_info)
+        data_section = _build_schema_section(source_info, column_samples=column_samples)
     else:
         shopify_configured = bool(
             os.environ.get("SHOPIFY_ACCESS_TOKEN")
