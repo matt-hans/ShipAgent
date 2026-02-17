@@ -30,7 +30,9 @@ from src.services.ups_payload_builder import (
 from src.services.ups_service_codes import ServiceCode, upgrade_to_international
 from src.services.errors import UPSServiceError
 from src.services.gateway_provider import get_data_gateway, get_external_sources_client
+from src.services.idempotency import generate_idempotency_key
 from src.services.international_rules import get_requirements, validate_international_readiness
+from src.services.mcp_client import MCPConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -360,8 +362,20 @@ class BatchEngine:
                     logger.warning("Commodity bulk fetch failed (non-critical): %s", e)
 
         async def _process_row(row: Any) -> None:
-            """Process a single row with concurrency control."""
+            """Process a single row with two-phase commit state machine.
+
+            State transitions:
+              pending → in_flight (Phase 1: pre-UPS commit with idempotency key)
+              in_flight → completed (Phase 2: post-UPS commit with tracking + label)
+              in_flight → failed (UPSServiceError or MCPConnectionError — no side effect)
+              in_flight → needs_review (ambiguous transport error — UPS may have acted)
+              pending → failed (pre-Phase-1 parse/validation error — no side effect)
+            """
             nonlocal successful, failed, total_cost_cents
+
+            # Initialized at top scope so the outer handler can always read it,
+            # even if an exception fires before the UPS call boundary.
+            ups_call_succeeded = False
 
             async with semaphore:
                 try:
@@ -399,98 +413,202 @@ class BatchEngine:
                         service_code=eff_service,
                     )
 
+                    # Generate idempotency key for exactly-once semantics
+                    idem_key = generate_idempotency_key(
+                        job_id, row.row_number, row.row_checksum,
+                    )
+
+                    # PHASE 1: Mark in-flight BEFORE UPS call
+                    async with db_lock:
+                        row.status = "in_flight"
+                        row.idempotency_key = idem_key
+                        self._db.commit()
+
+                    # Build payload with idempotency key for UPS audit trail
                     api_payload = build_ups_api_payload(
                         simplified,
                         account_number=self._account_number,
+                        idempotency_key=idem_key,
                     )
 
-                    # Call UPS via async MCP client
-                    result = await self._ups.create_shipment(request_body=api_payload)
-
-                    # Extract results — prefer package tracking number,
-                    # fall back to shipment ID (UPS test env masks package-level numbers)
-                    tracking_numbers = result.get("trackingNumbers", [])
-                    tracking_number = tracking_numbers[0] if tracking_numbers else ""
-                    if not tracking_number or "XXXX" in tracking_number:
-                        tracking_number = result.get(
-                            "shipmentIdentificationNumber", tracking_number
+                    # --- UPS CALL BOUNDARY ---
+                    # Everything BEFORE this line is pre-side-effect (safe to mark failed).
+                    # Everything AFTER is post-side-effect (UPS may have created a
+                    # shipment — MUST use needs_review, never failed).
+                    #
+                    # Error taxonomy:
+                    #   UPSServiceError  → hard rejection, no shipment created → failed
+                    #   MCPConnectionError → could not reach MCP server → failed
+                    #   Other Exception (TimeoutError, CancelledError, etc.)
+                    #       → request MAY have reached UPS → needs_review
+                    try:
+                        result = await self._ups.create_shipment(
+                            request_body=api_payload,
                         )
-
-                    # Save label with unique filename per row
-                    label_path = ""
-                    label_data_list = result.get("labelData", [])
-                    if label_data_list and label_data_list[0]:
-                        label_path = self._save_label(
-                            tracking_number,
-                            label_data_list[0],
-                            job_id=job_id,
-                            row_number=row.row_number,
+                        ups_call_succeeded = True
+                    except UPSServiceError as e:
+                        # Hard rejection — no shipment created. Safe to mark failed.
+                        async with db_lock:
+                            row.status = "failed"
+                            row.error_code = e.code
+                            row.error_message = str(e)
+                            self._db.commit()
+                        raise
+                    except MCPConnectionError as e:
+                        # Could not reach MCP server. No side effect. Safe to fail.
+                        async with db_lock:
+                            row.status = "failed"
+                            row.error_code = "E-3001"
+                            row.error_message = str(e)
+                            self._db.commit()
+                        raise
+                    except Exception as e:
+                        # Ambiguous transport failure — UPS may have acted.
+                        logger.error(
+                            "Ambiguous transport failure for row %d (job %s): %s [%s]. "
+                            "UPS may have created a shipment.",
+                            row.row_number, job_id, e, type(e).__name__,
                         )
+                        async with db_lock:
+                            row.status = "needs_review"
+                            row.error_message = (
+                                f"Ambiguous transport error during create_shipment: "
+                                f"{type(e).__name__}: {e}"
+                            )
+                            self._db.commit()
+                        raise
 
-                    # Cost in cents
-                    charges = result.get("totalCharges", {})
-                    cost_cents = _dollars_to_cents(charges.get("monetaryValue", "0"))
-
-                    # International charge breakdown and destination storage
-                    row_dest_country = dest_country if dest_country.upper() != DEFAULT_ORIGIN_COUNTRY else None
-                    row_duties_taxes_cents = None
-                    row_charge_breakdown = None
-
-                    charge_breakdown = result.get("chargeBreakdown")
-                    if charge_breakdown:
-                        row_charge_breakdown = json.dumps(charge_breakdown)
-                        duties = charge_breakdown.get("dutiesAndTaxes", {})
-                        if duties.get("monetaryValue"):
-                            row_duties_taxes_cents = _dollars_to_cents(
-                                duties["monetaryValue"]
+                    # --- POST-UPS: side effect occurred ---
+                    # UPS accepted the shipment. Any exception from here on must
+                    # NOT mark the row as "failed" — that would allow a retry to
+                    # create a duplicate. Use "needs_review" instead.
+                    try:
+                        tracking_numbers = result.get("trackingNumbers", [])
+                        tracking_number = tracking_numbers[0] if tracking_numbers else ""
+                        if not tracking_number or "XXXX" in tracking_number:
+                            tracking_number = result.get(
+                                "shipmentIdentificationNumber", tracking_number,
                             )
 
-                    # Serialize DB writes and progress events
-                    async with db_lock:
-                        row.tracking_number = tracking_number
-                        row.label_path = label_path
-                        row.cost_cents = cost_cents
-                        row.destination_country = row_dest_country
-                        row.duties_taxes_cents = row_duties_taxes_cents
-                        row.charge_breakdown = row_charge_breakdown
-                        row.status = "completed"
-                        row.processed_at = datetime.now(UTC).isoformat()
-                        self._db.commit()
-
-                        successful += 1
-                        total_cost_cents += cost_cents
-                        if tracking_number:
-                            successful_write_back_updates[row.row_number] = {
-                                "tracking_number": tracking_number,
-                                "shipped_at": row.processed_at or "",
-                            }
-
-                        if on_progress:
-                            await on_progress(
-                                "row_completed",
+                        # Save label to staging directory (not final path yet)
+                        label_path = ""
+                        label_data_list = result.get("labelData", [])
+                        if label_data_list and label_data_list[0]:
+                            label_path = self._save_label_staged(
+                                tracking_number,
+                                label_data_list[0],
                                 job_id=job_id,
                                 row_number=row.row_number,
-                                tracking_number=tracking_number,
-                                cost_cents=cost_cents,
                             )
 
-                    logger.info(
-                        "Row %d completed: tracking=%s, cost=%d cents",
-                        row.row_number,
-                        tracking_number,
-                        cost_cents,
-                    )
+                        # Cost in cents
+                        charges = result.get("totalCharges", {})
+                        cost_cents = _dollars_to_cents(
+                            charges.get("monetaryValue", "0"),
+                        )
 
-                except (UPSServiceError, ValueError, Exception) as e:
-                    error_code = getattr(e, "code", "E-3005")
-                    error_message = str(e)
+                        # International charge breakdown and destination storage
+                        row_dest_country = (
+                            dest_country
+                            if dest_country.upper() != DEFAULT_ORIGIN_COUNTRY
+                            else None
+                        )
+                        row_duties_taxes_cents = None
+                        row_charge_breakdown = None
+
+                        charge_breakdown = result.get("chargeBreakdown")
+                        if charge_breakdown:
+                            row_charge_breakdown = json.dumps(charge_breakdown)
+                            duties = charge_breakdown.get("dutiesAndTaxes", {})
+                            if duties.get("monetaryValue"):
+                                row_duties_taxes_cents = _dollars_to_cents(
+                                    duties["monetaryValue"],
+                                )
+
+                        # PHASE 2: Promote label first, then commit DB.
+                        # Crash safety: if we commit first and crash before promote,
+                        # startup cleanup deletes the staging file → completed row
+                        # with no label. By promoting first, crash leaves label at
+                        # final path + row still in_flight → recovery handles normally.
+                        final_label_path = ""
+                        if label_path:
+                            final_label_path = self._promote_label(label_path)
+
+                        async with db_lock:
+                            row.tracking_number = tracking_number
+                            row.label_path = final_label_path
+                            row.cost_cents = cost_cents
+                            row.destination_country = row_dest_country
+                            row.duties_taxes_cents = row_duties_taxes_cents
+                            row.charge_breakdown = row_charge_breakdown
+                            row.ups_shipment_id = result.get(
+                                "shipmentIdentificationNumber",
+                            )
+                            row.ups_tracking_number = tracking_number
+                            row.status = "completed"
+                            row.processed_at = datetime.now(UTC).isoformat()
+                            self._db.commit()
+
+                            successful += 1
+                            total_cost_cents += cost_cents
+                            if tracking_number:
+                                successful_write_back_updates[row.row_number] = {
+                                    "tracking_number": tracking_number,
+                                    "shipped_at": row.processed_at or "",
+                                }
+
+                            if on_progress:
+                                await on_progress(
+                                    "row_completed",
+                                    job_id=job_id,
+                                    row_number=row.row_number,
+                                    tracking_number=tracking_number,
+                                    cost_cents=cost_cents,
+                                )
+
+                        logger.info(
+                            "Row %d completed: tracking=%s, cost=%d cents",
+                            row.row_number,
+                            tracking_number,
+                            cost_cents,
+                        )
+
+                    except Exception as post_e:
+                        # Post-UPS failure: shipment exists at UPS.
+                        # Mark needs_review — NEVER failed.
+                        logger.error(
+                            "Post-UPS failure for row %d (job %s): %s. "
+                            "Shipment may exist at UPS — marking needs_review.",
+                            row.row_number, job_id, post_e,
+                        )
+                        async with db_lock:
+                            row.status = "needs_review"
+                            row.error_message = f"Post-UPS error: {post_e}"
+                            if hasattr(result, "get"):
+                                row.ups_shipment_id = result.get(
+                                    "shipmentIdentificationNumber",
+                                )
+                                tn = result.get("trackingNumbers", [])
+                                if tn:
+                                    row.ups_tracking_number = tn[0]
+                            self._db.commit()
+
+                except Exception as e:
+                    # Reaches here for:
+                    #   a) Pre-Phase-1 errors (parse, validation, payload build)
+                    #   b) Re-raised UPS/MCP/transport errors (row already marked)
+                    #
+                    # Only mark 'failed' for pre-UPS cases where inner handlers
+                    # haven't already set a terminal status.
+                    if not ups_call_succeeded:
+                        async with db_lock:
+                            if row.status in ("pending", "in_flight"):
+                                row.status = "failed"
+                                row.error_code = getattr(e, "code", "E-4001")
+                                row.error_message = str(e)
+                                self._db.commit()
 
                     async with db_lock:
-                        row.status = "failed"
-                        row.error_code = error_code
-                        row.error_message = error_message
-                        self._db.commit()
-
                         failed += 1
 
                         if on_progress:
@@ -498,8 +616,8 @@ class BatchEngine:
                                 "row_failed",
                                 job_id=job_id,
                                 row_number=row.row_number,
-                                error_code=error_code,
-                                error_message=error_message,
+                                error_code=getattr(e, "code", "E-4001"),
+                                error_message=str(e),
                             )
 
                     logger.error("Row %d failed: %s", row.row_number, e)
