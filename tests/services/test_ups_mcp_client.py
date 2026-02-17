@@ -1,5 +1,6 @@
 """Tests for UPSMCPClient (async MCP-based UPS client)."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -778,6 +779,43 @@ class TestUPSMCPReconnectBehavior:
             await ups_client._call("create_shipment", {"request_body": {"x": 1}})
 
         assert mock_mcp_client.call_tool.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_transport_failures_coalesce_single_reconnect(
+        self, ups_client, mock_mcp_client
+    ):
+        """Parallel failures should share one reconnect cycle."""
+        mock_mcp_client._session = object()
+        mock_mcp_client.disconnect = AsyncMock(return_value=None)
+        mock_mcp_client.connect = AsyncMock(return_value=None)
+
+        first_two_started = asyncio.Event()
+        call_count = 0
+
+        async def _side_effect(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                if call_count == 2:
+                    first_two_started.set()
+                await first_two_started.wait()
+                raise MCPConnectionError(command="test", reason="transport down")
+            return {"ok": f"retry-{call_count}"}
+
+        mock_mcp_client.call_tool = AsyncMock(side_effect=_side_effect)
+
+        task1 = asyncio.create_task(
+            ups_client._call("rate_shipment", {"request_body": {"id": 1}})
+        )
+        task2 = asyncio.create_task(
+            ups_client._call("rate_shipment", {"request_body": {"id": 2}})
+        )
+        result1, result2 = await asyncio.gather(task1, task2)
+
+        assert {result1["ok"], result2["ok"]} == {"retry-3", "retry-4"}
+        assert mock_mcp_client.call_tool.await_count == 4
+        mock_mcp_client.disconnect.assert_awaited_once()
+        mock_mcp_client.connect.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

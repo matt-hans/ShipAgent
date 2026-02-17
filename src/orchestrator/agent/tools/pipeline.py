@@ -364,6 +364,20 @@ async def ship_command_pipeline_tool(
     if not command:
         return _err("command is required")
 
+    validation_command = command
+    if bridge is not None:
+        bridge_message = getattr(bridge, "last_user_message", None)
+        bridge_command = bridge_message.strip() if isinstance(bridge_message, str) else ""
+        if bridge_command:
+            validation_command = bridge_command
+            if bridge_command != command:
+                logger.info(
+                    "ship_command_pipeline using bridge command for validation "
+                    "arg_command=%r bridge_command=%r",
+                    command[:120],
+                    bridge_command[:120],
+                )
+
     # Hard cutover: reject legacy where_clause
     if "where_clause" in args:
         return _err(
@@ -385,20 +399,25 @@ async def ship_command_pipeline_tool(
             "Use resolve_filter_intent to create a filter, or set "
             "all_rows=true to ship everything."
         )
-    if all_rows and _command_implies_filter(command):
+    if all_rows and _command_implies_filter(validation_command):
         return _err(
             "all_rows=true is not allowed when the command contains filters "
             "(e.g., regions or business/company qualifiers). Resolve and pass "
             "a filter_spec via resolve_filter_intent."
         )
 
-    limit = int(args.get("limit", 250))
-    job_name = str(args.get("job_name") or command or "Shipping Job")
+    try:
+        limit = int(args.get("limit", 250))
+    except (TypeError, ValueError):
+        limit = 250
+    if limit < 1:
+        limit = 250
+    job_name = str(args.get("job_name") or validation_command or "Shipping Job")
     raw_service_code = args.get("service_code")
     service_code: str | None = None
     if raw_service_code:
         resolved = translate_service_name(str(raw_service_code))
-        if _command_explicitly_requests_service(command):
+        if _command_explicitly_requests_service(validation_command):
             service_code = resolved
             logger.info(
                 "ship_command_pipeline applying explicit service override=%s",
@@ -439,14 +458,14 @@ async def ship_command_pipeline_tool(
         except Exception as e:
             return _err(f"Invalid filter_spec structure: {e}")
 
-        expected_region = _expected_region_from_command(command)
+        expected_region = _expected_region_from_command(validation_command)
         if expected_region and not _spec_includes_region(spec, expected_region):
             return _err(
                 f"Filter mismatch: command references region '{expected_region}' "
                 "but filter_spec does not include a matching state filter. "
                 "Re-run resolve_filter_intent with the correct region semantic key."
             )
-        if _command_requests_business_filter(command) and not _spec_includes_business_filter(spec):
+        if _command_requests_business_filter(validation_command) and not _spec_includes_business_filter(spec):
             return _err(
                 "Filter mismatch: command requests companies/business recipients, "
                 "but filter_spec does not include a business/company predicate. "
@@ -489,11 +508,57 @@ async def ship_command_pipeline_tool(
         filter_explanation = "All rows (no filter applied)"
 
     try:
-        fetched_rows = await gw.get_rows_by_filter(
-            where_sql=where_sql,
-            limit=limit,
-            params=params,
-        )
+        total_count = 0
+        used_count_endpoint = False
+        get_rows_with_count = getattr(gw, "get_rows_with_count", None)
+        if callable(get_rows_with_count):
+            count_result = await get_rows_with_count(
+                where_sql=where_sql,
+                limit=limit,
+                params=params,
+            )
+            if isinstance(count_result, dict):
+                result_rows = count_result.get("rows")
+                if isinstance(result_rows, list):
+                    fetched_rows = result_rows
+                    total_count = int(count_result.get("total_count", len(fetched_rows)))
+                    used_count_endpoint = True
+
+        if not used_count_endpoint:
+            fetched_rows = await gw.get_rows_by_filter(
+                where_sql=where_sql,
+                limit=limit,
+                params=params,
+            )
+            total_count = len(fetched_rows)
+
+        # Deterministic safety: never ship a silently truncated match set.
+        if total_count > len(fetched_rows):
+            max_fetch_rows_raw = os.environ.get("SHIP_PIPELINE_MAX_FETCH_ROWS", "1000")
+            try:
+                max_fetch_rows = max(1, int(max_fetch_rows_raw))
+            except ValueError:
+                max_fetch_rows = 1000
+
+            if total_count > max_fetch_rows:
+                return _err(
+                    "Filter matched "
+                    f"{total_count} rows, exceeding SHIP_PIPELINE_MAX_FETCH_ROWS="
+                    f"{max_fetch_rows}. Refine the filter and retry."
+                )
+
+            fetched_rows = await gw.get_rows_by_filter(
+                where_sql=where_sql,
+                limit=total_count,
+                params=params,
+            )
+            logger.info(
+                "ship_command_pipeline expanded truncated fetch "
+                "where_sql=%s total_count=%d requested_limit=%d",
+                where_sql,
+                total_count,
+                limit,
+            )
     except Exception as e:
         logger.error("ship_command_pipeline fetch failed: %s", e)
         return _err(f"Failed to fetch rows: {e}")
@@ -512,8 +577,20 @@ async def ship_command_pipeline_tool(
     try:
         with get_db_context() as db:
             job_service = JobService(db)
-            job = job_service.create_job(name=job_name, original_command=command)
-            await _persist_job_source_signature(job.id, db)
+            job = job_service.create_job(
+                name=job_name,
+                original_command=validation_command,
+            )
+            source_signature = {
+                "source_type": source_info.get("source_type", "unknown"),
+                "source_ref": source_info.get("path") or source_info.get("query") or "",
+                "schema_fingerprint": schema_signature,
+            }
+            await _persist_job_source_signature(
+                job.id,
+                db,
+                source_signature=source_signature,
+            )
             try:
                 mapping_started = time.perf_counter()
                 row_payload = _build_job_row_data(

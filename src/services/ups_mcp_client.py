@@ -145,6 +145,9 @@ class UPSMCPClient:
             elicitation_callback=_auto_decline_elicitation,
         )
         self._reconnect_count = 0
+        # Serialize reconnect attempts only. Tool calls remain concurrent.
+        self._reconnect_lock = asyncio.Lock()
+        self._connection_generation = 0
 
     def _build_server_params(self) -> StdioServerParameters:
         """Build StdioServerParameters for the UPS MCP server.
@@ -190,15 +193,14 @@ class UPSMCPClient:
 
     async def connect(self) -> None:
         """Connect to UPS MCP if disconnected."""
-        connected = getattr(self._mcp, "is_connected", False)
-        if isinstance(connected, bool) and connected:
-            return
-        await self._mcp.connect()
-        logger.info("UPS MCP client connected (env=%s)", self._environment)
+        async with self._reconnect_lock:
+            await self._connect_unlocked()
 
     async def disconnect(self) -> None:
         """Disconnect from UPS MCP."""
-        await self._mcp.disconnect()
+        async with self._reconnect_lock:
+            await self._disconnect_unlocked()
+            self._connection_generation += 1
 
     @property
     def is_connected(self) -> bool:
@@ -804,6 +806,7 @@ class UPSMCPClient:
         else:
             retry_kwargs = {"max_retries": 0, "base_delay": 1.0}
 
+        call_generation = self._connection_generation
         try:
             return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
         except MCPToolError as e:
@@ -825,26 +828,60 @@ class UPSMCPClient:
         except Exception as e:
             is_non_mutating = tool_name in self._READ_ONLY_TOOLS
             # For non-mutating operations, treat ANY non-MCPToolError as a
-            # transport failure worth reconnecting for.  This handles stale
+            # transport failure worth reconnecting for. This handles stale
             # subprocess connections (anyio ClosedResourceError, etc.) that
             # may not appear in the explicit type list.
             if not (is_non_mutating or self._is_transport_error(e)):
                 raise
 
-            logger.warning(
-                "UPS MCP transport failure during '%s', reconnecting once: %s [%s]",
-                tool_name,
-                e or type(e).__name__,
-                type(e).__name__,
-            )
-            self._reconnect_count += 1
-            await self.disconnect()
-            await self.connect()
+            await self._recover_transport(tool_name, e, call_generation)
 
             # Replay only non-mutating operations after reconnect.
             if is_non_mutating:
                 return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
             raise
+
+    async def _connect_unlocked(self) -> None:
+        """Connect to MCP without acquiring _reconnect_lock."""
+        connected = getattr(self._mcp, "is_connected", False)
+        if isinstance(connected, bool) and connected:
+            return
+        await self._mcp.connect()
+        logger.info("UPS MCP client connected (env=%s)", self._environment)
+
+    async def _disconnect_unlocked(self) -> None:
+        """Disconnect from MCP without acquiring _reconnect_lock."""
+        await self._mcp.disconnect()
+
+    async def _recover_transport(
+        self,
+        tool_name: str,
+        error: Exception,
+        call_generation: int,
+    ) -> None:
+        """Reconnect once for transport failures, coalescing concurrent recoveries."""
+        async with self._reconnect_lock:
+            # Another coroutine already repaired the transport while we waited.
+            if call_generation != self._connection_generation and self.is_connected:
+                return
+
+            logger.warning(
+                "UPS MCP transport failure during '%s', reconnecting once: %s [%s]",
+                tool_name,
+                error or type(error).__name__,
+                type(error).__name__,
+            )
+            self._reconnect_count += 1
+            try:
+                await self._disconnect_unlocked()
+            except Exception as disconnect_error:
+                logger.debug(
+                    "UPS MCP disconnect during transport recovery failed (continuing): %s [%s]",
+                    disconnect_error or type(disconnect_error).__name__,
+                    type(disconnect_error).__name__,
+                )
+            await self._connect_unlocked()
+            self._connection_generation += 1
 
     @staticmethod
     def _is_safe_mutating_retry_error(error_text: str) -> bool:
