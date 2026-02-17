@@ -88,6 +88,35 @@ def mark_tasks_completed(db: Session, job_id: str) -> int:
     return count
 
 
+def mark_rows_completed(db: Session, job_id: str, row_numbers: list[int]) -> int:
+    """Mark specific write-back tasks as completed by row number.
+
+    Used after partial write-back success to mark only the rows that
+    were written successfully, leaving failed rows as pending for retry.
+
+    Args:
+        db: Database session.
+        job_id: Job UUID.
+        row_numbers: List of 1-based row numbers to mark completed.
+
+    Returns:
+        Number of tasks marked completed.
+    """
+    if not row_numbers:
+        return 0
+    count = (
+        db.query(WriteBackTask)
+        .filter(
+            WriteBackTask.job_id == job_id,
+            WriteBackTask.status == "pending",
+            WriteBackTask.row_number.in_(row_numbers),
+        )
+        .update({"status": "completed"}, synchronize_session="fetch")
+    )
+    db.commit()
+    return count
+
+
 async def process_write_back_queue(
     db: Session,
     gateway: Any,

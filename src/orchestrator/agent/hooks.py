@@ -752,6 +752,21 @@ async def validate_filter_spec_on_pipeline(
             "The filter may have been modified after resolution."
         )
 
+    # Check resolution_status — token must prove RESOLVED status.
+    # A NEEDS_CONFIRMATION token cannot be used to execute; the agent must
+    # go through confirm → re-resolve to get a RESOLVED token.
+    token_status = decoded.get("resolution_status", "")
+    if token_status != "RESOLVED":
+        _log_to_stderr(
+            f"[FILTER ENFORCEMENT] DENYING non-RESOLVED token (status={token_status}) "
+            f"| ID: {tool_use_id}"
+        )
+        return _deny_with_reason(
+            f"Resolution token has status '{token_status}', not 'RESOLVED'. "
+            "Tier-B filters require user confirmation before execution. "
+            "Use confirm_filter_interpretation then re-resolve."
+        )
+
     return {}
 
 

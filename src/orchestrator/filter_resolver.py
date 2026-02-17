@@ -181,11 +181,17 @@ def resolve_filter_intent(
     # This ensures every filter_spec has a server-issued, HMAC-signed provenance
     # token. The pipeline hook validates this token unconditionally, preventing
     # a client from submitting a hand-crafted RESOLVED spec without server proof.
+    #
+    # CRITICAL: The token encodes the resolution status. A NEEDS_CONFIRMATION
+    # token cannot be used to execute — only RESOLVED tokens pass the hook.
+    # This prevents the agent from flipping status to RESOLVED without a
+    # genuine confirmation-then-re-resolve cycle.
     resolution_token = None
     if status in (ResolutionStatus.RESOLVED, ResolutionStatus.NEEDS_CONFIRMATION):
         resolution_token = _generate_resolution_token(
             schema_signature=schema_signature,
             resolved_root=canonicalized_root,
+            resolution_status=status.value,
         )
 
     return ResolvedFilterSpec(
@@ -475,8 +481,10 @@ def _expand_tier_b(
             f"({len(states)} states: {', '.join(sorted(states))})"
         )
 
-        # Check if we have a prior confirmation
-        if _is_confirmed(session_confirmations, schema_signature):
+        # Check if we have a prior confirmation for this specific term
+        if _is_confirmed(
+            session_confirmations, schema_signature, semantic_term=ref.semantic_key
+        ):
             child_statuses.append(ResolutionStatus.RESOLVED)
             return expansion
 
@@ -534,8 +542,10 @@ def _expand_tier_b(
             f"{ref.semantic_key} → {expansion_type} on '{target_col}'"
         )
 
-        # Check if we have a prior confirmation
-        if _is_confirmed(session_confirmations, schema_signature):
+        # Check if we have a prior confirmation for this specific term
+        if _is_confirmed(
+            session_confirmations, schema_signature, semantic_term=ref.semantic_key
+        ):
             child_statuses.append(ResolutionStatus.RESOLVED)
             return expansion
 
@@ -561,38 +571,54 @@ def _expand_tier_b(
 def _is_confirmed(
     session_confirmations: dict[str, ResolvedFilterSpec],
     schema_signature: str,
+    semantic_term: str | None = None,
 ) -> bool:
-    """Check if any session confirmation matches the current schema.
+    """Check if a session confirmation exists for this specific term.
 
     Args:
-        session_confirmations: Prior confirmed tokens.
+        session_confirmations: Prior confirmed tokens {token → confirmed spec}.
         schema_signature: Current schema hash.
+        semantic_term: The semantic key to match (e.g. 'northeast',
+            'BUSINESS_RECIPIENT'). If provided, only matches confirmations
+            whose pending_confirmations list includes this term.
 
     Returns:
-        True if a valid confirmation exists.
+        True if a valid, matching confirmation exists.
     """
     for token, confirmed in session_confirmations.items():
-        if _validate_resolution_token(token, schema_signature):
-            return True
+        if not _validate_resolution_token(token, schema_signature):
+            continue
+        if semantic_term is not None and confirmed.pending_confirmations:
+            confirmed_terms = {pc.term for pc in confirmed.pending_confirmations}
+            if semantic_term not in confirmed_terms:
+                continue
+        return True
     return False
 
 
 def _find_confirmed_spec(
     session_confirmations: dict[str, ResolvedFilterSpec],
     schema_signature: str,
+    semantic_term: str | None = None,
 ) -> ResolvedFilterSpec | None:
-    """Find a confirmed spec matching the current schema.
+    """Find a confirmed spec matching the current schema and term.
 
     Args:
-        session_confirmations: Prior confirmed tokens.
+        session_confirmations: Prior confirmed tokens {token → confirmed spec}.
         schema_signature: Current schema hash.
+        semantic_term: If provided, only match confirmations for this term.
 
     Returns:
         The confirmed spec, or None.
     """
     for token, confirmed in session_confirmations.items():
-        if _validate_resolution_token(token, schema_signature):
-            return confirmed
+        if not _validate_resolution_token(token, schema_signature):
+            continue
+        if semantic_term is not None and confirmed.pending_confirmations:
+            confirmed_terms = {pc.term for pc in confirmed.pending_confirmations}
+            if semantic_term not in confirmed_terms:
+                continue
+        return confirmed
     return None
 
 
@@ -655,12 +681,15 @@ def _generate_suggestions(term: str) -> list[dict[str, str]]:
 def _generate_resolution_token(
     schema_signature: str,
     resolved_root: FilterGroup,
+    resolution_status: str = "RESOLVED",
 ) -> str:
-    """Generate an HMAC-signed resolution token for Tier B confirmation.
+    """Generate an HMAC-signed resolution token.
 
     Args:
         schema_signature: Schema hash at resolution time.
         resolved_root: The resolved AST to bind to the token.
+        resolution_status: The resolution status at token generation time.
+            Encoded in the token to prevent status-flipping attacks.
 
     Returns:
         Base64-encoded token string.
@@ -677,6 +706,7 @@ def _generate_resolution_token(
         "schema_signature": schema_signature,
         "canonical_dict_version": CANONICAL_DICT_VERSION,
         "resolved_spec_hash": spec_hash,
+        "resolution_status": resolution_status,
         "expires_at": expires_at,
     }
 

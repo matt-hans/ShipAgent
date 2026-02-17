@@ -166,6 +166,12 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     _ensure_agent_sdk_available()
     warnings.filterwarnings("default", category=DeprecationWarning, module="claude_agent_sdk")
+
+    # Fail fast if filter token secret is missing or too short
+    from src.orchestrator.filter_config import validate_filter_config
+
+    validate_filter_config()
+
     init_db()
 
     allow_multi_worker = os.environ.get("SHIPAGENT_ALLOW_MULTI_WORKER", "false").lower()

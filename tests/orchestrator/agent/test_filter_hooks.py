@@ -183,12 +183,14 @@ def _make_valid_token(
     dict_version: str = "1.0.0",
     spec_hash: str = "abc",
     ttl: int = 600,
+    resolution_status: str = "RESOLVED",
 ) -> str:
     """Create a valid HMAC-signed token for testing."""
     payload = {
         "schema_signature": schema_signature,
         "canonical_dict_version": dict_version,
         "resolved_spec_hash": spec_hash,
+        "resolution_status": resolution_status,
         "expires_at": time.time() + ttl,
     }
     payload_json = json.dumps(payload, sort_keys=True)
@@ -384,6 +386,29 @@ class TestValidateFilterSpecOnPipeline:
             context=None,
         )
         assert not _is_denied(result)
+
+    @pytest.mark.anyio
+    async def test_denies_needs_confirmation_token(self):
+        """Denies pipeline with valid token that carries NEEDS_CONFIRMATION status."""
+        spec = _filter_spec_with_confirmation()
+        root_json = json.dumps(spec["root"], sort_keys=True, default=str)
+        spec_hash = hashlib.sha256(root_json.encode()).hexdigest()
+        spec["resolution_token"] = _make_valid_token(
+            schema_signature="sig123",
+            dict_version="1.0.0",
+            spec_hash=spec_hash,
+            resolution_status="NEEDS_CONFIRMATION",
+        )
+        result = await validate_filter_spec_on_pipeline(
+            {
+                "tool_name": "ship_command_pipeline",
+                "tool_input": {"filter_spec": spec},
+            },
+            tool_use_id="test-15c",
+            context=None,
+        )
+        assert _is_denied(result)
+        assert "needs_confirmation" in _denial_reason(result).lower()
 
     @pytest.mark.anyio
     async def test_ignores_unrelated_tools(self):
