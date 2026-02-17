@@ -761,3 +761,102 @@ class BatchEngine:
         filepath.write_bytes(pdf_bytes)
 
         return str(filepath)
+
+    def _save_label_staged(
+        self,
+        tracking_number: str,
+        base64_data: str,
+        job_id: str,
+        row_number: int,
+    ) -> str:
+        """Save label to staging directory for crash-safe two-phase commit.
+
+        Labels are first written to a staging subdirectory, then atomically
+        moved to the final location via _promote_label(). This prevents
+        partially-written labels from appearing at the final path if the
+        process crashes between the UPS call and the DB commit.
+
+        Args:
+            tracking_number: UPS tracking number.
+            base64_data: Base64-encoded PDF label data.
+            job_id: Job UUID (used as staging subdirectory name).
+            row_number: 1-based row number within the job.
+
+        Returns:
+            Absolute path to the staged label file.
+        """
+        staging_dir = Path(self._labels_dir) / "staging" / job_id
+        staging_dir.mkdir(parents=True, exist_ok=True)
+
+        job_prefix = job_id[:8] if job_id else "unknown"
+        filename = f"{job_prefix}_row{row_number:03d}_{tracking_number}.pdf"
+        staging_path = staging_dir / filename
+
+        pdf_bytes = base64.b64decode(base64_data)
+        staging_path.write_bytes(pdf_bytes)
+
+        return str(staging_path)
+
+    def _promote_label(self, staging_path: str) -> str:
+        """Atomically move label from staging to final location.
+
+        Uses os.rename() which is atomic on the same filesystem (POSIX).
+        After this call, the label exists at the final path and the staging
+        file is removed.
+
+        Args:
+            staging_path: Path to the staged label file.
+
+        Returns:
+            Absolute path to the final label file.
+        """
+        staging = Path(staging_path)
+        final_dir = Path(self._labels_dir)
+        final_dir.mkdir(parents=True, exist_ok=True)
+        final_path = final_dir / staging.name
+        os.rename(str(staging), str(final_path))
+        return str(final_path)
+
+    @staticmethod
+    def cleanup_staging(
+        job_service: Any,
+        labels_dir: str | None = None,
+    ) -> int:
+        """Remove orphaned staging files from completed or failed jobs.
+
+        Called at startup. Only removes staging files for jobs where NO rows
+        are in_flight or needs_review. Those staging files may contain labels
+        for shipments that need recovery or operator resolution.
+
+        Args:
+            job_service: JobService instance for database queries.
+            labels_dir: Labels directory path. Defaults to DEFAULT_LABELS_DIR.
+
+        Returns:
+            Number of orphaned staging files removed.
+        """
+        base = Path(labels_dir) if labels_dir else DEFAULT_LABELS_DIR
+        staging_root = base / "staging"
+        if not staging_root.exists():
+            return 0
+
+        count = 0
+        for job_dir in staging_root.iterdir():
+            if not job_dir.is_dir():
+                continue
+            job_id = job_dir.name
+
+            # Check if this job has any unresolved rows
+            rows = job_service.get_rows(job_id)
+            has_unresolved = any(
+                r.status in ("in_flight", "needs_review") for r in rows
+            )
+            if has_unresolved:
+                continue  # Preserve staging files for recovery
+
+            for f in job_dir.iterdir():
+                f.unlink()
+                count += 1
+            job_dir.rmdir()
+
+        return count
