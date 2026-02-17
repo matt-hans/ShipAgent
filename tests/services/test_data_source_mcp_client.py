@@ -77,6 +77,22 @@ async def test_get_rows_normalizes_shape(client, mock_mcp):
 
 
 @pytest.mark.asyncio
+async def test_get_rows_with_count_preserves_authoritative_total(client, mock_mcp):
+    """get_rows_with_count should preserve MCP total_count while normalizing rows."""
+    mock_mcp.call_tool.return_value = {
+        "rows": [
+            {"row_number": 1, "data": {"id": "1", "name": "Alice"}, "checksum": "abc"},
+            {"row_number": 2, "data": {"id": "2", "name": "Bob"}, "checksum": "def"},
+        ],
+        "total_count": 28,
+    }
+    result = await client.get_rows_with_count("1=1", limit=10)
+    assert result["total_count"] == 28
+    assert len(result["rows"]) == 2
+    assert result["rows"][0]["_row_number"] == 1
+
+
+@pytest.mark.asyncio
 async def test_get_rows_normalizes_none_clause(client, mock_mcp):
     """None where_clause should be normalized to '1=1'."""
     mock_mcp.call_tool.return_value = {"rows": [], "total_count": 0}

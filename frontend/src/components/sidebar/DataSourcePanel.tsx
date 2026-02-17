@@ -13,7 +13,7 @@ import { disconnectDataSource, importDataSource, uploadDataSource, getSavedDataS
 import type { DataSourceInfo, PlatformType } from '@/types/api';
 import { RecentSourcesModal } from '@/components/RecentSourcesModal';
 import { toDataSourceColumns } from '@/components/sidebar/dataSourceMappers';
-import { HardDriveIcon, EyeIcon, EyeOffIcon } from '@/components/ui/icons';
+import { HardDriveIcon, EyeIcon, EyeOffIcon, InfoIcon } from '@/components/ui/icons';
 import { ShopifyIcon } from '@/components/ui/brand-icons';
 import { Switch } from '@/components/ui/switch';
 
@@ -483,12 +483,20 @@ export function DataSourceSection() {
       {/* === WRITE-BACK TOGGLE === */}
       {activeSourceType && !interactiveShipping && (
         <div className="flex items-center justify-between px-3 py-2 mt-1 rounded-md bg-card/50 border border-slate-800/50">
-          <label
-            htmlFor="write-back-toggle"
-            className="text-[11px] text-muted-foreground select-none"
-          >
-            Write back tracking
-          </label>
+          <div className="flex items-center gap-1.5">
+            <label
+              htmlFor="write-back-toggle"
+              className="text-[11px] text-muted-foreground select-none"
+            >
+              Sync tracking info
+            </label>
+            <div className="relative group">
+              <InfoIcon className="w-3.5 h-3.5 text-slate-500 cursor-help" />
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1.5 bg-slate-800 text-slate-100 text-[10px] rounded shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-150 w-40 text-center leading-relaxed z-50">
+                Automatically updates tracking numbers on the original data source.
+              </div>
+            </div>
+          </div>
           <Switch
             id="write-back-toggle"
             checked={writeBackEnabled}

@@ -186,6 +186,34 @@ class TestFilterResolver:
         assert result.status == ResolutionStatus.NEEDS_CONFIRMATION
         assert result.pending_confirmations is not None
 
+    def test_business_predicate_matches_shopify_ship_to_company(self):
+        """BUSINESS_RECIPIENT resolves on Shopify-style ship_to_company column."""
+        from src.orchestrator.filter_resolver import resolve_filter_intent
+
+        shopify_schema = {"ship_to_company", "ship_to_state", "ship_to_name"}
+        shopify_types = {
+            "ship_to_company": "VARCHAR",
+            "ship_to_state": "VARCHAR",
+            "ship_to_name": "VARCHAR",
+        }
+        intent = _intent(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    SemanticReference(
+                        semantic_key="BUSINESS_RECIPIENT",
+                        target_column="ship_to_company",
+                    )
+                ],
+            )
+        )
+
+        result = resolve_filter_intent(
+            intent, shopify_schema, shopify_types, SCHEMA_SIG
+        )
+        assert result.status == ResolutionStatus.NEEDS_CONFIRMATION
+        assert result.pending_confirmations is not None
+
     def test_column_matching_exact_match(self):
         """6. target_column='company' matches 'company' in schema."""
         from src.orchestrator.filter_resolver import resolve_filter_intent

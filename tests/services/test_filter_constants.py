@@ -77,6 +77,7 @@ class TestBusinessPredicates:
 
         pred = BUSINESS_PREDICATES["BUSINESS_RECIPIENT"]
         assert "company" in pred["target_column_patterns"]
+        assert "ship_to_company" in pred["target_column_patterns"]
         assert pred["expansion"] == "is_not_blank"
 
     def test_personal_recipient_exists(self):

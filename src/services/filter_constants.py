@@ -141,14 +141,24 @@ REGION_ALIASES: dict[str, str] = {
 # Tier B — require confirmation before execution.
 # ---------------------------------------------------------------------------
 
+# Shared company-like column patterns across source types.
+# Includes Shopify's ``ship_to_company`` so "companies" intent resolves
+# deterministically for imported Shopify orders.
+_COMPANY_COLUMN_PATTERNS = [
+    "company",
+    "company_name",
+    "business_name",
+    "ship_to_company",
+]
+
 BUSINESS_PREDICATES: dict[str, dict] = {
     "BUSINESS_RECIPIENT": {
-        "target_column_patterns": ["company", "company_name", "business_name"],
+        "target_column_patterns": _COMPANY_COLUMN_PATTERNS,
         "expansion": "is_not_blank",
         "description": "Rows where company/business name is populated",
     },
     "PERSONAL_RECIPIENT": {
-        "target_column_patterns": ["company", "company_name", "business_name"],
+        "target_column_patterns": _COMPANY_COLUMN_PATTERNS,
         "expansion": "is_blank",
         "description": "Rows where company/business name is empty (personal recipients)",
     },

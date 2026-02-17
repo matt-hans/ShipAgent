@@ -402,13 +402,12 @@ This means you can say "use Ground" and the system will automatically select the
 
 **Key talking points at each step:**
 
-- **Preview step**: Point out the row count, total cost estimate, and zero warnings — the system got it right on the first try
-- **Confirm step**: Emphasize the safety gate — nothing ships without explicit confirmation
-- **Completion artifact**: Show the inline label access — labels are immediately available, no separate download step
-- **International demos**: Highlight the automatic service upgrade — Ground automatically becomes Standard for CA/MX or Worldwide Saver for EU
-- **Pickup button**: Highlight the "Schedule Pickup" button for seamless post-shipment logistics
-- **TrackingCard**: Show the activity timeline and expected delivery date
-- **PaperlessCard**: Show the file upload flow with document type selection and Document ID confirmation
+- **Preview step**: Point out the row count, total cost estimate, and zero warnings. Note the **Regional Intelligence**: "I asked for 'Northeast companies' and the system correctly identified those 6 states and filtered for business recipients automatically."
+- **Confirm step**: Emphasize the safety gate — nothing ships without explicit confirmation.
+- **Completion artifact**: Show the inline label access — labels are immediately available.
+- **International demos**: Highlight the automatic service upgrade — Ground automatically becomes Standard for CA/MX or Worldwide Saver for EU.
+- **Logistics Lifecycle**: Point out how we move from Tracking an existing package to finding a nearby drop-off (Locator) and then scheduling a Pickup for our own outbound shipments.
+- **PaperlessCard**: Show the file upload flow with Document ID confirmation — eliminates the need for physical invoice pouches.
 - **Sidebar**: Note the job appears in history with full audit trail
 
 **If asked "what happens under the hood":**
@@ -504,149 +503,251 @@ For production demos, use production UPS credentials to avoid CIE limitations.
 
 ## Video Recording Sequence
 
-**Sequential prompts for demo video recording** — run these in order for a comprehensive 8-phase demo. Each phase includes setup instructions and expected outcomes.
+### Recording Strategy
 
-### Phase 1: CSV Batch Shipping (2 Batches)
+Each phase demonstrates a distinct agentic capability. The sequence progresses from structured batch operations through source-agnostic proof, live e-commerce integration, conversational intelligence, global customs handling, and the full post-shipment logistics lifecycle.
 
-**Setup:** Click CSV button in sidebar, upload `test_data/sample_shipments.csv`
+**Core narrative:** This isn't a shipping form — it's an AI agent that reasons about logistics, expands geographic shorthand, detects semantic meaning in free text, handles customs compliance across 4 countries, and manages the complete shipping lifecycle through natural conversation.
 
-**Batch 1 — Multi-State with Weight/Value Filters:**
-
-> Ship all orders going to California, Texas, or Florida where the weight is over 10 pounds and the declared value is above $200 — use Ground for everything
-
-**Expected:** 5 shipments → Click Confirm → View Labels → Close dialog
+**Flow discipline:** Every preview must be confirmed and executed to completion. Scroll the cost summary into view before confirming. After batch completions with multiple labels, open View Labels and scroll through them.
 
 ---
 
-**Batch 2 — Keyword Search:**
+### Phase 1: CSV Batch Intelligence (2 batches)
+
+**Setup:** Click CSV button in sidebar → Upload `test_data/sample_shipments.csv` (100 rows, 18 columns, all 50 US states + PR + DC)
+
+---
+
+**Batch 1 — Geographic Reasoning + Business Logic (Prompt 4):**
+
+> Ship all orders going to the Northeast. Use 2nd Day Air
+
+**Agentic capability demonstrated:**
+- **Geographic expansion:** "Northeast" → 6 specific state codes (`state IN ('NY', 'MA', 'CT', 'PA', 'NJ', 'ME')`)
+- **Business logic:** "companies" → `company IS NOT NULL` (filters out personal recipients)
+- **Service mapping:** "2nd Day Air" → UPS service code `02`
+
+**Expected:** 5 shipments to business recipients in the Northeast
+**Verified:** Yes (Prompt 4)
+
+**Talking point:** *"I said 'Northeast companies' — the agent expanded that into six states AND understood that 'companies' means filtering for business recipients with a company name on file. Three layers of reasoning from two words."*
+
+→ Scroll to cost summary → **Confirm & Execute** → View Labels → Scroll through labels → Close
+
+---
+
+**Batch 2 — Semantic Keyword Intelligence (Prompt 3):**
 
 > Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish — use Ground for everything
 
-**Expected:** 7 shipments → Click Confirm → View Labels → Close dialog
+**Agentic capability demonstrated:**
+- **Natural language → SQL:** Extracts 5 semantic food categories from conversational text
+- **Pattern matching:** Generates 5 independent `ILIKE '%keyword%'` clauses joined with `OR`
+- **Free-text column search:** Matches against the unstructured `description` field
+
+**Expected:** 7 shipments (coffee beans, Cajun spice blends, artisan cheese wheels, BBQ competition supplies, crawfish boil equipment)
+**Verified:** Yes (Prompt 3)
+
+**Talking point:** *"I gave the agent a list of food categories in plain English. It generated five independent substring searches across the description field and found all seven matching orders — including 'crawfish boil equipment' which requires understanding that crawfish is food-related."*
+
+→ Scroll to cost summary → **Confirm & Execute** → View Labels → Scroll through labels → Close
 
 ---
 
-### Phase 2: Excel "Wow Moment"
+### Phase 2: Excel Source-Agnostic Proof
 
-**Setup:** Click Disconnect on CSV source, then click Excel button, upload `test_data/sample_shipments.xlsx`
-
-**Different Query Strategy:**
-
-> Ship all orders where the weight is over 20 pounds and the declared value is under $500 — use Ground for everything
-
-**Expected:** Shows same data, different query approach — source agnostic! → Click Confirm
+**Setup:** Click Disconnect in sidebar → Click Excel button → Upload `test_data/sample_shipments.xlsx` (identical data, different format)
 
 ---
 
-### Phase 3: Shopify Live Data
+**The "Wow Moment" — Same Prompt, Same Results (Prompt 8):**
 
-**Setup:** Page will reload. Toggle "Single Shipment" OFF if needed. Shopify should auto-connect.
+> Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish — use Ground for everything
 
-**Complex Multi-State with Price Range:**
+**Agentic capability demonstrated:**
+- **Source agnosticism:** Identical natural language query against a completely different data adapter (Excel/openpyxl vs CSV/DuckDB) — zero prompt changes needed
+- **Adapter abstraction:** The agent doesn't know or care what file format produced the data
 
-> Ship all unfulfilled orders from CA, TX, or NY where the total is $50-$500 using UPS Ground
+**Expected:** 7 shipments — **identical to CSV result**
+**Verified:** Yes (Prompt 8 = Prompt 3, same dataset)
 
-**Expected:** ~30 shipments, ~$668 total → Click Confirm (wait ~5 min for execution)
+**Talking point:** *"Exact same prompt, exact same seven results, completely different file format. The agent doesn't care if your data lives in CSV, Excel, or a live Shopify store — it adapts to any source automatically. That's true source-agnostic processing."*
+
+→ Scroll to cost summary → **Confirm & Execute**
 
 ---
 
-### Phase 4: Interactive Mode — Domestic
+### Phase 3: Shopify Live E-Commerce at Scale
 
-**Setup:** Page will reload. Toggle "Single Shipment" ON.
+**Setup:** Reload page (clean session) → Ensure Single Shipment toggle is OFF → Click "Use Shopify" → Wait for ACTIVE badge
 
-**Start Shipment:**
+---
+
+**5-Condition Compound Filter Against Live Data (Prompt 11):**
+
+> Ship all orders from customers in California, Texas, or New York where the total is over $50 and under $500, but only the unfulfilled ones using UPS Ground
+
+**Agentic capability demonstrated:**
+- **Complex multi-clause parsing:** 5 conditions extracted from a single sentence:
+  1. `state IN ('CA', 'TX', 'NY')` — 3-state OR
+  2. `total_price > 50` — floor threshold
+  3. `total_price < 500` — ceiling threshold
+  4. `fulfillment_status = 'unfulfilled'` — status filter
+  5. Service: UPS Ground (code `03`)
+- **Type casting:** Shopify stores `total_price` as VARCHAR — agent auto-casts to numeric
+- **Scale:** 30 concurrent shipments processed against a live store with 88 orders
+
+**Expected:** 30 shipments, ~$668 total cost
+**Verified:** Yes (Prompt 11, 2026-02-16, matthansdev.myshopify.com)
+
+**Talking point:** *"This is running against a live Shopify store with 88 real orders. The agent parsed five conditions from one sentence, handled type casting automatically — Shopify stores prices as strings — and is now processing 30 shipments concurrently. That's the power of an AI-native shipping platform."*
+
+→ Scroll to cost summary (note the 30-shipment count and ~$668 total) → **Confirm & Execute** → Watch concurrent progress
+
+---
+
+### Phase 4: Interactive Conversational Shipping
+
+**Setup:** Reload page (clean session) → Toggle "Single Shipment" ON
+
+---
+
+**4a. Domestic — Conversational Elicitation (Prompt 12):**
 
 > Use my default shipper info. Ship a package to Maria Garcia at 123 Ocean Drive, Miami, FL 33139
 
-**Agent will ask for details. Provide:**
-
+**Agent will ask for missing fields.** Provide:
 > phone 3055551234, description electronics, weight 5 lbs, dimensions 10x8x6
 
-**Expected:** ~$36 UPS Ground → Click Confirm → View Label
+**Agentic capability demonstrated:**
+- **Elicitation workflow:** Agent identifies 4 missing required fields and asks for them naturally
+- **Shipper config:** Auto-populates shipper info from saved configuration
+- **Conversational data collection:** No forms — just a back-and-forth conversation
+
+**Expected:** UPS Ground, ~$36 cost
+**Verified:** Yes (Prompt 12, 2026-02-16)
+
+**Talking point:** *"I gave partial information and the agent figured out exactly what was missing — phone, description, weight, dimensions — and asked for it in one natural question. No forms, no dropdowns, just conversation."*
+
+→ Scroll to preview → **Confirm & Ship** → View Label → Close
 
 ---
 
-### Phase 5: International Shipping (4 Destinations)
+**4b. International — 4 Destinations with Automatic Service Upgrades:**
 
-**Setup:** Ensure "Single Shipment" toggle is ON
+Each destination showcases a different international capability. The system automatically selects the correct international UPS service based on destination — no manual service specification needed.
 
-**13a — Canada:**
-
+**Canada (Prompt 13a):**
 > Ship a 2kg package to Sophie Martin at 555 Rue Sherbrooke Ouest, Montreal QC H3A 1E8, Canada. Contains software media (HS code 852349) worth $95. Phone: +1 514 555 1234
 
-**Expected:** UPS Standard, ~$37 → Click Confirm
+**Expected:** UPS Standard (auto-selected for North America), **$37.29**
+**Talking point:** *"Canada — the system detected North America and automatically selected UPS Standard, the optimal cross-border service."*
+→ **Confirm & Ship**
 
 ---
 
-**13b — Mexico:**
-
+**Mexico (Prompt 13b):**
 > Ship a 4kg package to Carlos Rodriguez at 200 Paseo de la Reforma, Mexico City 06600, Mexico. Contains automotive parts (HS code 870899) worth $320. Phone: +52 55 1234 5678
 
-**Expected:** UPS Standard, ~$105 → Click Confirm
+**Expected:** UPS Standard, **$105.23**
+**Talking point:** *"Mexico requires package-level merchandise descriptions for customs — the system adds those automatically. No manual compliance work."*
+→ **Confirm & Ship**
 
 ---
 
-**13c — United Kingdom (Auto-Upgrade Demo):**
-
+**United Kingdom (Prompt 13c):**
 > Ship a 2kg package to Elizabeth Taylor at 100 Piccadilly, London W1J 7NT, United Kingdom. Contains books (HS code 490199) worth $75. Phone: +44 20 7493 0800
 
-**Expected:** UPS Worldwide Saver (auto-upgrade!), ~$308 → Click Confirm
+**Expected:** UPS Worldwide Saver (auto-upgrade from domestic), **$307.75**
+**Talking point:** *"I didn't specify a service — the system detected a European destination and automatically upgraded to UPS Worldwide Saver. Domestic service codes are transparently translated to their international equivalents."*
+→ **Confirm & Ship**
 
 ---
 
-**13d — Germany:**
-
+**Germany (Prompt 13d):**
 > Ship a 3kg package to Franz Becker at 50 Unter den Linden, Berlin 10117, Germany. Contains mechanical parts (HS code 848790) worth $150. Phone: +49 30 1234 5678
 
-**Expected:** UPS Worldwide Saver, ~$342 → Click Confirm
+**Expected:** UPS Worldwide Saver, **$341.98**
+**Verified:** All 4 destinations verified 2026-02-16
+
+**Talking point (summary after all 4):** *"Four countries, four shipments, four complete customs declarations — each with proper HS codes, declared values, and automatically selected international services. All generated from natural conversation. The agent handles North American lanes with UPS Standard and routes everything else through Worldwide Saver automatically."*
+→ **Confirm & Ship**
 
 ---
 
-### Phase 6: Post-Shipment Features
+### Phase 5: Full Logistics Lifecycle
 
-**Setup:** Toggle "Single Shipment" OFF
+**Setup:** Toggle "Single Shipment" OFF (v2 tools work in both modes)
 
-**Tracking:**
+This phase demonstrates the complete post-shipment logistics lifecycle: track an existing package, find a nearby drop-off location, schedule a pickup, and upload customs documents — all through conversation.
+
+---
+
+**5a. Real-Time Package Tracking (Prompt 17):**
 
 > Track package 1Z999AA10123456784
 
-**Expected:** TrackingCard with status and activity timeline
+**Agentic capability:** UPS Tracking API integration renders a blue TrackingCard with activity timeline, current status, expected delivery date, and ship-to address. Includes sandbox mismatch detection.
+
+**Talking point:** *"From shipping to tracking — the complete lifecycle in one interface. The TrackingCard shows every scan event with timestamps and locations."*
 
 ---
 
-**Location Finder:**
+**5b. UPS Location Finder (Prompt 16):**
 
 > Find UPS drop-off locations near Beverly Hills, CA
 
-**Expected:** LocationCard with nearby UPS Access Points (may be limited in CIE)
+**Agentic capability:** UPS Locator API renders a teal LocationCard with expandable location list — addresses, phone numbers, operating hours. Click individual locations to expand details.
+
+**Talking point:** *"Need to drop off a package? Ask the agent. It shows nearby UPS Access Points with hours and contact info — click any location to see the full details."*
+
+**CIE note:** Limited city coverage in sandbox. If "no locations found," mention this is a sandbox limitation — the integration works in production.
 
 ---
 
-**Pickup Scheduling:**
+**5c. Pickup Scheduling — Conversational Elicitation (Prompt 14):**
 
 > Schedule a pickup for tomorrow at 3520 Hyland Ave, Costa Mesa, CA 92626
 
-**Agent will ask for details. Provide:**
-
+**Agent asks for details.** Provide:
 > ready by 9 AM, closing at 5 PM, contact Matt Hans at 9495551234
 
-**Expected:** ~$16 on-account fee → Click Confirm → PRN displayed
+**Agentic capability:** Multi-step pickup workflow — agent collects time window and contact info conversationally, shows purple PickupPreviewCard with cost breakdown, requires confirmation before scheduling (financial commitment safety gate).
+
+**Expected:** ~$16 on-account fee → PRN (Pickup Request Number) generated
+**Verified:** Yes (Prompt 14, 2026-02-16)
+
+**Talking point:** *"Pickup scheduling is a financial commitment — the agent shows the exact cost breakdown and requires explicit confirmation. No surprise charges."*
+
+→ Scroll to preview → **Confirm & Schedule** → Note PRN in completion
 
 ---
 
-**Paperless Upload:**
-
-> I need to upload a commercial invoice to UPS Paperless
-
-**Expected:** PaperlessUploadCard renders → Select PDF from `test_data/test_commercial_invoice.pdf` → Select "Commercial Invoice" → Click Upload → Document ID displayed
-
----
-
-### Phase 6b: Standalone Pickup
+**5d. Standalone Pickup — All Details at Once (Prompt 15):**
 
 > I need to schedule a UPS pickup for my location at 123 Business Ave, Suite 100, Chicago, IL 60601 for next Monday, ready by 10 AM, closing at 6 PM. My contact info is John Smith at 555-123-4567.
 
-**Expected:** Pickup preview ~$16-20 → Click Confirm → PRN displayed
+**Agentic capability:** All pickup parameters provided upfront — agent skips elicitation and goes straight to preview. Demonstrates adaptive interaction: piece-by-piece OR all-at-once, the agent handles both.
+
+**Expected:** Pickup confirmation with PRN, ~$16-20 cost
+
+**Talking point:** *"Same capability, different interaction style — give everything at once and the agent skips the questions. It adapts to how you communicate."*
+
+→ Scroll to preview → **Confirm & Schedule**
+
+---
+
+**5e. Paperless Customs Documents (Prompt 18):**
+
+> I need to upload a commercial invoice to UPS Paperless
+
+**Agentic capability:** Agent renders an amber PaperlessUploadCard with file dropzone, document type selector, and optional notes field. Upload `test_data/test_commercial_invoice.pdf` → Select "Commercial Invoice" → Click Upload → Agent calls UPS Paperless API and returns Document ID.
+
+**Expected:** Document ID returned (e.g., `2013-12-04-00.15.33.207814`)
+**Verified:** Yes (Prompt 18, 2026-02-16)
+
+**Talking point:** *"Digital trade documents — no more paper invoice pouches taped to boxes. Upload once, get a Document ID, and attach it to any international shipment electronically."*
 
 ---
 
@@ -655,9 +756,34 @@ For production demos, use production UPS credentials to avoid CIE limitations.
 - [ ] Backend running: `./scripts/start-backend.sh`
 - [ ] Frontend running: `cd frontend && npm run dev`
 - [ ] `INTERNATIONAL_ENABLED_LANES=*` in `.env`
-- [ ] Shopify env vars configured
-- [ ] Test data files present in `test_data/`
-- [ ] Screen recording software ready (or use `./node_modules/.bin/tsx scripts/record-demo.ts`)
+- [ ] Shopify env vars configured and accessible
+- [ ] Test data present: `test_data/sample_shipments.csv`, `.xlsx`, `test_commercial_invoice.pdf`
+- [ ] Screen recording software ready (OBS, QuickTime, or Loom)
+
+### Key Moments Reference
+
+| Phase | Prompt | Agentic Capability | Expected Result |
+|-------|--------|-------------------|-----------------|
+| CSV Batch 1 | Northeast companies, 2nd Day Air | Geographic expansion + NULL check + service mapping | 5 shipments |
+| CSV Batch 2 | Food keyword search | Semantic NL → 5 ILIKE clauses | 7 shipments |
+| Excel | Same food keyword prompt | Source-agnostic proof (CSV vs Excel) | 7 identical shipments |
+| Shopify | CA/TX/NY, $50-$500, unfulfilled | 5-condition compound filter + type casting + scale | 30 shipments, ~$668 |
+| Domestic | Maria Garcia, Miami | Conversational elicitation for missing fields | ~$36 UPS Ground |
+| Canada | Sophie Martin, Montreal | Auto-select UPS Standard for North America | $37.29 |
+| Mexico | Carlos Rodriguez, Mexico City | Auto merchandise description for MX compliance | $105.23 |
+| UK | Elizabeth Taylor, London | Auto-upgrade to Worldwide Saver for EU | $307.75 |
+| Germany | Franz Becker, Berlin | Full EU coverage with HS code handling | $341.98 |
+| Tracking | 1Z999AA10123456784 | TrackingCard with activity timeline | Blue card, scan history |
+| Locator | Beverly Hills, CA | LocationCard with hours and contact | Teal card, expandable list |
+| Pickup (elicit) | Costa Mesa address | Multi-step elicitation + cost preview | ~$16, PRN generated |
+| Pickup (direct) | Chicago, all-at-once | Adaptive interaction — skip elicitation | ~$16-20, PRN generated |
+| Paperless | Commercial invoice upload | PaperlessUploadCard + Document ID | Amber card, doc ID |
+
+### Narrative Arc
+
+1. **"Any data source"** (Phases 1-3): CSV → Excel → Shopify proves the agent works with any data, any format, any scale
+2. **"Any destination"** (Phase 4): Domestic → Canada → Mexico → UK → Germany proves global coverage with automatic compliance
+3. **"Any operation"** (Phase 5): Track → Locate → Schedule → Upload proves the complete logistics lifecycle
 
 ---
 

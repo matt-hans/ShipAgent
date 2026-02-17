@@ -167,3 +167,43 @@ class TestFetchRowsFilterSpec:
         call_kwargs = gw.get_rows_by_filter.call_args.kwargs
         assert call_kwargs["where_sql"] == "1=1"
         assert call_kwargs["params"] == []
+
+    @pytest.mark.asyncio
+    async def test_uses_total_count_when_gateway_exposes_it(self):
+        """fetch_rows should report authoritative total_count, not page size."""
+        from src.orchestrator.agent.tools.data import fetch_rows_tool
+
+        gw = AsyncMock()
+        gw.get_source_info.return_value = {
+            "source_type": "csv",
+            "row_count": 100,
+            "columns": [
+                {"name": "state", "type": "VARCHAR", "nullable": True},
+            ],
+            "signature": "test_sig",
+        }
+        gw.get_rows_with_count.return_value = {
+            "rows": [
+                {"_row_number": 1, "state": "CA"},
+                {"_row_number": 2, "state": "CA"},
+            ],
+            "total_count": 28,
+        }
+        bridge = MagicMock()
+        bridge.store_rows.return_value = "test-fetch-id"
+
+        with patch(
+            "src.orchestrator.agent.tools.data.get_data_gateway",
+            new_callable=AsyncMock,
+            return_value=gw,
+        ):
+            result = await fetch_rows_tool(
+                {"all_rows": True, "limit": 2},
+                bridge=bridge,
+            )
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["row_count"] == 28
+        assert content["total_count"] == 28
+        assert content["returned_count"] == 2

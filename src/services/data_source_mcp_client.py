@@ -244,7 +244,27 @@ class DataSourceMCPClient:
         offset: int = 0,
         params: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Get rows matching a parameterized WHERE clause, normalized to flat dicts.
+        """Get rows matching a parameterized WHERE clause.
+
+        Backward-compatible helper that returns only normalized rows.
+        For authoritative cardinality, use get_rows_with_count().
+        """
+        result = await self.get_rows_with_count(
+            where_sql=where_sql,
+            limit=limit,
+            offset=offset,
+            params=params,
+        )
+        return result["rows"]
+
+    async def get_rows_with_count(
+        self,
+        where_sql: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        params: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        """Get normalized rows and authoritative total_count for a filter.
 
         Args:
             where_sql: Parameterized WHERE condition ($1, $2, ... placeholders).
@@ -269,7 +289,11 @@ class DataSourceMCPClient:
         if query_params:
             tool_args["params"] = query_params
         result = await self._mcp.call_tool("get_rows_by_filter", tool_args)
-        return self._normalize_rows(result.get("rows", []))
+        raw_rows = result.get("rows", [])
+        return {
+            "rows": self._normalize_rows(raw_rows),
+            "total_count": int(result.get("total_count", len(raw_rows))),
+        }
 
     async def get_column_samples(self, max_samples: int = 5) -> dict[str, list[Any]]:
         """Get sample distinct values for each column.
