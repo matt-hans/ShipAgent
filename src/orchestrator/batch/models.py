@@ -135,3 +135,9 @@ class InterruptedJobInfo:
 
     error_message: Optional[str] = None
     """Error message if crash was due to an error."""
+
+    in_flight_count: int = 0
+    """Number of rows stuck in in_flight state (Phase 8: execution determinism)."""
+
+    needs_review_count: int = 0
+    """Number of rows in needs_review state requiring operator action."""
