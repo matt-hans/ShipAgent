@@ -322,4 +322,74 @@ def submit(
     asyncio.run(_run())
 
 
-# --- Daemon commands (placeholder for Task 7) ---
+# --- Daemon commands ---
+
+
+@daemon_app.command("start")
+def daemon_start_cmd(
+    host: Optional[str] = typer.Option(None, "--host", help="Bind address"),
+    port: Optional[int] = typer.Option(None, "--port", help="Bind port"),
+):
+    """Start the ShipAgent daemon (FastAPI + Watchdog)."""
+    import os
+
+    from src.cli.daemon import start_daemon
+
+    cfg = load_config(config_path=_config_path)
+    final_host = host or (cfg.daemon.host if cfg else "127.0.0.1")
+    final_port = port or (cfg.daemon.port if cfg else 8000)
+    pid_file = cfg.daemon.pid_file if cfg else "~/.shipagent/daemon.pid"
+    log_level = cfg.daemon.log_level if cfg else "info"
+
+    # Propagate config path to API startup via env var so that
+    # startup_event() loads the same config as the CLI.
+    if _config_path:
+        os.environ["SHIPAGENT_CONFIG_PATH"] = str(_config_path)
+
+    console.print(f"[bold]Starting ShipAgent daemon on {final_host}:{final_port}[/bold]")
+    start_daemon(host=final_host, port=final_port, pid_file=pid_file, log_level=log_level)
+
+
+@daemon_app.command("stop")
+def daemon_stop_cmd():
+    """Stop the ShipAgent daemon."""
+    from src.cli.daemon import stop_daemon
+
+    cfg = load_config(config_path=_config_path)
+    pid_file = cfg.daemon.pid_file if cfg else "~/.shipagent/daemon.pid"
+
+    if stop_daemon(pid_file=pid_file):
+        console.print("[green]Daemon stopped.[/green]")
+    else:
+        console.print("[yellow]Daemon is not running.[/yellow]")
+
+
+@daemon_app.command("status")
+def daemon_status_cmd():
+    """Check daemon status."""
+    from src.cli.daemon import daemon_status as check_status
+
+    cfg = load_config(config_path=_config_path)
+    pid_file = cfg.daemon.pid_file if cfg else "~/.shipagent/daemon.pid"
+    base_url = f"http://{cfg.daemon.host}:{cfg.daemon.port}" if cfg else "http://127.0.0.1:8000"
+
+    status = check_status(pid_file=pid_file, base_url=base_url)
+    if status["alive"] and status["healthy"]:
+        console.print(f"[green]Daemon running[/green] (PID {status['pid']}) — healthy")
+    elif status["alive"]:
+        console.print(f"[yellow]Daemon running[/yellow] (PID {status['pid']}) — unhealthy")
+    else:
+        console.print("[red]Daemon not running[/red]")
+
+
+# --- Interact command (placeholder for Task 12) ---
+
+
+@app.command()
+def interact(
+    session: Optional[str] = typer.Option(
+        None, "--session", help="Resume existing session ID"
+    ),
+):
+    """Start a conversational shipping REPL."""
+    console.print("[yellow]Interactive REPL — implemented in Task 12[/yellow]")
