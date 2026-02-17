@@ -52,6 +52,9 @@ def _dollars_to_cents(amount: str) -> int:
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_LABELS_DIR = PROJECT_ROOT / "labels"
 
+# Maximum recovery attempts before escalating in_flight rows to needs_review
+MAX_RECOVERY_ATTEMPTS = int(os.environ.get("MAX_RECOVERY_ATTEMPTS", "3"))
+
 # Callback type for progress reporting
 ProgressCallback = Callable[..., Awaitable[None]]
 
@@ -978,3 +981,170 @@ class BatchEngine:
             job_dir.rmdir()
 
         return count
+
+    async def recover_in_flight_rows(
+        self,
+        job_id: str,
+        rows: list[Any],
+    ) -> dict[str, Any]:
+        """Recover rows stuck in 'in_flight' state after a crash.
+
+        Three-tier recovery based on available state:
+
+        Tier 1 (has ups_tracking_number): Call track_package to verify. If UPS
+            confirms AND local artifacts (label file, cost_cents) are present →
+            complete. If UPS confirms but artifacts missing → needs_review. If
+            UPS returns empty/invalid → needs_review.
+
+        Tier 2 (no tracking info): Cannot determine if UPS created shipment.
+            Mark needs_review immediately (never auto-retry — prevents
+            duplicate shipments). Include idempotency_key in report for
+            operator to check UPS Quantum View.
+
+        Tier 3 (UPS lookup fails): Network/API error during track_package.
+            Increment recovery_attempt_count. After MAX_RECOVERY_ATTEMPTS
+            failed lookups, escalate to needs_review. Below limit, leave
+            in_flight for next startup pass.
+
+        Args:
+            job_id: Job UUID for logging context.
+            rows: All rows for the job (filters to in_flight internally).
+
+        Returns:
+            Dict with recovered, needs_review, unresolved counts and
+            per-row details for operator action.
+        """
+        in_flight = [r for r in rows if r.status == "in_flight"]
+        recovered = 0
+        needs_review = 0
+        unresolved = 0
+        details: list[dict[str, Any]] = []
+
+        for row in in_flight:
+            if row.ups_tracking_number:
+                # Tier 1: We have a per-package tracking number — verify it
+                try:
+                    raw = await self._ups.track_package(
+                        tracking_number=row.ups_tracking_number,
+                    )
+                    # Parse nested UPS tracking response
+                    shipment = raw.get("trackResponse", {}).get("shipment", [{}])
+                    if isinstance(shipment, list):
+                        shipment = shipment[0] if shipment else {}
+                    package = shipment.get("package", [{}])
+                    if isinstance(package, list):
+                        package = package[0] if package else {}
+                    returned_number = package.get("trackingNumber", "")
+
+                    if returned_number:
+                        # UPS confirms shipment exists — verify local artifacts
+                        missing_artifacts: list[str] = []
+                        if not row.label_path or not os.path.exists(row.label_path):
+                            missing_artifacts.append("label_path")
+                        if row.cost_cents is None:
+                            missing_artifacts.append("cost_cents")
+
+                        if missing_artifacts:
+                            row.status = "needs_review"
+                            row.error_message = (
+                                f"Shipment verified at UPS ({returned_number}) but "
+                                f"missing artifacts: {', '.join(missing_artifacts)}"
+                            )
+                            self._db.commit()
+                            needs_review += 1
+                            details.append({
+                                "row_number": row.row_number,
+                                "action": "needs_review",
+                                "reason": f"UPS confirmed but missing: {', '.join(missing_artifacts)}",
+                                "tracking_number": returned_number,
+                                "idempotency_key": row.idempotency_key,
+                            })
+                        else:
+                            # All artifacts present — safe to complete
+                            row.tracking_number = returned_number
+                            row.status = "completed"
+                            row.processed_at = datetime.now(UTC).isoformat()
+                            self._db.commit()
+                            recovered += 1
+                            details.append({
+                                "row_number": row.row_number,
+                                "action": "recovered",
+                                "tracking_number": returned_number,
+                            })
+                    else:
+                        # UPS doesn't recognize this tracking number
+                        row.status = "needs_review"
+                        row.error_message = (
+                            f"UPS returned empty tracking for stored number "
+                            f"'{row.ups_tracking_number}'"
+                        )
+                        self._db.commit()
+                        needs_review += 1
+                        details.append({
+                            "row_number": row.row_number,
+                            "action": "needs_review",
+                            "reason": "UPS returned invalid for stored tracking number",
+                            "ups_tracking_number": row.ups_tracking_number,
+                            "idempotency_key": row.idempotency_key,
+                        })
+                except Exception as e:
+                    # Tier 3: Lookup failed — escalation policy
+                    row.recovery_attempt_count += 1
+                    if row.recovery_attempt_count >= MAX_RECOVERY_ATTEMPTS:
+                        row.status = "needs_review"
+                        row.error_message = (
+                            f"UPS lookup failed {row.recovery_attempt_count} times "
+                            f"(last error: {e}) — escalated for manual resolution"
+                        )
+                        self._db.commit()
+                        needs_review += 1
+                        details.append({
+                            "row_number": row.row_number,
+                            "action": "needs_review",
+                            "reason": (
+                                f"Escalated after {row.recovery_attempt_count} "
+                                f"failed lookups"
+                            ),
+                            "idempotency_key": row.idempotency_key,
+                        })
+                    else:
+                        # Below limit — leave in_flight for next startup pass
+                        self._db.commit()
+                        unresolved += 1
+                        details.append({
+                            "row_number": row.row_number,
+                            "action": "unresolved",
+                            "reason": (
+                                f"UPS lookup failed "
+                                f"({row.recovery_attempt_count}/{MAX_RECOVERY_ATTEMPTS}): {e}"
+                            ),
+                            "idempotency_key": row.idempotency_key,
+                        })
+            else:
+                # Tier 2: No tracking info — ambiguous, mark for operator
+                row.status = "needs_review"
+                row.error_message = (
+                    "No UPS tracking number stored — cannot verify programmatically. "
+                    "Check UPS Quantum View using idempotency key."
+                )
+                self._db.commit()
+                needs_review += 1
+                details.append({
+                    "row_number": row.row_number,
+                    "action": "needs_review",
+                    "reason": "No ups_tracking_number — cannot verify programmatically",
+                    "idempotency_key": row.idempotency_key,
+                })
+
+        logger.info(
+            "In-flight recovery complete: job_id=%s recovered=%d "
+            "needs_review=%d unresolved=%d",
+            job_id, recovered, needs_review, unresolved,
+        )
+
+        return {
+            "recovered": recovered,
+            "needs_review": needs_review,
+            "unresolved": unresolved,
+            "details": details,
+        }
