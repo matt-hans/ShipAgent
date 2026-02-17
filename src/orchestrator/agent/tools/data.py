@@ -1,14 +1,15 @@
 """Data source and platform tool handlers.
 
 Handles source metadata, schema inspection, row fetching, filter
-validation, platform status, and Shopify connection.
+resolution, platform status, and Shopify connection.
 """
 
+import hashlib
 import logging
 import os
 from typing import Any
 
-import sqlglot
+
 
 from src.orchestrator.agent.tools.core import (
     EventEmitterBridge,
@@ -17,6 +18,11 @@ from src.orchestrator.agent.tools.core import (
     _store_fetched_rows,
     get_data_gateway,
     get_external_sources_client,
+)
+from src.orchestrator.models.filter_spec import (
+    FilterCompilationError,
+    FilterIntent,
+    ResolvedFilterSpec,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,21 +79,90 @@ async def fetch_rows_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
 ) -> dict[str, Any]:
-    """Fetch rows from the connected data source with optional SQL filter.
+    """Fetch rows from the connected data source using a compiled FilterSpec.
+
+    Accepts exactly one of filter_spec or all_rows=true. Rejects where_clause.
 
     Args:
-        args: Dict with optional 'where_clause' (str) and 'limit' (int).
+        args: Dict with 'filter_spec' (dict) or 'all_rows' (bool), optional 'limit' (int).
+        bridge: Optional event emitter bridge for row caching.
 
     Returns:
-        Tool response with matched rows and count.
+        Tool response with fetch_id, row count, and sample rows.
     """
-    gw = await get_data_gateway()
-    where_clause = args.get("where_clause")
+    from src.orchestrator.filter_compiler import compile_filter_spec
+    from src.orchestrator.models.filter_spec import (
+        FilterCompilationError,
+        ResolvedFilterSpec,
+    )
+
+    # Hard cutover: reject legacy where_clause
+    if "where_clause" in args:
+        return _err(
+            "where_clause is not accepted. Use resolve_filter_intent "
+            "to create a filter_spec."
+        )
+
+    filter_spec_raw = args.get("filter_spec")
+    all_rows = bool(args.get("all_rows", False))
+
+    # Exactly one of filter_spec or all_rows must be provided
+    if filter_spec_raw and all_rows:
+        return _err(
+            "Conflicting arguments: provide filter_spec OR all_rows=true, not both."
+        )
+    if not filter_spec_raw and not all_rows:
+        return _err(
+            "Either filter_spec or all_rows=true is required. "
+            "Use resolve_filter_intent to create a filter, or set "
+            "all_rows=true to fetch everything."
+        )
+
     limit = args.get("limit", 250)
     include_rows = bool(args.get("include_rows", False))
 
+    gw = await get_data_gateway()
+
+    if filter_spec_raw:
+        # Compile FilterSpec → parameterized SQL
+        source_info = await gw.get_source_info()
+        if source_info is None:
+            return _err("No data source connected.")
+
+        columns = source_info.get("columns", [])
+        schema_columns = {col["name"] for col in columns}
+        column_types = {col["name"]: col["type"] for col in columns}
+        schema_signature = source_info.get("signature", "")
+
+        try:
+            spec = ResolvedFilterSpec(**filter_spec_raw)
+        except Exception as e:
+            return _err(f"Invalid filter_spec structure: {e}")
+
+        try:
+            compiled = compile_filter_spec(
+                spec=spec,
+                schema_columns=schema_columns,
+                column_types=column_types,
+                runtime_schema_signature=schema_signature,
+            )
+        except FilterCompilationError as e:
+            return _err(f"[{e.code.value}] {e.message}")
+        except Exception as e:
+            logger.error("fetch_rows_tool compile failed: %s", e)
+            return _err(f"Filter compilation failed: {e}")
+
+        where_sql = compiled.where_sql
+        params = compiled.params
+    else:
+        # all_rows path
+        where_sql = "1=1"
+        params = []
+
     try:
-        rows = await gw.get_rows_by_filter(where_clause=where_clause, limit=limit)
+        rows = await gw.get_rows_by_filter(
+            where_sql=where_sql, limit=limit, params=params,
+        )
         fetch_id = _store_fetched_rows(rows, bridge=bridge)
         payload: dict[str, Any] = {
             "fetch_id": fetch_id,
@@ -103,21 +178,204 @@ async def fetch_rows_tool(
         return _err(f"Failed to fetch rows: {e}")
 
 
-async def validate_filter_syntax_tool(args: dict[str, Any]) -> dict[str, Any]:
-    """Validate SQL WHERE clause syntax using sqlglot.
+async def resolve_filter_intent_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
+    """Resolve a structured FilterIntent into a concrete FilterSpec.
+
+    Takes a FilterIntent JSON from the LLM, resolves semantic references
+    (regions, business predicates) against the active data source schema,
+    and returns a ResolvedFilterSpec with status and explanation.
 
     Args:
-        args: Dict with 'where_clause' (str).
+        args: Dict with 'intent' (FilterIntent JSON dict).
+        bridge: Optional event emitter bridge.
 
     Returns:
-        Tool response with valid=True/False and optional error message.
+        Tool response with resolved spec, status, explanation, and optional
+        confirmation/clarification data.
     """
-    where_clause = args.get("where_clause", "")
+    from src.orchestrator.filter_resolver import resolve_filter_intent
+
+    intent_raw = args.get("intent")
+    if not intent_raw:
+        return _err("intent is required.")
+
+    # Get schema from gateway
+    gw = await get_data_gateway()
+    source_info = await gw.get_source_info()
+    if source_info is None:
+        return _err(
+            "No data source connected. Connect a CSV, Excel, or database "
+            "source before resolving filters."
+        )
+
+    # Extract schema columns and types
+    columns = source_info.get("columns", [])
+    schema_columns = {col["name"] for col in columns}
+    column_types = {col["name"]: col["type"] for col in columns}
+    schema_signature = source_info.get("signature", "")
+
+    # Parse intent
     try:
-        sqlglot.parse(f"SELECT * FROM t WHERE {where_clause}")
-        return _ok({"valid": True, "where_clause": where_clause})
-    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError) as e:
-        return _ok({"valid": False, "error": str(e), "where_clause": where_clause})
+        intent = FilterIntent(**intent_raw)
+    except Exception as e:
+        return _err(f"Invalid FilterIntent structure: {e}")
+
+    # Resolve — pass session confirmations for Tier B bypass
+    session_confirmations = (
+        bridge.confirmed_resolutions if bridge is not None else None
+    )
+    try:
+        resolved = resolve_filter_intent(
+            intent=intent,
+            schema_columns=schema_columns,
+            column_types=column_types,
+            schema_signature=schema_signature,
+            session_confirmations=session_confirmations,
+        )
+    except FilterCompilationError as e:
+        return _err(f"[{e.code.value}] {e.message}")
+    except Exception as e:
+        logger.error("resolve_filter_intent_tool failed: %s", e)
+        return _err(f"Filter resolution failed: {e}")
+
+    return _ok(resolved.model_dump())
+
+
+async def confirm_filter_interpretation_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
+    """Confirm a Tier-B filter interpretation and re-resolve to RESOLVED.
+
+    After resolve_filter_intent returns NEEDS_CONFIRMATION, the agent
+    presents the pending_confirmations to the user. Once confirmed, the
+    agent calls this tool with the resolution_token and the original
+    intent. This tool:
+    1. Validates the token is genuine NEEDS_CONFIRMATION.
+    2. Stores the confirmed spec in session cache (bridge.confirmed_resolutions).
+    3. Re-resolves the intent with confirmations to produce a RESOLVED token.
+
+    Args:
+        args: Dict with 'resolution_token' (str) and 'intent' (FilterIntent dict).
+        bridge: Event emitter bridge (required for confirmation cache).
+
+    Returns:
+        Tool response with the re-resolved RESOLVED spec.
+    """
+    from src.orchestrator.filter_resolver import (
+        _validate_resolution_token,
+        resolve_filter_intent,
+    )
+
+    resolution_token = args.get("resolution_token")
+    intent_raw = args.get("intent")
+
+    if not resolution_token:
+        return _err("resolution_token is required.")
+    if not intent_raw:
+        return _err("intent is required (same FilterIntent used for resolve_filter_intent).")
+    if bridge is None:
+        return _err("Internal error: bridge not available for confirmation caching.")
+
+    # Get schema context
+    gw = await get_data_gateway()
+    source_info = await gw.get_source_info()
+    if source_info is None:
+        return _err("No data source connected.")
+
+    columns = source_info.get("columns", [])
+    schema_columns = {col["name"] for col in columns}
+    column_types = {col["name"]: col["type"] for col in columns}
+    schema_signature = source_info.get("signature", "")
+
+    # Validate the token is genuine and NEEDS_CONFIRMATION
+    token_payload = _validate_resolution_token(resolution_token, schema_signature)
+    if token_payload is None:
+        return _err(
+            "Invalid or expired resolution token. "
+            "Re-run resolve_filter_intent to get a fresh token."
+        )
+    token_status = token_payload.get("resolution_status", "")
+    if token_status != "NEEDS_CONFIRMATION":
+        return _err(
+            f"Token has status '{token_status}', not 'NEEDS_CONFIRMATION'. "
+            "Only NEEDS_CONFIRMATION tokens can be confirmed."
+        )
+
+    # Parse intent
+    try:
+        intent = FilterIntent(**intent_raw)
+    except Exception as e:
+        return _err(f"Invalid FilterIntent structure: {e}")
+
+    # Re-resolve the same intent without confirmations to reproduce the
+    # exact spec that was used to generate the original token.
+    try:
+        initial_spec = resolve_filter_intent(
+            intent=intent,
+            schema_columns=schema_columns,
+            column_types=column_types,
+            schema_signature=schema_signature,
+            session_confirmations=None,
+        )
+    except FilterCompilationError as e:
+        return _err(f"[{e.code.value}] {e.message}")
+    except Exception as e:
+        logger.error("confirm_filter_interpretation re-resolve failed: %s", e)
+        return _err(f"Re-resolution failed: {e}")
+
+    # Enforce token/intent binding: the token's resolved_spec_hash must
+    # match the hash of the spec produced by resolving THIS intent.
+    # This prevents using a NORTHEAST token to confirm BUSINESS_RECIPIENT.
+    fresh_spec_hash = hashlib.sha256(
+        initial_spec.root.model_dump_json().encode()
+    ).hexdigest()
+    token_spec_hash = token_payload.get("resolved_spec_hash", "")
+    if fresh_spec_hash != token_spec_hash:
+        return _err(
+            "Token/intent mismatch: the resolution token was generated for "
+            "a different FilterIntent. Pass the same intent that produced "
+            "the NEEDS_CONFIRMATION token."
+        )
+
+    # Validate canonical dict version
+    from src.services.filter_constants import CANONICAL_DICT_VERSION
+    token_dict_version = token_payload.get("canonical_dict_version", "")
+    if token_dict_version != CANONICAL_DICT_VERSION:
+        return _err(
+            f"Dict version mismatch: token was generated with "
+            f"'{token_dict_version}' but current version is "
+            f"'{CANONICAL_DICT_VERSION}'. Re-run resolve_filter_intent."
+        )
+
+    # Store confirmed spec in session cache keyed by the original token
+    bridge.confirmed_resolutions[resolution_token] = initial_spec
+
+    # Re-resolve with the confirmations now in place
+    try:
+        resolved = resolve_filter_intent(
+            intent=intent,
+            schema_columns=schema_columns,
+            column_types=column_types,
+            schema_signature=schema_signature,
+            session_confirmations=bridge.confirmed_resolutions,
+        )
+    except FilterCompilationError as e:
+        return _err(f"[{e.code.value}] {e.message}")
+    except Exception as e:
+        logger.error("confirm_filter_interpretation_tool failed: %s", e)
+        return _err(f"Confirmation re-resolution failed: {e}")
+
+    if resolved.status.value != "RESOLVED":
+        return _err(
+            f"Re-resolution produced status '{resolved.status.value}' instead of "
+            "'RESOLVED'. There may be additional unresolved terms."
+        )
+
+    return _ok(resolved.model_dump())
 
 
 async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:

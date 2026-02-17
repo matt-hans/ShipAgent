@@ -12,8 +12,10 @@ Example:
 import os
 from datetime import datetime
 
+from src.orchestrator.models.filter_spec import FilterOperator
 from src.orchestrator.models.intent import SERVICE_ALIASES, ServiceCode
 from src.services.data_source_mcp_client import DataSourceInfo
+from src.services.filter_constants import BUSINESS_PREDICATES, REGIONS
 
 # International service codes for labeling
 _INTERNATIONAL_SERVICES = frozenset({"07", "08", "11", "54", "65"})
@@ -39,11 +41,15 @@ def _build_service_table() -> str:
     return "\n".join(lines)
 
 
-def _build_schema_section(source_info: DataSourceInfo) -> str:
+def _build_schema_section(
+    source_info: DataSourceInfo,
+    column_samples: dict[str, list] | None = None,
+) -> str:
     """Build the dynamic data source schema section.
 
     Args:
         source_info: Metadata about the connected data source.
+        column_samples: Optional sample values per column for filter grounding.
 
     Returns:
         Formatted string describing the source and its columns.
@@ -58,13 +64,109 @@ def _build_schema_section(source_info: DataSourceInfo) -> str:
     lines.append("Columns:")
     for col in source_info.columns:
         nullable = "nullable" if col.nullable else "not null"
-        lines.append(f"  - {col.name} ({col.type}, {nullable})")
+        samples = column_samples.get(col.name) if column_samples else None
+        if samples:
+            sample_str = ", ".join(repr(s) for s in samples[:5])
+            lines.append(f"  - {col.name} ({col.type}, {nullable}) — samples: {sample_str}")
+        else:
+            lines.append(f"  - {col.name} ({col.type}, {nullable})")
     return "\n".join(lines)
+
+
+def _build_filter_rules(schema_columns: set[str] | None = None) -> str:
+    """Build FilterIntent schema documentation for the batch mode prompt.
+
+    Replaces the legacy SQL filter rules with structured FilterIntent
+    instructions. The LLM produces a FilterIntent JSON; deterministic
+    tools resolve and compile it to parameterized SQL.
+
+    Args:
+        schema_columns: Optional set of column names from the active data source.
+            Used to generate schema-aware guidance instead of hardcoded column names.
+
+    Returns:
+        Formatted string with FilterIntent schema and operator reference.
+    """
+    # Build operator reference
+    ops = ", ".join(f"`{op.value}`" for op in FilterOperator)
+
+    # Build semantic keys list dynamically from canonical constants
+    _semantic_keys_list = ", ".join(
+        sorted(REGIONS.keys()) + sorted(BUSINESS_PREDICATES.keys())
+    )
+
+    # Build schema-conditional search hints (avoid hardcoded column names)
+    _cols = schema_columns or set()
+    hint_lines: list[str] = []
+    name_cols = [c for c in ("customer_name", "ship_to_name", "name", "recipient_name") if c in _cols]
+    if name_cols:
+        cols_str = "` or `".join(name_cols)
+        hint_lines.append(f"- For person name searches, use `contains_ci` operator on `{cols_str}`.")
+    tag_cols = [c for c in ("tags", "tag", "labels") if c in _cols]
+    if tag_cols:
+        cols_str = "` or `".join(tag_cols)
+        hint_lines.append(f"- For tag searches, use `contains_ci` operator on `{cols_str}`.")
+    _schema_hints = "\n".join(hint_lines)
+
+    return f"""
+**IMPORTANT: NEVER generate raw SQL.** All filtering uses the FilterIntent JSON schema.
+
+### FilterIntent Schema
+
+To filter data, call `resolve_filter_intent` with a structured FilterIntent JSON.
+The deterministic resolver expands semantic references and produces a `filter_spec`
+that you pass to `ship_command_pipeline` or `fetch_rows`.
+
+**Workflow:**
+1. Build a FilterIntent JSON from the user's request
+2. Call `resolve_filter_intent` with the intent
+3. If status is RESOLVED: pass the returned `filter_spec` to pipeline/fetch_rows
+4. If status is NEEDS_CONFIRMATION: present the `pending_confirmations` to the user for approval, then call `confirm_filter_interpretation` with the `resolution_token` and the **same** `intent` to get a RESOLVED spec
+5. If status is UNRESOLVED: present suggestions to the user and ask for clarification
+
+### Available Operators
+
+{ops}
+
+### FilterIntent JSON Structure
+
+```json
+{{
+  "root": {{
+    "logic": "AND",
+    "conditions": [
+      {{"column": "state", "operator": "eq", "operands": [{{"type": "string", "value": "CA"}}]}},
+      {{"column": "total", "operator": "gt", "operands": [{{"type": "number", "value": 100}}]}}
+    ]
+  }}
+}}
+```
+
+### Semantic References
+
+For geographic regions and business predicates, use SemanticReference nodes instead of
+listing individual values. The resolver expands them deterministically:
+
+```json
+{{"semantic_key": "NORTHEAST", "target_column": "state"}}
+```
+
+Available semantic keys: {_semantic_keys_list},
+and all US state names (e.g., "california" → "CA").
+
+### Rules
+- NEVER generate SQL WHERE clauses. Always use FilterIntent JSON.
+- ONLY reference columns that exist in the connected data source schema above.
+- Use `all_rows=true` (not a FilterIntent) when the user wants all rows shipped.
+- If the filter is ambiguous, ask the user for clarification — never guess.
+{_schema_hints}
+"""
 
 
 def build_system_prompt(
     source_info: DataSourceInfo | None = None,
     interactive_shipping: bool = False,
+    column_samples: dict[str, list] | None = None,
 ) -> str:
     """Build the complete system prompt for the orchestration agent.
 
@@ -95,7 +197,7 @@ def build_system_prompt(
             "data-source-driven shipping, instruct them to turn Interactive Shipping off."
         )
     elif source_info is not None:
-        data_section = _build_schema_section(source_info)
+        data_section = _build_schema_section(source_info, column_samples=column_samples)
     else:
         shopify_configured = bool(
             os.environ.get("SHOPIFY_ACCESS_TOKEN")
@@ -170,57 +272,21 @@ You have deterministic tools available. In interactive mode, use `preview_intera
 for shipment creation. Do not attempt batch/data-source tools in this mode.
 """
     else:
-        filter_rules_section = f"""
-When generating SQL WHERE clauses to filter the user's data, follow these rules strictly:
-
-### Person Name Handling
-- "customer_name" = the person who PLACED the order (the buyer)
-- "ship_to_name" = the person who RECEIVES the package (the recipient)
-- When the user references a person by name (e.g. "customer Noah Bode", "for Noah Bode",
-  "orders for John Smith"), ALWAYS check BOTH fields using OR logic:
-  customer_name ILIKE '%Noah Bode%' OR ship_to_name ILIKE '%Noah Bode%'
-- When the user explicitly says "placed by" or "bought by", use only customer_name
-- When the user explicitly says "shipping to" or "deliver to", use only ship_to_name
-- For name matching, use ILIKE with % wildcards to handle minor spelling variations
-
-### Status Handling
-- "status" is a composite field like "paid/unfulfilled" — use LIKE for substring matching
-- "financial_status" is standalone: 'paid', 'pending', 'refunded', 'authorized', 'partially_refunded'
-- "fulfillment_status" is standalone: 'unfulfilled', 'fulfilled', 'partial'
-- For "paid orders" prefer: financial_status = 'paid'
-- For "unfulfilled orders" prefer: fulfillment_status = 'unfulfilled'
-
-### Date Handling
-- For "today", use: column = '{current_date}'
-- For "this week", calculate the appropriate date range
-- State abbreviations: California='CA', Texas='TX', New York='NY', etc.
-
-### Tag Handling
-- "tags" is a comma-separated string (e.g. "VIP, wholesale, priority")
-- To match a tag, use: tags LIKE '%VIP%'
-
-### Weight Handling
-- "total_weight_grams" is in grams. 1 lb = 453.592 grams, 1 kg = 1000 grams
-- For "orders over 5 lbs": total_weight_grams > 2268
-- For "orders over 2 kg": total_weight_grams > 2000
-
-### Item Count Handling
-- "item_count" = total number of items across all line items
-- For "orders with more than 3 items": item_count > 3
-
-### General Rules
-- ONLY reference columns that exist in the connected data source schema above
-- Use proper SQL syntax with single quotes for string values
-- If the filter is ambiguous, ask the user for clarification — never guess
-"""
+        _src_cols = (
+            {col.name for col in source_info.columns}
+            if source_info is not None
+            else None
+        )
+        filter_rules_section = _build_filter_rules(schema_columns=_src_cols)
         workflow_section = """
 ### Shipping Commands (default path)
 
 For straightforward shipping commands (for example: "ship all CA orders via Ground"):
 
-1. **Parse + Filter**: Understand intent and generate a SQL WHERE clause (or omit for all rows)
-2. **Single Tool Call**: Call `ship_command_pipeline` with the filter and command text. Include `service_code` ONLY when the user explicitly requests a service (e.g., Ground, 2nd Day Air)
-3. **Post-Preview Message**: After preview appears, respond with ONLY one brief sentence:
+1. **Parse + Build FilterIntent**: Build a FilterIntent JSON from the user's request (or use `all_rows=true` for all rows)
+2. **Resolve Filter**: Call `resolve_filter_intent` with the FilterIntent to get a `filter_spec`
+3. **Single Tool Call**: Call `ship_command_pipeline` with the `filter_spec` and command text. Include `service_code` ONLY when the user explicitly requests a service (e.g., Ground, 2nd Day Air)
+4. **Post-Preview Message**: After preview appears, respond with ONLY one brief sentence:
    "Preview ready — X rows at $Y estimated total. Please review and click Confirm or Cancel."
 
 Important:
@@ -228,7 +294,7 @@ Important:
 - Do NOT chain `create_job`, `add_rows_to_job`, and `batch_preview` when this fast path applies.
 
 If `ship_command_pipeline` returns an error:
-- Bad WHERE clause: fix the clause and retry once.
+- FilterSpec compilation error: fix the intent and retry once.
 - UPS/preview failure: report the error with `job_id` and suggest user action.
 - Do NOT auto-fallback to individual tools for the same command, to avoid duplicate jobs.
 
@@ -237,8 +303,8 @@ If `ship_command_pipeline` returns an error:
 When the request is ambiguous, exploratory, or not a straightforward shipping command:
 
 1. Check data source
-2. Generate/validate filter
-3. Fetch rows
+2. Build FilterIntent and call `resolve_filter_intent`
+3. Fetch rows with the resolved `filter_spec`
 4. Create job
 5. Add rows
 6. Preview

@@ -4,9 +4,12 @@ Handles the shipping command pipeline, job creation, row management,
 batch preview, and batch execution.
 """
 
+import hashlib
 import json
 import logging
 import os
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from src.db.connection import get_db_context
@@ -170,19 +173,88 @@ async def _run_batch_preview(job_id: str) -> dict[str, Any]:
     return result
 
 
+def _canonical_param(v: Any) -> Any:
+    """Normalize a param value for deterministic hashing.
+
+    Ensures dates use UTC ISO8601, decimals are normalized, and no type
+    relies on locale-specific str() formatting.
+
+    Args:
+        v: Parameter value from CompiledFilter.params.
+
+    Returns:
+        JSON-safe canonical representation.
+    """
+    if isinstance(v, datetime):
+        return v.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if isinstance(v, date):
+        return v.isoformat()
+    if isinstance(v, Decimal):
+        return str(v.normalize())
+    if isinstance(v, float):
+        return str(v)
+    return v
+
+
+def _compute_compiled_hash(where_sql: str, params: list[Any]) -> str:
+    """Compute deterministic SHA-256 hash of compiled query payload.
+
+    Args:
+        where_sql: Parameterized WHERE clause.
+        params: Positional parameter values.
+
+    Returns:
+        Hex digest of the canonical JSON representation.
+    """
+    canonical = json.dumps(
+        {"where_sql": where_sql, "params": [_canonical_param(p) for p in params]},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 async def ship_command_pipeline_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
 ) -> dict[str, Any]:
     """Fast-path pipeline for straightforward shipping commands.
 
-    Performs fetch -> create job -> add rows -> preview in one tool call.
+    Performs compile → fetch → create job → add rows → preview in one call.
+    Accepts exactly one of filter_spec or all_rows=true. Rejects where_clause.
     """
+    from src.orchestrator.filter_compiler import compile_filter_spec
+    from src.orchestrator.models.filter_spec import (
+        FilterCompilationError,
+        ResolvedFilterSpec,
+    )
+
     command = str(args.get("command", "")).strip()
     if not command:
         return _err("command is required")
 
-    where_clause = args.get("where_clause")
+    # Hard cutover: reject legacy where_clause
+    if "where_clause" in args:
+        return _err(
+            "where_clause is not accepted. Use resolve_filter_intent "
+            "to create a filter_spec."
+        )
+
+    filter_spec_raw = args.get("filter_spec")
+    all_rows = bool(args.get("all_rows", False))
+
+    # Exactly one of filter_spec or all_rows must be provided
+    if filter_spec_raw and all_rows:
+        return _err(
+            "Conflicting arguments: provide filter_spec OR all_rows=true, not both."
+        )
+    if not filter_spec_raw and not all_rows:
+        return _err(
+            "Either filter_spec or all_rows=true is required. "
+            "Use resolve_filter_intent to create a filter, or set "
+            "all_rows=true to ship everything."
+        )
+
     limit = int(args.get("limit", 250))
     job_name = str(args.get("job_name") or command or "Shipping Job")
     raw_service_code = args.get("service_code")
@@ -202,11 +274,68 @@ async def ship_command_pipeline_tool(
                 raw_service_code,
             )
 
+    # Compile filter or use all-rows path
+    filter_explanation = ""
+    filter_audit: dict[str, Any] = {}
+
+    if filter_spec_raw:
+        # Compile FilterSpec → parameterized SQL
+        gw = await get_data_gateway()
+        source_info = await gw.get_source_info()
+        if source_info is None:
+            return _err("No data source connected.")
+
+        columns = source_info.get("columns", [])
+        schema_columns = {col["name"] for col in columns}
+        column_types = {col["name"]: col["type"] for col in columns}
+        schema_signature = source_info.get("signature", "")
+
+        try:
+            spec = ResolvedFilterSpec(**filter_spec_raw)
+        except Exception as e:
+            return _err(f"Invalid filter_spec structure: {e}")
+
+        try:
+            compiled = compile_filter_spec(
+                spec=spec,
+                schema_columns=schema_columns,
+                column_types=column_types,
+                runtime_schema_signature=schema_signature,
+            )
+        except FilterCompilationError as e:
+            return _err(f"[{e.code.value}] {e.message}")
+        except Exception as e:
+            logger.error("ship_command_pipeline compile failed: %s", e)
+            return _err(f"Filter compilation failed: {e}")
+
+        where_sql = compiled.where_sql
+        params = compiled.params
+        filter_explanation = compiled.explanation
+
+        # Build audit trail
+        spec_hash = hashlib.sha256(
+            json.dumps(filter_spec_raw, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        compiled_hash = _compute_compiled_hash(where_sql, params)
+
+        filter_audit = {
+            "spec_hash": spec_hash,
+            "compiled_hash": compiled_hash,
+            "schema_signature": schema_signature,
+            "dict_version": spec.canonical_dict_version,
+        }
+    else:
+        # all_rows path
+        where_sql = "1=1"
+        params = []
+        filter_explanation = "All rows (no filter applied)"
+
     gw = await get_data_gateway()
     try:
         fetched_rows = await gw.get_rows_by_filter(
-            where_clause=where_clause,
+            where_sql=where_sql,
             limit=limit,
+            params=params,
         )
     except Exception as e:
         logger.error("ship_command_pipeline fetch failed: %s", e)
@@ -285,6 +414,14 @@ async def ship_command_pipeline_tool(
     _enrich_preview_rows_from_map(preview_rows, row_map)
     rows_with_warnings = sum(1 for row in preview_rows if row.get("warnings"))
     result["rows_with_warnings"] = rows_with_warnings
+
+    # Attach filter metadata for audit trail
+    if filter_explanation:
+        result["filter_explanation"] = filter_explanation
+    if filter_audit:
+        result["filter_audit"] = filter_audit
+    if filter_spec_raw:
+        result["compiled_filter"] = where_sql
 
     return _emit_preview_ready(
         result=result,

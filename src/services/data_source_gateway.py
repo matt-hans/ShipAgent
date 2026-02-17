@@ -63,18 +63,43 @@ class DataSourceGateway(Protocol):
         ...
 
     async def get_rows_by_filter(
-        self, where_clause: str | None = None, limit: int = 100, offset: int = 0
+        self,
+        where_sql: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        params: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Get rows matching a SQL WHERE clause as flat dicts.
+        """Get rows matching a parameterized WHERE clause as flat dicts.
 
         Args:
-            where_clause: SQL WHERE condition, or None for all rows.
-                Gateway normalizes None to "1=1" before calling MCP tool.
+            where_sql: Parameterized WHERE condition ($1, $2 placeholders),
+                or None for all rows. Gateway normalizes None to "1=1".
+            limit: Maximum rows to return.
+            offset: Number of rows to skip.
+            params: Positional parameter values for $N placeholders.
         """
         ...
 
     async def query_data(self, sql: str) -> dict[str, Any]:
         """Execute a SELECT query against active data source."""
+        ...
+
+    async def write_back_single(
+        self,
+        row_number: int,
+        tracking_number: str,
+        shipped_at: str | None = None,
+    ) -> None:
+        """Write tracking number back to source for a single row.
+
+        Args:
+            row_number: 1-based row number.
+            tracking_number: UPS tracking number.
+            shipped_at: ISO8601 timestamp (optional).
+
+        Raises:
+            Exception: On write-back failure.
+        """
         ...
 
     async def write_back_batch(
@@ -113,6 +138,19 @@ class DataSourceGateway(Protocol):
         Returns:
             Dict mapping order_id to list of commodity dicts.
             Missing orders are omitted from the result.
+        """
+        ...
+
+    async def get_column_samples(
+        self, max_samples: int = 5
+    ) -> dict[str, list[Any]]:
+        """Get sample distinct values for each column.
+
+        Args:
+            max_samples: Maximum distinct values per column (default 5).
+
+        Returns:
+            Dict mapping column names to lists of sample values.
         """
         ...
 

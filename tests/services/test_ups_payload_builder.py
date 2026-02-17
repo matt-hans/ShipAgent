@@ -785,6 +785,41 @@ class TestBuildUpsApiPayload:
         assert "ReferenceNumber" not in shipment
         assert "ReferenceNumber2" not in shipment
 
+    def test_includes_transaction_reference_when_idempotency_key_provided(self):
+        """When idempotency_key is provided, payload includes TransactionReference."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_api_payload(
+            simplified, account_number="X", idempotency_key="job:1:hash"
+        )
+        ref = result["ShipmentRequest"]["Request"]["TransactionReference"]
+        assert ref["CustomerContext"] == "job:1:hash"
+
+    def test_omits_transaction_reference_when_no_idempotency_key(self):
+        """When no idempotency_key, no TransactionReference in payload."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_api_payload(simplified, account_number="X")
+        assert "TransactionReference" not in result["ShipmentRequest"]["Request"]
+
 
 class TestBuildUpsRatePayload:
     """Test simplified → UPS Rate API format."""

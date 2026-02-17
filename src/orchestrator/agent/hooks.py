@@ -20,6 +20,10 @@ Usage:
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac as hmac_mod
+import json
 import sys
 import logging
 from datetime import datetime, timezone
@@ -40,6 +44,9 @@ __all__ = [
     "validate_schedule_pickup",
     "validate_cancel_pickup",
     "validate_track_package",
+    "deny_raw_sql_in_filter_tools",
+    "validate_intent_on_resolve",
+    "validate_filter_spec_on_pipeline",
 ]
 
 logger = logging.getLogger(__name__)
@@ -494,6 +501,276 @@ async def validate_track_package(
 
 
 # =============================================================================
+# Filter Enforcement Hooks
+# =============================================================================
+
+# Tools subject to filter enforcement
+_FILTER_SCOPED_TOOLS = frozenset({
+    "resolve_filter_intent",
+    "ship_command_pipeline",
+    "fetch_rows",
+})
+
+# Banned keys that indicate raw SQL injection attempts
+_BANNED_SQL_KEYS = frozenset({"where_clause", "sql", "query", "raw_sql"})
+
+
+def _find_banned_keys_recursive(obj: Any, banned: frozenset[str]) -> set[str]:
+    """Recursively search dicts/lists for banned key names.
+
+    Args:
+        obj: The object to traverse (dict, list, or scalar).
+        banned: Set of banned key names.
+
+    Returns:
+        Set of banned keys found at any nesting depth.
+    """
+    found: set[str] = set()
+    if isinstance(obj, dict):
+        found.update(banned & set(obj.keys()))
+        for value in obj.values():
+            found.update(_find_banned_keys_recursive(value, banned))
+    elif isinstance(obj, list):
+        for item in obj:
+            found.update(_find_banned_keys_recursive(item, banned))
+    return found
+
+
+async def deny_raw_sql_in_filter_tools(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """Deny raw SQL keys in filter-related tool payloads.
+
+    Scoped to: resolve_filter_intent, ship_command_pipeline, fetch_rows.
+    Recursively inspects payload for banned keys: where_clause, sql, query, raw_sql.
+
+    Args:
+        input_data: Contains 'tool_name' and 'tool_input' keys.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context from Claude Agent SDK.
+
+    Returns:
+        Empty dict to allow, or hookSpecificOutput with denial to block.
+    """
+    tool_name = input_data.get("tool_name", "")
+    tool_input = input_data.get("tool_input", {})
+
+    # Only enforce on filter-scoped tools
+    if tool_name not in _FILTER_SCOPED_TOOLS:
+        return {}
+
+    if not isinstance(tool_input, dict):
+        return {}
+
+    found_keys = _find_banned_keys_recursive(tool_input, _BANNED_SQL_KEYS)
+    if found_keys:
+        _log_to_stderr(
+            f"[FILTER ENFORCEMENT] DENYING raw SQL keys {found_keys} "
+            f"in {tool_name} | ID: {tool_use_id}"
+        )
+        return _deny_with_reason(
+            f"Raw SQL keys {sorted(found_keys)} are not allowed in {tool_name}. "
+            "Use resolve_filter_intent to create a filter_spec instead."
+        )
+
+    return {}
+
+
+async def validate_intent_on_resolve(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """Validate FilterIntent structure before resolution.
+
+    Performs lightweight structural checks on the intent payload before
+    the resolver processes it. Catches invalid operators early.
+
+    Args:
+        input_data: Contains 'tool_name' and 'tool_input' keys.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context from Claude Agent SDK.
+
+    Returns:
+        Empty dict to allow, or hookSpecificOutput with denial to block.
+    """
+    tool_name = input_data.get("tool_name", "")
+    if tool_name != "resolve_filter_intent":
+        return {}
+
+    tool_input = input_data.get("tool_input", {})
+    intent = tool_input.get("intent")
+    if not isinstance(intent, dict):
+        return {}
+
+    # Validate operators in conditions recursively
+    from src.orchestrator.models.filter_spec import FilterOperator
+    valid_ops = {op.value for op in FilterOperator}
+
+    def _check_node(node: Any) -> str | None:
+        """Check a node for invalid operators. Returns error or None."""
+        if not isinstance(node, dict):
+            return None
+        # It's a condition if it has "operator"
+        if "operator" in node:
+            op = node["operator"]
+            if op not in valid_ops:
+                return f"Invalid operator {op!r}. Valid: {sorted(valid_ops)}."
+        # It's a group if it has "conditions"
+        if "conditions" in node and isinstance(node["conditions"], list):
+            for child in node["conditions"]:
+                err = _check_node(child)
+                if err:
+                    return err
+        return None
+
+    root = intent.get("root")
+    if root:
+        err = _check_node(root)
+        if err:
+            _log_to_stderr(
+                f"[FILTER ENFORCEMENT] DENYING invalid intent: {err} | ID: {tool_use_id}"
+            )
+            return _deny_with_reason(f"FilterIntent validation failed: {err}")
+
+    return {}
+
+
+async def validate_filter_spec_on_pipeline(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """Validate filter_spec structure and Tier-B token on pipeline/fetch_rows.
+
+    Enforcement checklist (all must pass or deny):
+    1. If all_rows=true and no filter_spec, allow.
+    2. If filter_spec has status NEEDS_CONFIRMATION:
+       a. resolution_token MUST be present
+       b. HMAC signature is valid (not tampered)
+       c. Token TTL has not expired
+       d. Token schema_signature matches filter_spec
+       e. Token dict_version matches filter_spec
+       f. Token resolved_spec_hash matches SHA-256 of incoming root
+
+    Args:
+        input_data: Contains 'tool_name' and 'tool_input' keys.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context from Claude Agent SDK.
+
+    Returns:
+        Empty dict to allow, or hookSpecificOutput with denial to block.
+    """
+    tool_name = input_data.get("tool_name", "")
+    if tool_name not in ("ship_command_pipeline", "fetch_rows"):
+        return {}
+
+    tool_input = input_data.get("tool_input", {})
+
+    # all_rows path — no filter_spec validation needed
+    if tool_input.get("all_rows"):
+        return {}
+
+    filter_spec = tool_input.get("filter_spec")
+    if not isinstance(filter_spec, dict):
+        return {}
+
+    # Enforce resolution_token for ALL filter_specs regardless of status.
+    # A client could flip status from NEEDS_CONFIRMATION to RESOLVED to bypass
+    # validation. The token is the server-side proof of provenance.
+    token = filter_spec.get("resolution_token")
+    if not token:
+        _log_to_stderr(
+            f"[FILTER ENFORCEMENT] DENYING missing resolution_token "
+            f"for filter_spec | ID: {tool_use_id}"
+        )
+        return _deny_with_reason(
+            "All filter_spec submissions require a resolution_token proving "
+            "server-side provenance. Use resolve_filter_intent first."
+        )
+
+    # Decode and validate token
+    import os
+    import time
+
+    secret = os.environ.get("FILTER_TOKEN_SECRET", "")
+    if not secret:
+        return _deny_with_reason(
+            "FILTER_TOKEN_SECRET is not configured. Cannot validate resolution token."
+        )
+
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(token))
+    except (json.JSONDecodeError, ValueError):
+        return _deny_with_reason("Resolution token is malformed (invalid base64/JSON).")
+
+    # Check expiry
+    if time.time() > decoded.get("expires_at", 0):
+        _log_to_stderr(
+            f"[FILTER ENFORCEMENT] DENYING expired token | ID: {tool_use_id}"
+        )
+        return _deny_with_reason("Resolution token has expired. Re-resolve the filter.")
+
+    # Verify HMAC signature
+    signature = decoded.pop("signature", None)
+    if signature is None:
+        return _deny_with_reason("Resolution token missing HMAC signature.")
+
+    payload_json = json.dumps(decoded, sort_keys=True)
+    expected_sig = hmac_mod.new(
+        secret.encode(), payload_json.encode(), hashlib.sha256
+    ).hexdigest()
+    if not hmac_mod.compare_digest(signature, expected_sig):
+        _log_to_stderr(
+            f"[FILTER ENFORCEMENT] DENYING tampered token | ID: {tool_use_id}"
+        )
+        return _deny_with_reason("Resolution token HMAC signature is invalid (tampered).")
+
+    # Check schema_signature binding
+    if decoded.get("schema_signature") != filter_spec.get("schema_signature"):
+        return _deny_with_reason(
+            "Resolution token schema_signature does not match filter_spec. "
+            "The data source may have changed."
+        )
+
+    # Check dict_version binding
+    if decoded.get("canonical_dict_version") != filter_spec.get("canonical_dict_version"):
+        return _deny_with_reason(
+            "Resolution token dict_version does not match filter_spec. "
+            "Canonical dictionaries may have been updated."
+        )
+
+    # Check resolved_spec_hash binding
+    root = filter_spec.get("root", {})
+    root_json = json.dumps(root, sort_keys=True, default=str)
+    actual_hash = hashlib.sha256(root_json.encode()).hexdigest()
+    if decoded.get("resolved_spec_hash") != actual_hash:
+        return _deny_with_reason(
+            "Resolution token spec hash does not match the filter_spec root. "
+            "The filter may have been modified after resolution."
+        )
+
+    # Check resolution_status — token must prove RESOLVED status.
+    # A NEEDS_CONFIRMATION token cannot be used to execute; the agent must
+    # go through confirm → re-resolve to get a RESOLVED token.
+    token_status = decoded.get("resolution_status", "")
+    if token_status != "RESOLVED":
+        _log_to_stderr(
+            f"[FILTER ENFORCEMENT] DENYING non-RESOLVED token (status={token_status}) "
+            f"| ID: {tool_use_id}"
+        )
+        return _deny_with_reason(
+            f"Resolution token has status '{token_status}', not 'RESOLVED'. "
+            "Tier-B filters require user confirmation before execution. "
+            "Use confirm_filter_interpretation then re-resolve."
+        )
+
+    return {}
+
+
+# =============================================================================
 # Hook Factory — Instance-Scoped Enforcement
 # =============================================================================
 
@@ -574,6 +851,20 @@ def create_hook_matchers(
 
     return {
         "PreToolUse": [
+            # Filter enforcement hooks — deny_raw_sql first (ordering invariant)
+            HookMatcher(
+                matcher="resolve_filter_intent",
+                hooks=[deny_raw_sql_in_filter_tools, validate_intent_on_resolve],
+            ),
+            HookMatcher(
+                matcher="ship_command_pipeline",
+                hooks=[deny_raw_sql_in_filter_tools, validate_filter_spec_on_pipeline],
+            ),
+            HookMatcher(
+                matcher="fetch_rows",
+                hooks=[deny_raw_sql_in_filter_tools, validate_filter_spec_on_pipeline],
+            ),
+            # UPS safety hooks
             HookMatcher(
                 matcher="mcp__ups__create_shipment",
                 hooks=[shipping_hook],

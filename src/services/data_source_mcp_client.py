@@ -238,26 +238,52 @@ class DataSourceMCPClient:
         return await self._mcp.call_tool("get_schema", {})
 
     async def get_rows_by_filter(
-        self, where_clause: str | None = None, limit: int = 100, offset: int = 0
+        self,
+        where_sql: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        params: list[Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Get rows matching a WHERE clause, normalized to flat dicts.
+        """Get rows matching a parameterized WHERE clause, normalized to flat dicts.
 
-        MCP tool requires a non-None where_clause string for its SQL
-        template. Gateway normalizes None to "1=1" (all rows).
+        Args:
+            where_sql: Parameterized WHERE condition ($1, $2, ... placeholders).
+            limit: Maximum rows to return.
+            offset: Number of rows to skip.
+            params: Positional parameter values for $N placeholders.
 
         MCP returns {rows:[{row_number, data, checksum}]}.
         This method normalizes to flat dicts with _row_number and _checksum.
         """
         await self._ensure_connected()
+        effective_sql = where_sql
         # Normalize None/empty to "1=1" so the MCP tool's
-        # "WHERE {where_clause}" template doesn't break.
-        effective_clause = where_clause if where_clause and where_clause.strip() else "1=1"
-        result = await self._mcp.call_tool("get_rows_by_filter", {
-            "where_clause": effective_clause,
+        # "WHERE {where_sql}" template doesn't break.
+        effective_sql = effective_sql if effective_sql and effective_sql.strip() else "1=1"
+        query_params = params if params is not None else []
+        tool_args: dict[str, Any] = {
+            "where_sql": effective_sql,
             "limit": limit,
             "offset": offset,
-        })
+        }
+        if query_params:
+            tool_args["params"] = query_params
+        result = await self._mcp.call_tool("get_rows_by_filter", tool_args)
         return self._normalize_rows(result.get("rows", []))
+
+    async def get_column_samples(self, max_samples: int = 5) -> dict[str, list[Any]]:
+        """Get sample distinct values for each column.
+
+        Args:
+            max_samples: Maximum distinct values per column (default 5).
+
+        Returns:
+            Dict mapping column names to lists of sample values.
+        """
+        await self._ensure_connected()
+        return await self._mcp.call_tool(
+            "get_column_samples", {"max_samples": max_samples}
+        )
 
     async def query_data(self, sql: str) -> dict[str, Any]:
         """Execute a SELECT query against active data source."""
@@ -265,6 +291,29 @@ class DataSourceMCPClient:
         return await self._mcp.call_tool("query_data", {"sql": sql})
 
     # -- Write-back --------------------------------------------------------
+
+    async def write_back_single(
+        self,
+        row_number: int,
+        tracking_number: str,
+        shipped_at: str | None = None,
+    ) -> None:
+        """Write tracking number back to source for a single row.
+
+        Args:
+            row_number: 1-based row number.
+            tracking_number: UPS tracking number.
+            shipped_at: ISO8601 timestamp (optional).
+
+        Raises:
+            Exception: On MCP tool call failure.
+        """
+        await self._ensure_connected()
+        await self._mcp.call_tool("write_back", {
+            "row_number": row_number,
+            "tracking_number": tracking_number,
+            "shipped_at": shipped_at,
+        })
 
     async def write_back_batch(
         self, updates: dict[int, dict[str, str]]

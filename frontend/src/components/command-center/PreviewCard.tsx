@@ -136,6 +136,47 @@ function ChargeBreakdownDetail({ breakdown }: { breakdown: ChargeBreakdown }) {
   );
 }
 
+/** Collapsible filter explanation bar for batch preview transparency. */
+function FilterExplanationBar({
+  explanation,
+  compiledFilter,
+  filterAudit,
+}: {
+  explanation: string;
+  compiledFilter?: string;
+  filterAudit?: { spec_hash: string; compiled_hash: string; schema_signature: string; dict_version: string };
+}) {
+  const [showCompiled, setShowCompiled] = React.useState(false);
+
+  return (
+    <div
+      className="rounded-lg bg-slate-800/40 border border-slate-700/50 px-3 py-2 space-y-1.5"
+      data-spec-hash={filterAudit?.spec_hash}
+      data-compiled-hash={filterAudit?.compiled_hash}
+      data-schema-signature={filterAudit?.schema_signature}
+      data-dict-version={filterAudit?.dict_version}
+    >
+      <p className="text-sm text-slate-300">{explanation}</p>
+      {compiledFilter && (
+        <>
+          <button
+            onClick={() => setShowCompiled(!showCompiled)}
+            className="flex items-center gap-1 text-[10px] font-mono text-slate-500 hover:text-slate-300 transition-colors"
+          >
+            <ChevronDownIcon className={cn('w-3 h-3 transition-transform', showCompiled && 'rotate-180')} />
+            <span>View compiled filter</span>
+          </button>
+          {showCompiled && (
+            <pre className="mt-1 bg-slate-900/80 border border-slate-700/50 rounded px-2.5 py-2 text-[10px] font-mono text-slate-400 overflow-x-auto max-h-32 overflow-y-auto">
+              {compiledFilter}
+            </pre>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Single collapsible shipment row with warnings. */
 export function ShipmentRow({
   row,
@@ -396,6 +437,15 @@ export function PreviewCard({
           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Warnings</p>
         </div>
       </div>
+
+      {/* Filter explanation (batch mode transparency) */}
+      {preview.filter_explanation && (
+        <FilterExplanationBar
+          explanation={preview.filter_explanation}
+          compiledFilter={preview.compiled_filter}
+          filterAudit={preview.filter_audit}
+        />
+      )}
 
       {preview.additional_rows > 0 && (
         <div className="p-3 rounded-lg bg-slate-800/50 border border-slate-700/50">

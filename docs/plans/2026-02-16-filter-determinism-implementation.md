@@ -4,6 +4,8 @@
 
 **Goal:** Replace non-deterministic free-form SQL filter generation with a structured FilterSpec JSON compiler that guarantees identical queries for identical inputs.
 
+**Scope:** This plan covers the full deterministic shipment lifecycle — from user intent to row selection (Phases 1-7: FilterSpec compiler) through crash-safe execution with exactly-once semantics (Phase 8: idempotency, in-flight state, replay-safe retries, durable write-back).
+
 **Architecture:** The LLM outputs typed `FilterIntent` JSON (never SQL). A pure-function semantic resolver expands canonical terms (regions, business predicates) into concrete conditions. A pure-function SQL compiler produces parameterized DuckDB queries. Hook-level enforcement denies any raw SQL bypass.
 
 **Tech Stack:** Python 3.12+, Pydantic v2, DuckDB parameterized queries, HMAC (stdlib `hmac`), FastMCP, React + TypeScript (frontend)
@@ -1210,7 +1212,7 @@ Expected: PASS — these test DuckDB's native parameterization, confirming it wo
 
 **Step 3: Modify `query_tools.py` to always use parameterized execution**
 
-In `src/mcp/data_source/tools/query_tools.py`, update `get_rows_by_filter()` (lines 66-144) to **require** a `params` list. **Rename** the first parameter from `where_clause` to `where_sql` to eliminate semantic confusion — this is compiler-generated parameterized SQL, not a raw user-supplied clause. `params` is always a list (possibly empty for queries like `"1=1"`).
+In `src/mcp/data_source/tools/query_tools.py`, update `get_rows_by_filter()` (lines 66-144). **Rename** the first parameter from `where_clause` to `where_sql` to eliminate semantic confusion — this is compiler-generated parameterized SQL, not a raw user-supplied clause. The `params` parameter accepts `list[Any] | None` for backward compatibility with existing callers, but is normalized to `[]` internally — all execution paths are parameterized regardless of whether params are empty.
 
 ```python
 async def get_rows_by_filter(
@@ -1222,7 +1224,7 @@ async def get_rows_by_filter(
 ) -> dict:
 ```
 
-Replace the raw f-string interpolation at lines 113-125. **Always pass params to `db.execute()`** — use `params or []` to handle None safely (avoids the falsey-params bug where an empty list `[]` would skip parameterization):
+Replace the raw f-string interpolation at lines 113-125. **Always pass params to `db.execute()`** — normalize `None` to `[]` so every code path uses parameterized execution (even when there are zero parameters):
 
 ```python
 # ALWAYS parameterized — no raw interpolation path
@@ -1393,7 +1395,7 @@ git commit -m "feat: add resolve_filter_intent tool handler"
 Create `tests/orchestrator/agent/test_pipeline_filter_spec.py` testing:
 - Pipeline accepts `filter_spec` and calls compiler, passes parameterized SQL to gateway
 - Pipeline **rejects** raw `where_clause` — returns error if `where_clause` is passed
-- Pipeline requires `filter_spec` when filtering is needed (no filter = ship all rows)
+- Pipeline requires exactly one of `filter_spec` or `all_rows=true` — rejects calls with neither, and rejects calls with both
 - Compiled SQL + params are passed to gateway together
 - Audit metadata (`filter_explanation`, `compiled_filter`, `filter_audit`) is attached to preview result
 - `filter_audit` contains `spec_hash`, `compiled_hash`, `schema_signature`, `dict_version`
@@ -1404,13 +1406,34 @@ Create `tests/orchestrator/agent/test_pipeline_filter_spec.py` testing:
 
 In `src/orchestrator/agent/tools/pipeline.py:173-260`, **hard cutover** — no legacy path:
 1. **Remove** `where_clause` from accepted args entirely
-2. Accept `filter_spec` dict from args (required unless `all_rows` is explicitly `true`)
-3. If `filter_spec` present: parse into `ResolvedFilterSpec`, compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway
-4. If `filter_spec` absent AND `all_rows` is explicitly `true`: ship all rows (`WHERE 1=1`) — but this **still requires the existing preview confirmation gate** (no silent all-rows execution)
-5. If `filter_spec` absent AND `all_rows` is absent or `false`: return `_err("Either filter_spec or all_rows=true is required. Use resolve_filter_intent to create a filter, or set all_rows=true to ship everything.")` — **never silently default to all rows**
+2. Accept `filter_spec` dict and/or `all_rows` boolean from args — exactly one must be provided:
+   - `filter_spec` present, `all_rows` absent or `false` → compile and filter (normal path)
+   - `filter_spec` absent, `all_rows` is `true` → ship all rows (`WHERE 1=1`) with preview confirmation gate
+   - **Both** `filter_spec` present AND `all_rows` is `true` → return `_err("Conflicting arguments: provide filter_spec OR all_rows=true, not both.")` — deterministic rejection, no precedence guessing
+   - **Neither** present → return `_err("Either filter_spec or all_rows=true is required. Use resolve_filter_intent to create a filter, or set all_rows=true to ship everything.")`
 6. If `where_clause` is present in args: return `_err("where_clause is not accepted. Use resolve_filter_intent to create a filter_spec.")`
-6. Attach `filter_explanation`, `compiled_filter`, and `filter_audit` metadata to the result before calling `_emit_preview_ready()`
-7. Compute `compiled_hash` as SHA-256 of canonical JSON execution payload: `json.dumps({"where_sql": where_sql, "params": params}, sort_keys=True, default=str)` — params stay in execution order (sorting would hide meaningful order differences for non-commutative operators like `between`)
+7. Attach `filter_explanation`, `compiled_filter`, and `filter_audit` metadata to the result before calling `_emit_preview_ready()`
+8. Compute `compiled_hash` as SHA-256 of canonical JSON execution payload using a **deterministic serializer** (not `default=str`, which varies by type/locale):
+   ```python
+   def _canonical_param(v: Any) -> Any:
+       """Normalize a param value for deterministic hashing."""
+       if isinstance(v, datetime):
+           return v.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+       if isinstance(v, date):
+           return v.isoformat()  # YYYY-MM-DD, no timezone ambiguity
+       if isinstance(v, Decimal):
+           return str(v.normalize())  # Remove trailing zeros: Decimal('1.20') → '1.2'
+       if isinstance(v, float):
+           return str(v)  # Exact float repr
+       return v  # str, int, bool, None — already JSON-safe
+
+   canonical = json.dumps(
+       {"where_sql": where_sql, "params": [_canonical_param(p) for p in params]},
+       sort_keys=True, separators=(",", ":"),  # compact, deterministic
+   )
+   compiled_hash = hashlib.sha256(canonical.encode()).hexdigest()
+   ```
+   Params stay in execution order. The `_canonical_param()` function ensures dates use UTC ISO8601, decimals are normalized, and no type relies on `str()` formatting conventions.
 
 Update `DataSourceMCPClient.get_rows_by_filter()` to rename `where_clause` to `where_sql` and accept `params`:
 
@@ -1445,13 +1468,13 @@ git commit -m "feat: update ship_command_pipeline to accept filter_spec"
 Test that `fetch_rows_tool()`:
 - Accepts `filter_spec`, compiles it, and passes parameterized query to gateway
 - **Rejects** `where_clause` — returns error if passed
-- Works without any filter (fetches all rows)
+- Requires exactly one of `filter_spec` or `all_rows=true` — rejects calls with neither, and rejects calls with both
 
 **Step 2: Run test to verify it fails**
 
 **Step 3: Update `fetch_rows_tool()`**
 
-Same hard cutover as pipeline: accept `filter_spec` or `all_rows=true`, no `where_clause`. If `where_clause` is passed, return `_err()`. If neither `filter_spec` nor `all_rows=true`: return `_err()`. Never silently default to fetching all rows. Compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway.
+Same hard cutover as pipeline: exactly one of `filter_spec` or `all_rows=true` must be provided. If both are present, return `_err("Conflicting arguments")`. If neither is present, return `_err()`. If `where_clause` is passed, return `_err()`. Never silently default to fetching all rows. Compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway.
 
 **Step 4: Run tests**
 
@@ -1581,9 +1604,17 @@ Create `tests/orchestrator/agent/test_filter_hooks.py` testing:
 5. **`deny_raw_sql_in_filter_tools`** does NOT trigger for unrelated tools (e.g., `create_job`)
 6. **`validate_intent_on_resolve`** denies invalid operator in intent
 7. **`validate_intent_on_resolve`** allows valid intent
-8. **Hook ordering/finality:** a denied payload CANNOT be later "allowed" by any downstream hook — verify deny is final
-9. **Scoped matcher priority:** deny hook fires on scoped tools only; does not interfere with unrelated tool chains
-10. **Deny precedence:** when `deny_raw_sql_in_filter_tools` returns deny, no subsequent PreToolUse hook for that tool call is evaluated
+8. **`validate_filter_spec_on_pipeline`** denies pipeline call with Tier-B spec but missing `resolution_token`
+9. **`validate_filter_spec_on_pipeline`** denies pipeline call with expired token (TTL exceeded)
+10. **`validate_filter_spec_on_pipeline`** denies pipeline call with tampered HMAC signature
+11. **`validate_filter_spec_on_pipeline`** denies pipeline call with token whose `resolved_spec_hash` doesn't match incoming `filter_spec`
+12. **`validate_filter_spec_on_pipeline`** denies pipeline call with token whose `schema_signature` doesn't match current source
+13. **`validate_filter_spec_on_pipeline`** denies pipeline call with token whose `dict_version` doesn't match current canonical dict
+14. **`validate_filter_spec_on_pipeline`** allows pipeline call with valid Tier-B token (all bindings match)
+15. **`validate_filter_spec_on_pipeline`** allows pipeline call with Tier-A-only spec (no token required)
+16. **Hook ordering/finality:** a denied payload CANNOT be later "allowed" by any downstream hook — verify deny is final
+17. **Scoped matcher priority:** deny hook fires on scoped tools only; does not interfere with unrelated tool chains
+18. **Deny precedence:** when `deny_raw_sql_in_filter_tools` returns deny, no subsequent PreToolUse hook for that tool call is evaluated
 
 **Step 2: Run test to verify it fails**
 
@@ -1611,7 +1642,20 @@ async def validate_filter_spec_on_pipeline(
     tool_use_id: str | None,
     context: Any,
 ) -> dict[str, Any]:
-    """Validate filter_spec structure on pipeline and fetch_rows."""
+    """Validate filter_spec structure and Tier-B token on pipeline and fetch_rows.
+
+    Enforcement checklist (all must pass or deny):
+    1. filter_spec is present and structurally valid (or all_rows=true)
+    2. If filter_spec contains Tier-B resolved terms (status was NEEDS_CONFIRMATION):
+       a. resolution_token MUST be present — deny if missing
+       b. HMAC signature is valid (not tampered)
+       c. Token TTL has not expired
+       d. Token session_id matches current session
+       e. Token schema_signature matches current source schema
+       f. Token dict_version matches current canonical dict version
+       g. Token resolved_spec_hash matches SHA-256 of incoming filter_spec
+    3. Schema signature in filter_spec matches current source
+    """
 
 async def validate_intent_on_resolve(
     input_data: dict[str, Any],
@@ -1633,6 +1677,44 @@ Expected: All tests PASS.
 ```bash
 git add src/orchestrator/agent/hooks.py tests/orchestrator/agent/test_filter_hooks.py
 git commit -m "feat: add deny_raw_sql and filter validation hooks"
+```
+
+**Step 6: Add `validate_filter_config()` startup validation**
+
+This step implements the startup-time secret validation referenced in Architectural Invariant #6. Without it, the token secret requirement is only enforced at first use (lazy getter), which is too late for production.
+
+- Create `src/orchestrator/filter_config.py` with:
+  ```python
+  _MIN_SECRET_LENGTH = 32
+
+  def validate_filter_config() -> None:
+      """Validate required filter configuration at startup.
+
+      Called from FastAPI lifespan in src/api/main.py.
+      Raises FilterConfigError if FILTER_TOKEN_SECRET is not set or too short.
+      """
+      import os
+      secret = os.environ.get("FILTER_TOKEN_SECRET", "")
+      if not secret:
+          raise FilterConfigError(
+              "FILTER_TOKEN_SECRET env var is required. "
+              "Set it to a stable secret (min 32 chars) for HMAC token signing."
+          )
+      if len(secret) < _MIN_SECRET_LENGTH:
+          raise FilterConfigError(
+              f"FILTER_TOKEN_SECRET must be at least {_MIN_SECRET_LENGTH} characters. "
+              f"Current length: {len(secret)}. Use a cryptographically random value."
+          )
+  ```
+- Modify `src/api/main.py` lifespan to call `validate_filter_config()` at startup (before agent session prewarm)
+- Test: `tests/orchestrator/test_filter_config.py` — verify:
+  - Raises when env var is missing
+  - Raises when env var is too short (e.g., 16 chars)
+  - Succeeds when env var is set and >= 32 chars
+
+```bash
+git add src/orchestrator/filter_config.py src/api/main.py tests/orchestrator/test_filter_config.py
+git commit -m "feat: add validate_filter_config() startup check for FILTER_TOKEN_SECRET"
 ```
 
 ---
@@ -1891,6 +1973,1444 @@ git commit -m "test: add end-to-end determinism acceptance tests (release gate)"
 
 ---
 
+## Phase 8: Execution Determinism — Idempotency, In-Flight State, Replay Safety
+
+### Problem Statement
+
+The current execution path has a critical window between UPS side effect and DB persistence:
+
+```
+batch_engine.py:408  →  result = await self._ups.create_shipment(request_body=api_payload)
+    ... (tracking number extraction, label save, cost calculation) ...
+batch_engine.py:458  →  self._db.commit()
+```
+
+A crash, network split, or process kill between lines 408 and 458 creates a shipment at UPS that is not recorded in the local DB. On retry, the same row produces a **duplicate shipment** with a separate tracking number and charge.
+
+### Design Decisions
+
+1. **UPS `TransactionReference` is advisory-only** — UPS does not deduplicate based on it, and `track_package` only accepts UPS tracking numbers (not custom references). We use `TransactionReference.CustomerContext` strictly for post-hoc audit correlation in UPS Quantum View, not for programmatic dedup. Our dedup layer is local DB state only.
+2. **In-flight state is local-first.** Before calling UPS, write `in_flight` status + idempotency key to DB and commit. After UPS responds, update to `completed`/`failed`/`needs_review` and commit. The in-flight window is bounded to the UPS API call duration only.
+3. **Recovery uses a three-tier strategy based on available state.** When a row is `in_flight` on resume:
+   - **Tier 1 (has `ups_tracking_number`):** The per-package tracking number was stored before crash. Call `track_package(tracking_number=ups_tracking_number)` to verify the shipment still exists at UPS. If UPS confirms AND required artifacts are present (label file exists on disk, cost_cents is populated), transition to `completed`. If UPS confirms but artifacts are missing (label lost, cost unknown), transition to `needs_review` with reason "Shipment verified at UPS but missing artifacts: {list}" — the operator can use `recover_label` to restore.
+   - **Tier 2 (no tracking info):** The UPS call may or may not have succeeded — we cannot determine this programmatically because UPS does not support query-by-custom-reference. Mark as `needs_review` (never auto-retry — prevents duplicate shipments). Emit a recovery report with the idempotency key so the operator can check UPS Quantum View or shipping history.
+   - **Tier 3 (UPS lookup fails):** Network or API error during recovery. Increment `recovery_attempt_count`. After `MAX_RECOVERY_ATTEMPTS` (default 3) failed lookups, escalate to `needs_review` with reason "UPS lookup failed {N} times — escalated for manual resolution". Below the limit, leave as `in_flight` for the next startup pass.
+4. **Labels are promoted BEFORE the DB commit, not after.** Write to `labels/staging/{job_id}/{row}.png`, then `os.rename()` to final path, then commit the DB row with the final path. This ensures: if crash occurs after promote but before commit, the label exists at its final location and the in-flight row will be recovered normally. Startup cleanup only removes staging files for job directories that have no `in_flight` or `needs_review` rows.
+5. **Write-back uses a durable queue table.** Each successful row writes a `WriteBackTask` row to a new `write_back_queue` table. A background worker processes the queue. Partial failures are retried independently per row.
+6. **`needs_review` is a terminal status for safety.** Rows marked `needs_review` during crash recovery are never auto-retried. They require operator action (void duplicate at UPS or manually complete). The `get_job_status` tool reports `needs_review` count.
+7. **Intentional tradeoff: deterministic and safe, not fully autonomous.** For crash states where the system cannot programmatically determine whether UPS created a shipment (Tier 2: no `ups_tracking_number`), we intentionally choose manual operator review over autonomous retry. This is a deliberate design decision — the cost of a duplicate shipment (financial charge + operational overhead to void) exceeds the cost of a brief manual lookup in UPS Quantum View. Full autonomy for this edge case would require UPS to support query-by-customer-reference, which they do not. If UPS adds this capability in the future, Tier 2 can be upgraded to programmatic verification without changing the state machine.
+8. **Two-column UPS identity model.** UPS returns two distinct identifiers per shipment: `ShipmentIdentificationNumber` (shipment-level, used for void operations and audit) and `TrackingNumber` (per-package, used for tracking and recovery verification). These are stored in separate columns: `ups_shipment_id` and `ups_tracking_number`. Recovery (Tier 1) uses `ups_tracking_number` for `track_package` verification. Void operations use `ups_shipment_id`. Never conflate the two — for multi-package shipments they are different values.
+
+---
+
+### Task 21: Add `in_flight` Status and Idempotency Columns to JobRow
+
+**Files:**
+- Modify: `src/db/models.py` (RowStatus enum + JobRow model)
+- Create: `tests/db/test_row_inflight_status.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for in_flight row status and idempotency columns."""
+
+from src.db.models import RowStatus
+
+
+class TestRowStatusInFlight:
+    def test_in_flight_status_exists(self):
+        assert hasattr(RowStatus, "in_flight")
+        assert RowStatus.in_flight.value == "in_flight"
+
+    def test_needs_review_status_exists(self):
+        assert hasattr(RowStatus, "needs_review")
+        assert RowStatus.needs_review.value == "needs_review"
+
+    def test_valid_status_transitions(self):
+        """pending → in_flight → completed/failed is valid.
+        in_flight → needs_review is valid (crash recovery, ambiguous).
+        in_flight → pending is NOT valid (never auto-retry ambiguous rows).
+        pending → completed directly is NOT valid (must go through in_flight)."""
+```
+
+Test that `JobRow` has new columns:
+- `idempotency_key: str | None` — `"{job_id}:{row_number}:{row_checksum}"` set before UPS call
+- `ups_shipment_id: str | None` — UPS-returned `ShipmentIdentificationNumber` (for void operations and audit)
+- `ups_tracking_number: str | None` — UPS-returned per-package `TrackingNumber` (for `track_package` verification in recovery)
+- `recovery_attempt_count: int` — number of failed Tier-3 recovery attempts (default 0, used for escalation)
+
+**Step 2: Run test to verify it fails**
+
+Run: `pytest tests/db/test_row_inflight_status.py -v`
+Expected: FAIL — `in_flight` not in RowStatus.
+
+**Step 3: Implement changes**
+
+In `src/db/models.py`:
+
+```python
+class RowStatus(str, Enum):
+    pending = "pending"
+    in_flight = "in_flight"  # NEW: UPS call dispatched, awaiting response
+    completed = "completed"
+    failed = "failed"
+    skipped = "skipped"
+    needs_review = "needs_review"  # NEW: crash recovery — operator must resolve
+    # NOTE: `processing` is deliberately REMOVED. The legacy status was set by
+    # JobService.start_row() which predates the deterministic in_flight state
+    # machine. Its existence would allow an alternate row lifecycle that
+    # bypasses deterministic invariants. See cleanup steps below.
+```
+
+**State machine cleanup — remove legacy `processing` status:**
+
+The codebase currently has `RowStatus.processing` (`models.py:62`) set by `JobService.start_row()` (`job_service.py:399`). This status is **not used by BatchEngine** (which manages its own `pending → in_flight → completed/failed/needs_review` lifecycle) but its presence allows an alternate row lifecycle that could bypass the deterministic state machine.
+
+Remove/disable in this task:
+1. **Delete `processing` from `RowStatus` enum** (done above).
+2. **Delete `JobService.start_row()` method** (`job_service.py:399-414`). It is not called by BatchEngine — grep to confirm zero callers before deleting. If any callers exist outside the batch path, refactor them to use the in-flight state machine instead.
+3. **Add a test** that `RowStatus` does NOT contain `processing` and that `JobService` does NOT have a `start_row` attribute:
+```python
+def test_processing_status_removed():
+    """processing status is removed — no alternate lifecycle can bypass
+    the deterministic in_flight state machine."""
+    assert not hasattr(RowStatus, "processing")
+
+def test_start_row_removed():
+    """start_row() is removed — rows transition via in_flight, not processing."""
+    assert not hasattr(JobService, "start_row")
+```
+
+Add columns to `JobRow`:
+
+```python
+idempotency_key: Mapped[Optional[str]] = mapped_column(
+    String(200), nullable=True, index=True
+)
+ups_shipment_id: Mapped[Optional[str]] = mapped_column(
+    String(50), nullable=True
+)
+ups_tracking_number: Mapped[Optional[str]] = mapped_column(
+    String(50), nullable=True
+)
+recovery_attempt_count: Mapped[int] = mapped_column(
+    Integer, nullable=False, default=0, server_default="0"
+)
+```
+
+Add index: `Index("idx_job_rows_idempotency", "idempotency_key")`
+
+Also fix the `JobRow` docstring — change `row_checksum: SHA-256 hash` to `row_checksum: MD5 hash` (matches actual `core.py:211` implementation which uses `hashlib.md5`).
+
+**Step 4: Add schema migration for existing databases**
+
+In `src/db/connection.py`, add to the `row_migrations` list (after the existing `charge_breakdown` entry):
+
+```python
+    # Phase 8: Execution determinism columns
+    (
+        "idempotency_key",
+        "ALTER TABLE job_rows ADD COLUMN idempotency_key VARCHAR(200)",
+    ),
+    (
+        "ups_shipment_id",
+        "ALTER TABLE job_rows ADD COLUMN ups_shipment_id VARCHAR(50)",
+    ),
+    (
+        "ups_tracking_number",
+        "ALTER TABLE job_rows ADD COLUMN ups_tracking_number VARCHAR(50)",
+    ),
+    (
+        "recovery_attempt_count",
+        "ALTER TABLE job_rows ADD COLUMN recovery_attempt_count INTEGER NOT NULL DEFAULT 0",
+    ),
+```
+
+After the row migrations loop, add index creation **unconditionally** (not guarded by column existence — handles partial-upgrade states where column exists but index is missing):
+
+```python
+# Always attempt index creation — CREATE INDEX IF NOT EXISTS is
+# safe to run repeatedly and handles partial-upgrade states where
+# a column was added but the index creation failed or was skipped.
+for idx_stmt in [
+    "CREATE INDEX IF NOT EXISTS idx_job_rows_idempotency ON job_rows (idempotency_key)",
+    "CREATE INDEX IF NOT EXISTS idx_job_rows_tracking ON job_rows (ups_tracking_number)",
+]:
+    try:
+        conn.execute(text(idx_stmt))
+    except OperationalError:
+        pass  # Column doesn't exist yet (pre-Phase-8 DB)
+```
+
+**Step 5: Run tests**
+
+Run: `pytest tests/db/test_row_inflight_status.py -v`
+Expected: All PASS.
+
+**Step 6: Commit**
+
+```bash
+git add src/db/models.py src/db/connection.py tests/db/test_row_inflight_status.py
+git commit -m "feat: add in_flight status, idempotency columns, and schema migration"
+```
+
+---
+
+### Task 22: Idempotency Key Generation Utility
+
+**Files:**
+- Create: `src/services/idempotency.py`
+- Create: `tests/services/test_idempotency.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for idempotency key generation and validation."""
+
+class TestIdempotencyKey:
+    def test_generate_key_format(self):
+        """Key is '{job_id}:{row_number}:{row_checksum}'."""
+        key = generate_idempotency_key("job-123", 5, "abc123hash")
+        assert key == "job-123:5:abc123hash"
+
+    def test_same_inputs_produce_same_key(self):
+        """Deterministic: identical inputs always produce identical key."""
+        k1 = generate_idempotency_key("j1", 1, "hash1")
+        k2 = generate_idempotency_key("j1", 1, "hash1")
+        assert k1 == k2
+
+    def test_different_inputs_produce_different_keys(self):
+        k1 = generate_idempotency_key("j1", 1, "hash1")
+        k2 = generate_idempotency_key("j1", 2, "hash1")
+        assert k1 != k2
+
+    def test_key_fits_ups_transaction_reference(self):
+        """UPS TransactionReference.CustomerContext max is 512 chars."""
+        key = generate_idempotency_key("a" * 36, 99999, "b" * 64)
+        assert len(key) <= 512
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Implement**
+
+```python
+"""Idempotency key generation for exactly-once shipment creation."""
+
+
+def generate_idempotency_key(job_id: str, row_number: int, row_checksum: str) -> str:
+    """Generate a deterministic idempotency key for a shipment row.
+
+    The key uniquely identifies a specific row in a specific job with a specific
+    data snapshot. If the row data changes (different checksum), the key changes,
+    allowing a new shipment to be created for the updated data.
+
+    Args:
+        job_id: UUID of the parent job.
+        row_number: 1-based row number in the job.
+        row_checksum: MD5 hash of the row's order_data JSON (per core.py:211;
+            note: models.py docstring incorrectly says SHA-256 — fix during Task 21).
+
+    Returns:
+        Idempotency key string: '{job_id}:{row_number}:{row_checksum}'.
+    """
+    return f"{job_id}:{row_number}:{row_checksum}"
+```
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/services/idempotency.py tests/services/test_idempotency.py
+git commit -m "feat: add idempotency key generation for shipment rows"
+```
+
+---
+
+### Task 23: Include TransactionReference in UPS Payload
+
+**Files:**
+- Modify: `src/services/ups_payload_builder.py`
+- Modify: `tests/services/test_ups_payload_builder.py`
+
+**Step 1: Write the failing test**
+
+Add a test to the existing payload builder test file:
+
+```python
+def test_build_ups_api_payload_includes_transaction_reference(self):
+    """When idempotency_key is provided, payload includes TransactionReference."""
+    payload = build_ups_api_payload(simplified, account_number="X", idempotency_key="job:1:hash")
+    ref = payload["ShipmentRequest"]["Request"]["TransactionReference"]
+    assert ref["CustomerContext"] == "job:1:hash"
+
+def test_build_ups_api_payload_omits_transaction_reference_when_none(self):
+    """When no idempotency_key, no TransactionReference in payload."""
+    payload = build_ups_api_payload(simplified, account_number="X")
+    assert "TransactionReference" not in payload["ShipmentRequest"]["Request"]
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Add `idempotency_key` parameter to `build_ups_api_payload()`**
+
+In `src/services/ups_payload_builder.py`, add optional `idempotency_key: str | None = None` parameter. When provided, inject into payload:
+
+```python
+if idempotency_key:
+    request["TransactionReference"] = {"CustomerContext": idempotency_key}
+```
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/services/ups_payload_builder.py tests/services/test_ups_payload_builder.py
+git commit -m "feat: include TransactionReference in UPS payload for idempotency audit"
+```
+
+---
+
+### Task 24: Rewrite BatchEngine Execute with In-Flight State Machine
+
+**Files:**
+- Modify: `src/services/batch_engine.py:362-505`
+- Create: `tests/services/test_batch_engine_inflight.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for in-flight state machine in BatchEngine.execute()."""
+
+class TestInFlightStateMachine:
+    def test_row_transitions_to_in_flight_before_ups_call(self):
+        """Row status is 'in_flight' with idempotency_key set and committed
+        BEFORE create_shipment is called."""
+
+    def test_row_transitions_to_completed_after_ups_success(self):
+        """After successful create_shipment, row status is 'completed'
+        with tracking_number, cost_cents, ups_shipment_id, and ups_tracking_number."""
+
+    def test_row_transitions_to_failed_on_ups_error(self):
+        """On UPS error, row status is 'failed' with error_code and error_message.
+        The in_flight state is cleared."""
+
+    def test_crash_leaves_row_in_in_flight_state(self):
+        """Simulate crash between UPS call and DB commit.
+        Row should remain 'in_flight' with idempotency_key set."""
+
+    def test_pre_phase1_error_marks_pending_row_failed(self):
+        """If _parse_order_data or validation fails BEFORE the in_flight
+        commit, the row is still 'pending'. The outer handler must mark
+        it 'failed' — not leave it pending (which would cause ambiguous
+        retry behavior)."""
+
+    def test_ups_hard_rejection_marks_row_failed(self):
+        """UPSServiceError (translated from MCPToolError) means UPS processed
+        the request and returned isError. Hard rejection — no shipment created.
+        Row marked 'failed', safe to retry."""
+
+    def test_mcp_connection_error_marks_row_failed(self):
+        """MCPConnectionError means we couldn't reach the MCP server at all.
+        No side effect possible. Row marked 'failed', safe to retry."""
+
+    def test_transport_timeout_marks_needs_review(self):
+        """Generic Exception (TimeoutError, ClosedResourceError, etc.) from
+        create_shipment means the request MAY have reached UPS. Ambiguous —
+        row marked 'needs_review', never 'failed'."""
+
+    def test_transport_cancel_marks_needs_review(self):
+        """asyncio.CancelledError during create_shipment is ambiguous —
+        the request may have been sent. Row marked 'needs_review'."""
+
+    def test_post_ups_failure_marks_needs_review_not_failed(self):
+        """If UPS call succeeds but label staging/promote/commit fails,
+        row is marked needs_review — NOT failed. Marking failed would
+        allow retry to create a duplicate shipment."""
+
+    def test_post_ups_failure_preserves_partial_ups_identifiers(self):
+        """If post-UPS exception occurs, any available ups_shipment_id
+        and ups_tracking_number from the UPS response are still written
+        to the row for recovery."""
+
+    def test_ups_call_succeeded_always_bound(self):
+        """ups_call_succeeded is initialized at top of _process_row,
+        never unbound regardless of where exceptions fire."""
+
+    def test_pending_to_completed_directly_is_rejected(self):
+        """BatchEngine must not skip the in_flight state.
+        A row going from pending to completed without in_flight is a bug."""
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Rewrite `_process_row()` in `batch_engine.py`**
+
+Replace the current flow:
+
+```
+[current]  pending → create_shipment() → completed/failed (single commit)
+```
+
+With the two-phase commit:
+
+```
+[new]  pending
+         ├─ parse/validate/build error → failed (pre-side-effect, safe to retry)
+         └─ success → in_flight (commit 1: set idempotency_key)
+                       → create_shipment(idempotency_key)
+                          ├─ UPSServiceError (hard reject) → failed (safe to retry)
+                          ├─ MCPConnectionError (no reach) → failed (safe to retry)
+                          ├─ transport timeout/cancel (ambiguous) → needs_review
+                          └─ UPS accepts → post-side-effect zone
+                              ├─ promote + commit succeeds → completed
+                              └─ any local error → needs_review (never failed)
+```
+
+Implementation:
+
+```python
+async def _process_row(row: Any) -> None:
+    nonlocal successful, failed, total_cost_cents
+
+    # Initialized at top scope so the outer handler can always read it,
+    # even if an exception fires before the UPS call boundary.
+    ups_call_succeeded = False
+
+    async with semaphore:
+        try:
+            order_data = self._parse_order_data(row)
+            # ... (international validation, payload build — unchanged) ...
+
+            # Generate idempotency key
+            idem_key = generate_idempotency_key(job_id, row.row_number, row.row_checksum)
+
+            # PHASE 1: Mark in-flight BEFORE UPS call
+            async with db_lock:
+                row.status = "in_flight"
+                row.idempotency_key = idem_key
+                self._db.commit()
+
+            # Build payload with idempotency key
+            api_payload = build_ups_api_payload(
+                simplified, account_number=self._account_number,
+                idempotency_key=idem_key,
+            )
+
+            # --- UPS CALL BOUNDARY ---
+            # Everything BEFORE this line is pre-side-effect (safe to mark failed).
+            # Everything AFTER this line is post-side-effect (UPS may have
+            # created a shipment — MUST use needs_review, never failed).
+            #
+            # Error taxonomy (from ups_mcp_client.py + mcp_client.py):
+            #   UPSServiceError  → translated from MCPToolError → UPS received
+            #       the request and returned isError=True. Hard rejection.
+            #       No shipment created. Safe to mark 'failed'.
+            #   MCPConnectionError → could not reach MCP server at all.
+            #       No side effect. Safe to mark 'failed'.
+            #   Other Exception (transport: ClosedResourceError, TimeoutError,
+            #       asyncio.CancelledError, etc.) → for mutating tools,
+            #       ups_mcp_client._call() does NOT retry and re-raises.
+            #       Request MAY have reached UPS. AMBIGUOUS — must use
+            #       'needs_review', never 'failed'.
+            try:
+                result = await self._ups.create_shipment(request_body=api_payload)
+                ups_call_succeeded = True
+            except UPSServiceError as e:
+                # Hard rejection — UPS processed request and returned error.
+                # No shipment was created. Safe to mark failed.
+                async with db_lock:
+                    row.status = "failed"
+                    row.error_code = e.code
+                    row.error_message = str(e)
+                    self._db.commit()
+                raise  # re-raise to skip Phase 2
+            except MCPConnectionError as e:
+                # Could not reach the MCP server at all.
+                # No side effect. Safe to mark failed.
+                async with db_lock:
+                    row.status = "failed"
+                    row.error_code = "E-3001"
+                    row.error_message = str(e)
+                    self._db.commit()
+                raise  # re-raise to skip Phase 2
+            except Exception as e:
+                # Ambiguous transport failure (timeout, closed connection,
+                # cancelled, etc.). The request MAY have reached UPS and a
+                # shipment MAY exist. Mark needs_review — NEVER failed.
+                logger.error(
+                    "Ambiguous transport failure for row %d (job %s): %s [%s]. "
+                    "UPS may have created a shipment.",
+                    row.row_number, job_id, e, type(e).__name__,
+                )
+                async with db_lock:
+                    row.status = "needs_review"
+                    row.error_message = (
+                        f"Ambiguous transport error during create_shipment: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    self._db.commit()
+                raise  # re-raise to skip Phase 2
+
+            # --- POST-UPS: side effect occurred ---
+            # From here on, UPS has (or may have) created a shipment.
+            # Any exception must NOT mark row as "failed" — that would
+            # allow a retry to create a duplicate. Use "needs_review" instead.
+            try:
+                # Extract tracking number — prefer per-package TrackingNumber,
+                # fall back to ShipmentIdentificationNumber (UPS CIE env masks
+                # package-level numbers with "XXXX" placeholders).
+                # Source: batch_engine.py:410-417, ups_mcp_client.py:939-940
+                tracking_numbers = result.get("trackingNumbers", [])
+                tracking_number = tracking_numbers[0] if tracking_numbers else ""
+                if not tracking_number or "XXXX" in tracking_number:
+                    tracking_number = result.get(
+                        "shipmentIdentificationNumber", tracking_number
+                    )
+
+                # Save label to staging directory — NOT the final path yet.
+                # Source: batch_engine.py:420-428
+                label_path = ""
+                label_data_list = result.get("labelData", [])
+                if label_data_list and label_data_list[0]:
+                    label_path = self._save_label_staged(
+                        tracking_number,
+                        label_data_list[0],
+                        job_id=job_id,
+                        row_number=row.row_number,
+                    )
+
+                # Convert dollar string to integer cents — avoids float precision.
+                # Source: batch_engine.py:431-432
+                charges = result.get("totalCharges", {})
+                cost_cents = _dollars_to_cents(charges.get("monetaryValue", "0"))
+
+                # PHASE 2: Promote label FIRST, then commit
+                # Order matters for crash safety: if we commit first and
+                # crash before promote, startup cleanup deletes the staging
+                # file → completed row with no label. By promoting first:
+                # - Crash after promote but before commit: label at final
+                #   path, row still in_flight → recovery handles normally
+                # - Crash after commit: both label and DB are consistent
+                final_label_path = self._promote_label(label_path)
+
+                async with db_lock:
+                    row.tracking_number = tracking_number
+                    row.label_path = final_label_path  # FINAL path, not staging
+                    row.cost_cents = cost_cents
+                    # Store BOTH UPS identifiers (Design Decision #8):
+                    # - ups_shipment_id: for void operations and audit
+                    # - ups_tracking_number: for track_package recovery verification
+                    row.ups_shipment_id = result.get(
+                        "shipmentIdentificationNumber"
+                    )
+                    row.ups_tracking_number = tracking_number  # from PackageResults
+                    row.status = "completed"
+                    row.processed_at = datetime.now(UTC).isoformat()
+                    self._db.commit()
+
+                    # ... progress emission ...
+
+            except Exception as post_e:
+                # Post-UPS failure: shipment may exist at UPS.
+                # Mark needs_review — NEVER failed (prevents duplicate on retry).
+                logger.error(
+                    "Post-UPS failure for row %d (job %s): %s. "
+                    "Shipment may exist at UPS — marking needs_review.",
+                    row.row_number, job_id, post_e,
+                )
+                async with db_lock:
+                    row.status = "needs_review"
+                    row.error_message = f"Post-UPS error: {post_e}"
+                    # Preserve any partial UPS identifiers for recovery
+                    if hasattr(result, "get"):
+                        row.ups_shipment_id = result.get(
+                            "shipmentIdentificationNumber"
+                        )
+                        # tracking_number may have been extracted before failure
+                        if tracking_number:
+                            row.ups_tracking_number = tracking_number
+                    self._db.commit()
+
+        except (UPSServiceError, MCPConnectionError, ValueError, Exception) as e:
+            # Reaches here for:
+            #   a) Pre-Phase-1 errors (parse, validation, payload build)
+            #      — row is still 'pending', no UPS side effect
+            #   b) Phase 1 commit failure — row may be 'pending' or 'in_flight'
+            #   c) Re-raised UPS hard rejection (UPSServiceError) — row
+            #      already marked 'failed' by inner handler
+            #   d) Re-raised MCPConnectionError — row already marked 'failed'
+            #   e) Re-raised ambiguous transport error — row already marked
+            #      'needs_review' by inner handler
+            #
+            # Only mark 'failed' for pre-UPS cases where inner handlers
+            # haven't already set a terminal status. Check both
+            # ups_call_succeeded AND current row status to be safe.
+            if not ups_call_succeeded:
+                async with db_lock:
+                    if row.status in ("pending", "in_flight"):
+                        row.status = "failed"
+                        row.error_code = getattr(e, "code", "E-4001")
+                        row.error_message = str(e)
+                        self._db.commit()
+            # ... error progress emission ...
+```
+
+**Step 4: Run tests**
+
+Run: `pytest tests/services/test_batch_engine_inflight.py -v`
+Expected: All PASS.
+
+**Step 5: Commit**
+
+```bash
+git add src/services/batch_engine.py src/services/idempotency.py tests/services/test_batch_engine_inflight.py
+git commit -m "feat: rewrite batch execute with in-flight state machine"
+```
+
+---
+
+### Task 25: Label Staging with Atomic Promote
+
+**Files:**
+- Modify: `src/services/batch_engine.py` (add `_save_label_staged`, `_promote_label`, `_cleanup_staging`)
+- Create: `tests/services/test_label_staging.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for label staging directory with atomic promote."""
+
+class TestLabelStaging:
+    def test_save_label_staged_writes_to_staging_dir(self):
+        """Label is saved to labels/staging/{job_id}/{row}.png, not final path."""
+
+    def test_promote_label_moves_to_final_path(self):
+        """After promote, label exists at final path and staging file is gone."""
+
+    def test_crash_before_promote_leaves_orphan_in_staging(self):
+        """If promote never runs, staging file exists but final path does not."""
+
+    def test_cleanup_staging_skips_jobs_with_in_flight_rows(self):
+        """cleanup_staging() does NOT delete staging files for jobs that have
+        in_flight or needs_review rows — those labels may be needed for recovery."""
+
+    def test_cleanup_staging_removes_orphans_for_completed_jobs(self):
+        """cleanup_staging() removes staging dirs only for jobs where all
+        rows are completed, failed, or skipped (no in_flight/needs_review)."""
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Implement staging methods**
+
+```python
+def _save_label_staged(self, tracking_number: str, label_data: str,
+                        job_id: str, row_number: int) -> str:
+    """Save label to staging directory. Returns staging path."""
+    staging_dir = LABELS_DIR / "staging" / job_id
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"row_{row_number}_{tracking_number}.png"
+    staging_path = staging_dir / filename
+    staging_path.write_bytes(base64.b64decode(label_data))
+    return str(staging_path)
+
+def _promote_label(self, staging_path: str) -> str:
+    """Atomically move label from staging to final location."""
+    staging = Path(staging_path)
+    final_path = LABELS_DIR / staging.name
+    os.rename(str(staging), str(final_path))
+    return str(final_path)
+
+@staticmethod
+def cleanup_staging(db) -> int:
+    """Remove orphaned staging files. Called at startup.
+
+    IMPORTANT: Only removes staging files for jobs where NO rows are
+    in_flight or needs_review. Those staging files may contain labels
+    for shipments that need recovery/operator resolution.
+
+    Args:
+        db: Database session to check row statuses.
+    """
+    staging_root = LABELS_DIR / "staging"
+    if not staging_root.exists():
+        return 0
+
+    # Find job IDs that still have unresolved rows
+    from src.services.job_service import JobService
+    js = JobService(db)
+
+    count = 0
+    for job_dir in staging_root.iterdir():
+        if not job_dir.is_dir():
+            continue
+        job_id = job_dir.name
+        # Check if this job has any in_flight or needs_review rows
+        rows = js.get_rows(job_id)
+        has_unresolved = any(
+            r.status in ("in_flight", "needs_review") for r in rows
+        )
+        if has_unresolved:
+            continue  # Preserve staging files for recovery
+
+        for f in job_dir.iterdir():
+            f.unlink()
+            count += 1
+        job_dir.rmdir()
+    return count
+```
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/services/batch_engine.py tests/services/test_label_staging.py
+git commit -m "feat: add label staging with atomic promote for crash safety"
+```
+
+---
+
+### Task 26: In-Flight Row Recovery on Resume
+
+**Files:**
+- Modify: `src/orchestrator/batch/recovery.py`
+- Modify: `src/services/batch_engine.py` (add `recover_in_flight_rows`)
+- Create: `tests/orchestrator/batch/test_inflight_recovery.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for in-flight row recovery after crash."""
+
+class TestInFlightRecovery:
+    def test_recovery_detects_in_flight_rows(self):
+        """check_interrupted_jobs includes in_flight row count."""
+
+    def test_recovery_tier1_completes_with_verified_artifacts(self):
+        """Row has ups_tracking_number, label_path exists on disk,
+        cost_cents is populated. Recovery calls
+        track_package(tracking_number=ups_tracking_number).
+        UPS confirms → row marked completed."""
+
+    def test_recovery_tier1_needs_review_if_ups_confirms_but_label_missing(self):
+        """Row has ups_tracking_number, UPS confirms shipment exists,
+        but label_path file is missing from disk. Row marked needs_review
+        with reason 'Shipment verified at UPS but missing artifacts: label_path'.
+        Operator can use recover_label to restore."""
+
+    def test_recovery_tier1_needs_review_if_ups_confirms_but_cost_missing(self):
+        """Row has ups_tracking_number, UPS confirms, but cost_cents is None.
+        Row marked needs_review with explicit missing-artifacts reason."""
+
+    def test_recovery_tier1_marks_needs_review_if_ups_rejects(self):
+        """Row has ups_tracking_number but track_package says invalid.
+        Row marked needs_review (do not auto-retry — may be a partial state)."""
+
+    def test_recovery_tier2_marks_needs_review_when_no_tracking_info(self):
+        """Row is in_flight but has no ups_tracking_number.
+        Cannot determine if UPS created shipment (UPS doesn't support
+        query-by-custom-reference). Row marked needs_review.
+        Recovery report includes idempotency_key for operator lookup."""
+
+    def test_recovery_tier2_never_auto_retries(self):
+        """Rows without tracking info are NEVER reset to pending.
+        Auto-retry would risk duplicate shipments."""
+
+    def test_recovery_tier3_leaves_in_flight_below_max_attempts(self):
+        """If track_package fails (network error) and recovery_attempt_count
+        < MAX_RECOVERY_ATTEMPTS, increment counter and leave in_flight
+        for resolution on next startup pass."""
+
+    def test_recovery_tier3_escalates_after_max_attempts(self):
+        """If track_package fails and recovery_attempt_count reaches
+        MAX_RECOVERY_ATTEMPTS (default 3), escalate to needs_review
+        with reason 'UPS lookup failed N times — escalated'."""
+
+    def test_recovery_report_includes_all_unresolved_rows(self):
+        """Recovery returns structured report with recovered, needs_review,
+        and unresolved counts plus per-row details for operator action."""
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Implement recovery**
+
+Add `recover_in_flight_rows()` to `batch_engine.py`:
+
+```python
+MAX_RECOVERY_ATTEMPTS = int(os.environ.get("MAX_RECOVERY_ATTEMPTS", "3"))
+
+async def recover_in_flight_rows(
+    self, job_id: str, rows: list[Any],
+) -> dict[str, Any]:
+    """Recover rows stuck in 'in_flight' state after a crash.
+
+    Three-tier recovery based on available state:
+
+    Tier 1 (has ups_tracking_number): Per-package tracking number was stored
+        before crash. Call track_package(tracking_number=...) to verify. If
+        UPS confirms AND required artifacts are present (label file on disk,
+        cost_cents populated) → complete. If UPS confirms but artifacts are
+        missing → needs_review with explicit reason. If UPS rejects →
+        needs_review.
+
+    Tier 2 (no tracking info): Cannot determine if UPS created shipment.
+        UPS does not support query-by-custom-reference, so we CANNOT
+        programmatically check. Mark needs_review (never auto-retry —
+        prevents duplicate shipments). Include idempotency_key in report
+        for operator to check UPS Quantum View.
+
+    Tier 3 (UPS lookup fails): Network/API error during verification.
+        Increment recovery_attempt_count. After MAX_RECOVERY_ATTEMPTS
+        (default 3) failed lookups, escalate to needs_review. Below
+        limit, leave in_flight for next startup pass.
+
+    Returns:
+        {
+            "recovered": N,       # Tier 1 success — verified + artifacts OK
+            "needs_review": N,    # Tier 1 invalid/missing artifacts + Tier 2 + Tier 3 escalated
+            "unresolved": N,      # Tier 3 below max — still in_flight
+            "details": [          # Per-row report for operator
+                {"row_number": N, "action": "...", "idempotency_key": "..."},
+            ],
+        }
+    """
+    in_flight = [r for r in rows if r.status == "in_flight"]
+    recovered = needs_review = unresolved = 0
+    details: list[dict[str, Any]] = []
+
+    for row in in_flight:
+        if row.ups_tracking_number:
+            # Tier 1: We have a per-package tracking number — verify it
+            try:
+                raw = await self._ups.track_package(
+                    tracking_number=row.ups_tracking_number,
+                )
+                # Parse nested UPS tracking response (matches tracking.py:50-62):
+                #   raw["trackResponse"]["shipment"][0]["package"][0]["trackingNumber"]
+                shipment = raw.get("trackResponse", {}).get("shipment", [{}])
+                if isinstance(shipment, list):
+                    shipment = shipment[0] if shipment else {}
+                package = shipment.get("package", [{}])
+                if isinstance(package, list):
+                    package = package[0] if package else {}
+                returned_number = package.get("trackingNumber", "")
+
+                if returned_number:
+                    # UPS confirms shipment exists — now verify local artifacts
+                    missing_artifacts: list[str] = []
+                    if not row.label_path or not os.path.exists(row.label_path):
+                        missing_artifacts.append("label_path")
+                    if row.cost_cents is None:
+                        missing_artifacts.append("cost_cents")
+
+                    if missing_artifacts:
+                        # Shipment verified but cannot fully complete locally.
+                        # Operator can use recover_label / manual cost entry.
+                        row.status = "needs_review"
+                        row.error_message = (
+                            f"Shipment verified at UPS ({returned_number}) but "
+                            f"missing artifacts: {', '.join(missing_artifacts)}"
+                        )
+                        self._db.commit()
+                        needs_review += 1
+                        details.append({
+                            "row_number": row.row_number,
+                            "action": "needs_review",
+                            "reason": f"UPS confirmed but missing: {', '.join(missing_artifacts)}",
+                            "tracking_number": returned_number,
+                            "idempotency_key": row.idempotency_key,
+                        })
+                    else:
+                        # All artifacts present — safe to complete
+                        row.tracking_number = returned_number
+                        row.status = "completed"
+                        row.processed_at = datetime.now(UTC).isoformat()
+                        self._db.commit()
+                        recovered += 1
+                        details.append({
+                            "row_number": row.row_number,
+                            "action": "recovered",
+                            "tracking_number": returned_number,
+                        })
+                else:
+                    # UPS doesn't recognize this tracking number
+                    row.status = "needs_review"
+                    row.error_message = (
+                        f"UPS returned empty tracking for stored number "
+                        f"'{row.ups_tracking_number}'"
+                    )
+                    self._db.commit()
+                    needs_review += 1
+                    details.append({
+                        "row_number": row.row_number,
+                        "action": "needs_review",
+                        "reason": "UPS returned invalid for stored tracking number",
+                        "ups_tracking_number": row.ups_tracking_number,
+                        "idempotency_key": row.idempotency_key,
+                    })
+            except Exception as e:
+                # Tier 3: Lookup failed — escalation policy
+                row.recovery_attempt_count += 1
+                if row.recovery_attempt_count >= MAX_RECOVERY_ATTEMPTS:
+                    # Escalate: too many failed lookups → needs_review
+                    row.status = "needs_review"
+                    row.error_message = (
+                        f"UPS lookup failed {row.recovery_attempt_count} times "
+                        f"(last error: {e}) — escalated for manual resolution"
+                    )
+                    self._db.commit()
+                    needs_review += 1
+                    details.append({
+                        "row_number": row.row_number,
+                        "action": "needs_review",
+                        "reason": f"Escalated after {row.recovery_attempt_count} failed lookups",
+                        "idempotency_key": row.idempotency_key,
+                    })
+                else:
+                    # Below limit — leave in_flight, try again next startup
+                    self._db.commit()  # persist incremented counter
+                    unresolved += 1
+                    details.append({
+                        "row_number": row.row_number,
+                        "action": "unresolved",
+                        "reason": f"UPS lookup failed ({row.recovery_attempt_count}/{MAX_RECOVERY_ATTEMPTS}): {e}",
+                        "idempotency_key": row.idempotency_key,
+                    })
+        else:
+            # Tier 2: No tracking info — ambiguous, mark for operator
+            row.status = "needs_review"
+            row.error_message = (
+                "No UPS tracking number stored — cannot verify programmatically. "
+                "Check UPS Quantum View using idempotency key."
+            )
+            self._db.commit()
+            needs_review += 1
+            details.append({
+                "row_number": row.row_number,
+                "action": "needs_review",
+                "reason": "No ups_tracking_number — cannot verify programmatically",
+                "idempotency_key": row.idempotency_key,
+            })
+
+    return {
+        "recovered": recovered,
+        "needs_review": needs_review,
+        "unresolved": unresolved,
+        "details": details,
+    }
+```
+
+Update `recovery.py`:
+
+1. `check_interrupted_jobs()`: include `in_flight_count` and `needs_review_count` in `InterruptedJobInfo`.
+2. Add `RecoveryChoice.REVIEW` enum value and handler with concrete contract:
+
+```python
+class RecoveryChoice(str, Enum):
+    RESUME = "resume"
+    RESTART = "restart"
+    CANCEL = "cancel"
+    REVIEW = "review"  # NEW: inspect needs_review rows before deciding
+
+
+# In handle_recovery_choice():
+elif choice == RecoveryChoice.REVIEW:
+    # Return detailed row-level report for operator inspection.
+    # Does NOT change any row status — read-only operation.
+    all_rows = job_service.get_rows(job_id)
+    needs_review_rows = [
+        r for r in all_rows if r.status == "needs_review"
+    ]
+    in_flight_rows = [
+        r for r in all_rows if r.status == "in_flight"
+    ]
+
+    review_details: list[dict[str, Any]] = []
+    for r in needs_review_rows:
+        review_details.append({
+            "row_number": r.row_number,
+            "status": "needs_review",
+            "error_message": r.error_message or "",
+            "ups_tracking_number": r.ups_tracking_number or "",
+            "ups_shipment_id": r.ups_shipment_id or "",
+            "idempotency_key": r.idempotency_key or "",
+        })
+    for r in in_flight_rows:
+        review_details.append({
+            "row_number": r.row_number,
+            "status": "in_flight",
+            "recovery_attempt_count": r.recovery_attempt_count,
+            "ups_tracking_number": r.ups_tracking_number or "",
+            "idempotency_key": r.idempotency_key or "",
+        })
+
+    return {
+        "action": "review",
+        "job_id": job_id,
+        "needs_review_count": len(needs_review_rows),
+        "in_flight_count": len(in_flight_rows),
+        "rows": review_details,
+        "message": (
+            f"{len(needs_review_rows)} rows need review, "
+            f"{len(in_flight_rows)} rows still in-flight. "
+            "Use idempotency keys to look up shipments in UPS Quantum View. "
+            "After resolving, choose RESUME to continue or CANCEL to abort."
+        ),
+    }
+```
+
+**Input/output contract for `RecoveryChoice.REVIEW`:**
+- **Input:** `choice=RecoveryChoice.REVIEW`, `job_id`, `job_service`
+- **Output:** `{"action": "review", "job_id": str, "needs_review_count": int, "in_flight_count": int, "rows": list[RowDetail], "message": str}`
+- **Side effects:** None — purely read-only. Does not modify any row status.
+- **Caller flow:** After reviewing, caller picks `RESUME` (process remaining `pending` rows, skip `needs_review`/`in_flight`), `CANCEL` (abort job), or resolves individual rows manually then calls `RESUME`.
+
+Add test for the REVIEW path:
+
+```python
+def test_recovery_review_returns_detailed_row_report(self):
+    """RecoveryChoice.REVIEW returns per-row detail with idempotency keys,
+    error messages, and UPS identifiers for needs_review and in_flight rows.
+    Does not modify any row status (read-only)."""
+
+def test_recovery_review_then_resume_skips_resolved_rows(self):
+    """After REVIEW, operator resolves rows manually (e.g. void at UPS),
+    then calls RESUME. BatchEngine only processes pending rows —
+    needs_review rows are not auto-retried."""
+```
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/services/batch_engine.py src/orchestrator/batch/recovery.py tests/orchestrator/batch/test_inflight_recovery.py
+git commit -m "feat: add in-flight row recovery with UPS tracking lookup and review path"
+```
+
+---
+
+### Task 27: Write-Back Queue Table and Worker
+
+**Files:**
+- Modify: `src/db/models.py` (add `WriteBackTask` model)
+- Create: `src/services/write_back_worker.py`
+- Create: `tests/services/test_write_back_worker.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for durable write-back queue."""
+
+class TestWriteBackQueue:
+    def test_enqueue_creates_pending_task(self):
+        """enqueue_write_back() creates a WriteBackTask with status=pending."""
+
+    def test_worker_processes_pending_tasks(self):
+        """process_write_back_queue() sends tracking numbers to data source
+        and marks tasks as completed."""
+
+    def test_worker_retries_failed_tasks(self):
+        """Failed tasks stay in queue with incremented retry_count.
+        Tasks exceeding max_retries are marked as dead_letter."""
+
+    def test_per_row_write_back_survives_partial_failure(self):
+        """If row 3 write-back fails, rows 1, 2, 4, 5 are still written."""
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Implement**
+
+Add `WriteBackTask` to `src/db/models.py`:
+
+```python
+class WriteBackTask(Base):
+    """Durable queue for tracking number write-back."""
+
+    __tablename__ = "write_back_queue"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id"), nullable=False)
+    row_number: Mapped[int] = mapped_column(nullable=False)
+    tracking_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    shipped_at: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, completed, dead_letter
+    retry_count: Mapped[int] = mapped_column(default=0)
+    max_retries: Mapped[int] = mapped_column(default=3)
+    created_at: Mapped[str] = mapped_column(String(50), default=utc_now_iso)
+
+    # Prevent duplicate enqueue — same row can only have one active task
+    __table_args__ = (
+        UniqueConstraint("job_id", "row_number", name="uq_write_back_job_row"),
+        Index("idx_write_back_status", "status"),
+    )
+```
+
+**Schema migration for existing databases:** In `src/db/connection.py`, after the row migrations section, add table creation:
+
+```python
+# Create write_back_queue table if it doesn't exist (Phase 8)
+try:
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS write_back_queue (
+            id VARCHAR(36) PRIMARY KEY,
+            job_id VARCHAR(36) NOT NULL REFERENCES jobs(id),
+            row_number INTEGER NOT NULL,
+            tracking_number VARCHAR(50) NOT NULL,
+            shipped_at VARCHAR(50) NOT NULL,
+            status VARCHAR(20) DEFAULT 'pending',
+            retry_count INTEGER DEFAULT 0,
+            max_retries INTEGER DEFAULT 3,
+            created_at VARCHAR(50),
+            UNIQUE(job_id, row_number)
+        )
+    """))
+    conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS idx_write_back_status "
+        "ON write_back_queue (status)"
+    ))
+except OperationalError:
+    pass  # Table already exists
+```
+
+Create `src/services/write_back_worker.py`:
+
+```python
+"""Durable write-back worker for tracking number persistence."""
+
+MAX_RETRIES = 3
+
+async def enqueue_write_back(db, job_id: str, row_number: int,
+                              tracking_number: str, shipped_at: str) -> None:
+    """Add a write-back task to the durable queue."""
+
+async def process_write_back_queue(db, gateway) -> dict[str, int]:
+    """Process all pending write-back tasks.
+
+    Returns:
+        {"processed": N, "failed": N, "dead_letter": N}
+    """
+```
+
+Modify `batch_engine.py` to call `enqueue_write_back()` per row instead of collecting `successful_write_back_updates` dict. The bulk write-back at the end of `execute()` is replaced by the worker.
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/db/models.py src/db/connection.py src/services/write_back_worker.py tests/services/test_write_back_worker.py
+git commit -m "feat: add durable write-back queue with per-row retry and schema migration"
+```
+
+---
+
+### Task 28: Wire Startup Recovery and Staging Cleanup
+
+**Files:**
+- Modify: `src/api/main.py` (lifespan)
+- Create: `tests/api/test_startup_recovery.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for startup recovery hooks."""
+
+class TestStartupRecovery:
+    def test_lifespan_recovers_in_flight_rows_before_cleanup(self):
+        """On startup, recover_in_flight_rows() runs BEFORE cleanup_staging().
+        This ensures staging labels for unresolved rows are preserved."""
+
+    def test_lifespan_calls_cleanup_staging_with_db(self):
+        """cleanup_staging(db) skips jobs with in_flight/needs_review rows."""
+
+    def test_lifespan_calls_process_write_back_queue(self):
+        """On startup, pending write-back tasks from crashed sessions are processed."""
+
+    def test_lifespan_logs_recovery_report(self):
+        """If recovery finds needs_review rows, a warning is logged with
+        per-row details for operator action."""
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Add to FastAPI lifespan**
+
+In `src/api/main.py`, add to the existing lifespan `async with` block:
+
+```python
+# Execution determinism: recovery and cleanup
+import os
+from src.db.models import JobStatus
+from src.services.batch_engine import BatchEngine
+from src.services.job_service import JobService
+from src.services.write_back_worker import process_write_back_queue
+
+with get_db_context() as db:
+    js = JobService(db)
+
+    # 1. Recover in-flight rows from crashed sessions
+    #    Must run BEFORE staging cleanup — recovery may need staging labels.
+    #    list_jobs() accepts one status at a time, so query both running + paused.
+    interrupted: list = []
+    for st in (JobStatus.running, JobStatus.paused):
+        interrupted.extend(js.list_jobs(status=st, limit=500))
+
+    for job in interrupted:
+        rows = js.get_rows(job.id)
+        in_flight = [r for r in rows if r.status == "in_flight"]
+        if in_flight:
+            ups_client = await get_ups_gateway()
+            account = os.environ.get("UPS_ACCOUNT_NUMBER", "")
+            engine = BatchEngine(
+                ups_service=ups_client,
+                db_session=db,
+                account_number=account,
+            )
+            recovery_result = await engine.recover_in_flight_rows(
+                job.id, rows,
+            )
+            logger.info(
+                "Job %s recovery: %d recovered, %d needs_review, %d unresolved",
+                job.id,
+                recovery_result["recovered"],
+                recovery_result["needs_review"],
+                recovery_result["unresolved"],
+            )
+            if recovery_result["details"]:
+                logger.warning(
+                    "Rows requiring operator review for job %s: %s",
+                    job.id,
+                    recovery_result["details"],
+                )
+
+    # 2. Clean up orphaned staging labels (skips jobs with in_flight/needs_review)
+    orphans = BatchEngine.cleanup_staging(db)
+    if orphans:
+        logger.info("Cleaned up %d orphaned staging labels", orphans)
+
+    # 3. Process pending write-back tasks from crashed sessions
+    wb_result = await process_write_back_queue(db, await get_data_gateway())
+    if wb_result["processed"] > 0:
+        logger.info(
+            "Processed %d pending write-back tasks on startup",
+            wb_result["processed"],
+        )
+```
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/api/main.py tests/api/test_startup_recovery.py
+git commit -m "feat: wire startup recovery for staging cleanup and write-back queue"
+```
+
+---
+
+### Task 29: Execution Determinism Acceptance Tests
+
+**Files:**
+- Create: `tests/integration/test_execution_determinism.py`
+
+**Step 1: Write the acceptance tests**
+
+```python
+"""End-to-end execution determinism acceptance tests.
+
+These tests prove that the shipment execution path is crash-safe
+and replay-safe. This is the release gate for Phase 8.
+"""
+
+class TestCrashSafeExecution:
+    def test_crash_after_ups_call_with_tracking_and_artifacts_recovers(self):
+        """Simulate: create_shipment succeeds → ups_tracking_number stored →
+        label promoted → crash before final commit. On recovery: Tier 1 —
+        track_package verifies, label exists, cost populated → completed."""
+
+    def test_crash_after_ups_call_with_tracking_but_no_label_needs_review(self):
+        """Simulate: create_shipment succeeds → ups_tracking_number stored →
+        crash before label promote. On recovery: Tier 1 — UPS confirms but
+        label_path missing → needs_review with artifact reason."""
+
+    def test_crash_after_ups_call_without_tracking_marks_needs_review(self):
+        """Simulate: create_shipment succeeds → crash before tracking stored.
+        On recovery: Tier 2 — no ups_tracking_number → needs_review.
+        Never auto-retried (prevents duplicate shipments)."""
+
+    def test_crash_before_ups_call_marks_needs_review(self):
+        """Simulate: row set to in_flight → crash before create_shipment.
+        On recovery: Tier 2 — no tracking info → needs_review (cannot
+        determine if UPS received the request or not)."""
+
+    def test_tier3_escalation_after_max_attempts(self):
+        """Simulate: track_package fails on 3 consecutive startups.
+        recovery_attempt_count increments each time. After MAX_RECOVERY_ATTEMPTS,
+        row escalated to needs_review instead of staying in_flight forever."""
+
+    def test_needs_review_rows_never_auto_retried(self):
+        """needs_review is terminal. Resume execution skips these rows.
+        Operator must explicitly resolve (void at UPS or manual complete)."""
+
+    def test_concurrent_rows_maintain_independent_state(self):
+        """With BATCH_CONCURRENCY=5, each row has independent in_flight state.
+        Crash of one row does not affect others."""
+
+class TestWriteBackDurability:
+    def test_write_back_survives_process_restart(self):
+        """Enqueue write-back tasks → kill process → restart → tasks processed."""
+
+    def test_partial_write_back_failure_retries_independently(self):
+        """Row 3 write-back fails → rows 1,2,4,5 succeed → row 3 retried on next cycle."""
+
+class TestLabelAtomicity:
+    def test_label_promoted_before_db_commit(self):
+        """Label is moved from staging to final path BEFORE the DB commit.
+        After promote + commit: label at final path, row.label_path = final path."""
+
+    def test_crash_after_promote_before_commit_preserves_label(self):
+        """If crash occurs after label promote but before DB commit:
+        label exists at final path, row is still in_flight.
+        Recovery handles the row; label is NOT lost."""
+
+    def test_orphaned_staging_labels_cleaned_only_for_resolved_jobs(self):
+        """Staging labels are removed only for jobs where all rows are
+        completed/failed/skipped. Jobs with in_flight/needs_review rows
+        keep their staging files for recovery."""
+```
+
+**Step 2: Run tests**
+
+Run: `pytest tests/integration/test_execution_determinism.py -v`
+Expected: All PASS.
+
+**Step 3: Commit**
+
+```bash
+git add tests/integration/test_execution_determinism.py
+git commit -m "test: add execution determinism acceptance tests (Phase 8 release gate)"
+```
+
+---
+
+### Task 30: Wire `needs_review` Into Job Status Reporting
+
+**Files:**
+- Modify: `src/services/job_service.py` (`get_job_summary`)
+- Modify: `src/orchestrator/agent/tools/pipeline.py` (`get_job_status_tool` — verify it passes through new field)
+- Create: `tests/services/test_job_summary_needs_review.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for needs_review count in job summary."""
+
+from src.db.models import RowStatus
+
+
+class TestJobSummaryNeedsReview:
+    def test_summary_includes_needs_review_count(self, db_with_job):
+        """get_job_summary() returns needs_review_count field."""
+        # Setup: create job with 1 completed, 1 failed, 1 needs_review row
+        svc = JobService(db_with_job)
+        summary = svc.get_job_summary(job_id)
+        assert "needs_review_count" in summary
+        assert summary["needs_review_count"] == 1
+
+    def test_summary_includes_in_flight_count(self, db_with_job):
+        """get_job_summary() returns in_flight_count field."""
+        svc = JobService(db_with_job)
+        summary = svc.get_job_summary(job_id)
+        assert "in_flight_count" in summary
+
+    def test_pending_count_excludes_needs_review_and_in_flight(self, db_with_job):
+        """pending_count = total_rows - processed - needs_review - in_flight."""
+        svc = JobService(db_with_job)
+        summary = svc.get_job_summary(job_id)
+        expected_pending = (
+            summary["total_rows"]
+            - summary["processed_rows"]
+            - summary["needs_review_count"]
+            - summary["in_flight_count"]
+        )
+        assert summary["pending_count"] == expected_pending
+
+    def test_get_job_status_tool_exposes_needs_review(self):
+        """get_job_status_tool returns needs_review_count from summary."""
+```
+
+**Step 2: Run test to verify it fails**
+
+Run: `pytest tests/services/test_job_summary_needs_review.py -v`
+Expected: FAIL — `needs_review_count` not in summary dict.
+
+**Step 3: Implement**
+
+In `src/services/job_service.py`, update `get_job_summary()` (around line 599-622):
+
+```python
+    # Calculate counts by status
+    needs_review_count = (
+        self.db.query(func.count(JobRow.id))
+        .filter(JobRow.job_id == job_id)
+        .filter(JobRow.status == "needs_review")
+        .scalar()
+    ) or 0
+
+    in_flight_count = (
+        self.db.query(func.count(JobRow.id))
+        .filter(JobRow.job_id == job_id)
+        .filter(JobRow.status == "in_flight")
+        .scalar()
+    ) or 0
+
+    # pending_count must exclude needs_review and in_flight
+    pending_count = (
+        job.total_rows
+        - job.processed_rows
+        - needs_review_count
+        - in_flight_count
+    )
+
+    return {
+        "total_rows": job.total_rows,
+        "processed_rows": job.processed_rows,
+        "successful_rows": job.successful_rows,
+        "failed_rows": job.failed_rows,
+        "pending_count": pending_count,
+        "needs_review_count": needs_review_count,
+        "in_flight_count": in_flight_count,
+        "total_cost_cents": total_cost_cents,
+        "status": job.status,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "completed_at": job.completed_at,
+    }
+```
+
+`get_job_status_tool` in `pipeline.py` already calls `svc.get_job_summary()` and returns the full dict via `_ok(summary)`, so the new fields are automatically exposed to the agent.
+
+**Step 4: Run tests**
+
+Run: `pytest tests/services/test_job_summary_needs_review.py -v`
+Expected: All PASS.
+
+**Step 5: Commit**
+
+```bash
+git add src/services/job_service.py tests/services/test_job_summary_needs_review.py
+git commit -m "feat: expose needs_review_count and in_flight_count in job summary"
+```
+
+---
+
 ## Verification Checklist
 
 After all tasks are complete, verify:
@@ -1920,7 +3440,9 @@ After all tasks are complete, verify:
 - [ ] Hook deny is final — denied payloads cannot be "allowed" by any downstream hook
 - [ ] Hook scoped matchers do not interfere with unrelated tool chains
 - [ ] All DuckDB execution paths use `db.execute(sql, params)` — no raw interpolation
-- [ ] `FILTER_TOKEN_SECRET` env var is required at startup (no random fallback)
+- [ ] `FILTER_TOKEN_SECRET` env var is required at startup via `validate_filter_config()` (no random fallback)
+- [ ] `validate_filter_spec_on_pipeline` enforces Tier-B token binding (HMAC, TTL, session, schema, dict version, spec hash)
+- [ ] Pipeline/fetch_rows with Tier-B spec but missing `resolution_token` is denied by hook
 
 ### Determinism Release Gate (Task 20 — must pass before merge)
 
@@ -1936,6 +3458,40 @@ After all tasks are complete, verify:
 - [ ] PreviewCard shows filter explanation bar when `filter_explanation` is present
 - [ ] Compiled filter is collapsible and shows `compiled_filter` SQL
 - [ ] Filter audit metadata (`filter_audit`) is included in preview payload
+
+### Execution Determinism Release Gate (Task 29 — must pass before merge)
+
+- [ ] `pytest tests/db/test_row_inflight_status.py -v` — all pass
+- [ ] `pytest tests/services/test_idempotency.py -v` — all pass
+- [ ] `pytest tests/services/test_batch_engine_inflight.py -v` — all pass
+- [ ] `pytest tests/services/test_label_staging.py -v` — all pass
+- [ ] `pytest tests/orchestrator/batch/test_inflight_recovery.py -v` — all pass
+- [ ] `pytest tests/services/test_write_back_worker.py -v` — all pass
+- [ ] `pytest tests/api/test_startup_recovery.py -v` — all pass
+- [ ] `pytest tests/integration/test_execution_determinism.py -v` — all pass
+- [ ] No duplicate shipments on crash-retry (tested with injected failures)
+- [ ] UPS hard rejection (`UPSServiceError`) → row `failed` (safe to retry)
+- [ ] UPS unreachable (`MCPConnectionError`) → row `failed` (safe to retry)
+- [ ] Ambiguous transport error (timeout, cancel, closed) → row `needs_review` (never `failed`)
+- [ ] In-flight rows with `ups_tracking_number` recovered via `track_package(tracking_number=...)` (Tier 1)
+- [ ] Tier-1 recovery only transitions to `completed` when BOTH artifacts present (label file on disk + cost_cents populated)
+- [ ] Tier-1 recovery transitions to `needs_review` with explicit reason when UPS confirms but artifacts are missing
+- [ ] In-flight rows without tracking info marked `needs_review` — never auto-retried (Tier 2)
+- [ ] Tier-3 rows escalate to `needs_review` after `MAX_RECOVERY_ATTEMPTS` (default 3) failed UPS lookups
+- [ ] Tier-3 `recovery_attempt_count` increments on each failed lookup and persists across restarts
+- [ ] Recovery report includes per-row details with idempotency keys for operator action
+- [ ] `needs_review` status is terminal — requires explicit operator resolution
+- [ ] Idempotency key included in UPS payload as `TransactionReference.CustomerContext` (audit only, not dedup)
+- [ ] Labels promoted to final path BEFORE DB commit (staging → rename → commit)
+- [ ] `get_job_summary()` includes `needs_review_count` and `in_flight_count` fields
+- [ ] `pytest tests/services/test_job_summary_needs_review.py -v` — all pass
+- [ ] Write-back survives partial completion via durable queue
+- [ ] Orphaned staging labels cleaned on startup (only for jobs without in_flight/needs_review rows)
+- [ ] `ups_shipment_id` and `ups_tracking_number` are stored as separate columns (Design Decision #8 — never conflated)
+- [ ] Recovery Tier-1 uses `ups_tracking_number` (not `ups_shipment_id`) for `track_package` verification
+- [ ] Schema migration adds `idempotency_key`, `ups_shipment_id`, `ups_tracking_number`, and `recovery_attempt_count` columns to existing `job_rows` tables (note: `needs_review` and `in_flight` are new values on the existing `status` column, not new columns)
+- [ ] Schema migration runs `CREATE INDEX IF NOT EXISTS` unconditionally (not guarded by column-existence check)
+- [ ] Schema migration creates `write_back_queue` table on existing DBs
 
 ---
 
@@ -1975,4 +3531,16 @@ Phase 7 (Cleanup)
   Task 18: Update Existing Tests
   Task 19: Conversation Route
   Task 20: Determinism Acceptance Tests (release gate)
+       │
+Phase 8 (Execution Determinism)
+  Task 21: JobRow in_flight status + idempotency columns
+  Task 22: Idempotency key generation ◄──── Task 21
+  Task 23: TransactionReference in UPS payload ◄── Task 22
+  Task 24: BatchEngine in-flight state machine ◄── Task 21, 22, 23
+  Task 25: Label staging + atomic promote ◄──── Task 24
+  Task 26: In-flight row recovery ◄──────── Task 24
+  Task 27: Write-back queue + worker ◄───── Task 24
+  Task 28: Startup recovery wiring ◄──────── Task 25, 26, 27
+  Task 29: Execution determinism acceptance tests (release gate)
+  Task 30: Job status reporting for needs_review ◄── Task 21
 ```
