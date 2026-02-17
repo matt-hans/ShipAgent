@@ -301,7 +301,7 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
 
 @pytest.mark.asyncio
 async def test_process_message_uses_gateway_for_source_info():
-    """_process_agent_message uses DataSourceGateway (not DataSourceService)."""
+    """_process_agent_message delegates to shared handler which uses gateway."""
     from src.api.routes import conversations as conversations_mod
     conversations = importlib.reload(conversations_mod)
 
@@ -325,18 +325,18 @@ async def test_process_message_uses_gateway_for_source_info():
     mock_gw = AsyncMock()
     mock_gw.get_source_info_typed = AsyncMock(return_value=mock_source_info)
 
-    async def _fake_ensure_agent(sess, _source_info):
+    async def _fake_ensure_agent(sess, _source_info, interactive_shipping=False):
         sess.agent = _FakeAgent()
         sess.agent_source_hash = "hash"
         return True
 
     with (
         patch(
-            "src.services.gateway_provider.get_data_gateway",
+            "src.services.conversation_handler.get_data_gateway",
             new=AsyncMock(return_value=mock_gw),
         ),
         patch(
-            "src.api.routes.conversations._ensure_agent",
+            "src.services.conversation_handler.ensure_agent",
             new=AsyncMock(side_effect=_fake_ensure_agent),
         ),
     ):

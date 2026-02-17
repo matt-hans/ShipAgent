@@ -176,11 +176,10 @@ async def _prewarm_session_agent(session_id: str) -> None:
 
 
 async def _process_agent_message(session_id: str, content: str) -> None:
-    """Process a user message through the persistent agent.
+    """Process a user message — delegates to shared conversation_handler.
 
-    Runs as a background task. Reuses the session's agent (SDK maintains
-    conversation history internally). The agent and MCP servers stay alive
-    across messages. An asyncio.Lock serializes access per session.
+    Runs as a background task. Retains route-specific concerns:
+    queue delivery, timing metrics, preview metrics, done signaling.
 
     Args:
         session_id: Conversation session ID.
@@ -199,95 +198,45 @@ async def _process_agent_message(session_id: str, content: str) -> None:
     first_event_source = ""
     preview_rows_rated = 0
     preview_total_rows = 0
-    source_type = "none"
-    agent_rebuilt = False
-
-    logger.info(
-        "agent_timing marker=message_received session_id=%s content_len=%d elapsed=%.3f",
-        session_id,
-        len(content),
-        0.0,
-    )
 
     def _mark_first_event(source: str) -> None:
         nonlocal first_event_at, first_event_source
         if first_event_at is None:
             first_event_at = time.perf_counter()
             first_event_source = source
-            logger.info(
-                "agent_timing marker=first_event session_id=%s source=%s elapsed=%.3f",
-                session_id,
-                source,
-                first_event_at - started_at,
-            )
 
-    async with session.lock:
-        try:
-            from src.services.gateway_provider import get_data_gateway
+    # Queue-pushing callback for tool events (preview_ready, etc.)
+    def _emit_to_queue(event_type: str, data: dict) -> None:
+        _mark_first_event("tool_emit")
+        queue.put_nowait({"event": event_type, "data": data})
 
-            gw = await get_data_gateway()
-            source_info = await gw.get_source_info_typed()
+    try:
+        from src.services.conversation_handler import process_message
 
-            source_type = source_info.source_type if source_info is not None else "none"
-            logger.info(
-                "agent_timing marker=source_resolved session_id=%s source_type=%s elapsed=%.3f",
-                session_id,
-                source_type,
-                time.perf_counter() - started_at,
-            )
+        async for event in process_message(
+            session, content,
+            interactive_shipping=session.interactive_shipping,
+            emit_callback=_emit_to_queue,
+        ):
+            _mark_first_event(str(event.get("event", "unknown")))
+            await queue.put(event)
 
-            # Create or reuse agent (persists across messages)
-            agent_rebuilt = await _ensure_agent(session, source_info)
-            logger.info(
-                "agent_timing marker=agent_ready session_id=%s agent_rebuilt=%s elapsed=%.3f",
-                session_id,
-                agent_rebuilt,
-                time.perf_counter() - started_at,
-            )
+            # Capture preview metrics for timing log
+            event_type = event.get("event")
+            if event_type == "preview_ready":
+                pd = event.get("data", {})
+                preview_total_rows = int(pd.get("total_rows", 0))
+                preview_rows_rated = len(pd.get("preview_rows", []))
 
-            # Bridge tool events to the SSE queue.
-            def _emit_to_queue(event_type: str, data: dict) -> None:
-                _mark_first_event("tool_emit")
-                queue.put_nowait({"event": event_type, "data": data})
-
-            session.agent.emitter_bridge.callback = _emit_to_queue
-            try:
-                # Process message — SDK maintains conversation context internally.
-                async for event in session.agent.process_message_stream(content):
-                    _mark_first_event(str(event.get("event", "unknown")))
-                    await queue.put(event)
-
-                    event_type = event.get("event")
-                    if event_type == "preview_ready":
-                        preview_data = event.get("data", {})
-                        preview_total_rows = int(preview_data.get("total_rows", 0))
-                        preview_rows_rated = len(preview_data.get("preview_rows", []))
-
-                    # Store complete text blocks in session history.
-                    if event_type == "agent_message":
-                        text = event.get("data", {}).get("text", "")
-                        if text:
-                            _session_manager.add_message(
-                                session_id,
-                                "assistant",
-                                text,
-                            )
-            finally:
-                session.agent.emitter_bridge.callback = None
-
-        except Exception as e:
-            logger.error("Agent processing failed for session %s: %s", session_id, e)
-            _mark_first_event("error")
-            await queue.put(
-                {
-                    "event": "error",
-                    "data": {"message": str(e)},
-                }
-            )
+    except Exception as e:
+        logger.error("Agent processing failed for session %s: %s", session_id, e)
+        _mark_first_event("error")
+        await queue.put({"event": "error", "data": {"message": str(e)}})
 
     # Signal end of response
     await queue.put({"event": "done", "data": {}})
 
+    # Timing log
     elapsed = time.perf_counter() - started_at
     ttfb = (first_event_at - started_at) if first_event_at is not None else -1.0
     agent_turns_count = (
@@ -296,18 +245,13 @@ async def _process_agent_message(session_id: str, content: str) -> None:
         else 0
     )
     logger.info(
-        "agent_timing marker=done_emitted session_id=%s source_type=%s "
-        "agent_rebuilt=%s agent_turns_count=%d "
-        "preview_rows_rated=%d preview_total_rows=%d batch_concurrency=%s "
-        "interactive_shipping=%s first_event_source=%s ttfb=%.3f elapsed=%.3f",
+        "agent_timing marker=done_emitted session_id=%s "
+        "agent_turns_count=%d preview_rows_rated=%d preview_total_rows=%d "
+        "first_event_source=%s ttfb=%.3f elapsed=%.3f",
         session_id,
-        source_type,
-        agent_rebuilt,
         agent_turns_count,
         preview_rows_rated,
         preview_total_rows,
-        os.environ.get("BATCH_CONCURRENCY", "5"),
-        session.interactive_shipping,
         first_event_source,
         ttfb,
         elapsed,
