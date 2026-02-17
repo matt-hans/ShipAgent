@@ -4,6 +4,7 @@ Handles source metadata, schema inspection, row fetching, filter
 resolution, platform status, and Shopify connection.
 """
 
+import hashlib
 import logging
 import os
 from typing import Any
@@ -310,8 +311,8 @@ async def confirm_filter_interpretation_tool(
     except Exception as e:
         return _err(f"Invalid FilterIntent structure: {e}")
 
-    # Do a first resolve to get the spec with pending confirmations
-    # (we need the spec to store in confirmed_resolutions)
+    # Re-resolve the same intent without confirmations to reproduce the
+    # exact spec that was used to generate the original token.
     try:
         initial_spec = resolve_filter_intent(
             intent=intent,
@@ -325,6 +326,30 @@ async def confirm_filter_interpretation_tool(
     except Exception as e:
         logger.error("confirm_filter_interpretation re-resolve failed: %s", e)
         return _err(f"Re-resolution failed: {e}")
+
+    # Enforce token/intent binding: the token's resolved_spec_hash must
+    # match the hash of the spec produced by resolving THIS intent.
+    # This prevents using a NORTHEAST token to confirm BUSINESS_RECIPIENT.
+    fresh_spec_hash = hashlib.sha256(
+        initial_spec.root.model_dump_json().encode()
+    ).hexdigest()
+    token_spec_hash = token_payload.get("resolved_spec_hash", "")
+    if fresh_spec_hash != token_spec_hash:
+        return _err(
+            "Token/intent mismatch: the resolution token was generated for "
+            "a different FilterIntent. Pass the same intent that produced "
+            "the NEEDS_CONFIRMATION token."
+        )
+
+    # Validate canonical dict version
+    from src.services.filter_constants import CANONICAL_DICT_VERSION
+    token_dict_version = token_payload.get("canonical_dict_version", "")
+    if token_dict_version != CANONICAL_DICT_VERSION:
+        return _err(
+            f"Dict version mismatch: token was generated with "
+            f"'{token_dict_version}' but current version is "
+            f"'{CANONICAL_DICT_VERSION}'. Re-run resolve_filter_intent."
+        )
 
     # Store confirmed spec in session cache keyed by the original token
     bridge.confirmed_resolutions[resolution_token] = initial_spec

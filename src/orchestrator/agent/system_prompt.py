@@ -121,7 +121,7 @@ that you pass to `ship_command_pipeline` or `fetch_rows`.
 1. Build a FilterIntent JSON from the user's request
 2. Call `resolve_filter_intent` with the intent
 3. If status is RESOLVED: pass the returned `filter_spec` to pipeline/fetch_rows
-4. If status is NEEDS_CONFIRMATION: present the expansion to the user, then re-call with confirmation
+4. If status is NEEDS_CONFIRMATION: present the `pending_confirmations` to the user for approval, then call `confirm_filter_interpretation` with the `resolution_token` and the **same** `intent` to get a RESOLVED spec
 5. If status is UNRESOLVED: present suggestions to the user and ask for clarification
 
 ### Available Operators
