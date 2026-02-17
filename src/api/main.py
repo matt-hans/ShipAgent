@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import warnings
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -40,26 +41,11 @@ from src.db.connection import init_db
 from src.db.models import JobStatus
 from src.errors import ShipAgentError
 from src.services.batch_engine import BatchEngine
+from src.services.ups_mcp_client import UPSMCPClient
 
 # Frontend build directory
 FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
 logger = logging.getLogger(__name__)
-
-# Create FastAPI app
-app = FastAPI(
-    title="ShipAgent API",
-    description="Natural language interface for batch shipment processing",
-    version="0.1.0",
-)
-
-# CORS middleware for development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 def _ensure_agent_sdk_available() -> None:
@@ -85,6 +71,10 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
     may need staging labels for verification. Cleanup only removes staging
     files for jobs with no in_flight/needs_review rows.
 
+    Creates a temporary UPSMCPClient for recovery so track_package works.
+    Falls back gracefully if UPS MCP is unavailable (rows stay in_flight
+    for next restart attempt).
+
     Args:
         db: Database session.
         job_service: JobService instance for querying jobs and rows.
@@ -102,39 +92,60 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
             pass  # Status may not exist in older schemas
 
     # 2. Recover in-flight rows for each interrupted job
+    jobs_needing_recovery = []
     for job in interrupted:
         rows = js.get_rows(job.id)
         in_flight = [r for r in rows if r.status == "in_flight"]
-        if not in_flight:
-            continue
+        if in_flight:
+            jobs_needing_recovery.append((job, rows))
 
+    if jobs_needing_recovery:
+        # Create a real UPS MCP client for recovery (track_package needs it)
+        ups_client = None
         try:
-            engine = BatchEngine(
-                ups_service=None,  # Recovery uses track_package, not create_shipment
-                db_session=db,
-                account_number="",
-            )
-            recovery_result = await engine.recover_in_flight_rows(
-                job.id, rows,
-            )
-            logger.info(
-                "Job %s recovery: %d recovered, %d needs_review, %d unresolved",
-                job.id,
-                recovery_result["recovered"],
-                recovery_result["needs_review"],
-                recovery_result["unresolved"],
-            )
-            if recovery_result.get("details"):
-                logger.warning(
-                    "Rows requiring operator review for job %s: %s",
-                    job.id,
-                    recovery_result["details"],
-                )
+            ups_client = UPSMCPClient()
+            await ups_client.connect()
         except Exception as e:
-            logger.error(
-                "Recovery failed for job %s (non-blocking): %s",
-                job.id, e,
+            logger.warning(
+                "UPS MCP unavailable for recovery (rows stay in_flight): %s", e,
             )
+            ups_client = None
+
+        for job, rows in jobs_needing_recovery:
+            try:
+                engine = BatchEngine(
+                    ups_service=ups_client,
+                    db_session=db,
+                    account_number="",
+                )
+                recovery_result = await engine.recover_in_flight_rows(
+                    job.id, rows,
+                )
+                logger.info(
+                    "Job %s recovery: %d recovered, %d needs_review, %d unresolved",
+                    job.id,
+                    recovery_result["recovered"],
+                    recovery_result["needs_review"],
+                    recovery_result["unresolved"],
+                )
+                if recovery_result.get("details"):
+                    logger.warning(
+                        "Rows requiring operator review for job %s: %s",
+                        job.id,
+                        recovery_result["details"],
+                    )
+            except Exception as e:
+                logger.error(
+                    "Recovery failed for job %s (non-blocking): %s",
+                    job.id, e,
+                )
+
+        # Clean up the temporary UPS client
+        if ups_client is not None:
+            try:
+                await ups_client.disconnect()
+            except Exception:
+                pass
 
     # 3. Clean up orphaned staging labels (skips jobs with unresolved rows)
     try:
@@ -145,30 +156,57 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
         logger.error("Staging cleanup failed (non-blocking): %s", e)
 
 
-@app.on_event("startup")
-def startup_event() -> None:
-    """Initialize database on startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Async lifespan: startup recovery + shutdown cleanup."""
+    from src.db.connection import get_db_context
+    from src.services.gateway_provider import shutdown_gateways
+    from src.services.job_service import JobService
+
+    # --- Startup ---
     _ensure_agent_sdk_available()
     warnings.filterwarnings("default", category=DeprecationWarning, module="claude_agent_sdk")
     init_db()
+
     allow_multi_worker = os.environ.get("SHIPAGENT_ALLOW_MULTI_WORKER", "false").lower()
     if allow_multi_worker not in {"1", "true", "yes", "on"}:
         logger.warning(
-            (
-                "ShipAgent runtime policy: single-worker mode only. "
-                "Start uvicorn/gunicorn with one worker unless externalized "
-                "shared state is configured. Set SHIPAGENT_ALLOW_MULTI_WORKER=true "
-                "to suppress this warning."
-            ),
+            "ShipAgent runtime policy: single-worker mode only. "
+            "Start uvicorn/gunicorn with one worker unless externalized "
+            "shared state is configured. Set SHIPAGENT_ALLOW_MULTI_WORKER=true "
+            "to suppress this warning."
         )
 
+    # Run crash recovery (non-blocking — failures logged, not propagated)
+    try:
+        with get_db_context() as db:
+            js = JobService(db)
+            await run_startup_recovery(db, js)
+    except Exception as e:
+        logger.error("Startup recovery failed (non-blocking): %s", e)
 
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    """Clean up shared async resources on shutdown."""
-    from src.services.gateway_provider import shutdown_gateways
+    yield
 
+    # --- Shutdown ---
     await shutdown_gateways()
+
+
+# Create FastAPI app with async lifespan for startup recovery + shutdown cleanup
+app = FastAPI(
+    title="ShipAgent API",
+    description="Natural language interface for batch shipment processing",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+# CORS middleware for development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(ShipAgentError)

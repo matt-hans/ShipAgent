@@ -1,9 +1,12 @@
 """Tests for startup recovery hooks in FastAPI lifespan.
 
 Verifies that on startup:
-1. In-flight rows are recovered BEFORE staging cleanup
-2. Staging cleanup skips jobs with in_flight/needs_review rows
-3. Recovery report is logged when needs_review rows found
+1. A real UPSMCPClient is created for recovery (track_package needs it)
+2. In-flight rows are recovered BEFORE staging cleanup
+3. Staging cleanup skips jobs with in_flight/needs_review rows
+4. Recovery report is logged when needs_review rows found
+5. UPS MCP unavailability is handled gracefully (rows stay in_flight)
+6. UPS client is disconnected after recovery completes
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -33,10 +36,16 @@ class TestStartupRecovery:
             call_order.append("cleanup")
             return 0
 
+        mock_ups_client = AsyncMock()
+        mock_ups_client.connect = AsyncMock()
+        mock_ups_client.disconnect = AsyncMock()
+
         with patch(
             "src.api.main.BatchEngine", return_value=mock_engine,
         ), patch(
             "src.api.main.BatchEngine.cleanup_staging", mock_cleanup,
+        ), patch(
+            "src.api.main.UPSMCPClient", return_value=mock_ups_client,
         ):
             mock_db = MagicMock()
             mock_js = MagicMock()
@@ -75,12 +84,14 @@ class TestStartupRecovery:
     @pytest.mark.asyncio
     async def test_no_recovery_when_no_interrupted_jobs(self) -> None:
         """No recovery attempted when no running/paused jobs exist."""
-        mock_engine_class = MagicMock()
+        mock_ups_class = MagicMock()
 
         with patch(
-            "src.api.main.BatchEngine", mock_engine_class,
+            "src.api.main.BatchEngine", MagicMock(),
         ), patch(
             "src.api.main.BatchEngine.cleanup_staging", return_value=0,
+        ), patch(
+            "src.api.main.UPSMCPClient", mock_ups_class,
         ):
             mock_db = MagicMock()
             mock_js = MagicMock()
@@ -88,18 +99,20 @@ class TestStartupRecovery:
 
             await run_startup_recovery(mock_db, mock_js)
 
-        # BatchEngine should never be instantiated since no jobs need recovery
-        mock_engine_class.assert_not_called()
+        # UPSMCPClient should never be instantiated since no jobs need recovery
+        mock_ups_class.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_jobs_without_inflight_rows(self) -> None:
         """Jobs in running state but without in_flight rows skip recovery."""
-        mock_engine_class = MagicMock()
+        mock_ups_class = MagicMock()
 
         with patch(
-            "src.api.main.BatchEngine", mock_engine_class,
+            "src.api.main.BatchEngine", MagicMock(),
         ), patch(
             "src.api.main.BatchEngine.cleanup_staging", return_value=0,
+        ), patch(
+            "src.api.main.UPSMCPClient", mock_ups_class,
         ):
             mock_db = MagicMock()
             mock_js = MagicMock()
@@ -114,7 +127,8 @@ class TestStartupRecovery:
 
             await run_startup_recovery(mock_db, mock_js)
 
-        mock_engine_class.assert_not_called()
+        # No in-flight rows → no UPS client created
+        mock_ups_class.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recovery_failure_does_not_block_startup(self) -> None:
@@ -124,10 +138,16 @@ class TestStartupRecovery:
             side_effect=Exception("UPS MCP unavailable"),
         )
 
+        mock_ups_client = AsyncMock()
+        mock_ups_client.connect = AsyncMock()
+        mock_ups_client.disconnect = AsyncMock()
+
         with patch(
             "src.api.main.BatchEngine", return_value=mock_engine,
         ), patch(
             "src.api.main.BatchEngine.cleanup_staging", return_value=0,
+        ), patch(
+            "src.api.main.UPSMCPClient", return_value=mock_ups_client,
         ):
             mock_db = MagicMock()
             mock_js = MagicMock()
@@ -141,3 +161,75 @@ class TestStartupRecovery:
 
             # Should not raise — recovery failures are logged, not propagated
             await run_startup_recovery(mock_db, mock_js)
+
+    @pytest.mark.asyncio
+    async def test_ups_unavailable_graceful_fallback(self) -> None:
+        """If UPS MCP connect() fails, recovery proceeds with ups_client=None."""
+        batch_engine_kwargs: dict = {}
+        mock_engine = AsyncMock()
+        mock_engine.recover_in_flight_rows = AsyncMock(
+            return_value={"recovered": 0, "needs_review": 1, "unresolved": 0, "details": []},
+        )
+
+        def capture_engine(**kwargs):
+            batch_engine_kwargs.update(kwargs)
+            return mock_engine
+
+        mock_ups_client = AsyncMock()
+        mock_ups_client.connect = AsyncMock(side_effect=Exception("Connection refused"))
+
+        with patch(
+            "src.api.main.BatchEngine", side_effect=capture_engine,
+        ), patch(
+            "src.api.main.BatchEngine.cleanup_staging", return_value=0,
+        ), patch(
+            "src.api.main.UPSMCPClient", return_value=mock_ups_client,
+        ):
+            mock_db = MagicMock()
+            mock_js = MagicMock()
+            mock_job = MagicMock()
+            mock_job.id = "job-456"
+            mock_js.list_jobs.return_value = [mock_job]
+
+            in_flight_row = MagicMock()
+            in_flight_row.status = "in_flight"
+            mock_js.get_rows.return_value = [in_flight_row]
+
+            await run_startup_recovery(mock_db, mock_js)
+
+        # BatchEngine should receive ups_service=None when connect fails
+        assert batch_engine_kwargs["ups_service"] is None
+
+    @pytest.mark.asyncio
+    async def test_ups_client_disconnected_after_recovery(self) -> None:
+        """UPS MCP client is disconnected after recovery completes."""
+        mock_engine = AsyncMock()
+        mock_engine.recover_in_flight_rows = AsyncMock(
+            return_value={"recovered": 1, "needs_review": 0, "unresolved": 0, "details": []},
+        )
+
+        mock_ups_client = AsyncMock()
+        mock_ups_client.connect = AsyncMock()
+        mock_ups_client.disconnect = AsyncMock()
+
+        with patch(
+            "src.api.main.BatchEngine", return_value=mock_engine,
+        ), patch(
+            "src.api.main.BatchEngine.cleanup_staging", return_value=0,
+        ), patch(
+            "src.api.main.UPSMCPClient", return_value=mock_ups_client,
+        ):
+            mock_db = MagicMock()
+            mock_js = MagicMock()
+            mock_job = MagicMock()
+            mock_job.id = "job-789"
+            mock_js.list_jobs.return_value = [mock_job]
+
+            in_flight_row = MagicMock()
+            in_flight_row.status = "in_flight"
+            mock_js.get_rows.return_value = [in_flight_row]
+
+            await run_startup_recovery(mock_db, mock_js)
+
+        mock_ups_client.connect.assert_called_once()
+        mock_ups_client.disconnect.assert_called_once()
