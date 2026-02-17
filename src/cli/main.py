@@ -382,7 +382,7 @@ def daemon_status_cmd():
         console.print("[red]Daemon not running[/red]")
 
 
-# --- Interact command (placeholder for Task 12) ---
+# --- Interact command ---
 
 
 @app.command()
@@ -392,4 +392,8 @@ def interact(
     ),
 ):
     """Start a conversational shipping REPL."""
-    console.print("[yellow]Interactive REPL — implemented in Task 12[/yellow]")
+    from src.cli.repl import run_repl
+
+    cfg = load_config(config_path=_config_path)
+    client = get_client(standalone=_standalone, config=cfg)
+    asyncio.run(run_repl(client, session_id=session))
