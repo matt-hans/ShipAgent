@@ -84,6 +84,24 @@ class DataSourceGateway(Protocol):
         """Execute a SELECT query against active data source."""
         ...
 
+    async def write_back_single(
+        self,
+        row_number: int,
+        tracking_number: str,
+        shipped_at: str | None = None,
+    ) -> None:
+        """Write tracking number back to source for a single row.
+
+        Args:
+            row_number: 1-based row number.
+            tracking_number: UPS tracking number.
+            shipped_at: ISO8601 timestamp (optional).
+
+        Raises:
+            Exception: On write-back failure.
+        """
+        ...
+
     async def write_back_batch(
         self, updates: dict[int, dict[str, str]]
     ) -> dict[str, Any]:

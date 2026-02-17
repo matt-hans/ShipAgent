@@ -22,7 +22,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, UPS_CARRIER_NAME
-from src.services.write_back_worker import enqueue_write_back, mark_tasks_completed
+from src.services.write_back_worker import (
+    enqueue_write_back,
+    mark_rows_completed,
+    mark_tasks_completed,
+)
 from src.services.ups_payload_builder import (
     build_shipment_request,
     build_ups_api_payload,
@@ -674,9 +678,22 @@ class BatchEngine:
                     )
                     write_back_result = gw_result
 
-                    # Mark durable queue tasks as completed after successful bulk write-back
+                    # Mark durable queue tasks as completed
                     if failures == 0:
                         mark_tasks_completed(self._db, job_id)
+                    else:
+                        # Partial success: mark only rows that succeeded
+                        failed_rows = {
+                            e["row_number"]
+                            for e in gw_result.get("errors", [])
+                            if "row_number" in e
+                        }
+                        ok_rows = [
+                            rn for rn in successful_write_back_updates
+                            if rn not in failed_rows
+                        ]
+                        if ok_rows:
+                            mark_rows_completed(self._db, job_id, ok_rows)
                     logger.info(
                         (
                             "Batch write-back finished: job_id=%s success=%s "

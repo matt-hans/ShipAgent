@@ -292,6 +292,29 @@ class DataSourceMCPClient:
 
     # -- Write-back --------------------------------------------------------
 
+    async def write_back_single(
+        self,
+        row_number: int,
+        tracking_number: str,
+        shipped_at: str | None = None,
+    ) -> None:
+        """Write tracking number back to source for a single row.
+
+        Args:
+            row_number: 1-based row number.
+            tracking_number: UPS tracking number.
+            shipped_at: ISO8601 timestamp (optional).
+
+        Raises:
+            Exception: On MCP tool call failure.
+        """
+        await self._ensure_connected()
+        await self._mcp.call_tool("write_back", {
+            "row_number": row_number,
+            "tracking_number": tracking_number,
+            "shipped_at": shipped_at,
+        })
+
     async def write_back_batch(
         self, updates: dict[int, dict[str, str]]
     ) -> dict[str, Any]:

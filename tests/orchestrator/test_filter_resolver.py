@@ -402,6 +402,8 @@ class TestFilterResolver:
         decoded = json.loads(base64.urlsafe_b64decode(result.resolution_token))
         assert "signature" in decoded
         assert "expires_at" in decoded
+        # Token must encode the resolution status
+        assert decoded["resolution_status"] == result.status.value
 
     def test_nested_group_resolution(self):
         """15. Recursive resolution of nested groups."""

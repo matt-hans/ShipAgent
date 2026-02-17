@@ -15,6 +15,7 @@ from datetime import datetime
 from src.orchestrator.models.filter_spec import FilterOperator
 from src.orchestrator.models.intent import SERVICE_ALIASES, ServiceCode
 from src.services.data_source_mcp_client import DataSourceInfo
+from src.services.filter_constants import BUSINESS_PREDICATES, REGIONS
 
 # International service codes for labeling
 _INTERNATIONAL_SERVICES = frozenset({"07", "08", "11", "54", "65"})
@@ -85,6 +86,11 @@ def _build_filter_rules() -> str:
     # Build operator reference
     ops = ", ".join(f"`{op.value}`" for op in FilterOperator)
 
+    # Build semantic keys list dynamically from canonical constants
+    _semantic_keys_list = ", ".join(
+        sorted(REGIONS.keys()) + sorted(BUSINESS_PREDICATES.keys())
+    )
+
     return f"""
 **IMPORTANT: NEVER generate raw SQL.** All filtering uses the FilterIntent JSON schema.
 
@@ -128,9 +134,8 @@ listing individual values. The resolver expands them deterministically:
 {{"semantic_key": "NORTHEAST", "target_column": "state"}}
 ```
 
-Available semantic keys: NORTHEAST, SOUTHEAST, MIDWEST, SOUTHWEST, WEST_COAST,
-MOUNTAIN_WEST, MID_ATLANTIC, NEW_ENGLAND, SOUTH, PACIFIC, ALL_US,
-BUSINESS_RECIPIENT, PERSONAL_RECIPIENT, and all US state names (e.g., "california" → "CA").
+Available semantic keys: {_semantic_keys_list},
+and all US state names (e.g., "california" → "CA").
 
 ### Rules
 - NEVER generate SQL WHERE clauses. Always use FilterIntent JSON.
