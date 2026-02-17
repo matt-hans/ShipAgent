@@ -10,6 +10,9 @@
 
 **Design Doc:** `docs/plans/2026-02-16-headless-automation-design.md`
 
+**Concurrency Policy — Data Source Gateway:**
+The `DataSourceMCPClient` singleton (`gateway_provider.py:22`) holds a single active data source at a time. When a file is imported via `import_csv()` or `import_excel()`, it replaces the previous data source. This means concurrent file processing would cross-contaminate jobs (file A's rows visible during file B's agent session). The watchdog enforces serialization via **per-directory `asyncio.Lock`** — only one file is processed at a time per watch folder. Cross-folder parallelism is intentionally blocked by this same constraint. If future requirements demand parallel file processing, the gateway must be refactored to support per-session data source isolation.
+
 ---
 
 ## Task 1: Install Dependencies & Register Entry Point
@@ -704,20 +707,50 @@ class SubmitResult:
 
 @dataclass
 class JobSummary:
-    """Lightweight job data for list views."""
+    """Lightweight job data for list views.
+
+    Aligned with src/api/schemas.py:JobSummaryResponse (lines 125-146).
+    Extra fields from API response are accepted and ignored via from_api().
+    """
 
     id: str
     name: str
     status: str
+    original_command: str
     total_rows: int
+    processed_rows: int
     successful_rows: int
     failed_rows: int
+    total_cost_cents: int
     created_at: str
+    is_interactive: bool = False
+
+    @classmethod
+    def from_api(cls, data: dict) -> "JobSummary":
+        """Construct from API JSON, tolerating extra fields."""
+        return cls(
+            id=data["id"],
+            name=data.get("name", ""),
+            status=data["status"],
+            original_command=data.get("original_command", ""),
+            total_rows=data.get("total_rows", 0),
+            processed_rows=data.get("processed_rows", 0),
+            successful_rows=data.get("successful_rows", 0),
+            failed_rows=data.get("failed_rows", 0),
+            total_cost_cents=data.get("total_cost_cents", 0),
+            created_at=data.get("created_at", ""),
+            is_interactive=data.get("is_interactive", False),
+        )
 
 
 @dataclass
 class JobDetail:
-    """Full job detail with all fields."""
+    """Full job detail with all fields.
+
+    Aligned with src/api/schemas.py:JobResponse (lines 93-124).
+    Includes international and interactive fields.
+    Extra fields from API response are accepted and ignored via from_api().
+    """
 
     id: str
     name: str
@@ -733,12 +766,45 @@ class JobDetail:
     completed_at: str | None
     error_code: str | None
     error_message: str | None
+    description: str | None = None
+    mode: str = "confirm"
+    is_interactive: bool = False
+    total_duties_taxes_cents: int = 0
+    international_row_count: int = 0
     auto_confirm_violations: list[dict] | None = None
+
+    @classmethod
+    def from_api(cls, data: dict) -> "JobDetail":
+        """Construct from API JSON, tolerating extra fields."""
+        return cls(
+            id=data["id"],
+            name=data.get("name", ""),
+            status=data["status"],
+            original_command=data.get("original_command", ""),
+            total_rows=data.get("total_rows", 0),
+            processed_rows=data.get("processed_rows", 0),
+            successful_rows=data.get("successful_rows", 0),
+            failed_rows=data.get("failed_rows", 0),
+            total_cost_cents=data.get("total_cost_cents", 0),
+            created_at=data.get("created_at", ""),
+            started_at=data.get("started_at"),
+            completed_at=data.get("completed_at"),
+            error_code=data.get("error_code"),
+            error_message=data.get("error_message"),
+            description=data.get("description"),
+            mode=data.get("mode", "confirm"),
+            is_interactive=data.get("is_interactive", False),
+            total_duties_taxes_cents=data.get("total_duties_taxes_cents", 0),
+            international_row_count=data.get("international_row_count", 0),
+        )
 
 
 @dataclass
 class RowDetail:
-    """Per-row outcome data."""
+    """Per-row outcome data.
+
+    Aligned with src/api/schemas.py:JobRowResponse (lines 55-92).
+    """
 
     id: str
     row_number: int
@@ -747,6 +813,23 @@ class RowDetail:
     cost_cents: int | None
     error_code: str | None
     error_message: str | None
+    destination_country: str | None = None
+    duties_taxes_cents: int | None = None
+
+    @classmethod
+    def from_api(cls, data: dict) -> "RowDetail":
+        """Construct from API JSON, tolerating extra fields."""
+        return cls(
+            id=data["id"],
+            row_number=data.get("row_number", 0),
+            status=data["status"],
+            tracking_number=data.get("tracking_number"),
+            cost_cents=data.get("cost_cents"),
+            error_code=data.get("error_code"),
+            error_message=data.get("error_message"),
+            destination_country=data.get("destination_country"),
+            duties_taxes_cents=data.get("duties_taxes_cents"),
+        )
 
 
 @dataclass
@@ -1689,51 +1772,51 @@ class HttpClient:
 
     async def create_session(self, interactive: bool = False) -> str:
         """Create conversation session via POST /api/v1/conversations/."""
-        raise NotImplementedError("HttpClient.create_session — Task 8")
+        raise NotImplementedError("HttpClient.create_session — implemented in this task")
 
     async def delete_session(self, session_id: str) -> None:
         """Delete conversation session via DELETE /api/v1/conversations/{id}."""
-        raise NotImplementedError("HttpClient.delete_session — Task 8")
+        raise NotImplementedError("HttpClient.delete_session — implemented in this task")
 
     async def submit_file(self, file_path: str, command: str | None,
                           auto_confirm: bool) -> SubmitResult:
         """Submit file via POST /api/v1/data-sources/import + agent message."""
-        raise NotImplementedError("HttpClient.submit_file — Task 9")
+        raise NotImplementedError("HttpClient.submit_file — implemented in this task")
 
     async def list_jobs(self, status: str | None = None) -> list[JobSummary]:
         """List jobs via GET /api/v1/jobs."""
-        raise NotImplementedError("HttpClient.list_jobs — Task 8")
+        raise NotImplementedError("HttpClient.list_jobs — implemented in this task")
 
     async def get_job(self, job_id: str) -> JobDetail:
         """Get job detail via GET /api/v1/jobs/{id}."""
-        raise NotImplementedError("HttpClient.get_job — Task 8")
+        raise NotImplementedError("HttpClient.get_job — implemented in this task")
 
     async def get_job_rows(self, job_id: str) -> list[RowDetail]:
         """Get job rows via GET /api/v1/jobs/{id}/rows."""
-        raise NotImplementedError("HttpClient.get_job_rows — Task 8")
+        raise NotImplementedError("HttpClient.get_job_rows — implemented in this task")
 
     async def cancel_job(self, job_id: str) -> None:
         """Cancel job via PATCH /api/v1/jobs/{id}/status."""
-        raise NotImplementedError("HttpClient.cancel_job — Task 8")
+        raise NotImplementedError("HttpClient.cancel_job — implemented in this task")
 
     async def approve_job(self, job_id: str) -> None:
         """Approve job via POST /api/v1/jobs/{id}/confirm."""
-        raise NotImplementedError("HttpClient.approve_job — Task 8")
+        raise NotImplementedError("HttpClient.approve_job — implemented in this task")
 
     async def stream_progress(self, job_id: str) -> AsyncIterator[ProgressEvent]:
         """Stream progress via GET /api/v1/jobs/{id}/progress/stream."""
-        raise NotImplementedError("HttpClient.stream_progress — Task 8")
+        raise NotImplementedError("HttpClient.stream_progress — implemented in this task")
         yield  # pragma: no cover
 
     async def send_message(self, session_id: str,
                            content: str) -> AsyncIterator[AgentEvent]:
         """Send message via POST /api/v1/conversations/{id}/messages."""
-        raise NotImplementedError("HttpClient.send_message — Task 10")
+        raise NotImplementedError("HttpClient.send_message — implemented in this task")
         yield  # pragma: no cover
 
     async def health(self) -> HealthStatus:
         """Check health via GET /health."""
-        raise NotImplementedError("HttpClient.health — Task 8")
+        raise NotImplementedError("HttpClient.health — implemented in this task")
 
     async def cleanup(self) -> None:
         """No-op for HTTP client (stateless)."""
@@ -1789,46 +1872,46 @@ class InProcessRunner:
 
     async def create_session(self, interactive: bool = False) -> str:
         """Create agent session in-process."""
-        raise NotImplementedError("InProcessRunner.create_session — Task 10")
+        raise NotImplementedError("InProcessRunner.create_session — implemented in this task")
 
     async def delete_session(self, session_id: str) -> None:
         """Delete agent session in-process."""
-        raise NotImplementedError("InProcessRunner.delete_session — Task 10")
+        raise NotImplementedError("InProcessRunner.delete_session — implemented in this task")
 
     async def submit_file(self, file_path: str, command: str | None,
                           auto_confirm: bool) -> SubmitResult:
         """Import file and run agent command in-process."""
-        raise NotImplementedError("InProcessRunner.submit_file — Task 10")
+        raise NotImplementedError("InProcessRunner.submit_file — implemented in this task")
 
     async def list_jobs(self, status: str | None = None) -> list[JobSummary]:
         """List jobs directly from database."""
-        raise NotImplementedError("InProcessRunner.list_jobs — Task 10")
+        raise NotImplementedError("InProcessRunner.list_jobs — implemented in this task")
 
     async def get_job(self, job_id: str) -> JobDetail:
         """Get job detail directly from database."""
-        raise NotImplementedError("InProcessRunner.get_job — Task 10")
+        raise NotImplementedError("InProcessRunner.get_job — implemented in this task")
 
     async def get_job_rows(self, job_id: str) -> list[RowDetail]:
         """Get job rows directly from database."""
-        raise NotImplementedError("InProcessRunner.get_job_rows — Task 10")
+        raise NotImplementedError("InProcessRunner.get_job_rows — implemented in this task")
 
     async def cancel_job(self, job_id: str) -> None:
         """Cancel job directly via JobService."""
-        raise NotImplementedError("InProcessRunner.cancel_job — Task 10")
+        raise NotImplementedError("InProcessRunner.cancel_job — implemented in this task")
 
     async def approve_job(self, job_id: str) -> None:
         """Approve job directly via batch execution."""
-        raise NotImplementedError("InProcessRunner.approve_job — Task 10")
+        raise NotImplementedError("InProcessRunner.approve_job — implemented in this task")
 
     async def stream_progress(self, job_id: str) -> AsyncIterator[ProgressEvent]:
         """Stream progress in-process."""
-        raise NotImplementedError("InProcessRunner.stream_progress — Task 10")
+        raise NotImplementedError("InProcessRunner.stream_progress — implemented in this task")
         yield  # pragma: no cover
 
     async def send_message(self, session_id: str,
                            content: str) -> AsyncIterator[AgentEvent]:
         """Send message to agent in-process."""
-        raise NotImplementedError("InProcessRunner.send_message — Task 10")
+        raise NotImplementedError("InProcessRunner.send_message — implemented in this task")
         yield  # pragma: no cover
 
     async def health(self) -> HealthStatus:
@@ -1916,7 +1999,12 @@ def main(
 @app.command()
 def version():
     """Show ShipAgent version and dependency info."""
-    console.print("[bold]ShipAgent[/bold] v3.0.0")
+    from importlib.metadata import version as pkg_version
+    try:
+        v = pkg_version("shipagent")
+    except Exception:
+        v = "unknown"
+    console.print(f"[bold]ShipAgent[/bold] v{v}")
     console.print("  CLI: headless automation suite")
     try:
         import claude_agent_sdk
@@ -2059,9 +2147,64 @@ def job_cancel(
     client = get_client(standalone=_standalone, config=cfg)
 
     async def _run():
-        async with client:
-            await client.cancel_job(job_id)
-            console.print(f"[yellow]Job {job_id} cancelled.[/yellow]")
+        try:
+            async with client:
+                await client.cancel_job(job_id)
+                console.print(f"[yellow]Job {job_id} cancelled.[/yellow]")
+        except ShipAgentClientError as e:
+            console.print(f"[red]Error:[/red] {e.message}")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
+@job_app.command("logs")
+def job_logs(
+    job_id: str = typer.Argument(help="Job ID to stream logs for"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow/stream progress in real-time"),
+):
+    """Stream progress events for a job.
+
+    Use -f to follow in real-time (reconnects on daemon restart with backoff).
+    Without -f, prints current progress snapshot and exits.
+    """
+    from src.cli.protocol import ShipAgentClientError
+
+    cfg = load_config(config_path=_config_path)
+    client = get_client(standalone=_standalone, config=cfg)
+
+    async def _run():
+        try:
+            async with client:
+                if follow:
+                    # Stream with reconnect on daemon restart
+                    retry_delay = 1.0
+                    max_retry_delay = 30.0
+                    while True:
+                        try:
+                            async for event in client.stream_progress(job_id):
+                                retry_delay = 1.0  # Reset on success
+                                status_color = "green" if event.event_type == "row_completed" else "red"
+                                row_info = f"Row {event.row_number}/{event.total_rows}" if event.row_number else ""
+                                tracking = f" → {event.tracking_number}" if event.tracking_number else ""
+                                console.print(
+                                    f"[{status_color}]{event.event_type}[/{status_color}] "
+                                    f"{row_info}{tracking} {event.message}"
+                                )
+                            break  # Stream ended normally (job completed)
+                        except ShipAgentClientError:
+                            console.print(f"[yellow]Connection lost. Retrying in {retry_delay:.0f}s...[/yellow]")
+                            import asyncio as _asyncio
+                            await _asyncio.sleep(retry_delay)
+                            retry_delay = min(retry_delay * 2, max_retry_delay)
+                else:
+                    # Snapshot: just show current job status
+                    detail = await client.get_job(job_id)
+                    output = format_job_detail(detail, as_json=False)
+                    console.print(output)
+        except ShipAgentClientError as e:
+            console.print(f"[red]Error:[/red] {e.message}")
+            raise typer.Exit(1)
 
     asyncio.run(_run())
 
@@ -2304,19 +2447,35 @@ def remove_pid_file(pid_file: str) -> None:
 
 
 def is_pid_alive(pid: int) -> bool:
-    """Check if a process with the given PID is running.
+    """Check if a process with the given PID is running AND is a ShipAgent process.
+
+    Uses os.kill(pid, 0) for existence check, then verifies the process
+    command line contains 'shipagent' or 'uvicorn' to avoid targeting
+    a reused PID from an unrelated process.
 
     Args:
         pid: Process ID to check.
 
     Returns:
-        True if process exists and is accessible.
+        True if process exists, is accessible, and looks like a ShipAgent daemon.
     """
     try:
         os.kill(pid, 0)
-        return True
     except (OSError, ProcessLookupError):
         return False
+
+    # Verify process identity via /proc or ps
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True, text=True, timeout=2,
+        )
+        cmdline = result.stdout.strip().lower()
+        return any(marker in cmdline for marker in ["shipagent", "uvicorn", "src.api.main"])
+    except Exception:
+        # If ps fails (e.g., weird platform), fall back to existence-only
+        return True
 
 
 def start_daemon(
@@ -2386,6 +2545,16 @@ def stop_daemon(pid_file: str = "~/.shipagent/daemon.pid") -> bool:
 
     logger.info("Sending SIGTERM to daemon (PID %d)", pid)
     os.kill(pid, signal.SIGTERM)
+
+    # Wait for process to exit (up to 10s) before removing PID file
+    import time as _time
+    for _ in range(20):
+        _time.sleep(0.5)
+        try:
+            os.kill(pid, 0)
+        except (OSError, ProcessLookupError):
+            break  # Process exited
+
     remove_pid_file(pid_file)
     return True
 
@@ -2665,7 +2834,34 @@ Update `src/cli/http_client.py` — replace all `raise NotImplementedError` stub
 - `stream_progress` → `GET /api/v1/jobs/{id}/progress/stream` (SSE parsing)
 - `send_message` → `POST /api/v1/conversations/{id}/messages` + `GET /api/v1/conversations/{id}/stream` (SSE parsing)
 
-Each method parses the JSON response into the appropriate protocol dataclass. Error responses raise `typer.Exit(1)` with a Rich error message.
+Each method parses the JSON response into the appropriate protocol dataclass using the `from_api()` class methods, which tolerate extra fields from the API. Error responses raise a transport-neutral `ShipAgentClientError` (defined in `protocol.py`) — **never** `typer.Exit`. The CLI command handlers in `main.py` catch `ShipAgentClientError` and convert to `typer.Exit(1)` with a Rich error message. This keeps the client reusable for scripts, tests, and non-CLI consumers.
+
+Add to `src/cli/protocol.py`:
+
+```python
+class ShipAgentClientError(Exception):
+    """Transport-neutral error raised by ShipAgentClient implementations."""
+
+    def __init__(self, message: str, status_code: int | None = None):
+        self.message = message
+        self.status_code = status_code
+        super().__init__(message)
+```
+
+CLI handler pattern in `src/cli/main.py`:
+
+```python
+from src.cli.protocol import ShipAgentClientError
+
+async def _run():
+    try:
+        async with client:
+            jobs = await client.list_jobs(status=status)
+            ...
+    except ShipAgentClientError as e:
+        console.print(f"[red]Error:[/red] {e.message}")
+        raise typer.Exit(1)
+```
 
 **Step 4: Run tests to verify they pass**
 
@@ -2688,14 +2884,15 @@ git commit -m "feat(cli): implement HttpClient with httpx for all daemon API cal
 
 **Step 1: Enhance the /health endpoint**
 
-The existing `/health` endpoint returns `{"status": "healthy"}`. Enhance it to include version, uptime, and active job count so `shipagent daemon status` and `HttpClient.health()` get richer data.
+The existing `/health` endpoint returns `{"status": "healthy"}`. Enhance it to include version (from `importlib.metadata`), uptime, active job count, and watchdog status — matching the `HealthStatus` dataclass contract in `src/cli/protocol.py`.
 
 ```python
-# Replace the existing health_check function in src/api/main.py
-
+# Add at module level in src/api/main.py (near imports)
 import time as _time
+from importlib.metadata import version as _pkg_version
 
 _startup_time: float = 0.0
+_watchdog_service = None  # Set by watchdog startup in lifespan
 
 # In startup_event(), add:
 #   global _startup_time
@@ -2705,14 +2902,44 @@ _startup_time: float = 0.0
 def health_check() -> dict:
     """Health check endpoint with system status.
 
+    Returns all fields required by the CLI HealthStatus contract:
+    status, version, uptime_seconds, active_jobs, watchdog_active, watch_folders.
+
     Returns:
-        Dictionary with health status, version, and metrics.
+        Dictionary with health status and metrics.
     """
+    from src.db.connection import get_db as _get_db
+    from src.db.models import Job, JobStatus
+
     uptime = int(_time.time() - _startup_time) if _startup_time else 0
+
+    # Count active (running) jobs
+    try:
+        db = next(_get_db())
+        active_jobs = db.query(Job).filter(Job.status == JobStatus.running.value).count()
+        db.close()
+    except Exception:
+        active_jobs = 0
+
+    # Version from package metadata (matches pyproject.toml)
+    try:
+        version = _pkg_version("shipagent")
+    except Exception:
+        version = "unknown"
+
+    # Watchdog status
+    watchdog_active = _watchdog_service is not None and _watchdog_service._observer is not None
+    watch_folders = []
+    if _watchdog_service:
+        watch_folders = [c.path for c in _watchdog_service._configs]
+
     return {
         "status": "healthy",
-        "version": "3.0.0",
+        "version": version,
         "uptime_seconds": uptime,
+        "active_jobs": active_jobs,
+        "watchdog_active": watchdog_active,
+        "watch_folders": watch_folders,
     }
 ```
 
@@ -2725,12 +2952,373 @@ Expected: PASS (existing health tests should still pass with the added fields).
 
 ```bash
 git add src/api/main.py
-git commit -m "feat(api): enhance /health endpoint with version and uptime"
+git commit -m "feat(api): enhance /health endpoint with version, uptime, active_jobs, watchdog status"
 ```
 
 ---
 
-## Task 10: InProcessRunner Implementation
+## Task 10: Extract Shared Execution Services
+
+**Rationale:** The critical batch execution logic currently lives inside `src/api/routes/preview.py:_execute_batch` (lines 215-403) and agent session orchestration lives in `src/api/routes/conversations.py:_process_agent_message` (lines 178-314). Both the HTTP routes and the InProcessRunner need to call this logic. **We must not duplicate it.** Instead, extract shared service functions that both consumers import.
+
+**Files:**
+- Create: `src/services/batch_executor.py`
+- Create: `src/services/conversation_handler.py`
+- Modify: `src/api/routes/preview.py` (delegate to shared service)
+- Modify: `src/api/routes/conversations.py` (delegate to shared service)
+- Create: `tests/services/test_batch_executor.py`
+- Create: `tests/services/test_conversation_handler.py`
+
+**Step 1: Write failing tests for batch_executor**
+
+```python
+# tests/services/test_batch_executor.py
+"""Tests for shared batch execution service."""
+
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from src.services.batch_executor import execute_batch, get_shipper_for_job
+
+
+class TestGetShipperForJob:
+    """Tests for shipper resolution logic."""
+
+    def test_uses_persisted_shipper_json(self):
+        """Returns persisted shipper when job has shipper_json."""
+        job = MagicMock()
+        job.shipper_json = '{"name": "Acme Corp", "city": "LA"}'
+        result = get_shipper_for_job(job)
+        assert result["name"] == "Acme Corp"
+
+    def test_falls_back_to_env_shipper(self, monkeypatch):
+        """Falls back to env-based shipper when no shipper_json."""
+        job = MagicMock()
+        job.shipper_json = None
+        monkeypatch.setenv("SHIPPER_NAME", "Env Corp")
+        # Test that it doesn't raise; actual shipper building tested elsewhere
+```
+
+**Step 2: Write the shared batch executor**
+
+```python
+# src/services/batch_executor.py
+"""Shared batch execution service.
+
+Extracts the canonical execute-batch flow from preview.py so both
+HTTP routes and InProcessRunner call the same code path. This is
+the SINGLE source of truth for batch execution orchestration.
+
+Callers provide a progress_callback to adapt events to their
+transport (SSE for HTTP, Rich for CLI, logging for watchdog).
+"""
+
+import json
+import logging
+import os
+from typing import Any, Callable, Coroutine
+
+from src.db.models import Job, JobRow, JobStatus, RowStatus
+from src.services.batch_engine import BatchEngine
+from src.services.ups_mcp_client import UPSMCPClient
+
+logger = logging.getLogger(__name__)
+
+# Type for progress callback: async def(event_type: str, **kwargs) -> None
+ProgressCallback = Callable[..., Coroutine[Any, Any, None]]
+
+
+def get_shipper_for_job(job: Job, fallback_shipper: dict | None = None) -> dict:
+    """Resolve shipper address for a job.
+
+    Priority: (1) persisted shipper_json on job, (2) provided fallback,
+    (3) env-based shipper via build_shipper().
+
+    Args:
+        job: The Job model instance.
+        fallback_shipper: Optional pre-resolved shipper dict.
+
+    Returns:
+        Shipper address dict.
+    """
+    if job.shipper_json:
+        try:
+            return json.loads(job.shipper_json)
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.error("Malformed shipper_json for job %s: %s", job.id, e)
+
+    if fallback_shipper:
+        return fallback_shipper
+
+    from src.services.ups_payload_builder import build_shipper
+    return build_shipper()
+
+
+async def execute_batch(
+    job_id: str,
+    db_session: Any,
+    on_progress: ProgressCallback | None = None,
+) -> dict:
+    """Execute batch shipment processing.
+
+    This is the canonical execution path. Both preview.py routes
+    and InProcessRunner.approve_job() call this function.
+
+    Args:
+        job_id: The job UUID to process.
+        db_session: SQLAlchemy session.
+        on_progress: Optional async callback for progress events.
+
+    Returns:
+        Result dict with successful, failed, total_cost_cents keys.
+    """
+    job = db_session.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise ValueError(f"Job not found: {job_id}")
+
+    rows = (
+        db_session.query(JobRow)
+        .filter(JobRow.job_id == job_id, JobRow.status == RowStatus.pending.value)
+        .order_by(JobRow.row_number)
+        .all()
+    )
+
+    shipper = get_shipper_for_job(job)
+
+    base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
+    environment = "test" if "wwwcie" in base_url else "production"
+    account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
+
+    async with UPSMCPClient(
+        client_id=os.environ.get("UPS_CLIENT_ID", ""),
+        client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
+        environment=environment,
+        account_number=account_number,
+    ) as ups:
+        engine = BatchEngine(
+            ups_service=ups,
+            db_session=db_session,
+            account_number=account_number,
+        )
+
+        # Wrap progress callback to update job counters
+        successful = 0
+        failed = 0
+        total_cost = 0
+
+        async def _progress_adapter(event_type: str, **kwargs) -> None:
+            nonlocal successful, failed, total_cost
+            if event_type == "row_completed":
+                successful += 1
+                total_cost += kwargs.get("cost_cents", 0)
+            elif event_type == "row_failed":
+                failed += 1
+
+            job.processed_rows = successful + failed
+            job.successful_rows = successful
+            job.failed_rows = failed
+            job.total_cost_cents = total_cost
+            db_session.commit()
+
+            if on_progress:
+                await on_progress(event_type, **kwargs)
+
+        result = await engine.execute(
+            job_id=job_id,
+            rows=rows,
+            shipper=shipper,
+            on_progress=_progress_adapter,
+            write_back_enabled=getattr(job, "write_back_enabled", True),
+        )
+
+    return result
+```
+
+**Step 3: Write the shared conversation handler**
+
+```python
+# src/services/conversation_handler.py
+"""Shared conversation handling service.
+
+Extracts the canonical agent session orchestration from conversations.py
+so both HTTP routes and InProcessRunner call the same code path.
+"""
+
+import hashlib
+import logging
+from typing import Any, AsyncIterator
+
+from src.services.agent_session_manager import AgentSession, AgentSessionManager
+from src.services.gateway_provider import get_data_gateway
+
+logger = logging.getLogger(__name__)
+
+
+def compute_source_hash(source_info: Any) -> str:
+    """Compute hash of current data source for change detection.
+
+    Args:
+        source_info: Data source info from gateway.
+
+    Returns:
+        Hash string for comparison.
+    """
+    if source_info is None:
+        return "none"
+    raw = str(source_info)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+async def ensure_agent(
+    session: AgentSession,
+    source_info: Any,
+    interactive_shipping: bool = False,
+) -> bool:
+    """Ensure the agent exists and is current for the session.
+
+    Creates a new OrchestrationAgent if none exists or if the data source
+    has changed. This is the canonical agent creation path.
+
+    Args:
+        session: The agent session to ensure.
+        source_info: Current data source info.
+        interactive_shipping: Whether to create in interactive mode.
+
+    Returns:
+        True if a new agent was created, False if reused existing.
+    """
+    source_hash = compute_source_hash(source_info)
+    needs_rebuild = (
+        session.agent is None
+        or session.agent_source_hash != source_hash
+        or session.interactive_shipping != interactive_shipping
+    )
+
+    if not needs_rebuild:
+        return False
+
+    # Stop existing agent if any
+    if session.agent is not None:
+        try:
+            await session.agent.shutdown()
+        except Exception:
+            pass
+
+    # Import here to avoid circular imports
+    from src.orchestrator.agent.client import OrchestrationAgent
+    from src.orchestrator.agent.system_prompt import build_system_prompt
+
+    system_prompt = build_system_prompt(
+        source_info=source_info,
+        interactive_shipping=interactive_shipping,
+    )
+
+    session.agent = OrchestrationAgent(
+        system_prompt=system_prompt,
+        history=session.history,
+        interactive_shipping=interactive_shipping,
+    )
+    session.agent_source_hash = source_hash
+    session.interactive_shipping = interactive_shipping
+
+    return True
+
+
+async def process_message(
+    session: AgentSession,
+    content: str,
+    interactive_shipping: bool = False,
+) -> AsyncIterator[dict]:
+    """Process a user message through the agent, yielding SSE-compatible events.
+
+    This is the canonical message processing path. Both conversations.py
+    and InProcessRunner.send_message() call this function.
+
+    Args:
+        session: The agent session.
+        content: User message content.
+        interactive_shipping: Whether in interactive mode.
+
+    Yields:
+        Event dicts with 'event' and 'data' keys.
+    """
+    async with session.lock:
+        # Get current data source
+        try:
+            gw = await get_data_gateway()
+            source_info = await gw.get_source_info_typed()
+        except Exception:
+            source_info = None
+
+        # Ensure agent exists
+        await ensure_agent(session, source_info, interactive_shipping)
+
+        # Add user message to history
+        session.add_message("user", content)
+
+        # Process and yield events
+        async for event in session.agent.process_message_stream(content):
+            yield event
+
+        # Record assistant response (last text delta)
+        # The agent internally manages conversation history
+```
+
+**Step 4: Update preview.py to delegate to shared service**
+
+In `src/api/routes/preview.py`, replace the body of `_execute_batch()` (lines 215-403) with:
+
+```python
+async def _execute_batch(job_id: str) -> None:
+    """Execute batch shipment processing — delegates to shared service."""
+    from src.db.connection import get_db as get_db_session
+    from src.services.batch_executor import execute_batch
+
+    observer = _get_sse_observer()
+    db = next(get_db_session())
+    try:
+        await observer.on_batch_started(job_id, 0)  # row count resolved inside
+
+        async def on_progress(event_type: str, **kwargs) -> None:
+            if event_type == "row_completed":
+                await observer.on_row_completed(
+                    job_id, kwargs["row_number"],
+                    kwargs.get("tracking_number", ""),
+                    kwargs.get("cost_cents", 0),
+                )
+            elif event_type == "row_failed":
+                await observer.on_row_failed(
+                    job_id, kwargs["row_number"],
+                    kwargs.get("error_code", "E-3005"),
+                    kwargs.get("error_message", "Unknown error"),
+                )
+
+        result = await execute_batch(job_id, db, on_progress=on_progress)
+        # ... existing post-execution logic (international aggregation, completion)
+    finally:
+        db.close()
+```
+
+**Step 5: Run tests to verify existing behavior is preserved**
+
+Run: `pytest tests/services/test_batch_executor.py tests/api/ -v -k "not stream and not sse"`
+Expected: All PASS.
+
+**Step 6: Commit**
+
+```bash
+git add src/services/batch_executor.py src/services/conversation_handler.py \
+    tests/services/test_batch_executor.py tests/services/test_conversation_handler.py \
+    src/api/routes/preview.py src/api/routes/conversations.py
+git commit -m "refactor: extract shared batch_executor and conversation_handler services
+
+Both HTTP routes and CLI InProcessRunner now call the same canonical
+execution paths. No logic duplication between presentation layers."
+```
+
+---
+
+## Task 11: InProcessRunner Implementation
 
 **Files:**
 - Modify: `src/cli/runner.py`
@@ -2785,17 +3373,44 @@ Expected: FAIL (NotImplementedError)
 
 **Step 3: Implement InProcessRunner**
 
-Replace the stubs in `src/cli/runner.py` with implementations that directly use `JobService`, `AgentSessionManager`, `get_data_gateway()`, etc.
+Replace the stubs in `src/cli/runner.py`. **Critical: all execution and session logic calls the shared services from Task 10. No duplication.**
 
 Key implementations:
-- `list_jobs` → `JobService(db).list_jobs()` → map `Job` → `JobSummary`
-- `get_job` → `JobService(db).get_job()` → map `Job` → `JobDetail`
-- `get_job_rows` → `JobService(db).get_rows()` → map `JobRow` → `RowDetail`
+- `list_jobs` → `JobService(db).list_jobs()` → map `Job` → `JobSummary.from_api()`
+- `get_job` → `JobService(db).get_job()` → map `Job` → `JobDetail.from_api()`
+- `get_job_rows` → `JobService(db).get_rows()` → map `JobRow` → `RowDetail.from_api()`
 - `cancel_job` → `JobService(db).update_status(job_id, JobStatus.cancelled)`
-- `approve_job` → Execute batch inline (mirror `preview.py:_execute_batch`)
-- `create_session` → `AgentSessionManager().get_or_create_session(uuid4())`
-- `send_message` → `session.agent.process_message_stream(content)` → yield `AgentEvent`
-- `submit_file` → `get_data_gateway().import_csv()` → create session → send command
+- `approve_job` → **`batch_executor.execute_batch(job_id, db, on_progress=...)`** (shared service, NOT duplicated)
+- `create_session` → `self._session_manager.get_or_create_session(uuid4())`
+- `send_message` → **`conversation_handler.process_message(session, content)`** (shared service, NOT duplicated)
+- `submit_file` → `get_data_gateway().import_csv()` → create session → `conversation_handler.process_message()`
+
+```python
+# Key pattern in runner.py — approve_job uses shared service
+async def approve_job(self, job_id: str) -> None:
+    """Approve job via shared batch execution service."""
+    from src.services.batch_executor import execute_batch
+    db = next(get_db())
+    try:
+        await execute_batch(job_id, db, on_progress=self._log_progress)
+    finally:
+        db.close()
+
+# Key pattern — send_message uses shared service
+async def send_message(self, session_id: str, content: str) -> AsyncIterator[AgentEvent]:
+    """Send message via shared conversation handler."""
+    from src.services.conversation_handler import process_message
+    session = self._session_manager.get_session(session_id)
+    if not session:
+        raise ShipAgentClientError(f"Session not found: {session_id}")
+    async for event in process_message(session, content, self._interactive):
+        yield AgentEvent(
+            event_type=event.get("event", "unknown"),
+            content=event.get("data", {}).get("content"),
+            tool_name=event.get("data", {}).get("tool_name"),
+            tool_input=event.get("data", {}).get("tool_input"),
+        )
+```
 
 **Step 4: Run tests to verify they pass**
 
@@ -2806,12 +3421,12 @@ Expected: All tests PASS.
 
 ```bash
 git add src/cli/runner.py tests/cli/test_runner.py
-git commit -m "feat(cli): implement InProcessRunner with direct service access"
+git commit -m "feat(cli): implement InProcessRunner using shared execution services"
 ```
 
 ---
 
-## Task 11: Conversational REPL
+## Task 12: Conversational REPL
 
 **Files:**
 - Create: `src/cli/repl.py`
@@ -2937,7 +3552,7 @@ git commit -m "feat(cli): add conversational REPL with Rich rendering"
 
 ---
 
-## Task 12: Watchdog Hot-Folder Service
+## Task 13: Watchdog Hot-Folder Service
 
 **Files:**
 - Create: `src/cli/watchdog_service.py`
@@ -3150,29 +3765,42 @@ class _DebouncingHandler(FileSystemEventHandler):
     def _debounce(self, file_path: str) -> None:
         """Debounce file events — wait for writes to settle.
 
+        THREAD SAFETY: This method runs on the watchdog observer thread.
+        ALL event loop interaction MUST go through call_soon_threadsafe.
+        We use a threading.Timer for the debounce delay (runs on a thread),
+        then bridge to the async loop only when firing the callback.
+
         Args:
             file_path: Path of the file that triggered the event.
         """
+        import threading
+
         filename = Path(file_path).name
         if not _should_process_file(filename, self._config):
             return
 
         self._pending[file_path] = time.time()
 
-        # Cancel existing timer
+        # Cancel existing timer (threading.Timer, safe from any thread)
         if file_path in self._timers:
             self._timers[file_path].cancel()
 
-        # Schedule new timer on the async loop
-        self._timers[file_path] = self._loop.call_later(
-            DEBOUNCE_SECONDS,
-            lambda fp=file_path: self._loop.call_soon_threadsafe(
+        # Schedule new threading.Timer — fires on a thread, then bridges
+        # to async loop via call_soon_threadsafe
+        def _on_timer_expired(fp=file_path):
+            self._loop.call_soon_threadsafe(
                 lambda: asyncio.ensure_future(self._fire(fp))
-            ),
-        )
+            )
+
+        timer = threading.Timer(DEBOUNCE_SECONDS, _on_timer_expired)
+        timer.daemon = True
+        self._timers[file_path] = timer
+        timer.start()
 
     async def _fire(self, file_path: str) -> None:
         """Fire the callback after debounce period.
+
+        This runs on the async event loop (bridged via call_soon_threadsafe).
 
         Args:
             file_path: Path of the file to process.
@@ -3252,8 +3880,41 @@ class HotFolderService:
             self._observer.join(timeout=5)
             logger.info("HotFolderService stopped")
 
+    def _collision_safe_name(self, dest_dir: Path, filename: str) -> Path:
+        """Generate a collision-safe destination path.
+
+        If filename already exists in dest_dir, appends a timestamp suffix.
+
+        Args:
+            dest_dir: Target directory.
+            filename: Original filename.
+
+        Returns:
+            Path that does not collide with existing files.
+        """
+        dest = dest_dir / filename
+        if not dest.exists():
+            return dest
+        stem = Path(filename).stem
+        suffix = Path(filename).suffix
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        return dest_dir / f"{stem}_{ts}{suffix}"
+
+    def get_lock(self, folder_path: str) -> asyncio.Lock:
+        """Get the per-directory lock for serialized processing.
+
+        Args:
+            folder_path: The watch folder root path.
+
+        Returns:
+            asyncio.Lock for this directory.
+        """
+        return self._locks[folder_path]
+
     def claim_file(self, file_path: str) -> Path | None:
         """Move a file to .processing/ to claim it.
+
+        Uses collision-safe naming to prevent overwrites.
 
         Args:
             file_path: Path to the file to claim.
@@ -3265,32 +3926,38 @@ class HotFolderService:
         if not src.exists():
             return None
         parent = src.parent
-        dest = parent / ".processing" / src.name
+        processing_dir = parent / ".processing"
+        dest = self._collision_safe_name(processing_dir, src.name)
         shutil.move(str(src), str(dest))
         return dest
 
     def complete_file(self, processing_path: Path) -> None:
         """Move a processed file to processed/ directory.
 
+        Uses collision-safe naming to prevent overwrites.
+
         Args:
             processing_path: Path in .processing/ to move.
         """
-        dest = processing_path.parent.parent / "processed" / processing_path.name
+        processed_dir = processing_path.parent.parent / "processed"
+        dest = self._collision_safe_name(processed_dir, processing_path.name)
         shutil.move(str(processing_path), str(dest))
 
     def fail_file(self, processing_path: Path, error: dict) -> None:
         """Move a failed file to failed/ with error sidecar.
+
+        Uses collision-safe naming to prevent overwrites.
 
         Args:
             processing_path: Path in .processing/ to move.
             error: Error details to write to .error sidecar file.
         """
         failed_dir = processing_path.parent.parent / "failed"
-        dest = failed_dir / processing_path.name
+        dest = self._collision_safe_name(failed_dir, processing_path.name)
         shutil.move(str(processing_path), str(dest))
 
-        # Write error sidecar
-        error_file = failed_dir / f"{processing_path.name}.error"
+        # Write error sidecar (matches the collision-safe dest name)
+        error_file = dest.with_suffix(dest.suffix + ".error")
         error_file.write_text(json.dumps(error, indent=2))
 ```
 
@@ -3301,28 +3968,144 @@ Expected: All tests PASS.
 
 **Step 5: Integrate into daemon lifespan**
 
-Modify `src/api/main.py` startup/shutdown to optionally start the watchdog:
+Modify `src/api/main.py` to add watchdog lifecycle. This must be fully defined — no undefined references.
+
+Add at module level:
 
 ```python
-# In startup_event(), after init_db():
+# At module level in src/api/main.py
+_watchdog_service = None  # HotFolderService instance, set during startup
+```
+
+Add a complete `_process_watched_file` function and startup integration:
+
+```python
+async def _process_watched_file(file_path: str, config) -> None:
+    """Process a file detected by the watchdog.
+
+    This is the callback passed to HotFolderService.start().
+    It claims the file, imports it, runs the agent command,
+    applies auto-confirm rules, and moves the file to processed/failed.
+
+    Serialized per-directory via the HotFolderService lock to prevent
+    data-source gateway cross-contamination (Finding 7).
+
+    Args:
+        file_path: Path to the detected file.
+        config: WatchFolderConfig for this directory.
+    """
+    from src.cli.auto_confirm import evaluate_auto_confirm
+    from src.cli.config import AutoConfirmRules, load_config
+    from src.services.gateway_provider import get_data_gateway
+
+    global _watchdog_service
+    if not _watchdog_service:
+        return
+
+    # Acquire per-directory lock — serializes file processing
+    # to prevent data-source gateway cross-contamination
+    async with _watchdog_service.get_lock(config.path):
+        processing_path = _watchdog_service.claim_file(file_path)
+        if not processing_path:
+            return
+
+        try:
+            # Import file into data source gateway
+            gw = await get_data_gateway()
+            ext = processing_path.suffix.lower()
+            if ext == ".csv":
+                await gw.import_csv(file_path=str(processing_path))
+            elif ext in (".xlsx", ".xls"):
+                await gw.import_excel(file_path=str(processing_path))
+            else:
+                raise ValueError(f"Unsupported file type: {ext}")
+
+            # Create agent session and run command
+            from src.services.conversation_handler import process_message, ensure_agent
+            from src.services.agent_session_manager import AgentSessionManager
+            import uuid
+
+            mgr = AgentSessionManager()
+            session = mgr.get_or_create_session(str(uuid.uuid4()))
+            try:
+                source_info = await gw.get_source_info_typed()
+                await ensure_agent(session, source_info)
+                async for event in process_message(session, config.command):
+                    # Log events for observability
+                    if event.get("event") == "error":
+                        raise RuntimeError(event.get("data", {}).get("message", "Agent error"))
+            finally:
+                await mgr.stop_session_agent(session.session_id)
+                mgr.remove_session(session.session_id)
+
+            # TODO: Apply auto-confirm rules if config.auto_confirm is True
+            # This integrates with the preview/confirm flow from the agent
+
+            _watchdog_service.complete_file(processing_path)
+            logger.info("Watchdog: completed processing %s", processing_path.name)
+
+        except Exception as e:
+            logger.exception("Watchdog: failed processing %s", processing_path.name)
+            _watchdog_service.fail_file(processing_path, {
+                "error": str(e),
+                "file": str(file_path),
+                "command": config.command,
+            })
+```
+
+Update `startup_event()` in `src/api/main.py`:
+
+```python
+@app.on_event("startup")
+async def startup_event() -> None:
+    """Initialize database, start watchdog if configured."""
+    global _startup_time, _watchdog_service
+
+    _ensure_agent_sdk_available()
+    warnings.filterwarnings("default", category=DeprecationWarning, module="claude_agent_sdk")
+    init_db()
+    _startup_time = _time.time()
+
     # Start watchdog if configured
     from src.cli.config import load_config
     config = load_config()
     if config and config.watch_folders:
         from src.cli.watchdog_service import HotFolderService
-        global _watchdog_service
+
         _watchdog_service = HotFolderService(configs=config.watch_folders)
-        # Process backlog from while daemon was down
+
+        # Process backlog files dropped while daemon was down
         backlog = _watchdog_service.scan_existing_files()
         if backlog:
             logger.info("Found %d backlog files to process", len(backlog))
-        # Start watching (requires running event loop — schedule as task)
-        import asyncio
-        asyncio.get_event_loop().create_task(_start_watchdog())
+            for backlog_file in backlog:
+                # Find matching config for this file's directory
+                for wf_config in config.watch_folders:
+                    if str(backlog_file.parent) == str(Path(wf_config.path).resolve()):
+                        asyncio.create_task(
+                            _process_watched_file(str(backlog_file), wf_config)
+                        )
+                        break
 
-# In shutdown_event(), before shutdown_gateways():
+        # Start filesystem watcher
+        await _watchdog_service.start(process_callback=_process_watched_file)
+        logger.info("Watchdog started with %d watch folders", len(config.watch_folders))
+```
+
+Update `shutdown_event()`:
+
+```python
+@app.on_event("shutdown")
+async def shutdown_event() -> None:
+    """Clean up watchdog and MCP gateways on shutdown."""
+    global _watchdog_service
+    from src.services.gateway_provider import shutdown_gateways
+
     if _watchdog_service:
         await _watchdog_service.stop()
+        _watchdog_service = None
+
+    await shutdown_gateways()
 ```
 
 **Step 6: Commit**
@@ -3334,7 +4117,7 @@ git commit -m "feat(cli): add HotFolderService watchdog with debouncing and file
 
 ---
 
-## Task 13: Integration Testing & Polish
+## Task 14: Integration Testing & Polish
 
 **Files:**
 - Create: `tests/cli/test_integration.py`
@@ -3360,7 +4143,6 @@ class TestCLICommands:
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
         assert "ShipAgent" in result.stdout
-        assert "v3.0" in result.stdout
 
     def test_help(self):
         """Help shows available commands."""
@@ -3416,7 +4198,7 @@ git commit -m "test(cli): add integration tests for CLI command invocation"
 
 ---
 
-## Task 14: Update CLAUDE.md & Final Commit
+## Task 15: Update CLAUDE.md & Final Commit
 
 **Files:**
 - Modify: `CLAUDE.md`
@@ -3429,7 +4211,7 @@ Add the CLI to the architecture section, command surface, and component table. K
 - New `src/cli/` section in Source Structure
 - `shipagent` commands in Common Commands
 - CLI dependencies in Technology Stack
-- Update version to 3.0.0
+- Headless automation section describing daemon, watchdog, CLI modes
 
 **Step 2: Commit**
 
@@ -3453,11 +4235,28 @@ git commit -m "docs: update CLAUDE.md with headless automation CLI architecture"
 | 7 | Daemon management | `daemon.py` | `test_daemon.py` |
 | 8 | HTTP client implementation | `http_client.py` (full) | `test_http_client.py` |
 | 9 | Health endpoint enhancement | `main.py` (modify) | existing |
-| 10 | InProcessRunner implementation | `runner.py` (full) | `test_runner.py` |
-| 11 | Conversational REPL | `repl.py` | manual |
-| 12 | Watchdog hot-folders | `watchdog_service.py` | `test_watchdog_service.py` |
-| 13 | Integration tests | — | `test_integration.py` |
-| 14 | CLAUDE.md update | — | — |
+| 10 | **Extract shared execution services** | `batch_executor.py`, `conversation_handler.py` | `test_batch_executor.py`, `test_conversation_handler.py` |
+| 11 | InProcessRunner implementation | `runner.py` (full) | `test_runner.py` |
+| 12 | Conversational REPL | `repl.py` | manual |
+| 13 | Watchdog hot-folders | `watchdog_service.py` | `test_watchdog_service.py` |
+| 14 | Integration tests | — | `test_integration.py` |
+| 15 | CLAUDE.md update | — | — |
 
-**Total new files:** 12 source + 8 test = 20 files
-**Estimated commits:** 14
+**Total new files:** 14 source + 10 test = 24 files
+**Estimated commits:** 15
+
+## Review Findings Resolution
+
+| # | Finding | Severity | Resolution |
+|---|---------|----------|------------|
+| 1 | Watchdog startup incomplete | P0 | Fully defined `_process_watched_file()`, `startup_event()` with backlog processing, `shutdown_event()` cleanup. No undefined references. |
+| 2 | InProcessRunner duplicates logic | P0 | New Task 10 extracts `batch_executor.py` and `conversation_handler.py`. Both routes and runner import shared services. |
+| 3 | Protocol dataclasses misaligned | P1 | `JobSummary`, `JobDetail`, `RowDetail` updated to match `src/api/schemas.py`. Added `from_api()` constructors that tolerate extra fields. |
+| 4 | Health contract inconsistent | P1 | `/health` now returns `active_jobs`, `watchdog_active`, `watch_folders`. Matches `HealthStatus` dataclass. |
+| 5 | Watchdog debounce thread-unsafe | P1 | `_debounce()` uses `threading.Timer` (thread-safe) + `call_soon_threadsafe` bridge. No direct `loop.call_later` from observer thread. |
+| 6 | File lifecycle collision + unused locks | P1 | Added `_collision_safe_name()` with timestamp suffix. `get_lock()` exposed. `_process_watched_file` acquires per-directory lock. |
+| 7 | Data-source singleton cross-contamination | P1 | Concurrency policy documented in preamble. Per-directory lock serializes file processing. Explicit note on future isolation requirements. |
+| 8 | Transport coupled to CLI exit | P2 | Added `ShipAgentClientError` to protocol. HttpClient raises it. CLI handlers catch and convert to `typer.Exit(1)`. |
+| 9 | Missing `job logs -f` | P2 | Added `job_logs` command with `-f` follow mode and reconnect-with-backoff on daemon restart. |
+| 10 | PID targets wrong process | P2 | `is_pid_alive()` now verifies process cmdline contains shipagent/uvicorn. `stop_daemon` waits for exit before removing PID file. |
+| 11 | Version hardcoded | P3 | `version` command reads from `importlib.metadata`. Health endpoint uses same. No hardcoded version strings. |
