@@ -1998,6 +1998,7 @@ A crash, network split, or process kill between lines 408 and 458 creates a ship
 4. **Labels are promoted BEFORE the DB commit, not after.** Write to `labels/staging/{job_id}/{row}.png`, then `os.rename()` to final path, then commit the DB row with the final path. This ensures: if crash occurs after promote but before commit, the label exists at its final location and the in-flight row will be recovered normally. Startup cleanup only removes staging files for job directories that have no `in_flight` or `needs_review` rows.
 5. **Write-back uses a durable queue table.** Each successful row writes a `WriteBackTask` row to a new `write_back_queue` table. A background worker processes the queue. Partial failures are retried independently per row.
 6. **`needs_review` is a terminal status for safety.** Rows marked `needs_review` during crash recovery are never auto-retried. They require operator action (void duplicate at UPS or manually complete). The `get_job_status` tool reports `needs_review` count.
+7. **Intentional tradeoff: deterministic and safe, not fully autonomous.** For crash states where the system cannot programmatically determine whether UPS created a shipment (Tier 2: no `ups_transaction_id`), we intentionally choose manual operator review over autonomous retry. This is a deliberate design decision — the cost of a duplicate shipment (financial charge + operational overhead to void) exceeds the cost of a brief manual lookup in UPS Quantum View. Full autonomy for this edge case would require UPS to support query-by-customer-reference, which they do not. If UPS adds this capability in the future, Tier 2 can be upgraded to programmatic verification without changing the state machine.
 
 ---
 
@@ -2259,6 +2260,12 @@ class TestInFlightStateMachine:
         """Simulate crash between UPS call and DB commit.
         Row should remain 'in_flight' with idempotency_key set."""
 
+    def test_pre_phase1_error_marks_pending_row_failed(self):
+        """If _parse_order_data or validation fails BEFORE the in_flight
+        commit, the row is still 'pending'. The outer handler must mark
+        it 'failed' — not leave it pending (which would cause ambiguous
+        retry behavior)."""
+
     def test_ups_rejection_marks_row_failed(self):
         """If UPS create_shipment raises UPSServiceError (rejection),
         row is marked failed. This is pre-side-effect — safe to retry."""
@@ -2271,6 +2278,10 @@ class TestInFlightStateMachine:
     def test_post_ups_failure_preserves_partial_tracking_info(self):
         """If post-UPS exception occurs, any available ups_transaction_id
         from the UPS response is still written to the row for recovery."""
+
+    def test_ups_call_succeeded_always_bound(self):
+        """ups_call_succeeded is initialized at top of _process_row,
+        never unbound regardless of where exceptions fire."""
 
     def test_pending_to_completed_directly_is_rejected(self):
         """BatchEngine must not skip the in_flight state.
@@ -2290,12 +2301,14 @@ Replace the current flow:
 With the two-phase commit:
 
 ```
-[new]  pending → in_flight (commit 1: set idempotency_key, status='in_flight')
-                → create_shipment(idempotency_key)
-                   ├─ UPS rejects → failed (commit 2a: safe to retry)
-                   └─ UPS accepts → post-side-effect zone
-                       ├─ promote + commit succeeds → completed (commit 2b)
-                       └─ any local error → needs_review (commit 2c: never failed)
+[new]  pending
+         ├─ parse/validate/build error → failed (pre-side-effect, safe to retry)
+         └─ success → in_flight (commit 1: set idempotency_key)
+                       → create_shipment(idempotency_key)
+                          ├─ UPS rejects → failed (commit 2a: safe to retry)
+                          └─ UPS accepts → post-side-effect zone
+                              ├─ promote + commit succeeds → completed (commit 2b)
+                              └─ any local error → needs_review (commit 2c: never failed)
 ```
 
 Implementation:
@@ -2303,6 +2316,10 @@ Implementation:
 ```python
 async def _process_row(row: Any) -> None:
     nonlocal successful, failed, total_cost_cents
+
+    # Initialized at top scope so the outer handler can always read it,
+    # even if an exception fires before the UPS call boundary.
+    ups_call_succeeded = False
 
     async with semaphore:
         try:
@@ -2328,7 +2345,6 @@ async def _process_row(row: Any) -> None:
             # Everything BEFORE this line is pre-side-effect (safe to mark failed).
             # Everything AFTER this line is post-side-effect (UPS may have
             # created a shipment — MUST use needs_review, never failed).
-            ups_call_succeeded = False
             try:
                 result = await self._ups.create_shipment(request_body=api_payload)
                 ups_call_succeeded = True
@@ -2392,13 +2408,19 @@ async def _process_row(row: Any) -> None:
                     self._db.commit()
 
         except (UPSServiceError, ValueError, Exception) as e:
-            # Only reaches here for pre-UPS errors (payload build, Phase 1
-            # commit, etc.) or the re-raised UPS call error above.
-            # Row is already marked failed by the inner handler if UPS
-            # rejected; for pre-UPS errors, mark failed here.
+            # Reaches here for:
+            #   a) Pre-Phase-1 errors (parse, validation, payload build)
+            #      — row is still 'pending', no UPS side effect
+            #   b) Phase 1 commit failure — row may be 'pending' or 'in_flight'
+            #   c) Re-raised UPS call rejection — row already marked 'failed'
+            #      by the inner handler above
+            #
+            # In all pre-UPS cases, mark 'failed' regardless of current
+            # status (pending or in_flight). This is safe because no
+            # shipment was created at UPS.
             if not ups_call_succeeded:
                 async with db_lock:
-                    if row.status == "in_flight":
+                    if row.status in ("pending", "in_flight"):
                         row.status = "failed"
                         row.error_code = getattr(e, "code", "E-4001")
                         row.error_message = str(e)
@@ -3054,7 +3076,7 @@ After all tasks are complete, verify:
 - [ ] Labels promoted to final path BEFORE DB commit (staging → rename → commit)
 - [ ] Write-back survives partial completion via durable queue
 - [ ] Orphaned staging labels cleaned on startup (only for jobs without in_flight/needs_review rows)
-- [ ] Schema migration adds `idempotency_key`, `ups_transaction_id`, `needs_review` columns to existing DBs
+- [ ] Schema migration adds `idempotency_key` and `ups_transaction_id` columns to existing `job_rows` tables (note: `needs_review` and `in_flight` are new values on the existing `status` column, not new columns)
 - [ ] Schema migration creates `write_back_queue` table on existing DBs
 
 ---
