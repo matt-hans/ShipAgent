@@ -37,7 +37,9 @@ from src.api.routes import (
     saved_data_sources,
 )
 from src.db.connection import init_db
+from src.db.models import JobStatus
 from src.errors import ShipAgentError
+from src.services.batch_engine import BatchEngine
 
 # Frontend build directory
 FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
@@ -74,6 +76,73 @@ def _ensure_agent_sdk_available() -> None:
         ) from exc
     sdk_version = getattr(claude_agent_sdk, "__version__", "unknown")
     logger.info("Claude Agent SDK version: %s", sdk_version)
+
+
+async def run_startup_recovery(db: object, job_service: object) -> None:
+    """Run crash recovery on startup: recover in-flight rows, then clean staging.
+
+    Order matters: recovery MUST run before staging cleanup, because recovery
+    may need staging labels for verification. Cleanup only removes staging
+    files for jobs with no in_flight/needs_review rows.
+
+    Args:
+        db: Database session.
+        job_service: JobService instance for querying jobs and rows.
+    """
+    from src.services.job_service import JobService
+
+    js: JobService = job_service  # type: ignore[assignment]
+
+    # 1. Find interrupted jobs (running or paused)
+    interrupted: list = []
+    for st in (JobStatus.running,):
+        try:
+            interrupted.extend(js.list_jobs(status=st, limit=500))
+        except Exception:
+            pass  # Status may not exist in older schemas
+
+    # 2. Recover in-flight rows for each interrupted job
+    for job in interrupted:
+        rows = js.get_rows(job.id)
+        in_flight = [r for r in rows if r.status == "in_flight"]
+        if not in_flight:
+            continue
+
+        try:
+            engine = BatchEngine(
+                ups_service=None,  # Recovery uses track_package, not create_shipment
+                db_session=db,
+                account_number="",
+            )
+            recovery_result = await engine.recover_in_flight_rows(
+                job.id, rows,
+            )
+            logger.info(
+                "Job %s recovery: %d recovered, %d needs_review, %d unresolved",
+                job.id,
+                recovery_result["recovered"],
+                recovery_result["needs_review"],
+                recovery_result["unresolved"],
+            )
+            if recovery_result.get("details"):
+                logger.warning(
+                    "Rows requiring operator review for job %s: %s",
+                    job.id,
+                    recovery_result["details"],
+                )
+        except Exception as e:
+            logger.error(
+                "Recovery failed for job %s (non-blocking): %s",
+                job.id, e,
+            )
+
+    # 3. Clean up orphaned staging labels (skips jobs with unresolved rows)
+    try:
+        orphans = BatchEngine.cleanup_staging(js)
+        if orphans:
+            logger.info("Cleaned up %d orphaned staging labels", orphans)
+    except Exception as e:
+        logger.error("Staging cleanup failed (non-blocking): %s", e)
 
 
 @app.on_event("startup")
