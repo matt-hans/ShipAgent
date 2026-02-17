@@ -554,6 +554,7 @@ from src.cli.protocol import (
     ProgressEvent,
     RowDetail,
     ShipAgentClient,
+    ShipAgentClientError,
     SubmitResult,
 )
 
@@ -870,6 +871,23 @@ class AgentEvent:
     content: str | None = None
     tool_name: str | None = None
     tool_input: str | None = None
+
+
+class ShipAgentClientError(Exception):
+    """Transport-neutral error raised by ShipAgentClient implementations.
+
+    HttpClient raises this on HTTP errors; InProcessRunner raises this
+    on service-level failures. CLI commands catch this and convert to
+    user-friendly Rich error messages + typer.Exit(1).
+
+    Defined here in protocol.py (Task 3) so it is available to all
+    consumers from the earliest task onward.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None):
+        self.message = message
+        self.status_code = status_code
+        super().__init__(message)
 
 
 class ShipAgentClient(Protocol):
@@ -2618,6 +2636,8 @@ def daemon_start_cmd(
     port: Optional[int] = typer.Option(None, "--port", help="Bind port"),
 ):
     """Start the ShipAgent daemon (FastAPI + Watchdog)."""
+    import os
+
     from src.cli.daemon import start_daemon
 
     cfg = load_config(config_path=_config_path)
@@ -2625,6 +2645,11 @@ def daemon_start_cmd(
     final_port = port or (cfg.daemon.port if cfg else 8000)
     pid_file = cfg.daemon.pid_file if cfg else "~/.shipagent/daemon.pid"
     log_level = cfg.daemon.log_level if cfg else "info"
+
+    # Propagate config path to API startup via env var so that
+    # startup_event() loads the same config as the CLI.
+    if _config_path:
+        os.environ["SHIPAGENT_CONFIG_PATH"] = str(_config_path)
 
     console.print(f"[bold]Starting ShipAgent daemon on {final_host}:{final_port}[/bold]")
     start_daemon(host=final_host, port=final_port, pid_file=pid_file, log_level=log_level)
@@ -2817,9 +2842,12 @@ class TestCreateSession:
 
     @pytest.mark.asyncio
     async def test_creates_session(self):
-        """Creates conversation session via API."""
+        """Creates conversation session via API.
+
+        Real endpoint returns 201 (conversations.py:370).
+        """
         client = _make_client({
-            "/api/v1/conversations": (200, {"session_id": "sess-abc"})
+            "/api/v1/conversations": (201, {"session_id": "sess-abc"})
         })
         session_id = await client.create_session()
         assert session_id == "sess-abc"
@@ -2846,19 +2874,7 @@ Update `src/cli/http_client.py` — replace all `raise NotImplementedError` stub
 - `stream_progress` → `GET /api/v1/jobs/{id}/progress/stream` (SSE parsing)
 - `send_message` → `POST /api/v1/conversations/{id}/messages` + `GET /api/v1/conversations/{id}/stream` (SSE parsing)
 
-Each method parses the JSON response into the appropriate protocol dataclass using the `from_api()` class methods, which tolerate extra fields from the API. Error responses raise a transport-neutral `ShipAgentClientError` (defined in `protocol.py`) — **never** `typer.Exit`. The CLI command handlers in `main.py` catch `ShipAgentClientError` and convert to `typer.Exit(1)` with a Rich error message. This keeps the client reusable for scripts, tests, and non-CLI consumers.
-
-Add to `src/cli/protocol.py`:
-
-```python
-class ShipAgentClientError(Exception):
-    """Transport-neutral error raised by ShipAgentClient implementations."""
-
-    def __init__(self, message: str, status_code: int | None = None):
-        self.message = message
-        self.status_code = status_code
-        super().__init__(message)
-```
+Each method parses the JSON response into the appropriate protocol dataclass using the `from_api()` class methods, which tolerate extra fields from the API. Error responses raise a transport-neutral `ShipAgentClientError` (already defined in `protocol.py` from Task 3) — **never** `typer.Exit`. The CLI command handlers in `main.py` catch `ShipAgentClientError` and convert to `typer.Exit(1)` with a Rich error message. This keeps the client reusable for scripts, tests, and non-CLI consumers.
 
 CLI handler pattern in `src/cli/main.py`:
 
@@ -2994,16 +3010,22 @@ from src.services.batch_executor import execute_batch, get_shipper_for_job
 
 
 class TestGetShipperForJob:
-    """Tests for shipper resolution logic."""
+    """Tests for shipper resolution logic.
 
-    def test_uses_persisted_shipper_json(self):
+    get_shipper_for_job() is async (Shopify fallback requires MCP call),
+    so all tests use async def + await.
+    """
+
+    @pytest.mark.asyncio
+    async def test_uses_persisted_shipper_json(self):
         """Returns persisted shipper when job has shipper_json."""
         job = MagicMock()
         job.shipper_json = '{"name": "Acme Corp", "city": "LA"}'
-        result = get_shipper_for_job(job)
+        result = await get_shipper_for_job(job)
         assert result["name"] == "Acme Corp"
 
-    def test_falls_back_to_env_shipper(self, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_falls_back_to_env_shipper(self, monkeypatch):
         """Falls back to env-based shipper when no shipper_json."""
         job = MagicMock()
         job.shipper_json = None
@@ -3373,6 +3395,14 @@ async def process_message(
     This is the canonical message processing path. Both conversations.py
     and InProcessRunner.send_message() call this function.
 
+    IMPORTANT — History Write Ownership:
+        The CALLER owns history writes (both user and assistant messages).
+        - conversations.py route adds user message before calling this function.
+        - InProcessRunner.send_message() adds user message before calling this.
+        This function does NOT add user messages — only stores assistant
+        response text from agent_message events (see below).
+        This prevents duplicate messages when the route already stores history.
+
     Args:
         session: The agent session.
         content: User message content.
@@ -3398,8 +3428,8 @@ async def process_message(
         # Ensure agent exists (creates + starts if needed)
         await ensure_agent(session, source_info, interactive_shipping)
 
-        # Add user message to session history
-        session.add_message("user", content)
+        # NOTE: Caller adds user message BEFORE calling process_message().
+        # Do NOT add it here — see "History Write Ownership" above.
 
         # Wire emitter bridge for tool events (preview_ready, etc.)
         # The emitter_bridge.callback must be set so orchestrator tools
@@ -3597,11 +3627,20 @@ class InProcessRunner:
     #   tool_call: {"tool_name": "...", "tool_input": {...}}
     async def send_message(self, session_id: str,
                            content: str) -> AsyncIterator[AgentEvent]:
-        """Send message via shared conversation handler."""
+        """Send message via shared conversation handler.
+
+        History write ownership: this method adds the user message
+        before calling process_message(), matching the convention
+        that callers own history writes (see conversation_handler.py).
+        """
         from src.services.conversation_handler import process_message
         session = self._session_manager.get_session(session_id)
         if not session:
             raise ShipAgentClientError(f"Session not found: {session_id}")
+
+        # Caller-owned history write (see process_message docstring)
+        session.add_message("user", content)
+
         async for event in process_message(
             session, content, self._interactive_shipping
         ):
@@ -3846,6 +3885,223 @@ class TestHotFolderService:
         backlog = service.scan_existing_files()
         assert len(backlog) == 1
         assert backlog[0].name == "backlog.csv"
+
+
+class TestProcessWatchedFileEndToEnd:
+    """End-to-end tests for _process_watched_file.
+
+    Tests the critical watchdog flow: file claim → agent processing →
+    auto-confirm evaluation → execution (or rejection) → file finalization.
+    All external dependencies (agent, data gateway, DB) are mocked.
+    """
+
+    @pytest.mark.asyncio
+    async def test_auto_confirm_approved_executes_and_moves_to_processed(
+        self, tmp_path
+    ):
+        """When auto-confirm approves, job executes and file moves to processed/."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        _ensure_subdirs(str(inbox))
+        csv_file = inbox / "orders.csv"
+        csv_file.write_text("name,city\nJohn,LA")
+
+        config = WatchFolderConfig(
+            path=str(inbox),
+            command="Ship all orders",
+            auto_confirm=True,
+            max_cost_cents=100000,
+            max_rows=500,
+        )
+
+        # Mock the entire processing pipeline
+        mock_gw = AsyncMock()
+        mock_gw.import_csv = AsyncMock(return_value={"success": True, "rows": 1})
+        mock_session_mgr = MagicMock()
+        mock_session = MagicMock()
+        mock_session.agent = MagicMock()
+        mock_session.lock = asyncio.Lock()
+        mock_session_mgr.get_or_create_session.return_value = mock_session
+
+        # Simulate agent producing a preview_ready event
+        async def fake_process_message(session, content, interactive, **kw):
+            yield {"event": "preview_ready", "data": {"job_id": "job-1"}}
+            yield {"event": "agent_message", "data": {"text": "Done"}}
+
+        # Mock DB with a pending job that has 1 row
+        mock_job = MagicMock()
+        mock_job.id = "job-1"
+        mock_job.status = "pending"
+        mock_job.shipper_json = None
+        mock_row = MagicMock()
+        mock_row.cost_cents = 1500
+        mock_row.service_code = "03"
+        mock_row.address_validated = True
+        mock_row.address_warning = False
+
+        mock_db = MagicMock()
+        mock_db.query.return_value.get.return_value = mock_job
+        mock_db.query.return_value.filter.return_value.all.return_value = [mock_row]
+
+        with (
+            patch("src.services.gateway_provider.get_data_gateway", return_value=mock_gw),
+            patch("src.services.conversation_handler.process_message", side_effect=fake_process_message),
+            patch("src.services.batch_executor.execute_batch", new_callable=AsyncMock) as mock_exec,
+            patch("src.db.connection.get_session", return_value=mock_db),
+        ):
+            from src.api.main import _process_watched_file
+            await _process_watched_file(str(csv_file), config)
+
+        # File should move to processed/
+        assert not csv_file.exists()
+        assert (inbox / "processed" / "orders.csv").exists()
+        # execute_batch should have been called
+        mock_exec.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_auto_confirm_rejected_leaves_job_pending(self, tmp_path):
+        """When auto-confirm rejects, job stays pending and file moves to processed/."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        _ensure_subdirs(str(inbox))
+        csv_file = inbox / "orders.csv"
+        csv_file.write_text("name,city\nJohn,LA")
+
+        config = WatchFolderConfig(
+            path=str(inbox),
+            command="Ship all orders",
+            auto_confirm=True,
+            max_cost_cents=100,  # Very low threshold — will reject
+            max_rows=500,
+        )
+
+        # Row cost exceeds threshold
+        mock_row = MagicMock()
+        mock_row.cost_cents = 50000  # $500 > $1 limit
+        mock_row.service_code = "03"
+        mock_row.address_validated = True
+        mock_row.address_warning = False
+
+        mock_job = MagicMock()
+        mock_job.id = "job-1"
+        mock_job.status = "pending"
+        mock_job.shipper_json = None
+
+        mock_db = MagicMock()
+        mock_db.query.return_value.get.return_value = mock_job
+        mock_db.query.return_value.filter.return_value.all.return_value = [mock_row]
+
+        mock_gw = AsyncMock()
+        mock_gw.import_csv = AsyncMock(return_value={"success": True, "rows": 1})
+
+        async def fake_process_message(session, content, interactive, **kw):
+            yield {"event": "preview_ready", "data": {"job_id": "job-1"}}
+
+        mock_session = MagicMock()
+        mock_session.agent = MagicMock()
+        mock_session.lock = asyncio.Lock()
+
+        with (
+            patch("src.services.gateway_provider.get_data_gateway", return_value=mock_gw),
+            patch("src.services.conversation_handler.process_message", side_effect=fake_process_message),
+            patch("src.services.batch_executor.execute_batch", new_callable=AsyncMock) as mock_exec,
+            patch("src.db.connection.get_session", return_value=mock_db),
+        ):
+            from src.api.main import _process_watched_file
+            await _process_watched_file(str(csv_file), config)
+
+        # execute_batch should NOT have been called (rejected)
+        mock_exec.assert_not_called()
+        # Job status should still be pending
+        assert mock_job.status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_processing_error_moves_file_to_failed(self, tmp_path):
+        """When processing fails, file moves to failed/ with error sidecar."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        inbox = tmp_path / "inbox"
+        inbox.mkdir()
+        _ensure_subdirs(str(inbox))
+        csv_file = inbox / "orders.csv"
+        csv_file.write_text("bad data")
+
+        config = WatchFolderConfig(
+            path=str(inbox),
+            command="Ship all orders",
+            auto_confirm=False,
+        )
+
+        mock_gw = AsyncMock()
+        mock_gw.import_csv = AsyncMock(side_effect=Exception("Import failed"))
+
+        with patch(
+            "src.services.gateway_provider.get_data_gateway",
+            return_value=mock_gw,
+        ):
+            from src.api.main import _process_watched_file
+            await _process_watched_file(str(csv_file), config)
+
+        # File should move to failed/
+        assert not csv_file.exists()
+        assert (inbox / "failed" / "orders.csv").exists()
+        # Error sidecar should exist
+        assert (inbox / "failed" / "orders.csv.error").exists()
+
+    @pytest.mark.asyncio
+    async def test_global_lock_serializes_concurrent_files(self, tmp_path):
+        """Only one file processes at a time across all watch folders."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        inbox1 = tmp_path / "inbox1"
+        inbox2 = tmp_path / "inbox2"
+        inbox1.mkdir()
+        inbox2.mkdir()
+        _ensure_subdirs(str(inbox1))
+        _ensure_subdirs(str(inbox2))
+
+        (inbox1 / "a.csv").write_text("data")
+        (inbox2 / "b.csv").write_text("data")
+
+        config1 = WatchFolderConfig(path=str(inbox1), command="Ship")
+        config2 = WatchFolderConfig(path=str(inbox2), command="Ship")
+
+        processing_order = []
+
+        async def fake_import(*args, **kwargs):
+            processing_order.append("start")
+            await asyncio.sleep(0.1)
+            processing_order.append("end")
+            return {"success": True, "rows": 1}
+
+        mock_gw = AsyncMock()
+        mock_gw.import_csv = fake_import
+
+        async def fake_process_message(session, content, interactive, **kw):
+            yield {"event": "agent_message", "data": {"text": "Done"}}
+
+        mock_session = MagicMock()
+        mock_session.agent = MagicMock()
+        mock_session.lock = asyncio.Lock()
+
+        with (
+            patch("src.services.gateway_provider.get_data_gateway", return_value=mock_gw),
+            patch("src.services.conversation_handler.process_message", side_effect=fake_process_message),
+        ):
+            from src.api.main import _process_watched_file
+            # Process both files concurrently
+            await asyncio.gather(
+                _process_watched_file(str(inbox1 / "a.csv"), config1),
+                _process_watched_file(str(inbox2 / "b.csv"), config2),
+            )
+
+        # With global lock: start, end, start, end (serialized)
+        # Without lock: start, start, end, end (interleaved)
+        assert processing_order == ["start", "end", "start", "end"]
 ```
 
 **Step 2: Run tests to verify they fail**
@@ -4289,15 +4545,31 @@ async def _process_watched_file(file_path: str, config) -> None:
                             allow_warnings=global_rules.allow_warnings,
                         )
 
-                        # Evaluate auto-confirm rules against the job
+                        # Build preview dict from the pending job's rows.
+                        # evaluate_auto_confirm(rules, preview) expects a dict
+                        # with keys: total_rows, total_cost_cents,
+                        # max_row_cost_cents, service_codes,
+                        # all_addresses_valid, has_address_warnings.
                         from src.db.models import JobRow
                         rows = db.query(JobRow).filter(
                             JobRow.job_id == pending_job_id
                         ).all()
+                        row_costs = [r.cost_cents or 0 for r in rows]
+                        preview_data = {
+                            "total_rows": len(rows),
+                            "total_cost_cents": sum(row_costs),
+                            "max_row_cost_cents": max(row_costs) if row_costs else 0,
+                            "service_codes": list({r.service_code for r in rows if r.service_code}),
+                            "all_addresses_valid": all(
+                                getattr(r, "address_validated", True) for r in rows
+                            ),
+                            "has_address_warnings": any(
+                                getattr(r, "address_warning", False) for r in rows
+                            ),
+                        }
                         confirm_result = evaluate_auto_confirm(
                             rules=folder_rules,
-                            rows=rows,
-                            total_cost_cents=sum(r.cost_cents or 0 for r in rows),
+                            preview=preview_data,
                         )
 
                         if confirm_result.approved:
@@ -4312,13 +4584,20 @@ async def _process_watched_file(file_path: str, config) -> None:
                             job.started_at = datetime.now(UTC).isoformat()
                             db.commit()
 
+                            # Progress callback MUST be async — execute_batch
+                            # calls `await on_progress(...)` internally.
+                            async def _watchdog_progress(
+                                event_type: str, **kwargs: Any
+                            ) -> None:
+                                logger.info(
+                                    "Watchdog progress [%s]: %s %s",
+                                    pending_job_id, event_type, kwargs,
+                                )
+
                             await execute_batch(
                                 job_id=pending_job_id,
                                 db_session=db,
-                                on_progress=lambda et, **kw: logger.info(
-                                    "Watchdog progress [%s]: %s %s",
-                                    pending_job_id, et, kw,
-                                ),
+                                on_progress=_watchdog_progress,
                             )
                         else:
                             logger.warning(
@@ -4365,9 +4644,14 @@ async def startup_event() -> None:
     init_db()
     _startup_time = _time.time()
 
-    # Start watchdog if configured
+    # Start watchdog if configured.
+    # Respect SHIPAGENT_CONFIG_PATH env var set by `shipagent daemon start`
+    # so the daemon loads the same config file the CLI resolved.
+    import os
+
     from src.cli.config import load_config
-    config = load_config()
+    config_path = os.environ.get("SHIPAGENT_CONFIG_PATH")
+    config = load_config(config_path=config_path)
     if config and config.watch_folders:
         from src.cli.watchdog_service import HotFolderService
 
@@ -4586,3 +4870,16 @@ git commit -m "docs: update CLAUDE.md with headless automation CLI architecture"
 | Should watchdog use global or per-folder locks? | **Global lock** | `DataSourceMCPClient` is a process-global singleton. Per-folder locks still allow cross-folder concurrency against the same data source. Global lock is the only correct choice until the gateway supports per-session isolation. |
 | Should auto-confirm drive preview/confirm or bypass it? | **Drives existing preview/confirm** | The agent produces a `preview_ready` event with a `job_id`. Auto-confirm evaluates rules against that pending job and either calls `execute_batch()` (existing confirm path) or leaves the job pending for manual approval. No new execution path — same `execute_batch()` used by HTTP and CLI. |
 | Is Shopify-derived shipper fallback required in headless? | **Yes, preserved** | `get_shipper_for_job()` now implements the full 3-tier priority from `preview.py`: persisted → env-based (local source) → Shopify fallback. Headless flows that originate from Shopify orders need the shop address. |
+
+## Review Findings Resolution — Round 3
+
+| # | Finding | Severity | Resolution |
+|---|---------|----------|------------|
+| 1 | `evaluate_auto_confirm(rules, preview)` called with `rows=`, `total_cost_cents=` kwargs instead of `preview` dict | P0 | Watchdog now builds a `preview_data` dict with all required keys (`total_rows`, `total_cost_cents`, `max_row_cost_cents`, `service_codes`, `all_addresses_valid`, `has_address_warnings`) from job rows, and passes it as `preview=preview_data`. Call signature matches definition. |
+| 2 | Watchdog passes sync lambda to `execute_batch` which `await`s `on_progress(...)` | P0 | Replaced sync lambda with `async def _watchdog_progress(event_type, **kwargs) -> None` coroutine. `await on_progress(...)` now works correctly. |
+| 3 | `ShipAgentClientError` imported at module level in `main.py` (Task 6) but class defined later in Task 8 | P1 | Moved `ShipAgentClientError` class definition to `protocol.py` in Task 3 (where it belongs conceptually). Removed duplicate definition from Task 8. Module-level import in Task 6 now resolves because Task 3 precedes Task 6. Test imports updated. |
+| 4 | `--config` path not propagated to API `startup_event()` — watchdog/auto-confirm behavior diverges from CLI | P1 | `daemon_start_cmd` now sets `SHIPAGENT_CONFIG_PATH` env var before calling `start_daemon()`. `startup_event()` reads `os.environ.get("SHIPAGENT_CONFIG_PATH")` and passes it to `load_config(config_path=...)`. Same config file used throughout. |
+| 5 | Async test for `get_shipper_for_job` calls it without `await` | P1 | Tests updated to `async def` with `@pytest.mark.asyncio` decorator and `await get_shipper_for_job(job)`. Docstring notes function is async due to Shopify fallback. |
+| 6 | History write ownership ambiguous — both route and shared handler add user message | P1 | Removed `session.add_message("user", content)` from `process_message()`. Added "History Write Ownership" docstring section: callers (route + InProcessRunner) own user message storage. `InProcessRunner.send_message()` now explicitly adds user message before calling `process_message()`. |
+| 7 | Watchdog tests only cover helpers/lifecycle — no `_process_watched_file` e2e coverage | P2 | Added `TestProcessWatchedFileEndToEnd` class with 4 tests: (1) auto-confirm approved → executes + moves to processed/, (2) auto-confirm rejected → job stays pending, (3) processing error → moves to failed/ with error sidecar, (4) global lock serializes concurrent files from different folders. All mock external deps (agent, DB, gateway). |
+| 8 | Create conversation test uses `200`, real endpoint returns `201` | P3 | Updated test fixture from `(200, {...})` to `(201, {...})` matching `conversations.py:370`. Added comment noting real status code. |
