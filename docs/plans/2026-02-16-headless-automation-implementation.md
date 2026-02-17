@@ -11,7 +11,7 @@
 **Design Doc:** `docs/plans/2026-02-16-headless-automation-design.md`
 
 **Concurrency Policy — Data Source Gateway:**
-The `DataSourceMCPClient` singleton (`gateway_provider.py:22`) holds a single active data source at a time. When a file is imported via `import_csv()` or `import_excel()`, it replaces the previous data source. This means concurrent file processing would cross-contaminate jobs (file A's rows visible during file B's agent session). The watchdog enforces serialization via **per-directory `asyncio.Lock`** — only one file is processed at a time per watch folder. Cross-folder parallelism is intentionally blocked by this same constraint. If future requirements demand parallel file processing, the gateway must be refactored to support per-session data source isolation.
+The `DataSourceMCPClient` singleton (`gateway_provider.py:22`) holds a single active data source at a time. When a file is imported via `import_csv()` or `import_excel()`, it replaces the previous data source. This means concurrent file processing would cross-contaminate jobs (file A's rows visible during file B's agent session). The watchdog enforces serialization via a **single global `asyncio.Lock`** (`_global_processing_lock` in `watchdog_service.py`). Only one file is processed at a time across ALL watch folders. This is deliberate: per-directory locks would still allow cross-folder concurrency against the single data source. If future requirements demand parallel file processing, the gateway must be refactored to support per-session data source isolation.
 
 ---
 
@@ -578,13 +578,19 @@ class TestDataModels:
             id="job-123",
             name="CA Orders",
             status="running",
+            original_command="Ship all CA orders",
             total_rows=50,
+            processed_rows=32,
             successful_rows=30,
             failed_rows=2,
+            total_cost_cents=15000,
             created_at="2026-02-16T10:00:00Z",
+            is_interactive=False,
         )
         assert summary.id == "job-123"
         assert summary.status == "running"
+        assert summary.processed_rows == 32
+        assert summary.total_cost_cents == 15000
 
     def test_job_detail(self):
         """JobDetail holds full job information."""
@@ -1059,7 +1065,10 @@ class TestFormatJobTable:
         jobs = [
             JobSummary(
                 id="job-123", name="CA Orders", status="completed",
-                total_rows=50, successful_rows=48, failed_rows=2,
+                original_command="Ship all CA orders",
+                total_rows=50, processed_rows=50,
+                successful_rows=48, failed_rows=2,
+                total_cost_cents=24000,
                 created_at="2026-02-16T10:00:00Z",
             ),
         ]
@@ -1073,7 +1082,10 @@ class TestFormatJobTable:
         jobs = [
             JobSummary(
                 id="job-123", name="CA Orders", status="completed",
-                total_rows=50, successful_rows=48, failed_rows=2,
+                original_command="Ship all CA orders",
+                total_rows=50, processed_rows=50,
+                successful_rows=48, failed_rows=2,
+                total_cost_cents=24000,
                 created_at="2026-02-16T10:00:00Z",
             ),
         ]
@@ -1957,6 +1969,7 @@ from rich.console import Console
 from src.cli.config import load_config
 from src.cli.factory import get_client
 from src.cli.output import format_job_detail, format_job_table, format_rows_table
+from src.cli.protocol import ShipAgentClientError
 
 app = typer.Typer(
     name="shipagent",
@@ -2168,8 +2181,7 @@ def job_logs(
     Use -f to follow in real-time (reconnects on daemon restart with backoff).
     Without -f, prints current progress snapshot and exits.
     """
-    from src.cli.protocol import ShipAgentClientError
-
+    # ShipAgentClientError imported at module level (line 4 of main.py imports)
     cfg = load_config(config_path=_config_path)
     client = get_client(standalone=_standalone, config=cfg)
 
@@ -2307,7 +2319,7 @@ Run: `pip install -e '.[dev]' && shipagent --help`
 Expected: Shows help with daemon, job, config subcommands.
 
 Run: `shipagent version`
-Expected: Shows `ShipAgent v3.0.0` and SDK version.
+Expected: Shows `ShipAgent v<version from pyproject.toml>` and SDK version (version read via `importlib.metadata`).
 
 Run: `shipagent config validate`
 Expected: "No config file found" (no shipagent.yaml yet).
@@ -3028,29 +3040,71 @@ logger = logging.getLogger(__name__)
 ProgressCallback = Callable[..., Coroutine[Any, Any, None]]
 
 
-def get_shipper_for_job(job: Job, fallback_shipper: dict | None = None) -> dict:
+async def get_shipper_for_job(job: Job) -> dict:
     """Resolve shipper address for a job.
 
-    Priority: (1) persisted shipper_json on job, (2) provided fallback,
-    (3) env-based shipper via build_shipper().
+    Matches the exact 3-tier priority from preview.py:_execute_batch:
+    (1) Persisted shipper_json on the job (from interactive preview).
+    (2) Env-based shipper when a local data source (CSV/Excel) is active.
+    (3) Shopify shop address when no local data source is active.
+
+    This is async because tier (3) requires querying the Shopify MCP server.
 
     Args:
         job: The Job model instance.
-        fallback_shipper: Optional pre-resolved shipper dict.
 
     Returns:
         Shipper address dict.
     """
+    from src.services.ups_payload_builder import build_shipper
+
+    # Tier 1: persisted shipper from interactive preview
     if job.shipper_json:
         try:
             return json.loads(job.shipper_json)
         except (json.JSONDecodeError, TypeError) as e:
             logger.error("Malformed shipper_json for job %s: %s", job.id, e)
 
-    if fallback_shipper:
-        return fallback_shipper
+    # Tier 2: env-based shipper when local data source is active
+    from src.services.gateway_provider import get_data_gateway
+    gw = await get_data_gateway()
+    source_info = await gw.get_source_info()
+    if source_info is not None:
+        logger.info("Using env shipper for local data source job %s", job.id)
+        return build_shipper()
 
-    from src.services.ups_payload_builder import build_shipper
+    # Tier 3: Shopify shop address when no local source is active
+    try:
+        shopify_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+        shopify_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+        if shopify_token and shopify_domain:
+            from src.services.gateway_provider import get_external_sources_client
+            ext = await get_external_sources_client()
+            connections = await ext.list_connections()
+            shopify_connected = any(
+                (c.get("platform") if isinstance(c, dict) else getattr(c, "platform", None)) == "shopify"
+                and (c.get("status") if isinstance(c, dict) else getattr(c, "status", None)) == "connected"
+                for c in connections.get("connections", [])
+            )
+            if not shopify_connected:
+                result = await ext.connect_platform(
+                    platform="shopify",
+                    credentials={"access_token": shopify_token},
+                    store_url=shopify_domain,
+                )
+                shopify_connected = result.get("success", False)
+            if shopify_connected:
+                shop_result = await ext.get_shop_info("shopify")
+                if shop_result.get("success"):
+                    shop_info = shop_result.get("shop", {})
+                    if shop_info:
+                        logger.info("Using shipper from Shopify store: %s", shop_info.get("name"))
+                        return build_shipper(shop_info)
+    except Exception as e:
+        logger.warning("Failed to get shop info from Shopify: %s", e)
+
+    # Final fallback: env-based shipper
+    logger.info("Using env shipper (no local source, no Shopify) for job %s", job.id)
     return build_shipper()
 
 
@@ -3059,19 +3113,41 @@ async def execute_batch(
     db_session: Any,
     on_progress: ProgressCallback | None = None,
 ) -> dict:
-    """Execute batch shipment processing.
+    """Execute batch shipment processing — full lifecycle.
 
     This is the canonical execution path. Both preview.py routes
     and InProcessRunner.approve_job() call this function.
+
+    **Owns the COMPLETE lifecycle:**
+    - Row iteration + UPS calls via BatchEngine
+    - Per-row progress counter updates on the Job model
+    - Final status transition (completed/failed)
+    - International data aggregation (duties/taxes, country counts)
+    - Completion timestamp
+    - Error handling with fallback status
+
+    Callers do NOT need to perform any post-execution status updates.
+    The only caller responsibility is transport-specific event emission
+    (SSE for HTTP, Rich for CLI, logging for watchdog) via on_progress.
 
     Args:
         job_id: The job UUID to process.
         db_session: SQLAlchemy session.
         on_progress: Optional async callback for progress events.
+            Called with (event_type: str, **kwargs) where event_type is
+            "row_completed" or "row_failed".
 
     Returns:
-        Result dict with successful, failed, total_cost_cents keys.
+        Result dict with successful, failed, total_cost_cents,
+        status, international_row_count, total_duties_taxes_cents keys.
+
+    Raises:
+        ValueError: If job not found.
     """
+    from datetime import UTC, datetime
+
+    from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
+
     job = db_session.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise ValueError(f"Job not found: {job_id}")
@@ -3083,55 +3159,112 @@ async def execute_batch(
         .all()
     )
 
-    shipper = get_shipper_for_job(job)
+    shipper = await get_shipper_for_job(job)
 
     base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
     environment = "test" if "wwwcie" in base_url else "production"
     account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
 
-    async with UPSMCPClient(
-        client_id=os.environ.get("UPS_CLIENT_ID", ""),
-        client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
-        environment=environment,
-        account_number=account_number,
-    ) as ups:
-        engine = BatchEngine(
-            ups_service=ups,
-            db_session=db_session,
+    try:
+        async with UPSMCPClient(
+            client_id=os.environ.get("UPS_CLIENT_ID", ""),
+            client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
+            environment=environment,
             account_number=account_number,
+        ) as ups:
+            engine = BatchEngine(
+                ups_service=ups,
+                db_session=db_session,
+                account_number=account_number,
+            )
+
+            # Wrap progress callback to update job counters
+            successful = 0
+            failed = 0
+            total_cost = 0
+
+            async def _progress_adapter(event_type: str, **kwargs) -> None:
+                nonlocal successful, failed, total_cost
+                if event_type == "row_completed":
+                    successful += 1
+                    total_cost += kwargs.get("cost_cents", 0)
+                elif event_type == "row_failed":
+                    failed += 1
+
+                job.processed_rows = successful + failed
+                job.successful_rows = successful
+                job.failed_rows = failed
+                job.total_cost_cents = total_cost
+                db_session.commit()
+
+                if on_progress:
+                    await on_progress(event_type, **kwargs)
+
+            result = await engine.execute(
+                job_id=job_id,
+                rows=rows,
+                shipper=shipper,
+                on_progress=_progress_adapter,
+                write_back_enabled=getattr(job, "write_back_enabled", True),
+            )
+
+        # --- Final status + aggregation (owned here, not by callers) ---
+        successful = result["successful"]
+        failed = result["failed"]
+        total_cost = result["total_cost_cents"]
+
+        # Aggregate international row-level data onto job
+        intl_rows = (
+            db_session.query(JobRow)
+            .filter(
+                JobRow.job_id == job_id,
+                JobRow.destination_country.isnot(None),
+            )
+            .all()
+        )
+        intl_count = sum(
+            1 for r in intl_rows
+            if r.destination_country not in (DEFAULT_ORIGIN_COUNTRY, "PR")
+        )
+        intl_duties = sum(r.duties_taxes_cents or 0 for r in intl_rows)
+
+        # Final job update — status, counters, timestamps
+        final_status = "completed" if failed == 0 else "failed"
+        job.processed_rows = successful + failed
+        job.successful_rows = successful
+        job.failed_rows = failed
+        job.total_cost_cents = total_cost
+        job.international_row_count = intl_count
+        job.total_duties_taxes_cents = intl_duties if intl_duties > 0 else None
+        job.status = final_status
+        job.completed_at = datetime.now(UTC).isoformat()
+        db_session.commit()
+
+        logger.info(
+            "Batch execution complete for job %s: %d successful, %d failed, "
+            "$%.2f total, %d international rows",
+            job_id, successful, failed, total_cost / 100, intl_count,
         )
 
-        # Wrap progress callback to update job counters
-        successful = 0
-        failed = 0
-        total_cost = 0
+        return {
+            "successful": successful,
+            "failed": failed,
+            "total_cost_cents": total_cost,
+            "status": final_status,
+            "international_row_count": intl_count,
+            "total_duties_taxes_cents": intl_duties,
+        }
 
-        async def _progress_adapter(event_type: str, **kwargs) -> None:
-            nonlocal successful, failed, total_cost
-            if event_type == "row_completed":
-                successful += 1
-                total_cost += kwargs.get("cost_cents", 0)
-            elif event_type == "row_failed":
-                failed += 1
-
-            job.processed_rows = successful + failed
-            job.successful_rows = successful
-            job.failed_rows = failed
-            job.total_cost_cents = total_cost
+    except Exception as e:
+        logger.exception("Batch execution failed for job %s: %s", job_id, e)
+        # Update job to failed status
+        job = db_session.query(Job).filter(Job.id == job_id).first()
+        if job and job.status == "running":
+            job.status = "failed"
+            job.error_code = "E-4001"
+            job.error_message = str(e)
             db_session.commit()
-
-            if on_progress:
-                await on_progress(event_type, **kwargs)
-
-        result = await engine.execute(
-            job_id=job_id,
-            rows=rows,
-            shipper=shipper,
-            on_progress=_progress_adapter,
-            write_back_enabled=getattr(job, "write_back_enabled", True),
-        )
-
-    return result
+        raise
 ```
 
 **Step 3: Write the shared conversation handler**
@@ -3188,21 +3321,18 @@ async def ensure_agent(
         True if a new agent was created, False if reused existing.
     """
     source_hash = compute_source_hash(source_info)
-    needs_rebuild = (
-        session.agent is None
-        or session.agent_source_hash != source_hash
-        or session.interactive_shipping != interactive_shipping
-    )
+    combined_hash = f"{source_hash}|interactive={interactive_shipping}"
 
-    if not needs_rebuild:
+    # Reuse existing agent if config hasn't changed
+    if session.agent is not None and session.agent_source_hash == combined_hash:
         return False
 
-    # Stop existing agent if any
+    # Stop existing agent if config changed mid-conversation
     if session.agent is not None:
         try:
-            await session.agent.shutdown()
-        except Exception:
-            pass
+            await session.agent.stop()
+        except Exception as e:
+            logger.warning("Error stopping old agent: %s", e)
 
     # Import here to avoid circular imports
     from src.orchestrator.agent.client import OrchestrationAgent
@@ -3213,12 +3343,20 @@ async def ensure_agent(
         interactive_shipping=interactive_shipping,
     )
 
-    session.agent = OrchestrationAgent(
+    # OrchestrationAgent constructor accepts: system_prompt, max_turns,
+    # permission_mode, model, interactive_shipping, session_id.
+    # It does NOT accept history — the SDK maintains conversation memory
+    # internally via the ClaudeSDKClient.
+    agent = OrchestrationAgent(
         system_prompt=system_prompt,
-        history=session.history,
         interactive_shipping=interactive_shipping,
+        session_id=session.session_id,
     )
-    session.agent_source_hash = source_hash
+    # Must call start() to spawn MCP servers and connect SDK client
+    await agent.start()
+
+    session.agent = agent
+    session.agent_source_hash = combined_hash
     session.interactive_shipping = interactive_shipping
 
     return True
@@ -3228,6 +3366,7 @@ async def process_message(
     session: AgentSession,
     content: str,
     interactive_shipping: bool = False,
+    emit_callback: Any | None = None,
 ) -> AsyncIterator[dict]:
     """Process a user message through the agent, yielding SSE-compatible events.
 
@@ -3238,9 +3377,15 @@ async def process_message(
         session: The agent session.
         content: User message content.
         interactive_shipping: Whether in interactive mode.
+        emit_callback: Optional callback for emitter bridge tool events.
+            conversations.py passes a queue-pushing lambda.
+            CLI callers can pass None (events arrive in the yielded stream).
 
     Yields:
         Event dicts with 'event' and 'data' keys.
+        Shape: {"event": "<type>", "data": {<payload>}}
+        Event types: agent_message_delta (text streaming), agent_message (complete block),
+        tool_call (tool invocation), preview_ready, batch_started, error, etc.
     """
     async with session.lock:
         # Get current data source
@@ -3250,18 +3395,33 @@ async def process_message(
         except Exception:
             source_info = None
 
-        # Ensure agent exists
+        # Ensure agent exists (creates + starts if needed)
         await ensure_agent(session, source_info, interactive_shipping)
 
-        # Add user message to history
+        # Add user message to session history
         session.add_message("user", content)
 
-        # Process and yield events
-        async for event in session.agent.process_message_stream(content):
-            yield event
+        # Wire emitter bridge for tool events (preview_ready, etc.)
+        # The emitter_bridge.callback must be set so orchestrator tools
+        # can push events (preview_ready, batch_started, etc.) into the
+        # stream alongside agent_message_delta events.
+        if emit_callback:
+            session.agent.emitter_bridge.callback = emit_callback
 
-        # Record assistant response (last text delta)
-        # The agent internally manages conversation history
+        try:
+            # Process message — SDK maintains conversation context internally.
+            # Events have shape: {"event": "agent_message_delta", "data": {"text": "..."}}
+            async for event in session.agent.process_message_stream(content):
+                yield event
+
+                # Store complete text blocks in session history
+                if event.get("event") == "agent_message":
+                    text = event.get("data", {}).get("text", "")
+                    if text:
+                        session.add_message("assistant", text)
+        finally:
+            if emit_callback:
+                session.agent.emitter_bridge.callback = None
 ```
 
 **Step 4: Update preview.py to delegate to shared service**
@@ -3294,7 +3454,28 @@ async def _execute_batch(job_id: str) -> None:
                 )
 
         result = await execute_batch(job_id, db, on_progress=on_progress)
-        # ... existing post-execution logic (international aggregation, completion)
+
+        # execute_batch() now fully owns final status, international
+        # aggregation, and completion timestamp. No post-execution logic
+        # needed here — just emit the SSE completion/failure event.
+        if result["failed"] == 0:
+            await observer.on_batch_completed(
+                job_id, result["successful"] + result["failed"],
+                result["successful"], result["total_cost_cents"],
+                duties_taxes_cents=result.get("total_duties_taxes_cents", 0),
+                international_row_count=result.get("international_row_count", 0),
+            )
+        else:
+            await observer.on_batch_failed(
+                job_id, "E-3005",
+                f"{result['failed']} row(s) failed during execution",
+                result["successful"] + result["failed"],
+                duties_taxes_cents=result.get("total_duties_taxes_cents", 0),
+                international_row_count=result.get("international_row_count", 0),
+            )
+    except Exception as e:
+        logger.exception("Background batch execution failed for job %s: %s", job_id, e)
+        await observer.on_batch_failed(job_id, "E-4001", str(e), 0)
     finally:
         db.close()
 ```
@@ -3386,30 +3567,52 @@ Key implementations:
 - `submit_file` → `get_data_gateway().import_csv()` → create session → `conversation_handler.process_message()`
 
 ```python
-# Key pattern in runner.py — approve_job uses shared service
-async def approve_job(self, job_id: str) -> None:
-    """Approve job via shared batch execution service."""
-    from src.services.batch_executor import execute_batch
-    db = next(get_db())
-    try:
-        await execute_batch(job_id, db, on_progress=self._log_progress)
-    finally:
-        db.close()
+class InProcessRunner:
+    def __init__(self, config: ShipAgentConfig | None = None,
+                 interactive_shipping: bool = False):
+        """Initialize in-process runner.
 
-# Key pattern — send_message uses shared service
-async def send_message(self, session_id: str, content: str) -> AsyncIterator[AgentEvent]:
-    """Send message via shared conversation handler."""
-    from src.services.conversation_handler import process_message
-    session = self._session_manager.get_session(session_id)
-    if not session:
-        raise ShipAgentClientError(f"Session not found: {session_id}")
-    async for event in process_message(session, content, self._interactive):
-        yield AgentEvent(
-            event_type=event.get("event", "unknown"),
-            content=event.get("data", {}).get("content"),
-            tool_name=event.get("data", {}).get("tool_name"),
-            tool_input=event.get("data", {}).get("tool_input"),
-        )
+        Args:
+            config: Application config.
+            interactive_shipping: Whether to enable interactive mode.
+        """
+        self._config = config
+        self._interactive_shipping = interactive_shipping
+        self._session_manager = AgentSessionManager()
+
+    # Key pattern — approve_job uses shared service
+    async def approve_job(self, job_id: str) -> None:
+        """Approve job via shared batch execution service."""
+        from src.services.batch_executor import execute_batch
+        db = next(get_db())
+        try:
+            await execute_batch(job_id, db, on_progress=self._log_progress)
+        finally:
+            db.close()
+
+    # Key pattern — send_message uses shared service
+    # Event data shape matches OrchestrationAgent.process_message_stream():
+    #   agent_message_delta: {"text": "..."}
+    #   agent_message: {"text": "..."}
+    #   tool_call: {"tool_name": "...", "tool_input": {...}}
+    async def send_message(self, session_id: str,
+                           content: str) -> AsyncIterator[AgentEvent]:
+        """Send message via shared conversation handler."""
+        from src.services.conversation_handler import process_message
+        session = self._session_manager.get_session(session_id)
+        if not session:
+            raise ShipAgentClientError(f"Session not found: {session_id}")
+        async for event in process_message(
+            session, content, self._interactive_shipping
+        ):
+            data = event.get("data", {})
+            yield AgentEvent(
+                event_type=event.get("event", "unknown"),
+                # Agent emits "text" not "content" — see client.py:344,379
+                content=data.get("text"),
+                tool_name=data.get("tool_name"),
+                tool_input=data.get("tool_input"),
+            )
 ```
 
 **Step 4: Run tests to verify they pass**
@@ -3828,12 +4031,15 @@ class HotFolderService:
         """
         self._configs = configs
         self._observer: Observer | None = None
-        self._locks: dict[str, asyncio.Lock] = {}
+        # GLOBAL lock — serializes ALL file processing across ALL folders.
+        # Required because DataSourceMCPClient is a process-global singleton
+        # that holds one active data source. Per-directory locks would still
+        # allow cross-folder concurrency against the single data source.
+        self._global_processing_lock = asyncio.Lock()
 
         # Create subdirectories for each watch folder
         for config in configs:
             _ensure_subdirs(config.path)
-            self._locks[config.path] = asyncio.Lock()
 
     def scan_existing_files(self) -> list[Path]:
         """Scan watch folders for files dropped while daemon was down.
@@ -3900,16 +4106,18 @@ class HotFolderService:
         ts = time.strftime("%Y%m%d-%H%M%S")
         return dest_dir / f"{stem}_{ts}{suffix}"
 
-    def get_lock(self, folder_path: str) -> asyncio.Lock:
-        """Get the per-directory lock for serialized processing.
+    @property
+    def processing_lock(self) -> asyncio.Lock:
+        """Global processing lock — serializes ALL file processing.
 
-        Args:
-            folder_path: The watch folder root path.
+        The DataSourceMCPClient singleton holds one active data source.
+        ALL watchdog file processing must be serialized globally, not
+        per-directory. Callers acquire this lock before importing files.
 
         Returns:
-            asyncio.Lock for this directory.
+            The global asyncio.Lock.
         """
-        return self._locks[folder_path]
+        return self._global_processing_lock
 
     def claim_file(self, file_path: str) -> Path | None:
         """Move a file to .processing/ to claim it.
@@ -3987,8 +4195,8 @@ async def _process_watched_file(file_path: str, config) -> None:
     It claims the file, imports it, runs the agent command,
     applies auto-confirm rules, and moves the file to processed/failed.
 
-    Serialized per-directory via the HotFolderService lock to prevent
-    data-source gateway cross-contamination (Finding 7).
+    Serialized globally via HotFolderService.processing_lock to prevent
+    data-source gateway cross-contamination.
 
     Args:
         file_path: Path to the detected file.
@@ -4002,9 +4210,10 @@ async def _process_watched_file(file_path: str, config) -> None:
     if not _watchdog_service:
         return
 
-    # Acquire per-directory lock — serializes file processing
-    # to prevent data-source gateway cross-contamination
-    async with _watchdog_service.get_lock(config.path):
+    # Acquire GLOBAL lock — serializes ALL file processing across ALL
+    # watch folders. Required because DataSourceMCPClient is a process-global
+    # singleton holding one active data source at a time.
+    async with _watchdog_service.processing_lock:
         processing_path = _watchdog_service.claim_file(file_path)
         if not processing_path:
             return
@@ -4026,20 +4235,110 @@ async def _process_watched_file(file_path: str, config) -> None:
             import uuid
 
             mgr = AgentSessionManager()
-            session = mgr.get_or_create_session(str(uuid.uuid4()))
+            session_id = str(uuid.uuid4())
+            session = mgr.get_or_create_session(session_id)
+            pending_job_id: str | None = None
             try:
                 source_info = await gw.get_source_info_typed()
                 await ensure_agent(session, source_info)
                 async for event in process_message(session, config.command):
-                    # Log events for observability
-                    if event.get("event") == "error":
-                        raise RuntimeError(event.get("data", {}).get("message", "Agent error"))
-            finally:
-                await mgr.stop_session_agent(session.session_id)
-                mgr.remove_session(session.session_id)
+                    event_type = event.get("event")
+                    data = event.get("data", {})
 
-            # TODO: Apply auto-confirm rules if config.auto_confirm is True
-            # This integrates with the preview/confirm flow from the agent
+                    if event_type == "error":
+                        raise RuntimeError(data.get("message", "Agent error"))
+
+                    # Capture job ID from preview_ready event — this is
+                    # the job the agent created and wants confirmed
+                    if event_type == "preview_ready":
+                        pending_job_id = data.get("job_id")
+                        logger.info(
+                            "Watchdog: agent produced preview for job %s",
+                            pending_job_id,
+                        )
+            finally:
+                await mgr.stop_session_agent(session_id)
+                mgr.remove_session(session_id)
+
+            # Apply auto-confirm rules if the agent produced a pending job
+            if pending_job_id and config.auto_confirm:
+                from src.db.connection import get_db as get_db_session
+                from src.services.batch_executor import execute_batch
+
+                db = next(get_db_session())
+                try:
+                    from src.db.models import Job
+                    job = db.query(Job).filter(Job.id == pending_job_id).first()
+                    if not job or job.status != "pending":
+                        logger.warning(
+                            "Watchdog: job %s not pending (status=%s), skipping auto-confirm",
+                            pending_job_id,
+                            getattr(job, "status", "NOT FOUND"),
+                        )
+                    else:
+                        # Resolve auto-confirm rules: folder overrides > global
+                        global_config = load_config()
+                        global_rules = global_config.auto_confirm if global_config else AutoConfirmRules()
+                        folder_rules = AutoConfirmRules(
+                            enabled=True,
+                            max_cost_cents=config.max_cost_cents or global_rules.max_cost_cents,
+                            max_rows=config.max_rows or global_rules.max_rows,
+                            max_cost_per_row_cents=global_rules.max_cost_per_row_cents,
+                            allowed_services=global_rules.allowed_services,
+                            require_valid_addresses=global_rules.require_valid_addresses,
+                            allow_warnings=global_rules.allow_warnings,
+                        )
+
+                        # Evaluate auto-confirm rules against the job
+                        from src.db.models import JobRow
+                        rows = db.query(JobRow).filter(
+                            JobRow.job_id == pending_job_id
+                        ).all()
+                        confirm_result = evaluate_auto_confirm(
+                            rules=folder_rules,
+                            rows=rows,
+                            total_cost_cents=sum(r.cost_cents or 0 for r in rows),
+                        )
+
+                        if confirm_result.approved:
+                            logger.info(
+                                "Watchdog: auto-confirm APPROVED job %s (%s)",
+                                pending_job_id,
+                                confirm_result.reason,
+                            )
+                            # Transition job to running and execute
+                            from datetime import UTC, datetime
+                            job.status = "running"
+                            job.started_at = datetime.now(UTC).isoformat()
+                            db.commit()
+
+                            await execute_batch(
+                                job_id=pending_job_id,
+                                db_session=db,
+                                on_progress=lambda et, **kw: logger.info(
+                                    "Watchdog progress [%s]: %s %s",
+                                    pending_job_id, et, kw,
+                                ),
+                            )
+                        else:
+                            logger.warning(
+                                "Watchdog: auto-confirm REJECTED job %s — %s "
+                                "(violations: %s)",
+                                pending_job_id,
+                                confirm_result.reason,
+                                [v.message for v in confirm_result.violations],
+                            )
+                            # Job stays pending — operator can approve via
+                            # `shipagent job approve <id>`
+                finally:
+                    db.close()
+            elif pending_job_id:
+                logger.info(
+                    "Watchdog: auto_confirm disabled for folder %s, "
+                    "job %s stays pending",
+                    config.path,
+                    pending_job_id,
+                )
 
             _watchdog_service.complete_file(processing_path)
             logger.info("Watchdog: completed processing %s", processing_path.name)
@@ -4079,9 +4378,13 @@ async def startup_event() -> None:
         if backlog:
             logger.info("Found %d backlog files to process", len(backlog))
             for backlog_file in backlog:
-                # Find matching config for this file's directory
+                # Find matching config for this file's directory.
+                # Resolve BOTH sides to absolute real paths to handle
+                # relative paths, symlinks, and trailing slashes.
+                resolved_parent = backlog_file.parent.resolve()
                 for wf_config in config.watch_folders:
-                    if str(backlog_file.parent) == str(Path(wf_config.path).resolve()):
+                    resolved_config = Path(wf_config.path).resolve()
+                    if resolved_parent == resolved_config:
                         asyncio.create_task(
                             _process_watched_file(str(backlog_file), wf_config)
                         )
@@ -4245,7 +4548,7 @@ git commit -m "docs: update CLAUDE.md with headless automation CLI architecture"
 **Total new files:** 14 source + 10 test = 24 files
 **Estimated commits:** 15
 
-## Review Findings Resolution
+## Review Findings Resolution — Round 1
 
 | # | Finding | Severity | Resolution |
 |---|---------|----------|------------|
@@ -4260,3 +4563,26 @@ git commit -m "docs: update CLAUDE.md with headless automation CLI architecture"
 | 9 | Missing `job logs -f` | P2 | Added `job_logs` command with `-f` follow mode and reconnect-with-backoff on daemon restart. |
 | 10 | PID targets wrong process | P2 | `is_pid_alive()` now verifies process cmdline contains shipagent/uvicorn. `stop_daemon` waits for exit before removing PID file. |
 | 11 | Version hardcoded | P3 | `version` command reads from `importlib.metadata`. Health endpoint uses same. No hardcoded version strings. |
+
+## Review Findings Resolution — Round 2
+
+| # | Finding | Severity | Resolution |
+|---|---------|----------|------------|
+| 1 | Conversation handler uses wrong agent API (`shutdown()` → `stop()`, invalid `history` param, missing `start()`) | P0 | Fixed: `ensure_agent()` now calls `agent.stop()` (not `shutdown()`), constructs `OrchestrationAgent(system_prompt, interactive_shipping, session_id)` (no `history` param), and calls `await agent.start()` after construction. Combined hash matches real `_ensure_agent()` pattern. |
+| 2 | Watchdog auto-confirm flow is a TODO placeholder | P0 | Replaced TODO with complete auto-confirm flow: captures `preview_ready` event's `job_id`, resolves folder-override rules via `AutoConfirmRules`, calls `evaluate_auto_confirm()`, transitions job to `running`, calls `execute_batch()` if approved, logs violations if rejected. |
+| 3 | Concurrency isolation uses per-directory locks (allows cross-folder concurrency against singleton data source) | P0 | Switched to single `_global_processing_lock` in `HotFolderService`. Only one file processes at a time across ALL watch folders. `get_lock()` replaced with `processing_lock` property. Concurrency policy preamble updated. |
+| 4 | Shared `execute_batch` returns counts only, leaving status/aggregation to caller (drift risk) | P1 | `execute_batch()` now fully owns: final status transition (completed/failed), international data aggregation (duties/taxes, country counts), completion timestamp, error handling with fallback status. Returns enriched dict. Callers only emit transport-specific events (SSE/CLI/log). |
+| 5 | Runner event mapping uses `data["content"]` but real agent emits `data["text"]` | P1 | Fixed to `data.get("text")`. Added `_interactive_shipping` field definition in `InProcessRunner.__init__()`. Added event shape documentation as comments. |
+| 6 | Test fixtures construct `JobSummary` without required fields | P1 | All test fixtures now include `original_command`, `processed_rows`, `total_cost_cents`, `is_interactive` fields matching the updated dataclass. |
+| 7 | `ShipAgentClientError` caught without import in `job_cancel` scope | P1 | Added `from src.cli.protocol import ShipAgentClientError` to module-level imports in `main.py`. Removed redundant local import inside `job_logs`. |
+| 8 | Shipper resolution missing Shopify fallback for non-local-source jobs | P2 | `get_shipper_for_job()` now async with full 3-tier priority matching `preview.py`: (1) persisted shipper_json, (2) env-based when local source active, (3) Shopify shop address fallback. Call site updated to `await`. |
+| 9 | Backlog file-to-config matching fragile with relative paths/symlinks | P2 | Both sides of comparison now use `Path.resolve()` to normalize to absolute real paths before comparison. |
+| 10 | Version verification text still expects `ShipAgent v3.0.0` | P3 | Updated to reference `importlib.metadata` dynamic version. |
+
+## Open Questions Resolution
+
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| Should watchdog use global or per-folder locks? | **Global lock** | `DataSourceMCPClient` is a process-global singleton. Per-folder locks still allow cross-folder concurrency against the same data source. Global lock is the only correct choice until the gateway supports per-session isolation. |
+| Should auto-confirm drive preview/confirm or bypass it? | **Drives existing preview/confirm** | The agent produces a `preview_ready` event with a `job_id`. Auto-confirm evaluates rules against that pending job and either calls `execute_batch()` (existing confirm path) or leaves the job pending for manual approval. No new execution path — same `execute_batch()` used by HTTP and CLI. |
+| Is Shopify-derived shipper fallback required in headless? | **Yes, preserved** | `get_shipper_for_job()` now implements the full 3-tier priority from `preview.py`: persisted → env-based (local source) → Shopify fallback. Headless flows that originate from Shopify orders need the shop address. |
