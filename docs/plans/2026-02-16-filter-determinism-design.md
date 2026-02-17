@@ -71,7 +71,7 @@ DuckDB execution → preview → user confirms cost → execute
 | `resolve_filter_intent` | LLM → Server | Takes `FilterIntent` JSON, returns `ResolvedFilterSpec` with status |
 | `ship_command_pipeline` | LLM → Server | Accepts `filter_spec` (resolved), replaces `where_clause` param |
 | `fetch_rows` | LLM → Server | Accepts `filter_spec` (resolved), replaces `where_clause` param |
-| `validate_filter_syntax` | **Removed** | Temporary stub during migration, then deleted |
+| `validate_filter_syntax` | **Deleted** | Hard cutover — removed entirely, no stub |
 | `validate_filter_spec` | Internal only | Called inside `compile_filter_spec`, not exposed to LLM |
 
 ### Design Decisions (10 refinements incorporated)
@@ -453,7 +453,7 @@ class CompiledFilter:
 | `resolve_filter_intent` | N/A (new) | `intent: FilterIntent` → `ResolvedFilterSpec` |
 | `ship_command_pipeline` | `where_clause: str` | `filter_spec: FilterSpec` + `resolution_token: str` |
 | `fetch_rows` | `where_clause: str` | `filter_spec: FilterSpec` |
-| `validate_filter_syntax` | `where_clause: str` | **Removed** (temporary stub → delete) |
+| `validate_filter_syntax` | `where_clause: str` | **Deleted** (hard cutover — no stub) |
 
 ### New Tool Definition: `resolve_filter_intent`
 
@@ -526,13 +526,15 @@ Deny is final — not overridable by later hooks in chain (at `hooks.py:555`).
 NEVER generate SQL WHERE clauses. NEVER include where_clause, sql, or query parameters in tool calls.
 ```
 
-### Migration Plan
+### Cutover Strategy (Hard Cutover — No Dual Path)
 
-1. Add `filter_spec` parameter alongside existing `where_clause` (both accepted temporarily)
-2. Deploy `deny_raw_sql` hook (blocks new raw SQL usage)
-3. Remove `where_clause` from tool definitions
-4. Delete `validate_filter_syntax` tool
-5. Remove raw SQL interpolation from `query_tools.py:113` and `:119`
+All changes land in a single commit sequence. There is no migration period where both paths coexist.
+
+1. Replace `where_clause` with `filter_spec` in `ship_command_pipeline` and `fetch_rows` (same commit)
+2. Delete `validate_filter_syntax` tool entirely (no stub)
+3. Deploy `deny_raw_sql` hook (blocks any raw SQL keys on filter tools)
+4. Replace raw SQL interpolation at `query_tools.py:113` and `:119` with parameterized execution
+5. End-to-end determinism acceptance tests must pass before merge (release gate)
 
 ### Audit Metadata in Preview Payloads
 
@@ -657,9 +659,9 @@ The new `_build_filter_rules()` function:
 | File | Changes |
 |------|---------|
 | `src/orchestrator/agent/system_prompt.py` | Replace SQL filter rules with FilterIntent schema docs. Add `_build_filter_rules()`. Add sample values to `_build_schema_section()`. |
-| `src/orchestrator/agent/tools/__init__.py` | Add `resolve_filter_intent` definition. Change `ship_command_pipeline` and `fetch_rows` to accept `filter_spec`. Deprecate then remove `validate_filter_syntax`. |
+| `src/orchestrator/agent/tools/__init__.py` | Add `resolve_filter_intent` definition. Replace `where_clause` with `filter_spec` on `ship_command_pipeline` and `fetch_rows`. Delete `validate_filter_syntax`. |
 | `src/orchestrator/agent/tools/pipeline.py` | Accept `filter_spec` + `resolution_token`, call compiler internally, attach audit metadata to preview. |
-| `src/orchestrator/agent/tools/data.py` | Accept `filter_spec` in `fetch_rows`. Add `resolve_filter_intent_tool()` handler. Remove `validate_filter_syntax_tool()` after migration. |
+| `src/orchestrator/agent/tools/data.py` | Replace `where_clause` with `filter_spec` in `fetch_rows`. Add `resolve_filter_intent_tool()` handler. Delete `validate_filter_syntax_tool()`. |
 | `src/orchestrator/agent/hooks.py` | Add `deny_raw_sql_in_filter_tools`, `validate_filter_spec_on_pipeline`, `validate_intent_on_resolve`. |
 | `src/orchestrator/agent/tools/core.py` | Include `filter_explanation`, `compiled_filter`, `filter_audit` in preview payloads. |
 | `src/api/routes/conversations.py` | Accept + pass `column_samples`. Fetch samples in `_process_agent_message()`. Add `confirmed_resolutions` to session. |

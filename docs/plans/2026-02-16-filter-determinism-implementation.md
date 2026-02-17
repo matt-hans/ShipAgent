@@ -10,6 +10,22 @@
 
 **Design Reference:** `docs/plans/2026-02-16-filter-determinism-design.md`
 
+**Cutover Strategy: HARD CUTOVER — NO LEGACY PATH.** There is no dual-path migration. The `where_clause` parameter is removed from all tool definitions and handlers in the same commit that adds `filter_spec`. The `validate_filter_syntax` tool is deleted, not stubbed. Hook enforcement denies raw SQL from day one. All determinism is structural (server-side compiler owns SQL generation) — never prompt-dependent. This is a clean break.
+
+---
+
+## Architectural Invariants
+
+These invariants are **non-negotiable** and must hold at every commit boundary:
+
+1. **No raw SQL in tool contracts.** The `where_clause`, `sql`, `query`, and `raw_sql` keys do not exist in any orchestrator tool input schema. The LLM produces `FilterIntent` JSON — never SQL.
+2. **Server-side compiler is sole SQL authority.** `compile_filter_spec()` is the only function that generates SQL. It produces parameterized queries (`$1, $2, ...`). No f-string interpolation of user-influenced values into SQL anywhere.
+3. **All parameterized execution, always.** DuckDB `db.execute(sql, params)` is the only query path. Even an empty params list `[]` uses the parameterized path. There is no "raw path" fallback.
+4. **Determinism is structurally guaranteed.** Identical `FilterIntent` + identical schema → identical `CompiledFilter` (same `where_sql`, same `params`, same `compiled_hash`). This is enforced by canonicalization (sorted children, sorted IN-lists) and tested by hash-invariant acceptance tests.
+5. **Ambiguity policy is product behavior, not best-effort.** Tier A: auto-expand, zero confirmation. Tier B: expand + mandatory confirmation — no execution without explicit user approval. Tier C: clarification with 2-3 options — no execution, no silent interpretation, no fallback.
+6. **Token secret is required, not optional.** `FILTER_TOKEN_SECRET` env var must be set at startup. No random fallback. Tokens must be verifiable across process restarts within their TTL.
+7. **Interactive mode does not use FilterSpec.** Interactive shipping uses conversational collection, not data source filtering. `resolve_filter_intent` is a batch-mode-only tool. Interactive mode's tool allowlist is unchanged.
+
 ---
 
 ## Phase 1: Foundation — Data Models, Constants, Error Codes
@@ -44,7 +60,7 @@ class TestFilterOperator:
 
         expected = {
             "eq", "neq", "gt", "gte", "lt", "lte",
-            "in_", "not_in", "contains_ci", "starts_with_ci", "ends_with_ci",
+            "in", "not_in", "contains_ci", "starts_with_ci", "ends_with_ci",
             "is_null", "is_not_null", "is_blank", "is_not_blank", "between",
         }
         assert {op.value for op in FilterOperator} == expected
@@ -348,7 +364,7 @@ class FilterOperator(str, Enum):
     gte = "gte"
     lt = "lt"
     lte = "lte"
-    in_ = "in_"
+    in_ = "in"        # Python attribute is `in_` (reserved word); VALUE is "in" (LLM-facing)
     not_in = "not_in"
     contains_ci = "contains_ci"
     starts_with_ci = "starts_with_ci"
@@ -1066,12 +1082,16 @@ Key implementation details:
 - `_resolve_node()` recursive helper dispatches on node type
 - `_resolve_condition()` validates column, operator, arity
 - `_resolve_semantic()` normalizes key, looks up tier, expands or flags
-- `_generate_resolution_token()` uses `hmac.new()` with a server secret (from env `FILTER_TOKEN_SECRET` or random fallback)
-- `_validate_resolution_token()` verifies HMAC + expiry
+- `_generate_resolution_token()` uses `hmac.new()` with a server secret from **required** env var `FILTER_TOKEN_SECRET` — raises `RuntimeError` at module load if not set (no random fallback; tokens must be verifiable across restarts within TTL)
+- `_validate_resolution_token()` verifies HMAC signature + expiry + session + schema signature + dict version + resolved_spec_hash
 - `_match_target_column()` delegates to `filter_constants.match_column_pattern()`
-- `_build_explanation()` generates human-readable text
-- Status precedence: accumulate child statuses, return worst
-- `_canonicalize_group()` sorts children deterministically
+- `_build_explanation()` generates human-readable text from the resolved AST
+- Status precedence: accumulate child statuses, return worst (`UNRESOLVED > NEEDS_CONFIRMATION > RESOLVED`)
+- `_canonicalize_group()` sorts children deterministically by full subtree serialization
+- **Ambiguity policy is mandatory product behavior:**
+  - Tier A: auto-expand silently (state abbreviations, service codes)
+  - Tier B: expand + set `NEEDS_CONFIRMATION` — agent MUST present expansion to user and await explicit approval before any query execution
+  - Tier C: set `UNRESOLVED` with 2-3 suggestions — agent MUST present options and require explicit pick; no silent interpretation, no fallback execution
 
 **Step 4: Run tests to verify they pass**
 
@@ -1186,9 +1206,9 @@ class TestParameterizedExecution:
 Run: `pytest tests/mcp/data_source/test_parameterized_query.py -v`
 Expected: PASS — these test DuckDB's native parameterization, confirming it works before we wire it in.
 
-**Step 3: Modify `query_tools.py` to accept parameterized queries**
+**Step 3: Modify `query_tools.py` to always use parameterized execution**
 
-In `src/mcp/data_source/tools/query_tools.py`, update `get_rows_by_filter()` (lines 66-144) to accept optional `params: list[Any] = None`. When `params` is provided, use parameterized execution:
+In `src/mcp/data_source/tools/query_tools.py`, update `get_rows_by_filter()` (lines 66-144) to **require** a `params` list. The `where_clause` parameter now contains compiler-generated SQL with `$1, $2, ...` placeholders — never raw user input. `params` is always a list (possibly empty for queries like `"1=1"`).
 
 ```python
 async def get_rows_by_filter(
@@ -1200,43 +1220,34 @@ async def get_rows_by_filter(
 ) -> dict:
 ```
 
-Replace the raw f-string interpolation at lines 113-125 with:
+Replace the raw f-string interpolation at lines 113-125. **Always pass params to `db.execute()`** — use `params or []` to handle None safely (avoids the falsey-params bug where an empty list `[]` would skip parameterization):
 
 ```python
-# Lines 113-116: Parameterized count
-if params:
-    total_count = db.execute(
-        f'SELECT COUNT(*) FROM imported_data WHERE {where_clause}',
-        params,
-    ).fetchone()[0]
-else:
-    total_count = db.execute(
-        f'SELECT COUNT(*) FROM imported_data WHERE {where_clause}',
-    ).fetchone()[0]
+# ALWAYS parameterized — no raw interpolation path
+query_params = params if params is not None else []
 
-# Lines 119-125: Parameterized rows query
-if params:
-    results = db.execute(f"""
-        SELECT {SOURCE_ROW_NUM_COLUMN}, {select_clause}
-        FROM imported_data
-        WHERE {where_clause}
-        ORDER BY {SOURCE_ROW_NUM_COLUMN}
-        LIMIT {limit} OFFSET {offset}
-    """, params).fetchall()
-else:
-    results = db.execute(f"""
-        SELECT {SOURCE_ROW_NUM_COLUMN}, {select_clause}
-        FROM imported_data
-        WHERE {where_clause}
-        ORDER BY {SOURCE_ROW_NUM_COLUMN}
-        LIMIT {limit} OFFSET {offset}
-    """).fetchall()
+# Count query
+total_count = db.execute(
+    f'SELECT COUNT(*) FROM imported_data WHERE {where_clause}',
+    query_params,
+).fetchone()[0]
+
+# Rows query
+results = db.execute(f"""
+    SELECT {SOURCE_ROW_NUM_COLUMN}, {select_clause}
+    FROM imported_data
+    WHERE {where_clause}
+    ORDER BY {SOURCE_ROW_NUM_COLUMN}
+    LIMIT {limit} OFFSET {offset}
+""", query_params).fetchall()
 ```
+
+**Note:** The `where_clause` here is the compiler-generated parameterized SQL (e.g., `"state" IN ($1, $2)`), not raw user SQL. The f-string interpolation of `where_clause` is safe because it comes from `compile_filter_spec()` which only produces quoted column names and `$N` placeholders. Actual values are always in `params`.
 
 **Step 4: Run all existing data source tests to verify no regression**
 
 Run: `pytest tests/mcp/data_source/ -v -k "not edi"`
-Expected: All tests PASS (existing tests pass `params=None` and use the old path).
+Expected: All tests PASS. Existing callers that pass `params=None` will use `[]` (empty list), which DuckDB handles identically to no-params execution.
 
 **Step 5: Commit**
 
@@ -1368,7 +1379,7 @@ git commit -m "feat: add resolve_filter_intent tool handler"
 
 ---
 
-### Task 9: Update `ship_command_pipeline` to Accept `filter_spec`
+### Task 9: Update `ship_command_pipeline` — Hard Cutover to `filter_spec`
 
 **Files:**
 - Modify: `src/orchestrator/agent/tools/pipeline.py:173-260`
@@ -1378,20 +1389,25 @@ git commit -m "feat: add resolve_filter_intent tool handler"
 **Step 1: Write the failing test**
 
 Create `tests/orchestrator/agent/test_pipeline_filter_spec.py` testing:
-- Pipeline accepts `filter_spec` and calls compiler
-- Pipeline rejects raw `where_clause` when `filter_spec` is present
-- Compiled SQL is passed to gateway with params
-- Audit metadata is attached to preview result
+- Pipeline accepts `filter_spec` and calls compiler, passes parameterized SQL to gateway
+- Pipeline **rejects** raw `where_clause` — returns error if `where_clause` is passed
+- Pipeline requires `filter_spec` when filtering is needed (no filter = ship all rows)
+- Compiled SQL + params are passed to gateway together
+- Audit metadata (`filter_explanation`, `compiled_filter`, `filter_audit`) is attached to preview result
+- `filter_audit` contains `spec_hash`, `compiled_hash`, `schema_signature`, `dict_version`
 
 **Step 2: Run test to verify it fails**
 
 **Step 3: Update `ship_command_pipeline_tool()`**
 
-In `src/orchestrator/agent/tools/pipeline.py:173-260`, update to:
-1. Accept `filter_spec` dict from args
-2. If `filter_spec` present: parse into `ResolvedFilterSpec`, compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway
-3. If `filter_spec` absent but `where_clause` present: use legacy path (temporary migration)
-4. Attach `filter_explanation`, `compiled_filter`, and `filter_audit` metadata to the result before calling `_emit_preview_ready()`
+In `src/orchestrator/agent/tools/pipeline.py:173-260`, **hard cutover** — no legacy path:
+1. **Remove** `where_clause` from accepted args entirely
+2. Accept `filter_spec` dict from args (optional — omit to ship all rows)
+3. If `filter_spec` present: parse into `ResolvedFilterSpec`, compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway
+4. If `filter_spec` absent: ship all rows (no filter applied — equivalent to `WHERE 1=1`)
+5. If `where_clause` is present in args: return `_err("where_clause is not accepted. Use resolve_filter_intent to create a filter_spec.")`
+6. Attach `filter_explanation`, `compiled_filter`, and `filter_audit` metadata to the result before calling `_emit_preview_ready()`
+7. Compute `compiled_hash` (SHA-256 of `where_sql + sorted(params)`) for audit reproducibility
 
 Update `DataSourceMCPClient.get_rows_by_filter()` to accept and forward `params`:
 
@@ -1415,7 +1431,7 @@ git commit -m "feat: update ship_command_pipeline to accept filter_spec"
 
 ---
 
-### Task 10: Update `fetch_rows` to Accept `filter_spec`
+### Task 10: Update `fetch_rows` — Hard Cutover to `filter_spec`
 
 **Files:**
 - Modify: `src/orchestrator/agent/tools/data.py:72-103`
@@ -1423,13 +1439,16 @@ git commit -m "feat: update ship_command_pipeline to accept filter_spec"
 
 **Step 1: Write the failing test**
 
-Test that `fetch_rows_tool()` accepts `filter_spec`, compiles it, and passes parameterized query to gateway.
+Test that `fetch_rows_tool()`:
+- Accepts `filter_spec`, compiles it, and passes parameterized query to gateway
+- **Rejects** `where_clause` — returns error if passed
+- Works without any filter (fetches all rows)
 
 **Step 2: Run test to verify it fails**
 
 **Step 3: Update `fetch_rows_tool()`**
 
-Same pattern as pipeline: accept `filter_spec`, compile, pass `where_sql` + `params` to gateway. Fall back to `where_clause` for migration.
+Same hard cutover as pipeline: accept `filter_spec` only, no `where_clause`. If `where_clause` is passed, return `_err()`. Compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway.
 
 **Step 4: Run tests**
 
@@ -1451,11 +1470,11 @@ git commit -m "feat: update fetch_rows to accept filter_spec"
 **Step 1: Write the failing test**
 
 Create `tests/orchestrator/agent/test_tool_definitions_filter.py` testing:
-- `resolve_filter_intent` tool exists in batch mode
-- `ship_command_pipeline` input schema has `filter_spec` property
-- `fetch_rows` input schema has `filter_spec` property
-- `validate_filter_syntax` still exists (migration stub)
-- `resolve_filter_intent` is available in interactive mode too
+- `resolve_filter_intent` tool exists in **batch mode only** (not interactive — interactive uses conversational collection, not data source filtering)
+- `ship_command_pipeline` input schema has `filter_spec` property and does NOT have `where_clause`
+- `fetch_rows` input schema has `filter_spec` property and does NOT have `where_clause`
+- `validate_filter_syntax` tool does NOT exist (deleted, not stubbed)
+- In interactive mode, `resolve_filter_intent` is NOT in the tool list (interactive mode allowlist is unchanged)
 
 **Step 2: Run test to verify it fails**
 
@@ -1463,10 +1482,12 @@ Create `tests/orchestrator/agent/test_tool_definitions_filter.py` testing:
 
 In `src/orchestrator/agent/tools/__init__.py`:
 1. Add import: `from src.orchestrator.agent.tools.data import resolve_filter_intent_tool`
-2. Add `resolve_filter_intent` tool definition with `FilterIntent` input schema
-3. Add `filter_spec` and `resolution_token` properties to `ship_command_pipeline` definition
-4. Add `filter_spec` property to `fetch_rows` definition
-5. Keep `validate_filter_syntax` as migration stub (will remove in Phase 7)
+2. **Remove** import of `validate_filter_syntax_tool` from data.py
+3. Add `resolve_filter_intent` tool definition with `FilterIntent` input schema
+4. **Replace** `where_clause` with `filter_spec` and `resolution_token` in `ship_command_pipeline` definition
+5. **Replace** `where_clause` with `filter_spec` in `fetch_rows` definition
+6. **Delete** the `validate_filter_syntax` tool definition entirely (hard cutover — no stub)
+7. `resolve_filter_intent` is batch-mode only — add it to the batch definitions list, NOT the interactive allowlist (the interactive mode tool filter at lines 651-663 remains unchanged)
 
 **Step 4: Run tests**
 
@@ -1493,7 +1514,7 @@ Test that `_emit_preview_ready()` includes `filter_explanation`, `compiled_filte
 
 **Step 3: Update `_emit_preview_ready()`**
 
-Add filter metadata to the SSE payload and slim LLM response. Only include if present in `result`:
+Add ALL three filter metadata fields to both the SSE payload and slim LLM response. Only include if present in `result`:
 
 ```python
 def _emit_preview_ready(
@@ -1516,11 +1537,14 @@ def _emit_preview_ready(
             "the preview and click Confirm or Cancel."
         ),
     }
-    # Include filter metadata if available
-    if "filter_explanation" in result:
-        response["filter_explanation"] = result["filter_explanation"]
+    # Include ALL filter metadata fields for transparency and audit
+    for key in ("filter_explanation", "compiled_filter", "filter_audit"):
+        if key in result:
+            response[key] = result[key]
     return _ok(response)
 ```
+
+The `filter_audit` dict contains: `spec_hash` (SHA-256 of serialized FilterSpec), `compiled_hash` (SHA-256 of `where_sql` + sorted params), `schema_signature`, and `dict_version`. These travel through the SSE payload to the PreviewCard frontend component for developer-accessible audit trail.
 
 **Step 4: Run tests**
 
@@ -1747,15 +1771,16 @@ git commit -m "feat: add filter explanation bar to PreviewCard"
 
 ---
 
-## Phase 7: Migration Cleanup and Integration Testing
+## Phase 7: Integration, Cleanup, and Determinism Acceptance Testing
 
 ---
 
-### Task 18: Update Existing Tests
+### Task 18: Update Existing Tests — Hard Cutover Assertions
 
 **Files:**
 - Modify: `tests/orchestrator/agent/test_tools_v2.py` (if it asserts `where_clause` in tool definitions)
 - Modify: `tests/orchestrator/agent/test_system_prompt.py` (update SQL-assertion tests)
+- Modify: `src/orchestrator/agent/tools/data.py` — delete `validate_filter_syntax_tool()` handler function and its `sqlglot` import
 
 **Step 1: Run the full test suite to find failures**
 
@@ -1764,25 +1789,28 @@ Expected: Identify any tests that fail due to tool definition changes.
 
 **Step 2: Fix failing tests**
 
-Update assertions that check for `where_clause` in tool definitions to expect `filter_spec` alongside it. Update system prompt tests that assert SQL generation instructions.
+- Update assertions that check for `where_clause` in tool definitions to assert it is **absent** and `filter_spec` is **present**
+- Update system prompt tests that assert SQL generation instructions to assert FilterIntent instructions instead
+- Remove any tests for `validate_filter_syntax` (tool is deleted, not stubbed)
+- Ensure no test imports or references `validate_filter_syntax_tool`
 
 **Step 3: Commit**
 
 ```bash
-git add tests/
-git commit -m "test: update existing tests for FilterSpec migration"
+git add tests/ src/orchestrator/agent/tools/data.py
+git commit -m "test: update existing tests for FilterSpec hard cutover"
 ```
 
 ---
 
-### Task 19: Conversation Route — Pass Column Samples
+### Task 19: Conversation Route — Pass Column Samples and Confirmations
 
 **Files:**
 - Modify: `src/api/routes/conversations.py`
 
 **Step 1: Update `_ensure_agent()` and `_process_agent_message()`**
 
-When building/rebuilding the agent, fetch column samples and pass them to `build_system_prompt()` for filter grounding. Also wire `session.confirmed_resolutions` through to the resolver tool.
+When building/rebuilding the agent, fetch column samples and pass them to `build_system_prompt()` for filter grounding. Also wire `session.confirmed_resolutions` through to the resolver tool handler so Tier B confirmations persist within a session.
 
 **Step 2: Commit**
 
@@ -1793,26 +1821,61 @@ git commit -m "feat: pass column samples and confirmed resolutions through conve
 
 ---
 
-### Task 20: Remove `validate_filter_syntax` (Post-Migration)
+### Task 20: End-to-End Determinism Acceptance Tests
 
 **Files:**
-- Modify: `src/orchestrator/agent/tools/__init__.py` — remove tool definition
-- Modify: `src/orchestrator/agent/tools/data.py` — remove handler
-- Delete import from `__init__.py`
+- Create: `tests/integration/test_filter_determinism.py`
 
-This task should be executed AFTER the FilterSpec pipeline is fully operational and tested end-to-end. Do NOT execute this during initial rollout.
+**Step 1: Write the determinism acceptance test**
 
-**Step 1: Remove tool definition from registry**
+This is the **release gate** — the test that proves the system is deterministic. It should:
 
-**Step 2: Remove handler function**
+```python
+"""End-to-end determinism acceptance tests.
 
-**Step 3: Run full test suite**
+These tests prove that identical FilterIntent + identical schema always produce
+identical CompiledFilter output (same where_sql, same params, same compiled_hash,
+same row set, same preview totals). This is the release gate for the FilterSpec
+compiler architecture.
+"""
 
-**Step 4: Commit**
+class TestDeterministicReproducibility:
+    """Same input => same output, every time."""
+
+    def test_identical_intent_produces_identical_compiled_hash(self):
+        """Run the same FilterIntent through resolve + compile 5 times.
+        Assert all 5 produce identical compiled_hash."""
+
+    def test_reordered_conditions_produce_same_sql(self):
+        """FilterGroup with conditions in different order produces identical
+        where_sql and params after canonicalization."""
+
+    def test_reordered_in_list_produces_same_sql(self):
+        """IN-list with values in different order produces identical
+        sorted params and identical where_sql."""
+
+    def test_northeast_business_recipient_always_returns_same_rows(self):
+        """The canonical demo query: 'companies in the Northeast'.
+        Resolve NORTHEAST + BUSINESS_RECIPIENT, compile, execute against
+        test CSV. Assert exactly the expected row set every time."""
+
+    def test_compiled_hash_is_content_addressed(self):
+        """Two different FilterIntents that happen to produce the same SQL
+        (e.g., state='CA' vs state IN ('CA')) produce different spec_hash
+        but could produce same compiled_hash — verify hash is over
+        where_sql + params, not over the intent."""
+```
+
+**Step 2: Run tests**
+
+Run: `pytest tests/integration/test_filter_determinism.py -v`
+Expected: All PASS — this is the proof that the system is deterministic.
+
+**Step 3: Commit**
 
 ```bash
-git add src/orchestrator/agent/tools/__init__.py src/orchestrator/agent/tools/data.py
-git commit -m "refactor: remove deprecated validate_filter_syntax tool"
+git add tests/integration/test_filter_determinism.py
+git commit -m "test: add end-to-end determinism acceptance tests (release gate)"
 ```
 
 ---
@@ -1820,6 +1883,8 @@ git commit -m "refactor: remove deprecated validate_filter_syntax tool"
 ## Verification Checklist
 
 After all tasks are complete, verify:
+
+### Unit & Integration Tests
 
 - [ ] `pytest tests/orchestrator/models/test_filter_spec.py -v` — all pass
 - [ ] `pytest tests/services/test_filter_constants.py -v` — all pass
@@ -1832,10 +1897,32 @@ After all tasks are complete, verify:
 - [ ] `pytest tests/orchestrator/agent/test_system_prompt_filter.py -v` — all pass
 - [ ] `pytest tests/ -k "not stream and not sse and not progress and not edi" --tb=short` — no regressions
 - [ ] `cd frontend && npx tsc --noEmit` — no type errors
+
+### Architectural Invariants (must hold at every commit)
+
+- [ ] No tool definition contains `where_clause`, `sql`, `query`, or `raw_sql` as an input parameter
+- [ ] `validate_filter_syntax` tool does not exist (deleted, not stubbed)
+- [ ] `resolve_filter_intent` is batch-mode only (absent from interactive tool allowlist)
 - [ ] System prompt contains "NEVER generate SQL" in batch mode
-- [ ] System prompt contains FilterIntent schema documentation
+- [ ] System prompt contains FilterIntent schema documentation with column samples
 - [ ] Hook enforcement denies raw `where_clause` on filter tools
-- [ ] PreviewCard shows filter explanation when available
+- [ ] All DuckDB execution paths use `db.execute(sql, params)` — no raw interpolation
+- [ ] `FILTER_TOKEN_SECRET` env var is required at startup (no random fallback)
+
+### Determinism Release Gate (Task 20 — must pass before merge)
+
+- [ ] `pytest tests/integration/test_filter_determinism.py -v` — all pass
+- [ ] Same `FilterIntent` + same schema produces identical `compiled_hash` across 5 runs
+- [ ] Reordered conditions produce identical `where_sql` after canonicalization
+- [ ] Reordered IN-list values produce identical sorted params
+- [ ] Canonical demo query ("companies in the Northeast") returns exact same row set every time
+- [ ] `compiled_hash` is content-addressed over `where_sql + sorted(params)`
+
+### Frontend
+
+- [ ] PreviewCard shows filter explanation bar when `filter_explanation` is present
+- [ ] Compiled filter is collapsible and shows `compiled_filter` SQL
+- [ ] Filter audit metadata (`filter_audit`) is included in preview payload
 
 ---
 
@@ -1874,5 +1961,5 @@ Phase 6 (Frontend)
 Phase 7 (Cleanup)
   Task 18: Update Existing Tests
   Task 19: Conversation Route
-  Task 20: Remove validate_filter_syntax (deferred)
+  Task 20: Determinism Acceptance Tests (release gate)
 ```
