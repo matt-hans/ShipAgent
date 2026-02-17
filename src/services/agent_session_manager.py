@@ -54,6 +54,7 @@ class AgentSession:
         self.agent_source_hash: str | None = None
         self.interactive_shipping: bool = False
         self.terminating: bool = False
+        self.confirmed_resolutions: dict[str, Any] = {}  # token → confirmed ResolvedFilterSpec
         self.lock = asyncio.Lock()
         self.prewarm_task: asyncio.Task[Any] | None = None
 
