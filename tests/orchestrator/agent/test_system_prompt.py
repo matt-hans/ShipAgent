@@ -43,17 +43,16 @@ def test_prompt_contains_service_codes():
 
 
 def test_prompt_contains_filter_rules():
-    """System prompt includes filter generation rules from filter_generator.py."""
+    """System prompt includes FilterIntent schema documentation."""
     prompt = build_system_prompt()
-    # Person name disambiguation
-    assert "customer_name" in prompt
-    assert "ship_to_name" in prompt
-    # Status handling
-    assert "financial_status" in prompt or "fulfillment_status" in prompt
-    # Weight handling
-    assert "total_weight_grams" in prompt or "453" in prompt
-    # Tag handling
-    assert "tags" in prompt.lower()
+    # FilterIntent schema
+    assert "FilterIntent" in prompt
+    assert "resolve_filter_intent" in prompt
+    # NEVER generate SQL instruction
+    assert "NEVER generate" in prompt
+    # Operator reference
+    assert "eq" in prompt
+    assert "contains_ci" in prompt
 
 
 def test_prompt_includes_source_schema():
