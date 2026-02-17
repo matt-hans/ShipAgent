@@ -1,0 +1,268 @@
+"""Tests for ship_command_pipeline hard cutover to filter_spec."""
+
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from src.orchestrator.models.filter_spec import (
+    FilterCondition,
+    FilterGroup,
+    FilterOperator,
+    ResolvedFilterSpec,
+    ResolutionStatus,
+    TypedLiteral,
+)
+
+
+@pytest.fixture(autouse=True)
+def _pipeline_env(monkeypatch):
+    """Set env vars needed by pipeline internals."""
+    monkeypatch.setenv("UPS_ACCOUNT_NUMBER", "TEST123")
+    monkeypatch.setenv("FILTER_TOKEN_SECRET", "test-secret-pipeline")
+
+
+def _mock_gateway(rows=None, source_info=None):
+    """Create a mock data gateway."""
+    if rows is None:
+        rows = [
+            {"_row_number": 1, "state": "CA", "company": "Acme", "weight": 5.0},
+            {"_row_number": 2, "state": "CA", "company": "Beta", "weight": 3.0},
+        ]
+    if source_info is None:
+        source_info = {
+            "source_type": "csv",
+            "row_count": 100,
+            "columns": [
+                {"name": "state", "type": "VARCHAR", "nullable": True},
+                {"name": "company", "type": "VARCHAR", "nullable": True},
+                {"name": "weight", "type": "DOUBLE", "nullable": True},
+            ],
+            "signature": "test_sig",
+        }
+    gw = AsyncMock()
+    gw.get_rows_by_filter.return_value = rows
+    gw.get_source_info.return_value = source_info
+    gw.get_source_signature.return_value = {
+        "source_type": "csv",
+        "source_ref": "test.csv",
+        "schema_fingerprint": "test_sig",
+    }
+    return gw
+
+
+def _make_resolved_spec():
+    """Create a RESOLVED FilterSpec dict for passing to pipeline."""
+    return ResolvedFilterSpec(
+        status=ResolutionStatus.RESOLVED,
+        root=FilterGroup(
+            logic="AND",
+            conditions=[
+                FilterCondition(
+                    column="state",
+                    operator=FilterOperator.eq,
+                    operands=[TypedLiteral(type="string", value="CA")],
+                )
+            ],
+        ),
+        explanation="state equals CA",
+        schema_signature="test_sig",
+        canonical_dict_version="1.0",
+    ).model_dump()
+
+
+def _parse_tool_result(result: dict) -> tuple[bool, dict | str]:
+    """Parse MCP tool response."""
+    is_error = result.get("isError", False)
+    content_list = result.get("content", [])
+    if content_list and content_list[0].get("type") == "text":
+        text = content_list[0]["text"]
+        try:
+            return is_error, json.loads(text)
+        except json.JSONDecodeError:
+            return is_error, text
+    return is_error, {}
+
+
+def _mock_job_service():
+    """Create a mock JobService with create_job, create_rows, get_rows."""
+    svc = MagicMock()
+    mock_job = MagicMock()
+    mock_job.id = "test-job-id"
+    mock_job.status = "pending"
+    svc.create_job.return_value = mock_job
+    svc.create_rows.return_value = [MagicMock(), MagicMock()]
+    svc.get_rows.return_value = [MagicMock(row_number=1), MagicMock(row_number=2)]
+    return svc
+
+
+def _mock_batch_engine():
+    """Create a mock BatchEngine that returns preview results."""
+    engine = MagicMock()
+    engine.preview = AsyncMock(return_value={
+        "job_id": "test-job-id",
+        "total_rows": 2,
+        "total_estimated_cost_cents": 2400,
+        "preview_rows": [
+            {"row_number": 1, "estimated_cost_cents": 1200},
+            {"row_number": 2, "estimated_cost_cents": 1200},
+        ],
+    })
+    return engine
+
+
+def _pipeline_patches(gw, engine=None, job_svc=None):
+    """Return a tuple of context managers for pipeline tests."""
+    if engine is None:
+        engine = _mock_batch_engine()
+    if job_svc is None:
+        job_svc = _mock_job_service()
+
+    mock_db_ctx = MagicMock()
+    mock_db_ctx.__enter__ = MagicMock(return_value=MagicMock())
+    mock_db_ctx.__exit__ = MagicMock(return_value=False)
+
+    return (
+        patch("src.orchestrator.agent.tools.pipeline.get_data_gateway", new_callable=AsyncMock, return_value=gw),
+        patch("src.orchestrator.agent.tools.core.get_data_gateway", new_callable=AsyncMock, return_value=gw),
+        patch("src.orchestrator.agent.tools.pipeline._get_ups_client", new_callable=AsyncMock, return_value=AsyncMock()),
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context", return_value=mock_db_ctx),
+        patch("src.orchestrator.agent.tools.pipeline.JobService", return_value=job_svc),
+        patch("src.services.batch_engine.BatchEngine", return_value=engine),
+        patch("src.services.ups_payload_builder.build_shipper", return_value={}),
+    )
+
+
+class TestPipelineFilterSpec:
+    """Verify ship_command_pipeline hard cutover to filter_spec."""
+
+    @pytest.mark.asyncio
+    async def test_pipeline_accepts_filter_spec(self):
+        """Pipeline with filter_spec compiles and passes parameterized SQL to gateway."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": "ship CA orders ground",
+                "filter_spec": _make_resolved_spec(),
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "preview_ready"
+
+        # Verify gateway was called with parameterized SQL
+        gw.get_rows_by_filter.assert_called_once()
+        call_kwargs = gw.get_rows_by_filter.call_args.kwargs
+        assert "where_sql" in call_kwargs
+        assert "params" in call_kwargs
+        assert call_kwargs["params"] == ["CA"]
+
+    @pytest.mark.asyncio
+    async def test_pipeline_rejects_where_clause(self):
+        """Pipeline rejects raw where_clause with error."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        result = await ship_command_pipeline_tool({
+            "command": "ship CA orders",
+            "where_clause": "state = 'CA'",
+        })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "where_clause" in content.lower()
+        assert "resolve_filter_intent" in content.lower()
+
+    @pytest.mark.asyncio
+    async def test_pipeline_rejects_neither_filter_spec_nor_all_rows(self):
+        """Pipeline rejects calls with neither filter_spec nor all_rows."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        result = await ship_command_pipeline_tool({
+            "command": "ship some orders",
+        })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "filter_spec" in content.lower() or "all_rows" in content.lower()
+
+    @pytest.mark.asyncio
+    async def test_pipeline_rejects_both_filter_spec_and_all_rows(self):
+        """Pipeline rejects calls with both filter_spec and all_rows."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        result = await ship_command_pipeline_tool({
+            "command": "ship all CA orders",
+            "filter_spec": _make_resolved_spec(),
+            "all_rows": True,
+        })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "conflicting" in content.lower()
+
+    @pytest.mark.asyncio
+    async def test_pipeline_all_rows_fetches_everything(self):
+        """Pipeline with all_rows=true fetches all rows via WHERE 1=1."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": "ship everything",
+                "all_rows": True,
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "preview_ready"
+
+        # Gateway should have been called with all-rows filter
+        gw.get_rows_by_filter.assert_called_once()
+        call_kwargs = gw.get_rows_by_filter.call_args.kwargs
+        assert call_kwargs["where_sql"] == "1=1"
+        assert call_kwargs["params"] == []
+
+    @pytest.mark.asyncio
+    async def test_pipeline_attaches_filter_audit(self):
+        """Pipeline attaches filter_audit metadata to preview event."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        engine = _mock_batch_engine()
+
+        captured_preview_event = {}
+
+        def capture_emit(event_type, data):
+            if event_type == "preview_ready":
+                captured_preview_event.update(data)
+
+        bridge = MagicMock()
+        bridge.emit = capture_emit
+
+        p = _pipeline_patches(gw, engine)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool(
+                {
+                    "command": "ship CA orders ground",
+                    "filter_spec": _make_resolved_spec(),
+                },
+                bridge=bridge,
+            )
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+
+        # The preview event should contain filter_audit
+        assert "filter_audit" in captured_preview_event
+        audit = captured_preview_event["filter_audit"]
+        assert "spec_hash" in audit
+        assert "compiled_hash" in audit
+        assert "schema_signature" in audit
+        assert audit["schema_signature"] == "test_sig"
