@@ -23,10 +23,7 @@ from src.api.schemas import (
 )
 from src.db.connection import get_db
 from src.db.models import Job, JobRow, RowStatus
-from src.services.batch_engine import BatchEngine
 from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
-from src.services.ups_mcp_client import UPSMCPClient
-from src.services.ups_payload_builder import build_shipper
 from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
 
 logger = logging.getLogger(__name__)
@@ -213,192 +210,54 @@ def _get_sse_observer():
 
 
 async def _execute_batch(job_id: str) -> None:
-    """Execute batch shipment processing in the background.
-
-    Creates a UPSMCPClient and BatchEngine, then delegates row processing
-    to the engine. Updates job counters and emits SSE progress events
-    via a progress callback adapter.
+    """Execute batch shipment processing — delegates to shared service.
 
     Args:
         job_id: The job UUID to process.
     """
     from src.db.connection import get_db as get_db_session
+    from src.services.batch_executor import execute_batch
 
     observer = _get_sse_observer()
     db = next(get_db_session())
     try:
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if not job:
-            logger.error("Job not found for execution: %s", job_id)
-            return
+        await observer.on_batch_started(job_id, 0)
 
-        # Get all pending rows
-        rows = (
-            db.query(JobRow)
-            .filter(JobRow.job_id == job_id, JobRow.status == RowStatus.pending.value)
-            .order_by(JobRow.row_number)
-            .all()
-        )
-
-        logger.info("Starting batch execution for job %s with %d rows", job_id, len(rows))
-
-        # Emit batch_started SSE event
-        await observer.on_batch_started(job_id, len(rows))
-
-        # Get shipper info once for all shipments.
-        # Priority: (1) persisted shipper from interactive preview,
-        # (2) env-based shipper for local data sources (CSV/Excel),
-        # (3) Shopify shop address when no local source is active.
-        if job.shipper_json:
-            try:
-                shipper = json.loads(job.shipper_json)
-                logger.info("Using persisted shipper for job %s", job_id)
-            except (json.JSONDecodeError, TypeError) as e:
-                logger.error(
-                    "Malformed shipper_json for job %s: %s — falling back to env",
-                    job_id,
-                    e,
+        async def on_progress(event_type: str, **kwargs) -> None:
+            """Adapt progress events to SSE observer calls."""
+            if event_type == "row_completed":
+                await observer.on_row_completed(
+                    job_id, kwargs["row_number"],
+                    kwargs.get("tracking_number", ""),
+                    kwargs.get("cost_cents", 0),
                 )
-                shipper = build_shipper()
-        else:
-            from src.services.gateway_provider import get_data_gateway
+            elif event_type == "row_failed":
+                await observer.on_row_failed(
+                    job_id, kwargs["row_number"],
+                    kwargs.get("error_code", "E-3005"),
+                    kwargs.get("error_message", "Unknown error"),
+                )
 
-            gw = await get_data_gateway()
-            source_info = await gw.get_source_info()
-            if source_info is not None:
-                shipper = build_shipper()
-                logger.info("Using env shipper for local data source job %s", job_id)
-            else:
-                shipper = await _get_shipper_info()
+        result = await execute_batch(job_id, db, on_progress=on_progress)
 
-        # Derive UPS environment from base URL
-        base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
-        environment = "test" if "wwwcie" in base_url else "production"
-        account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
-
-        # Create UPSMCPClient (async MCP over stdio)
-        async with UPSMCPClient(
-            client_id=os.environ.get("UPS_CLIENT_ID", ""),
-            client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
-            environment=environment,
-            account_number=account_number,
-        ) as ups:
-            # Create BatchEngine
-            engine = BatchEngine(
-                ups_service=ups,
-                db_session=db,
-                account_number=account_number,
-            )
-
-            # SSE progress adapter — bridges BatchEngine callbacks to SSE observer
-            successful = 0
-            failed = 0
-            total_cost = 0
-
-            async def on_progress(event_type: str, **kwargs) -> None:
-                """Adapt BatchEngine progress events to SSE observer calls."""
-                nonlocal successful, failed, total_cost
-
-                if event_type == "row_completed":
-                    successful += 1
-                    total_cost += kwargs.get("cost_cents", 0)
-                    # Update job counters incrementally
-                    job.processed_rows = successful + failed
-                    job.successful_rows = successful
-                    job.failed_rows = failed
-                    job.total_cost_cents = total_cost
-                    db.commit()
-                    await observer.on_row_completed(
-                        job_id, kwargs["row_number"],
-                        kwargs.get("tracking_number", ""),
-                        kwargs.get("cost_cents", 0),
-                    )
-                elif event_type == "row_failed":
-                    failed += 1
-                    job.processed_rows = successful + failed
-                    job.successful_rows = successful
-                    job.failed_rows = failed
-                    job.total_cost_cents = total_cost
-                    db.commit()
-                    await observer.on_row_failed(
-                        job_id, kwargs["row_number"],
-                        kwargs.get("error_code", "E-3005"),
-                        kwargs.get("error_message", "Unknown error"),
-                    )
-
-            # Execute batch (write-back controlled by user toggle, stored on job)
-            result = await engine.execute(
-                job_id=job_id,
-                rows=rows,
-                shipper=shipper,
-                on_progress=on_progress,
-                write_back_enabled=getattr(job, "write_back_enabled", True),
-            )
-
-        successful = result["successful"]
-        failed = result["failed"]
-        total_cost = result["total_cost_cents"]
-
-        # Aggregate international row-level data onto job
-        intl_rows = (
-            db.query(JobRow)
-            .filter(
-                JobRow.job_id == job_id,
-                JobRow.destination_country.isnot(None),
-            )
-            .all()
-        )
-        intl_count = len(intl_rows)
-        intl_duties = sum(r.duties_taxes_cents or 0 for r in intl_rows)
-
-        # Update job with final status
-        job.processed_rows = successful + failed
-        job.successful_rows = successful
-        job.failed_rows = failed
-        job.total_cost_cents = total_cost
-        job.international_row_count = intl_count
-        job.total_duties_taxes_cents = intl_duties if intl_duties > 0 else None
-        job.status = "completed" if failed == 0 else "failed"
-        job.completed_at = datetime.now(UTC).isoformat()
-        db.commit()
-
-        # Emit final batch event
-        if failed == 0:
+        if result["failed"] == 0:
             await observer.on_batch_completed(
-                job_id, len(rows), successful, total_cost,
-                duties_taxes_cents=intl_duties,
-                international_row_count=intl_count,
+                job_id, result["successful"] + result["failed"],
+                result["successful"], result["total_cost_cents"],
+                duties_taxes_cents=result.get("total_duties_taxes_cents", 0),
+                international_row_count=result.get("international_row_count", 0),
             )
         else:
             await observer.on_batch_failed(
-                job_id, "E-3005", f"{failed} row(s) failed during execution",
-                successful + failed,
-                duties_taxes_cents=intl_duties,
-                international_row_count=intl_count,
+                job_id, "E-3005",
+                f"{result['failed']} row(s) failed during execution",
+                result["successful"] + result["failed"],
+                duties_taxes_cents=result.get("total_duties_taxes_cents", 0),
+                international_row_count=result.get("international_row_count", 0),
             )
-
-        logger.info(
-            "Batch execution complete for job %s: %d successful, %d failed, $%.2f total",
-            job_id,
-            successful,
-            failed,
-            total_cost / 100,
-        )
-
     except Exception as e:
-        logger.exception("Batch execution failed for job %s: %s", job_id, e)
-        # Update job to failed status
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if job:
-            job.status = "failed"
-            job.error_code = "E-4001"
-            job.error_message = str(e)
-            db.commit()
-
-        # Emit batch_failed SSE event
-        await observer.on_batch_failed(
-            job_id, "E-4001", str(e), 0
-        )
+        logger.exception("Background batch execution failed for job %s: %s", job_id, e)
+        await observer.on_batch_failed(job_id, "E-4001", str(e), 0)
     finally:
         db.close()
 
