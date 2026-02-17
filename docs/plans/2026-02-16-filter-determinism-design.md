@@ -669,7 +669,7 @@ The new `_build_filter_rules()` function:
 | `src/mcp/data_source/tools/query_tools.py` | Accept `where_sql` + `params` for parameterized execution. Remove raw SQL interpolation at lines 113, 119. |
 | `src/mcp/data_source/tools/schema_tools.py` | Add `get_column_samples()` MCP tool. |
 | `src/mcp/data_source/server.py` | Register `get_column_samples`. |
-| `src/services/data_source_mcp_client.py` | Add `get_column_samples()` method. Update `get_rows_by_filter()` for parameterized queries. |
+| `src/services/data_source_mcp_client.py` | Add `get_column_samples()` method. Rename `where_clause` → `where_sql` in `get_rows_by_filter()` and add `params` parameter for parameterized queries. |
 | `src/mcp/data_source/tools/source_info_tools.py` | Filter `_source_row_num` from prompt-facing schema metadata. |
 | `src/errors/registry.py` | Add filter error codes: `E-2030` through `E-2040`. |
 | `frontend/src/types/api.ts` | Add `filter_explanation`, `compiled_filter`, `filter_audit` to `BatchPreview`. |

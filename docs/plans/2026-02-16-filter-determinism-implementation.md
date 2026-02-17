@@ -21,10 +21,11 @@ These invariants are **non-negotiable** and must hold at every commit boundary:
 1. **No raw SQL in tool contracts.** The `where_clause`, `sql`, `query`, and `raw_sql` keys do not exist in any orchestrator tool input schema. The LLM produces `FilterIntent` JSON — never SQL.
 2. **Server-side compiler is sole SQL authority.** `compile_filter_spec()` is the only function that generates SQL. It produces parameterized queries (`$1, $2, ...`). No f-string interpolation of user-influenced values into SQL anywhere.
 3. **All parameterized execution, always.** DuckDB `db.execute(sql, params)` is the only query path. Even an empty params list `[]` uses the parameterized path. There is no "raw path" fallback.
-4. **Determinism is structurally guaranteed.** Identical `FilterIntent` + identical schema → identical `CompiledFilter` (same `where_sql`, same `params`, same `compiled_hash`). This is enforced by canonicalization (sorted children, sorted IN-lists) and tested by hash-invariant acceptance tests.
+4. **Determinism is structurally guaranteed.** Identical `FilterIntent` + identical schema → identical `CompiledFilter` (same `where_sql`, same `params`, same `compiled_hash`). This is enforced by canonicalization (sorted children, sorted IN-lists) and tested by hash-invariant acceptance tests. The `compiled_hash` is computed from the canonical JSON of the exact execution payload (`{"where_sql": ..., "params": [...]}`), preserving parameter order — never from sorted params.
 5. **Ambiguity policy is product behavior, not best-effort.** Tier A: auto-expand, zero confirmation. Tier B: expand + mandatory confirmation — no execution without explicit user approval. Tier C: clarification with 2-3 options — no execution, no silent interpretation, no fallback.
-6. **Token secret is required, not optional.** `FILTER_TOKEN_SECRET` env var must be set at startup. No random fallback. Tokens must be verifiable across process restarts within their TTL.
+6. **Token secret is required, not optional.** `FILTER_TOKEN_SECRET` env var must be set. No random fallback. Tokens must be verifiable across process restarts within their TTL. Validation happens at two levels: (a) FastAPI `lifespan` startup calls `validate_filter_config()` for fail-fast on server boot; (b) `_get_token_secret()` lazy getter raises `FilterConfigError` on first use if still missing. **Not** validated at module import time — import-time errors are too brittle and break unrelated test paths.
 7. **Interactive mode does not use FilterSpec.** Interactive shipping uses conversational collection, not data source filtering. `resolve_filter_intent` is a batch-mode-only tool. Interactive mode's tool allowlist is unchanged.
+8. **No implicit all-rows.** Omitting `filter_spec` does NOT default to all rows. The caller must explicitly pass `all_rows=true` to bypass filtering. Even then, the existing preview confirmation gate applies — there is no path to autonomous execution of all rows. This prevents accidental broadened execution if the resolver fails upstream.
 
 ---
 
@@ -1073,7 +1074,7 @@ def resolve_filter_intent(
     schema_columns: set[str],
     column_types: dict[str, str],
     schema_signature: str,
-    session_confirmations: dict[str, str] | None = None,
+    session_confirmations: dict[str, "ResolvedFilterSpec"] | None = None,
 ) -> ResolvedFilterSpec:
 ```
 
@@ -1082,7 +1083,8 @@ Key implementation details:
 - `_resolve_node()` recursive helper dispatches on node type
 - `_resolve_condition()` validates column, operator, arity
 - `_resolve_semantic()` normalizes key, looks up tier, expands or flags
-- `_generate_resolution_token()` uses `hmac.new()` with a server secret from **required** env var `FILTER_TOKEN_SECRET` — raises `RuntimeError` at module load if not set (no random fallback; tokens must be verifiable across restarts within TTL)
+- `_generate_resolution_token()` uses `hmac.new()` with a server secret from **required** env var `FILTER_TOKEN_SECRET` (no random fallback; tokens must be verifiable across restarts within TTL)
+- The token secret is **not validated at module import time** (import-time RuntimeError would break unrelated tests and paths). Instead, `_get_token_secret()` is a lazy getter that raises `FilterConfigError` on first use if `FILTER_TOKEN_SECRET` is not set. Additionally, the FastAPI `lifespan` startup in `src/api/main.py` calls `validate_filter_config()` which fails fast at server boot — not at import
 - `_validate_resolution_token()` verifies HMAC signature + expiry + session + schema signature + dict version + resolved_spec_hash
 - `_match_target_column()` delegates to `filter_constants.match_column_pattern()`
 - `_build_explanation()` generates human-readable text from the resolved AST
@@ -1208,11 +1210,11 @@ Expected: PASS — these test DuckDB's native parameterization, confirming it wo
 
 **Step 3: Modify `query_tools.py` to always use parameterized execution**
 
-In `src/mcp/data_source/tools/query_tools.py`, update `get_rows_by_filter()` (lines 66-144) to **require** a `params` list. The `where_clause` parameter now contains compiler-generated SQL with `$1, $2, ...` placeholders — never raw user input. `params` is always a list (possibly empty for queries like `"1=1"`).
+In `src/mcp/data_source/tools/query_tools.py`, update `get_rows_by_filter()` (lines 66-144) to **require** a `params` list. **Rename** the first parameter from `where_clause` to `where_sql` to eliminate semantic confusion — this is compiler-generated parameterized SQL, not a raw user-supplied clause. `params` is always a list (possibly empty for queries like `"1=1"`).
 
 ```python
 async def get_rows_by_filter(
-    where_clause: str,
+    where_sql: str,
     ctx: Context,
     limit: int = 100,
     offset: int = 0,
@@ -1228,7 +1230,7 @@ query_params = params if params is not None else []
 
 # Count query
 total_count = db.execute(
-    f'SELECT COUNT(*) FROM imported_data WHERE {where_clause}',
+    f'SELECT COUNT(*) FROM imported_data WHERE {where_sql}',
     query_params,
 ).fetchone()[0]
 
@@ -1236,13 +1238,13 @@ total_count = db.execute(
 results = db.execute(f"""
     SELECT {SOURCE_ROW_NUM_COLUMN}, {select_clause}
     FROM imported_data
-    WHERE {where_clause}
+    WHERE {where_sql}
     ORDER BY {SOURCE_ROW_NUM_COLUMN}
     LIMIT {limit} OFFSET {offset}
 """, query_params).fetchall()
 ```
 
-**Note:** The `where_clause` here is the compiler-generated parameterized SQL (e.g., `"state" IN ($1, $2)`), not raw user SQL. The f-string interpolation of `where_clause` is safe because it comes from `compile_filter_spec()` which only produces quoted column names and `$N` placeholders. Actual values are always in `params`.
+**Note:** The `where_sql` parameter is compiler-generated parameterized SQL (e.g., `"state" IN ($1, $2)`), not raw user SQL. The f-string interpolation of `where_sql` is safe because it comes from `compile_filter_spec()` which only produces quoted column names and `$N` placeholders. Actual values are always in `params`. The parameter is named `where_sql` (not `where_clause`) to make this distinction clear and prevent semantic confusion.
 
 **Step 4: Run all existing data source tests to verify no regression**
 
@@ -1402,19 +1404,20 @@ Create `tests/orchestrator/agent/test_pipeline_filter_spec.py` testing:
 
 In `src/orchestrator/agent/tools/pipeline.py:173-260`, **hard cutover** — no legacy path:
 1. **Remove** `where_clause` from accepted args entirely
-2. Accept `filter_spec` dict from args (optional — omit to ship all rows)
+2. Accept `filter_spec` dict from args (required unless `all_rows` is explicitly `true`)
 3. If `filter_spec` present: parse into `ResolvedFilterSpec`, compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway
-4. If `filter_spec` absent: ship all rows (no filter applied — equivalent to `WHERE 1=1`)
-5. If `where_clause` is present in args: return `_err("where_clause is not accepted. Use resolve_filter_intent to create a filter_spec.")`
+4. If `filter_spec` absent AND `all_rows` is explicitly `true`: ship all rows (`WHERE 1=1`) — but this **still requires the existing preview confirmation gate** (no silent all-rows execution)
+5. If `filter_spec` absent AND `all_rows` is absent or `false`: return `_err("Either filter_spec or all_rows=true is required. Use resolve_filter_intent to create a filter, or set all_rows=true to ship everything.")` — **never silently default to all rows**
+6. If `where_clause` is present in args: return `_err("where_clause is not accepted. Use resolve_filter_intent to create a filter_spec.")`
 6. Attach `filter_explanation`, `compiled_filter`, and `filter_audit` metadata to the result before calling `_emit_preview_ready()`
-7. Compute `compiled_hash` (SHA-256 of `where_sql + sorted(params)`) for audit reproducibility
+7. Compute `compiled_hash` as SHA-256 of canonical JSON execution payload: `json.dumps({"where_sql": where_sql, "params": params}, sort_keys=True, default=str)` — params stay in execution order (sorting would hide meaningful order differences for non-commutative operators like `between`)
 
-Update `DataSourceMCPClient.get_rows_by_filter()` to accept and forward `params`:
+Update `DataSourceMCPClient.get_rows_by_filter()` to rename `where_clause` to `where_sql` and accept `params`:
 
 ```python
 async def get_rows_by_filter(
     self,
-    where_clause: str | None = None,
+    where_sql: str | None = None,
     limit: int = 100,
     params: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
@@ -1448,7 +1451,7 @@ Test that `fetch_rows_tool()`:
 
 **Step 3: Update `fetch_rows_tool()`**
 
-Same hard cutover as pipeline: accept `filter_spec` only, no `where_clause`. If `where_clause` is passed, return `_err()`. Compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway.
+Same hard cutover as pipeline: accept `filter_spec` or `all_rows=true`, no `where_clause`. If `where_clause` is passed, return `_err()`. If neither `filter_spec` nor `all_rows=true`: return `_err()`. Never silently default to fetching all rows. Compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway.
 
 **Step 4: Run tests**
 
@@ -1471,8 +1474,8 @@ git commit -m "feat: update fetch_rows to accept filter_spec"
 
 Create `tests/orchestrator/agent/test_tool_definitions_filter.py` testing:
 - `resolve_filter_intent` tool exists in **batch mode only** (not interactive — interactive uses conversational collection, not data source filtering)
-- `ship_command_pipeline` input schema has `filter_spec` property and does NOT have `where_clause`
-- `fetch_rows` input schema has `filter_spec` property and does NOT have `where_clause`
+- `ship_command_pipeline` input schema has `filter_spec` and `all_rows` properties and does NOT have `where_clause`
+- `fetch_rows` input schema has `filter_spec` and `all_rows` properties and does NOT have `where_clause`
 - `validate_filter_syntax` tool does NOT exist (deleted, not stubbed)
 - In interactive mode, `resolve_filter_intent` is NOT in the tool list (interactive mode allowlist is unchanged)
 
@@ -1484,8 +1487,8 @@ In `src/orchestrator/agent/tools/__init__.py`:
 1. Add import: `from src.orchestrator.agent.tools.data import resolve_filter_intent_tool`
 2. **Remove** import of `validate_filter_syntax_tool` from data.py
 3. Add `resolve_filter_intent` tool definition with `FilterIntent` input schema
-4. **Replace** `where_clause` with `filter_spec` and `resolution_token` in `ship_command_pipeline` definition
-5. **Replace** `where_clause` with `filter_spec` in `fetch_rows` definition
+4. **Replace** `where_clause` with `filter_spec`, `resolution_token`, and `all_rows` (boolean, default false) in `ship_command_pipeline` definition
+5. **Replace** `where_clause` with `filter_spec` and `all_rows` (boolean, default false) in `fetch_rows` definition
 6. **Delete** the `validate_filter_syntax` tool definition entirely (hard cutover — no stub)
 7. `resolve_filter_intent` is batch-mode only — add it to the batch definitions list, NOT the interactive allowlist (the interactive mode tool filter at lines 651-663 remains unchanged)
 
@@ -1544,7 +1547,7 @@ def _emit_preview_ready(
     return _ok(response)
 ```
 
-The `filter_audit` dict contains: `spec_hash` (SHA-256 of serialized FilterSpec), `compiled_hash` (SHA-256 of `where_sql` + sorted params), `schema_signature`, and `dict_version`. These travel through the SSE payload to the PreviewCard frontend component for developer-accessible audit trail.
+The `filter_audit` dict contains: `spec_hash` (SHA-256 of serialized FilterSpec), `compiled_hash` (SHA-256 of canonical JSON execution payload `{"where_sql": ..., "params": [...]}` with params in execution order), `schema_signature`, and `dict_version`. These travel through the SSE payload to the PreviewCard frontend component for developer-accessible audit trail.
 
 **Step 4: Run tests**
 
@@ -1578,6 +1581,9 @@ Create `tests/orchestrator/agent/test_filter_hooks.py` testing:
 5. **`deny_raw_sql_in_filter_tools`** does NOT trigger for unrelated tools (e.g., `create_job`)
 6. **`validate_intent_on_resolve`** denies invalid operator in intent
 7. **`validate_intent_on_resolve`** allows valid intent
+8. **Hook ordering/finality:** a denied payload CANNOT be later "allowed" by any downstream hook — verify deny is final
+9. **Scoped matcher priority:** deny hook fires on scoped tools only; does not interfere with unrelated tool chains
+10. **Deny precedence:** when `deny_raw_sql_in_filter_tools` returns deny, no subsequent PreToolUse hook for that tool call is evaluated
 
 **Step 2: Run test to verify it fails**
 
@@ -1615,7 +1621,7 @@ async def validate_intent_on_resolve(
     """Validate FilterIntent structure before resolution."""
 ```
 
-Update `create_hook_matchers()` to include the new hooks in the PreToolUse chain.
+Update `create_hook_matchers()` to include the new hooks in the PreToolUse chain. **Hook ordering invariant:** `deny_raw_sql_in_filter_tools` must be registered first in the matcher list for filter-scoped tools. The Claude SDK processes PreToolUse hooks in registration order — if a deny hook fires, the SDK halts the chain (deny is final, not overridable). Verify this with the test cases above (items 8-10).
 
 **Step 4: Run tests**
 
@@ -1639,7 +1645,7 @@ git commit -m "feat: add deny_raw_sql and filter validation hooks"
 **Step 1: Add `confirmed_resolutions` field to `AgentSession.__init__`**
 
 ```python
-self.confirmed_resolutions: dict[str, Any] = {}  # token → confirmed ResolvedFilterSpec
+self.confirmed_resolutions: dict[str, "ResolvedFilterSpec"] = {}  # token → confirmed ResolvedFilterSpec
 ```
 
 This is a single-line addition. No separate test file needed — the field is tested implicitly by the resolver integration tests.
@@ -1863,7 +1869,12 @@ class TestDeterministicReproducibility:
         """Two different FilterIntents that happen to produce the same SQL
         (e.g., state='CA' vs state IN ('CA')) produce different spec_hash
         but could produce same compiled_hash — verify hash is over
-        where_sql + params, not over the intent."""
+        canonical JSON of {"where_sql": ..., "params": [...]}, not the intent."""
+
+    def test_compiled_hash_preserves_param_order(self):
+        """BETWEEN with (low, high) vs (high, low) produces different hashes.
+        Params are hashed in execution order, not sorted — sorting would
+        hide meaningful order differences for non-commutative operators."""
 ```
 
 **Step 2: Run tests**
@@ -1906,6 +1917,8 @@ After all tasks are complete, verify:
 - [ ] System prompt contains "NEVER generate SQL" in batch mode
 - [ ] System prompt contains FilterIntent schema documentation with column samples
 - [ ] Hook enforcement denies raw `where_clause` on filter tools
+- [ ] Hook deny is final — denied payloads cannot be "allowed" by any downstream hook
+- [ ] Hook scoped matchers do not interfere with unrelated tool chains
 - [ ] All DuckDB execution paths use `db.execute(sql, params)` — no raw interpolation
 - [ ] `FILTER_TOKEN_SECRET` env var is required at startup (no random fallback)
 
@@ -1916,7 +1929,7 @@ After all tasks are complete, verify:
 - [ ] Reordered conditions produce identical `where_sql` after canonicalization
 - [ ] Reordered IN-list values produce identical sorted params
 - [ ] Canonical demo query ("companies in the Northeast") returns exact same row set every time
-- [ ] `compiled_hash` is content-addressed over `where_sql + sorted(params)`
+- [ ] `compiled_hash` is content-addressed over canonical JSON `{"where_sql": ..., "params": [...]}` (order-preserving, not sorted)
 
 ### Frontend
 
