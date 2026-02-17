@@ -1,7 +1,7 @@
 """Data source and platform tool handlers.
 
 Handles source metadata, schema inspection, row fetching, filter
-validation, platform status, and Shopify connection.
+resolution, platform status, and Shopify connection.
 """
 
 import logging
@@ -17,6 +17,10 @@ from src.orchestrator.agent.tools.core import (
     _store_fetched_rows,
     get_data_gateway,
     get_external_sources_client,
+)
+from src.orchestrator.models.filter_spec import (
+    FilterCompilationError,
+    FilterIntent,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,6 +122,68 @@ async def validate_filter_syntax_tool(args: dict[str, Any]) -> dict[str, Any]:
         return _ok({"valid": True, "where_clause": where_clause})
     except (sqlglot.errors.ParseError, sqlglot.errors.TokenError) as e:
         return _ok({"valid": False, "error": str(e), "where_clause": where_clause})
+
+
+async def resolve_filter_intent_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
+    """Resolve a structured FilterIntent into a concrete FilterSpec.
+
+    Takes a FilterIntent JSON from the LLM, resolves semantic references
+    (regions, business predicates) against the active data source schema,
+    and returns a ResolvedFilterSpec with status and explanation.
+
+    Args:
+        args: Dict with 'intent' (FilterIntent JSON dict).
+        bridge: Optional event emitter bridge.
+
+    Returns:
+        Tool response with resolved spec, status, explanation, and optional
+        confirmation/clarification data.
+    """
+    from src.orchestrator.filter_resolver import resolve_filter_intent
+
+    intent_raw = args.get("intent")
+    if not intent_raw:
+        return _err("intent is required.")
+
+    # Get schema from gateway
+    gw = await get_data_gateway()
+    source_info = await gw.get_source_info()
+    if source_info is None:
+        return _err(
+            "No data source connected. Connect a CSV, Excel, or database "
+            "source before resolving filters."
+        )
+
+    # Extract schema columns and types
+    columns = source_info.get("columns", [])
+    schema_columns = {col["name"] for col in columns}
+    column_types = {col["name"]: col["type"] for col in columns}
+    schema_signature = source_info.get("signature", "")
+
+    # Parse intent
+    try:
+        intent = FilterIntent(**intent_raw)
+    except Exception as e:
+        return _err(f"Invalid FilterIntent structure: {e}")
+
+    # Resolve
+    try:
+        resolved = resolve_filter_intent(
+            intent=intent,
+            schema_columns=schema_columns,
+            column_types=column_types,
+            schema_signature=schema_signature,
+        )
+    except FilterCompilationError as e:
+        return _err(f"[{e.code.value}] {e.message}")
+    except Exception as e:
+        logger.error("resolve_filter_intent_tool failed: %s", e)
+        return _err(f"Filter resolution failed: {e}")
+
+    return _ok(resolved.model_dump())
 
 
 async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
