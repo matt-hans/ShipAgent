@@ -396,27 +396,6 @@ class JobService:
     # Row State Operations
     # =========================================================================
 
-    def start_row(self, row_id: str) -> JobRow:
-        """Mark a row as processing.
-
-        Args:
-            row_id: The UUID of the row to update.
-
-        Returns:
-            The updated JobRow object.
-
-        Raises:
-            ValueError: If row not found.
-        """
-        row = self.get_row(row_id)
-        if row is None:
-            raise ValueError(f"Row not found: {row_id}")
-
-        row.status = RowStatus.processing.value
-        self.db.commit()
-        self.db.refresh(row)
-        return row
-
     def complete_row(
         self,
         row_id: str,
