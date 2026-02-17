@@ -86,3 +86,5 @@ repomix-output.xml
 
 *.db-shm
 *.db-wal
+
+node_modules/

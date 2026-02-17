@@ -502,4 +502,163 @@ For production demos, use production UPS credentials to avoid CIE limitations.
 
 ---
 
+## Video Recording Sequence
+
+**Sequential prompts for demo video recording** — run these in order for a comprehensive 8-phase demo. Each phase includes setup instructions and expected outcomes.
+
+### Phase 1: CSV Batch Shipping (2 Batches)
+
+**Setup:** Click CSV button in sidebar, upload `test_data/sample_shipments.csv`
+
+**Batch 1 — Multi-State with Weight/Value Filters:**
+
+> Ship all orders going to California, Texas, or Florida where the weight is over 10 pounds and the declared value is above $200 — use Ground for everything
+
+**Expected:** 5 shipments → Click Confirm → View Labels → Close dialog
+
+---
+
+**Batch 2 — Keyword Search:**
+
+> Ship all orders where the description mentions food or drink related items like spice, coffee, cheese, BBQ, or crawfish — use Ground for everything
+
+**Expected:** 7 shipments → Click Confirm → View Labels → Close dialog
+
+---
+
+### Phase 2: Excel "Wow Moment"
+
+**Setup:** Click Disconnect on CSV source, then click Excel button, upload `test_data/sample_shipments.xlsx`
+
+**Different Query Strategy:**
+
+> Ship all orders where the weight is over 20 pounds and the declared value is under $500 — use Ground for everything
+
+**Expected:** Shows same data, different query approach — source agnostic! → Click Confirm
+
+---
+
+### Phase 3: Shopify Live Data
+
+**Setup:** Page will reload. Toggle "Single Shipment" OFF if needed. Shopify should auto-connect.
+
+**Complex Multi-State with Price Range:**
+
+> Ship all unfulfilled orders from CA, TX, or NY where the total is $50-$500 using UPS Ground
+
+**Expected:** ~30 shipments, ~$668 total → Click Confirm (wait ~5 min for execution)
+
+---
+
+### Phase 4: Interactive Mode — Domestic
+
+**Setup:** Page will reload. Toggle "Single Shipment" ON.
+
+**Start Shipment:**
+
+> Use my default shipper info. Ship a package to Maria Garcia at 123 Ocean Drive, Miami, FL 33139
+
+**Agent will ask for details. Provide:**
+
+> phone 3055551234, description electronics, weight 5 lbs, dimensions 10x8x6
+
+**Expected:** ~$36 UPS Ground → Click Confirm → View Label
+
+---
+
+### Phase 5: International Shipping (4 Destinations)
+
+**Setup:** Ensure "Single Shipment" toggle is ON
+
+**13a — Canada:**
+
+> Ship a 2kg package to Sophie Martin at 555 Rue Sherbrooke Ouest, Montreal QC H3A 1E8, Canada. Contains software media (HS code 852349) worth $95. Phone: +1 514 555 1234
+
+**Expected:** UPS Standard, ~$37 → Click Confirm
+
+---
+
+**13b — Mexico:**
+
+> Ship a 4kg package to Carlos Rodriguez at 200 Paseo de la Reforma, Mexico City 06600, Mexico. Contains automotive parts (HS code 870899) worth $320. Phone: +52 55 1234 5678
+
+**Expected:** UPS Standard, ~$105 → Click Confirm
+
+---
+
+**13c — United Kingdom (Auto-Upgrade Demo):**
+
+> Ship a 2kg package to Elizabeth Taylor at 100 Piccadilly, London W1J 7NT, United Kingdom. Contains books (HS code 490199) worth $75. Phone: +44 20 7493 0800
+
+**Expected:** UPS Worldwide Saver (auto-upgrade!), ~$308 → Click Confirm
+
+---
+
+**13d — Germany:**
+
+> Ship a 3kg package to Franz Becker at 50 Unter den Linden, Berlin 10117, Germany. Contains mechanical parts (HS code 848790) worth $150. Phone: +49 30 1234 5678
+
+**Expected:** UPS Worldwide Saver, ~$342 → Click Confirm
+
+---
+
+### Phase 6: Post-Shipment Features
+
+**Setup:** Toggle "Single Shipment" OFF
+
+**Tracking:**
+
+> Track package 1Z999AA10123456784
+
+**Expected:** TrackingCard with status and activity timeline
+
+---
+
+**Location Finder:**
+
+> Find UPS drop-off locations near Beverly Hills, CA
+
+**Expected:** LocationCard with nearby UPS Access Points (may be limited in CIE)
+
+---
+
+**Pickup Scheduling:**
+
+> Schedule a pickup for tomorrow at 3520 Hyland Ave, Costa Mesa, CA 92626
+
+**Agent will ask for details. Provide:**
+
+> ready by 9 AM, closing at 5 PM, contact Matt Hans at 9495551234
+
+**Expected:** ~$16 on-account fee → Click Confirm → PRN displayed
+
+---
+
+**Paperless Upload:**
+
+> I need to upload a commercial invoice to UPS Paperless
+
+**Expected:** PaperlessUploadCard renders → Select PDF from `test_data/test_commercial_invoice.pdf` → Select "Commercial Invoice" → Click Upload → Document ID displayed
+
+---
+
+### Phase 6b: Standalone Pickup
+
+> I need to schedule a UPS pickup for my location at 123 Business Ave, Suite 100, Chicago, IL 60601 for next Monday, ready by 10 AM, closing at 6 PM. My contact info is John Smith at 555-123-4567.
+
+**Expected:** Pickup preview ~$16-20 → Click Confirm → PRN displayed
+
+---
+
+### Recording Checklist
+
+- [ ] Backend running: `./scripts/start-backend.sh`
+- [ ] Frontend running: `cd frontend && npm run dev`
+- [ ] `INTERNATIONAL_ENABLED_LANES=*` in `.env`
+- [ ] Shopify env vars configured
+- [ ] Test data files present in `test_data/`
+- [ ] Screen recording software ready (or use `./node_modules/.bin/tsx scripts/record-demo.ts`)
+
+---
+
 *Last verified: 2026-02-16*
