@@ -656,21 +656,18 @@ async def validate_filter_spec_on_pipeline(
     if not isinstance(filter_spec, dict):
         return {}
 
-    # Only enforce token for NEEDS_CONFIRMATION specs
-    status = filter_spec.get("status", "")
-    if status != "NEEDS_CONFIRMATION":
-        return {}
-
-    # --- Tier B enforcement ---
+    # Enforce resolution_token for ALL filter_specs regardless of status.
+    # A client could flip status from NEEDS_CONFIRMATION to RESOLVED to bypass
+    # validation. The token is the server-side proof of provenance.
     token = filter_spec.get("resolution_token")
     if not token:
         _log_to_stderr(
             f"[FILTER ENFORCEMENT] DENYING missing resolution_token "
-            f"for NEEDS_CONFIRMATION spec | ID: {tool_use_id}"
+            f"for filter_spec | ID: {tool_use_id}"
         )
         return _deny_with_reason(
-            "A NEEDS_CONFIRMATION filter_spec requires a resolution_token. "
-            "The user must confirm the filter expansion first."
+            "All filter_spec submissions require a resolution_token proving "
+            "server-side provenance. Use resolve_filter_intent first."
         )
 
     # Decode and validate token
