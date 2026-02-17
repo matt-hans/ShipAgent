@@ -1992,13 +1992,14 @@ A crash, network split, or process kill between lines 408 and 458 creates a ship
 1. **UPS `TransactionReference` is advisory-only** — UPS does not deduplicate based on it, and `track_package` only accepts UPS tracking numbers (not custom references). We use `TransactionReference.CustomerContext` strictly for post-hoc audit correlation in UPS Quantum View, not for programmatic dedup. Our dedup layer is local DB state only.
 2. **In-flight state is local-first.** Before calling UPS, write `in_flight` status + idempotency key to DB and commit. After UPS responds, update to `completed`/`failed`/`needs_review` and commit. The in-flight window is bounded to the UPS API call duration only.
 3. **Recovery uses a three-tier strategy based on available state.** When a row is `in_flight` on resume:
-   - **Tier 1 (has `ups_transaction_id`):** The UPS tracking number was stored before crash. Call `track_package(tracking_number=ups_transaction_id)` to verify the shipment still exists at UPS. If valid → mark `completed`. If invalid → mark `needs_review`.
+   - **Tier 1 (has `ups_tracking_number`):** The per-package tracking number was stored before crash. Call `track_package(tracking_number=ups_tracking_number)` to verify the shipment still exists at UPS. If UPS confirms AND required artifacts are present (label file exists on disk, cost_cents is populated), transition to `completed`. If UPS confirms but artifacts are missing (label lost, cost unknown), transition to `needs_review` with reason "Shipment verified at UPS but missing artifacts: {list}" — the operator can use `recover_label` to restore.
    - **Tier 2 (no tracking info):** The UPS call may or may not have succeeded — we cannot determine this programmatically because UPS does not support query-by-custom-reference. Mark as `needs_review` (never auto-retry — prevents duplicate shipments). Emit a recovery report with the idempotency key so the operator can check UPS Quantum View or shipping history.
-   - **Tier 3 (UPS lookup fails):** Network or API error during recovery. Leave as `in_flight` for manual resolution on next attempt.
+   - **Tier 3 (UPS lookup fails):** Network or API error during recovery. Increment `recovery_attempt_count`. After `MAX_RECOVERY_ATTEMPTS` (default 3) failed lookups, escalate to `needs_review` with reason "UPS lookup failed {N} times — escalated for manual resolution". Below the limit, leave as `in_flight` for the next startup pass.
 4. **Labels are promoted BEFORE the DB commit, not after.** Write to `labels/staging/{job_id}/{row}.png`, then `os.rename()` to final path, then commit the DB row with the final path. This ensures: if crash occurs after promote but before commit, the label exists at its final location and the in-flight row will be recovered normally. Startup cleanup only removes staging files for job directories that have no `in_flight` or `needs_review` rows.
 5. **Write-back uses a durable queue table.** Each successful row writes a `WriteBackTask` row to a new `write_back_queue` table. A background worker processes the queue. Partial failures are retried independently per row.
 6. **`needs_review` is a terminal status for safety.** Rows marked `needs_review` during crash recovery are never auto-retried. They require operator action (void duplicate at UPS or manually complete). The `get_job_status` tool reports `needs_review` count.
-7. **Intentional tradeoff: deterministic and safe, not fully autonomous.** For crash states where the system cannot programmatically determine whether UPS created a shipment (Tier 2: no `ups_transaction_id`), we intentionally choose manual operator review over autonomous retry. This is a deliberate design decision — the cost of a duplicate shipment (financial charge + operational overhead to void) exceeds the cost of a brief manual lookup in UPS Quantum View. Full autonomy for this edge case would require UPS to support query-by-customer-reference, which they do not. If UPS adds this capability in the future, Tier 2 can be upgraded to programmatic verification without changing the state machine.
+7. **Intentional tradeoff: deterministic and safe, not fully autonomous.** For crash states where the system cannot programmatically determine whether UPS created a shipment (Tier 2: no `ups_tracking_number`), we intentionally choose manual operator review over autonomous retry. This is a deliberate design decision — the cost of a duplicate shipment (financial charge + operational overhead to void) exceeds the cost of a brief manual lookup in UPS Quantum View. Full autonomy for this edge case would require UPS to support query-by-customer-reference, which they do not. If UPS adds this capability in the future, Tier 2 can be upgraded to programmatic verification without changing the state machine.
+8. **Two-column UPS identity model.** UPS returns two distinct identifiers per shipment: `ShipmentIdentificationNumber` (shipment-level, used for void operations and audit) and `TrackingNumber` (per-package, used for tracking and recovery verification). These are stored in separate columns: `ups_shipment_id` and `ups_tracking_number`. Recovery (Tier 1) uses `ups_tracking_number` for `track_package` verification. Void operations use `ups_shipment_id`. Never conflate the two — for multi-package shipments they are different values.
 
 ---
 
@@ -2034,7 +2035,9 @@ class TestRowStatusInFlight:
 
 Test that `JobRow` has new columns:
 - `idempotency_key: str | None` — `"{job_id}:{row_number}:{row_checksum}"` set before UPS call
-- `ups_transaction_id: str | None` — UPS-returned `ShipmentIdentificationNumber` for audit
+- `ups_shipment_id: str | None` — UPS-returned `ShipmentIdentificationNumber` (for void operations and audit)
+- `ups_tracking_number: str | None` — UPS-returned per-package `TrackingNumber` (for `track_package` verification in recovery)
+- `recovery_attempt_count: int` — number of failed Tier-3 recovery attempts (default 0, used for escalation)
 
 **Step 2: Run test to verify it fails**
 
@@ -2062,8 +2065,14 @@ Add columns to `JobRow`:
 idempotency_key: Mapped[Optional[str]] = mapped_column(
     String(200), nullable=True, index=True
 )
-ups_transaction_id: Mapped[Optional[str]] = mapped_column(
+ups_shipment_id: Mapped[Optional[str]] = mapped_column(
     String(50), nullable=True
+)
+ups_tracking_number: Mapped[Optional[str]] = mapped_column(
+    String(50), nullable=True
+)
+recovery_attempt_count: Mapped[int] = mapped_column(
+    Integer, nullable=False, default=0, server_default="0"
 )
 ```
 
@@ -2082,23 +2091,33 @@ In `src/db/connection.py`, add to the `row_migrations` list (after the existing 
         "ALTER TABLE job_rows ADD COLUMN idempotency_key VARCHAR(200)",
     ),
     (
-        "ups_transaction_id",
-        "ALTER TABLE job_rows ADD COLUMN ups_transaction_id VARCHAR(50)",
+        "ups_shipment_id",
+        "ALTER TABLE job_rows ADD COLUMN ups_shipment_id VARCHAR(50)",
+    ),
+    (
+        "ups_tracking_number",
+        "ALTER TABLE job_rows ADD COLUMN ups_tracking_number VARCHAR(50)",
+    ),
+    (
+        "recovery_attempt_count",
+        "ALTER TABLE job_rows ADD COLUMN recovery_attempt_count INTEGER NOT NULL DEFAULT 0",
     ),
 ```
 
-After the row migrations loop, add idempotency index creation:
+After the row migrations loop, add index creation **unconditionally** (not guarded by column existence — handles partial-upgrade states where column exists but index is missing):
 
 ```python
-# Add idempotency index if column was just created
-if "idempotency_key" not in existing_rows:
+# Always attempt index creation — CREATE INDEX IF NOT EXISTS is
+# safe to run repeatedly and handles partial-upgrade states where
+# a column was added but the index creation failed or was skipped.
+for idx_stmt in [
+    "CREATE INDEX IF NOT EXISTS idx_job_rows_idempotency ON job_rows (idempotency_key)",
+    "CREATE INDEX IF NOT EXISTS idx_job_rows_tracking ON job_rows (ups_tracking_number)",
+]:
     try:
-        conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS idx_job_rows_idempotency "
-            "ON job_rows (idempotency_key)"
-        ))
+        conn.execute(text(idx_stmt))
     except OperationalError:
-        pass  # Index already exists
+        pass  # Column doesn't exist yet (pre-Phase-8 DB)
 ```
 
 **Step 5: Run tests**
@@ -2250,7 +2269,7 @@ class TestInFlightStateMachine:
 
     def test_row_transitions_to_completed_after_ups_success(self):
         """After successful create_shipment, row status is 'completed'
-        with tracking_number, cost_cents, and ups_transaction_id."""
+        with tracking_number, cost_cents, ups_shipment_id, and ups_tracking_number."""
 
     def test_row_transitions_to_failed_on_ups_error(self):
         """On UPS error, row status is 'failed' with error_code and error_message.
@@ -2289,9 +2308,10 @@ class TestInFlightStateMachine:
         row is marked needs_review — NOT failed. Marking failed would
         allow retry to create a duplicate shipment."""
 
-    def test_post_ups_failure_preserves_partial_tracking_info(self):
-        """If post-UPS exception occurs, any available ups_transaction_id
-        from the UPS response is still written to the row for recovery."""
+    def test_post_ups_failure_preserves_partial_ups_identifiers(self):
+        """If post-UPS exception occurs, any available ups_shipment_id
+        and ups_tracking_number from the UPS response are still written
+        to the row for recovery."""
 
     def test_ups_call_succeeded_always_bound(self):
         """ups_call_succeeded is initialized at top of _process_row,
@@ -2434,9 +2454,13 @@ async def _process_row(row: Any) -> None:
                     row.tracking_number = tracking_number
                     row.label_path = final_label_path  # FINAL path, not staging
                     row.cost_cents = cost_cents
-                    row.ups_transaction_id = result.get(
+                    # Store BOTH UPS identifiers (Design Decision #8):
+                    # - ups_shipment_id: for void operations and audit
+                    # - ups_tracking_number: for track_package recovery verification
+                    row.ups_shipment_id = result.get(
                         "shipmentIdentificationNumber"
                     )
+                    row.ups_tracking_number = tracking_number  # from PackageResults
                     row.status = "completed"
                     row.processed_at = datetime.now(UTC).isoformat()
                     self._db.commit()
@@ -2454,11 +2478,14 @@ async def _process_row(row: Any) -> None:
                 async with db_lock:
                     row.status = "needs_review"
                     row.error_message = f"Post-UPS error: {post_e}"
-                    # Preserve any partial tracking info for recovery
+                    # Preserve any partial UPS identifiers for recovery
                     if hasattr(result, "get"):
-                        row.ups_transaction_id = result.get(
+                        row.ups_shipment_id = result.get(
                             "shipmentIdentificationNumber"
                         )
+                        # tracking_number may have been extracted before failure
+                        if tracking_number:
+                            row.ups_tracking_number = tracking_number
                     self._db.commit()
 
         except (UPSServiceError, MCPConnectionError, ValueError, Exception) as e:
@@ -2617,17 +2644,28 @@ class TestInFlightRecovery:
     def test_recovery_detects_in_flight_rows(self):
         """check_interrupted_jobs includes in_flight row count."""
 
-    def test_recovery_tier1_verifies_via_ups_transaction_id(self):
-        """Row has ups_transaction_id (tracking number stored before crash).
-        Recovery calls track_package(tracking_number=ups_transaction_id).
-        If UPS confirms → row marked completed."""
+    def test_recovery_tier1_completes_with_verified_artifacts(self):
+        """Row has ups_tracking_number, label_path exists on disk,
+        cost_cents is populated. Recovery calls
+        track_package(tracking_number=ups_tracking_number).
+        UPS confirms → row marked completed."""
+
+    def test_recovery_tier1_needs_review_if_ups_confirms_but_label_missing(self):
+        """Row has ups_tracking_number, UPS confirms shipment exists,
+        but label_path file is missing from disk. Row marked needs_review
+        with reason 'Shipment verified at UPS but missing artifacts: label_path'.
+        Operator can use recover_label to restore."""
+
+    def test_recovery_tier1_needs_review_if_ups_confirms_but_cost_missing(self):
+        """Row has ups_tracking_number, UPS confirms, but cost_cents is None.
+        Row marked needs_review with explicit missing-artifacts reason."""
 
     def test_recovery_tier1_marks_needs_review_if_ups_rejects(self):
-        """Row has ups_transaction_id but track_package says invalid.
+        """Row has ups_tracking_number but track_package says invalid.
         Row marked needs_review (do not auto-retry — may be a partial state)."""
 
     def test_recovery_tier2_marks_needs_review_when_no_tracking_info(self):
-        """Row is in_flight but has no ups_transaction_id.
+        """Row is in_flight but has no ups_tracking_number.
         Cannot determine if UPS created shipment (UPS doesn't support
         query-by-custom-reference). Row marked needs_review.
         Recovery report includes idempotency_key for operator lookup."""
@@ -2636,9 +2674,15 @@ class TestInFlightRecovery:
         """Rows without tracking info are NEVER reset to pending.
         Auto-retry would risk duplicate shipments."""
 
-    def test_recovery_tier3_leaves_in_flight_on_lookup_failure(self):
-        """If track_package fails (network error), the row stays in_flight
-        for resolution on next startup attempt."""
+    def test_recovery_tier3_leaves_in_flight_below_max_attempts(self):
+        """If track_package fails (network error) and recovery_attempt_count
+        < MAX_RECOVERY_ATTEMPTS, increment counter and leave in_flight
+        for resolution on next startup pass."""
+
+    def test_recovery_tier3_escalates_after_max_attempts(self):
+        """If track_package fails and recovery_attempt_count reaches
+        MAX_RECOVERY_ATTEMPTS (default 3), escalate to needs_review
+        with reason 'UPS lookup failed N times — escalated'."""
 
     def test_recovery_report_includes_all_unresolved_rows(self):
         """Recovery returns structured report with recovered, needs_review,
@@ -2652,6 +2696,8 @@ class TestInFlightRecovery:
 Add `recover_in_flight_rows()` to `batch_engine.py`:
 
 ```python
+MAX_RECOVERY_ATTEMPTS = int(os.environ.get("MAX_RECOVERY_ATTEMPTS", "3"))
+
 async def recover_in_flight_rows(
     self, job_id: str, rows: list[Any],
 ) -> dict[str, Any]:
@@ -2659,9 +2705,12 @@ async def recover_in_flight_rows(
 
     Three-tier recovery based on available state:
 
-    Tier 1 (has ups_transaction_id): UPS tracking number was stored before
-        crash. Call track_package(tracking_number=...) to verify. If valid →
-        complete. If invalid → needs_review.
+    Tier 1 (has ups_tracking_number): Per-package tracking number was stored
+        before crash. Call track_package(tracking_number=...) to verify. If
+        UPS confirms AND required artifacts are present (label file on disk,
+        cost_cents populated) → complete. If UPS confirms but artifacts are
+        missing → needs_review with explicit reason. If UPS rejects →
+        needs_review.
 
     Tier 2 (no tracking info): Cannot determine if UPS created shipment.
         UPS does not support query-by-custom-reference, so we CANNOT
@@ -2670,13 +2719,15 @@ async def recover_in_flight_rows(
         for operator to check UPS Quantum View.
 
     Tier 3 (UPS lookup fails): Network/API error during verification.
-        Leave in_flight for next startup attempt.
+        Increment recovery_attempt_count. After MAX_RECOVERY_ATTEMPTS
+        (default 3) failed lookups, escalate to needs_review. Below
+        limit, leave in_flight for next startup pass.
 
     Returns:
         {
-            "recovered": N,       # Tier 1 success — verified at UPS
-            "needs_review": N,    # Tier 1 invalid + all Tier 2 rows
-            "unresolved": N,      # Tier 3 — left in_flight
+            "recovered": N,       # Tier 1 success — verified + artifacts OK
+            "needs_review": N,    # Tier 1 invalid/missing artifacts + Tier 2 + Tier 3 escalated
+            "unresolved": N,      # Tier 3 below max — still in_flight
             "details": [          # Per-row report for operator
                 {"row_number": N, "action": "...", "idempotency_key": "..."},
             ],
@@ -2687,11 +2738,11 @@ async def recover_in_flight_rows(
     details: list[dict[str, Any]] = []
 
     for row in in_flight:
-        if row.ups_transaction_id:
-            # Tier 1: We have a UPS tracking number — verify it
+        if row.ups_tracking_number:
+            # Tier 1: We have a per-package tracking number — verify it
             try:
                 raw = await self._ups.track_package(
-                    tracking_number=row.ups_transaction_id,
+                    tracking_number=row.ups_tracking_number,
                 )
                 # Parse nested UPS tracking response (matches tracking.py:50-62):
                 #   raw["trackResponse"]["shipment"][0]["package"][0]["trackingNumber"]
@@ -2704,47 +2755,99 @@ async def recover_in_flight_rows(
                 returned_number = package.get("trackingNumber", "")
 
                 if returned_number:
-                    # Shipment confirmed at UPS — complete locally
-                    row.tracking_number = returned_number
-                    row.status = "completed"
-                    row.processed_at = datetime.now(UTC).isoformat()
-                    self._db.commit()
-                    recovered += 1
-                    details.append({
-                        "row_number": row.row_number,
-                        "action": "recovered",
-                        "tracking_number": row.ups_transaction_id,
-                    })
+                    # UPS confirms shipment exists — now verify local artifacts
+                    missing_artifacts: list[str] = []
+                    if not row.label_path or not os.path.exists(row.label_path):
+                        missing_artifacts.append("label_path")
+                    if row.cost_cents is None:
+                        missing_artifacts.append("cost_cents")
+
+                    if missing_artifacts:
+                        # Shipment verified but cannot fully complete locally.
+                        # Operator can use recover_label / manual cost entry.
+                        row.status = "needs_review"
+                        row.error_message = (
+                            f"Shipment verified at UPS ({returned_number}) but "
+                            f"missing artifacts: {', '.join(missing_artifacts)}"
+                        )
+                        self._db.commit()
+                        needs_review += 1
+                        details.append({
+                            "row_number": row.row_number,
+                            "action": "needs_review",
+                            "reason": f"UPS confirmed but missing: {', '.join(missing_artifacts)}",
+                            "tracking_number": returned_number,
+                            "idempotency_key": row.idempotency_key,
+                        })
+                    else:
+                        # All artifacts present — safe to complete
+                        row.tracking_number = returned_number
+                        row.status = "completed"
+                        row.processed_at = datetime.now(UTC).isoformat()
+                        self._db.commit()
+                        recovered += 1
+                        details.append({
+                            "row_number": row.row_number,
+                            "action": "recovered",
+                            "tracking_number": returned_number,
+                        })
                 else:
                     # UPS doesn't recognize this tracking number
                     row.status = "needs_review"
+                    row.error_message = (
+                        f"UPS returned empty tracking for stored number "
+                        f"'{row.ups_tracking_number}'"
+                    )
                     self._db.commit()
                     needs_review += 1
                     details.append({
                         "row_number": row.row_number,
                         "action": "needs_review",
-                        "reason": "UPS returned invalid for stored transaction ID",
-                        "ups_transaction_id": row.ups_transaction_id,
+                        "reason": "UPS returned invalid for stored tracking number",
+                        "ups_tracking_number": row.ups_tracking_number,
                         "idempotency_key": row.idempotency_key,
                     })
             except Exception as e:
-                # Tier 3: Lookup failed — leave in_flight
-                unresolved += 1
-                details.append({
-                    "row_number": row.row_number,
-                    "action": "unresolved",
-                    "reason": f"UPS lookup failed: {e}",
-                    "idempotency_key": row.idempotency_key,
-                })
+                # Tier 3: Lookup failed — escalation policy
+                row.recovery_attempt_count += 1
+                if row.recovery_attempt_count >= MAX_RECOVERY_ATTEMPTS:
+                    # Escalate: too many failed lookups → needs_review
+                    row.status = "needs_review"
+                    row.error_message = (
+                        f"UPS lookup failed {row.recovery_attempt_count} times "
+                        f"(last error: {e}) — escalated for manual resolution"
+                    )
+                    self._db.commit()
+                    needs_review += 1
+                    details.append({
+                        "row_number": row.row_number,
+                        "action": "needs_review",
+                        "reason": f"Escalated after {row.recovery_attempt_count} failed lookups",
+                        "idempotency_key": row.idempotency_key,
+                    })
+                else:
+                    # Below limit — leave in_flight, try again next startup
+                    self._db.commit()  # persist incremented counter
+                    unresolved += 1
+                    details.append({
+                        "row_number": row.row_number,
+                        "action": "unresolved",
+                        "reason": f"UPS lookup failed ({row.recovery_attempt_count}/{MAX_RECOVERY_ATTEMPTS}): {e}",
+                        "idempotency_key": row.idempotency_key,
+                    })
         else:
             # Tier 2: No tracking info — ambiguous, mark for operator
             row.status = "needs_review"
+            row.error_message = (
+                "No UPS tracking number stored — cannot verify programmatically. "
+                "Check UPS Quantum View using idempotency key."
+            )
             self._db.commit()
             needs_review += 1
             details.append({
                 "row_number": row.row_number,
                 "action": "needs_review",
-                "reason": "No UPS transaction ID — cannot verify programmatically",
+                "reason": "No ups_tracking_number — cannot verify programmatically",
                 "idempotency_key": row.idempotency_key,
             })
 
@@ -3006,20 +3109,30 @@ and replay-safe. This is the release gate for Phase 8.
 """
 
 class TestCrashSafeExecution:
-    def test_crash_after_ups_call_with_stored_tracking_recovers(self):
-        """Simulate: create_shipment succeeds → ups_transaction_id stored →
-        crash before final commit. On recovery: Tier 1 — track_package
-        verifies tracking number → row marked completed. No duplicate."""
+    def test_crash_after_ups_call_with_tracking_and_artifacts_recovers(self):
+        """Simulate: create_shipment succeeds → ups_tracking_number stored →
+        label promoted → crash before final commit. On recovery: Tier 1 —
+        track_package verifies, label exists, cost populated → completed."""
+
+    def test_crash_after_ups_call_with_tracking_but_no_label_needs_review(self):
+        """Simulate: create_shipment succeeds → ups_tracking_number stored →
+        crash before label promote. On recovery: Tier 1 — UPS confirms but
+        label_path missing → needs_review with artifact reason."""
 
     def test_crash_after_ups_call_without_tracking_marks_needs_review(self):
         """Simulate: create_shipment succeeds → crash before tracking stored.
-        On recovery: Tier 2 — no ups_transaction_id → row marked needs_review.
+        On recovery: Tier 2 — no ups_tracking_number → needs_review.
         Never auto-retried (prevents duplicate shipments)."""
 
     def test_crash_before_ups_call_marks_needs_review(self):
         """Simulate: row set to in_flight → crash before create_shipment.
         On recovery: Tier 2 — no tracking info → needs_review (cannot
         determine if UPS received the request or not)."""
+
+    def test_tier3_escalation_after_max_attempts(self):
+        """Simulate: track_package fails on 3 consecutive startups.
+        recovery_attempt_count increments each time. After MAX_RECOVERY_ATTEMPTS,
+        row escalated to needs_review instead of staying in_flight forever."""
 
     def test_needs_review_rows_never_auto_retried(self):
         """needs_review is terminal. Resume execution skips these rows.
@@ -3239,8 +3352,12 @@ After all tasks are complete, verify:
 - [ ] UPS hard rejection (`UPSServiceError`) → row `failed` (safe to retry)
 - [ ] UPS unreachable (`MCPConnectionError`) → row `failed` (safe to retry)
 - [ ] Ambiguous transport error (timeout, cancel, closed) → row `needs_review` (never `failed`)
-- [ ] In-flight rows with `ups_transaction_id` recovered via `track_package(tracking_number=...)` (Tier 1)
+- [ ] In-flight rows with `ups_tracking_number` recovered via `track_package(tracking_number=...)` (Tier 1)
+- [ ] Tier-1 recovery only transitions to `completed` when BOTH artifacts present (label file on disk + cost_cents populated)
+- [ ] Tier-1 recovery transitions to `needs_review` with explicit reason when UPS confirms but artifacts are missing
 - [ ] In-flight rows without tracking info marked `needs_review` — never auto-retried (Tier 2)
+- [ ] Tier-3 rows escalate to `needs_review` after `MAX_RECOVERY_ATTEMPTS` (default 3) failed UPS lookups
+- [ ] Tier-3 `recovery_attempt_count` increments on each failed lookup and persists across restarts
 - [ ] Recovery report includes per-row details with idempotency keys for operator action
 - [ ] `needs_review` status is terminal — requires explicit operator resolution
 - [ ] Idempotency key included in UPS payload as `TransactionReference.CustomerContext` (audit only, not dedup)
@@ -3249,7 +3366,10 @@ After all tasks are complete, verify:
 - [ ] `pytest tests/services/test_job_summary_needs_review.py -v` — all pass
 - [ ] Write-back survives partial completion via durable queue
 - [ ] Orphaned staging labels cleaned on startup (only for jobs without in_flight/needs_review rows)
-- [ ] Schema migration adds `idempotency_key` and `ups_transaction_id` columns to existing `job_rows` tables (note: `needs_review` and `in_flight` are new values on the existing `status` column, not new columns)
+- [ ] `ups_shipment_id` and `ups_tracking_number` are stored as separate columns (Design Decision #8 — never conflated)
+- [ ] Recovery Tier-1 uses `ups_tracking_number` (not `ups_shipment_id`) for `track_package` verification
+- [ ] Schema migration adds `idempotency_key`, `ups_shipment_id`, `ups_tracking_number`, and `recovery_attempt_count` columns to existing `job_rows` tables (note: `needs_review` and `in_flight` are new values on the existing `status` column, not new columns)
+- [ ] Schema migration runs `CREATE INDEX IF NOT EXISTS` unconditionally (not guarded by column-existence check)
 - [ ] Schema migration creates `write_back_queue` table on existing DBs
 
 ---
