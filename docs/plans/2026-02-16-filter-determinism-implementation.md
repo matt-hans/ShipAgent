@@ -4,6 +4,8 @@
 
 **Goal:** Replace non-deterministic free-form SQL filter generation with a structured FilterSpec JSON compiler that guarantees identical queries for identical inputs.
 
+**Scope Boundary:** This plan covers **deterministic row selection** (Phases 1-7) — the path from user intent to parameterized SQL query to previewed row set. It does NOT cover **deterministic execution** of side-effecting operations (UPS shipment creation, label persistence, write-back, tracking, pickup scheduling). Those require idempotency keys, exactly-once semantics, and replay-safe retry logic — documented as Phase 8 (future work, separate design cycle).
+
 **Architecture:** The LLM outputs typed `FilterIntent` JSON (never SQL). A pure-function semantic resolver expands canonical terms (regions, business predicates) into concrete conditions. A pure-function SQL compiler produces parameterized DuckDB queries. Hook-level enforcement denies any raw SQL bypass.
 
 **Tech Stack:** Python 3.12+, Pydantic v2, DuckDB parameterized queries, HMAC (stdlib `hmac`), FastMCP, React + TypeScript (frontend)
@@ -1393,7 +1395,7 @@ git commit -m "feat: add resolve_filter_intent tool handler"
 Create `tests/orchestrator/agent/test_pipeline_filter_spec.py` testing:
 - Pipeline accepts `filter_spec` and calls compiler, passes parameterized SQL to gateway
 - Pipeline **rejects** raw `where_clause` — returns error if `where_clause` is passed
-- Pipeline requires `filter_spec` or explicit `all_rows=true` — rejects calls with neither
+- Pipeline requires exactly one of `filter_spec` or `all_rows=true` — rejects calls with neither, and rejects calls with both
 - Compiled SQL + params are passed to gateway together
 - Audit metadata (`filter_explanation`, `compiled_filter`, `filter_audit`) is attached to preview result
 - `filter_audit` contains `spec_hash`, `compiled_hash`, `schema_signature`, `dict_version`
@@ -1404,13 +1406,34 @@ Create `tests/orchestrator/agent/test_pipeline_filter_spec.py` testing:
 
 In `src/orchestrator/agent/tools/pipeline.py:173-260`, **hard cutover** — no legacy path:
 1. **Remove** `where_clause` from accepted args entirely
-2. Accept `filter_spec` dict from args (required unless `all_rows` is explicitly `true`)
-3. If `filter_spec` present: parse into `ResolvedFilterSpec`, compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway
-4. If `filter_spec` absent AND `all_rows` is explicitly `true`: ship all rows (`WHERE 1=1`) — but this **still requires the existing preview confirmation gate** (no silent all-rows execution)
-5. If `filter_spec` absent AND `all_rows` is absent or `false`: return `_err("Either filter_spec or all_rows=true is required. Use resolve_filter_intent to create a filter, or set all_rows=true to ship everything.")` — **never silently default to all rows**
+2. Accept `filter_spec` dict and/or `all_rows` boolean from args — exactly one must be provided:
+   - `filter_spec` present, `all_rows` absent or `false` → compile and filter (normal path)
+   - `filter_spec` absent, `all_rows` is `true` → ship all rows (`WHERE 1=1`) with preview confirmation gate
+   - **Both** `filter_spec` present AND `all_rows` is `true` → return `_err("Conflicting arguments: provide filter_spec OR all_rows=true, not both.")` — deterministic rejection, no precedence guessing
+   - **Neither** present → return `_err("Either filter_spec or all_rows=true is required. Use resolve_filter_intent to create a filter, or set all_rows=true to ship everything.")`
 6. If `where_clause` is present in args: return `_err("where_clause is not accepted. Use resolve_filter_intent to create a filter_spec.")`
 7. Attach `filter_explanation`, `compiled_filter`, and `filter_audit` metadata to the result before calling `_emit_preview_ready()`
-8. Compute `compiled_hash` as SHA-256 of canonical JSON execution payload: `json.dumps({"where_sql": where_sql, "params": params}, sort_keys=True, default=str)` — params stay in execution order (sorting would hide meaningful order differences for non-commutative operators like `between`)
+8. Compute `compiled_hash` as SHA-256 of canonical JSON execution payload using a **deterministic serializer** (not `default=str`, which varies by type/locale):
+   ```python
+   def _canonical_param(v: Any) -> Any:
+       """Normalize a param value for deterministic hashing."""
+       if isinstance(v, datetime):
+           return v.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+       if isinstance(v, date):
+           return v.isoformat()  # YYYY-MM-DD, no timezone ambiguity
+       if isinstance(v, Decimal):
+           return str(v.normalize())  # Remove trailing zeros: Decimal('1.20') → '1.2'
+       if isinstance(v, float):
+           return str(v)  # Exact float repr
+       return v  # str, int, bool, None — already JSON-safe
+
+   canonical = json.dumps(
+       {"where_sql": where_sql, "params": [_canonical_param(p) for p in params]},
+       sort_keys=True, separators=(",", ":"),  # compact, deterministic
+   )
+   compiled_hash = hashlib.sha256(canonical.encode()).hexdigest()
+   ```
+   Params stay in execution order. The `_canonical_param()` function ensures dates use UTC ISO8601, decimals are normalized, and no type relies on `str()` formatting conventions.
 
 Update `DataSourceMCPClient.get_rows_by_filter()` to rename `where_clause` to `where_sql` and accept `params`:
 
@@ -1445,13 +1468,13 @@ git commit -m "feat: update ship_command_pipeline to accept filter_spec"
 Test that `fetch_rows_tool()`:
 - Accepts `filter_spec`, compiles it, and passes parameterized query to gateway
 - **Rejects** `where_clause` — returns error if passed
-- Requires `filter_spec` or explicit `all_rows=true` — rejects calls with neither
+- Requires exactly one of `filter_spec` or `all_rows=true` — rejects calls with neither, and rejects calls with both
 
 **Step 2: Run test to verify it fails**
 
 **Step 3: Update `fetch_rows_tool()`**
 
-Same hard cutover as pipeline: accept `filter_spec` or `all_rows=true`, no `where_clause`. If `where_clause` is passed, return `_err()`. If neither `filter_spec` nor `all_rows=true`: return `_err()`. Never silently default to fetching all rows. Compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway.
+Same hard cutover as pipeline: exactly one of `filter_spec` or `all_rows=true` must be provided. If both are present, return `_err("Conflicting arguments")`. If neither is present, return `_err()`. If `where_clause` is passed, return `_err()`. Never silently default to fetching all rows. Compile via `compile_filter_spec()`, pass `where_sql` + `params` to gateway.
 
 **Step 4: Run tests**
 
@@ -1662,22 +1685,32 @@ This step implements the startup-time secret validation referenced in Architectu
 
 - Create `src/orchestrator/filter_config.py` with:
   ```python
+  _MIN_SECRET_LENGTH = 32
+
   def validate_filter_config() -> None:
       """Validate required filter configuration at startup.
 
       Called from FastAPI lifespan in src/api/main.py.
-      Raises FilterConfigError if FILTER_TOKEN_SECRET is not set.
+      Raises FilterConfigError if FILTER_TOKEN_SECRET is not set or too short.
       """
       import os
-      secret = os.environ.get("FILTER_TOKEN_SECRET")
+      secret = os.environ.get("FILTER_TOKEN_SECRET", "")
       if not secret:
           raise FilterConfigError(
               "FILTER_TOKEN_SECRET env var is required. "
               "Set it to a stable secret (min 32 chars) for HMAC token signing."
           )
+      if len(secret) < _MIN_SECRET_LENGTH:
+          raise FilterConfigError(
+              f"FILTER_TOKEN_SECRET must be at least {_MIN_SECRET_LENGTH} characters. "
+              f"Current length: {len(secret)}. Use a cryptographically random value."
+          )
   ```
 - Modify `src/api/main.py` lifespan to call `validate_filter_config()` at startup (before agent session prewarm)
-- Test: `tests/orchestrator/test_filter_config.py` — verify `validate_filter_config()` raises when env var is missing, succeeds when set
+- Test: `tests/orchestrator/test_filter_config.py` — verify:
+  - Raises when env var is missing
+  - Raises when env var is too short (e.g., 16 chars)
+  - Succeeds when env var is set and >= 32 chars
 
 ```bash
 git add src/orchestrator/filter_config.py src/api/main.py tests/orchestrator/test_filter_config.py
@@ -1940,6 +1973,63 @@ git commit -m "test: add end-to-end determinism acceptance tests (release gate)"
 
 ---
 
+## Phase 8: Execution Determinism (Future Work — Separate Design Cycle)
+
+> **Status:** NOT IMPLEMENTED IN THIS PLAN. This phase documents the known gaps between deterministic row selection (Phases 1-7) and fully deterministic shipment lifecycle. It requires a separate brainstorming/design cycle before implementation.
+
+### Problem Statement
+
+The current execution path has a critical window between UPS side effect and DB persistence:
+
+```
+batch_engine.py:408  →  result = await self._ups.create_shipment(request_body=api_payload)
+    ... (tracking number extraction, label save, cost calculation) ...
+batch_engine.py:458  →  self._db.commit()
+```
+
+A crash, network split, or process kill between lines 408 and 458 creates a shipment at UPS that is not recorded in the local DB. On retry, the same row would be sent to UPS again — producing a **duplicate shipment** with a separate tracking number and charge.
+
+### Known Gaps
+
+| Gap | Current Behavior | Required Behavior |
+|-----|-----------------|-------------------|
+| **Idempotency keys** | None — each `create_shipment` call is unique | Row-level idempotency key (e.g., `job_id:row_number:checksum`) sent as UPS `TransactionReference` |
+| **In-flight state** | Row is `pending` until fully complete | Add `in_flight` state between `pending` and `completed` — written before UPS call, committed after |
+| **Replay-safe retries** | Retry sends a new `create_shipment` | Before retry: check if row has `in_flight` state, query UPS by idempotency key to detect prior success |
+| **Write-back atomicity** | CSV/Excel write-back happens after all rows complete | Write-back should be per-row or use a write-ahead log for crash recovery |
+| **Label persistence** | Label saved to disk before DB commit | Label save should be part of the atomic commit or use a staging path |
+| **Tracking write-back** | External platform write-back is best-effort | Should be retryable with a dedicated queue/retry mechanism |
+
+### Affected Files
+
+| File | Gap |
+|------|-----|
+| `src/services/batch_engine.py:395-475` | Idempotency key generation, in-flight state, replay detection |
+| `src/db/models.py` (JobRow) | Add `in_flight` status, `idempotency_key` column, `ups_transaction_id` column |
+| `src/services/ups_mcp_client.py` | Forward idempotency key as `TransactionReference` in UPS payload |
+| `src/services/ups_payload_builder.py` | Include `TransactionReference` in request body |
+| `src/services/batch_engine.py:500-550` | Write-back atomicity, retry queue |
+| `src/orchestrator/batch/recovery.py` | In-flight row recovery on startup |
+
+### Design Questions (for brainstorming cycle)
+
+1. Does UPS honor `TransactionReference` for deduplication, or is it advisory-only? If advisory, we need our own dedup layer.
+2. Should in-flight detection query UPS (`track_package` by reference) or rely on local state only?
+3. What is the acceptable window for duplicate detection? (UPS API latency = 2-10s, DB commit = <50ms)
+4. Should label files use a staging directory with atomic rename, or write-ahead log?
+5. How does this interact with the existing `BATCH_CONCURRENCY` semaphore? (concurrent rows with in-flight state)
+
+### Release Gate (Phase 8)
+
+- [ ] No duplicate shipments on crash-retry (tested with injected failures)
+- [ ] In-flight rows recovered on process restart
+- [ ] Idempotency key prevents duplicate UPS charges
+- [ ] Write-back survives partial completion
+
+> **Next step:** Run `/brainstorming` for execution determinism design before creating implementation tasks.
+
+---
+
 ## Verification Checklist
 
 After all tasks are complete, verify:
@@ -2026,4 +2116,10 @@ Phase 7 (Cleanup)
   Task 18: Update Existing Tests
   Task 19: Conversation Route
   Task 20: Determinism Acceptance Tests (release gate)
+       │
+Phase 8 (Execution Determinism — FUTURE, separate design cycle)
+  ► Idempotency keys for UPS create_shipment
+  ► In-flight row state + replay-safe retries
+  ► Write-back atomicity + label staging
+  ► Requires brainstorming before implementation
 ```
