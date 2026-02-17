@@ -18,6 +18,7 @@ class ToolDefinition(TypedDict):
 
 from src.orchestrator.agent.tools.core import EventEmitterBridge, _bind_bridge
 from src.orchestrator.agent.tools.data import (
+    confirm_filter_interpretation_tool,
     connect_shopify_tool,
     fetch_rows_tool,
     get_platform_status_tool,
@@ -196,6 +197,36 @@ def get_all_tool_definitions(
                 "required": ["intent"],
             },
             "handler": _bind_bridge(resolve_filter_intent_tool, bridge),
+        },
+        {
+            "name": "confirm_filter_interpretation",
+            "description": (
+                "Confirm a Tier-B filter interpretation after user approval. "
+                "Call this after resolve_filter_intent returns NEEDS_CONFIRMATION "
+                "and the user has confirmed the pending interpretations. "
+                "Pass the resolution_token and the original intent to get a "
+                "RESOLVED spec with a valid execution token."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "resolution_token": {
+                        "type": "string",
+                        "description": (
+                            "The resolution_token from the NEEDS_CONFIRMATION response."
+                        ),
+                    },
+                    "intent": {
+                        "type": "object",
+                        "description": (
+                            "The same FilterIntent JSON originally passed to "
+                            "resolve_filter_intent."
+                        ),
+                    },
+                },
+                "required": ["resolution_token", "intent"],
+            },
+            "handler": _bind_bridge(confirm_filter_interpretation_tool, bridge),
         },
         {
             "name": "create_job",

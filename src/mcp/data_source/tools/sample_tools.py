@@ -34,6 +34,7 @@ def get_column_samples_impl(
         rows = db.execute(
             f'SELECT DISTINCT "{col}" FROM imported_data '
             f'WHERE "{col}" IS NOT NULL '
+            f"ORDER BY 1 "
             f"LIMIT {max_samples}"
         ).fetchall()
         samples[col] = [row[0] for row in rows]

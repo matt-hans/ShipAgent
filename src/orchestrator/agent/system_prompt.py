@@ -73,12 +73,16 @@ def _build_schema_section(
     return "\n".join(lines)
 
 
-def _build_filter_rules() -> str:
+def _build_filter_rules(schema_columns: set[str] | None = None) -> str:
     """Build FilterIntent schema documentation for the batch mode prompt.
 
     Replaces the legacy SQL filter rules with structured FilterIntent
     instructions. The LLM produces a FilterIntent JSON; deterministic
     tools resolve and compile it to parameterized SQL.
+
+    Args:
+        schema_columns: Optional set of column names from the active data source.
+            Used to generate schema-aware guidance instead of hardcoded column names.
 
     Returns:
         Formatted string with FilterIntent schema and operator reference.
@@ -90,6 +94,19 @@ def _build_filter_rules() -> str:
     _semantic_keys_list = ", ".join(
         sorted(REGIONS.keys()) + sorted(BUSINESS_PREDICATES.keys())
     )
+
+    # Build schema-conditional search hints (avoid hardcoded column names)
+    _cols = schema_columns or set()
+    hint_lines: list[str] = []
+    name_cols = [c for c in ("customer_name", "ship_to_name", "name", "recipient_name") if c in _cols]
+    if name_cols:
+        cols_str = "` or `".join(name_cols)
+        hint_lines.append(f"- For person name searches, use `contains_ci` operator on `{cols_str}`.")
+    tag_cols = [c for c in ("tags", "tag", "labels") if c in _cols]
+    if tag_cols:
+        cols_str = "` or `".join(tag_cols)
+        hint_lines.append(f"- For tag searches, use `contains_ci` operator on `{cols_str}`.")
+    _schema_hints = "\n".join(hint_lines)
 
     return f"""
 **IMPORTANT: NEVER generate raw SQL.** All filtering uses the FilterIntent JSON schema.
@@ -142,8 +159,7 @@ and all US state names (e.g., "california" → "CA").
 - ONLY reference columns that exist in the connected data source schema above.
 - Use `all_rows=true` (not a FilterIntent) when the user wants all rows shipped.
 - If the filter is ambiguous, ask the user for clarification — never guess.
-- For person name searches, use `contains_ci` operator on `customer_name` or `ship_to_name`.
-- For tag searches, use `contains_ci` operator on the `tags` column.
+{_schema_hints}
 """
 
 
@@ -256,7 +272,12 @@ You have deterministic tools available. In interactive mode, use `preview_intera
 for shipment creation. Do not attempt batch/data-source tools in this mode.
 """
     else:
-        filter_rules_section = _build_filter_rules()
+        _src_cols = (
+            {col.name for col in source_info.columns}
+            if source_info is not None
+            else None
+        )
+        filter_rules_section = _build_filter_rules(schema_columns=_src_cols)
         workflow_section = """
 ### Shipping Commands (default path)
 

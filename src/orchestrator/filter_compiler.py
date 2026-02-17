@@ -211,6 +211,13 @@ def _compile_group(
                 f"compilation. Spec must be fully resolved before compilation.",
             )
 
+    if not fragments:
+        raise FilterCompilationError(
+            FilterErrorCode.STRUCTURAL_LIMIT_EXCEEDED,
+            "Filter group compiled to zero conditions. "
+            "This can happen when all children are unresolved semantic references.",
+        )
+
     joiner = f" {group.logic} "
     return joiner.join(fragments)
 
@@ -452,9 +459,12 @@ def _check_operator_type_compat(
     Raises:
         FilterCompilationError: On type mismatch.
     """
-    col_type = column_types.get(column, "").upper()
-    if not col_type:
+    raw_type = column_types.get(column, "").upper()
+    if not raw_type:
         return  # Unknown type — skip check
+
+    # Normalize parameterized types: DECIMAL(10,2) → DECIMAL, VARCHAR(255) → VARCHAR
+    col_type = raw_type.split("(")[0].strip()
 
     if operator in _ORDERING_OPS and col_type not in _ORDERABLE_TYPES:
         raise FilterCompilationError(

@@ -336,6 +336,8 @@ class TestWriteBackDurability:
                 row_number=i,
                 tracking_number=f"1Z{i:03d}",
                 shipped_at="2026-02-17T00:00:00Z",
+                status="pending",
+                retry_count=0,
             )
             for i in range(1, 4)
         ]
