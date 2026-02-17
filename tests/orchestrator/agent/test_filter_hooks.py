@@ -314,8 +314,8 @@ class TestValidateFilterSpecOnPipeline:
         assert not _is_denied(result)
 
     @pytest.mark.anyio
-    async def test_allows_tier_a_no_token(self):
-        """Allows pipeline with Tier-A-only spec (no token required)."""
+    async def test_denies_tier_a_without_token(self):
+        """Denies pipeline with RESOLVED spec but no resolution_token."""
         spec = _filter_spec_resolved()
         result = await validate_filter_spec_on_pipeline(
             {
@@ -323,6 +323,28 @@ class TestValidateFilterSpecOnPipeline:
                 "tool_input": {"filter_spec": spec},
             },
             tool_use_id="test-15",
+            context=None,
+        )
+        assert _is_denied(result)
+        assert "resolution_token" in _denial_reason(result).lower()
+
+    @pytest.mark.anyio
+    async def test_allows_tier_a_with_valid_token(self):
+        """Allows pipeline with RESOLVED spec and valid token."""
+        spec = _filter_spec_resolved()
+        root_json = json.dumps(spec["root"], sort_keys=True, default=str)
+        spec_hash = hashlib.sha256(root_json.encode()).hexdigest()
+        spec["resolution_token"] = _make_valid_token(
+            schema_signature="sig123",
+            dict_version="1.0.0",
+            spec_hash=spec_hash,
+        )
+        result = await validate_filter_spec_on_pipeline(
+            {
+                "tool_name": "ship_command_pipeline",
+                "tool_input": {"filter_spec": spec},
+            },
+            tool_use_id="test-15b",
             context=None,
         )
         assert not _is_denied(result)

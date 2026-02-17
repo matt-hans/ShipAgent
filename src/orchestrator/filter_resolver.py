@@ -177,9 +177,12 @@ def resolve_filter_intent(
     # Build explanation
     explanation = _build_explanation(canonicalized_root)
 
-    # Generate resolution token if NEEDS_CONFIRMATION
+    # Generate resolution token for ALL resolutions (Tier-A and Tier-B).
+    # This ensures every filter_spec has a server-issued, HMAC-signed provenance
+    # token. The pipeline hook validates this token unconditionally, preventing
+    # a client from submitting a hand-crafted RESOLVED spec without server proof.
     resolution_token = None
-    if status == ResolutionStatus.NEEDS_CONFIRMATION:
+    if status in (ResolutionStatus.RESOLVED, ResolutionStatus.NEEDS_CONFIRMATION):
         resolution_token = _generate_resolution_token(
             schema_signature=schema_signature,
             resolved_root=canonicalized_root,
