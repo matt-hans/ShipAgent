@@ -4,7 +4,7 @@
 
 **Goal:** Replace non-deterministic free-form SQL filter generation with a structured FilterSpec JSON compiler that guarantees identical queries for identical inputs.
 
-**Scope Boundary:** This plan covers **deterministic row selection** (Phases 1-7) — the path from user intent to parameterized SQL query to previewed row set. It does NOT cover **deterministic execution** of side-effecting operations (UPS shipment creation, label persistence, write-back, tracking, pickup scheduling). Those require idempotency keys, exactly-once semantics, and replay-safe retry logic — documented as Phase 8 (future work, separate design cycle).
+**Scope:** This plan covers the full deterministic shipment lifecycle — from user intent to row selection (Phases 1-7: FilterSpec compiler) through crash-safe execution with exactly-once semantics (Phase 8: idempotency, in-flight state, replay-safe retries, durable write-back).
 
 **Architecture:** The LLM outputs typed `FilterIntent` JSON (never SQL). A pure-function semantic resolver expands canonical terms (regions, business predicates) into concrete conditions. A pure-function SQL compiler produces parameterized DuckDB queries. Hook-level enforcement denies any raw SQL bypass.
 
@@ -1212,7 +1212,7 @@ Expected: PASS — these test DuckDB's native parameterization, confirming it wo
 
 **Step 3: Modify `query_tools.py` to always use parameterized execution**
 
-In `src/mcp/data_source/tools/query_tools.py`, update `get_rows_by_filter()` (lines 66-144) to **require** a `params` list. **Rename** the first parameter from `where_clause` to `where_sql` to eliminate semantic confusion — this is compiler-generated parameterized SQL, not a raw user-supplied clause. `params` is always a list (possibly empty for queries like `"1=1"`).
+In `src/mcp/data_source/tools/query_tools.py`, update `get_rows_by_filter()` (lines 66-144). **Rename** the first parameter from `where_clause` to `where_sql` to eliminate semantic confusion — this is compiler-generated parameterized SQL, not a raw user-supplied clause. The `params` parameter accepts `list[Any] | None` for backward compatibility with existing callers, but is normalized to `[]` internally — all execution paths are parameterized regardless of whether params are empty.
 
 ```python
 async def get_rows_by_filter(
@@ -1224,7 +1224,7 @@ async def get_rows_by_filter(
 ) -> dict:
 ```
 
-Replace the raw f-string interpolation at lines 113-125. **Always pass params to `db.execute()`** — use `params or []` to handle None safely (avoids the falsey-params bug where an empty list `[]` would skip parameterization):
+Replace the raw f-string interpolation at lines 113-125. **Always pass params to `db.execute()`** — normalize `None` to `[]` so every code path uses parameterized execution (even when there are zero parameters):
 
 ```python
 # ALWAYS parameterized — no raw interpolation path
@@ -1973,9 +1973,7 @@ git commit -m "test: add end-to-end determinism acceptance tests (release gate)"
 
 ---
 
-## Phase 8: Execution Determinism (Future Work — Separate Design Cycle)
-
-> **Status:** NOT IMPLEMENTED IN THIS PLAN. This phase documents the known gaps between deterministic row selection (Phases 1-7) and fully deterministic shipment lifecycle. It requires a separate brainstorming/design cycle before implementation.
+## Phase 8: Execution Determinism — Idempotency, In-Flight State, Replay Safety
 
 ### Problem Statement
 
@@ -1987,46 +1985,685 @@ batch_engine.py:408  →  result = await self._ups.create_shipment(request_body=
 batch_engine.py:458  →  self._db.commit()
 ```
 
-A crash, network split, or process kill between lines 408 and 458 creates a shipment at UPS that is not recorded in the local DB. On retry, the same row would be sent to UPS again — producing a **duplicate shipment** with a separate tracking number and charge.
+A crash, network split, or process kill between lines 408 and 458 creates a shipment at UPS that is not recorded in the local DB. On retry, the same row produces a **duplicate shipment** with a separate tracking number and charge.
 
-### Known Gaps
+### Design Decisions
 
-| Gap | Current Behavior | Required Behavior |
-|-----|-----------------|-------------------|
-| **Idempotency keys** | None — each `create_shipment` call is unique | Row-level idempotency key (e.g., `job_id:row_number:checksum`) sent as UPS `TransactionReference` |
-| **In-flight state** | Row is `pending` until fully complete | Add `in_flight` state between `pending` and `completed` — written before UPS call, committed after |
-| **Replay-safe retries** | Retry sends a new `create_shipment` | Before retry: check if row has `in_flight` state, query UPS by idempotency key to detect prior success |
-| **Write-back atomicity** | CSV/Excel write-back happens after all rows complete | Write-back should be per-row or use a write-ahead log for crash recovery |
-| **Label persistence** | Label saved to disk before DB commit | Label save should be part of the atomic commit or use a staging path |
-| **Tracking write-back** | External platform write-back is best-effort | Should be retryable with a dedicated queue/retry mechanism |
+1. **UPS `TransactionReference` is advisory-only** — UPS does not deduplicate based on it. We use it for post-hoc audit correlation, but our own dedup layer (local DB state + pre-retry tracking lookup) is the enforcement mechanism.
+2. **In-flight state is local-first.** Before calling UPS, write `in_flight` status + idempotency key to DB and commit. After UPS responds, update to `completed`/`failed` and commit. The in-flight window is bounded to the UPS API call duration only.
+3. **Pre-retry tracking lookup is the dedup mechanism.** When a row is `in_flight` on resume, query UPS `track_package` by the idempotency key (stored as `TransactionReference`). If UPS returns a valid tracking number, the shipment succeeded — skip re-creation and record the existing result.
+4. **Labels use a staging directory with atomic rename.** Write to `labels/staging/{job_id}/{row}.png`, then `os.rename()` to `labels/{tracking}.png` after DB commit. On crash, staging files are orphaned (harmless) and cleaned up on next startup.
+5. **Write-back uses a durable queue table.** Each successful row writes a `WriteBackTask` row to a new `write_back_queue` table. A background worker processes the queue. Partial failures are retried independently per row.
 
-### Affected Files
+---
 
-| File | Gap |
-|------|-----|
-| `src/services/batch_engine.py:395-475` | Idempotency key generation, in-flight state, replay detection |
-| `src/db/models.py` (JobRow) | Add `in_flight` status, `idempotency_key` column, `ups_transaction_id` column |
-| `src/services/ups_mcp_client.py` | Forward idempotency key as `TransactionReference` in UPS payload |
-| `src/services/ups_payload_builder.py` | Include `TransactionReference` in request body |
-| `src/services/batch_engine.py:500-550` | Write-back atomicity, retry queue |
-| `src/orchestrator/batch/recovery.py` | In-flight row recovery on startup |
+### Task 21: Add `in_flight` Status and Idempotency Columns to JobRow
 
-### Design Questions (for brainstorming cycle)
+**Files:**
+- Modify: `src/db/models.py` (RowStatus enum + JobRow model)
+- Create: `tests/db/test_row_inflight_status.py`
 
-1. Does UPS honor `TransactionReference` for deduplication, or is it advisory-only? If advisory, we need our own dedup layer.
-2. Should in-flight detection query UPS (`track_package` by reference) or rely on local state only?
-3. What is the acceptable window for duplicate detection? (UPS API latency = 2-10s, DB commit = <50ms)
-4. Should label files use a staging directory with atomic rename, or write-ahead log?
-5. How does this interact with the existing `BATCH_CONCURRENCY` semaphore? (concurrent rows with in-flight state)
+**Step 1: Write the failing test**
 
-### Release Gate (Phase 8)
+```python
+"""Tests for in_flight row status and idempotency columns."""
 
-- [ ] No duplicate shipments on crash-retry (tested with injected failures)
-- [ ] In-flight rows recovered on process restart
-- [ ] Idempotency key prevents duplicate UPS charges
-- [ ] Write-back survives partial completion
+from src.db.models import RowStatus
 
-> **Next step:** Run `/brainstorming` for execution determinism design before creating implementation tasks.
+
+class TestRowStatusInFlight:
+    def test_in_flight_status_exists(self):
+        assert hasattr(RowStatus, "in_flight")
+        assert RowStatus.in_flight.value == "in_flight"
+
+    def test_valid_status_transitions(self):
+        """pending → in_flight → completed/failed is valid.
+        in_flight → pending is valid (retry reset).
+        pending → completed directly is NOT valid (must go through in_flight)."""
+```
+
+Test that `JobRow` has new columns:
+- `idempotency_key: str | None` — `"{job_id}:{row_number}:{row_checksum}"` set before UPS call
+- `ups_transaction_id: str | None` — UPS-returned `ShipmentIdentificationNumber` for audit
+
+**Step 2: Run test to verify it fails**
+
+Run: `pytest tests/db/test_row_inflight_status.py -v`
+Expected: FAIL — `in_flight` not in RowStatus.
+
+**Step 3: Implement changes**
+
+In `src/db/models.py`:
+
+```python
+class RowStatus(str, Enum):
+    pending = "pending"
+    in_flight = "in_flight"  # NEW: UPS call dispatched, awaiting response
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+    skipped = "skipped"
+```
+
+Add columns to `JobRow`:
+
+```python
+idempotency_key: Mapped[Optional[str]] = mapped_column(
+    String(200), nullable=True, index=True
+)
+ups_transaction_id: Mapped[Optional[str]] = mapped_column(
+    String(50), nullable=True
+)
+```
+
+Add index: `Index("idx_job_rows_idempotency", "idempotency_key")`
+
+**Step 4: Run tests**
+
+Run: `pytest tests/db/test_row_inflight_status.py -v`
+Expected: All PASS.
+
+**Step 5: Commit**
+
+```bash
+git add src/db/models.py tests/db/test_row_inflight_status.py
+git commit -m "feat: add in_flight status and idempotency columns to JobRow"
+```
+
+---
+
+### Task 22: Idempotency Key Generation Utility
+
+**Files:**
+- Create: `src/services/idempotency.py`
+- Create: `tests/services/test_idempotency.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for idempotency key generation and validation."""
+
+class TestIdempotencyKey:
+    def test_generate_key_format(self):
+        """Key is '{job_id}:{row_number}:{row_checksum}'."""
+        key = generate_idempotency_key("job-123", 5, "abc123hash")
+        assert key == "job-123:5:abc123hash"
+
+    def test_same_inputs_produce_same_key(self):
+        """Deterministic: identical inputs always produce identical key."""
+        k1 = generate_idempotency_key("j1", 1, "hash1")
+        k2 = generate_idempotency_key("j1", 1, "hash1")
+        assert k1 == k2
+
+    def test_different_inputs_produce_different_keys(self):
+        k1 = generate_idempotency_key("j1", 1, "hash1")
+        k2 = generate_idempotency_key("j1", 2, "hash1")
+        assert k1 != k2
+
+    def test_key_fits_ups_transaction_reference(self):
+        """UPS TransactionReference.CustomerContext max is 512 chars."""
+        key = generate_idempotency_key("a" * 36, 99999, "b" * 64)
+        assert len(key) <= 512
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Implement**
+
+```python
+"""Idempotency key generation for exactly-once shipment creation."""
+
+
+def generate_idempotency_key(job_id: str, row_number: int, row_checksum: str) -> str:
+    """Generate a deterministic idempotency key for a shipment row.
+
+    The key uniquely identifies a specific row in a specific job with a specific
+    data snapshot. If the row data changes (different checksum), the key changes,
+    allowing a new shipment to be created for the updated data.
+
+    Args:
+        job_id: UUID of the parent job.
+        row_number: 1-based row number in the job.
+        row_checksum: MD5 hash of the row's order_data JSON.
+
+    Returns:
+        Idempotency key string: '{job_id}:{row_number}:{row_checksum}'.
+    """
+    return f"{job_id}:{row_number}:{row_checksum}"
+```
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/services/idempotency.py tests/services/test_idempotency.py
+git commit -m "feat: add idempotency key generation for shipment rows"
+```
+
+---
+
+### Task 23: Include TransactionReference in UPS Payload
+
+**Files:**
+- Modify: `src/services/ups_payload_builder.py`
+- Modify: `tests/services/test_ups_payload_builder.py`
+
+**Step 1: Write the failing test**
+
+Add a test to the existing payload builder test file:
+
+```python
+def test_build_ups_api_payload_includes_transaction_reference(self):
+    """When idempotency_key is provided, payload includes TransactionReference."""
+    payload = build_ups_api_payload(simplified, account_number="X", idempotency_key="job:1:hash")
+    ref = payload["ShipmentRequest"]["Request"]["TransactionReference"]
+    assert ref["CustomerContext"] == "job:1:hash"
+
+def test_build_ups_api_payload_omits_transaction_reference_when_none(self):
+    """When no idempotency_key, no TransactionReference in payload."""
+    payload = build_ups_api_payload(simplified, account_number="X")
+    assert "TransactionReference" not in payload["ShipmentRequest"]["Request"]
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Add `idempotency_key` parameter to `build_ups_api_payload()`**
+
+In `src/services/ups_payload_builder.py`, add optional `idempotency_key: str | None = None` parameter. When provided, inject into payload:
+
+```python
+if idempotency_key:
+    request["TransactionReference"] = {"CustomerContext": idempotency_key}
+```
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/services/ups_payload_builder.py tests/services/test_ups_payload_builder.py
+git commit -m "feat: include TransactionReference in UPS payload for idempotency audit"
+```
+
+---
+
+### Task 24: Rewrite BatchEngine Execute with In-Flight State Machine
+
+**Files:**
+- Modify: `src/services/batch_engine.py:362-505`
+- Create: `tests/services/test_batch_engine_inflight.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for in-flight state machine in BatchEngine.execute()."""
+
+class TestInFlightStateMachine:
+    def test_row_transitions_to_in_flight_before_ups_call(self):
+        """Row status is 'in_flight' with idempotency_key set and committed
+        BEFORE create_shipment is called."""
+
+    def test_row_transitions_to_completed_after_ups_success(self):
+        """After successful create_shipment, row status is 'completed'
+        with tracking_number, cost_cents, and ups_transaction_id."""
+
+    def test_row_transitions_to_failed_on_ups_error(self):
+        """On UPS error, row status is 'failed' with error_code and error_message.
+        The in_flight state is cleared."""
+
+    def test_crash_leaves_row_in_in_flight_state(self):
+        """Simulate crash between UPS call and DB commit.
+        Row should remain 'in_flight' with idempotency_key set."""
+
+    def test_pending_to_completed_directly_is_rejected(self):
+        """BatchEngine must not skip the in_flight state.
+        A row going from pending to completed without in_flight is a bug."""
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Rewrite `_process_row()` in `batch_engine.py`**
+
+Replace the current flow:
+
+```
+[current]  pending → create_shipment() → completed/failed (single commit)
+```
+
+With the two-phase commit:
+
+```
+[new]  pending → in_flight (commit 1: set idempotency_key, status='in_flight')
+                → create_shipment(idempotency_key)
+                → completed/failed (commit 2: set tracking, cost, status)
+```
+
+Implementation:
+
+```python
+async def _process_row(row: Any) -> None:
+    nonlocal successful, failed, total_cost_cents
+
+    async with semaphore:
+        try:
+            order_data = self._parse_order_data(row)
+            # ... (international validation, payload build — unchanged) ...
+
+            # Generate idempotency key
+            idem_key = generate_idempotency_key(job_id, row.row_number, row.row_checksum)
+
+            # PHASE 1: Mark in-flight BEFORE UPS call
+            async with db_lock:
+                row.status = "in_flight"
+                row.idempotency_key = idem_key
+                self._db.commit()
+
+            # Build payload with idempotency key
+            api_payload = build_ups_api_payload(
+                simplified, account_number=self._account_number,
+                idempotency_key=idem_key,
+            )
+
+            # UPS call (side effect)
+            result = await self._ups.create_shipment(request_body=api_payload)
+
+            # Extract results (unchanged)
+            tracking_number = ...
+            label_path = self._save_label_staged(...)  # staging dir
+            cost_cents = ...
+
+            # PHASE 2: Mark completed AFTER UPS success
+            async with db_lock:
+                row.tracking_number = tracking_number
+                row.label_path = label_path
+                row.cost_cents = cost_cents
+                row.ups_transaction_id = result.get("shipmentIdentificationNumber")
+                row.status = "completed"
+                row.processed_at = datetime.now(UTC).isoformat()
+                self._db.commit()
+
+                # Promote label from staging to final
+                self._promote_label(label_path)
+
+                # ... progress emission ...
+
+        except (UPSServiceError, ValueError, Exception) as e:
+            async with db_lock:
+                row.status = "failed"
+                row.error_code = getattr(e, "code", "E-3005")
+                row.error_message = str(e)
+                self._db.commit()
+                # ... error progress emission ...
+```
+
+**Step 4: Run tests**
+
+Run: `pytest tests/services/test_batch_engine_inflight.py -v`
+Expected: All PASS.
+
+**Step 5: Commit**
+
+```bash
+git add src/services/batch_engine.py src/services/idempotency.py tests/services/test_batch_engine_inflight.py
+git commit -m "feat: rewrite batch execute with in-flight state machine"
+```
+
+---
+
+### Task 25: Label Staging with Atomic Promote
+
+**Files:**
+- Modify: `src/services/batch_engine.py` (add `_save_label_staged`, `_promote_label`, `_cleanup_staging`)
+- Create: `tests/services/test_label_staging.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for label staging directory with atomic promote."""
+
+class TestLabelStaging:
+    def test_save_label_staged_writes_to_staging_dir(self):
+        """Label is saved to labels/staging/{job_id}/{row}.png, not final path."""
+
+    def test_promote_label_moves_to_final_path(self):
+        """After promote, label exists at final path and staging file is gone."""
+
+    def test_crash_before_promote_leaves_orphan_in_staging(self):
+        """If promote never runs, staging file exists but final path does not."""
+
+    def test_cleanup_staging_removes_orphans(self):
+        """cleanup_staging() called at startup removes old staging dirs."""
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Implement staging methods**
+
+```python
+def _save_label_staged(self, tracking_number: str, label_data: str,
+                        job_id: str, row_number: int) -> str:
+    """Save label to staging directory. Returns staging path."""
+    staging_dir = LABELS_DIR / "staging" / job_id
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"row_{row_number}_{tracking_number}.png"
+    staging_path = staging_dir / filename
+    staging_path.write_bytes(base64.b64decode(label_data))
+    return str(staging_path)
+
+def _promote_label(self, staging_path: str) -> str:
+    """Atomically move label from staging to final location."""
+    staging = Path(staging_path)
+    final_path = LABELS_DIR / staging.name
+    os.rename(str(staging), str(final_path))
+    return str(final_path)
+
+@staticmethod
+def cleanup_staging() -> int:
+    """Remove orphaned staging files. Called at startup."""
+    staging_root = LABELS_DIR / "staging"
+    if not staging_root.exists():
+        return 0
+    count = 0
+    for job_dir in staging_root.iterdir():
+        if job_dir.is_dir():
+            for f in job_dir.iterdir():
+                f.unlink()
+                count += 1
+            job_dir.rmdir()
+    return count
+```
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/services/batch_engine.py tests/services/test_label_staging.py
+git commit -m "feat: add label staging with atomic promote for crash safety"
+```
+
+---
+
+### Task 26: In-Flight Row Recovery on Resume
+
+**Files:**
+- Modify: `src/orchestrator/batch/recovery.py`
+- Modify: `src/services/batch_engine.py` (add `recover_in_flight_rows`)
+- Create: `tests/orchestrator/batch/test_inflight_recovery.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for in-flight row recovery after crash."""
+
+class TestInFlightRecovery:
+    def test_recovery_detects_in_flight_rows(self):
+        """check_interrupted_jobs includes in_flight row count."""
+
+    def test_resume_queries_ups_for_in_flight_rows(self):
+        """On resume, each in_flight row triggers track_package with
+        the idempotency_key. If UPS returns a tracking number,
+        the row is completed without re-creating the shipment."""
+
+    def test_resume_retries_in_flight_row_when_ups_has_no_record(self):
+        """If track_package returns no result for the idempotency_key,
+        the row is reset to pending for re-processing."""
+
+    def test_resume_handles_ups_lookup_failure_gracefully(self):
+        """If track_package fails (network error), the row stays in_flight
+        and recovery reports it for manual resolution."""
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Implement recovery**
+
+Add `recover_in_flight_rows()` to `batch_engine.py`:
+
+```python
+async def recover_in_flight_rows(
+    self, job_id: str, rows: list[Any],
+) -> dict[str, int]:
+    """Recover rows stuck in 'in_flight' state after a crash.
+
+    For each in_flight row:
+    1. Query UPS track_package by idempotency_key
+    2. If tracking found → mark completed (shipment already created)
+    3. If no tracking → reset to pending (safe to retry)
+    4. If lookup fails → leave in_flight (manual resolution)
+
+    Returns:
+        {"recovered": N, "reset": N, "unresolved": N}
+    """
+    in_flight = [r for r in rows if r.status == "in_flight"]
+    recovered = reset = unresolved = 0
+
+    for row in in_flight:
+        try:
+            result = await self._ups.track_package(
+                inquiry_number=row.idempotency_key,
+            )
+            if result and result.get("trackingNumber"):
+                # Shipment exists at UPS — complete locally
+                row.tracking_number = result["trackingNumber"]
+                row.status = "completed"
+                row.processed_at = datetime.now(UTC).isoformat()
+                self._db.commit()
+                recovered += 1
+            else:
+                # No record at UPS — safe to retry
+                row.status = "pending"
+                row.idempotency_key = None
+                self._db.commit()
+                reset += 1
+        except Exception:
+            unresolved += 1
+
+    return {"recovered": recovered, "reset": reset, "unresolved": unresolved}
+```
+
+Update `recovery.py` `check_interrupted_jobs()` to include `in_flight_count` in `InterruptedJobInfo`.
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/services/batch_engine.py src/orchestrator/batch/recovery.py tests/orchestrator/batch/test_inflight_recovery.py
+git commit -m "feat: add in-flight row recovery with UPS tracking lookup"
+```
+
+---
+
+### Task 27: Write-Back Queue Table and Worker
+
+**Files:**
+- Modify: `src/db/models.py` (add `WriteBackTask` model)
+- Create: `src/services/write_back_worker.py`
+- Create: `tests/services/test_write_back_worker.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for durable write-back queue."""
+
+class TestWriteBackQueue:
+    def test_enqueue_creates_pending_task(self):
+        """enqueue_write_back() creates a WriteBackTask with status=pending."""
+
+    def test_worker_processes_pending_tasks(self):
+        """process_write_back_queue() sends tracking numbers to data source
+        and marks tasks as completed."""
+
+    def test_worker_retries_failed_tasks(self):
+        """Failed tasks stay in queue with incremented retry_count.
+        Tasks exceeding max_retries are marked as dead_letter."""
+
+    def test_per_row_write_back_survives_partial_failure(self):
+        """If row 3 write-back fails, rows 1, 2, 4, 5 are still written."""
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Implement**
+
+Add `WriteBackTask` to `src/db/models.py`:
+
+```python
+class WriteBackTask(Base):
+    """Durable queue for tracking number write-back."""
+
+    __tablename__ = "write_back_queue"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    job_id: Mapped[str] = mapped_column(String(36), ForeignKey("jobs.id"), nullable=False)
+    row_number: Mapped[int] = mapped_column(nullable=False)
+    tracking_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    shipped_at: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, completed, dead_letter
+    retry_count: Mapped[int] = mapped_column(default=0)
+    max_retries: Mapped[int] = mapped_column(default=3)
+    created_at: Mapped[str] = mapped_column(String(50), default=utc_now_iso)
+```
+
+Create `src/services/write_back_worker.py`:
+
+```python
+"""Durable write-back worker for tracking number persistence."""
+
+MAX_RETRIES = 3
+
+async def enqueue_write_back(db, job_id: str, row_number: int,
+                              tracking_number: str, shipped_at: str) -> None:
+    """Add a write-back task to the durable queue."""
+
+async def process_write_back_queue(db, gateway) -> dict[str, int]:
+    """Process all pending write-back tasks.
+
+    Returns:
+        {"processed": N, "failed": N, "dead_letter": N}
+    """
+```
+
+Modify `batch_engine.py` to call `enqueue_write_back()` per row instead of collecting `successful_write_back_updates` dict. The bulk write-back at the end of `execute()` is replaced by the worker.
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/db/models.py src/services/write_back_worker.py tests/services/test_write_back_worker.py
+git commit -m "feat: add durable write-back queue with per-row retry"
+```
+
+---
+
+### Task 28: Wire Startup Recovery and Staging Cleanup
+
+**Files:**
+- Modify: `src/api/main.py` (lifespan)
+- Create: `tests/api/test_startup_recovery.py`
+
+**Step 1: Write the failing test**
+
+```python
+"""Tests for startup recovery hooks."""
+
+class TestStartupRecovery:
+    def test_lifespan_calls_cleanup_staging(self):
+        """On startup, BatchEngine.cleanup_staging() removes orphaned labels."""
+
+    def test_lifespan_calls_process_write_back_queue(self):
+        """On startup, pending write-back tasks from crashed sessions are processed."""
+```
+
+**Step 2: Run test to verify it fails**
+
+**Step 3: Add to FastAPI lifespan**
+
+In `src/api/main.py`, add to the existing lifespan `async with` block:
+
+```python
+# Execution determinism: cleanup and recovery
+from src.services.batch_engine import BatchEngine
+orphans = BatchEngine.cleanup_staging()
+if orphans:
+    logger.info("Cleaned up %d orphaned staging labels", orphans)
+
+# Process any pending write-back tasks from crashed sessions
+from src.services.write_back_worker import process_write_back_queue
+with get_db_context() as db:
+    wb_result = await process_write_back_queue(db, await get_data_gateway())
+    if wb_result["processed"] > 0:
+        logger.info("Processed %d pending write-back tasks on startup", wb_result["processed"])
+```
+
+**Step 4: Run tests**
+
+**Step 5: Commit**
+
+```bash
+git add src/api/main.py tests/api/test_startup_recovery.py
+git commit -m "feat: wire startup recovery for staging cleanup and write-back queue"
+```
+
+---
+
+### Task 29: Execution Determinism Acceptance Tests
+
+**Files:**
+- Create: `tests/integration/test_execution_determinism.py`
+
+**Step 1: Write the acceptance tests**
+
+```python
+"""End-to-end execution determinism acceptance tests.
+
+These tests prove that the shipment execution path is crash-safe
+and replay-safe. This is the release gate for Phase 8.
+"""
+
+class TestCrashSafeExecution:
+    def test_crash_after_ups_call_does_not_duplicate_on_retry(self):
+        """Simulate: create_shipment succeeds → crash before DB commit.
+        On retry: row is in_flight, UPS lookup finds tracking → row completed
+        without a second create_shipment call."""
+
+    def test_crash_before_ups_call_retries_cleanly(self):
+        """Simulate: row set to in_flight → crash before create_shipment.
+        On retry: UPS lookup finds nothing → row reset to pending → normal execution."""
+
+    def test_concurrent_rows_maintain_independent_state(self):
+        """With BATCH_CONCURRENCY=5, each row has independent in_flight state.
+        Crash of one row does not affect others."""
+
+class TestWriteBackDurability:
+    def test_write_back_survives_process_restart(self):
+        """Enqueue write-back tasks → kill process → restart → tasks processed."""
+
+    def test_partial_write_back_failure_retries_independently(self):
+        """Row 3 write-back fails → rows 1,2,4,5 succeed → row 3 retried on next cycle."""
+
+class TestLabelAtomicity:
+    def test_label_only_at_final_path_after_commit(self):
+        """Before DB commit: label in staging only. After commit: label at final path."""
+
+    def test_orphaned_staging_labels_cleaned_on_startup(self):
+        """Staging labels from crashed sessions are removed on next startup."""
+```
+
+**Step 2: Run tests**
+
+Run: `pytest tests/integration/test_execution_determinism.py -v`
+Expected: All PASS.
+
+**Step 3: Commit**
+
+```bash
+git add tests/integration/test_execution_determinism.py
+git commit -m "test: add execution determinism acceptance tests (Phase 8 release gate)"
+```
 
 ---
 
@@ -2078,6 +2715,23 @@ After all tasks are complete, verify:
 - [ ] Compiled filter is collapsible and shows `compiled_filter` SQL
 - [ ] Filter audit metadata (`filter_audit`) is included in preview payload
 
+### Execution Determinism Release Gate (Task 29 — must pass before merge)
+
+- [ ] `pytest tests/db/test_row_inflight_status.py -v` — all pass
+- [ ] `pytest tests/services/test_idempotency.py -v` — all pass
+- [ ] `pytest tests/services/test_batch_engine_inflight.py -v` — all pass
+- [ ] `pytest tests/services/test_label_staging.py -v` — all pass
+- [ ] `pytest tests/orchestrator/batch/test_inflight_recovery.py -v` — all pass
+- [ ] `pytest tests/services/test_write_back_worker.py -v` — all pass
+- [ ] `pytest tests/api/test_startup_recovery.py -v` — all pass
+- [ ] `pytest tests/integration/test_execution_determinism.py -v` — all pass
+- [ ] No duplicate shipments on crash-retry (tested with injected failures)
+- [ ] In-flight rows recovered on process restart via UPS tracking lookup
+- [ ] Idempotency key included in UPS payload as `TransactionReference`
+- [ ] Labels only at final path after DB commit (staging dir for crash safety)
+- [ ] Write-back survives partial completion via durable queue
+- [ ] Orphaned staging labels cleaned on startup
+
 ---
 
 ## Dependency Graph
@@ -2117,9 +2771,14 @@ Phase 7 (Cleanup)
   Task 19: Conversation Route
   Task 20: Determinism Acceptance Tests (release gate)
        │
-Phase 8 (Execution Determinism — FUTURE, separate design cycle)
-  ► Idempotency keys for UPS create_shipment
-  ► In-flight row state + replay-safe retries
-  ► Write-back atomicity + label staging
-  ► Requires brainstorming before implementation
+Phase 8 (Execution Determinism)
+  Task 21: JobRow in_flight status + idempotency columns
+  Task 22: Idempotency key generation ◄──── Task 21
+  Task 23: TransactionReference in UPS payload ◄── Task 22
+  Task 24: BatchEngine in-flight state machine ◄── Task 21, 22, 23
+  Task 25: Label staging + atomic promote ◄──── Task 24
+  Task 26: In-flight row recovery ◄──────── Task 24
+  Task 27: Write-back queue + worker ◄───── Task 24
+  Task 28: Startup recovery wiring ◄──────── Task 25, 26, 27
+  Task 29: Execution determinism acceptance tests (release gate)
 ```
