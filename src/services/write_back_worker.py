@@ -1,16 +1,19 @@
 """Durable write-back worker for tracking number persistence.
 
 Provides a queue-based approach to writing tracking numbers back to data
-sources. Each successful shipment enqueues a WriteBackTask; the worker
-processes them with per-task retry and dead-letter semantics.
+sources. Each successful shipment enqueues a WriteBackTask (ORM model);
+the worker processes them with per-task retry and dead-letter semantics.
 
-This replaces the fire-and-forget bulk write-back at the end of
-BatchEngine.execute() with a crash-safe, retry-capable queue.
+Tasks are DB-persisted, so they survive process crashes. On restart,
+any pending tasks can be drained via process_write_back_queue().
 """
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any
+
+from sqlalchemy.orm import Session
+
+from src.db.models import WriteBackTask
 
 logger = logging.getLogger(__name__)
 
@@ -18,29 +21,8 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 
 
-@dataclass
-class WriteBackTask:
-    """A single write-back task in the durable queue.
-
-    Attributes:
-        job_id: Job UUID this task belongs to.
-        row_number: 1-based row number within the job.
-        tracking_number: UPS tracking number to write back.
-        shipped_at: ISO8601 timestamp of when the shipment was created.
-        status: Task status (pending, completed, dead_letter).
-        retry_count: Number of failed attempts so far.
-    """
-
-    job_id: str
-    row_number: int
-    tracking_number: str
-    shipped_at: str
-    status: str = "pending"
-    retry_count: int = 0
-
-
 def enqueue_write_back(
-    db: Any,
+    db: Session,
     job_id: str,
     row_number: int,
     tracking_number: str,
@@ -56,7 +38,7 @@ def enqueue_write_back(
         shipped_at: ISO8601 timestamp.
 
     Returns:
-        The created WriteBackTask.
+        The created WriteBackTask ORM instance.
     """
     task = WriteBackTask(
         job_id=job_id,
@@ -69,8 +51,45 @@ def enqueue_write_back(
     return task
 
 
+def get_pending_tasks(db: Session, job_id: str | None = None) -> list[WriteBackTask]:
+    """Query pending write-back tasks from the database.
+
+    Args:
+        db: Database session.
+        job_id: Optional filter to get tasks for a specific job.
+
+    Returns:
+        List of WriteBackTask instances with status='pending'.
+    """
+    query = db.query(WriteBackTask).filter(WriteBackTask.status == "pending")
+    if job_id is not None:
+        query = query.filter(WriteBackTask.job_id == job_id)
+    return query.all()
+
+
+def mark_tasks_completed(db: Session, job_id: str) -> int:
+    """Mark all pending write-back tasks for a job as completed.
+
+    Used after successful bulk write-back to clear the queue.
+
+    Args:
+        db: Database session.
+        job_id: Job UUID.
+
+    Returns:
+        Number of tasks marked completed.
+    """
+    count = (
+        db.query(WriteBackTask)
+        .filter(WriteBackTask.job_id == job_id, WriteBackTask.status == "pending")
+        .update({"status": "completed"})
+    )
+    db.commit()
+    return count
+
+
 async def process_write_back_queue(
-    db: Any,
+    db: Session,
     gateway: Any,
     tasks: list[WriteBackTask],
 ) -> dict[str, int]:
