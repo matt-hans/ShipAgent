@@ -1979,7 +1979,7 @@ Usage:
 import asyncio
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
 from rich.console import Console
@@ -3537,7 +3537,7 @@ class TestEnsureAgent:
 
         mock_agent = AsyncMock()
         with patch(
-            "src.services.conversation_handler.OrchestrationAgent",
+            "src.orchestrator.agent.client.OrchestrationAgent",
             return_value=mock_agent,
         ):
             result = await ensure_agent(session, source_info=None)
@@ -3551,7 +3551,7 @@ class TestEnsureAgent:
         """Reuses existing agent when source hash matches."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "None|interactive=False"
+        session.agent_source_hash = "none|interactive=False"
 
         result = await ensure_agent(session, source_info=None)
 
@@ -3568,7 +3568,7 @@ class TestEnsureAgent:
 
         new_agent = AsyncMock()
         with patch(
-            "src.services.conversation_handler.OrchestrationAgent",
+            "src.orchestrator.agent.client.OrchestrationAgent",
             return_value=new_agent,
         ):
             result = await ensure_agent(session, source_info=None)
@@ -3587,7 +3587,7 @@ class TestProcessMessage:
         """Yields events from the agent stream."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "None|interactive=False"
+        session.agent_source_hash = "none|interactive=False"
         session.lock = asyncio.Lock()
 
         # Mock agent stream
@@ -3616,7 +3616,7 @@ class TestProcessMessage:
         """Stores assistant text in session history."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "None|interactive=False"
+        session.agent_source_hash = "none|interactive=False"
         session.lock = asyncio.Lock()
 
         async def fake_stream(content):
@@ -3640,7 +3640,7 @@ class TestProcessMessage:
         """Does NOT store user message — caller owns that."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "None|interactive=False"
+        session.agent_source_hash = "none|interactive=False"
         session.lock = asyncio.Lock()
 
         async def fake_stream(content):
@@ -3667,7 +3667,7 @@ class TestProcessMessage:
         """Sets emitter bridge callback before processing and clears it after."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "None|interactive=False"
+        session.agent_source_hash = "none|interactive=False"
         session.lock = asyncio.Lock()
         bridge = MagicMock()
         session.agent.emitter_bridge = bridge
@@ -4165,6 +4165,11 @@ class TestProcessWatchedFileEndToEnd:
     Tests the critical watchdog flow: file claim → agent processing →
     auto-confirm evaluation → execution (or rejection) → file finalization.
     All external dependencies (agent, data gateway, DB) are mocked.
+
+    IMPORTANT: _process_watched_file guards on `global _watchdog_service`.
+    Each test must set this module-level variable (via patch) so the function
+    does not early-return. We create a real HotFolderService instance
+    backed by the test's tmp_path inbox.
     """
 
     @pytest.mark.asyncio
@@ -4187,6 +4192,11 @@ class TestProcessWatchedFileEndToEnd:
             max_cost_cents=100000,
             max_rows=500,
         )
+
+        # Create a real HotFolderService to satisfy the _watchdog_service guard.
+        # _process_watched_file checks `global _watchdog_service` and early-returns
+        # if falsy. We set it via patch on the src.api.main module.
+        watchdog_svc = HotFolderService(configs=[config])
 
         # Mock the entire processing pipeline
         mock_gw = AsyncMock()
@@ -4218,6 +4228,7 @@ class TestProcessWatchedFileEndToEnd:
         mock_db.query.return_value.filter.return_value.all.return_value = [mock_row]
 
         with (
+            patch("src.api.main._watchdog_service", watchdog_svc),
             patch("src.services.gateway_provider.get_data_gateway", new_callable=AsyncMock, return_value=mock_gw),
             patch("src.services.conversation_handler.process_message", side_effect=fake_process_message),
             patch("src.services.conversation_handler.ensure_agent", new_callable=AsyncMock),
@@ -4252,6 +4263,9 @@ class TestProcessWatchedFileEndToEnd:
             max_rows=500,
         )
 
+        # Create HotFolderService to satisfy _watchdog_service guard
+        watchdog_svc = HotFolderService(configs=[config])
+
         # Row cost exceeds threshold.
         # JobRow has cost_cents and order_data — no service_code column.
         mock_row = MagicMock()
@@ -4276,6 +4290,7 @@ class TestProcessWatchedFileEndToEnd:
             yield {"event": "preview_ready", "data": {"job_id": "job-1"}}
 
         with (
+            patch("src.api.main._watchdog_service", watchdog_svc),
             patch("src.services.gateway_provider.get_data_gateway", new_callable=AsyncMock, return_value=mock_gw),
             patch("src.services.conversation_handler.process_message", side_effect=fake_process_message),
             patch("src.services.conversation_handler.ensure_agent", new_callable=AsyncMock),
@@ -4307,10 +4322,14 @@ class TestProcessWatchedFileEndToEnd:
             auto_confirm=False,
         )
 
+        # Create HotFolderService to satisfy _watchdog_service guard
+        watchdog_svc = HotFolderService(configs=[config])
+
         mock_gw = AsyncMock()
         mock_gw.import_csv = AsyncMock(side_effect=Exception("Import failed"))
 
         with (
+            patch("src.api.main._watchdog_service", watchdog_svc),
             patch("src.services.gateway_provider.get_data_gateway", new_callable=AsyncMock, return_value=mock_gw),
         ):
             from src.api.main import _process_watched_file
@@ -4340,6 +4359,10 @@ class TestProcessWatchedFileEndToEnd:
         config1 = WatchFolderConfig(path=str(inbox1), command="Ship")
         config2 = WatchFolderConfig(path=str(inbox2), command="Ship")
 
+        # Create HotFolderService covering BOTH inboxes.
+        # Both configs share the same service → same processing_lock.
+        watchdog_svc = HotFolderService(configs=[config1, config2])
+
         processing_order = []
 
         async def fake_import(*args, **kwargs):
@@ -4357,6 +4380,7 @@ class TestProcessWatchedFileEndToEnd:
             yield {"event": "agent_message", "data": {"text": "Done"}}
 
         with (
+            patch("src.api.main._watchdog_service", watchdog_svc),
             patch("src.services.gateway_provider.get_data_gateway", new_callable=AsyncMock, return_value=mock_gw),
             patch("src.services.conversation_handler.process_message", side_effect=fake_process_message),
             patch("src.services.conversation_handler.ensure_agent", new_callable=AsyncMock),
@@ -5190,3 +5214,12 @@ git commit -m "docs: update CLAUDE.md with headless automation CLI architecture"
 | 5 | Task 10 lacks concrete `conversations.py` delegation implementation | P2 | Added complete `_process_agent_message()` delegation snippet showing queue/timing wrapper around `process_message()` call. Integration notes document: history ownership (caller writes user messages), emitter callback pattern, ensure_agent call, and preview metric extraction from events. |
 | 6 | `tests/services/test_conversation_handler.py` listed but no content specified | P2 | Added 6 tests across 2 classes: `TestEnsureAgent` (creates when none, reuses when hash unchanged, rebuilds when hash changes) and `TestProcessMessage` (yields agent events, stores assistant history, does NOT store user messages, sets/clears emitter callback). |
 | 8 | Create conversation test uses `200`, real endpoint returns `201` | P3 | Updated test fixture from `(200, {...})` to `(201, {...})` matching `conversations.py:370`. Added comment noting real status code. |
+
+## Review Findings Resolution — Round 5
+
+| # | Finding | Severity | Resolution |
+|---|---------|----------|------------|
+| 1 | `_watchdog_progress(..., **kwargs: Any)` uses `Any` but `main.py` only imports `Optional` | P0 | Added `Any` to the `from typing import` line in `main.py` scaffold: `from typing import Any, Optional`. |
+| 2 | `test_conversation_handler` patches `src.services.conversation_handler.OrchestrationAgent` but `ensure_agent()` imports from `src.orchestrator.agent.client` | P1 | Changed all 2 patch targets from `"src.services.conversation_handler.OrchestrationAgent"` to `"src.orchestrator.agent.client.OrchestrationAgent"`. Patch intercepts the import at the definition site. |
+| 3 | Hash fixtures use `"None|interactive=False"` (uppercase N) but `compute_source_hash(None)` returns `"none"` (lowercase) | P1 | Changed all 5 occurrences from `"None|interactive=False"` to `"none|interactive=False"` to match `compute_source_hash()` which returns `"none"` for `None` input. |
+| 4 | Watchdog e2e tests call `_process_watched_file` without establishing `_watchdog_service` — function early-returns | P1 | Each of the 4 e2e tests now creates a `HotFolderService(configs=[...])` instance and patches `src.api.main._watchdog_service` with it. The global lock serialization test uses both configs so the single service owns the shared `processing_lock`. Class docstring updated to document this requirement. |
