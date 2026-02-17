@@ -138,6 +138,8 @@ def get_all_tool_definitions(
             "description": (
                 "Fetch rows from the data source using a compiled FilterSpec. "
                 "Returns a compact fetch_id reference for downstream tools. "
+                "Response includes total_count (authoritative matches) and "
+                "returned_count (current page size). "
                 "Provide filter_spec OR all_rows=true, not both."
             ),
             "input_schema": {

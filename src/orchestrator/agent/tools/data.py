@@ -88,7 +88,7 @@ async def fetch_rows_tool(
         bridge: Optional event emitter bridge for row caching.
 
     Returns:
-        Tool response with fetch_id, row count, and sample rows.
+        Tool response with fetch_id, total_count, returned_count, and sample rows.
     """
     from src.orchestrator.filter_compiler import compile_filter_spec
     from src.orchestrator.models.filter_spec import (
@@ -160,15 +160,41 @@ async def fetch_rows_tool(
         params = []
 
     try:
-        rows = await gw.get_rows_by_filter(
-            where_sql=where_sql, limit=limit, params=params,
-        )
+        total_count = 0
+        used_count_endpoint = False
+        get_rows_with_count = getattr(gw, "get_rows_with_count", None)
+        if callable(get_rows_with_count):
+            result = await get_rows_with_count(
+                where_sql=where_sql,
+                limit=limit,
+                params=params,
+            )
+            if isinstance(result, dict):
+                result_rows = result.get("rows")
+                if isinstance(result_rows, list):
+                    rows = result_rows
+                    total_count = int(result.get("total_count", len(rows)))
+                    used_count_endpoint = True
+
+        if not used_count_endpoint:
+            rows = await gw.get_rows_by_filter(
+                where_sql=where_sql,
+                limit=limit,
+                params=params,
+            )
+            total_count = len(rows)
+
         fetch_id = _store_fetched_rows(rows, bridge=bridge)
         payload: dict[str, Any] = {
             "fetch_id": fetch_id,
-            "row_count": len(rows),
+            "row_count": total_count,
+            "total_count": total_count,
+            "returned_count": len(rows),
             "sample_rows": rows[:2],
-            "message": "Use fetch_id with add_rows_to_job. Avoid passing full rows through the model.",
+            "message": (
+                "Use fetch_id with add_rows_to_job. "
+                "Use total_count for cardinality; returned_count reflects the page size."
+            ),
         }
         if include_rows:
             payload["rows"] = rows

@@ -159,6 +159,8 @@ and all US state names (e.g., "california" → "CA").
 - ONLY reference columns that exist in the connected data source schema above.
 - Use `all_rows=true` (not a FilterIntent) when the user wants all rows shipped.
 - If the filter is ambiguous, ask the user for clarification — never guess.
+- Never claim a row/order count unless it comes from a tool response field (`total_rows`, `total_count`, or `row_count`).
+- If both `total_count` and `returned_count` are present, treat `total_count` as authoritative.
 {_schema_hints}
 """
 
@@ -309,6 +311,10 @@ When the request is ambiguous, exploratory, or not a straightforward shipping co
 5. Add rows
 6. Preview
 7. Await confirmation
+
+Fallback narration rules:
+- Do not narrate inferred counts from samples/pages.
+- If a tool response includes both `total_count` and `returned_count`, only cite `total_count`.
 """
         safety_mode_section = """
 - If no data source is connected and the user requests a batch operation, do not attempt to fetch rows — ask the user to connect a data source first.
@@ -334,6 +340,7 @@ deterministically (e.g., SQL validation, column mapping, payload building).
 - You must NEVER skip the preview step. The user must see costs before committing.
 - Prefer `ship_command_pipeline` first for straightforward shipping commands.
 - During multi-tool fallback steps, prefer tool-first execution with minimal narration.
+- During fallback, never state speculative counts before an authoritative tool count is returned.
 - After preview is ready, respond with ONLY one brief sentence. Do NOT provide row-level or shipment-level details in text.
 - After preview is ready, you must NOT call additional tools until the user confirms or cancels.
 """
