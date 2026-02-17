@@ -162,10 +162,20 @@ def _bind_bridge(
 # ---------------------------------------------------------------------------
 
 
-async def _persist_job_source_signature(job_id: str, db: Any) -> None:
-    """Persist source signature metadata for replay safety checks."""
-    gw = await get_data_gateway()
-    signature = await gw.get_source_signature()
+async def _persist_job_source_signature(
+    job_id: str,
+    db: Any,
+    source_signature: dict[str, Any] | None = None,
+) -> None:
+    """Persist source signature metadata for replay safety checks.
+
+    Accepts an optional precomputed signature to avoid an extra MCP round trip
+    when the caller already fetched source metadata in the same flow.
+    """
+    signature = source_signature
+    if signature is None:
+        gw = await get_data_gateway()
+        signature = await gw.get_source_signature()
     if signature is None:
         return
 

@@ -54,14 +54,6 @@ def _cache_path() -> Path:
     return path
 
 
-def _non_empty(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return value.strip() != ""
-    return True
-
-
 def _resolve_verify_sample_limit() -> int:
     """Resolve verification sample cap with a safe constant fallback."""
     raw = os.environ.get(
@@ -80,6 +72,13 @@ def _verify_mapping(
     source_columns: list[str],
     sample_rows: list[dict[str, Any]],
 ) -> tuple[bool, list[str]]:
+    """Validate mapping structure against source schema.
+
+    Verification is intentionally schema-based (not row-value-based) so cache
+    persistence remains stable across filtered subsets where required fields may
+    be blank in the sampled rows.
+    """
+    _ = sample_rows  # Signature retained for test hooks and call-site stability.
     column_set = set(source_columns)
     for mapped_col in mapping.values():
         if mapped_col not in column_set:
@@ -89,17 +88,11 @@ def _verify_mapping(
     for required_path in REQUIRED_FIELDS:
         canonical_key = _REQUIRED_PATH_TO_CANONICAL.get(required_path)
         mapped_col = mapping.get(required_path)
-        satisfied = False
-        for row in sample_rows:
-            if not isinstance(row, dict):
-                continue
-            if canonical_key and _non_empty(row.get(canonical_key)):
-                satisfied = True
-                break
-            if mapped_col and _non_empty(row.get(mapped_col)):
-                satisfied = True
-                break
-        if not satisfied:
+        if mapped_col in column_set:
+            continue
+        if canonical_key and canonical_key in column_set:
+            continue
+        if required_path not in mapping:
             missing_required.append(required_path)
     return len(missing_required) == 0, missing_required
 

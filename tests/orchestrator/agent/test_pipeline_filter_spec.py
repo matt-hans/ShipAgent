@@ -71,6 +71,29 @@ def _make_resolved_spec():
     ).model_dump()
 
 
+def _make_northeast_resolved_spec():
+    """Create a RESOLVED FilterSpec that matches Northeast states."""
+    return ResolvedFilterSpec(
+        status=ResolutionStatus.RESOLVED,
+        root=FilterGroup(
+            logic="AND",
+            conditions=[
+                FilterCondition(
+                    column="state",
+                    operator=FilterOperator.in_,
+                    operands=[
+                        TypedLiteral(type="string", value="NY"),
+                        TypedLiteral(type="string", value="NJ"),
+                    ],
+                )
+            ],
+        ),
+        explanation="state in [NY, NJ]",
+        schema_signature="test_sig",
+        canonical_dict_version="1.0",
+    ).model_dump()
+
+
 def _parse_tool_result(result: dict) -> tuple[bool, dict | str]:
     """Parse MCP tool response."""
     is_error = result.get("isError", False)
@@ -294,6 +317,66 @@ class TestPipelineFilterSpec:
         is_error, content = _parse_tool_result(result)
         assert is_error is True
         assert "business/company predicate" in content
+
+    @pytest.mark.asyncio
+    async def test_pipeline_uses_bridge_command_for_business_guard(self):
+        """Business guard should use the original user message from bridge."""
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        bridge = EventEmitterBridge()
+        bridge.last_user_message = "Ship all orders going to companies in the Northeast."
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool(
+                {
+                    # Simulate LLM truncating command text in tool args.
+                    "command": "Ship all orders in the Northeast.",
+                    "filter_spec": _make_northeast_resolved_spec(),
+                },
+                bridge=bridge,
+            )
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "business/company predicate" in content
+
+    @pytest.mark.asyncio
+    async def test_pipeline_expands_truncated_page_to_authoritative_total(self):
+        """Pipeline should auto-expand when count endpoint shows truncation."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        rows_page = [
+            {"_row_number": 1, "state": "CA", "company": "Acme", "weight": 5.0},
+            {"_row_number": 2, "state": "CA", "company": "Beta", "weight": 3.0},
+        ]
+        rows_full = rows_page + [
+            {"_row_number": 3, "state": "CA", "company": "Gamma", "weight": 2.0},
+            {"_row_number": 4, "state": "CA", "company": "Delta", "weight": 1.0},
+        ]
+        gw = _mock_gateway(rows=rows_full)
+        gw.get_rows_with_count.return_value = {
+            "rows": rows_page,
+            "total_count": 4,
+        }
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool(
+                {
+                    "command": "ship CA orders ground",
+                    "filter_spec": _make_resolved_spec(),
+                    "limit": 2,
+                }
+            )
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "preview_ready"
+        gw.get_rows_by_filter.assert_called_once()
+        assert gw.get_rows_by_filter.call_args.kwargs["limit"] == 4
 
     @pytest.mark.asyncio
     async def test_pipeline_attaches_filter_audit(self):

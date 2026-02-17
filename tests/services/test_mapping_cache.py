@@ -167,6 +167,50 @@ def test_verification_failure_is_not_persisted(_cache_env, monkeypatch):
     assert not _cache_env.exists()
 
 
+def test_valid_mapping_persists_even_when_sample_values_are_blank(_cache_env, monkeypatch):
+    calls = {"count": 0}
+
+    def _mapping(_columns):
+        calls["count"] += 1
+        return {
+            "shipTo.name": "Name",
+            "shipTo.addressLine1": "Address",
+            "shipTo.city": "City",
+            "shipTo.stateProvinceCode": "State",
+            "shipTo.postalCode": "ZIP",
+            "shipTo.countryCode": "Country",
+            "packages[0].weight": "Weight",
+        }
+
+    monkeypatch.setattr(mapping_cache, "auto_map_columns", _mapping)
+    blank_sample = [
+        {
+            "Name": "",
+            "Address": "",
+            "City": "",
+            "State": "",
+            "ZIP": "",
+            "Country": "",
+            "Weight": "",
+        }
+    ]
+
+    first = mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-blank",
+        sample_rows=blank_sample,
+    )
+    second = mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-blank",
+        sample_rows=blank_sample,
+    )
+
+    assert first == second
+    assert calls["count"] == 1
+    assert _cache_env.exists()
+
+
 def test_invalidate_clears_cache_and_file(_cache_env):
     mapping_cache.get_or_compute_mapping(
         source_columns=_source_columns(),
