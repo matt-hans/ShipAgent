@@ -12,6 +12,7 @@ Example:
 import os
 from datetime import datetime
 
+from src.orchestrator.models.filter_spec import FilterOperator
 from src.orchestrator.models.intent import SERVICE_ALIASES, ServiceCode
 from src.services.data_source_mcp_client import DataSourceInfo
 
@@ -60,6 +61,76 @@ def _build_schema_section(source_info: DataSourceInfo) -> str:
         nullable = "nullable" if col.nullable else "not null"
         lines.append(f"  - {col.name} ({col.type}, {nullable})")
     return "\n".join(lines)
+
+
+def _build_filter_rules() -> str:
+    """Build FilterIntent schema documentation for the batch mode prompt.
+
+    Replaces the legacy SQL filter rules with structured FilterIntent
+    instructions. The LLM produces a FilterIntent JSON; deterministic
+    tools resolve and compile it to parameterized SQL.
+
+    Returns:
+        Formatted string with FilterIntent schema and operator reference.
+    """
+    # Build operator reference
+    ops = ", ".join(f"`{op.value}`" for op in FilterOperator)
+
+    return f"""
+**IMPORTANT: NEVER generate raw SQL.** All filtering uses the FilterIntent JSON schema.
+
+### FilterIntent Schema
+
+To filter data, call `resolve_filter_intent` with a structured FilterIntent JSON.
+The deterministic resolver expands semantic references and produces a `filter_spec`
+that you pass to `ship_command_pipeline` or `fetch_rows`.
+
+**Workflow:**
+1. Build a FilterIntent JSON from the user's request
+2. Call `resolve_filter_intent` with the intent
+3. If status is RESOLVED: pass the returned `filter_spec` to pipeline/fetch_rows
+4. If status is NEEDS_CONFIRMATION: present the expansion to the user, then re-call with confirmation
+5. If status is UNRESOLVED: present suggestions to the user and ask for clarification
+
+### Available Operators
+
+{ops}
+
+### FilterIntent JSON Structure
+
+```json
+{{
+  "root": {{
+    "logic": "AND",
+    "conditions": [
+      {{"column": "state", "operator": "eq", "operands": [{{"type": "string", "value": "CA"}}]}},
+      {{"column": "total", "operator": "gt", "operands": [{{"type": "number", "value": 100}}]}}
+    ]
+  }}
+}}
+```
+
+### Semantic References
+
+For geographic regions and business predicates, use SemanticReference nodes instead of
+listing individual values. The resolver expands them deterministically:
+
+```json
+{{"semantic_key": "NORTHEAST", "target_column": "state"}}
+```
+
+Available semantic keys: NORTHEAST, SOUTHEAST, MIDWEST, SOUTHWEST, WEST_COAST,
+MOUNTAIN_WEST, MID_ATLANTIC, NEW_ENGLAND, SOUTH, PACIFIC, ALL_US,
+BUSINESS_RECIPIENT, PERSONAL_RECIPIENT, and all US state names (e.g., "california" → "CA").
+
+### Rules
+- NEVER generate SQL WHERE clauses. Always use FilterIntent JSON.
+- ONLY reference columns that exist in the connected data source schema above.
+- Use `all_rows=true` (not a FilterIntent) when the user wants all rows shipped.
+- If the filter is ambiguous, ask the user for clarification — never guess.
+- For person name searches, use `contains_ci` operator on `customer_name` or `ship_to_name`.
+- For tag searches, use `contains_ci` operator on the `tags` column.
+"""
 
 
 def build_system_prompt(
@@ -170,57 +241,16 @@ You have deterministic tools available. In interactive mode, use `preview_intera
 for shipment creation. Do not attempt batch/data-source tools in this mode.
 """
     else:
-        filter_rules_section = f"""
-When generating SQL WHERE clauses to filter the user's data, follow these rules strictly:
-
-### Person Name Handling
-- "customer_name" = the person who PLACED the order (the buyer)
-- "ship_to_name" = the person who RECEIVES the package (the recipient)
-- When the user references a person by name (e.g. "customer Noah Bode", "for Noah Bode",
-  "orders for John Smith"), ALWAYS check BOTH fields using OR logic:
-  customer_name ILIKE '%Noah Bode%' OR ship_to_name ILIKE '%Noah Bode%'
-- When the user explicitly says "placed by" or "bought by", use only customer_name
-- When the user explicitly says "shipping to" or "deliver to", use only ship_to_name
-- For name matching, use ILIKE with % wildcards to handle minor spelling variations
-
-### Status Handling
-- "status" is a composite field like "paid/unfulfilled" — use LIKE for substring matching
-- "financial_status" is standalone: 'paid', 'pending', 'refunded', 'authorized', 'partially_refunded'
-- "fulfillment_status" is standalone: 'unfulfilled', 'fulfilled', 'partial'
-- For "paid orders" prefer: financial_status = 'paid'
-- For "unfulfilled orders" prefer: fulfillment_status = 'unfulfilled'
-
-### Date Handling
-- For "today", use: column = '{current_date}'
-- For "this week", calculate the appropriate date range
-- State abbreviations: California='CA', Texas='TX', New York='NY', etc.
-
-### Tag Handling
-- "tags" is a comma-separated string (e.g. "VIP, wholesale, priority")
-- To match a tag, use: tags LIKE '%VIP%'
-
-### Weight Handling
-- "total_weight_grams" is in grams. 1 lb = 453.592 grams, 1 kg = 1000 grams
-- For "orders over 5 lbs": total_weight_grams > 2268
-- For "orders over 2 kg": total_weight_grams > 2000
-
-### Item Count Handling
-- "item_count" = total number of items across all line items
-- For "orders with more than 3 items": item_count > 3
-
-### General Rules
-- ONLY reference columns that exist in the connected data source schema above
-- Use proper SQL syntax with single quotes for string values
-- If the filter is ambiguous, ask the user for clarification — never guess
-"""
+        filter_rules_section = _build_filter_rules()
         workflow_section = """
 ### Shipping Commands (default path)
 
 For straightforward shipping commands (for example: "ship all CA orders via Ground"):
 
-1. **Parse + Filter**: Understand intent and generate a SQL WHERE clause (or omit for all rows)
-2. **Single Tool Call**: Call `ship_command_pipeline` with the filter and command text. Include `service_code` ONLY when the user explicitly requests a service (e.g., Ground, 2nd Day Air)
-3. **Post-Preview Message**: After preview appears, respond with ONLY one brief sentence:
+1. **Parse + Build FilterIntent**: Build a FilterIntent JSON from the user's request (or use `all_rows=true` for all rows)
+2. **Resolve Filter**: Call `resolve_filter_intent` with the FilterIntent to get a `filter_spec`
+3. **Single Tool Call**: Call `ship_command_pipeline` with the `filter_spec` and command text. Include `service_code` ONLY when the user explicitly requests a service (e.g., Ground, 2nd Day Air)
+4. **Post-Preview Message**: After preview appears, respond with ONLY one brief sentence:
    "Preview ready — X rows at $Y estimated total. Please review and click Confirm or Cancel."
 
 Important:
@@ -228,7 +258,7 @@ Important:
 - Do NOT chain `create_job`, `add_rows_to_job`, and `batch_preview` when this fast path applies.
 
 If `ship_command_pipeline` returns an error:
-- Bad WHERE clause: fix the clause and retry once.
+- FilterSpec compilation error: fix the intent and retry once.
 - UPS/preview failure: report the error with `job_id` and suggest user action.
 - Do NOT auto-fallback to individual tools for the same command, to avoid duplicate jobs.
 
@@ -237,8 +267,8 @@ If `ship_command_pipeline` returns an error:
 When the request is ambiguous, exploratory, or not a straightforward shipping command:
 
 1. Check data source
-2. Generate/validate filter
-3. Fetch rows
+2. Build FilterIntent and call `resolve_filter_intent`
+3. Fetch rows with the resolved `filter_spec`
 4. Create job
 5. Add rows
 6. Preview
