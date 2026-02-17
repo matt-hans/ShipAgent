@@ -637,6 +637,7 @@ def _is_truthy(value: Any) -> bool:
 def build_ups_api_payload(
     simplified: dict[str, Any],
     account_number: str,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Transform simplified format to full UPS ShipmentRequest.
 
@@ -645,6 +646,9 @@ def build_ups_api_payload(
             Keys: shipper, shipTo, packages, serviceCode, description,
             reference, reference2, saturdayDelivery, signatureRequired.
         account_number: UPS account number for billing.
+        idempotency_key: Optional idempotency key for TransactionReference.
+            When provided, included as CustomerContext for exactly-once
+            shipment creation and crash recovery audit.
 
     Returns:
         Full UPS API ShipmentRequest wrapper.
@@ -811,9 +815,13 @@ def build_ups_api_payload(
     if options:
         shipment["ShipmentServiceOptions"] = options
 
+    request: dict[str, Any] = {"RequestOption": "nonvalidate"}
+    if idempotency_key:
+        request["TransactionReference"] = {"CustomerContext": idempotency_key}
+
     return {
         "ShipmentRequest": {
-            "Request": {"RequestOption": "nonvalidate"},
+            "Request": request,
             "Shipment": shipment,
             "LabelSpecification": {
                 "LabelImageFormat": {"Code": DEFAULT_LABEL_FORMAT},
