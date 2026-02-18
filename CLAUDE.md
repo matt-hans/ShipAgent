@@ -41,7 +41,9 @@ These rules are non-negotiable. Violating them creates architectural debt that u
 **Interactive Shipping:** COMPLETE — ad-hoc single-shipment creation with preview gate and auto-populated shipper config
 **International Shipping:** COMPLETE — US→CA/MX lane validation, commodity handling, customs forms, batch + interactive integration. Gated by `INTERNATIONAL_ENABLED_LANES` env var.
 **Headless Automation CLI:** COMPLETE — `shipagent` CLI with daemon management, conversational REPL, hot-folder watchdog, auto-confirm engine. Shared services (`batch_executor.py`, `conversation_handler.py`) enable code reuse between HTTP routes and CLI InProcessRunner.
-**Test Count:** 1320 test functions across 77 test files
+**Test Count:** ~1887 test functions across 80+ test files (as of 2026-02-18, post API-key auth + decision auditing)
+**API Key Auth:** COMPLETE — optional `SHIPAGENT_API_KEY` env var gates `/api/*`; `X-API-Key` header required when set
+**Agent Decision Auditing:** COMPLETE — `DecisionAuditService` ledger with SQLite tables + JSONL mirror; `GET /api/v1/agent-audit/runs` endpoint
 **UPS MCP v2 Integration:** COMPLETE — 18 UPS tools (7 original + 11 new) across 6 domains. Agent uses ups-mcp as stdio MCP server with v2 tools available in both batch and interactive modes; BatchEngine uses UPSMCPClient (programmatic MCP over stdio). New tools: pickup (6), paperless (3), locator (1), landed cost (1). Frontend: domain-colored cards (pickup/purple, locator/teal, paperless/amber, landed-cost/indigo, tracking/blue).
 
 ## Architecture
@@ -337,6 +339,14 @@ Per-conversation agent sessions. Each gets isolated history, persistent `Orchest
 
 Builds UPS API payloads from column-mapped data + canonical constants (`ups_constants.py`). All field limits, defaults, packaging codes, and label specs are imported — never inline. See [UPS API Lessons](#ups-api-lessons) for hard-won fixes.
 
+### API Key Auth Middleware (`src/api/middleware/auth.py`)
+
+Optional gate controlled by `SHIPAGENT_API_KEY` env var. When set, all `/api/*` paths require `X-API-Key: <key>` header. Public paths (`/health`, `/readyz`, `/docs`, `/assets/`) are exempt. Uses `hmac.compare_digest` for timing-safe comparison. Omit or leave blank to disable.
+
+### DecisionAuditService (`src/services/decision_audit_service.py`)
+
+Centralized agent decision ledger. Writes to `agent_decision_runs` + `agent_decision_events` SQLite tables; mirrors best-effort to JSONL. Context propagation via `src/services/decision_audit_context.py`. Config env vars: `AGENT_AUDIT_ENABLED`, `AGENT_AUDIT_JSONL_PATH`, `AGENT_AUDIT_RETENTION_DAYS`, `AGENT_AUDIT_MAX_PAYLOAD_BYTES`.
+
 ## Frontend Architecture
 
 The UI is an agent-driven chat interface. `useConversation` hook manages session lifecycle and SSE event streaming. `useAppState` context holds conversation, jobs, data source, and mode state (`interactiveShipping` persisted to localStorage).
@@ -360,6 +370,8 @@ All endpoints use `/api/v1/` prefix. See route files in `src/api/routes/` for fu
 **Saved Sources** (saved_data_sources.py): `GET /saved-sources`, `POST /saved-sources/reconnect`, `DELETE /saved-sources/{id}`, `POST /saved-sources/bulk-delete`
 
 **Platforms** (platforms.py): `POST /platforms/{platform}/connect`, `GET /platforms/shopify/env-status` (auto-reconnect after restart), `GET /platforms/{platform}/orders`
+
+**Agent Audit** (agent_audit.py): `GET /agent-audit/runs`, `GET /agent-audit/runs/{id}`, `GET /agent-audit/runs/{id}/events`, `GET /agent-audit/runs/{id}/timeline`, `GET /agent-audit/export`, `DELETE /agent-audit/runs` (prune by age)
 
 ## Technology Stack
 
@@ -389,6 +401,16 @@ set -a && source .env && set +a && uvicorn src.api.main:app --reload --port 8000
 
 # After backend restart, reconnect Shopify:
 curl http://localhost:8000/api/v1/platforms/shopify/env-status
+
+# Docker (dev)
+docker-compose up --build
+
+# Docker (prod)
+docker-compose -f docker-compose.prod.yml up -d
+
+# Database: set DATABASE_URL for custom SQLite path
+# Docker default: DATABASE_URL=sqlite:////app/data/shipagent.db
+# Backup/restore: scripts/backup.sh <dest>, scripts/restore.sh <backup>
 ```
 
 ### Tests
