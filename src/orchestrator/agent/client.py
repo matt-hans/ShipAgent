@@ -57,6 +57,7 @@ from src.orchestrator.agent.config import create_mcp_servers_config
 from src.orchestrator.agent.hooks import create_hook_matchers
 from src.orchestrator.agent.tools import get_all_tool_definitions
 from src.orchestrator.agent.tools.core import EventEmitterBridge
+from src.services.decision_audit_service import DecisionAuditService
 
 # Default model resolution:
 # 1) AGENT_MODEL (preferred)
@@ -301,6 +302,18 @@ class OrchestrationAgent:
         try:
             await self._client.query(user_input)
             assistant_turn_count = 0
+            text_chunk_count = 0
+            text_chunk_chars = 0
+            DecisionAuditService.log_event_from_context(
+                phase="ingress",
+                event_name="agent.query.dispatched",
+                actor="agent",
+                payload={
+                    "input_length": len(user_input),
+                    "model": self._model,
+                    "interactive_shipping": self._interactive_shipping,
+                },
+            )
 
             # Track whether we received StreamEvents for text (to avoid
             # duplicate emission from AssistantMessage TextBlocks)
@@ -340,6 +353,18 @@ class OrchestrationAgent:
                             if text:
                                 streamed_text_in_turn = True
                                 current_text_parts.append(text)
+                                text_chunk_count += 1
+                                text_chunk_chars += len(text)
+                                if text_chunk_count % 20 == 0:
+                                    DecisionAuditService.log_event_from_context(
+                                        phase="egress",
+                                        event_name="agent.text_chunk.batch",
+                                        actor="agent",
+                                        payload={
+                                            "chunks_seen": text_chunk_count,
+                                            "chars_seen": text_chunk_chars,
+                                        },
+                                    )
                                 yield {
                                     "event": "agent_message_delta",
                                     "data": {"text": text},
@@ -349,6 +374,15 @@ class OrchestrationAgent:
                         # Emit complete text block for history storage
                         if current_text_parts:
                             full_text = "".join(current_text_parts)
+                            DecisionAuditService.log_event_from_context(
+                                phase="egress",
+                                event_name="agent.text_block.completed",
+                                actor="agent",
+                                payload={
+                                    "block_chars": len(full_text),
+                                    "chunks_seen": text_chunk_count,
+                                },
+                            )
                             yield {
                                 "event": "agent_message",
                                 "data": {"text": full_text},
@@ -372,9 +406,24 @@ class OrchestrationAgent:
                                     "tool_input": block.input,
                                 },
                             }
+                            DecisionAuditService.log_event_from_context(
+                                phase="tool_call",
+                                event_name="agent.tool_call.observed",
+                                actor="agent",
+                                tool_name=str(block.name),
+                                payload={
+                                    "tool_input_type": type(block.input).__name__,
+                                },
+                            )
                         elif isinstance(block, TextBlock):
                             # Only emit if we didn't stream this text
                             if not streamed_text_in_turn:
+                                DecisionAuditService.log_event_from_context(
+                                    phase="egress",
+                                    event_name="agent.text_block.completed",
+                                    actor="agent",
+                                    payload={"block_chars": len(block.text)},
+                                )
                                 yield {
                                     "event": "agent_message",
                                     "data": {"text": block.text},
@@ -386,10 +435,27 @@ class OrchestrationAgent:
                 # --- ResultMessage: agent finished ---
                 elif isinstance(message, ResultMessage):
                     if message.is_error:
+                        DecisionAuditService.log_event_from_context(
+                            phase="error",
+                            event_name="agent.result.error",
+                            actor="agent",
+                            payload={"message": str(message.result)},
+                        )
                         yield {
                             "event": "error",
                             "data": {"message": str(message.result)},
                         }
+                    else:
+                        DecisionAuditService.log_event_from_context(
+                            phase="egress",
+                            event_name="agent.result.completed",
+                            actor="agent",
+                            payload={
+                                "assistant_turn_count": assistant_turn_count,
+                                "streamed_chunks": text_chunk_count,
+                                "streamed_chars": text_chunk_chars,
+                            },
+                        )
                     break
 
             self._last_turn_count = assistant_turn_count
@@ -397,6 +463,12 @@ class OrchestrationAgent:
         except Exception as e:
             self._last_turn_count = 0
             logger.error("process_message_stream error: %s", e)
+            DecisionAuditService.log_event_from_context(
+                phase="error",
+                event_name="agent.stream.exception",
+                actor="agent",
+                payload={"error": str(e)},
+            )
             yield {
                 "event": "error",
                 "data": {"message": str(e)},

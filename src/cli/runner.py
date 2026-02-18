@@ -397,3 +397,15 @@ class InProcessRunner:
         """Shut down gateways."""
         from src.services.gateway_provider import shutdown_gateways
         await shutdown_gateways()
+
+    async def get_job_audit_events(self, job_id: str, limit: int = 200) -> list[dict]:
+        """Get centralized decision audit events for a job."""
+        from src.services.decision_audit_service import DecisionAuditService
+
+        payload = DecisionAuditService.list_events_for_job(
+            job_id=job_id,
+            limit=limit,
+            offset=0,
+        )
+        events = payload.get("events", [])
+        return events if isinstance(events, list) else []

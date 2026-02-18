@@ -332,3 +332,11 @@ class ShipAgentClient(Protocol):
     async def cleanup(self) -> None:
         """Clean up resources (close connections, stop MCP clients)."""
         ...
+
+    async def get_job_audit_events(
+        self,
+        job_id: str,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Get centralized agent audit events for a job."""
+        ...

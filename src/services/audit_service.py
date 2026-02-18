@@ -78,6 +78,17 @@ REDACT_FIELDS = {
 }
 
 REDACTED = "[REDACTED]"
+_EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+_PHONE_RE = re.compile(r"\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b")
+_TOKEN_RE = re.compile(r"\b(?:sk-[A-Za-z0-9_-]{12,}|[A-Fa-f0-9]{24,})\b")
+
+
+def _redact_string(value: str) -> str:
+    """Redact common secret/PII patterns from raw strings."""
+    value = _EMAIL_RE.sub(REDACTED, value)
+    value = _PHONE_RE.sub(REDACTED, value)
+    value = _TOKEN_RE.sub(REDACTED, value)
+    return value
 
 
 def redact_sensitive(
@@ -104,7 +115,7 @@ def redact_sensitive(
     if data is None:
         return None
     if isinstance(data, str):
-        return data
+        return _redact_string(data)
     if isinstance(data, list):
         return [redact_sensitive(item, _depth + 1) for item in data]
     if isinstance(data, dict):

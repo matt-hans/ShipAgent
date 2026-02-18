@@ -301,6 +301,58 @@ def _ensure_columns_exist(conn: Any) -> None:
         except OperationalError:
             pass  # Column doesn't exist yet (pre-Phase-8 DB)
 
+    # Agent decision audit ledger tables/indexes.
+    # Use idempotent CREATE TABLE/INDEX for resilience in partial upgrades.
+    for ddl in [
+        """
+        CREATE TABLE IF NOT EXISTS agent_decision_runs (
+            id VARCHAR(36) PRIMARY KEY,
+            session_id VARCHAR(64),
+            job_id VARCHAR(36),
+            user_message_hash VARCHAR(64) NOT NULL,
+            user_message_redacted TEXT NOT NULL,
+            source_signature TEXT,
+            status VARCHAR(20) NOT NULL DEFAULT 'running',
+            model VARCHAR(120),
+            interactive_shipping BOOLEAN NOT NULL DEFAULT 0,
+            started_at VARCHAR(50) NOT NULL,
+            completed_at VARCHAR(50),
+            FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE SET NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS agent_decision_events (
+            id VARCHAR(36) PRIMARY KEY,
+            run_id VARCHAR(36) NOT NULL,
+            seq INTEGER NOT NULL,
+            timestamp VARCHAR(50) NOT NULL,
+            phase VARCHAR(32) NOT NULL,
+            event_name VARCHAR(120) NOT NULL,
+            actor VARCHAR(20) NOT NULL,
+            tool_name VARCHAR(120),
+            payload_redacted TEXT NOT NULL,
+            payload_hash VARCHAR(64) NOT NULL,
+            latency_ms INTEGER,
+            prev_event_hash VARCHAR(64),
+            event_hash VARCHAR(64) NOT NULL,
+            UNIQUE(run_id, seq),
+            FOREIGN KEY(run_id) REFERENCES agent_decision_runs(id) ON DELETE CASCADE
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_agent_decision_runs_session ON agent_decision_runs (session_id)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_decision_runs_job ON agent_decision_runs (job_id)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_decision_runs_status ON agent_decision_runs (status)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_decision_runs_started_at ON agent_decision_runs (started_at)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_decision_events_run ON agent_decision_events (run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_decision_events_phase ON agent_decision_events (phase)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_decision_events_event_name ON agent_decision_events (event_name)",
+        "CREATE INDEX IF NOT EXISTS idx_agent_decision_events_timestamp ON agent_decision_events (timestamp)",
+    ]:
+        try:
+            conn.execute(text(ddl))
+        except OperationalError as e:
+            log.warning("Agent decision ledger migration step failed: %s", e)
+
     # write_back_tasks migration: deduplicate historical duplicates before
     # enforcing uniqueness on (job_id, row_number).
     try:

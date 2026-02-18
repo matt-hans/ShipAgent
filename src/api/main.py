@@ -34,6 +34,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import (
+    agent_audit,
     conversations,
     data_sources,
     jobs,
@@ -61,6 +62,14 @@ _watchdog_service = None  # Set by watchdog startup in lifespan
 
 def _ensure_agent_sdk_available() -> None:
     """Fail fast when backend is not running with the project virtualenv."""
+    if os.environ.get("SHIPAGENT_SKIP_SDK_CHECK", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        logger.warning("Skipping claude_agent_sdk availability check by configuration.")
+        return
     try:
         import claude_agent_sdk  # noqa: F401
     except ModuleNotFoundError as exc:
@@ -535,6 +544,7 @@ app.include_router(progress.router, prefix="/api/v1")
 app.include_router(platforms.router, prefix="/api/v1")
 app.include_router(saved_data_sources.router, prefix="/api/v1")
 app.include_router(conversations.router, prefix="/api/v1")
+app.include_router(agent_audit.router, prefix="/api/v1")
 
 
 @app.get("/health")

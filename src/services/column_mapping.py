@@ -234,6 +234,18 @@ def auto_map_columns(source_columns: list[str]) -> dict[str, str]:
     Returns:
         Dict mapping simplified UPS field paths to source column names.
     """
+    mapping, _ = auto_map_columns_with_trace(source_columns)
+    return mapping
+
+
+def auto_map_columns_with_trace(
+    source_columns: list[str],
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Auto-map source column names and return trace metadata.
+
+    Trace includes the selected source column and candidate ranking basis
+    for each mapped target path.
+    """
     # Deterministic candidate pool per target path, independent of source order.
     by_path: dict[str, list[tuple[int, int, int, int, str, str]]] = {}
     canonical_columns = sorted(
@@ -277,6 +289,7 @@ def auto_map_columns(source_columns: list[str]) -> dict[str, str]:
             )
 
     mapping: dict[str, str] = {}
+    trace: dict[str, Any] = {}
     seen_paths: set[str] = set()
     for _, _, path in _AUTO_MAP_RULES:
         if path in seen_paths:
@@ -286,13 +299,33 @@ def auto_map_columns(source_columns: list[str]) -> dict[str, str]:
         if not candidates:
             continue
         # Rank: exact > substring > rule order > shorter header > lexical.
-        best = sorted(
+        ranked = sorted(
             candidates,
             key=lambda c: (-c[0], -c[1], -c[2], -c[3], c[4], c[5].lower()),
-        )[0]
+        )
+        best = ranked[0]
         mapping[path] = best[5]
+        trace[path] = {
+            "selected_source_column": best[5],
+            "selected_score": {
+                "exact_matches": best[0],
+                "substring_matches": best[1],
+                "rule_priority": -best[2],
+                "header_length_penalty": -best[3],
+            },
+            "candidates": [
+                {
+                    "source_column": candidate[5],
+                    "exact_matches": candidate[0],
+                    "substring_matches": candidate[1],
+                    "rule_priority": -candidate[2],
+                    "header_length_penalty": -candidate[3],
+                }
+                for candidate in ranked[:10]
+            ],
+        }
 
-    return mapping
+    return mapping, trace
 
 
 # Re-exported from src.services.ups_service_codes for backward compatibility:

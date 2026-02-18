@@ -15,6 +15,7 @@ from typing import Any, Callable, Coroutine
 
 from src.db.models import Job, JobRow, JobStatus, RowStatus
 from src.services.batch_engine import BatchEngine
+from src.services.decision_audit_service import DecisionAuditService
 from src.services.ups_mcp_client import UPSMCPClient
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,14 @@ async def execute_batch(
     job = db_session.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise ValueError(f"Job not found: {job_id}")
+    run_id = DecisionAuditService.resolve_run_id_for_job(job_id)
+    DecisionAuditService.log_event(
+        run_id=run_id,
+        phase="execution",
+        event_name="execution.batch.started",
+        actor="system",
+        payload={"job_id": job_id, "job_status": job.status},
+    )
 
     rows = (
         db_session.query(JobRow)
@@ -224,6 +233,22 @@ async def execute_batch(
             "$%.2f total, %d international rows",
             job_id, successful, failed, total_cost / 100, intl_count,
         )
+        DecisionAuditService.log_event(
+            run_id=run_id,
+            phase="execution",
+            event_name="execution.batch.completed",
+            actor="system",
+            payload={
+                "job_id": job_id,
+                "successful": successful,
+                "failed": failed,
+                "processed_rows": successful + failed,
+                "total_cost_cents": total_cost,
+                "international_row_count": intl_count,
+                "total_duties_taxes_cents": intl_duties,
+                "status": final_status,
+            },
+        )
 
         return {
             "successful": successful,
@@ -236,6 +261,13 @@ async def execute_batch(
 
     except Exception as e:
         logger.exception("Batch execution failed for job %s: %s", job_id, e)
+        DecisionAuditService.log_event(
+            run_id=run_id,
+            phase="error",
+            event_name="execution.batch.failed",
+            actor="system",
+            payload={"job_id": job_id, "error": str(e)},
+        )
         # Update job to failed status
         job = db_session.query(Job).filter(Job.id == job_id).first()
         if job and job.status == "running":

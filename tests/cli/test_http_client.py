@@ -208,3 +208,22 @@ class TestSubmitFile:
             await client.submit_file(str(csv_file), None, False)
 
         mock_delete.assert_called_once_with("sess-xyz")
+
+
+class TestJobAudit:
+    """Tests for HttpClient.get_job_audit_events."""
+
+    @pytest.mark.asyncio
+    async def test_get_job_audit_events(self):
+        """Returns event list from agent audit endpoint."""
+        client = _make_client({
+            "/api/v1/agent-audit/jobs/job-1/events": (200, {
+                "events": [{"id": "evt-1", "run_id": "run-1"}],
+                "total": 1,
+                "limit": 200,
+                "offset": 0,
+            }),
+        })
+        events = await client.get_job_audit_events("job-1")
+        assert len(events) == 1
+        assert events[0]["id"] == "evt-1"

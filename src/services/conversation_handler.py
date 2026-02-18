@@ -8,6 +8,16 @@ import hashlib
 import logging
 from typing import Any, AsyncIterator
 
+from src.db.models import AgentDecisionRunStatus
+from src.services.decision_audit_context import (
+    get_decision_job_id,
+    get_decision_run_id,
+    reset_decision_job_id,
+    reset_decision_run_id,
+    set_decision_job_id,
+    set_decision_run_id,
+)
+from src.services.decision_audit_service import DecisionAuditService
 from src.services.agent_session_manager import AgentSession, AgentSessionManager
 from src.services.gateway_provider import get_data_gateway
 
@@ -110,30 +120,71 @@ async def process_message(
     Yields:
         Event dicts with 'event' and 'data' keys.
     """
-    async with session.lock:
-        # Get current data source
-        try:
-            gw = await get_data_gateway()
-            source_info = await gw.get_source_info_typed()
-        except Exception:
-            source_info = None
+    existing_run_id = get_decision_run_id()
+    created_run_id: str | None = None
+    run_token = None
+    job_token = set_decision_job_id(None)
+    run_status = AgentDecisionRunStatus.completed
 
-        # Ensure agent exists (creates + starts if needed)
-        await ensure_agent(session, source_info, interactive_shipping)
+    if existing_run_id is None:
+        created_run_id = DecisionAuditService.start_run(
+            session_id=session.session_id,
+            user_message=content,
+            model=None,
+            interactive_shipping=interactive_shipping,
+        )
+        run_token = set_decision_run_id(created_run_id)
 
-        # Wire emitter bridge for tool events (preview_ready, etc.)
-        if emit_callback:
-            session.agent.emitter_bridge.callback = emit_callback
+    try:
+        async with session.lock:
+            # Get current data source
+            try:
+                gw = await get_data_gateway()
+                source_info = await gw.get_source_info_typed()
+            except Exception:
+                source_info = None
 
-        try:
-            async for event in session.agent.process_message_stream(content):
-                yield event
+            # Ensure agent exists (creates + starts if needed)
+            await ensure_agent(session, source_info, interactive_shipping)
 
-                # Store complete text blocks in session history
-                if event.get("event") == "agent_message":
-                    text = event.get("data", {}).get("text", "")
-                    if text:
-                        session.add_message("assistant", text)
-        finally:
+            # Wire emitter bridge for tool events (preview_ready, etc.)
             if emit_callback:
-                session.agent.emitter_bridge.callback = None
+                session.agent.emitter_bridge.callback = emit_callback
+
+            try:
+                async for event in session.agent.process_message_stream(content):
+                    yield event
+
+                    # Store complete text blocks in session history
+                    if event.get("event") == "agent_message":
+                        text = event.get("data", {}).get("text", "")
+                        if text:
+                            session.add_message("assistant", text)
+                    elif event.get("event") == "error":
+                        run_status = AgentDecisionRunStatus.failed
+                    elif event.get("event") == "preview_ready":
+                        event_job_id = event.get("data", {}).get("job_id")
+                        if isinstance(event_job_id, str) and event_job_id:
+                            set_decision_job_id(event_job_id)
+                            DecisionAuditService.set_run_job_id(
+                                get_decision_run_id(),
+                                event_job_id,
+                            )
+            finally:
+                if emit_callback:
+                    session.agent.emitter_bridge.callback = None
+    except Exception:
+        run_status = AgentDecisionRunStatus.failed
+        raise
+    finally:
+        try:
+            if created_run_id is not None:
+                DecisionAuditService.complete_run(
+                    created_run_id,
+                    status=run_status,
+                    job_id=get_decision_job_id(),
+                )
+        finally:
+            reset_decision_job_id(job_token)
+            if run_token is not None:
+                reset_decision_run_id(run_token)
