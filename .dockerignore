@@ -31,7 +31,5 @@ dist
 build
 *.egg-info
 
-docs
 e2e-screenshots
 repomix-output.xml
-
