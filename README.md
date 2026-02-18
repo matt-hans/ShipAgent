@@ -19,10 +19,12 @@ ShipAgent is an AI-powered shipping platform that lets you describe shipments in
 - **Preview & Confirm** — Review cost estimates and shipment details before execution
 - **Crash Recovery** — Resume interrupted batches from exactly where they stopped
 
-### Data Sources
+### Current Data Sources
 - **CSV & Excel** — Upload flat files with automatic sheet detection
 - **SQL Databases** — Connect to PostgreSQL/MySQL via connection string
 - **Shopify** — Pull unfulfilled orders directly from your store
+
+### Future Data Sources
 - **WooCommerce** — Connect to WooCommerce REST API
 - **SAP Business One** — Fetch sales orders from SAP B1 Service Layer
 - **Oracle** — Query Oracle Fusion Cloud/ERP order data
