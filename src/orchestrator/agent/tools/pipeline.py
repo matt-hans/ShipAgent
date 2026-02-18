@@ -147,6 +147,43 @@ def _command_specificity_score(command: str) -> tuple[int, int]:
     return score, len(normalized)
 
 
+def _command_filter_fingerprint(
+    command: str,
+) -> tuple[
+    str | None,
+    frozenset[str],
+    bool,
+    tuple[tuple[float, bool] | None, tuple[float, bool] | None],
+    str | None,
+]:
+    """Return normalized filter semantics used for safe cache reuse."""
+    return (
+        _expected_region_from_command(command),
+        frozenset(_expected_state_codes_from_command(command)),
+        _command_requests_business_filter(command),
+        _requested_total_bounds_from_command(command),
+        _requested_fulfillment_status_from_command(command),
+    )
+
+
+def _commands_filter_equivalent_for_cache(
+    cached_command: str,
+    current_command: str,
+) -> bool:
+    """True when two commands express the same filter semantics.
+
+    This allows service-only or wording-only follow-ups to reuse the same
+    resolved filter without re-running resolve_filter_intent.
+    """
+    if not _command_implies_filter(cached_command):
+        return False
+    if not _command_implies_filter(current_command):
+        return False
+    return _command_filter_fingerprint(cached_command) == _command_filter_fingerprint(
+        current_command
+    )
+
+
 def _select_validation_command(
     arg_command: str,
     bridge: EventEmitterBridge | None,
@@ -873,8 +910,23 @@ async def ship_command_pipeline_tool(
             cached_spec_raw = getattr(bridge, "last_resolved_filter_spec", None)
             cached_command_raw = getattr(bridge, "last_resolved_filter_command", None)
             if isinstance(cached_spec_raw, dict) and isinstance(cached_command_raw, str):
-                if normalize_term(cached_command_raw) == normalize_term(validation_command):
+                same_command = (
+                    normalize_term(cached_command_raw)
+                    == normalize_term(validation_command)
+                )
+                same_filter_semantics = _commands_filter_equivalent_for_cache(
+                    cached_command_raw,
+                    validation_command,
+                )
+                if same_command or same_filter_semantics:
                     cached_spec = cached_spec_raw
+                    if same_filter_semantics and not same_command:
+                        logger.info(
+                            "ship_command_pipeline reusing cached filter_spec via "
+                            "semantic-equivalence cached_command=%r current_command=%r",
+                            cached_command_raw[:120],
+                            validation_command[:120],
+                        )
 
         if cached_spec is not None:
             filter_spec_raw = cached_spec
@@ -1482,7 +1534,43 @@ async def get_landed_cost_tool(
     try:
         client = await _get_ups_client()
         result = await client.get_landed_cost(**args)
-        payload = {"action": "landed_cost", "success": True, **result}
+        commodities_raw = args.get("commodities", [])
+        commodities: list[dict[str, Any]] = (
+            commodities_raw if isinstance(commodities_raw, list) else []
+        )
+        total_units = 0
+        declared_value = 0.0
+        for item in commodities:
+            if not isinstance(item, dict):
+                continue
+            try:
+                qty = int(item.get("quantity", 0) or 0)
+            except (TypeError, ValueError):
+                qty = 0
+            try:
+                price = float(item.get("price", 0) or 0)
+            except (TypeError, ValueError):
+                price = 0.0
+            total_units += max(qty, 0)
+            declared_value += max(qty, 0) * max(price, 0.0)
+
+        payload = {
+            "action": "landed_cost",
+            "success": True,
+            **result,
+            "requestSummary": {
+                "exportCountryCode": str(args.get("export_country_code", "")).upper(),
+                "importCountryCode": str(args.get("import_country_code", "")).upper(),
+                "currencyCode": str(
+                    args.get("currency_code")
+                    or result.get("currencyCode", "USD")
+                ).upper(),
+                "shipmentType": str(args.get("shipment_type", "Sale")),
+                "commodityCount": len(commodities),
+                "totalUnits": total_units,
+                "declaredMerchandiseValue": f"{declared_value:.2f}",
+            },
+        }
         _emit_event("landed_cost_result", payload, bridge=bridge)
         return _ok("Landed cost estimate displayed.")
     except UPSServiceError as e:

@@ -1271,13 +1271,28 @@ class UPSMCPClient:
             }
             for item in items_raw
         ]
+
+        brokerage_raw = shipment.get("brokerageFeeItems", [])
+        if isinstance(brokerage_raw, dict):
+            brokerage_raw = [brokerage_raw]
+        brokerage_items = [
+            {
+                "chargeName": str(item.get("chargeName", "")),
+                "chargeAmount": str(item.get("chargeAmount", 0)),
+            }
+            for item in brokerage_raw
+            if isinstance(item, dict)
+        ]
         return {
             "success": True,
             "totalLandedCost": str(grand_total),
             "currencyCode": currency,
+            "shipmentId": str(shipment.get("id", "")),
+            "importCountryCode": str(shipment.get("importCountryCode", "")),
             "totalDuties": str(shipment.get("totalDuties", 0)),
             "totalVAT": str(shipment.get("totalVAT", 0)),
             "totalBrokerageFees": str(shipment.get("totalBrokerageFees", 0)),
+            "brokerageFeeItems": brokerage_items,
             "items": items,
         }
 

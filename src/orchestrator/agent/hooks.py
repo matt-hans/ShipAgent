@@ -48,6 +48,7 @@ __all__ = [
     "validate_track_package",
     "validate_find_locations",
     "validate_get_service_center_facilities",
+    "validate_landed_cost_quote",
     "deny_raw_sql_in_filter_tools",
     "validate_intent_on_resolve",
     "validate_filter_spec_on_pipeline",
@@ -568,6 +569,35 @@ async def validate_get_service_center_facilities(
     )
 
 
+async def validate_landed_cost_quote(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """Deny direct MCP landed-cost calls — force orchestrator wrapper.
+
+    The orchestrator wrapper ``get_landed_cost_tool`` emits a
+    ``landed_cost_result`` event for the frontend LandedCostCard.
+    Direct MCP calls bypass that event path and degrade to plain text.
+
+    Args:
+        input_data: Contains 'tool_name' and 'tool_input' keys.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context from Claude Agent SDK.
+
+    Returns:
+        hookSpecificOutput with denial.
+    """
+    _log_to_stderr(
+        f"[VALIDATION] Pre-hook DENYING direct landed_cost_quote | ID: {tool_use_id}"
+    )
+    return _deny_with_reason(
+        "Direct mcp__ups__get_landed_cost_quote is not allowed. "
+        "Use the get_landed_cost orchestrator tool instead, which emits "
+        "landed cost result events for the UI."
+    )
+
+
 # =============================================================================
 # Filter Enforcement Hooks
 # =============================================================================
@@ -1011,6 +1041,10 @@ def create_hook_matchers(
             HookMatcher(
                 matcher="mcp__ups__get_service_center_facilities",
                 hooks=[validate_get_service_center_facilities],
+            ),
+            HookMatcher(
+                matcher="mcp__ups__get_landed_cost_quote",
+                hooks=[validate_landed_cost_quote],
             ),
             HookMatcher(
                 matcher=None,
