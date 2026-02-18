@@ -116,11 +116,11 @@ async def test_clear_source_resets_state(mock_ctx_with_source):
 
 
 @pytest.mark.asyncio
-async def test_source_signature_parity_with_data_source_service(mock_ctx_with_source):
-    """Signature from get_source_info must match DataSourceService.get_source_signature().
+async def test_source_signature_parity_with_gateway_fingerprint(mock_ctx_with_source):
+    """Signature from get_source_info must match gateway fingerprint rules.
 
-    This is a replay-safety gate: if the two diverge, job source matching
-    will break during migration.
+    This is a replay-safety gate: if fingerprint construction changes,
+    job source matching can break.
     """
     from src.mcp.data_source.tools.source_info_tools import get_source_info
 
@@ -135,8 +135,7 @@ async def test_source_signature_parity_with_data_source_service(mock_ctx_with_so
 
     result = await get_source_info(mock_ctx_with_source)
 
-    # Compute expected fingerprint the same way DataSourceService does
-    # (src/services/data_source_service.py:442-448)
+    # Compute expected fingerprint from the canonical column-signature format.
     expected_parts = [
         f"{col[0]}:{col[1]}:{int(col[2] == 'YES')}"
         for col in mock_schema
@@ -147,7 +146,7 @@ async def test_source_signature_parity_with_data_source_service(mock_ctx_with_so
 
     assert result["signature"] == expected_fingerprint, (
         f"Signature mismatch — MCP tool produced {result['signature']!r}, "
-        f"DataSourceService would produce {expected_fingerprint!r}"
+        f"expected fingerprint is {expected_fingerprint!r}"
     )
 
     # Also verify nullable values match real DuckDB output, not hardcoded

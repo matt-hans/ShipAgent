@@ -60,7 +60,7 @@ class DataSourceGateway(Protocol):
     async def get_source_signature(self) -> dict[str, Any] | None:
         """Get stable source signature for replay safety checks.
 
-        Returns dict matching DataSourceService.get_source_signature() contract:
+        Returns:
         {"source_type": str, "source_ref": str, "schema_fingerprint": str}
         or None if no source is active.
         """

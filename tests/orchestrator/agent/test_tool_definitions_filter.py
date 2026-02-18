@@ -55,7 +55,7 @@ class TestToolDefinitionsFilter:
         assert "filter_spec" in props
         assert "all_rows" in props
         assert "where_clause" not in props
-        assert "oneOf" in tool["input_schema"]
+        assert "oneOf" not in tool["input_schema"]
 
     def test_resolve_filter_intent_input_schema(self):
         """resolve_filter_intent has intent property in schema."""

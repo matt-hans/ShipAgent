@@ -166,12 +166,12 @@ class TestProcessMessageStream:
                 "content_block": {
                     "type": "tool_use",
                     "id": "tool-1",
-                    "name": "batch_preview",
+                    "name": "ship_command_pipeline",
                     "input": {"job_id": "j1"},
                 },
             })
             yield FakeAssistantMessage([
-                FakeToolUseBlock("tool-1", "batch_preview", {"job_id": "j1"}),
+                FakeToolUseBlock("tool-1", "ship_command_pipeline", {"job_id": "j1"}),
             ])
             yield FakeResultMessage()
 
@@ -219,12 +219,12 @@ class TestProcessMessageStream:
                 "type": "content_block_start",
                 "content_block": {
                     "type": "tool_use",
-                    "name": "batch_preview",
+                    "name": "ship_command_pipeline",
                     "input": {},
                 },
             })
             yield FakeAssistantMessage([
-                FakeToolUseBlock("tool-2", "batch_preview", {"job_id": "j2"}),
+                FakeToolUseBlock("tool-2", "ship_command_pipeline", {"job_id": "j2"}),
             ])
             yield FakeResultMessage()
 

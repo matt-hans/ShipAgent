@@ -19,16 +19,16 @@ client = TestClient(app)
 
 def test_batch_heuristic_avoids_false_positive_for_personal_phrase():
     """'ship orders to my brother' should not auto-switch to batch mode."""
-    from src.api.routes.conversations import _looks_like_batch_shipping_request
+    from src.orchestrator.agent.intent_detection import is_batch_shipping_request
 
-    assert not _looks_like_batch_shipping_request("I want to ship orders to my brother")
+    assert not is_batch_shipping_request("I want to ship orders to my brother")
 
 
 def test_batch_heuristic_detects_plural_filtered_command():
     """Plural + filter cues should be treated as batch shipping."""
-    from src.api.routes.conversations import _looks_like_batch_shipping_request
+    from src.orchestrator.agent.intent_detection import is_batch_shipping_request
 
-    assert _looks_like_batch_shipping_request(
+    assert is_batch_shipping_request(
         "Ship orders to customers in CA where status is unfulfilled",
     )
 
@@ -327,7 +327,7 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
 
 @pytest.mark.asyncio
 async def test_process_message_uses_gateway_for_source_info():
-    """_process_agent_message uses DataSourceGateway (not DataSourceService)."""
+    """_process_agent_message uses DataSourceGateway for source info."""
     from src.api.routes import conversations as conversations_mod
     conversations = importlib.reload(conversations_mod)
 

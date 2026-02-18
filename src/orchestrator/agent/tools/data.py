@@ -11,6 +11,10 @@ from typing import Any
 
 
 
+from src.orchestrator.agent.intent_detection import (
+    is_confirmation_response,
+    is_shipping_request,
+)
 from src.orchestrator.agent.tools.core import (
     EventEmitterBridge,
     _err,
@@ -82,37 +86,34 @@ def _determinism_guard_error(source_info: dict[str, Any]) -> str | None:
         "source with PRIMARY KEY/UNIQUE constraints."
     )
 
+def _command_for_filter_cache(bridge: EventEmitterBridge) -> str | None:
+    """Select a stable command string to bind with cached resolved specs.
 
-def _looks_like_shipping_request(message: str | None) -> bool:
-    """Heuristic: detect direct shipping intents vs exploratory data analysis."""
-    if not message:
-        return False
-    text = message.strip().lower()
-    if not text or text.startswith("[document_attached"):
-        return False
-    if "do not ship" in text or "don't ship" in text:
-        return False
-    if "ship" not in text and "shipment" not in text:
-        return False
-    exploratory_prefixes = (
-        "show",
-        "list",
-        "find",
-        "count",
-        "how many",
-        "which",
-        "what",
-    )
-    return not any(text.startswith(prefix) for prefix in exploratory_prefixes)
-
-
-def _is_confirmation_response(message: str | None) -> bool:
-    """True for short confirmation replies (yes/proceed/confirm)."""
-    if not message:
-        return False
-    return message.strip().lower() in {
-        "yes", "y", "ok", "okay", "confirm", "proceed", "continue", "go ahead",
-    }
+    Confirmation turns ("yes", "proceed") should not overwrite command context
+    with non-semantic text.
+    """
+    last_msg = bridge.last_user_message
+    if isinstance(last_msg, str):
+        trimmed = last_msg.strip()
+        if trimmed:
+            if is_confirmation_response(trimmed):
+                if (
+                    isinstance(bridge.last_shipping_command, str)
+                    and bridge.last_shipping_command.strip()
+                ):
+                    return bridge.last_shipping_command.strip()
+                if (
+                    isinstance(bridge.last_resolved_filter_command, str)
+                    and bridge.last_resolved_filter_command.strip()
+                ):
+                    return bridge.last_resolved_filter_command.strip()
+            return trimmed
+    if (
+        isinstance(bridge.last_resolved_filter_command, str)
+        and bridge.last_resolved_filter_command.strip()
+    ):
+        return bridge.last_resolved_filter_command.strip()
+    return None
 
 
 async def get_source_info_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -198,12 +199,12 @@ async def fetch_rows_tool(
             "to create a filter_spec."
         )
 
-    # Deterministic routing: shipping commands should use the fast pipeline,
-    # not fetch_rows/create_job/add_rows fallback steps.
+    # Deterministic routing: shipping commands should use the execution
+    # pipeline, not exploratory fetch_rows flows.
     if bridge is not None and (
-        _looks_like_shipping_request(bridge.last_user_message)
+        is_shipping_request(bridge.last_user_message)
         or (
-            _is_confirmation_response(bridge.last_user_message)
+            is_confirmation_response(bridge.last_user_message)
             and bool(bridge.last_shipping_command)
         )
     ):
@@ -301,8 +302,9 @@ async def fetch_rows_tool(
             "returned_count": len(rows),
             "sample_rows": rows[:2],
             "message": (
-                "Use fetch_id with add_rows_to_job. "
-                "Use total_count for cardinality; returned_count reflects the page size."
+                "Exploration-only result set. "
+                "Use total_count for cardinality; returned_count reflects the page size. "
+                "For shipment execution, use ship_command_pipeline."
             ),
         }
         if include_rows:
@@ -362,7 +364,7 @@ async def resolve_filter_intent_tool(
     source_signature = _build_source_signature(source_info, schema_signature)
 
     # Shipping paths must use deterministic sources.
-    if bridge is not None and _looks_like_shipping_request(bridge.last_user_message):
+    if bridge is not None and is_shipping_request(bridge.last_user_message):
         guard_error = _determinism_guard_error(source_info)
         if guard_error:
             logger.warning(
@@ -399,10 +401,7 @@ async def resolve_filter_intent_tool(
     if bridge is not None:
         if resolved.status.value == "RESOLVED":
             bridge.last_resolved_filter_spec = resolved_payload
-            last_msg = bridge.last_user_message
-            bridge.last_resolved_filter_command = (
-                last_msg.strip() if isinstance(last_msg, str) else None
-            )
+            bridge.last_resolved_filter_command = _command_for_filter_cache(bridge)
             bridge.last_resolved_filter_schema_signature = (
                 schema_signature if isinstance(schema_signature, str) and schema_signature else None
             )
@@ -565,10 +564,7 @@ async def confirm_filter_interpretation_tool(
 
     resolved_payload = resolved.model_dump()
     bridge.last_resolved_filter_spec = resolved_payload
-    last_msg = bridge.last_user_message
-    bridge.last_resolved_filter_command = (
-        last_msg.strip() if isinstance(last_msg, str) else None
-    )
+    bridge.last_resolved_filter_command = _command_for_filter_cache(bridge)
     bridge.last_resolved_filter_schema_signature = (
         schema_signature if isinstance(schema_signature, str) and schema_signature else None
     )
