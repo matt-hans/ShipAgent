@@ -143,19 +143,30 @@ class HttpClient:
         )
         self._raise_for_status(resp)
 
-        # Step 5: Stream SSE until "done" so the agent finishes creating the job
-        await self._drain_session_stream(session_id)
+        # Step 5: Stream SSE; capture job_id from preview_ready event
+        streamed_job_id = await self._drain_session_stream(session_id)
 
-        # Step 6: Find the job created during this submission
-        job_id = session_id  # fallback
+        # Step 6: Delete the conversation session — job is now the handle
         try:
-            new_jobs = await self.list_jobs()
-            for job in new_jobs:
-                if job.id not in existing_ids:
-                    job_id = job.id
-                    break
+            await self.delete_session(session_id)
         except Exception:
-            pass  # Non-fatal fallback to session_id
+            pass  # Non-fatal: session will expire eventually
+
+        # Step 7: Resolve job_id — event-sourced ID is preferred; fall back
+        # to list diff only when the preview_ready event was not observed
+        # (e.g., the agent returned an error before creating the job).
+        if streamed_job_id:
+            job_id = streamed_job_id
+        else:
+            job_id = session_id  # last-resort fallback
+            try:
+                new_jobs = await self.list_jobs()
+                for job in new_jobs:
+                    if job.id not in existing_ids:
+                        job_id = job.id
+                        break
+            except Exception:
+                pass  # Non-fatal fallback to session_id
 
         return SubmitResult(
             job_id=job_id,
@@ -164,17 +175,24 @@ class HttpClient:
             message=f"File uploaded and command sent: {final_command}",
         )
 
-    async def _drain_session_stream(self, session_id: str) -> None:
+    async def _drain_session_stream(self, session_id: str) -> str | None:
         """Stream the agent SSE response until the "done" event.
 
-        Used after posting a message to ensure the agent has finished
-        processing before callers query the resulting job state.
+        Captures the job_id from any ``preview_ready`` event so callers
+        can identify the created job deterministically without resorting
+        to a list diff, which is inherently race-prone under concurrent
+        job creation.
 
         Args:
             session_id: The conversation session to drain.
+
+        Returns:
+            The job_id extracted from the ``preview_ready`` event, or
+            ``None`` if the event was not observed before "done".
         """
         import httpx
 
+        captured_job_id: str | None = None
         try:
             async with httpx.AsyncClient(
                 base_url=self._base_url, timeout=120.0
@@ -190,10 +208,16 @@ class HttpClient:
                                 data = json.loads(data_str)
                             except json.JSONDecodeError:
                                 continue
-                            if data.get("event") == "done":
-                                return
+                            event = data.get("event")
+                            if event == "preview_ready":
+                                job_id = data.get("data", {}).get("job_id")
+                                if job_id:
+                                    captured_job_id = job_id
+                            elif event == "done":
+                                return captured_job_id
         except Exception as exc:
             logger.warning("Session stream drain failed for %s: %s", session_id, exc)
+        return captured_job_id
 
     async def list_jobs(self, status: str | None = None) -> list[JobSummary]:
         """List jobs via GET /api/v1/jobs.

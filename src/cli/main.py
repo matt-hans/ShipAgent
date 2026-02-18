@@ -319,18 +319,40 @@ def submit(
 
                 ac_rules = cfg.auto_confirm if cfg else AutoConfirmRules()
                 try:
-                    job = await client.get_job(result.job_id)
+                    import json as _json
+
                     rows = await client.get_job_rows(result.job_id)
-                    max_row_cost = max(
-                        (r.cost_cents or 0 for r in rows), default=0
-                    )
+
+                    # Use per-row cost estimates (populated at preview time).
+                    # job.total_cost_cents is only written during execution,
+                    # so it is 0 before confirmation.
+                    row_costs = [r.cost_cents or 0 for r in rows]
+                    total_cost_from_rows = sum(row_costs)
+                    max_row_cost = max(row_costs, default=0)
+
+                    # Extract real service codes from row order_data.
+                    service_codes: list[str] = []
+                    for r in rows:
+                        if r.order_data:
+                            try:
+                                sc = _json.loads(r.order_data).get("service_code")
+                                if sc:
+                                    service_codes.append(sc)
+                            except (_json.JSONDecodeError, AttributeError):
+                                pass
+
+                    # Address validation state is not re-persisted on rows
+                    # after preview (the agent validates at preview time only).
+                    # Use conservative defaults so require_valid_addresses=true
+                    # (the default) blocks auto-confirm unless the operator
+                    # explicitly sets require_valid_addresses=false in config.
                     preview_data = {
-                        "total_rows": job.total_rows,
-                        "total_cost_cents": job.total_cost_cents,
+                        "total_rows": len(rows),
+                        "total_cost_cents": total_cost_from_rows,
                         "max_row_cost_cents": max_row_cost,
-                        "service_codes": [],
-                        "all_addresses_valid": True,
-                        "has_address_warnings": False,
+                        "service_codes": service_codes,
+                        "all_addresses_valid": False,
+                        "has_address_warnings": True,
                     }
                     ac_result = evaluate_auto_confirm(ac_rules, preview_data)
                     if ac_result.approved:
