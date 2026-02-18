@@ -1,8 +1,8 @@
 # ShipAgent
 
-**Natural Language Batch Shipment Processing**
+**AI-Powered Natural Language Shipping Automation**
 
-ShipAgent is an AI-powered shipping automation platform that lets you describe shipments in plain English and handles the rest. Simply say *"Ship all California orders from today's spreadsheet using UPS Ground"* and ShipAgent parses your intent, extracts data, validates against carrier schemas, and executes shipments with full audit trails.
+ShipAgent is an AI-powered shipping platform that lets you describe shipments in plain English and handles the rest — from single-package ad-hoc shipments to batch processing hundreds of orders. Simply say *"Ship all California orders from today's spreadsheet using UPS Ground"* and ShipAgent parses your intent, extracts data, validates against carrier schemas, and executes shipments with full audit trails.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![React 19](https://img.shields.io/badge/react-19-blue.svg)](https://react.dev/)
@@ -12,14 +12,43 @@ ShipAgent is an AI-powered shipping automation platform that lets you describe s
 
 ## Features
 
-- **Natural Language Commands** - Describe what you want to ship in plain English
-- **Multiple Data Sources** - Import from CSV, Excel (.xlsx), PostgreSQL/MySQL databases, or Shopify
-- **UPS Integration** - Full API coverage for shipping, rating, and address validation
-- **Batch Processing** - Process hundreds of shipments with per-row audit logging
-- **Column Mapping** - LLM generates source-to-payload field mappings automatically
-- **Preview Mode** - Review cost estimates and shipment details before execution
-- **Crash Recovery** - Resume interrupted batches from exactly where they stopped
-- **Write-Back** - Automatically update tracking numbers in your source data
+### Core Shipping
+- **Natural Language Commands** — Describe what you want to ship in plain English
+- **Batch Processing** — Process hundreds of shipments with per-row audit logging
+- **Single Shipment Mode** — Interactive one-off shipment creation with real-time preview
+- **Preview & Confirm** — Review cost estimates and shipment details before execution
+- **Crash Recovery** — Resume interrupted batches from exactly where they stopped
+
+### Data Sources
+- **CSV & Excel** — Upload flat files with automatic sheet detection
+- **SQL Databases** — Connect to PostgreSQL/MySQL via connection string
+- **Shopify** — Pull unfulfilled orders directly from your store
+- **WooCommerce** — Connect to WooCommerce REST API
+- **SAP Business One** — Fetch sales orders from SAP B1 Service Layer
+- **Oracle** — Query Oracle Fusion Cloud/ERP order data
+- **EDI** — Parse ANSI X12 EDI 850 purchase orders
+
+### UPS Integration
+- **Shipping** — Create shipments and generate labels (GIF/PNG/ZPL)
+- **Rating** — Get rate quotes with Shop mode for multi-service comparison
+- **Address Validation** — Verify and correct shipping addresses
+- **Package Tracking** — Track shipments by tracking number
+- **Pickup Scheduling** — Schedule, cancel, rate, and check status of pickups
+- **Landed Cost** — Estimate duties, taxes, and fees for international shipments
+- **Paperless Documents** — Upload, attach, and manage customs/trade documents
+- **Location Finder** — Find nearby UPS Access Points, retail locations, and service centers
+
+### International Shipping
+- **Lane-Driven Rules Engine** — Automatic field requirements based on origin/destination/service
+- **Commodity Management** — Import and manage commodity data for customs declarations
+- **InternationalForms** — Auto-generate Commercial Invoices and Certificates of Origin
+- **EU-to-EU Exemptions** — Automatic customs doc exemption for EU-internal Standard shipments
+
+### Intelligence
+- **LLM Column Mapping** — AI generates source-to-payload field mappings
+- **Deterministic Filter Engine** — SQL-based row filtering with token-signed confirmations
+- **Decision Audit Ledger** — Centralized, redacted log of every agent decision
+- **Write-Back** — Automatically update tracking numbers in your source data
 
 ---
 
@@ -29,34 +58,49 @@ ShipAgent uses the **Model Context Protocol (MCP)** to separate concerns into in
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Browser UI                                      │
-│                         (React + Vite + Tailwind)                           │
+│                              Browser UI                                    │
+│                       (React + Vite + Tailwind CSS 4)                      │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Orchestration Agent                                  │
-│                   (Python + Claude Agent SDK + FastAPI)                     │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐        │
-│  │ NL Parser   │  │ Filter Gen  │  │ Col Mapping │  │ BatchEngine │        │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘        │
+│                     FastAPI REST + SSE Gateway                              │
+│           (Conversations, Jobs, Preview, Progress, Labels, Platforms)       │
 └─────────────────────────────────────────────────────────────────────────────┘
-          │                                │                        │
-          ▼                                ▼                        ▼
-┌──────────────────┐         ┌──────────────────┐        ┌──────────────────┐
-│  Data Source MCP │         │   UPS Service    │        │  State Database  │
-│  (Python/FastMCP)│         │   (Python)       │        │    (SQLite)      │
-│                  │         │                  │        │                  │
-│  • CSV/Excel     │         │  • Shipping      │        │  • Job state     │
-│  • Database      │         │  • Rating        │        │  • Audit logs    │
-│  • Shopify       │         │  • Address       │        │  • Recovery      │
-└──────────────────┘         └──────────────────┘        └──────────────────┘
-          │                            │
-          ▼                            ▼
-    ┌──────────┐               ┌──────────────┐
-    │  DuckDB  │               │   UPS API    │
-    └──────────┘               │   (OAuth)    │
-                               └──────────────┘
+                                     │
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       Orchestration Agent                                   │
+│                 (Python + Claude Agent SDK + 25+ Tools)                     │
+│  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐    │
+│  │ Pipeline  │ │Interactive│ │  Pickup   │ │  Docs /   │ │ Tracking  │    │
+│  │ (Batch)   │ │ (Single)  │ │ Schedule  │ │ Paperless │ │           │    │
+│  └───────────┘ └───────────┘ └───────────┘ └───────────┘ └───────────┘    │
+│  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────────────────────┐  │
+│  │ Filter    │ │  Column   │ │ Int'l     │ │  Data Source Tools        │  │
+│  │ Compiler  │ │  Mapping  │ │ Rules     │ │  (connect, query, write)  │  │
+│  └───────────┘ └───────────┘ └───────────┘ └───────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+     │                    │                    │                    │
+     ▼                    ▼                    ▼                    ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
+│ Data Source   │  │ External     │  │ UPS MCP      │  │ State Database   │
+│ MCP Server   │  │ Sources MCP  │  │ Client       │  │ (SQLite)         │
+│ (FastMCP)    │  │ (FastMCP)    │  │ (stdio)      │  │                  │
+│              │  │              │  │              │  │ • Job state      │
+│ • CSV/Excel  │  │ • Shopify    │  │ • Ship/Rate  │  │ • Audit logs     │
+│ • Database   │  │ • WooCommerce│  │ • Track      │  │ • Decision audit │
+│ • EDI 850    │  │ • SAP B1     │  │ • Pickup     │  │ • Recovery       │
+│ • Commodities│  │ • Oracle     │  │ • Paperless  │  │ • Saved sources  │
+│              │  │              │  │ • Locator    │  │                  │
+└──────────────┘  └──────────────┘  │ • Landed Cost│  └──────────────────┘
+     │                    │         └──────────────┘
+     ▼                    ▼                │
+┌──────────┐     ┌───────────────┐         ▼
+│  DuckDB  │     │ Platform APIs │   ┌──────────────┐
+└──────────┘     └───────────────┘   │  UPS API     │
+                                     │  (OAuth 2.0) │
+                                     └──────────────┘
 ```
 
 ### Core Design Principle
@@ -70,11 +114,14 @@ The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets u
 | Component | Technology |
 |-----------|------------|
 | **Orchestration Agent** | Python 3.12+, Claude Agent SDK, FastAPI |
-| **Data Processing** | DuckDB, Pandas, openpyxl |
-| **UPS Integration** | Python ups-mcp (ToolManager, OpenAPI-validated) |
+| **Data Processing** | DuckDB, openpyxl, pydifact (EDI) |
+| **UPS Integration** | ups-mcp v2 (18 tools: shipping, tracking, pickup, locator, paperless, landed cost) |
 | **Template Engine** | Jinja2 with custom logistics filters |
-| **State Database** | SQLite + SQLAlchemy |
+| **State Database** | SQLite + SQLAlchemy + aiosqlite |
 | **Frontend** | React 19, Vite, Tailwind CSS 4, shadcn/ui |
+| **CLI** | Typer + Rich + HTTPX |
+| **Watchdog** | Hot-folder file monitoring with auto-import |
+| **Filter Engine** | sqlglot (SQL transpilation and validation) |
 
 ---
 
@@ -123,34 +170,51 @@ The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets u
 
 ### Configuration
 
-Key runtime values for Docker/local:
-
 ```bash
-# Anthropic API (required)
+# =============================================================================
+# Required
+# =============================================================================
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxxx
-
-# Claude model (optional; defaults to Haiku 4.5 if unset)
-AGENT_MODEL=claude-haiku-4-5-20251001
-
-# UPS API Credentials (required for shipping)
 UPS_CLIENT_ID=your_client_id
 UPS_CLIENT_SECRET=your_client_secret
 UPS_ACCOUNT_NUMBER=your_account_number
+FILTER_TOKEN_SECRET=replace-with-64-char-hex-secret   # openssl rand -hex 32
 
-# Required for filter-confirmation token signing
-FILTER_TOKEN_SECRET=replace-with-64-char-hex-secret
+# =============================================================================
+# Optional — Orchestration
+# =============================================================================
+AGENT_MODEL=claude-haiku-4-5-20251001         # Default model; also accepts ANTHROPIC_MODEL
 
-# Database (canonical setting)
-# Docker default:
-DATABASE_URL=sqlite:////app/data/shipagent.db
+# =============================================================================
+# Optional — Batch Tuning
+# =============================================================================
+BATCH_PREVIEW_MAX_ROWS=50                     # Preview cap (0 = rate all rows)
+BATCH_CONCURRENCY=5                           # Concurrent UPS calls
 
-# Shopify Integration (optional)
+# =============================================================================
+# Optional — Database
+# =============================================================================
+DATABASE_URL=sqlite:////app/data/shipagent.db # Docker default
+
+# =============================================================================
+# Optional — Shopify
+# =============================================================================
 SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxxx
 SHOPIFY_STORE_DOMAIN=mystore.myshopify.com
 
-# Optional API hardening
-# SHIPAGENT_API_KEY=your_api_key
-# ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+# =============================================================================
+# Optional — Decision Audit Ledger
+# =============================================================================
+AGENT_AUDIT_ENABLED=true
+AGENT_AUDIT_JSONL_PATH=/app/data/agent-decision-log.jsonl
+AGENT_AUDIT_RETENTION_DAYS=30
+AGENT_AUDIT_MAX_PAYLOAD_BYTES=16384
+
+# =============================================================================
+# Optional — API Hardening
+# =============================================================================
+# SHIPAGENT_API_KEY=your_api_key              # Protect /api/* with X-API-Key
+# ALLOWED_ORIGINS=http://localhost:5173        # CORS allowlist
 ```
 
 ### Local Dev (Without Docker)
@@ -176,12 +240,11 @@ SHOPIFY_STORE_DOMAIN=mystore.myshopify.com
    ```
    Open [http://localhost:5173](http://localhost:5173)
 
-### Runtime Policy (Current)
+### Runtime Policy
 
 - ShipAgent is currently **local-first and single-worker**.
-- Use one backend worker (`--workers 1`) while state is process-local (conversation agents, in-memory caches).
+- Use one backend worker (`--workers 1`) while state is process-local.
 - Startup warns by default unless you set `SHIPAGENT_ALLOW_MULTI_WORKER=true`.
-- Redis/distributed worker support is deferred for a future migration.
 - Liveness endpoint: `GET /health`
 - Readiness endpoint: `GET /readyz`
 
@@ -196,48 +259,71 @@ docker compose up -d
 docker compose exec shipagent /app/scripts/backup.sh
 
 # Restore from backup (run with service stopped, then start)
-docker compose run --rm shipagent /app/scripts/restore.sh /app/data/backups/shipagent_YYYYMMDD_HHMMSS.db /app/data/backups/labels_YYYYMMDD_HHMMSS.tar.gz
+docker compose run --rm shipagent /app/scripts/restore.sh \
+  /app/data/backups/shipagent_YYYYMMDD_HHMMSS.db \
+  /app/data/backups/labels_YYYYMMDD_HHMMSS.tar.gz
 ```
 
 ---
 
 ## Usage
 
-### Basic Workflow
+### Web Interface
 
-1. **Connect a Data Source**
-   - Upload a CSV/Excel file, or
-   - Enter a database connection string, or
-   - Connect your Shopify store
-
-2. **Describe Your Shipment**
-   ```
-   Ship all orders from California using UPS Ground
-   ```
-   ```
-   Ship pending orders over $100 with 2nd Day Air
-   ```
-   ```
-   Create shipments for today's orders to zip codes starting with 90
-   ```
-
-3. **Review the Preview**
-   - See matching rows, estimated costs, and any warnings
-   - Approve or modify before execution
-
-4. **Execute and Track**
-   - Watch real-time progress
-   - Download labels as ZIP
-   - Tracking numbers automatically written back to source
+1. **Connect a Data Source** — Upload CSV/Excel, enter a database connection string, or connect to Shopify/WooCommerce/SAP/Oracle
+2. **Describe Your Shipment** — Type a natural language command
+3. **Review the Preview** — See matching shipments, estimated costs, and any warnings
+4. **Execute and Track** — Watch real-time SSE progress, download labels as ZIP, tracking numbers auto-written back
 
 ### Example Commands
 
 | Command | What it does |
 |---------|--------------|
 | `Ship all CA orders via Ground` | Filter by state, use UPS Ground |
-| `Ship orders from today with Next Day Air` | Filter by date, use express |
+| `Ship orders from today with Next Day Air` | Filter by date, use express service |
 | `Ship unfulfilled Shopify orders` | Pull from Shopify, ship pending |
 | `Create shipments for orders over $50` | Filter by order value |
+| `Ship this package to 123 Main St, Boston MA 02101` | Single interactive shipment |
+| `Schedule a pickup for tomorrow at my warehouse` | Schedule UPS carrier pickup |
+| `Track package 1Z999AA10123456784` | Get package tracking status |
+| `Upload a commercial invoice for this shipment` | Attach paperless customs document |
+| `What are the landed costs for shipping to Canada?` | Get duty/tax estimates |
+| `Find the nearest UPS Access Point` | Locate nearby drop-off points |
+
+---
+
+## CLI
+
+ShipAgent includes a full-featured CLI (installed as `shipagent` or via `./scripts/shipagent`):
+
+```bash
+# Daemon management
+shipagent daemon start [--host 0.0.0.0] [--port 8000]
+shipagent daemon stop
+shipagent daemon status
+
+# Job management
+shipagent job list [--status pending] [--json]
+shipagent job inspect <job_id> [--json]
+shipagent job rows <job_id> [--json]
+shipagent job approve <job_id>
+shipagent job cancel <job_id>
+shipagent job logs <job_id> [-f]       # -f for live streaming
+shipagent job audit <job_id> [-n 200]
+
+# File submission
+shipagent submit <file> [-c "Ship all orders"] [--wait] [--auto-confirm]
+
+# Interactive REPL
+shipagent interact [--session <id>]
+
+# Configuration
+shipagent config show
+shipagent config validate [--config path/to/config.yaml]
+
+# Version info
+shipagent version
+```
 
 ---
 
@@ -247,42 +333,100 @@ docker compose run --rm shipagent /app/scripts/restore.sh /app/data/backups/ship
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/v1/commands` | Submit a natural language command |
+| **Conversations** |||
+| `POST` | `/api/v1/conversations` | Create a new conversation session |
+| `POST` | `/api/v1/conversations/{id}/messages` | Send a message to the agent |
+| `GET` | `/api/v1/conversations/{id}/stream` | SSE event stream for real-time updates |
+| `GET` | `/api/v1/conversations/{id}/history` | Get conversation message history |
+| `POST` | `/api/v1/conversations/{id}/documents` | Upload customs/trade document |
+| **Data Sources** |||
+| `POST` | `/api/v1/data-sources/upload` | Upload CSV/Excel file |
+| `GET` | `/api/v1/data-sources/info` | Get active data source info |
+| **Platforms** |||
+| `POST` | `/api/v1/platforms/connect` | Connect to external platform |
+| `POST` | `/api/v1/platforms/validate` | Validate platform credentials |
+| `GET` | `/api/v1/platforms/status` | Get platform connection status |
+| **Jobs** |||
 | `GET` | `/api/v1/jobs` | List all jobs with pagination |
 | `GET` | `/api/v1/jobs/{id}` | Get job details |
+| **Preview & Execution** |||
 | `GET` | `/api/v1/jobs/{id}/preview` | Get batch preview |
 | `POST` | `/api/v1/jobs/{id}/confirm` | Confirm and execute batch |
+| **Progress** |||
 | `GET` | `/api/v1/jobs/{id}/progress` | Get current progress |
 | `GET` | `/api/v1/jobs/{id}/progress/stream` | SSE progress stream |
-| `GET` | `/api/v1/jobs/{id}/labels/zip` | Download all labels |
+| **Labels** |||
+| `GET` | `/api/v1/jobs/{id}/labels` | List labels for a job |
+| `GET` | `/api/v1/jobs/{id}/labels/zip` | Download all labels as ZIP |
+| `GET` | `/api/v1/labels/{label_id}` | Download individual label |
+| **Saved Sources** |||
+| `GET` | `/api/v1/saved-data-sources` | List saved data sources |
+| `POST` | `/api/v1/saved-data-sources` | Save a data source for reuse |
+| **Audit** |||
+| `GET` | `/api/v1/audit/runs` | List agent decision audit runs |
+| `GET` | `/api/v1/audit/runs/{id}/events` | Get events for an audit run |
+| **Health** |||
+| `GET` | `/health` | Liveness check with system metrics |
+| `GET` | `/readyz` | Dependency-aware readiness probe |
 
 ### MCP Tools
 
-#### Data Source MCP (13 tools)
+#### Data Source MCP (18+ tools)
 
 | Tool | Description |
 |------|-------------|
 | `import_csv` | Import data from CSV file |
 | `import_excel` | Import data from Excel file |
 | `import_database` | Import data from SQL database |
-| `get_schema` | Get current source schema |
+| `import_records` | Import flat dicts (for platform orders) |
+| `list_sheets` | List sheets in an Excel workbook |
+| `list_tables` | List tables in a database |
+| `get_schema` | Get source schema with column types |
+| `override_column_type` | Override a column's DuckDB type |
 | `get_row` | Get a specific row by number |
-| `get_rows_by_filter` | Query rows with SQL WHERE |
+| `get_rows_by_filter` | Query rows with SQL WHERE clause |
 | `query_data` | Execute arbitrary SQL query |
+| `get_column_samples` | Sample distinct values per column |
+| `get_source_info` | Get active source metadata + signature |
+| `clear_source` | Disconnect active data source |
 | `compute_checksums` | Generate SHA-256 for rows |
-| `verify_checksum` | Verify row hasn't changed |
-| `write_back` | Update source with tracking |
+| `verify_checksum` | Verify row hasn't been modified |
+| `import_commodities` | Import commodity data for international |
+| `get_commodities_bulk` | Get commodities for multiple orders |
+| `import_edi` | Parse EDI 850 purchase orders |
 
-#### UPS Service (via UPSService + ToolManager)
+#### External Sources MCP (8 tools)
 
-UPS operations are handled via direct Python import, not a subprocess MCP server.
+| Tool | Description |
+|------|-------------|
+| `connect_platform` | Connect to Shopify/WooCommerce/SAP/Oracle |
+| `disconnect_platform` | Disconnect from a platform |
+| `list_connections` | List all platform connections |
+| `list_orders` | Fetch orders with optional filters |
+| `get_order` | Get a single order by ID |
+| `get_shop_info` | Get store/shop metadata |
+| `validate_credentials` | Validate platform credentials |
+| `update_tracking` | Write tracking numbers back to platform |
+
+#### UPS MCP Client (15 methods)
 
 | Method | Description |
 |--------|-------------|
-| `UPSService.rate_shipment()` | Get shipping rate quote |
-| `UPSService.create_shipment()` | Create shipment and label |
-| `UPSService.void_shipment()` | Void a shipment |
-| `UPSService.validate_address()` | Validate shipping address |
+| `get_rate()` | Get rate quote (Rate/Shop/Shoptimeintransit modes) |
+| `create_shipment()` | Create shipment and generate label |
+| `void_shipment()` | Void an existing shipment |
+| `validate_address()` | Validate and correct shipping address |
+| `track_package()` | Track package by tracking number |
+| `schedule_pickup()` | Schedule a UPS carrier pickup |
+| `cancel_pickup()` | Cancel a scheduled pickup |
+| `rate_pickup()` | Get pickup cost estimate |
+| `get_pickup_status()` | Get pending pickup status |
+| `get_landed_cost()` | Estimate duties, taxes, and fees |
+| `upload_document()` | Upload customs document to Forms History |
+| `push_document()` | Attach document to a shipment |
+| `delete_document()` | Delete document from Forms History |
+| `find_locations()` | Find nearby UPS locations |
+| `get_service_center_facilities()` | Find UPS service center drop-offs |
 
 ---
 
@@ -299,6 +443,9 @@ pytest --cov=src --cov-report=term-missing
 
 # Run specific test file
 pytest tests/api/test_jobs.py -v
+
+# Integration tests only
+pytest -m integration
 
 # Type checking
 mypy src/
@@ -330,46 +477,157 @@ npm run lint
 ```
 shipagent/
 ├── src/
-│   ├── api/                    # FastAPI REST endpoints
-│   │   ├── routes/             # Route handlers
-│   │   ├── main.py             # App factory
-│   │   └── schemas.py          # Pydantic models
-│   ├── db/                     # Database layer
-│   │   ├── models.py           # SQLAlchemy models
-│   │   └── session.py          # Session management
-│   ├── errors/                 # Error handling
-│   │   ├── codes.py            # E-XXXX error codes
-│   │   └── ups_translator.py   # UPS error mapping
-│   ├── services/               # Business logic
-│   │   ├── job_service.py      # Job state machine
-│   │   ├── audit_service.py    # Audit logging
-│   │   ├── ups_service.py      # UPS API wrapper (ToolManager)
-│   │   ├── column_mapping.py   # Column mapping service
-│   │   └── payload_builder.py  # UPS payload construction
+│   ├── api/                        # FastAPI REST + SSE gateway
+│   │   ├── main.py                 # App factory, lifespan, SPA serving
+│   │   ├── middleware/             # API key auth middleware
+│   │   ├── routes/
+│   │   │   ├── conversations.py    # SSE agent conversations
+│   │   │   ├── data_sources.py     # File upload, source info
+│   │   │   ├── jobs.py             # Job CRUD
+│   │   │   ├── labels.py           # Label download + ZIP
+│   │   │   ├── logs.py             # Job audit logs
+│   │   │   ├── platforms.py        # External platform connect/validate
+│   │   │   ├── preview.py          # Batch preview endpoints
+│   │   │   ├── progress.py         # SSE progress streaming
+│   │   │   ├── saved_data_sources.py # Saved source persistence
+│   │   │   └── agent_audit.py      # Decision audit REST API
+│   │   ├── schemas.py              # Pydantic request/response models
+│   │   └── schemas_conversations.py
+│   ├── cli/                        # Typer CLI suite
+│   │   ├── main.py                 # Command entry point
+│   │   ├── daemon.py               # Daemon start/stop/status
+│   │   ├── runner.py               # Job runner logic
+│   │   ├── repl.py                 # Interactive REPL
+│   │   ├── auto_confirm.py         # Auto-confirm rule engine
+│   │   ├── watchdog_service.py     # Hot-folder file monitoring
+│   │   ├── http_client.py          # API client for CLI
+│   │   ├── config.py               # YAML config parser
+│   │   ├── output.py               # Rich console formatting
+│   │   └── protocol.py             # API protocol types
+│   ├── db/                         # Database layer
+│   │   ├── models.py               # SQLAlchemy models
+│   │   └── connection.py           # Session + init_db
+│   ├── errors/                     # Error handling
+│   │   ├── codes.py                # E-XXXX error codes
+│   │   └── ups_translator.py       # UPS error mapping
+│   ├── services/                   # Business logic
+│   │   ├── batch_engine.py         # Batch execution engine
+│   │   ├── batch_executor.py       # Concurrent execution pool
+│   │   ├── job_service.py          # Job state machine
+│   │   ├── audit_service.py        # Audit logging
+│   │   ├── decision_audit_service.py # Centralized agent decision audit
+│   │   ├── ups_mcp_client.py       # Async UPS MCP client (15 methods)
+│   │   ├── ups_payload_builder.py  # UPS payload construction
+│   │   ├── ups_service_codes.py    # Canonical UPS service codes
+│   │   ├── column_mapping.py       # LLM column mapping
+│   │   ├── mapping_cache.py        # Column mapping cache
+│   │   ├── international_rules.py  # International shipping rules engine
+│   │   ├── data_source_gateway.py  # Data source abstraction
+│   │   ├── data_source_mcp_client.py # Async Data Source MCP client
+│   │   ├── external_sources_mcp_client.py # External Sources MCP client
+│   │   ├── agent_session_manager.py # Agent session lifecycle
+│   │   ├── conversation_handler.py # Conversation state
+│   │   ├── label_storage.py        # Label persistence + staging
+│   │   ├── write_back_utils.py     # Write-back helpers
+│   │   ├── write_back_worker.py    # Async write-back worker
+│   │   ├── saved_data_source_service.py # Saved source CRUD
+│   │   ├── attachment_store.py     # Session-scoped file attachments
+│   │   ├── filter_constants.py     # Shipper defaults + env config
+│   │   ├── paperless_constants.py  # UPS Paperless file format constants
+│   │   └── idempotency.py          # Idempotency key generation
 │   ├── mcp/
-│   │   ├── data_source/        # Data Source MCP server
-│   │   │   ├── server.py       # FastMCP server
-│   │   │   ├── adapters/       # CSV, Excel, DB adapters
-│   │   │   └── tools/          # MCP tool implementations
-│   │   ├── external_sources/   # External platform clients
-│   │   └── ups/                # UPS OpenAPI specs + config
-│   │       └── specs/          # OpenAPI YAML specs
-│   └── orchestrator/           # AI orchestration
-│       ├── nl_engine/          # NL parsing & filter generation
-│       ├── filters/            # Jinja2 logistics filters
-│       ├── agent/              # Claude Agent SDK
-│       └── batch/              # Batch execution engine
-├── frontend/                   # React web interface
+│   │   ├── data_source/            # Data Source MCP server
+│   │   │   ├── server.py           # FastMCP server
+│   │   │   ├── adapters/           # CSV, Excel, DB, EDI adapters
+│   │   │   ├── tools/              # 18+ MCP tool implementations
+│   │   │   │   ├── import_tools.py
+│   │   │   │   ├── query_tools.py
+│   │   │   │   ├── schema_tools.py
+│   │   │   │   ├── checksum_tools.py
+│   │   │   │   ├── source_info_tools.py
+│   │   │   │   ├── sample_tools.py
+│   │   │   │   ├── commodity_tools.py
+│   │   │   │   ├── edi_tools.py
+│   │   │   │   └── writeback_tools.py
+│   │   │   ├── edi/                # EDI 850 parser
+│   │   │   └── models.py           # Data source models
+│   │   └── external_sources/       # External platform MCP
+│   │       ├── server.py           # FastMCP server
+│   │       ├── tools.py            # 8 platform tools
+│   │       ├── models.py           # Platform connection models
+│   │       └── clients/            # Platform API clients
+│   │           ├── shopify.py
+│   │           ├── woocommerce.py
+│   │           ├── sap.py
+│   │           └── oracle.py
+│   └── orchestrator/               # AI orchestration
+│       ├── agent/                  # Claude Agent SDK
+│       │   ├── client.py           # Agent client (conversation mgmt)
+│       │   ├── config.py           # Agent config + MCP server setup
+│       │   ├── hooks.py            # Agent lifecycle hooks
+│       │   ├── system_prompt.py    # Dynamic system prompt builder
+│       │   ├── intent_detection.py # Shipping intent classification
+│       │   └── tools/              # 25+ agent tool handlers
+│       │       ├── pipeline.py     # Batch pipeline (ship, confirm, landed cost)
+│       │       ├── interactive.py  # Single shipment preview/create
+│       │       ├── data.py         # Data source + filter tools
+│       │       ├── pickup.py       # Pickup scheduling tools
+│       │       ├── documents.py    # Paperless document tools
+│       │       ├── tracking.py     # Package tracking
+│       │       └── core.py         # Shared tool utilities
+│       ├── filter_compiler.py      # SQL filter compilation
+│       ├── filter_resolver.py      # Filter resolution pipeline
+│       ├── models/                 # Domain models
+│       │   ├── intent.py           # FilterIntent, ShippingIntent
+│       │   ├── filter.py           # CompiledFilter
+│       │   ├── filter_spec.py      # FilterSpec
+│       │   ├── mapping.py          # ColumnMapping
+│       │   ├── correction.py       # Filter corrections
+│       │   └── elicitation.py      # Missing info elicitation
+│       ├── batch/                  # Batch execution engine
+│       │   ├── events.py           # Batch event types
+│       │   ├── models.py           # Batch models
+│       │   ├── modes.py            # Execution modes
+│       │   ├── recovery.py         # Crash recovery
+│       │   └── sse_observer.py     # SSE event observer
+│       └── filters/                # Jinja2 logistics filters
+├── frontend/                       # React web interface
 │   └── src/
-│       ├── components/         # UI components
-│       ├── hooks/              # React hooks
-│       ├── lib/                # Utilities
-│       └── types/              # TypeScript types
-├── tests/                      # Test suite
-│   ├── unit/                   # Unit tests
-│   ├── integration/            # Integration tests
-│   └── helpers/                # Test utilities
-└── docs/                       # Documentation
+│       ├── App.tsx                 # Root component
+│       ├── components/
+│       │   ├── CommandCenter.tsx    # Main chat + command interface
+│       │   ├── JobDetailPanel.tsx   # Job detail side panel
+│       │   ├── LabelPreview.tsx     # Shipping label viewer
+│       │   ├── RecentSourcesModal.tsx # Saved sources modal
+│       │   ├── command-center/     # Chat subcomponents
+│       │   ├── sidebar/            # Navigation sidebar
+│       │   ├── layout/             # App layout
+│       │   └── ui/                 # shadcn/ui components
+│       ├── hooks/                  # React hooks (SSE, state, etc.)
+│       ├── lib/                    # Utilities
+│       └── types/                  # TypeScript types
+├── tests/                          # Test suite
+│   ├── api/                        # API endpoint tests
+│   ├── cli/                        # CLI command tests
+│   ├── mcp/                        # MCP tool tests
+│   ├── orchestrator/               # Orchestration tests
+│   ├── services/                   # Service layer tests
+│   ├── integration/                # Integration tests
+│   ├── db/                         # Database tests
+│   ├── errors/                     # Error handling tests
+│   ├── helpers/                    # Test utilities + MCP test client
+│   └── fixtures/                   # Test fixtures
+├── scripts/
+│   ├── shipagent                   # CLI wrapper for Docker host
+│   ├── start-backend.sh            # Local backend startup
+│   ├── restart.sh                  # Restart script
+│   ├── backup.sh                   # Database backup
+│   └── restore.sh                  # Database restore
+├── docs/                           # Documentation
+├── Dockerfile                      # Production container
+├── docker-compose.yml              # Development compose
+├── docker-compose.prod.yml         # Production compose
+└── pyproject.toml                  # Python project metadata
 ```
 
 ---
@@ -394,6 +652,9 @@ ShipAgent uses structured error codes for debugging:
 - **Timestamps**: ISO8601 strings for SQLite compatibility
 - **API Versioning**: All endpoints use `/api/v1/` prefix
 - **Enums**: Inherit from both `str` and `Enum` for JSON serialization
+- **Row Identity**: `_source_row_num` column tracks row provenance across adapters
+- **Filter Security**: Deterministic filters use HMAC-signed tokens for confirmation
+- **International Rules**: Lane-based requirement sets versioned with effective dates
 
 ---
 
@@ -410,10 +671,22 @@ class MyAdapter(BaseSourceAdapter):
     async def get_metadata(self) -> SourceMetadata: ...
 ```
 
+### Adding an External Platform Client
+
+Follow the `BaseExternalClient` pattern:
+
+```python
+class MyPlatformClient(BaseExternalClient):
+    async def authenticate(self, credentials: dict) -> bool: ...
+    async def list_orders(self, status=None, limit=100, offset=0) -> list[dict]: ...
+    async def get_order(self, order_id: str) -> dict: ...
+    async def update_tracking(self, order_id: str, tracking: str, carrier: str) -> bool: ...
+```
+
 ### Adding a Carrier Service
 
-Follow the UPSService pattern:
-1. Create a service class wrapping the carrier's SDK/API client
+Follow the UPSMCPClient pattern:
+1. Create an async MCP client wrapping the carrier's API
 2. Implement `rate_shipment()`, `create_shipment()`, `void_shipment()`, `validate_address()`
 3. Handle OAuth/authentication
 4. Return standardized response format with error translation
@@ -423,14 +696,18 @@ Follow the UPSService pattern:
 ## Roadmap
 
 - [x] Phase 1: Core Infrastructure (API, Database, Errors)
-- [x] Phase 2: Data Source MCP
-- [x] Phase 3: UPS MCP Integration
-- [x] Phase 4: NL Engine (Intent Parsing, Mapping)
-- [x] Phase 5: Agent Orchestration
-- [x] Phase 6: Batch Execution Engine
-- [ ] Phase 7: Web Interface (In Progress)
-- [ ] Phase 8: Multi-carrier Support (FedEx, USPS)
-- [ ] Phase 9: International Shipping & Customs
+- [x] Phase 2: Data Source MCP (CSV, Excel, Database)
+- [x] Phase 3: UPS MCP Integration (Ship, Rate, Validate)
+- [x] Phase 4: NL Engine (Intent Parsing, Filter Compilation, Column Mapping)
+- [x] Phase 5: Agent Orchestration (Claude Agent SDK, 25+ Tools)
+- [x] Phase 6: Batch Execution Engine (Preview, Confirm, Recovery)
+- [x] Phase 7: Web Interface (React, SSE Streaming, Label Preview)
+- [x] Phase 8: CLI Suite (Daemon, Job Control, REPL, Watchdog)
+- [x] Phase 9: External Platforms (Shopify, WooCommerce, SAP, Oracle)
+- [x] Phase 10: International Shipping (Rules Engine, Commodities, Paperless)
+- [x] Phase 11: UPS Extended APIs (Pickup, Tracking, Locator, Landed Cost)
+- [x] Phase 12: Decision Audit Ledger
+- [ ] Phase 13: Multi-carrier Support (FedEx, USPS)
 
 ---
 
@@ -458,8 +735,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- [Anthropic Claude](https://www.anthropic.com/) - AI orchestration
-- [Model Context Protocol](https://modelcontextprotocol.io/) - MCP specification
-- [UPS Developer Kit](https://developer.ups.com/) - Shipping APIs
-- [FastAPI](https://fastapi.tiangolo.com/) - API framework
-- [DuckDB](https://duckdb.org/) - In-process SQL engine
+- [Anthropic Claude](https://www.anthropic.com/) — AI orchestration via Agent SDK
+- [Model Context Protocol](https://modelcontextprotocol.io/) — MCP specification
+- [UPS Developer Kit](https://developer.ups.com/) — Shipping APIs
+- [FastAPI](https://fastapi.tiangolo.com/) — API framework
+- [DuckDB](https://duckdb.org/) — In-process SQL engine
+- [FastMCP](https://github.com/jlowin/fastmcp) — MCP server framework
+- [Typer](https://typer.tiangolo.com/) — CLI framework
+- [shadcn/ui](https://ui.shadcn.com/) — UI component library
