@@ -4,6 +4,7 @@ import json
 
 import pytest
 import httpx
+from unittest.mock import AsyncMock, patch
 
 from src.cli.http_client import HttpClient
 from src.cli.protocol import JobSummary, JobDetail
@@ -140,3 +141,70 @@ class TestCreateSession:
         })
         session_id = await client.create_session()
         assert session_id == "sess-abc"
+
+
+class TestSubmitFile:
+    """Tests for HttpClient.submit_file — event-sourced job ID and session cleanup."""
+
+    def _make_submit_client(self) -> HttpClient:
+        """Client with all upload+session endpoints mocked."""
+        return _make_client({
+            "/api/v1/data-sources/upload": (200, {"row_count": 5}),
+            "/api/v1/jobs": (200, {"jobs": [], "total": 0, "limit": 50, "offset": 0}),
+            "/api/v1/conversations": (201, {"session_id": "sess-xyz"}),
+            "/api/v1/conversations/sess-xyz/messages": (200, {"status": "queued"}),
+        })
+
+    @pytest.mark.asyncio
+    async def test_event_sourced_job_id_returned(self, tmp_path):
+        """submit_file returns job_id captured from the preview_ready SSE event."""
+        csv_file = tmp_path / "orders.csv"
+        csv_file.write_text("name\nAlice\n")
+        client = self._make_submit_client()
+
+        with patch.object(client, "_drain_session_stream",
+                          new=AsyncMock(return_value="job-from-event")):
+            result = await client.submit_file(str(csv_file), None, False)
+
+        assert result.job_id == "job-from-event"
+        assert result.row_count == 5
+
+    @pytest.mark.asyncio
+    async def test_list_diff_fallback_when_no_event(self, tmp_path):
+        """submit_file falls back to list diff when no preview_ready event is captured."""
+        csv_file = tmp_path / "orders.csv"
+        csv_file.write_text("name\nBob\n")
+
+        new_job = JobSummary.from_api({
+            "id": "job-new", "name": "New", "status": "pending",
+            "total_rows": 3, "successful_rows": 0, "failed_rows": 0,
+            "created_at": "2026-02-17T10:00:00Z",
+        })
+
+        client = _make_client({
+            "/api/v1/data-sources/upload": (200, {"row_count": 3}),
+            "/api/v1/conversations": (201, {"session_id": "sess-fallback"}),
+            "/api/v1/conversations/sess-fallback/messages": (200, {}),
+        })
+
+        # First call (snapshot) returns empty; second call (diff) returns new job.
+        with patch.object(client, "_drain_session_stream", new=AsyncMock(return_value=None)), \
+             patch.object(client, "list_jobs",
+                          new=AsyncMock(side_effect=[[], [new_job]])):
+            result = await client.submit_file(str(csv_file), None, False)
+
+        assert result.job_id == "job-new"
+
+    @pytest.mark.asyncio
+    async def test_session_deleted_after_extraction(self, tmp_path):
+        """submit_file deletes the conversation session after capturing the job ID."""
+        csv_file = tmp_path / "orders.csv"
+        csv_file.write_text("name\nCarol\n")
+        client = self._make_submit_client()
+
+        with patch.object(client, "_drain_session_stream",
+                          new=AsyncMock(return_value="job-abc")), \
+             patch.object(client, "delete_session", new=AsyncMock()) as mock_delete:
+            await client.submit_file(str(csv_file), None, False)
+
+        mock_delete.assert_called_once_with("sess-xyz")
