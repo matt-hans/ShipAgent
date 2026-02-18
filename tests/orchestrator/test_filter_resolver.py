@@ -185,6 +185,28 @@ class TestFilterResolver:
         # Business predicates are Tier B — needs confirmation
         assert result.status == ResolutionStatus.NEEDS_CONFIRMATION
         assert result.pending_confirmations is not None
+        assert result.pending_confirmations[0].term == "BUSINESS_RECIPIENT"
+
+    def test_business_predicate_business_recipient_lowercase_key(self):
+        """Lowercase semantic key resolves to canonical BUSINESS_RECIPIENT."""
+        from src.orchestrator.filter_resolver import resolve_filter_intent
+
+        intent = _intent(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    SemanticReference(
+                        semantic_key="business_recipient", target_column="company"
+                    )
+                ],
+            )
+        )
+        result = resolve_filter_intent(
+            intent, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG
+        )
+        assert result.status == ResolutionStatus.NEEDS_CONFIRMATION
+        assert result.pending_confirmations is not None
+        assert result.pending_confirmations[0].term == "BUSINESS_RECIPIENT"
 
     def test_business_predicate_matches_shopify_ship_to_company(self):
         """BUSINESS_RECIPIENT resolves on Shopify-style ship_to_company column."""

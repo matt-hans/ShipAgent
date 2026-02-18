@@ -129,6 +129,11 @@ def _build_filter_rules(schema_columns: set[str] | None = None) -> str:
     if tag_cols:
         cols_str = "` or `".join(tag_cols)
         hint_lines.append(f"- For tag searches, use `contains_ci` operator on `{cols_str}`.")
+    if "fulfillment_status" in _cols:
+        hint_lines.append(
+            "- For fulfillment filters: use `fulfillment_status` equals "
+            "`\"unfulfilled\"` or `\"fulfilled\"` (not null checks)."
+        )
     _schema_hints = "\n".join(hint_lines)
 
     return f"""
@@ -321,9 +326,11 @@ Important:
 - NEVER use `all_rows=true` when the command includes qualifiers like regions or business/company terms.
 
 If `ship_command_pipeline` returns an error:
+- Missing `filter_spec`/`all_rows` args: immediately call `resolve_filter_intent` and retry `ship_command_pipeline` with the returned `filter_spec`.
 - FilterSpec compilation error: fix the intent and retry once.
 - UPS/preview failure: report the error with `job_id` and suggest user action.
-- Do NOT auto-fallback to individual tools for the same command, to avoid duplicate jobs.
+- Do NOT ask the user to choose a manual fallback for the same command.
+- Do NOT auto-fallback to individual tools (`create_job`, `add_rows_to_job`, `batch_preview`) for the same command, to avoid duplicate/orphan jobs.
 
 ### Complex / Exploratory Commands (fallback path)
 

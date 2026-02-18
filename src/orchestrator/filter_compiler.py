@@ -263,6 +263,7 @@ def _compile_condition(
     columns_used.add(cond.column)
     col = f'"{cond.column}"'
     op = cond.operator
+    blank_normalized_col = f"TRIM(CAST(COALESCE({col}, '') AS VARCHAR))"
 
     # Dispatch by operator
     if op == FilterOperator.eq:
@@ -394,12 +395,12 @@ def _compile_condition(
     elif op == FilterOperator.is_blank:
         idx = _next_param(param_counter, params, "")
         explanation_parts.append(f"{cond.column} is blank (null or empty)")
-        return f"({col} IS NULL OR {col} = ${idx})"
+        return f"({blank_normalized_col} = ${idx})"
 
     elif op == FilterOperator.is_not_blank:
         idx = _next_param(param_counter, params, "")
         explanation_parts.append(f"{cond.column} is not blank")
-        return f"({col} IS NOT NULL AND {col} != ${idx})"
+        return f"({blank_normalized_col} != ${idx})"
 
     elif op == FilterOperator.between:
         idx_lo = _next_param(

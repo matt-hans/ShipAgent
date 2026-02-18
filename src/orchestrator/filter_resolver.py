@@ -33,7 +33,6 @@ from src.orchestrator.models.filter_spec import (
     UnresolvedTerm,
 )
 from src.services.filter_constants import (
-    BUSINESS_PREDICATES,
     CANONICAL_DICT_VERSION,
     REGION_ALIASES,
     REGIONS,
@@ -41,6 +40,7 @@ from src.services.filter_constants import (
     get_tier,
     match_column_pattern,
     normalize_term,
+    resolve_business_predicate,
 )
 
 
@@ -493,8 +493,9 @@ def _expand_tier_b(
         return expansion
 
     # Check if this is a business predicate
-    if ref.semantic_key in BUSINESS_PREDICATES:
-        predicate = BUSINESS_PREDICATES[ref.semantic_key]
+    business_predicate = resolve_business_predicate(ref.semantic_key)
+    if business_predicate is not None:
+        canonical_key, predicate = business_predicate
         patterns = predicate["target_column_patterns"]
         expansion_type = predicate["expansion"]
 
@@ -503,13 +504,13 @@ def _expand_tier_b(
         if len(matched) == 0:
             raise FilterCompilationError(
                 FilterErrorCode.MISSING_TARGET_COLUMN,
-                f"Business predicate {ref.semantic_key!r} requires one of "
+                f"Business predicate {canonical_key!r} requires one of "
                 f"{patterns}, but none found in schema {sorted(schema_columns)}.",
             )
         if len(matched) > 1:
             raise FilterCompilationError(
                 FilterErrorCode.AMBIGUOUS_TERM,
-                f"Business predicate {ref.semantic_key!r} matched multiple columns: "
+                f"Business predicate {canonical_key!r} matched multiple columns: "
                 f"{matched}. Specify which column to use.",
             )
 
@@ -524,7 +525,7 @@ def _expand_tier_b(
             raise FilterCompilationError(
                 FilterErrorCode.INVALID_OPERATOR,
                 f"Unknown expansion type {expansion_type!r} for "
-                f"predicate {ref.semantic_key!r}.",
+                f"predicate {canonical_key!r}.",
             )
 
         expansion = FilterCondition(
@@ -533,12 +534,12 @@ def _expand_tier_b(
             operands=[],
         )
         description = (
-            f"{ref.semantic_key} → {expansion_type} on '{target_col}'"
+            f"{canonical_key} → {expansion_type} on '{target_col}'"
         )
 
         # Check if we have a prior confirmation for this specific term
         if _is_confirmed(
-            session_confirmations, schema_signature, semantic_term=ref.semantic_key
+            session_confirmations, schema_signature, semantic_term=canonical_key
         ):
             child_statuses.append(ResolutionStatus.RESOLVED)
             return expansion
@@ -546,7 +547,7 @@ def _expand_tier_b(
         child_statuses.append(ResolutionStatus.NEEDS_CONFIRMATION)
         pending_confirmations.append(
             PendingConfirmation(
-                term=ref.semantic_key,
+                term=canonical_key,
                 expansion=description,
                 tier="B",
             )
@@ -583,8 +584,11 @@ def _is_confirmed(
         if not _validate_resolution_token(token, schema_signature):
             continue
         if semantic_term is not None and confirmed.pending_confirmations:
-            confirmed_terms = {pc.term for pc in confirmed.pending_confirmations}
-            if semantic_term not in confirmed_terms:
+            target_term = normalize_term(semantic_term)
+            confirmed_terms = {
+                normalize_term(pc.term) for pc in confirmed.pending_confirmations
+            }
+            if target_term not in confirmed_terms:
                 continue
         return True
     return False

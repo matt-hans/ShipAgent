@@ -104,6 +104,8 @@ class TestAmbiguityTiers:
         from src.services.filter_constants import get_tier
 
         assert get_tier("BUSINESS_RECIPIENT") == "B"
+        assert get_tier("business_recipient") == "B"
+        assert get_tier("business recipient") == "B"
 
     def test_unknown_term_is_tier_c(self):
         from src.services.filter_constants import get_tier
@@ -160,6 +162,15 @@ class TestColumnPatternMatching:
             schema_columns={"company", "company_name", "state"},
         )
         assert set(result) == {"company", "company_name"}
+
+    def test_case_insensitive_match(self):
+        from src.services.filter_constants import match_column_pattern
+
+        result = match_column_pattern(
+            patterns=["company", "ship_to_company"],
+            schema_columns={"Company", "Ship_To_Company", "state"},
+        )
+        assert set(result) == {"Company", "Ship_To_Company"}
 
 
 class TestDictVersion:

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.orchestrator.agent.tools.core import EventEmitterBridge
 from src.orchestrator.models.filter_spec import (
     FilterCondition,
     FilterGroup,
@@ -105,6 +106,34 @@ class TestResolveFilterIntentTool:
         assert is_error is False
         assert content["status"] == "NEEDS_CONFIRMATION"
         assert content["pending_confirmations"] is not None
+
+    @pytest.mark.asyncio
+    async def test_resolved_spec_is_cached_on_bridge(self):
+        """RESOLVED output should populate bridge cache for pipeline recovery."""
+        from src.orchestrator.agent.tools.data import resolve_filter_intent_tool
+
+        gw = _mock_gateway()
+        bridge = EventEmitterBridge()
+        bridge.last_user_message = "ship CA orders"
+        intent_dict = {
+            "root": {
+                "logic": "AND",
+                "conditions": [
+                    {"column": "state", "operator": "eq", "operands": [{"type": "string", "value": "CA"}]},
+                ],
+            },
+            "schema_signature": "test_schema_sig",
+        }
+
+        with patch("src.orchestrator.agent.tools.data.get_data_gateway", return_value=gw):
+            result = await resolve_filter_intent_tool({"intent": intent_dict}, bridge=bridge)
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "RESOLVED"
+        assert isinstance(bridge.last_resolved_filter_spec, dict)
+        assert bridge.last_resolved_filter_spec.get("status") == "RESOLVED"
+        assert bridge.last_resolved_filter_command == "ship CA orders"
 
     @pytest.mark.asyncio
     async def test_missing_schema_returns_error(self):
