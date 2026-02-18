@@ -46,6 +46,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 COPY --chown=shipagent:shipagent src ./src
 COPY --chown=shipagent:shipagent pyproject.toml ./
 COPY --chown=shipagent:shipagent scripts ./scripts
+COPY --chown=shipagent:shipagent docs ./docs
 COPY --from=frontend-builder --chown=shipagent:shipagent /app/frontend/dist ./frontend/dist
 
 RUN mkdir -p /app/data /app/labels && \

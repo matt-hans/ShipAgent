@@ -54,8 +54,18 @@ jobs:
           curl -fsS http://127.0.0.1:18000/readyz
           curl -fsS http://127.0.0.1:18000/ | head -n 5
           docker exec shipagent-smoke shipagent version
+          docker exec shipagent-smoke test -f /app/docs/rating.yaml
+          docker exec shipagent-smoke test -f /app/docs/shipping.yaml
+          docker exec shipagent-smoke /opt/venv/bin/python - <<'PY'
+          from pathlib import Path
+          from src.services.ups_specs import ensure_ups_specs_dir
+          p = Path(ensure_ups_specs_dir())
+          assert (p / "Rating.yaml").exists()
+          assert (p / "Shipping.yaml").exists()
+          assert (p / "TimeInTransit.yaml").exists()
+          print("ups-spec-cache-ok")
+          PY
 
       - name: Cleanup
         if: always()
         run: docker rm -f shipagent-smoke || true
-
