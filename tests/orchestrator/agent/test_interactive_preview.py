@@ -1402,8 +1402,8 @@ class TestExecutionUsesPersistedShipper:
         with (
             patch("src.api.routes.preview._get_sse_observer", return_value=AsyncMock()),
             patch("src.db.connection.get_db", mock_get_db),
-            patch("src.api.routes.preview.UPSMCPClient", return_value=mock_ups_cm),
-            patch("src.api.routes.preview.BatchEngine", return_value=mock_be_instance),
+            patch("src.services.batch_executor.UPSMCPClient", return_value=mock_ups_cm),
+            patch("src.services.batch_executor.BatchEngine", return_value=mock_be_instance),
             patch.dict(os.environ, {
                 "UPS_ACCOUNT_NUMBER": "X",
                 "UPS_BASE_URL": "https://wwwcie.ups.com",
@@ -1450,9 +1450,9 @@ class TestExecutionUsesPersistedShipper:
         with (
             patch("src.api.routes.preview._get_sse_observer", return_value=AsyncMock()),
             patch("src.db.connection.get_db", mock_get_db),
-            patch("src.api.routes.preview.UPSMCPClient", return_value=mock_ups_cm),
-            patch("src.api.routes.preview.BatchEngine", return_value=mock_be_instance),
-            patch("src.api.routes.preview.build_shipper", return_value=env_shipper) as mock_env,
+            patch("src.services.batch_executor.UPSMCPClient", return_value=mock_ups_cm),
+            patch("src.services.batch_executor.BatchEngine", return_value=mock_be_instance),
+            patch("src.services.ups_payload_builder.build_shipper", return_value=env_shipper) as mock_env,
             patch.dict(os.environ, {
                 "UPS_ACCOUNT_NUMBER": "X",
                 "UPS_BASE_URL": "https://wwwcie.ups.com",

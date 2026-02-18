@@ -40,6 +40,7 @@ These rules are non-negotiable. Violating them creates architectural debt that u
 **SDK Orchestration Redesign:** COMPLETE — Claude SDK is the sole orchestration path via `/api/v1/conversations/` endpoints
 **Interactive Shipping:** COMPLETE — ad-hoc single-shipment creation with preview gate and auto-populated shipper config
 **International Shipping:** COMPLETE — US→CA/MX lane validation, commodity handling, customs forms, batch + interactive integration. Gated by `INTERNATIONAL_ENABLED_LANES` env var.
+**Headless Automation CLI:** COMPLETE — `shipagent` CLI with daemon management, conversational REPL, hot-folder watchdog, auto-confirm engine. Shared services (`batch_executor.py`, `conversation_handler.py`) enable code reuse between HTTP routes and CLI InProcessRunner.
 **Test Count:** 1320 test functions across 77 test files
 **UPS MCP v2 Integration:** COMPLETE — 18 UPS tools (7 original + 11 new) across 6 domains. Agent uses ups-mcp as stdio MCP server with v2 tools available in both batch and interactive modes; BatchEngine uses UPSMCPClient (programmatic MCP over stdio). New tools: pickup (6), paperless (3), locator (1), landed cost (1). Frontend: domain-colored cards (pickup/purple, locator/teal, paperless/amber, landed-cost/indigo, tracking/blue).
 
@@ -90,6 +91,7 @@ User → Browser UI (React) → FastAPI REST API → Conversation SSE Route
 | **Gateway Provider** | Python singletons | MCP lifecycle — process-global singleton factory for all MCP clients |
 | **State Database** | SQLite + SQLAlchemy | Persistence — jobs, rows, audit logs, saved sources |
 | **FastAPI Backend** | Python + FastAPI | HTTP layer — REST API, SSE streaming, SPA serving |
+| **Headless CLI** | Python + Typer + Rich | CLI automation — daemon management, job control, conversational REPL, hot-folder watchdog |
 | **Browser UI** | React + Vite + TypeScript | Presentation — agent-driven chat, preview cards, progress, labels |
 
 ### Agent Tool Architecture
@@ -196,6 +198,18 @@ src/
 │   ├── main.py                 # App factory with lifespan events + SPA serving
 │   ├── schemas.py              # Pydantic request/response models
 │   └── schemas_conversations.py # Conversation endpoint schemas
+├── cli/                        # Headless automation CLI (shipagent command)
+│   ├── main.py                 # Typer CLI entry point — daemon, job, submit, interact commands
+│   ├── config.py               # YAML config loader — DaemonConfig, AutoConfirmRules, WatchFolderConfig
+│   ├── protocol.py             # ShipAgentClient protocol + CLI data models (JobSummary, JobDetail, etc.)
+│   ├── factory.py              # Client factory — get_client(standalone=) → HttpClient or InProcessRunner
+│   ├── daemon.py               # Daemon PID management — start, stop, status
+│   ├── http_client.py          # HttpClient — REST+SSE client for daemon mode
+│   ├── runner.py               # InProcessRunner — direct DB + shared services for standalone mode
+│   ├── repl.py                 # Conversational REPL with Rich rendering
+│   ├── output.py               # Rich table/panel formatters for CLI output
+│   ├── auto_confirm.py         # Auto-confirm engine — rule evaluation for headless execution
+│   └── watchdog_service.py     # HotFolderService — filesystem watcher with debouncing + file lifecycle
 ├── db/                         # Database layer
 │   ├── models.py               # SQLAlchemy models (Job, JobRow, AuditLog, SavedDataSource)
 │   └── connection.py           # Session management
@@ -222,6 +236,8 @@ src/
 │   ├── data_source_mcp_client.py # DataSourceMCPClient — async data source via MCP stdio
 │   ├── external_sources_mcp_client.py # ExternalSourcesMCPClient — async platform via MCP stdio
 │   ├── gateway_provider.py     # Centralized singleton factory for MCP client gateways
+│   ├── batch_executor.py       # Shared batch execution service (used by HTTP routes + CLI)
+│   ├── conversation_handler.py # Shared conversation handling (agent session + message streaming)
 │   ├── saved_data_source_service.py # Saved source CRUD (list, upsert, delete, reconnect)
 │   └── write_back_utils.py     # Atomic CSV/Excel write-back utilities
 ├── mcp/
@@ -357,6 +373,7 @@ All endpoints use `/api/v1/` prefix. See route files in `src/api/routes/` for fu
 | NL Processing | sqlglot (SQL generation/validation), Jinja2 (logistics filters) |
 | Real-time | SSE via `sse-starlette` |
 | PDF | `pypdf` (merging), `react-pdf` + `pdfjs-dist` (browser rendering) |
+| Headless CLI | Typer, Rich, httpx, watchdog, PyYAML |
 | Frontend | React, Vite, TypeScript, Tailwind CSS v4, shadcn/ui |
 
 ## Common Commands
@@ -398,6 +415,31 @@ mypy src/
 # Linting
 ruff check src/ tests/
 ruff format src/ tests/
+```
+
+### Headless CLI
+
+```bash
+# Standalone mode (no daemon required)
+shipagent --standalone submit orders.csv --service "UPS Ground"
+shipagent --standalone job list
+shipagent --standalone interact
+
+# Daemon mode
+shipagent daemon start --config shipagent.yaml
+shipagent daemon status
+shipagent submit orders.csv --auto-confirm
+shipagent job inspect <job-id>
+shipagent job approve <job-id>
+shipagent job logs <job-id> -f
+shipagent daemon stop
+
+# Config management
+shipagent config show
+shipagent config validate --config shipagent.yaml
+
+# CLI tests
+pytest tests/cli/ -v
 ```
 
 ### Frontend
