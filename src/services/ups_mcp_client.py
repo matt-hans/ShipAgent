@@ -673,11 +673,11 @@ class UPSMCPClient:
         if shipper_number:
             args["shipper_number"] = shipper_number
         try:
-            await self._call("push_document_to_shipment", args)
+            raw = await self._call("push_document_to_shipment", args)
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
-        return {"success": True}
+        return self._normalize_push_document_response(raw)
 
     async def delete_document(
         self,
@@ -700,11 +700,11 @@ class UPSMCPClient:
         if shipper_number:
             args["shipper_number"] = shipper_number
         try:
-            await self._call("delete_paperless_document", args)
+            raw = await self._call("delete_paperless_document", args)
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
-        return {"success": True}
+        return self._normalize_delete_document_response(raw)
 
     # ── Locator methods ────────────────────────────────────────────────
 
@@ -1331,6 +1331,23 @@ class UPSMCPClient:
             currencyCode, totalDuties, totalVAT, totalBrokerageFees,
             and per-commodity items.
         """
+        def _first_present(mapping: dict[str, Any], *keys: str, default: Any) -> Any:
+            """Return the first present non-None value for a sequence of keys."""
+            for key in keys:
+                if key in mapping and mapping.get(key) is not None:
+                    return mapping.get(key)
+            return default
+
+        def _to_bool(value: Any) -> bool:
+            """Normalize bool-like values from UPS payloads."""
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value != 0
+            if isinstance(value, str):
+                return value.strip().lower() in {"true", "1", "yes", "y"}
+            return bool(value)
+
         # UPS returns shipment at top level (production verified).
         shipment = raw.get("shipment", {})
         grand_total = shipment.get("grandTotal", 0)
@@ -1341,10 +1358,31 @@ class UPSMCPClient:
             items_raw = [items_raw]
         items = [
             {
-                "commodityId": item.get("commodityId", ""),
+                "commodityId": str(
+                    _first_present(item, "commodityId", "commodityID", default="")
+                ),
                 "duties": str(item.get("commodityDuty", 0)),
                 "taxes": str(item.get("commodityVAT", 0)),
-                "fees": str(item.get("totalCommodityTaxesAndFees", 0)),
+                "fees": str(
+                    _first_present(
+                        item,
+                        "totalCommodityTaxesAndFees",
+                        "totalCommodityTaxAndFee",
+                        default=0,
+                    )
+                ),
+                "totalDutyAndTax": str(
+                    _first_present(
+                        item,
+                        "totalCommodityDutyAndTax",
+                        "totalCommodityDutyandTax",
+                        default=0,
+                    )
+                ),
+                "currencyCode": str(item.get("commodityCurrencyCode", "") or currency),
+                "isCalculable": _to_bool(
+                    _first_present(item, "isCalculable", default=True)
+                ),
                 "hsCode": item.get("hsCode", ""),
             }
             for item in items_raw
@@ -1369,30 +1407,150 @@ class UPSMCPClient:
             "importCountryCode": str(shipment.get("importCountryCode", "")),
             "totalDuties": str(shipment.get("totalDuties", 0)),
             "totalVAT": str(shipment.get("totalVAT", 0)),
+            "totalCommodityLevelTaxesAndFees": str(
+                shipment.get("totalCommodityLevelTaxesAndFees", 0)
+            ),
+            "totalShipmentLevelTaxesAndFees": str(
+                shipment.get("totalShipmentLevelTaxesAndFees", 0)
+            ),
+            "totalDutyAndTax": str(
+                _first_present(
+                    shipment,
+                    "totalDutyAndTax",
+                    "totalDutyandTax",
+                    default=0,
+                )
+            ),
             "totalBrokerageFees": str(shipment.get("totalBrokerageFees", 0)),
             "brokerageFeeItems": brokerage_items,
+            "transId": str(
+                _first_present(raw, "transID", "transId", default="")
+            ),
+            "alVersion": _first_present(raw, "alVersion", "alversion", default=0),
+            "perfStats": (
+                raw.get("perfStats", {}) if isinstance(raw.get("perfStats", {}), dict) else {}
+            ),
             "items": items,
         }
 
     def _normalize_upload_response(self, raw: dict) -> dict[str, Any]:
-        """Extract document ID from raw UPS upload response.
+        """Extract upload details from raw UPS upload response.
 
         Args:
             raw: Raw UPS UploadResponse dict.
 
         Returns:
-            Normalised response dict with success and documentId.
+            Normalised response dict with success, documentId/documentIds,
+            and response metadata when available.
         """
-        upload = raw.get("UploadResponse", {})
-        doc_id = (
-            upload
-            .get("FormsHistoryDocumentID", {})
-            .get("DocumentID", "")
+        upload = raw.get("UploadResponse", {}) if isinstance(raw, dict) else {}
+        forms_history = upload.get("FormsHistoryDocumentID", {})
+        doc_ids = self._extract_document_ids(
+            forms_history.get("DocumentID", forms_history),
         )
-        return {
+        result: dict[str, Any] = {
             "success": True,
-            "documentId": doc_id,
         }
+        if doc_ids:
+            result["documentIds"] = doc_ids
+            result["documentId"] = doc_ids[0]
+        result.update(self._extract_paperless_response_meta(upload.get("Response", {})))
+        return result
+
+    def _normalize_push_document_response(self, raw: dict) -> dict[str, Any]:
+        """Extract details from raw UPS push-document response."""
+        push = raw.get("PushToImageRepositoryResponse", {}) if isinstance(raw, dict) else {}
+        result: dict[str, Any] = {"success": True}
+
+        forms_group_id = push.get("FormsGroupID")
+        if forms_group_id:
+            result["formsGroupId"] = str(forms_group_id)
+
+        forms_history = push.get("FormsHistoryDocumentID", {})
+        doc_ids = self._extract_document_ids(
+            forms_history.get("DocumentID", forms_history),
+        )
+        if doc_ids:
+            result["documentIds"] = doc_ids
+            result["documentId"] = doc_ids[0]
+
+        result.update(self._extract_paperless_response_meta(push.get("Response", {})))
+        return result
+
+    def _normalize_delete_document_response(self, raw: dict) -> dict[str, Any]:
+        """Extract details from raw UPS delete-document response."""
+        delete = raw.get("DeleteResponse", {}) if isinstance(raw, dict) else {}
+        result: dict[str, Any] = {"success": True}
+        result.update(self._extract_paperless_response_meta(delete.get("Response", {})))
+        return result
+
+    def _extract_paperless_response_meta(self, response: Any) -> dict[str, Any]:
+        """Extract common response metadata for paperless endpoints."""
+        if not isinstance(response, dict):
+            return {}
+
+        status = response.get("ResponseStatus", {})
+        transaction = response.get("TransactionReference", {})
+        alerts_raw = response.get("Alert", [])
+
+        out: dict[str, Any] = {}
+
+        if isinstance(status, dict):
+            code = status.get("Code")
+            description = status.get("Description")
+            if code is not None and str(code).strip():
+                out["statusCode"] = str(code)
+            if description is not None and str(description).strip():
+                out["statusDescription"] = str(description)
+
+        if isinstance(transaction, dict):
+            customer_context = transaction.get("CustomerContext")
+            if customer_context is not None and str(customer_context).strip():
+                out["customerContext"] = str(customer_context)
+
+        if isinstance(alerts_raw, dict):
+            alerts_raw = [alerts_raw]
+        alerts: list[dict[str, str]] = []
+        if isinstance(alerts_raw, list):
+            for alert in alerts_raw:
+                if isinstance(alert, dict):
+                    code = str(alert.get("Code", "")).strip()
+                    message = str(alert.get("Description", "")).strip()
+                else:
+                    code = ""
+                    message = str(alert).strip()
+                if code or message:
+                    alerts.append({"code": code, "message": message})
+        if alerts:
+            out["alerts"] = alerts
+
+        return out
+
+    @staticmethod
+    def _extract_document_ids(raw_value: Any) -> list[str]:
+        """Normalize one-or-many UPS DocumentID values into a clean list."""
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, str):
+            value = raw_value.strip()
+            return [value] if value else []
+        if isinstance(raw_value, dict):
+            # Defensive fallback for unexpected nested wrappers.
+            return UPSMCPClient._extract_document_ids(raw_value.get("DocumentID"))
+        if isinstance(raw_value, list):
+            out: list[str] = []
+            for item in raw_value:
+                if isinstance(item, str):
+                    value = item.strip()
+                    if value:
+                        out.append(value)
+                elif item is not None:
+                    value = str(item).strip()
+                    if value:
+                        out.append(value)
+            return out
+        value = str(raw_value).strip()
+        return [value] if value else []
 
     def _normalize_locations_response(self, raw: dict) -> dict[str, Any]:
         """Extract locations from raw UPS locator response.

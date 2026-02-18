@@ -768,9 +768,19 @@ export interface LandedCostResult {
   totalLandedCost: string;
   currencyCode: string;
   shipmentId?: string;
+  transId?: string;
+  alVersion?: number;
+  perfStats?: {
+    absLayerTime?: string;
+    fulfillTime?: string;
+    receiptTime?: string;
+  };
   importCountryCode?: string;
   totalDuties?: string;
   totalVAT?: string;
+  totalCommodityLevelTaxesAndFees?: string;
+  totalShipmentLevelTaxesAndFees?: string;
+  totalDutyAndTax?: string;
   totalBrokerageFees?: string;
   brokerageFeeItems?: Array<{
     chargeName: string;
@@ -787,9 +797,13 @@ export interface LandedCostResult {
   };
   items: Array<{
     commodityId: string;
+    itemLabel?: string;
     duties: string;
     taxes: string;
     fees: string;
+    totalDutyAndTax?: string;
+    currencyCode?: string;
+    isCalculable?: boolean;
     hsCode?: string;
   }>;
 }
@@ -815,6 +829,15 @@ export interface PaperlessResult {
   action: 'uploaded' | 'pushed' | 'deleted';
   success: boolean;
   documentId?: string;
+  documentIds?: string[];
+  formsGroupId?: string;
+  statusCode?: string;
+  statusDescription?: string;
+  customerContext?: string;
+  alerts?: Array<{
+    code?: string;
+    message?: string;
+  }>;
   fileName?: string;
   fileFormat?: string;
   documentType?: string;

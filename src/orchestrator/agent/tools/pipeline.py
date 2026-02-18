@@ -1532,17 +1532,35 @@ async def get_landed_cost_tool(
         Tool response with landed cost breakdown, or error envelope.
     """
     try:
+        def _first_non_empty(*values: Any) -> str:
+            for value in values:
+                text = str(value or "").strip()
+                if text:
+                    return text
+            return ""
+
         client = await _get_ups_client()
         result = await client.get_landed_cost(**args)
         commodities_raw = args.get("commodities", [])
         commodities: list[dict[str, Any]] = (
             commodities_raw if isinstance(commodities_raw, list) else []
         )
+        commodity_by_id: dict[str, dict[str, Any]] = {}
+        commodity_by_index: list[dict[str, Any]] = []
         total_units = 0
         declared_value = 0.0
-        for item in commodities:
+        for idx, item in enumerate(commodities, start=1):
             if not isinstance(item, dict):
                 continue
+            commodity_by_index.append(item)
+            commodity_id = _first_non_empty(
+                item.get("commodity_id"),
+                item.get("commodityId"),
+                item.get("commodityID"),
+                item.get("id"),
+                str(idx),
+            )
+            commodity_by_id[commodity_id] = item
             try:
                 qty = int(item.get("quantity", 0) or 0)
             except (TypeError, ValueError):
@@ -1554,10 +1572,38 @@ async def get_landed_cost_tool(
             total_units += max(qty, 0)
             declared_value += max(qty, 0) * max(price, 0.0)
 
+        items_raw = result.get("items", [])
+        rendered_items: list[dict[str, Any]] = []
+        if isinstance(items_raw, list):
+            for index, item in enumerate(items_raw):
+                if not isinstance(item, dict):
+                    continue
+                commodity_id = str(item.get("commodityId", "")).strip()
+                source = commodity_by_id.get(commodity_id)
+                if source is None and index < len(commodity_by_index):
+                    source = commodity_by_index[index]
+                item_label = ""
+                if source is not None:
+                    item_label = _first_non_empty(
+                        source.get("description"),
+                        source.get("name"),
+                        source.get("item_name"),
+                        source.get("title"),
+                        source.get("sku"),
+                        source.get("hs_code"),
+                    )
+                rendered_items.append(
+                    {
+                        **item,
+                        "itemLabel": item_label,
+                    }
+                )
+
         payload = {
             "action": "landed_cost",
             "success": True,
             **result,
+            "items": rendered_items if rendered_items else result.get("items", []),
             "requestSummary": {
                 "exportCountryCode": str(args.get("export_country_code", "")).upper(),
                 "importCountryCode": str(args.get("import_country_code", "")).upper(),
