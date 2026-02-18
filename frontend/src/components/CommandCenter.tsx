@@ -593,7 +593,9 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                     preview={preview}
                     onConfirm={(opts) => handleConfirm(opts)}
                     onCancel={handleCancel}
+                    onRefine={handleRefine}
                     isConfirming={isConfirming}
+                    isRefining={isRefining}
                     isProcessing={conv.isProcessing}
                   />
                 ) : (

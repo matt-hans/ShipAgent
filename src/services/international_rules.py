@@ -45,6 +45,14 @@ DOMESTIC_ONLY_SERVICES: frozenset[str] = frozenset({
 # Lanes requiring InvoiceLineTotal
 INVOICE_LINE_TOTAL_LANES: frozenset[str] = frozenset({"US-CA", "US-PR"})
 
+# Destination countries where UPS requires ShipTo.StateProvinceCode.
+# Keep default narrowly scoped; operators can extend via env when UPS
+# introduces stricter country requirements.
+DEFAULT_RECIPIENT_STATE_REQUIRED_COUNTRIES: frozenset[str] = frozenset({"GB"})
+RECIPIENT_STATE_REQUIRED_COUNTRIES_ENV = (
+    "INTERNATIONAL_RECIPIENT_STATE_REQUIRED_COUNTRIES"
+)
+
 
 @dataclass
 class ValidationError:
@@ -115,6 +123,36 @@ def is_lane_enabled(origin: str, destination: str) -> bool:
     if "*" in lanes:
         return True
     return f"{origin.upper()}-{destination.upper()}" in lanes
+
+
+def recipient_state_required(destination: str) -> bool:
+    """Return whether destination requires ShipTo.StateProvinceCode.
+
+    Uses an env override for operations without code changes:
+    INTERNATIONAL_RECIPIENT_STATE_REQUIRED_COUNTRIES=GB,IE,...
+
+    Args:
+        destination: Destination country code (ISO-2).
+
+    Returns:
+        True when recipient state/province is required.
+    """
+    country = destination.upper().strip()
+    if not country:
+        return False
+
+    configured = os.environ.get(
+        RECIPIENT_STATE_REQUIRED_COUNTRIES_ENV, "",
+    ).strip()
+    if not configured:
+        required = DEFAULT_RECIPIENT_STATE_REQUIRED_COUNTRIES
+    else:
+        required = {
+            c.strip().upper()
+            for c in configured.split(",")
+            if c.strip()
+        }
+    return country in required
 
 
 def _is_ups_letter(packaging_code: str | None) -> bool:
@@ -321,6 +359,18 @@ def validate_international_readiness(
             "ship_to_phone", "MISSING_RECIPIENT_PHONE",
             "Recipient phone number is required for international shipments.",
             "ShipTo.Phone.Number",
+        )
+
+    # Country-specific recipient state/province requirement
+    destination_country = str(order_data.get("ship_to_country", "")).upper().strip()
+    if requirements.is_international and recipient_state_required(destination_country):
+        _check(
+            "ship_to_state", "MISSING_RECIPIENT_STATE",
+            (
+                "Recipient state/province code is required for shipments "
+                f"to {destination_country}."
+            ),
+            "ShipTo.Address.StateProvinceCode",
         )
 
     # Description

@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
 from mcp import StdioServerParameters
 
@@ -27,6 +27,7 @@ from src.services.mcp_client import (
     MCPToolError,
     _auto_decline_elicitation,
 )
+from src.services.ups_service_codes import SERVICE_CODE_NAMES
 from src.services.ups_specs import ensure_ups_specs_dir
 
 logger = logging.getLogger(__name__)
@@ -222,26 +223,42 @@ class UPSMCPClient:
 
     # ── Public API ─────────────────────────────────────────────────────
 
-    async def get_rate(self, request_body: dict[str, Any]) -> dict[str, Any]:
-        """Get a rate quote for a single service.
+    async def get_rate(
+        self,
+        request_body: dict[str, Any],
+        requestoption: Literal["Rate", "Shop", "Shoptimeintransit"] = "Rate",
+    ) -> dict[str, Any]:
+        """Get a rate quote for one or more services.
 
         Args:
             request_body: Full UPS RateRequest payload.
+            requestoption: UPS rating mode.
+                - "Rate": quote the specified service only
+                - "Shop": return all available services
+                - "Shoptimeintransit": shop + transit data
 
         Returns:
-            Normalised dict with: success, totalCharges.
+            Normalised dict.
+            - Rate mode: success, totalCharges, chargeBreakdown
+            - Shop modes: success, ratedShipments (available services)
 
         Raises:
             UPSServiceError: On UPS API error.
         """
+        normalized_option = str(requestoption or "Rate")
+        if normalized_option not in ("Rate", "Shop", "Shoptimeintransit"):
+            normalized_option = "Rate"
+
         try:
             raw = await self._call("rate_shipment", {
-                "requestoption": "Rate",
+                "requestoption": normalized_option,
                 "request_body": request_body,
             })
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
+        if normalized_option in ("Shop", "Shoptimeintransit"):
+            return self._normalize_shop_rate_response(raw)
         return self._normalize_rate_response(raw)
 
     async def create_shipment(self, request_body: dict[str, Any]) -> dict[str, Any]:
@@ -1099,6 +1116,67 @@ class UPSMCPClient:
                 "currencyCode": charges.get("CurrencyCode", "USD"),
             },
             "chargeBreakdown": charge_breakdown,
+        }
+
+    @staticmethod
+    def _parse_amount(value: str | None) -> float:
+        """Parse UPS monetary strings to float for deterministic sorting."""
+        try:
+            return float(str(value or "0").strip())
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _normalize_shop_rate_response(self, raw: dict) -> dict[str, Any]:
+        """Extract all available services from a UPS Shop response."""
+        rated = (
+            raw.get("RateResponse", {})
+            .get("RatedShipment", [])
+        )
+        if isinstance(rated, dict):
+            rated = [rated]
+
+        services: list[dict[str, Any]] = []
+        for shipment in rated or []:
+            service = shipment.get("Service", {}) if isinstance(shipment, dict) else {}
+            code = str(service.get("Code", "")).strip()
+            if not code:
+                continue
+
+            desc = str(service.get("Description", "")).strip()
+            negotiated = (
+                shipment.get("NegotiatedRateCharges", {})
+                .get("TotalCharge", {})
+            )
+            published = shipment.get("TotalCharges", {})
+            charges = negotiated if negotiated.get("MonetaryValue") else published
+            amount = str(charges.get("MonetaryValue", "0"))
+            currency = str(charges.get("CurrencyCode", "USD"))
+
+            delivery_days = (
+                shipment.get("GuaranteedDelivery", {})
+                .get("BusinessDaysInTransit")
+            )
+
+            services.append({
+                "serviceCode": code,
+                "serviceName": SERVICE_CODE_NAMES.get(code, desc or f"UPS Service {code}"),
+                "serviceDescription": desc or SERVICE_CODE_NAMES.get(code, ""),
+                "totalCharges": {
+                    "monetaryValue": amount,
+                    "amount": amount,
+                    "currencyCode": currency,
+                },
+                "deliveryDays": str(delivery_days).strip() if delivery_days else None,
+            })
+
+        services.sort(
+            key=lambda s: self._parse_amount(
+                s.get("totalCharges", {}).get("monetaryValue"),
+            )
+        )
+        return {
+            "success": True,
+            "ratedShipments": services,
         }
 
     def _normalize_address_response(self, raw: dict) -> dict[str, Any]:

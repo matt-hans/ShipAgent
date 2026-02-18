@@ -205,6 +205,170 @@ class TestPreviewInteractiveShipment:
         assert "Missing required" in result["content"][0]["text"]
 
     @pytest.mark.asyncio
+    async def test_international_gb_missing_state_is_blocked_before_preview(self):
+        """GB shipments require recipient state/province before preview creation."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        env = {
+            "UPS_ACCOUNT_NUMBER": "TEST123",
+            "SHIPPER_NAME": "Test",
+            "SHIPPER_ADDRESS1": "123 Main",
+            "SHIPPER_CITY": "LA",
+            "SHIPPER_STATE": "CA",
+            "SHIPPER_ZIP": "90001",
+            "SHIPPER_COUNTRY": "US",
+            "SHIPPER_ATTENTION_NAME": "Warehouse Desk",
+            "SHIPPER_PHONE": "12125551234",
+            "INTERNATIONAL_ENABLED_LANES": "US-GB",
+        }
+
+        args = self._base_args(
+            ship_to_state="",
+            ship_to_country="GB",
+            ship_to_phone="442079430800",
+            ship_to_attention_name="Elizabeth Taylor",
+            service="UPS Worldwide Saver",
+            shipment_description="Books",
+            commodities=[
+                {
+                    "description": "Books",
+                    "commodity_code": "490199",
+                    "origin_country": "US",
+                    "quantity": 1,
+                    "unit_value": "75.00",
+                }
+            ],
+        )
+
+        with patch.dict(os.environ, env, clear=False):
+            result = await preview_interactive_shipment_tool(args)
+
+        assert result["isError"] is True
+        assert "state/province code is required" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_includes_available_services_from_shop_discovery(self):
+        """Interactive preview includes UPS Shop-discovered service options."""
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        mock_preview_result = {
+            "job_id": "svc-discovery-test",
+            "total_rows": 1,
+            "preview_rows": [
+                {
+                    "row_number": 1,
+                    "recipient_name": "John Smith",
+                    "city_state": "Austin, TX",
+                    "estimated_cost_cents": 1500,
+                    "warnings": [],
+                }
+            ],
+            "additional_rows": 0,
+            "total_estimated_cost_cents": 1500,
+        }
+
+        created_job = MagicMock()
+        created_job.id = "svc-discovery-test"
+        mock_job_service = MagicMock()
+        mock_job_service.create_job.return_value = created_job
+        mock_job_service.create_rows.return_value = [MagicMock()]
+        mock_job_service.get_rows.return_value = [MagicMock()]
+
+        mock_engine = AsyncMock()
+        mock_engine.preview.return_value = mock_preview_result
+
+        mock_ups = AsyncMock()
+        mock_ups.get_rate.return_value = {
+            "ratedShipments": [
+                {
+                    "serviceCode": "03",
+                    "serviceName": "UPS Ground",
+                    "totalCharges": {"monetaryValue": "15.00", "currencyCode": "USD"},
+                },
+                {
+                    "serviceCode": "12",
+                    "serviceName": "UPS 3 Day Select",
+                    "totalCharges": {"monetaryValue": "22.00", "currencyCode": "USD"},
+                },
+            ]
+        }
+        bridge = EventEmitterBridge()
+        emitted_events = []
+        bridge.callback = lambda event_type, data: emitted_events.append((event_type, data))
+
+        env = {
+            "UPS_ACCOUNT_NUMBER": "TEST123",
+            "SHIPPER_NAME": "Test",
+            "SHIPPER_ADDRESS1": "123 Main",
+            "SHIPPER_CITY": "LA",
+            "SHIPPER_STATE": "CA",
+            "SHIPPER_ZIP": "90001",
+        }
+
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=mock_ups),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
+            patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
+            patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
+        ):
+            mock_db_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_db_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = await preview_interactive_shipment_tool(self._base_args(), bridge=bridge)
+
+        assert result["isError"] is False
+        assert emitted_events
+        event_type, event_data = emitted_events[0]
+        assert event_type == "preview_ready"
+        assert len(event_data.get("available_services", [])) == 2
+        assert event_data["available_services"][0]["code"] == "03"
+        assert event_data["available_services"][0]["selected"] is True
+
+    @pytest.mark.asyncio
+    async def test_explicit_unavailable_service_returns_error_with_options(self):
+        """Explicit service is rejected when UPS Shop says it is unavailable."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        mock_ups = AsyncMock()
+        mock_ups.get_rate.return_value = {
+            "ratedShipments": [
+                {
+                    "serviceCode": "03",
+                    "serviceName": "UPS Ground",
+                    "totalCharges": {"monetaryValue": "15.00", "currencyCode": "USD"},
+                },
+                {
+                    "serviceCode": "12",
+                    "serviceName": "UPS 3 Day Select",
+                    "totalCharges": {"monetaryValue": "22.00", "currencyCode": "USD"},
+                },
+            ]
+        }
+
+        env = {
+            "UPS_ACCOUNT_NUMBER": "TEST123",
+            "SHIPPER_NAME": "Test",
+            "SHIPPER_ADDRESS1": "123 Main",
+            "SHIPPER_CITY": "LA",
+            "SHIPPER_STATE": "CA",
+            "SHIPPER_ZIP": "90001",
+        }
+
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=mock_ups),
+        ):
+            result = await preview_interactive_shipment_tool(
+                self._base_args(service="Next Day Air")
+            )
+
+        assert result["isError"] is True
+        assert "Requested service" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
     async def test_none_optional_fields_not_polluted(self):
         """None in optional fields becomes empty string, not 'None'."""
         from src.orchestrator.agent.tools.core import EventEmitterBridge
@@ -459,6 +623,7 @@ class TestPreviewInteractiveShipment:
             "SHIPPER_ZIP": "90001",
             "SHIPPER_ATTENTION_NAME": "Warehouse Desk",
             "SHIPPER_PHONE": "2125557890",
+            "INTERNATIONAL_ENABLED_LANES": "US-CA",
         }
 
         with (
@@ -499,6 +664,100 @@ class TestPreviewInteractiveShipment:
         assert order_data["reason_for_export"] == "SALE"
         assert order_data["shipper_attention_name"] == "Warehouse Desk"
         assert order_data["shipper_phone"] == "2125557890"
+
+    @pytest.mark.asyncio
+    async def test_international_attention_defaults_to_recipient_name(self):
+        """When attention is omitted, interactive flow defaults it to ship_to_name."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        mock_preview_result = {
+            "job_id": "intl-attn-default-test",
+            "total_rows": 1,
+            "preview_rows": [
+                {
+                    "row_number": 1,
+                    "recipient_name": "Franz Becker",
+                    "city_state": "Berlin, BE",
+                    "estimated_cost_cents": 4100,
+                    "warnings": [],
+                }
+            ],
+            "additional_rows": 0,
+            "total_estimated_cost_cents": 4100,
+        }
+
+        created_job = MagicMock()
+        created_job.id = "intl-attn-default-test"
+        mock_job_service = MagicMock()
+        mock_job_service.create_job.return_value = created_job
+        mock_job_service.create_rows.return_value = [MagicMock()]
+        mock_job_service.get_rows.return_value = [MagicMock()]
+
+        mock_engine = AsyncMock()
+        mock_engine.preview.return_value = mock_preview_result
+
+        mock_ups = AsyncMock()
+        mock_ups.get_rate.return_value = {
+            "ratedShipments": [
+                {
+                    "serviceCode": "65",
+                    "serviceName": "UPS Worldwide Saver",
+                    "totalCharges": {"monetaryValue": "41.00", "currencyCode": "USD"},
+                }
+            ]
+        }
+
+        env = {
+            "UPS_ACCOUNT_NUMBER": "TEST123",
+            "SHIPPER_NAME": "Test",
+            "SHIPPER_ADDRESS1": "123 Main",
+            "SHIPPER_CITY": "LA",
+            "SHIPPER_STATE": "CA",
+            "SHIPPER_ZIP": "90001",
+            "SHIPPER_COUNTRY": "US",
+            "SHIPPER_ATTENTION_NAME": "Warehouse Desk",
+            "SHIPPER_PHONE": "2125557890",
+            "INTERNATIONAL_ENABLED_LANES": "US-DE",
+        }
+
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=mock_ups),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
+            patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
+            patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
+            patch(
+                "src.orchestrator.agent.tools.interactive._build_job_row_data",
+                side_effect=lambda rows: rows,
+            ) as mock_build,
+        ):
+            mock_db_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_db_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = await preview_interactive_shipment_tool(
+                self._base_args(
+                    ship_to_name="Franz Becker",
+                    ship_to_city="Berlin",
+                    ship_to_state="BE",
+                    ship_to_zip="10117",
+                    ship_to_country="DE",
+                    ship_to_phone="+49 30 1234 5678",
+                    service="UPS Worldwide Saver",
+                    shipment_description="Mechanical parts",
+                    commodities=[{
+                        "description": "Mechanical parts",
+                        "commodity_code": "848790",
+                        "origin_country": "US",
+                        "quantity": 1,
+                        "unit_value": "150.00",
+                    }],
+                )
+            )
+
+        assert result["isError"] is False
+        order_data = mock_build.call_args[0][0][0]
+        assert order_data["ship_to_attention_name"] == "Franz Becker"
 
     @pytest.mark.asyncio
     async def test_creates_job_with_interactive_flag(self):
@@ -915,6 +1174,7 @@ class TestPreviewInteractiveShipment:
         with (
             patch.dict(os.environ, env, clear=False),
             patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=AsyncMock()),
             patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
         ):
             mock_db_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())

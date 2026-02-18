@@ -145,6 +145,63 @@ class TestGetRate:
 
         assert exc_info.value.code == "E-3003"
 
+    @pytest.mark.asyncio
+    async def test_shop_request_option_returns_available_services(self, ups_client, mock_mcp_client):
+        """Shop mode returns normalized available service list."""
+        mock_mcp_client.call_tool.return_value = {
+            "RateResponse": {
+                "RatedShipment": [
+                    {
+                        "Service": {"Code": "65", "Description": "UPS Worldwide Saver"},
+                        "TotalCharges": {"MonetaryValue": "45.10", "CurrencyCode": "USD"},
+                    },
+                    {
+                        "Service": {"Code": "07", "Description": "UPS Worldwide Express"},
+                        "TotalCharges": {"MonetaryValue": "58.30", "CurrencyCode": "USD"},
+                    },
+                ]
+            }
+        }
+
+        result = await ups_client.get_rate(
+            request_body={"test": True},
+            requestoption="Shop",
+        )
+
+        assert result["success"] is True
+        assert len(result["ratedShipments"]) == 2
+        assert result["ratedShipments"][0]["serviceCode"] == "65"
+        assert result["ratedShipments"][0]["serviceName"] == "UPS Worldwide Saver"
+
+        mock_mcp_client.call_tool.assert_awaited_once_with(
+            "rate_shipment",
+            {"requestoption": "Shop", "request_body": {"test": True}},
+            max_retries=2,
+            base_delay=0.2,
+        )
+
+    @pytest.mark.asyncio
+    async def test_shop_rates_sorted_by_price(self, ups_client, mock_mcp_client):
+        """Shop response is sorted by ascending total charge."""
+        mock_mcp_client.call_tool.return_value = {
+            "RateResponse": {
+                "RatedShipment": [
+                    {
+                        "Service": {"Code": "07"},
+                        "TotalCharges": {"MonetaryValue": "88.00", "CurrencyCode": "USD"},
+                    },
+                    {
+                        "Service": {"Code": "65"},
+                        "TotalCharges": {"MonetaryValue": "49.00", "CurrencyCode": "USD"},
+                    },
+                ]
+            }
+        }
+
+        result = await ups_client.get_rate(request_body={}, requestoption="Shop")
+        codes = [s["serviceCode"] for s in result["ratedShipments"]]
+        assert codes == ["65", "07"]
+
 
 # ---------------------------------------------------------------------------
 # create_shipment normalization

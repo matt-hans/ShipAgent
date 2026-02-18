@@ -601,18 +601,32 @@ export function InteractivePreviewCard({
   preview,
   onConfirm,
   onCancel,
+  onRefine,
   isConfirming,
+  isRefining,
   isProcessing,
 }: {
   preview: BatchPreview;
   onConfirm: (opts?: ConfirmOptions) => void;
   onCancel: () => void;
+  onRefine: (text: string) => void;
   isConfirming: boolean;
+  isRefining: boolean;
   isProcessing: boolean;
 }) {
   const [showPayload, setShowPayload] = React.useState(false);
+  const [refinementInput, setRefinementInput] = React.useState('');
   const { shipper, ship_to: shipTo } = preview;
   const hasWarnings = preview.preview_rows?.some(r => r.warnings?.length > 0);
+  const availableServices = preview.available_services || [];
+  const refinementDisabled = isRefining || isConfirming || isProcessing;
+
+  const submitRefinement = () => {
+    const text = refinementInput.trim();
+    if (!text || refinementDisabled) return;
+    onRefine(text);
+    setRefinementInput('');
+  };
 
   return (
     <div className="card-premium p-5 animate-scale-in max-w-lg">
@@ -690,6 +704,54 @@ export function InteractivePreviewCard({
         </div>
       </div>
 
+      {/* Available services from UPS Shop */}
+      {availableServices.length > 0 && (
+        <div className="mb-4 rounded-lg border border-slate-700/60 bg-slate-900/40 p-3">
+          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-2">
+            Available Services
+          </p>
+          <div className="space-y-1.5 max-h-36 overflow-y-auto scrollable pr-1">
+            {availableServices.map((svc) => {
+              const isSelected = svc.code === preview.service_code || !!svc.selected;
+              const label = `${svc.name} (${svc.code})`;
+              return (
+                <button
+                  key={svc.code}
+                  type="button"
+                  onClick={() => {
+                    if (isSelected || refinementDisabled) return;
+                    onRefine(`Change service to ${svc.code} (${svc.name})`);
+                  }}
+                  disabled={refinementDisabled}
+                  className={cn(
+                    'w-full rounded-md border px-2.5 py-2 text-left transition-colors',
+                    isSelected
+                      ? 'border-primary/40 bg-primary/10'
+                      : 'border-slate-700/70 bg-slate-800/40 hover:border-primary/30 hover:bg-slate-800/70',
+                    refinementDisabled && 'opacity-60 cursor-not-allowed'
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-slate-200">{label}</span>
+                    <span className={cn('text-xs font-mono', isSelected ? 'text-primary' : 'text-slate-300')}>
+                      {formatCurrency(svc.estimated_cost_cents)}
+                    </span>
+                  </div>
+                  {svc.delivery_days && (
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Est. transit: {svc.delivery_days} day{svc.delivery_days === '1' ? '' : 's'}
+                    </p>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          {preview.service_selection_notice && (
+            <p className="mt-2 text-[10px] text-slate-400">{preview.service_selection_notice}</p>
+          )}
+        </div>
+      )}
+
       {/* Estimated Cost */}
       <div className="bg-gradient-to-r from-emerald-500/10 to-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 mb-4 text-center">
         <p className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider mb-1">Estimated Cost</p>
@@ -709,6 +771,37 @@ export function InteractivePreviewCard({
           )}
         </div>
       )}
+
+      {/* Refinement input */}
+      <div className="mb-4">
+        <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1.5">
+          Refine Shipment
+        </p>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={refinementInput}
+            onChange={(e) => setRefinementInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submitRefinement();
+              }
+            }}
+            placeholder='e.g. "make it 3 lbs"'
+            disabled={refinementDisabled}
+            className="flex-1 px-3 py-2 text-xs bg-slate-800/70 border border-slate-700 rounded-md text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/25 disabled:opacity-50"
+          />
+          <button
+            type="button"
+            onClick={submitRefinement}
+            disabled={!refinementInput.trim() || refinementDisabled}
+            className="px-3 py-2 text-xs btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isRefining ? 'Applying...' : 'Apply'}
+          </button>
+        </div>
+      </div>
 
       {/* Expandable Full Payload */}
       {preview.resolved_payload && (
@@ -732,14 +825,14 @@ export function InteractivePreviewCard({
       <div className="flex gap-3">
         <button
           onClick={onCancel}
-          disabled={isConfirming || isProcessing}
+          disabled={isConfirming || isProcessing || isRefining}
           className="btn-secondary flex-1 h-9 text-sm"
         >
           Cancel
         </button>
         <button
           onClick={() => onConfirm()}
-          disabled={isConfirming || isProcessing}
+          disabled={isConfirming || isProcessing || isRefining}
           className="btn-primary flex-1 h-9 text-sm flex items-center justify-center gap-2"
         >
           {isConfirming ? (

@@ -234,10 +234,10 @@ class TestInteractiveShippingPromptConditioning:
         assert "mcp__ups__create_shipment" in prompt
 
     def test_interactive_prompt_requires_service_parameter(self):
-        """Interactive prompt enforces explicit service parameter passing."""
+        """Interactive prompt carries explicit service + discovery guidance."""
         prompt = build_system_prompt(interactive_shipping=True)
         assert "ALWAYS pass this as the `service` parameter" in prompt
-        assert "NEVER omit the `service` parameter" in prompt
+        assert "optional at first pass" in prompt
 
     def test_safety_rules_always_present(self):
         """Safety rules are present regardless of interactive flag."""

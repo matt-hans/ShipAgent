@@ -752,7 +752,10 @@ def get_all_tool_definitions(
                     },
                     "ship_to_state": {
                         "type": "string",
-                        "description": "Recipient state/province code (e.g. CA, NY).",
+                        "description": (
+                            "Recipient state/province code (e.g. CA, NY). "
+                            "Required for some international destinations (e.g. GB)."
+                        ),
                     },
                     "ship_to_zip": {
                         "type": "string",
@@ -769,7 +772,10 @@ def get_all_tool_definitions(
                     },
                     "ship_to_attention_name": {
                         "type": "string",
-                        "description": "Recipient attention name (required for international).",
+                        "description": (
+                            "Recipient attention/contact name override. "
+                            "Optional: defaults to ship_to_name when omitted."
+                        ),
                     },
                     "shipment_description": {
                         "type": "string",
@@ -784,8 +790,9 @@ def get_all_tool_definitions(
                         "description": (
                             "UPS service name or code. ALWAYS extract and pass the user's "
                             "service preference (e.g. 'Ground', 'Next Day Air', '2nd Day Air', "
-                            "'3 Day Select', 'UPS Standard'). Only use 'Ground' when the user "
-                            "explicitly says Ground or does not mention any service."
+                            "'3 Day Select', 'UPS Standard'). If the user does not provide a "
+                            "service, you may omit this field and the system will discover route-"
+                            "available services via UPS Shop and pick a default for preview."
                         ),
                     },
                     "weight": {

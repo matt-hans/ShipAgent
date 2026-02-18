@@ -273,15 +273,17 @@ You do NOT need to ask for shipper details, account number, or billing informati
 **Gather from the user:**
 1. Recipient name
 2. Recipient address (street, city, state, ZIP)
-3. Service preference — ALWAYS pass this as the `service` parameter. If the user says "Ground" or does not mention a service, pass "Ground". If they say "overnight", "Next Day Air", "2nd Day Air", "3 Day Select", etc., pass that exact name. NEVER omit the `service` parameter.
+3. Service preference (optional at first pass). ALWAYS pass this as the `service` parameter when the user specifies a service (e.g., "overnight", "Next Day Air", "2nd Day Air", "3 Day Select", "UPS Standard").
 4. Package weight in lbs (optional — defaults to 1.0)
 5. Recipient phone (optional)
+6. Recipient attention name only if different from recipient name (otherwise the system defaults attention to recipient name)
 
 **Workflow:**
 1. Collect shipment details from the user's message
 2. Call `preview_interactive_shipment` with the gathered details
-3. STOP — the preview card will appear for the user to review all shipment details and estimated cost
-4. The system handles confirmation and execution automatically — do not call any other tools
+3. STOP — the preview card will appear with shipment details, estimated cost, and route-available services
+4. If the user refines (e.g., "use Worldwide Saver", "make it 3 lbs"), call `preview_interactive_shipment` again with updated values
+5. The system handles confirmation and execution automatically — do not call any other tools
 
 **Important:**
 - Do NOT call `mcp__ups__create_shipment` directly — always use `preview_interactive_shipment`
@@ -393,7 +395,9 @@ deterministically (e.g., SQL validation, column mapping, payload building).
         if interactive_shipping:
             interactive_specific_guidance = """
 Interactive mode collection requirements:
-- ALWAYS pass `ship_to_country` for non-US destinations and collect recipient phone + attention name.
+- ALWAYS pass `ship_to_country` for non-US destinations and collect recipient phone.
+- Do NOT ask for recipient attention name when recipient name is already known; default attention to recipient name unless the user specifies a different contact.
+- Collect recipient `ship_to_state` (state/province/county code) when required for the destination country (e.g., GB).
 - Do NOT ask for shipper phone or attention name — these are auto-populated from environment configuration.
 - Collect and pass `commodities` items with description, commodity_code, origin_country, quantity, and unit_value.
 - Collect and pass `invoice_currency_code`, `invoice_monetary_value`, and `reason_for_export` when required.
@@ -423,7 +427,8 @@ Country-based filter examples:
 **Enabled destinations:** {lanes_display}
 
 International shipments require additional fields beyond domestic:
-- **Recipient phone** and **attention name** (required)
+- **Recipient phone** (required)
+- Recipient attention defaults to recipient name; collect/override only when the user specifies a different contact
 - Shipper phone and attention name are auto-populated from configuration — do NOT ask the user for these
 - **Description of goods** (max 35 chars, required for customs)
 - **Commodity data** (HS tariff code, origin country, quantity, unit value per item)

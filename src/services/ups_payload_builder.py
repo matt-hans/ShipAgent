@@ -837,12 +837,18 @@ def build_ups_api_payload(
 def build_ups_rate_payload(
     simplified: dict[str, Any],
     account_number: str,
+    request_option: str = "Rate",
+    include_service: bool = True,
 ) -> dict[str, Any]:
     """Transform simplified format to full UPS RateRequest.
 
     Args:
         simplified: Simplified payload from build_shipment_request().
         account_number: UPS account number.
+        request_option: UPS rating request option ("Rate", "Shop",
+            or "Shoptimeintransit").
+        include_service: Whether to include Shipment.Service in payload.
+            Use False with Shop requests to discover all available services.
 
     Returns:
         Full UPS API RateRequest wrapper.
@@ -938,7 +944,7 @@ def build_ups_rate_payload(
         },
     }
 
-    if service_code:
+    if include_service and service_code:
         shipment["Service"] = {"Code": service_code}
 
     # Delivery confirmation affects rate
@@ -971,7 +977,7 @@ def build_ups_rate_payload(
 
     return {
         "RateRequest": {
-            "Request": {"RequestOption": "Rate"},
+            "Request": {"RequestOption": request_option},
             "Shipment": shipment,
         }
     }

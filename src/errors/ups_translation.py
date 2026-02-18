@@ -16,6 +16,7 @@ UPS_ERROR_MAP: dict[str, str] = {
     "120101": "E-3003",  # Invalid postal code
     "120102": "E-3003",  # Invalid city/state combination
     "120104": "E-3003",  # Invalid address
+    "120206": "E-3003",  # Missing or invalid state/province code
     # Service availability errors
     "111030": "E-3004",  # Service not available
     "111050": "E-3004",  # Delivery not available to postal code
@@ -62,6 +63,7 @@ UPS_ERROR_MAP: dict[str, str] = {
 UPS_MESSAGE_PATTERNS: dict[str, str] = {
     "invalid zip": "E-2001",
     "invalid postal": "E-2001",
+    "state province code": "E-3003",
     "address not found": "E-3003",
     "service unavailable": "E-3001",
     "rate limit": "E-3002",
