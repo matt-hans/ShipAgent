@@ -52,6 +52,9 @@ class TestInteractiveToolSchema:
         preview_def = next(d for d in defs if d["name"] == "preview_interactive_shipment")
         props = preview_def["input_schema"]["properties"]
         assert "ship_to_attention_name" in props
+        desc = props["ship_to_attention_name"]["description"]
+        assert "Optional override only" in desc
+        assert "Do not ask user to confirm equality" in desc
 
     def test_ship_to_state_not_required(self):
         """ship_to_state should not be required for international shipments."""

@@ -106,7 +106,7 @@ export function ProgressDisplay({ jobId, onComplete, onFailed }: {
         </div>
         <div className="flex justify-between text-xs font-mono">
           <span className="text-slate-400">
-            {progress.processed} / {progress.total} rows
+            {progress.processed} / {progress.total} shipments
           </span>
           <span className="text-slate-400">{percentage}%</span>
         </div>

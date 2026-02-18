@@ -163,9 +163,7 @@ class BatchEngine:
 
         preview_rows: list[dict[str, Any]] = []
         total_cost_cents = 0
-        rows_lock = asyncio.Lock()
         row_durations: list[float] = []
-        first_partial_emitted = False
 
         # Pre-hydrate commodities for international rows that need them.
         # Collect order IDs, bulk-fetch from MCP, then inject into order data.
@@ -211,10 +209,8 @@ class BatchEngine:
                 except Exception as e:
                     logger.warning("Commodity bulk fetch failed (non-critical): %s", e)
 
-        async def _rate_row(row: Any) -> None:
+        async def _rate_row(row: Any) -> tuple[dict[str, Any], int, float]:
             """Rate a single row with concurrency control."""
-            nonlocal total_cost_cents
-            nonlocal first_partial_emitted
             row_started = datetime.now(UTC)
 
             async with semaphore:
@@ -293,50 +289,19 @@ class BatchEngine:
                         traceback.format_exc(),
                     )
                     rate_error = err_msg
-                finally:
-                    row_elapsed = (datetime.now(UTC) - row_started).total_seconds()
-                    row_durations.append(row_elapsed)
+                row_elapsed = (datetime.now(UTC) - row_started).total_seconds()
 
-                # Serialize row list append and cost accumulation
-                async with rows_lock:
-                    nonlocal total_cost_cents
-                    total_cost_cents += cost_cents
-
-                    row_info: dict[str, Any] = {
-                        "row_number": row.row_number,
-                        "recipient_name": order_data.get(
-                            "ship_to_name", f"Row {row.row_number}"
-                        ),
-                        "city_state": f"{order_data.get('ship_to_city', '')}, {order_data.get('ship_to_state', '')}",
-                        "estimated_cost_cents": cost_cents,
-                    }
-                    if rate_error:
-                        row_info["rate_error"] = rate_error
-                    preview_rows.append(row_info)
-                    if on_preview_partial is not None:
-                        try:
-                            on_preview_partial(
-                                {
-                                    "job_id": job_id,
-                                    "preview_rows": [dict(row_info)],
-                                    "rows_rated": len(preview_rows),
-                                    "total_rows": len(rows),
-                                    "is_final": False,
-                                }
-                            )
-                            if not first_partial_emitted:
-                                first_partial_emitted = True
-                                logger.info(
-                                    "metric=preview_first_partial_latency_ms job_id=%s value=%d",
-                                    job_id,
-                                    int((datetime.now(UTC) - started_at).total_seconds() * 1000),
-                                )
-                        except Exception as callback_err:
-                            logger.warning(
-                                "Preview partial callback failed for job %s: %s",
-                                job_id,
-                                callback_err,
-                            )
+                row_info: dict[str, Any] = {
+                    "row_number": row.row_number,
+                    "recipient_name": order_data.get(
+                        "ship_to_name", f"Row {row.row_number}"
+                    ),
+                    "city_state": f"{order_data.get('ship_to_city', '')}, {order_data.get('ship_to_state', '')}",
+                    "estimated_cost_cents": cost_cents,
+                }
+                if rate_error:
+                    row_info["rate_error"] = rate_error
+                return row_info, cost_cents, row_elapsed
 
         try:
             preview_cap = int(
@@ -348,7 +313,11 @@ class BatchEngine:
         except ValueError:
             preview_cap = self.DEFAULT_PREVIEW_MAX_ROWS
         rows_to_rate = rows if preview_cap <= 0 else rows[:preview_cap]
-        await asyncio.gather(*[_rate_row(row) for row in rows_to_rate])
+        rated_results = await asyncio.gather(*[_rate_row(row) for row in rows_to_rate])
+        for row_info, cost_cents, row_elapsed in rated_results:
+            preview_rows.append(row_info)
+            total_cost_cents += cost_cents
+            row_durations.append(row_elapsed)
 
         # Sort preview rows by row_number for consistent ordering
         preview_rows.sort(key=lambda r: r["row_number"])
@@ -362,6 +331,29 @@ class BatchEngine:
             )
         else:
             total_estimated_cost_cents = total_cost_cents
+
+        if on_preview_partial is not None:
+            try:
+                on_preview_partial(
+                    {
+                        "job_id": job_id,
+                        "preview_rows": [dict(row) for row in preview_rows],
+                        "rows_rated": len(preview_rows),
+                        "total_rows": len(rows),
+                        "is_final": True,
+                    }
+                )
+                logger.info(
+                    "metric=preview_first_partial_latency_ms job_id=%s value=%d",
+                    job_id,
+                    int((datetime.now(UTC) - started_at).total_seconds() * 1000),
+                )
+            except Exception as callback_err:
+                logger.warning(
+                    "Preview partial callback failed for job %s: %s",
+                    job_id,
+                    callback_err,
+                )
 
         total_elapsed = (datetime.now(UTC) - started_at).total_seconds()
         avg_row = (sum(row_durations) / len(row_durations)) if row_durations else 0.0

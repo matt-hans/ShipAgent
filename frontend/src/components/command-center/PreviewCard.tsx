@@ -197,7 +197,7 @@ export function ShipmentRow({
       <button
         onClick={hasDetails ? onToggle : undefined}
         className={cn(
-          'w-full flex items-center justify-between px-3 py-2.5 text-xs transition-colors',
+          'w-full flex items-center justify-between px-3 py-2 text-xs transition-colors',
           hasDetails && 'hover:bg-slate-800/30 cursor-pointer',
           !hasDetails && 'cursor-default',
           isExpanded && 'bg-slate-800/20'
@@ -279,9 +279,9 @@ export function ShipmentRow({
   );
 }
 
-const COLLAPSED_ROW_COUNT = 6;
+const COLLAPSED_ROW_COUNT = 4;
 
-/** List of shipment rows with expand/collapse for 6+ rows. */
+/** List of shipment rows with expand/collapse for larger batches. */
 export function ShipmentList({
   rows,
   expandedRows,
@@ -299,7 +299,7 @@ export function ShipmentList({
     <div className="space-y-0">
       <div className={cn(
         'overflow-y-auto rounded-md border border-slate-800 scrollable',
-        isListExpanded ? 'max-h-[60vh]' : 'max-h-none'
+        isListExpanded ? 'max-h-[52vh]' : 'max-h-[15rem]'
       )}>
         {visibleRows.map((row) => (
           <ShipmentRow
@@ -402,7 +402,7 @@ export function PreviewCard({
 
   return (
     <div className={cn(
-      'card-premium p-4 space-y-4 animate-scale-in border-gradient transition-opacity',
+      'card-premium p-4 space-y-4 animate-scale-in border-gradient transition-opacity max-h-[72vh] overflow-y-auto scrollable',
       isRefining && 'opacity-70'
     )}>
       {/* Header */}

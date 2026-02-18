@@ -27,6 +27,14 @@ from src.orchestrator.agent.tools.core import (
 
 logger = logging.getLogger(__name__)
 
+_COUNTRY_CODE_ALIASES: dict[str, str] = {
+    "UK": "GB",
+    "UNITED KINGDOM": "GB",
+    "GREAT BRITAIN": "GB",
+    "ENGLAND": "GB",
+}
+_STATE_REQUIRED_COUNTRIES: frozenset[str] = frozenset({"US", "CA", "PR"})
+
 
 # ---------------------------------------------------------------------------
 # Ship-from normalization
@@ -154,6 +162,14 @@ def _format_services_for_error(services: list[dict[str, Any]], limit: int = 6) -
     return ", ".join(labels)
 
 
+def _normalize_country_code(raw: str, default: str) -> str:
+    """Normalize destination country to an uppercase ISO-like code."""
+    upper = raw.strip().upper()
+    if not upper:
+        return default
+    return _COUNTRY_CODE_ALIASES.get(upper, upper)
+
+
 async def preview_interactive_shipment_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
@@ -175,6 +191,7 @@ async def preview_interactive_shipment_tool(
     from src.services.errors import UPSServiceError
     from src.services.international_rules import (
         get_requirements,
+        recipient_state_required,
         validate_international_readiness,
     )
     from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, DEFAULT_PACKAGE_WEIGHT_LBS, UPS_ADDRESS_MAX_LEN
@@ -184,7 +201,11 @@ async def preview_interactive_shipment_tool(
         build_shipper,
         resolve_packaging_code,
     )
-    from src.services.ups_service_codes import resolve_service_code, upgrade_to_international
+    from src.services.ups_service_codes import (
+        SUPPORTED_INTERNATIONAL_SERVICES,
+        resolve_service_code,
+        upgrade_to_international,
+    )
 
     # Safe coercion: None -> "", non-string -> str, then strip
     def _str(val: Any, default: str = "") -> str:
@@ -210,7 +231,11 @@ async def preview_interactive_shipment_tool(
     ship_to_address2 = _str(args.get("ship_to_address2"))
     ship_to_phone = _str(args.get("ship_to_phone"))
     ship_to_state = _str(args.get("ship_to_state"))
-    ship_to_country = (_str(args.get("ship_to_country"), DEFAULT_ORIGIN_COUNTRY) or DEFAULT_ORIGIN_COUNTRY).upper()
+    raw_ship_to_country = _str(args.get("ship_to_country")).upper()
+    ship_to_country = _normalize_country_code(
+        raw_ship_to_country,
+        DEFAULT_ORIGIN_COUNTRY,
+    )
     ship_to_attention_name = _str(args.get("ship_to_attention_name"))
     # Operational default: if user gives a recipient, use that same name
     # for attention unless they explicitly provide an alternate contact.
@@ -256,6 +281,14 @@ async def preview_interactive_shipment_tool(
 
     # Resolve service code, auto-upgrade for international destinations
     requested_service_code = resolve_service_code(service)
+    if (
+        not raw_ship_to_country
+        and requested_service_code in SUPPORTED_INTERNATIONAL_SERVICES
+    ):
+        return _err(
+            "ship_to_country is required when using an international service. "
+            "Provide a 2-letter destination country code (e.g., GB for UK)."
+        )
     shipper_country = (
         _str(shipper.get("countryCode"), DEFAULT_ORIGIN_COUNTRY)
         or DEFAULT_ORIGIN_COUNTRY
@@ -301,6 +334,18 @@ async def preview_interactive_shipment_tool(
         order_data["invoice_monetary_value"] = invoice_monetary_value
     if reason_for_export:
         order_data["reason_for_export"] = reason_for_export
+
+    if (
+        not ship_to_state
+        and (
+            ship_to_country in _STATE_REQUIRED_COUNTRIES
+            or recipient_state_required(ship_to_country)
+        )
+    ):
+        return _err(
+            "Recipient state/province code is required for shipments "
+            f"to {ship_to_country}."
+        )
 
     if ship_to_country not in (DEFAULT_ORIGIN_COUNTRY, ""):
         shipper_attention_name = _str(os.environ.get("SHIPPER_ATTENTION_NAME"))

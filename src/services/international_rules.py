@@ -350,6 +350,12 @@ def validate_international_readiness(
 
     # Recipient contact
     if requirements.requires_recipient_contact:
+        # Default attention to recipient name when possible so callers do not
+        # need to elicit redundant "same as recipient?" confirmations.
+        if not order_data.get("ship_to_attention_name"):
+            fallback_attention = str(order_data.get("ship_to_name", "")).strip()
+            if fallback_attention:
+                order_data["ship_to_attention_name"] = fallback_attention
         _check(
             "ship_to_attention_name", "MISSING_RECIPIENT_ATTENTION_NAME",
             "Recipient attention name is required for international shipments.",
@@ -372,6 +378,31 @@ def validate_international_readiness(
             ),
             "ShipTo.Address.StateProvinceCode",
         )
+        ship_to_state = str(order_data.get("ship_to_state", "")).strip()
+        ship_to_postal = str(order_data.get("ship_to_postal_code", "")).strip()
+        if ship_to_state:
+            state_comp = re.sub(r"[\s\-]", "", ship_to_state).upper()
+            postal_comp = re.sub(r"[\s\-]", "", ship_to_postal).upper()
+            # High-confidence invalid pattern: state/province copied from postal code.
+            if postal_comp and state_comp == postal_comp:
+                errors.append(ValidationError(
+                    machine_code="INVALID_RECIPIENT_STATE",
+                    message=(
+                        "Recipient state/province code is invalid: it matches "
+                        "the postal code. Provide a valid state/province code."
+                    ),
+                    field_path="ShipTo.Address.StateProvinceCode",
+                ))
+            # GB-specific safeguard: postal-style strings in state usually contain digits.
+            elif destination_country == "GB" and any(ch.isdigit() for ch in ship_to_state):
+                errors.append(ValidationError(
+                    machine_code="INVALID_RECIPIENT_STATE",
+                    message=(
+                        "Recipient state/province code is invalid for GB. "
+                        "Provide a valid county/state code (not the postal code)."
+                    ),
+                    field_path="ShipTo.Address.StateProvinceCode",
+                ))
 
     # Description
     if requirements.requires_description:

@@ -400,10 +400,10 @@ class TestBatchEnginePreview:
         assert result["total_estimated_cost_cents"] > 0
         assert mock_ups_service.get_rate.call_count == 1
 
-    async def test_preview_emits_partial_callback(
+    async def test_preview_emits_final_partial_callback(
         self, mock_ups_service, mock_db_session
     ):
-        """preview should stream partial rows through on_preview_partial."""
+        """preview should emit one callback only after rating completes."""
         engine = BatchEngine(
             ups_service=mock_ups_service,
             db_session=mock_db_session,
@@ -447,7 +447,7 @@ class TestBatchEnginePreview:
         assert partial_events[0]["job_id"] == "job-partial"
         assert partial_events[0]["rows_rated"] == 1
         assert partial_events[0]["total_rows"] == 1
-        assert partial_events[0]["is_final"] is False
+        assert partial_events[0]["is_final"] is True
 
     async def test_preview_default_cap_is_50(
         self, mock_ups_service, mock_db_session, monkeypatch
