@@ -10,11 +10,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Development Philosophy
 
-**Agent-First Architecture:** The `OrchestrationAgent` (Claude Agent SDK) is the brain and the backbone. All new features MUST integrate through the agent's tool system. Never build standalone API endpoints that bypass the agent loop. The agent decides what to do; tools execute deterministically. The SDK manages conversation state, tool dispatch, MCP server lifecycles, and streaming — do not reimplement any of these concerns outside the SDK.
+**Agent-First Architecture:** The `OrchestrationAgent` (Claude Agent SDK) is the core. Features MUST integrate via tools; never bypass the agent loop. The SDK handles state, dispatch, and streaming—do not reimplement these.
 
-**MCP as Connectivity Layer:** External systems (UPS APIs, data sources, e-commerce platforms) are accessed exclusively through MCP servers over stdio transport. MCP provides a universal protocol for the agent to discover and invoke capabilities. New integrations MUST be built as MCP servers or MCP clients, never as direct SDK imports.
+**MCP Connectivity:** External systems are accessed exclusively via MCP (stdio). Integrations MUST be MCP servers or clients, never direct imports.
 
-**Deterministic Tool Execution:** The LLM acts as a *Configuration Engine*, not a *Data Pipe*. It interprets user intent and generates transformation rules (SQL filters, column mappings, service selections), but deterministic code executes those rules on actual shipping data. The LLM never touches row data directly. Tools validate inputs, enforce business rules, and produce auditable results.
+**Deterministic Execution:** The LLM generates transformation rules; deterministic code executes them. The LLM never touches row data directly. Tools enforce rules and ensure auditability.
 
 **Canonical Data Models:** All integration constants, defaults, and domain enums live in dedicated canonical modules — never scattered as magic numbers across the codebase. When adding a new carrier, platform, or data source, define its constants in a single canonical module and import everywhere. This makes the system maintainable, testable, and auditable. See [Canonical Data Models](#canonical-data-models) for the current inventory.
 
@@ -24,27 +24,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 These rules are non-negotiable. Violating them creates architectural debt that undermines the agent:
 
-1. **No business logic in API routes.** Routes are thin HTTP adapters. They create sessions, forward messages, and stream events. All decision-making happens inside the agent loop or deterministic tools.
-2. **No direct UPS calls outside MCP.** All UPS operations — interactive and batch — go through MCP servers (stdio transport). Never import UPS libraries directly. The `UPSService` class was deleted for this reason.
-3. **No LLM calls outside the agent.** The `OrchestrationAgent` is the sole consumer of the Anthropic API. Services, tools, and routes never call the LLM directly. If something needs LLM reasoning, it must be the agent's job.
-4. **No tool that skips the approval gate.** Every path that creates shipments or spends money must route through a preview step with mandatory user confirmation. The agent NEVER auto-executes.
-5. **No global mutable state for MCP clients.** All MCP client lifecycles are managed through `gateway_provider.py` singletons with proper async locking. Never create ad-hoc MCP connections.
-6. **No mode leakage.** Batch tools are hidden from the interactive agent; interactive tools are hidden from the batch agent. Mode enforcement is structural (tool registry filtering) + behavioral (hooks that deny cross-mode calls).
-7. **No row data through the LLM.** The agent generates transformation rules (SQL filters, service selections, column mappings). Deterministic tools apply those rules to actual data. The LLM never sees or processes individual shipment rows.
-8. **No scattered data definitions.** All carrier constants, service codes, packaging types, field limits, and integration defaults MUST live in their canonical module (`ups_constants.py`, `ups_service_codes.py`, etc.). Never hardcode magic numbers, default values, or enum definitions in tools, routes, or payload builders. Import from the canonical source — one definition, many consumers.
+1. **No business logic in API routes.** Routes are thin adapters. Decision-making stays in the agent loop or tools.
+2. **No direct UPS calls outside MCP.** All UPS operations use MCP (stdio). Never import UPS libraries directly.
+3. **No LLM calls outside the agent.** The `OrchestrationAgent` is the sole LLM consumer.
+4. **No tool skips approval.** Paths creating shipments or spending money REQUIRE a preview/confirmation step.
+5. **No global mutable state for MCP clients.** Use `gateway_provider.py` singletons with async locking.
+6. **No mode leakage.** Tool sets are strictly isolated between batch and interactive agents.
+7. **No row data in LLM.** The LLM generates rules; tools apply them. LLM never sees individual rows.
+8. **No scattered data definitions.** All constants/enums MUST live in canonical modules (e.g., `ups_constants.py`).
 
 ## Project Status
 
-**Current Phase:** 7 - Web Interface (core chat UI operational, interactive shipping mode complete)
-**Phases 1-6:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent Integration, Batch Execution)
-**SDK Orchestration Redesign:** COMPLETE — Claude SDK is the sole orchestration path via `/api/v1/conversations/` endpoints
-**Interactive Shipping:** COMPLETE — ad-hoc single-shipment creation with preview gate and auto-populated shipper config
-**International Shipping:** COMPLETE — US→CA/MX lane validation, commodity handling, customs forms, batch + interactive integration. Gated by `INTERNATIONAL_ENABLED_LANES` env var.
-**Headless Automation CLI:** COMPLETE — `shipagent` CLI with daemon management, conversational REPL, hot-folder watchdog, auto-confirm engine. Shared services (`batch_executor.py`, `conversation_handler.py`) enable code reuse between HTTP routes and CLI InProcessRunner.
-**Test Count:** ~1887 test functions across 80+ test files (as of 2026-02-18, post API-key auth + decision auditing)
-**API Key Auth:** COMPLETE — optional `SHIPAGENT_API_KEY` env var gates `/api/*`; `X-API-Key` header required when set
-**Agent Decision Auditing:** COMPLETE — `DecisionAuditService` ledger with SQLite tables + JSONL mirror; `GET /api/v1/agent-audit/runs` endpoint
-**UPS MCP v2 Integration:** COMPLETE — 18 UPS tools (7 original + 11 new) across 6 domains. Agent uses ups-mcp as stdio MCP server with v2 tools available in both batch and interactive modes; BatchEngine uses UPSMCPClient (programmatic MCP over stdio). New tools: pickup (6), paperless (3), locator (1), landed cost (1). Frontend: domain-colored cards (pickup/purple, locator/teal, paperless/amber, landed-cost/indigo, tracking/blue).
+**Phases 1-6:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent SDK, Batch Execution)
+**Phase 7:** Web Interface (Chat UI + Interactive Shipping operational)
+**Key Features:** International (CA/MX), Headless CLI, API Key Auth, Decision Auditing.
+**UPS MCP v2:** 18 UPS tools across 6 domains (Shipping, Rating, Tracking, Pickup, Locator, Paperless, Landed Cost).
+**Test Count:** ~1887 across 80+ files (as of 2026-02-18)
 
 ## Architecture
 
