@@ -16,7 +16,7 @@ from src.services.mcp_client import MCPClient
 from src.services.mapping_cache import invalidate as invalidate_mapping_cache
 
 
-# -- Gateway-local DTOs (no dependency on legacy DataSourceService) -----------
+# -- Gateway-local DTOs --------------------------------------------------------
 
 
 @dataclass
@@ -280,7 +280,7 @@ class DataSourceMCPClient:
         )
 
     async def get_source_signature(self) -> dict[str, Any] | None:
-        """Get stable source signature matching DataSourceService contract.
+        """Get stable source signature for deterministic replay checks.
 
         Returns:
             {"source_type": str, "source_ref": str, "schema_fingerprint": str}
@@ -467,7 +467,7 @@ class DataSourceMCPClient:
 
         Calls the clear_source MCP tool which drops the imported_data table
         and clears the current_source metadata. Mirrors the existing
-        DataSourceService.disconnect() behavior.
+        gateway disconnect behavior.
         """
         await self._call_tool("clear_source", {})
         invalidate_mapping_cache()

@@ -26,10 +26,7 @@ from src.orchestrator.agent.tools.data import (
     get_source_info_tool,
 )
 from src.orchestrator.agent.tools.pipeline import (
-    add_rows_to_job_tool,
     batch_execute_tool,
-    batch_preview_tool,
-    create_job_tool,
     get_job_status_tool,
     ship_command_pipeline_tool,
 )
@@ -165,204 +162,6 @@ async def test_fetch_rows_include_rows_returns_full_payload():
     assert result["isError"] is False
     data = json.loads(result["content"][0]["text"])
     assert data["rows"][0]["state"] == "CA"
-
-
-@pytest.mark.asyncio
-async def test_add_rows_to_job_uses_fetch_id_cache():
-    """add_rows_to_job accepts fetch_id and resolves rows from cache."""
-    rows = [{"order_id": 1, "state": "CA"}]
-    bridge = EventEmitterBridge()
-
-    with patch(
-        "src.orchestrator.agent.tools.data.get_data_gateway"
-    ) as mock_gw_fn:
-        mock_gw = AsyncMock()
-        mock_gw.get_rows_by_filter.return_value = rows
-        mock_gw_fn.return_value = mock_gw
-        fetch_res = await fetch_rows_tool(
-            {"all_rows": True},
-            bridge=bridge,
-        )
-
-    fetch_data = json.loads(fetch_res["content"][0]["text"])
-    fetch_id = fetch_data["fetch_id"]
-
-    with patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx:
-        mock_db = MagicMock()
-        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
-
-        with patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS:
-            MockJS.return_value.create_rows.return_value = [MagicMock()]
-            result = await add_rows_to_job_tool(
-                {
-                    "job_id": "job-123",
-                    "fetch_id": fetch_id,
-                },
-                bridge=bridge,
-            )
-
-    assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["rows_added"] == 1
-
-
-@pytest.mark.asyncio
-async def test_add_rows_to_job_rejects_shipping_confirmation_context():
-    """add_rows_to_job is blocked for shipping confirmation turns; force fast path."""
-    bridge = EventEmitterBridge()
-    bridge.last_user_message = "yes"
-    bridge.last_shipping_command = "Ship all orders in the Northeast."
-
-    result = await add_rows_to_job_tool(
-        {"job_id": "job-123", "rows": [{"order_id": 1}]},
-        bridge=bridge,
-    )
-
-    assert result["isError"] is True
-    assert "ship_command_pipeline" in result["content"][0]["text"]
-
-
-@pytest.mark.asyncio
-async def test_add_rows_to_job_auto_maps_csv_columns_to_canonical_order_data():
-    """CSV-style headers are normalized to ship_to_* fields before persistence."""
-    rows = [
-        {
-            "Recipient Name": "Alice",
-            "Address": "123 Main St",
-            "City": "Los Angeles",
-            "State": "CA",
-            "ZIP": "90001",
-            "Country": "US",
-            "Weight": 2.5,
-            "Service": "Ground",
-        }
-    ]
-
-    captured_row_data: list[dict[str, Any]] = []
-
-    with patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx:
-        mock_db = MagicMock()
-        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
-
-        with patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS:
-
-            def _capture(job_id, row_data):
-                captured_row_data.extend(row_data)
-                return [MagicMock()]
-
-            MockJS.return_value.create_rows.side_effect = _capture
-            result = await add_rows_to_job_tool(
-                {
-                    "job_id": "job-123",
-                    "rows": rows,
-                }
-            )
-
-    assert result["isError"] is False
-    assert captured_row_data
-    order_data = json.loads(captured_row_data[0]["order_data"])
-    assert order_data["ship_to_name"] == "Alice"
-    assert order_data["ship_to_address1"] == "123 Main St"
-    assert order_data["ship_to_city"] == "Los Angeles"
-    assert order_data["ship_to_state"] == "CA"
-    assert order_data["ship_to_postal_code"] == "90001"
-    assert order_data["ship_to_country"] == "US"
-    assert order_data["service_code"] == "03"
-
-
-@pytest.mark.asyncio
-async def test_add_rows_to_job_does_not_overwrite_existing_canonical_values():
-    """Mapped values should only fill missing canonical keys, not overwrite existing ones."""
-    rows = [
-        {
-            "ship_to_name": "Canonical Recipient",
-            "Name": "Mapped Recipient",
-            "Address": "123 Main St",
-            "City": "Los Angeles",
-            "State": "CA",
-            "ZIP": "90001",
-            "Country": "US",
-            "Weight": 2.5,
-        }
-    ]
-    captured_row_data: list[dict[str, Any]] = []
-
-    with patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx:
-        mock_db = MagicMock()
-        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
-
-        with patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS:
-
-            def _capture(job_id, row_data):
-                captured_row_data.extend(row_data)
-                return [MagicMock()]
-
-            MockJS.return_value.create_rows.side_effect = _capture
-            result = await add_rows_to_job_tool(
-                {
-                    "job_id": "job-123",
-                    "rows": rows,
-                }
-            )
-
-    assert result["isError"] is False
-    order_data = json.loads(captured_row_data[0]["order_data"])
-    assert order_data["ship_to_name"] == "Canonical Recipient"
-
-
-# ---------------------------------------------------------------------------
-# create_job_tool
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_create_job_returns_job_id():
-    """Creates a job and returns its ID."""
-    mock_job = MagicMock()
-    mock_job.id = "test-job-123"
-    mock_job.status = "pending"
-
-    with (
-        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
-        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
-        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
-    ):
-        mock_db = MagicMock()
-        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
-        MockJS.return_value.create_job.return_value = mock_job
-
-        result = await create_job_tool(
-            {
-                "name": "Ship CA orders",
-                "command": "Ship California orders via Ground",
-            }
-        )
-
-    assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["job_id"] == "test-job-123"
-
-
-@pytest.mark.asyncio
-async def test_create_job_rejects_shipping_fast_path_context():
-    """create_job is blocked during shipping-intent turns; force fast path."""
-    bridge = EventEmitterBridge()
-    bridge.last_user_message = "Ship all orders going to companies in the Northeast."
-
-    result = await create_job_tool(
-        {
-            "name": "Ship Northeast Companies",
-            "command": "Ship all orders going to companies in the Northeast.",
-        },
-        bridge=bridge,
-    )
-
-    assert result["isError"] is True
-    assert "ship_command_pipeline" in result["content"][0]["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -854,75 +653,6 @@ async def test_get_job_status_returns_summary():
     assert data["total_rows"] == 10
 
 
-# ---------------------------------------------------------------------------
-# batch_preview_tool
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_batch_preview_returns_preview_data():
-    """Preview tool returns a slim LLM payload while keeping SSE payload full."""
-    preview_result = {
-        "job_id": "test-job",
-        "total_rows": 5,
-        "total_estimated_cost_cents": 3500,
-        "preview_rows": [],
-    }
-
-    with patch("src.orchestrator.agent.tools.pipeline._run_batch_preview") as mock_preview:
-        mock_preview.return_value = preview_result
-        result = await batch_preview_tool({"job_id": "test-job"})
-
-    assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["status"] == "preview_ready"
-    assert data["total_rows"] == 5
-    assert data["total_estimated_cost_cents"] == 3500
-    assert "preview_rows" not in data
-    assert "STOP HERE" in data["message"]
-
-
-@pytest.mark.asyncio
-async def test_batch_preview_rejects_shipping_confirmation_context():
-    """batch_preview is blocked for shipping confirmation turns; force fast path."""
-    bridge = EventEmitterBridge()
-    bridge.last_user_message = "yes"
-    bridge.last_shipping_command = "Ship all orders in the Northeast."
-
-    result = await batch_preview_tool({"job_id": "test-job"}, bridge=bridge)
-    assert result["isError"] is True
-    assert "ship_command_pipeline" in result["content"][0]["text"]
-
-
-@pytest.mark.asyncio
-async def test_batch_preview_uses_emit_preview_ready_helper():
-    """batch_preview_tool delegates response construction to _emit_preview_ready."""
-    preview_result = {
-        "job_id": "test-job",
-        "total_rows": 5,
-        "total_estimated_cost_cents": 3500,
-        "preview_rows": [],
-    }
-    bridge = EventEmitterBridge()
-
-    with (
-        patch(
-            "src.orchestrator.agent.tools.pipeline._run_batch_preview",
-            new=AsyncMock(return_value=preview_result),
-        ),
-        patch(
-            "src.orchestrator.agent.tools.pipeline._emit_preview_ready",
-            return_value={
-                "isError": False,
-                "content": [{"type": "text", "text": "{}"}],
-            },
-        ) as mock_emit,
-    ):
-        await batch_preview_tool({"job_id": "test-job"}, bridge=bridge)
-
-    mock_emit.assert_called_once()
-
-
 @pytest.mark.asyncio
 async def test_ship_command_pipeline_uses_emit_preview_ready_helper():
     """ship_command_pipeline_tool delegates final payload to _emit_preview_ready."""
@@ -1046,8 +776,10 @@ def test_tool_definitions_unfiltered_when_interactive_disabled():
     defs = get_all_tool_definitions(interactive_shipping=False)
     names = {d["name"] for d in defs}
     assert "ship_command_pipeline" in names
-    assert "batch_preview" in names
     assert "fetch_rows" in names
+    assert "create_job" not in names
+    assert "add_rows_to_job" not in names
+    assert "batch_preview" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -1095,86 +827,6 @@ def test_emit_event_isolated_between_bridges():
     assert captured_b == []
 
 
-@pytest.mark.asyncio
-async def test_batch_preview_emits_preview_ready():
-    """batch_preview_tool emits preview_ready event to the registered callback."""
-    preview_result = {
-        "job_id": "test-job",
-        "total_rows": 2,
-        "total_estimated_cost_cents": 2400,
-        "preview_rows": [
-            {"row_number": 1, "recipient_name": "Alice", "estimated_cost_cents": 1200},
-            {
-                "row_number": 2,
-                "recipient_name": "Bob",
-                "estimated_cost_cents": 1200,
-                "rate_error": "Bad address",
-            },
-        ],
-    }
-
-    captured = []
-    bridge = EventEmitterBridge()
-
-    def callback(event_type: str, data: dict) -> None:
-        captured.append((event_type, data))
-
-    bridge.callback = callback
-    with (
-        patch("src.orchestrator.agent.tools.pipeline._run_batch_preview") as mock_preview,
-        patch("src.orchestrator.agent.tools.pipeline._enrich_preview_rows") as mock_enrich,
-    ):
-        mock_preview.return_value = preview_result
-        # _enrich_preview_rows modifies rows in place; simulate no-op
-        mock_enrich.return_value = preview_result["preview_rows"]
-
-        result = await batch_preview_tool({"job_id": "test-job"}, bridge=bridge)
-
-    assert result["isError"] is False
-    assert len(captured) == 1
-    assert captured[0][0] == "preview_ready"
-    assert captured[0][1]["job_id"] == "test-job"
-    assert "preview_rows" in captured[0][1]
-
-
-@pytest.mark.asyncio
-async def test_batch_preview_emits_before_ok_return():
-    """_emit_event is called before _ok return construction."""
-    preview_result = {
-        "job_id": "test-job",
-        "total_rows": 1,
-        "total_estimated_cost_cents": 123,
-        "preview_rows": [],
-    }
-    call_order: list[str] = []
-
-    def _capture_emit(*_args, **_kwargs) -> None:
-        call_order.append("emit")
-
-    def _capture_ok(payload: dict) -> dict:
-        call_order.append("ok")
-        return {
-            "isError": False,
-            "content": [{"type": "text", "text": json.dumps(payload)}],
-        }
-
-    with (
-        patch(
-            "src.orchestrator.agent.tools.pipeline._run_batch_preview",
-            new=AsyncMock(return_value=preview_result),
-        ),
-        patch(
-            "src.orchestrator.agent.tools.pipeline._enrich_preview_rows",
-            return_value=preview_result["preview_rows"],
-        ),
-        patch("src.orchestrator.agent.tools.core._emit_event", side_effect=_capture_emit),
-        patch("src.orchestrator.agent.tools.core._ok", side_effect=_capture_ok),
-    ):
-        await batch_preview_tool({"job_id": "test-job"})
-
-    assert call_order == ["emit", "ok"]
-
-
 def test_emit_preview_ready_payload_shape():
     """_emit_preview_ready returns the expected slim payload schema."""
     bridge = EventEmitterBridge()
@@ -1192,33 +844,6 @@ def test_emit_preview_ready_payload_shape():
     assert payload["status"] == "preview_ready"
     assert payload["job_id"] == "job-1"
     assert payload["rows_with_warnings"] == 1
-
-
-@pytest.mark.asyncio
-async def test_fetch_cache_isolated_between_bridges():
-    """fetch_id created on one bridge is not visible to another bridge."""
-    rows = [{"order_id": 1, "state": "CA"}]
-    bridge_a = EventEmitterBridge()
-    bridge_b = EventEmitterBridge()
-
-    with patch(
-        "src.orchestrator.agent.tools.data.get_data_gateway"
-    ) as mock_gw_fn:
-        mock_gw = AsyncMock()
-        mock_gw.get_rows_by_filter.return_value = rows
-        mock_gw_fn.return_value = mock_gw
-        fetch_res = await fetch_rows_tool(
-            {"all_rows": True},
-            bridge=bridge_a,
-        )
-
-    fetch_id = json.loads(fetch_res["content"][0]["text"])["fetch_id"]
-    result = await add_rows_to_job_tool(
-        {"job_id": "job-123", "fetch_id": fetch_id},
-        bridge=bridge_b,
-    )
-    assert result["isError"] is True
-    assert "fetch_id not found" in result["content"][0]["text"]
 
 
 def test_preview_data_normalization():

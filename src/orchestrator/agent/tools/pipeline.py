@@ -12,7 +12,7 @@ import re
 import time
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any, Callable
+from typing import Any
 
 from src.db.connection import get_db_context
 from src.orchestrator.binding_hash import build_binding_fingerprint
@@ -31,13 +31,10 @@ from src.services.ups_service_codes import translate_service_name
 
 from src.orchestrator.agent.tools.core import (
     EventEmitterBridge,
-    _build_job_row_data,
     _build_job_row_data_with_metadata,
     _command_explicitly_requests_service,
-    _consume_fetched_rows,
     _emit_event,
     _emit_preview_ready,
-    _enrich_preview_rows,
     _enrich_preview_rows_from_map,
     _err,
     _get_ups_client,
@@ -221,28 +218,6 @@ def _select_validation_command(
             best_score = score
 
     return best_command, best_source
-
-
-def _is_confirmation_response(message: str | None) -> bool:
-    """True for short confirmation replies (yes/proceed/confirm)."""
-    if not message:
-        return False
-    return message.strip().lower() in {
-        "yes", "y", "ok", "okay", "confirm", "proceed", "continue", "go ahead",
-    }
-
-
-def _should_force_fast_path(bridge: EventEmitterBridge | None) -> bool:
-    """Force ship_command_pipeline when shipping intent is active in session context."""
-    if bridge is None:
-        return False
-    msg = bridge.last_user_message
-    if not msg:
-        return False
-    text = msg.strip().lower()
-    if "ship" in text or "shipment" in text:
-        return True
-    return _is_confirmation_response(msg) and bool(bridge.last_shipping_command)
 
 
 def _iter_conditions(group: Any) -> list[Any]:
@@ -651,93 +626,6 @@ def _append_fulfillment_status_condition(
     )
 
 
-async def create_job_tool(
-    args: dict[str, Any],
-    bridge: EventEmitterBridge | None = None,
-) -> dict[str, Any]:
-    """Create a new job in the state database.
-
-    Args:
-        args: Dict with 'name' (str) and 'command' (str).
-
-    Returns:
-        Tool response with job_id and status.
-    """
-    name = args.get("name", "Untitled Job")
-    command = args.get("command", "")
-    if _should_force_fast_path(bridge):
-        return _err(
-            "For shipping execution commands, do not use create_job directly. "
-            "Use ship_command_pipeline with a resolved filter_spec."
-        )
-
-    try:
-        with get_db_context() as db:
-            svc = JobService(db)
-            job = svc.create_job(name=name, original_command=command)
-            await _persist_job_source_signature(job.id, db)
-            return _ok({"job_id": job.id, "status": job.status})
-    except Exception as e:
-        logger.error("create_job_tool failed: %s", e)
-        return _err(f"Failed to create job: {e}")
-
-
-async def add_rows_to_job_tool(
-    args: dict[str, Any],
-    bridge: EventEmitterBridge | None = None,
-) -> dict[str, Any]:
-    """Add fetched rows to a job so batch preview and execution can process them.
-
-    This bridges the gap between fetch_rows (which retrieves data) and
-    batch_preview/batch_execute (which need rows stored in the job).
-
-    Args:
-        args: Dict with 'job_id' (str) and 'rows' (list of row dicts from fetch_rows).
-
-    Returns:
-        Tool response with rows_added count.
-    """
-    job_id = args.get("job_id", "")
-    fetch_id = args.get("fetch_id", "")
-    rows = args.get("rows", [])
-
-    if not job_id:
-        return _err("job_id is required")
-    if _should_force_fast_path(bridge):
-        return _err(
-            "For shipping execution commands, do not use add_rows_to_job. "
-            "Use ship_command_pipeline with a resolved filter_spec."
-        )
-    if fetch_id:
-        cached_rows = _consume_fetched_rows(fetch_id, bridge=bridge)
-        if cached_rows is None:
-            return _err(
-                "fetch_id not found or expired. Re-run fetch_rows and pass the new fetch_id.",
-            )
-        rows = cached_rows
-
-    if not rows:
-        return _err("Either fetch_id or non-empty rows list is required")
-
-    try:
-        with get_db_context() as db:
-            svc = JobService(db)
-            row_data = _build_job_row_data(rows)
-
-            created = svc.create_rows(job_id, row_data)
-            return _ok(
-                {
-                    "job_id": job_id,
-                    "rows_added": len(created),
-                }
-            )
-    except ValueError as e:
-        return _err(str(e))
-    except Exception as e:
-        logger.error("add_rows_to_job_tool failed: %s", e)
-        return _err(f"Failed to add rows to job: {e}")
-
-
 async def get_job_status_tool(args: dict[str, Any]) -> dict[str, Any]:
     """Get the summary/status of a job.
 
@@ -761,45 +649,6 @@ async def get_job_status_tool(args: dict[str, Any]) -> dict[str, Any]:
     except Exception as e:
         logger.error("get_job_status_tool failed: %s", e)
         return _err(f"Failed to get job status: {e}")
-
-
-async def _run_batch_preview(
-    job_id: str,
-    on_preview_partial: Callable[[dict[str, Any]], None] | None = None,
-) -> dict[str, Any]:
-    """Internal helper — run batch preview via BatchEngine.
-
-    Separated for testability. In production this creates a BatchEngine
-    with the cached UPSMCPClient (async MCP) and calls preview().
-
-    Args:
-        job_id: Job UUID.
-
-    Returns:
-        Preview result dict from BatchEngine.
-    """
-    from src.services.batch_engine import BatchEngine
-    from src.services.ups_payload_builder import build_shipper
-
-    account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
-    shipper = build_shipper()
-    ups = await _get_ups_client()
-
-    with get_db_context() as db:
-        engine = BatchEngine(
-            ups_service=ups,
-            db_session=db,
-            account_number=account_number,
-        )
-        svc = JobService(db)
-        rows = svc.get_rows(job_id)
-        result = await engine.preview(
-            job_id=job_id,
-            rows=rows,
-            shipper=shipper,
-            on_preview_partial=on_preview_partial,
-        )
-    return result
 
 
 def _canonical_param(v: Any) -> Any:
@@ -1394,67 +1243,6 @@ async def ship_command_pipeline_tool(
         rows_with_warnings=rows_with_warnings,
         bridge=bridge,
     )
-
-
-async def batch_preview_tool(
-    args: dict[str, Any],
-    bridge: EventEmitterBridge | None = None,
-) -> dict[str, Any]:
-    """Run batch preview (rate all rows) for a job.
-
-    Emits a 'preview_ready' event to the frontend SSE queue so the
-    PreviewCard renders, while still returning the result to the LLM
-    for conversational context.
-
-    Args:
-        args: Dict with 'job_id' (str).
-
-    Returns:
-        Tool response with preview data (row count, estimated cost, etc.).
-    """
-    unknown = _validate_allowed_args(
-        "batch_preview",
-        args,
-        {"job_id"},
-    )
-    if unknown is not None:
-        return unknown
-
-    job_id = args.get("job_id", "")
-    if not job_id:
-        return _err("job_id is required")
-    if _should_force_fast_path(bridge):
-        return _err(
-            "For shipping execution commands, do not use batch_preview directly. "
-            "Use ship_command_pipeline with a resolved filter_spec."
-        )
-
-    try:
-        def _emit_preview_partial(payload: dict[str, Any]) -> None:
-            _emit_event("preview_partial", payload, bridge=bridge)
-
-        result = await _run_batch_preview(
-            job_id,
-            on_preview_partial=_emit_preview_partial,
-        )
-
-        # Enrich rows for the frontend
-        preview_rows = result.get("preview_rows", [])
-        _enrich_preview_rows(job_id, preview_rows)
-
-        # Count warnings after normalization
-        rows_with_warnings = sum(1 for r in preview_rows if r.get("warnings"))
-        result["rows_with_warnings"] = rows_with_warnings
-
-        return _emit_preview_ready(
-            result=result,
-            rows_with_warnings=rows_with_warnings,
-            bridge=bridge,
-            job_id_override=job_id,
-        )
-    except Exception as e:
-        logger.error("batch_preview_tool failed: %s", e)
-        return _err(f"Batch preview failed: {e}")
 
 
 async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:

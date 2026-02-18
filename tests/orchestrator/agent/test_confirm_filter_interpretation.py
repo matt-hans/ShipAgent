@@ -192,6 +192,32 @@ class TestConfirmFilterInterpretation:
         assert len(bridge.confirmed_resolutions) == 1
 
     @pytest.mark.asyncio
+    async def test_confirmation_turn_preserves_semantic_filter_command(
+        self, bridge: EventEmitterBridge, mock_gateway,
+    ) -> None:
+        """Confirmation turns should not overwrite cached command with 'yes'."""
+        from src.orchestrator.agent.tools.data import (
+            confirm_filter_interpretation_tool,
+        )
+
+        intent_raw = _northeast_intent()
+        token = _resolve_to_token(intent_raw)
+        bridge.last_user_message = "yes"
+        bridge.last_shipping_command = "Process shipments for the northeast companies."
+        bridge.last_resolved_filter_command = "ship northeast companies"
+
+        result = await confirm_filter_interpretation_tool(
+            {"resolution_token": token, "intent": intent_raw},
+            bridge=bridge,
+        )
+
+        assert result["isError"] is False
+        assert (
+            bridge.last_resolved_filter_command
+            == "Process shipments for the northeast companies."
+        )
+
+    @pytest.mark.asyncio
     async def test_mismatched_token_intent_rejected(
         self, bridge: EventEmitterBridge, mock_gateway,
     ) -> None:

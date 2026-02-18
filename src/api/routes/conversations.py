@@ -19,7 +19,6 @@ import base64
 import json
 import logging
 import os
-import re
 import time
 from typing import Any, AsyncGenerator
 from uuid import uuid4
@@ -38,8 +37,12 @@ from src.api.schemas_conversations import (
     SendMessageResponse,
     UploadDocumentResponse,
 )
+from src.orchestrator.agent.intent_detection import (
+    is_batch_shipping_request,
+    is_confirmation_response,
+    is_shipping_request,
+)
 from src.services.agent_session_manager import AgentSessionManager
-from src.services.filter_constants import STATE_ABBREVIATIONS
 from src.services.paperless_constants import (
     UPS_PAPERLESS_ALLOWED_EXTENSIONS,
     UPS_PAPERLESS_UI_ACCEPTED_FORMATS,
@@ -55,72 +58,6 @@ _session_manager = AgentSessionManager()
 
 # Event queues for SSE streaming — one queue per session.
 _event_queues: dict[str, asyncio.Queue] = {}
-_BATCH_SCOPE_PATTERN = re.compile(
-    r"\b(all|every|\d+)\s+(orders|rows|shipments|packages)\b",
-)
-_BATCH_TARGET_PATTERN = re.compile(r"\b(orders|rows|shipments|packages)\b")
-_BATCH_FILTER_CUES = (
-    " where ",
-    " unfulfilled ",
-    " fulfilled ",
-    " pending ",
-    " company ",
-    " companies ",
-    " customer ",
-    " customers ",
-    " northeast ",
-    " midwest ",
-    " southwest ",
-    " southeast ",
-    " west coast ",
-    " east coast ",
-)
-_STATE_NAME_CUES = tuple(
-    f" {name.lower()} "
-    for name in STATE_ABBREVIATIONS.keys()
-)
-
-
-def _looks_like_shipping_request(message: str) -> bool:
-    """Heuristic for shipment-execution commands."""
-    text = message.strip().lower()
-    if not text or text.startswith("[document_attached"):
-        return False
-    if "ship" not in text and "shipment" not in text:
-        return False
-    if "do not ship" in text or "don't ship" in text:
-        return False
-    exploratory_prefixes = ("show", "list", "find", "count", "how many", "which", "what")
-    return not any(text.startswith(prefix) for prefix in exploratory_prefixes)
-
-
-def _looks_like_batch_shipping_request(message: str) -> bool:
-    """Heuristic for batch shipping commands that need FilterSpec tools.
-
-    Distinguishes commands like "ship all orders in the Northeast" from
-    single-recipient interactive shipments. Used to auto-failover from
-    interactive mode to batch mode when the user's command clearly targets
-    dataset filtering/execution.
-    """
-    text = " ".join(message.strip().lower().replace("-", " ").split())
-    if not _looks_like_shipping_request(message):
-        return False
-    padded = f" {text} "
-    if not _BATCH_TARGET_PATTERN.search(text):
-        return False
-
-    has_scope = text.startswith(("ship all ", "ship every ")) or bool(
-        _BATCH_SCOPE_PATTERN.search(text),
-    )
-    has_filter_cue = any(cue in padded for cue in _BATCH_FILTER_CUES)
-    has_state_name = any(cue in padded for cue in _STATE_NAME_CUES)
-    return has_scope or has_filter_cue or has_state_name
-
-
-def _is_confirmation_response(message: str) -> bool:
-    """True for short confirmation replies (yes/proceed/confirm)."""
-    text = message.strip().lower()
-    return text in {"yes", "y", "ok", "okay", "confirm", "proceed", "continue", "go ahead"}
 
 
 def _get_event_queue(session_id: str) -> asyncio.Queue:
@@ -382,7 +319,7 @@ async def _process_agent_message(session_id: str, content: str) -> None:
             # rebuild so resolve_filter_intent/ship_command_pipeline are available.
             if (
                 session.interactive_shipping
-                and _looks_like_batch_shipping_request(content)
+                and is_batch_shipping_request(content)
             ):
                 logger.info(
                     "Switching session %s from interactive to batch mode for "
@@ -411,9 +348,9 @@ async def _process_agent_message(session_id: str, content: str) -> None:
 
             session.agent.emitter_bridge.callback = _emit_to_queue
             session.agent.emitter_bridge.last_user_message = content
-            if _looks_like_shipping_request(content):
+            if is_shipping_request(content):
                 session.agent.emitter_bridge.last_shipping_command = content
-            elif _is_confirmation_response(content):
+            elif is_confirmation_response(content):
                 # Keep prior shipping command context for one confirmation turn.
                 pass
             else:

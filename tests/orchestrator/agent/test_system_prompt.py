@@ -5,7 +5,7 @@ containing all required domain knowledge for the SDK orchestration agent.
 """
 
 from src.orchestrator.agent.system_prompt import build_system_prompt
-from src.services.data_source_service import DataSourceInfo, SchemaColumnInfo
+from src.services.data_source_mcp_client import DataSourceInfo, SchemaColumnInfo
 
 
 def _make_source_info() -> DataSourceInfo:

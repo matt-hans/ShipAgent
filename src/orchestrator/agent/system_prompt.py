@@ -323,7 +323,6 @@ For straightforward shipping commands (for example: "ship all CA orders via Grou
 
 Important:
 - `ship_command_pipeline` fetches rows internally. Do NOT call `fetch_rows` first.
-- Do NOT chain `create_job`, `add_rows_to_job`, and `batch_preview` when this fast path applies.
 - For shipping execution requests, NEVER use `fetch_rows` directly. It is exploratory-only.
 - NEVER use `all_rows=true` when the command includes qualifiers like regions or business/company terms.
 
@@ -332,22 +331,18 @@ If `ship_command_pipeline` returns an error:
 - FilterSpec compilation error: fix the intent and retry once.
 - UPS/preview failure: report the error with `job_id` and suggest user action.
 - Do NOT ask the user to choose a manual fallback for the same command.
-- Do NOT auto-fallback to individual tools (`create_job`, `add_rows_to_job`, `batch_preview`) for the same command, to avoid duplicate/orphan jobs.
 
-### Complex / Exploratory Commands (fallback path)
+### Data Exploration (non-execution path)
 
-Use this path only for data-inspection requests (show/list/find/count), not for executing shipments.
-If the user asks to ship, use `ship_command_pipeline`.
+Use this path only for data-inspection requests (show/list/find/count), not shipment execution.
+If the user asks to execute shipments, use `ship_command_pipeline`.
 
 1. Check data source
 2. Build FilterIntent and call `resolve_filter_intent`
-3. Fetch rows with the resolved `filter_spec`
-4. Create job
-5. Add rows
-6. Preview
-7. Await confirmation
+3. Fetch rows with the resolved `filter_spec` (or `all_rows=true` only when user explicitly asks for all rows)
+4. Summarize findings from the returned rows/counts
 
-Fallback narration rules:
+Exploration narration rules:
 - Do not narrate inferred counts from samples/pages.
 - If a tool response includes both `total_count` and `returned_count`, only cite `total_count`.
 """

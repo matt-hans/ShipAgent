@@ -4,8 +4,8 @@ Provides REST API endpoints for importing, querying, and disconnecting
 local data sources (CSV, Excel, Database).
 
 All routes are thin HTTP-to-MCP adapters delegating to the
-DataSourceMCPClient via gateway_provider. No direct DataSourceService
-imports or local state management.
+DataSourceMCPClient via gateway_provider, with no local state
+management in the route layer.
 
 All endpoints use /api/v1/data-sources prefix.
 """

@@ -44,10 +44,7 @@ from src.orchestrator.agent.tools.pickup import (
     schedule_pickup_tool,
 )
 from src.orchestrator.agent.tools.pipeline import (
-    add_rows_to_job_tool,
     batch_execute_tool,
-    batch_preview_tool,
-    create_job_tool,
     get_job_status_tool,
     get_landed_cost_tool,
     ship_command_pipeline_tool,
@@ -137,7 +134,7 @@ def get_all_tool_definitions(
             "name": "fetch_rows",
             "description": (
                 "Fetch rows from the data source using a compiled FilterSpec. "
-                "Returns a compact fetch_id reference for downstream tools. "
+                "Returns row samples and counts for exploratory analysis. "
                 "Response includes total_count (authoritative matches) and "
                 "returned_count (current page size). "
                 "Provide filter_spec OR all_rows=true, not both."
@@ -231,57 +228,6 @@ def get_all_tool_definitions(
             "handler": _bind_bridge(confirm_filter_interpretation_tool, bridge),
         },
         {
-            "name": "create_job",
-            "description": "Create a new shipping job in the state database.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Human-readable job name.",
-                    },
-                    "command": {
-                        "type": "string",
-                        "description": "The original user command.",
-                    },
-                },
-                "required": ["name", "command"],
-            },
-            "handler": _bind_bridge(create_job_tool, bridge),
-        },
-        {
-            "name": "add_rows_to_job",
-            "description": (
-                "Add fetched rows to a job. Call this AFTER create_job and "
-                "BEFORE batch_preview. Prefer passing fetch_id from fetch_rows "
-                "instead of full rows for faster execution."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "Job UUID from create_job.",
-                    },
-                    "rows": {
-                        "type": "array",
-                        "description": (
-                            "Optional full row array from fetch_rows. Prefer fetch_id."
-                        ),
-                        "items": {"type": "object"},
-                    },
-                    "fetch_id": {
-                        "type": "string",
-                        "description": (
-                            "Preferred compact reference returned by fetch_rows."
-                        ),
-                    },
-                },
-                "required": ["job_id"],
-            },
-            "handler": _bind_bridge(add_rows_to_job_tool, bridge),
-        },
-        {
             "name": "get_job_status",
             "description": "Get the summary and progress of a job.",
             "input_schema": {
@@ -295,21 +241,6 @@ def get_all_tool_definitions(
                 "required": ["job_id"],
             },
             "handler": get_job_status_tool,
-        },
-        {
-            "name": "batch_preview",
-            "description": "Run batch preview (rate all rows) for a job. Shows estimated costs before execution.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "Job UUID to preview.",
-                    },
-                },
-                "required": ["job_id"],
-            },
-            "handler": _bind_bridge(batch_preview_tool, bridge),
         },
         {
             "name": "batch_execute",

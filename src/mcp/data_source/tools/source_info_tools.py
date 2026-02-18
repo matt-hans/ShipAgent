@@ -26,22 +26,19 @@ async def get_source_info(ctx: Context) -> dict:
 
     await ctx.info("Retrieving source info")
 
-    # Build signature from schema if available.
-    # Mirrors DataSourceService.get_source_signature() format:
+    # Build signature from schema if available as:
     # full SHA-256 hex digest of "name:type:nullable|..." (no truncation).
     db = ctx.request_context.lifespan_context["db"]
     signature = None
     columns = []
     try:
         schema_rows = db.execute("DESCRIBE imported_data").fetchall()
-        # col[2] is "YES" or "NO" from DuckDB DESCRIBE — use real nullability,
-        # matching schema_tools.get_schema() at line 42 and
-        # DataSourceService.get_source_signature() at line 443.
+        # col[2] is "YES" or "NO" from DuckDB DESCRIBE — use real nullability.
         columns = [
             {"name": col[0], "type": col[1], "nullable": col[2] == "YES"}
             for col in schema_rows
         ]
-        # Match DataSourceService fingerprint format exactly:
+        # Fingerprint format:
         # "name:type:nullable_int|name:type:nullable_int|..."
         schema_parts = [
             f"{c['name']}:{c['type']}:{int(c['nullable'])}"
@@ -135,8 +132,7 @@ async def import_records(
 async def clear_source(ctx: Context) -> dict:
     """Clear the active data source, dropping imported data.
 
-    Mirrors DataSourceService.disconnect() behavior:
-    drops imported_data table, clears current_source metadata,
+    Drops imported_data table, clears current_source metadata,
     and resets type_overrides to prevent stale CASTs.
 
     Returns:
