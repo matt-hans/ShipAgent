@@ -263,6 +263,7 @@ class InProcessRunner:
                     "cost_cents": r.cost_cents,
                     "error_code": r.error_code,
                     "error_message": r.error_message,
+                    "order_data": r.order_data,
                 })
                 for r in rows
             ]

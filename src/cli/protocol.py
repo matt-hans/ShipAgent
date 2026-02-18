@@ -129,6 +129,7 @@ class RowDetail:
     error_message: str | None
     destination_country: str | None = None
     duties_taxes_cents: int | None = None
+    order_data: str | None = None
 
     @classmethod
     def from_api(cls, data: dict) -> "RowDetail":
@@ -143,6 +144,7 @@ class RowDetail:
             error_message=data.get("error_message"),
             destination_country=data.get("destination_country"),
             duties_taxes_cents=data.get("duties_taxes_cents"),
+            order_data=data.get("order_data"),
         )
 
 
