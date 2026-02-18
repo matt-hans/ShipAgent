@@ -11,6 +11,7 @@ from typing import Any
 
 from src.services.data_source_mcp_client import DataSourceMCPClient
 from src.services.external_sources_mcp_client import ExternalSourcesMCPClient
+from src.services.mapping_cache import invalidate as invalidate_mapping_cache
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,7 @@ async def get_ups_gateway() -> Any:
 async def shutdown_gateways() -> None:
     """Shutdown hook — disconnect all gateway clients. Call from FastAPI lifespan."""
     global _data_gateway, _ext_sources_client, _ups_gateway
+    invalidate_mapping_cache()
     if _data_gateway is not None:
         try:
             await _data_gateway.disconnect_mcp()

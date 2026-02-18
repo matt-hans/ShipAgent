@@ -23,21 +23,48 @@ paths: {}
 """
 
 
+def _first_existing(*candidate_paths: Path) -> Path | None:
+    """Return the first existing path from candidates."""
+    for path in candidate_paths:
+        if path.exists():
+            return path
+    return None
+
+
 def ensure_ups_specs_dir() -> str:
     """Prepare and return a UPS_MCP_SPECS_DIR-compatible directory path."""
     _RUNTIME_SPECS_DIR.mkdir(parents=True, exist_ok=True)
 
     mapping = {
-        "Rating.yaml": _SOURCE_DOCS_DIR / "rating.yaml",
-        "Shipping.yaml": _SOURCE_DOCS_DIR / "shipping.yaml",
+        "Rating.yaml": (
+            _SOURCE_DOCS_DIR / "rating.yaml",
+            _SOURCE_DOCS_DIR / "Rating.yaml",
+        ),
+        "Shipping.yaml": (
+            _SOURCE_DOCS_DIR / "shipping.yaml",
+            _SOURCE_DOCS_DIR / "Shipping.yaml",
+        ),
         # Optional specs — skipped if source file doesn't exist
-        "LandedCost.yaml": _SOURCE_DOCS_DIR / "landed_cost.yaml",
-        "Paperless.yaml": _SOURCE_DOCS_DIR / "paperless.yaml",
-        "Locator.yaml": _SOURCE_DOCS_DIR / "locator.yaml",
-        "Pickup.yaml": _SOURCE_DOCS_DIR / "pickup.yaml",
+        "LandedCost.yaml": (
+            _SOURCE_DOCS_DIR / "landed_cost.yaml",
+            _SOURCE_DOCS_DIR / "LandedCost.yaml",
+        ),
+        "Paperless.yaml": (
+            _SOURCE_DOCS_DIR / "paperless.yaml",
+            _SOURCE_DOCS_DIR / "Paperless.yaml",
+        ),
+        "Locator.yaml": (
+            _SOURCE_DOCS_DIR / "locator.yaml",
+            _SOURCE_DOCS_DIR / "Locator.yaml",
+        ),
+        "Pickup.yaml": (
+            _SOURCE_DOCS_DIR / "pickup.yaml",
+            _SOURCE_DOCS_DIR / "Pickup.yaml",
+        ),
     }
-    for target_name, source_path in mapping.items():
-        if not source_path.exists():
+    for target_name, source_candidates in mapping.items():
+        source_path = _first_existing(*source_candidates)
+        if source_path is None:
             continue
         target_path = _RUNTIME_SPECS_DIR / target_name
         source_text = source_path.read_text()

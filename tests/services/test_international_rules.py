@@ -184,6 +184,109 @@ class TestValidateInternationalReadiness:
             assert errors[0].machine_code == "MISSING_RECIPIENT_PHONE"
             assert errors[0].field_path == "ShipTo.Phone.Number"
 
+    def test_recipient_attention_defaults_to_ship_to_name(self):
+        """Missing recipient attention should auto-default to ship_to_name."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
+            order = {
+                "ship_to_country": "CA",
+                "ship_to_name": "Jane Doe",
+                "ship_to_phone": "6045551234",
+                "shipper_phone": "2125551234",
+                "shipper_attention_name": "Acme Corp",
+                "shipment_description": "Coffee Beans",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "150.00",
+                "commodities": [
+                    {
+                        "description": "Coffee Beans",
+                        "commodity_code": "090111",
+                        "origin_country": "CO",
+                        "quantity": 5,
+                        "unit_value": "30.00",
+                    }
+                ],
+            }
+            req = get_requirements("US", "CA", "11")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "MISSING_RECIPIENT_ATTENTION_NAME" not in codes
+            assert order["ship_to_attention_name"] == "Jane Doe"
+
+    def test_missing_recipient_state_for_gb(self):
+        """Destination-specific rule: GB requires ship_to_state."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-GB"}, clear=False):
+            order = {
+                "ship_to_country": "GB",
+                "ship_to_phone": "442079430800",
+                "ship_to_attention_name": "Elizabeth Taylor",
+                "shipper_phone": "12125551234",
+                "shipper_attention_name": "Warehouse Desk",
+                "shipment_description": "Books",
+                "commodities": [{
+                    "description": "Books",
+                    "commodity_code": "490199",
+                    "origin_country": "US",
+                    "quantity": 1,
+                    "unit_value": "75.00",
+                }],
+            }
+            req = get_requirements("US", "GB", "07")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "MISSING_RECIPIENT_STATE" in codes
+            state_error = next(e for e in errors if e.machine_code == "MISSING_RECIPIENT_STATE")
+            assert state_error.field_path == "ShipTo.Address.StateProvinceCode"
+
+    def test_invalid_recipient_state_when_matches_postal_code(self):
+        """State/province copied from postal code should fail validation."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-GB"}, clear=False):
+            order = {
+                "ship_to_country": "GB",
+                "ship_to_state": "W1J 7NT",
+                "ship_to_postal_code": "W1J 7NT",
+                "ship_to_phone": "442079430800",
+                "ship_to_attention_name": "Elizabeth Taylor",
+                "shipper_phone": "12125551234",
+                "shipper_attention_name": "Warehouse Desk",
+                "shipment_description": "Books",
+                "commodities": [{
+                    "description": "Books",
+                    "commodity_code": "490199",
+                    "origin_country": "US",
+                    "quantity": 1,
+                    "unit_value": "75.00",
+                }],
+            }
+            req = get_requirements("US", "GB", "07")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "INVALID_RECIPIENT_STATE" in codes
+
+    def test_invalid_recipient_state_for_gb_with_digits(self):
+        """GB state/province should reject postal-style values with digits."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-GB"}, clear=False):
+            order = {
+                "ship_to_country": "GB",
+                "ship_to_state": "W1J7NT",
+                "ship_to_postal_code": "W1J 7NT",
+                "ship_to_phone": "442079430800",
+                "ship_to_attention_name": "Elizabeth Taylor",
+                "shipper_phone": "12125551234",
+                "shipper_attention_name": "Warehouse Desk",
+                "shipment_description": "Books",
+                "commodities": [{
+                    "description": "Books",
+                    "commodity_code": "490199",
+                    "origin_country": "US",
+                    "quantity": 1,
+                    "unit_value": "75.00",
+                }],
+            }
+            req = get_requirements("US", "GB", "07")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "INVALID_RECIPIENT_STATE" in codes
+
     def test_missing_commodities(self):
         with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
             order = {

@@ -1,5 +1,6 @@
 """Tests for UPSMCPClient (async MCP-based UPS client)."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -143,6 +144,63 @@ class TestGetRate:
             await ups_client.get_rate(request_body={})
 
         assert exc_info.value.code == "E-3003"
+
+    @pytest.mark.asyncio
+    async def test_shop_request_option_returns_available_services(self, ups_client, mock_mcp_client):
+        """Shop mode returns normalized available service list."""
+        mock_mcp_client.call_tool.return_value = {
+            "RateResponse": {
+                "RatedShipment": [
+                    {
+                        "Service": {"Code": "65", "Description": "UPS Worldwide Saver"},
+                        "TotalCharges": {"MonetaryValue": "45.10", "CurrencyCode": "USD"},
+                    },
+                    {
+                        "Service": {"Code": "07", "Description": "UPS Worldwide Express"},
+                        "TotalCharges": {"MonetaryValue": "58.30", "CurrencyCode": "USD"},
+                    },
+                ]
+            }
+        }
+
+        result = await ups_client.get_rate(
+            request_body={"test": True},
+            requestoption="Shop",
+        )
+
+        assert result["success"] is True
+        assert len(result["ratedShipments"]) == 2
+        assert result["ratedShipments"][0]["serviceCode"] == "65"
+        assert result["ratedShipments"][0]["serviceName"] == "UPS Worldwide Saver"
+
+        mock_mcp_client.call_tool.assert_awaited_once_with(
+            "rate_shipment",
+            {"requestoption": "Shop", "request_body": {"test": True}},
+            max_retries=2,
+            base_delay=0.2,
+        )
+
+    @pytest.mark.asyncio
+    async def test_shop_rates_sorted_by_price(self, ups_client, mock_mcp_client):
+        """Shop response is sorted by ascending total charge."""
+        mock_mcp_client.call_tool.return_value = {
+            "RateResponse": {
+                "RatedShipment": [
+                    {
+                        "Service": {"Code": "07"},
+                        "TotalCharges": {"MonetaryValue": "88.00", "CurrencyCode": "USD"},
+                    },
+                    {
+                        "Service": {"Code": "65"},
+                        "TotalCharges": {"MonetaryValue": "49.00", "CurrencyCode": "USD"},
+                    },
+                ]
+            }
+        }
+
+        result = await ups_client.get_rate(request_body={}, requestoption="Shop")
+        codes = [s["serviceCode"] for s in result["ratedShipments"]]
+        assert codes == ["65", "07"]
 
 
 # ---------------------------------------------------------------------------
@@ -716,6 +774,27 @@ class TestUPSMCPReconnectBehavior:
         mock_mcp_client.connect.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_rate_call_reconnects_again_if_replay_hits_transport_error(
+        self, ups_client, mock_mcp_client
+    ):
+        """Non-mutating replay gets one bounded extra transport recovery."""
+        mock_mcp_client._session = object()
+        mock_mcp_client.call_tool = AsyncMock(side_effect=[
+            MCPConnectionError(command="test", reason="transport down"),
+            MCPConnectionError(command="test", reason="session not initialized"),
+            {"ok": True},
+        ])
+        mock_mcp_client.disconnect = AsyncMock(return_value=None)
+        mock_mcp_client.connect = AsyncMock(return_value=None)
+
+        result = await ups_client._call("rate_shipment", {"request_body": {}})
+
+        assert result == {"ok": True}
+        assert mock_mcp_client.call_tool.call_count == 3
+        assert mock_mcp_client.disconnect.await_count == 2
+        assert mock_mcp_client.connect.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_create_shipment_reconnects_without_replay(self, ups_client, mock_mcp_client):
         """Mutating create_shipment calls reconnect but do not auto-replay."""
         mock_mcp_client._session = object()
@@ -778,6 +857,43 @@ class TestUPSMCPReconnectBehavior:
             await ups_client._call("create_shipment", {"request_body": {"x": 1}})
 
         assert mock_mcp_client.call_tool.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_transport_failures_coalesce_single_reconnect(
+        self, ups_client, mock_mcp_client
+    ):
+        """Parallel failures should share one reconnect cycle."""
+        mock_mcp_client._session = object()
+        mock_mcp_client.disconnect = AsyncMock(return_value=None)
+        mock_mcp_client.connect = AsyncMock(return_value=None)
+
+        first_two_started = asyncio.Event()
+        call_count = 0
+
+        async def _side_effect(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                if call_count == 2:
+                    first_two_started.set()
+                await first_two_started.wait()
+                raise MCPConnectionError(command="test", reason="transport down")
+            return {"ok": f"retry-{call_count}"}
+
+        mock_mcp_client.call_tool = AsyncMock(side_effect=_side_effect)
+
+        task1 = asyncio.create_task(
+            ups_client._call("rate_shipment", {"request_body": {"id": 1}})
+        )
+        task2 = asyncio.create_task(
+            ups_client._call("rate_shipment", {"request_body": {"id": 2}})
+        )
+        result1, result2 = await asyncio.gather(task1, task2)
+
+        assert {result1["ok"], result2["ok"]} == {"retry-3", "retry-4"}
+        assert mock_mcp_client.call_tool.await_count == 4
+        mock_mcp_client.disconnect.assert_awaited_once()
+        mock_mcp_client.connect.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -945,19 +1061,19 @@ class TestGetLandedCost:
                 ],
                 "totalBrokerageFees": 16.8,
                 "totalDuties": 12.50,
-                "totalCommodityLevelTaxesAndFees": 0,
-                "totalShipmentLevelTaxesAndFees": 0,
+                "totalCommodityLevelTaxesAndFees": 1.11,
+                "totalShipmentLevelTaxesAndFees": 0.45,
                 "totalVAT": 7.73,
                 "totalDutyandTax": 20.23,
                 "grandTotal": 37.03,
                 "importCountryCode": "GB",
                 "shipmentItems": [
                     {
-                        "commodityId": "1",
+                        "commodityID": "1",
                         "commodityDuty": 12.50,
-                        "totalCommodityTaxesAndFees": 0,
+                        "totalCommodityTaxAndFee": 1.11,
                         "commodityVAT": 7.73,
-                        "totalCommodityDutyandTax": 20.23,
+                        "totalCommodityDutyAndTax": 21.34,
                         "commodityCurrencyCode": "USD",
                         "isCalculable": True,
                         "hsCode": "4009320020",
@@ -966,6 +1082,7 @@ class TestGetLandedCost:
             },
             "alversion": 1,
             "transID": "test-123",
+            "perfStats": {"absLayerTime": "12", "fulfillTime": "35", "receiptTime": "3"},
         }
         result = await ups_client.get_landed_cost(
             currency_code="USD", export_country_code="US",
@@ -977,11 +1094,25 @@ class TestGetLandedCost:
         assert result["currencyCode"] == "USD"
         assert result["totalDuties"] == "12.5"
         assert result["totalVAT"] == "7.73"
+        assert result["totalCommodityLevelTaxesAndFees"] == "1.11"
+        assert result["totalShipmentLevelTaxesAndFees"] == "0.45"
+        assert result["totalDutyAndTax"] == "20.23"
         assert result["totalBrokerageFees"] == "16.8"
+        assert result["shipmentId"] == "test-shipment-1"
+        assert result["importCountryCode"] == "GB"
+        assert result["transId"] == "test-123"
+        assert result["alVersion"] == 1
+        assert result["perfStats"]["absLayerTime"] == "12"
+        assert result["brokerageFeeItems"] == [
+            {"chargeName": "Disbursement Fee", "chargeAmount": "16.8"},
+        ]
         assert len(result["items"]) == 1
         assert result["items"][0]["duties"] == "12.5"
         assert result["items"][0]["taxes"] == "7.73"
-        assert result["items"][0]["fees"] == "0"
+        assert result["items"][0]["fees"] == "1.11"
+        assert result["items"][0]["totalDutyAndTax"] == "21.34"
+        assert result["items"][0]["currencyCode"] == "USD"
+        assert result["items"][0]["isCalculable"] is True
         assert result["items"][0]["hsCode"] == "4009320020"
 
     @pytest.mark.asyncio
@@ -1047,6 +1178,43 @@ class TestUploadDocument:
         assert result["documentId"] == "2013-12-04-00.15.33.207814"
 
     @pytest.mark.asyncio
+    async def test_upload_document_extracts_metadata(self, ups_client, mock_mcp_client):
+        """upload_document normalizes array IDs + response metadata."""
+        mock_mcp_client.call_tool.return_value = {
+            "UploadResponse": {
+                "FormsHistoryDocumentID": {
+                    "DocumentID": [
+                        "2013-12-04-00.15.33.207814",
+                        "2013-12-04-00.15.33.207815",
+                    ],
+                },
+                "Response": {
+                    "ResponseStatus": {"Code": "1", "Description": "Success"},
+                    "TransactionReference": {"CustomerContext": "ctx-123"},
+                    "Alert": [{"Code": "A1", "Description": "Uploaded with warning"}],
+                },
+            },
+        }
+
+        result = await ups_client.upload_document(
+            file_content_base64="dGVzdA==",
+            file_name="invoice.txt",
+            file_format="txt",
+            document_type="002",
+        )
+
+        assert result["success"] is True
+        assert result["documentId"] == "2013-12-04-00.15.33.207814"
+        assert result["documentIds"] == [
+            "2013-12-04-00.15.33.207814",
+            "2013-12-04-00.15.33.207815",
+        ]
+        assert result["statusCode"] == "1"
+        assert result["statusDescription"] == "Success"
+        assert result["customerContext"] == "ctx-123"
+        assert result["alerts"] == [{"code": "A1", "message": "Uploaded with warning"}]
+
+    @pytest.mark.asyncio
     async def test_upload_document_no_retry(self, ups_client, mock_mcp_client):
         """upload_document must NOT retry (mutating)."""
         assert "upload_paperless_document" in UPSMCPClient._MUTATING_TOOLS
@@ -1059,12 +1227,17 @@ class TestPushDocument:
     async def test_push_document(self, ups_client, mock_mcp_client):
         """push_document links document to shipment."""
         mock_mcp_client.call_tool.return_value = {
-            "PushToImageRepositoryResponse": {"FormsHistoryDocumentID": {"DocumentID": "TEST"}}
+            "PushToImageRepositoryResponse": {
+                "FormsGroupID": "GROUP-123",
+                "Response": {"ResponseStatus": {"Code": "1", "Description": "Success"}},
+            },
         }
         result = await ups_client.push_document(
             document_id="TEST", shipment_identifier="1Z123",
         )
         assert result["success"] is True
+        assert result["formsGroupId"] == "GROUP-123"
+        assert result["statusCode"] == "1"
 
 
 class TestDeleteDocument:
@@ -1097,9 +1270,25 @@ class TestFindLocations:
                     "DropLocation": [
                         {
                             "LocationID": "L1",
-                            "AddressKeyFormat": {"AddressLine": "123 Main"},
-                            "PhoneNumber": "555-1234",
-                            "OperatingHours": {"StandardHours": {"DayOfWeek": []}},
+                            "AddressKeyFormat": {
+                                "AddressLine": "123 Main",
+                                "PoliticalDivision2": "Austin",
+                                "PoliticalDivision1": "TX",
+                                "PostcodePrimaryLow": "78701",
+                                "CountryCode": "US",
+                            },
+                            "PhoneNumber": ["555-1234"],
+                            "OperatingHours": {
+                                "StandardHours": {
+                                    "DayOfWeek": [
+                                        {
+                                            "Day": "Monday",
+                                            "OpenHours": "0900",
+                                            "CloseHours": "1700",
+                                        }
+                                    ]
+                                }
+                            },
                         }
                     ]
                 }
@@ -1111,7 +1300,15 @@ class TestFindLocations:
         )
         assert result["success"] is True
         assert len(result["locations"]) == 1
-        assert result["locations"][0]["id"] == "L1"
+        loc = result["locations"][0]
+        assert loc["id"] == "L1"
+        assert loc["address"]["City"] == "Austin"
+        assert loc["address"]["StateProvinceCode"] == "TX"
+        assert loc["address"]["PostalCode"] == "78701"
+        assert loc["phone"] == "555-1234"
+        assert loc["phones"] == ["555-1234"]
+        assert loc["hours"]["Monday"] == "0900-1700"
+        assert "AddressKeyFormat" in loc["details"]
 
     @pytest.mark.asyncio
     async def test_find_locations_uses_read_only_retry(self, ups_client, mock_mcp_client):
@@ -1124,31 +1321,48 @@ class TestGetServiceCenterFacilities:
 
     @pytest.mark.asyncio
     async def test_get_service_center_facilities(self, ups_client, mock_mcp_client):
-        """get_service_center_facilities returns normalised facility list."""
+        """get_service_center_facilities normalizes v2409 PickupFacilities."""
         mock_mcp_client.call_tool.return_value = {
-            "ServiceCenterResponse": {
-                "ServiceCenterList": [
-                    {
-                        "FacilityName": "UPS Store #1234",
-                        "FacilityAddress": {
-                            "AddressLine": "123 Main St",
-                            "City": "Austin",
-                            "StateProvinceCode": "TX",
-                            "PostalCode": "78701",
+            "PickupGetServiceCenterFacilitiesResponse": {
+                "Response": {"ResponseStatus": {"Code": "1", "Description": "Success"}},
+                "ServiceCenterLocation": {
+                    "PickupFacilities": {
+                        "Name": "ATLANTA",
+                        "Address": {
+                            "AddressLine": ["5356 GEORGIA HWY 85, SUITE 100"],
+                            "City": "FOREST PARK",
+                            "StateProvince": "GA",
+                            "PostalCode": "30297",
+                            "CountryCode": "US",
+                        },
+                        "Phone": "8004238848",
+                        "Timezone": "Eastern Standard Time",
+                        "SLIC": "0973",
+                        "Type": "FRT",
+                        "FacilityTime": {
+                            "DayOfWeek": [
+                                {"Day": "Monday", "OpenHours": "0600", "CloseHours": "2100"}
+                            ]
                         },
                     }
-                ]
+                },
             }
         }
         result = await ups_client.get_service_center_facilities(
-            city="Austin", state="TX", postal_code="78701", country_code="US",
+            city="Atlanta", state="GA", postal_code="30301", country_code="US",
         )
         assert result["success"] is True
         assert len(result["facilities"]) == 1
         fac = result["facilities"][0]
-        assert fac["name"] == "UPS Store #1234"
-        assert "Austin" in fac["address"]
-        assert "TX" in fac["address"]
+        assert fac["name"] == "ATLANTA"
+        assert "FOREST PARK" in fac["address"]
+        assert "GA" in fac["address"]
+        assert fac["phone"] == "8004238848"
+        assert fac["timezone"] == "Eastern Standard Time"
+        assert fac["slic"] == "0973"
+        assert fac["type"] == "FRT"
+        assert fac["hours"]["Monday"] == "0600-2100"
+        assert "Address" in fac["details"]
 
 
 class TestTrackPackage:

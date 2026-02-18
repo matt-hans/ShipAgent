@@ -248,6 +248,20 @@ export interface ShipperInfo {
   countryCode: string;
 }
 
+/** Service option discovered from UPS Shop for a route. */
+export interface AvailableServiceOption {
+  code: string;
+  name: string;
+  description?: string;
+  estimated_cost_cents: number;
+  total_charges: {
+    monetary_value: string;
+    currency_code: string;
+  };
+  delivery_days?: string | null;
+  selected?: boolean;
+}
+
 /** Batch preview before execution. */
 export interface BatchPreview {
   job_id: string;
@@ -264,6 +278,7 @@ export interface BatchPreview {
   shipper?: ShipperInfo;
   ship_to?: {
     name: string;
+    attention_name?: string;
     address1: string;
     address2?: string;
     city: string;
@@ -275,9 +290,34 @@ export interface BatchPreview {
   account_number?: string;
   service_name?: string;
   service_code?: string;
+  available_services?: AvailableServiceOption[];
+  service_selection_notice?: string;
   weight_lbs?: number;
   packaging_type?: string;
   resolved_payload?: Record<string, unknown>;
+  // Filter transparency metadata (batch mode)
+  filter_explanation?: string;
+  compiled_filter?: string;
+  filter_audit?: {
+    spec_hash: string;
+    compiled_hash: string;
+    schema_signature: string;
+    dict_version: string;
+    source_fingerprint?: string;
+    compiler_version?: string;
+    mapping_version?: string;
+    normalizer_version?: string;
+    mapping_hash?: string;
+  };
+}
+
+/** Incremental preview update streamed before preview_ready. */
+export interface PreviewPartialPayload {
+  job_id: string;
+  preview_rows: PreviewRow[];
+  rows_rated: number;
+  total_rows: number;
+  is_final: boolean;
 }
 
 // === Progress Types ===
@@ -563,6 +603,7 @@ export interface DataSourceImportRequest {
   sheet?: string;
   connection_string?: string;
   query?: string;
+  row_key_columns?: string[];
 }
 
 /** Response from a data source import operation. */
@@ -612,6 +653,7 @@ export interface SavedDataSourceListResponse {
 export interface ReconnectRequest {
   source_id: string;
   connection_string?: string;
+  row_key_columns?: string[];
 }
 
 // === Conversation Types ===
@@ -623,6 +665,7 @@ export type AgentEventType =
   | 'tool_result'
   | 'agent_message'
   | 'agent_message_delta'
+  | 'preview_partial'
   | 'preview_ready'
   | 'pickup_preview'
   | 'pickup_result'
@@ -701,11 +744,20 @@ export interface LocationResult {
     id: string;
     address: Record<string, string>;
     phone?: string;
+    phones?: string[];
     hours?: Record<string, string>;
+    details?: Record<string, unknown>;
   }>;
   facilities?: Array<{
     name: string;
     address: string;
+    phone?: string;
+    phones?: string[];
+    timezone?: string;
+    slic?: string;
+    type?: string;
+    hours?: Record<string, string>;
+    details?: Record<string, unknown>;
   }>;
 }
 
@@ -715,14 +767,43 @@ export interface LandedCostResult {
   success: boolean;
   totalLandedCost: string;
   currencyCode: string;
+  shipmentId?: string;
+  transId?: string;
+  alVersion?: number;
+  perfStats?: {
+    absLayerTime?: string;
+    fulfillTime?: string;
+    receiptTime?: string;
+  };
+  importCountryCode?: string;
   totalDuties?: string;
   totalVAT?: string;
+  totalCommodityLevelTaxesAndFees?: string;
+  totalShipmentLevelTaxesAndFees?: string;
+  totalDutyAndTax?: string;
   totalBrokerageFees?: string;
+  brokerageFeeItems?: Array<{
+    chargeName: string;
+    chargeAmount: string;
+  }>;
+  requestSummary?: {
+    exportCountryCode: string;
+    importCountryCode: string;
+    currencyCode: string;
+    shipmentType: string;
+    commodityCount: number;
+    totalUnits: number;
+    declaredMerchandiseValue: string;
+  };
   items: Array<{
     commodityId: string;
+    itemLabel?: string;
     duties: string;
     taxes: string;
     fees: string;
+    totalDutyAndTax?: string;
+    currencyCode?: string;
+    isCalculable?: boolean;
     hsCode?: string;
   }>;
 }
@@ -748,6 +829,15 @@ export interface PaperlessResult {
   action: 'uploaded' | 'pushed' | 'deleted';
   success: boolean;
   documentId?: string;
+  documentIds?: string[];
+  formsGroupId?: string;
+  statusCode?: string;
+  statusDescription?: string;
+  customerContext?: string;
+  alerts?: Array<{
+    code?: string;
+    message?: string;
+  }>;
   fileName?: string;
   fileFormat?: string;
   documentType?: string;

@@ -340,6 +340,137 @@ class TestHandleRecoveryChoice:
             )
 
 
+    def test_handle_review_returns_detailed_report(self) -> None:
+        """Test REVIEW returns per-row detail for needs_review and in_flight rows."""
+        job_service = MockJobService()
+        job = MockJob("job-123", status="running", total_rows=5)
+        rows = [
+            MockJobRow("r1", "job-123", 1, "completed", "1Z001"),
+            MockJobRow("r2", "job-123", 2, "needs_review"),
+            MockJobRow("r3", "job-123", 3, "in_flight"),
+            MockJobRow("r4", "job-123", 4, "failed"),
+            MockJobRow("r5", "job-123", 5, "pending"),
+        ]
+        # Add Phase 8 attributes to the needs_review and in_flight rows
+        rows[1].error_message = "Ambiguous transport error"
+        rows[1].ups_tracking_number = "1Z002"
+        rows[1].ups_shipment_id = "SHIP002"
+        rows[1].idempotency_key = "job-123:2:abc"
+
+        rows[2].recovery_attempt_count = 1
+        rows[2].ups_tracking_number = "1Z003"
+        rows[2].idempotency_key = "job-123:3:def"
+
+        job_service.add_job(job, rows)
+
+        result = handle_recovery_choice(
+            RecoveryChoice.REVIEW, "job-123", job_service,
+        )
+
+        assert result["action"] == "review"
+        assert result["needs_review_count"] == 1
+        assert result["in_flight_count"] == 1
+        assert len(result["rows"]) == 2
+        # Verify needs_review row details
+        nr_row = next(r for r in result["rows"] if r["status"] == "needs_review")
+        assert nr_row["row_number"] == 2
+        assert nr_row["error_message"] == "Ambiguous transport error"
+        assert nr_row["idempotency_key"] == "job-123:2:abc"
+        # Verify in_flight row details
+        if_row = next(r for r in result["rows"] if r["status"] == "in_flight")
+        assert if_row["row_number"] == 3
+        assert if_row["idempotency_key"] == "job-123:3:def"
+
+    def test_handle_review_is_read_only(self) -> None:
+        """Test REVIEW does not modify any row status."""
+        job_service = MockJobService()
+        job = MockJob("job-123", status="running", total_rows=3)
+        rows = [
+            MockJobRow("r1", "job-123", 1, "needs_review"),
+            MockJobRow("r2", "job-123", 2, "in_flight"),
+            MockJobRow("r3", "job-123", 3, "pending"),
+        ]
+        for r in rows:
+            r.error_message = ""
+            r.ups_tracking_number = ""
+            r.ups_shipment_id = ""
+            r.idempotency_key = ""
+            r.recovery_attempt_count = 0
+        job_service.add_job(job, rows)
+
+        handle_recovery_choice(
+            RecoveryChoice.REVIEW, "job-123", job_service,
+        )
+
+        # No status changes should have occurred
+        assert len(job_service.update_status_calls) == 0
+        assert rows[0].status == "needs_review"
+        assert rows[1].status == "in_flight"
+        assert rows[2].status == "pending"
+
+
+class TestCheckInterruptedJobsInFlightCounts:
+    """Tests for in_flight_count and needs_review_count in InterruptedJobInfo."""
+
+    def test_includes_in_flight_and_needs_review_counts(self) -> None:
+        """check_interrupted_jobs counts in_flight and needs_review rows."""
+        job_service = MockJobService()
+        job = MockJob("job-123", status="running", total_rows=10, processed_rows=5)
+        rows = [
+            MockJobRow("r1", "job-123", 1, "completed"),
+            MockJobRow("r2", "job-123", 2, "in_flight"),
+            MockJobRow("r3", "job-123", 3, "in_flight"),
+            MockJobRow("r4", "job-123", 4, "needs_review"),
+            MockJobRow("r5", "job-123", 5, "pending"),
+        ]
+        job_service.add_job(job, rows)
+
+        result = check_interrupted_jobs(job_service)
+
+        assert result is not None
+        assert result.in_flight_count == 2
+        assert result.needs_review_count == 1
+
+    def test_zero_counts_when_no_special_rows(self) -> None:
+        """Counts are 0 when no in_flight/needs_review rows exist."""
+        job_service = MockJobService()
+        job = MockJob("job-123", status="running", total_rows=5, processed_rows=3)
+        rows = [
+            MockJobRow("r1", "job-123", 1, "completed"),
+            MockJobRow("r2", "job-123", 2, "failed"),
+            MockJobRow("r3", "job-123", 3, "pending"),
+        ]
+        job_service.add_job(job, rows)
+
+        result = check_interrupted_jobs(job_service)
+
+        assert result is not None
+        assert result.in_flight_count == 0
+        assert result.needs_review_count == 0
+
+
+class TestRecoveryPromptWithReview:
+    """Tests for recovery prompt showing REVIEW option."""
+
+    def test_prompt_includes_review_option(self) -> None:
+        """Recovery prompt includes [review] option."""
+        info = InterruptedJobInfo(
+            job_id="job-123",
+            job_name="Test Batch",
+            completed_rows=5,
+            total_rows=10,
+            remaining_rows=5,
+            in_flight_count=2,
+            needs_review_count=1,
+        )
+
+        prompt = get_recovery_prompt(info)
+
+        assert "[review]" in prompt
+        assert "2 in-flight" in prompt
+        assert "1 needs review" in prompt
+
+
 class TestRecoveryChoiceEnum:
     """Tests for RecoveryChoice enum."""
 
@@ -348,6 +479,7 @@ class TestRecoveryChoiceEnum:
         assert RecoveryChoice.RESUME.value == "resume"
         assert RecoveryChoice.RESTART.value == "restart"
         assert RecoveryChoice.CANCEL.value == "cancel"
+        assert RecoveryChoice.REVIEW.value == "review"
 
     def test_enum_string_inheritance(self) -> None:
         """Test enum inherits from str for JSON serialization."""

@@ -54,8 +54,10 @@ class AgentSession:
         self.agent_source_hash: str | None = None
         self.interactive_shipping: bool = False
         self.terminating: bool = False
+        self.confirmed_resolutions: dict[str, Any] = {}  # token → confirmed ResolvedFilterSpec
         self.lock = asyncio.Lock()
         self.prewarm_task: asyncio.Task[Any] | None = None
+        self.message_tasks: set[asyncio.Task[Any]] = set()
 
     def add_message(self, role: str, content: str) -> None:
         """Append a message to the conversation history.
@@ -164,6 +166,28 @@ class AgentSessionManager:
                 session_id,
                 e,
             )
+
+    async def cancel_session_message_tasks(self, session_id: str) -> None:
+        """Cancel and await all in-flight message tasks for a session."""
+        session = self._sessions.get(session_id)
+        if session is None or not session.message_tasks:
+            return
+        tasks = list(session.message_tasks)
+        session.message_tasks.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(
+                    "Error while cancelling message task for session %s: %s",
+                    session_id,
+                    e,
+                )
 
     def list_sessions(self) -> list[str]:
         """List all active session IDs.

@@ -20,10 +20,10 @@ import json
 import logging
 import os
 import time
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 from uuid import uuid4
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from sse_starlette.sse import EventSourceResponse
 
@@ -37,7 +37,17 @@ from src.api.schemas_conversations import (
     SendMessageResponse,
     UploadDocumentResponse,
 )
+from src.orchestrator.agent.intent_detection import (
+    is_batch_shipping_request,
+    is_confirmation_response,
+    is_shipping_request,
+)
 from src.services.agent_session_manager import AgentSessionManager
+from src.services.paperless_constants import (
+    UPS_PAPERLESS_ALLOWED_EXTENSIONS,
+    UPS_PAPERLESS_UI_ACCEPTED_FORMATS,
+    normalize_paperless_extension,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +90,7 @@ def _compute_source_hash(source_info: "DataSourceInfo | None") -> str:
         str(source_info.file_path or ""),
         str(source_info.row_count),
         ",".join(c.name for c in source_info.columns),
+        str(getattr(source_info, "signature", "") or ""),
     ]
     return "|".join(parts)
 
@@ -124,10 +135,24 @@ async def _ensure_agent(
             await session.agent.stop()
         except Exception as e:
             logger.warning("Error stopping old agent: %s", e)
+        # Source changed — invalidate confirmed semantic cache bound to prior schema.
+        session.confirmed_resolutions.clear()
+
+    # Fetch column samples for filter grounding (batch mode only).
+    column_samples: dict[str, list] | None = None
+    if source_info is not None and not session.interactive_shipping:
+        try:
+            from src.services.gateway_provider import get_data_gateway
+
+            gw_for_samples = await get_data_gateway()
+            column_samples = await gw_for_samples.get_column_samples(max_samples=5)
+        except Exception as e:
+            logger.warning("Failed to fetch column samples: %s", e)
 
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=session.interactive_shipping,
+        column_samples=column_samples,
     )
     agent = OrchestrationAgent(
         system_prompt=system_prompt,
@@ -176,10 +201,11 @@ async def _prewarm_session_agent(session_id: str) -> None:
 
 
 async def _process_agent_message(session_id: str, content: str) -> None:
-    """Process a user message — delegates to shared conversation_handler.
+    """Process a user message through the persistent agent.
 
-    Runs as a background task. Retains route-specific concerns:
-    queue delivery, timing metrics, preview metrics, done signaling.
+    Runs as a background task. Reuses the session's agent (SDK maintains
+    conversation history internally). The agent and MCP servers stay alive
+    across messages. An asyncio.Lock serializes access per session.
 
     Args:
         session_id: Conversation session ID.
@@ -198,45 +224,202 @@ async def _process_agent_message(session_id: str, content: str) -> None:
     first_event_source = ""
     preview_rows_rated = 0
     preview_total_rows = 0
+    preview_first_partial_logged = False
+    preview_total_logged = False
+    source_type = "none"
+    agent_rebuilt = False
+    raw_hide_transient = os.environ.get("AGENT_HIDE_TRANSIENT_CHAT", "true").strip().lower()
+    hide_transient_chat = raw_hide_transient not in {"0", "false", "no", "off"}
+    buffered_agent_messages: list[str] = []
+    artifact_emitted = False
+    artifact_events = {
+        "preview_partial",
+        "preview_ready",
+        "pickup_preview",
+        "pickup_result",
+        "location_result",
+        "landed_cost_result",
+        "paperless_upload_prompt",
+        "paperless_result",
+        "tracking_result",
+    }
+
+    logger.info(
+        "agent_timing marker=message_received session_id=%s content_len=%d elapsed=%.3f",
+        session_id,
+        len(content),
+        0.0,
+    )
+
+    def _track_preview_event(
+        event_type: str,
+        data: dict[str, Any],
+        source: str,
+    ) -> None:
+        nonlocal preview_rows_rated, preview_total_rows
+        nonlocal preview_first_partial_logged, preview_total_logged
+
+        if event_type == "preview_partial":
+            rows_rated = int(data.get("rows_rated", 0))
+            total_rows = int(data.get("total_rows", 0))
+            preview_rows_rated = max(preview_rows_rated, rows_rated)
+            preview_total_rows = max(preview_total_rows, total_rows)
+            if not preview_first_partial_logged:
+                preview_first_partial_logged = True
+                logger.info(
+                    "metric=preview_first_partial_latency_ms session_id=%s "
+                    "source=%s value=%d",
+                    session_id,
+                    source,
+                    int((time.perf_counter() - started_at) * 1000),
+                )
+            return
+
+        if event_type == "preview_ready":
+            preview_total_rows = int(data.get("total_rows", preview_total_rows))
+            preview_rows_rated = len(data.get("preview_rows", []))
+            if not preview_total_logged:
+                preview_total_logged = True
+                logger.info(
+                    "metric=preview_total_latency_ms session_id=%s source=%s value=%d",
+                    session_id,
+                    source,
+                    int((time.perf_counter() - started_at) * 1000),
+                )
 
     def _mark_first_event(source: str) -> None:
         nonlocal first_event_at, first_event_source
         if first_event_at is None:
             first_event_at = time.perf_counter()
             first_event_source = source
+            logger.info(
+                "agent_timing marker=first_event session_id=%s source=%s elapsed=%.3f",
+                session_id,
+                source,
+                first_event_at - started_at,
+            )
 
-    # Queue-pushing callback for tool events (preview_ready, etc.)
-    def _emit_to_queue(event_type: str, data: dict) -> None:
-        _mark_first_event("tool_emit")
-        queue.put_nowait({"event": event_type, "data": data})
+    async with session.lock:
+        try:
+            from src.services.gateway_provider import get_data_gateway
 
-    try:
-        from src.services.conversation_handler import process_message
+            gw = await get_data_gateway()
+            source_info = await gw.get_source_info_typed()
 
-        async for event in process_message(
-            session, content,
-            interactive_shipping=session.interactive_shipping,
-            emit_callback=_emit_to_queue,
-        ):
-            _mark_first_event(str(event.get("event", "unknown")))
-            await queue.put(event)
+            source_type = source_info.source_type if source_info is not None else "none"
+            logger.info(
+                "agent_timing marker=source_resolved session_id=%s source_type=%s elapsed=%.3f",
+                session_id,
+                source_type,
+                time.perf_counter() - started_at,
+            )
 
-            # Capture preview metrics for timing log
-            event_type = event.get("event")
-            if event_type == "preview_ready":
-                pd = event.get("data", {})
-                preview_total_rows = int(pd.get("total_rows", 0))
-                preview_rows_rated = len(pd.get("preview_rows", []))
+            # Auto-failover: batch shipping commands require FilterSpec tools.
+            # If the session is in interactive mode, switch to batch mode and
+            # rebuild so resolve_filter_intent/ship_command_pipeline are available.
+            if (
+                session.interactive_shipping
+                and is_batch_shipping_request(content)
+            ):
+                logger.info(
+                    "Switching session %s from interactive to batch mode for "
+                    "batch shipping command.",
+                    session_id,
+                )
+                session.interactive_shipping = False
 
-    except Exception as e:
-        logger.error("Agent processing failed for session %s: %s", session_id, e)
-        _mark_first_event("error")
-        await queue.put({"event": "error", "data": {"message": str(e)}})
+            # Create or reuse agent (persists across messages)
+            agent_rebuilt = await _ensure_agent(session, source_info)
+            logger.info(
+                "agent_timing marker=agent_ready session_id=%s agent_rebuilt=%s elapsed=%.3f",
+                session_id,
+                agent_rebuilt,
+                time.perf_counter() - started_at,
+            )
+
+            # Bridge tool events to the SSE queue.
+            def _emit_to_queue(event_type: str, data: dict) -> None:
+                nonlocal artifact_emitted
+                _mark_first_event("tool_emit")
+                _track_preview_event(event_type, data, "tool_emit")
+                if hide_transient_chat and event_type in artifact_events:
+                    artifact_emitted = True
+                queue.put_nowait({"event": event_type, "data": data})
+
+            session.agent.emitter_bridge.callback = _emit_to_queue
+            session.agent.emitter_bridge.last_user_message = content
+            if is_shipping_request(content):
+                session.agent.emitter_bridge.last_shipping_command = content
+            elif is_confirmation_response(content):
+                # Keep prior shipping command context for one confirmation turn.
+                pass
+            else:
+                session.agent.emitter_bridge.last_shipping_command = None
+            session.agent.emitter_bridge.confirmed_resolutions = (
+                session.confirmed_resolutions
+            )
+            try:
+                # Process message — SDK maintains conversation context internally.
+                async for event in session.agent.process_message_stream(content):
+                    event_type = event.get("event")
+                    _mark_first_event(str(event_type or "unknown"))
+                    if isinstance(event_type, str):
+                        _track_preview_event(
+                            event_type,
+                            event.get("data", {}),
+                            "agent_stream",
+                        )
+                    if hide_transient_chat and event_type in artifact_events:
+                        artifact_emitted = True
+
+                    if event_type == "agent_message":
+                        text = event.get("data", {}).get("text", "")
+                        if hide_transient_chat:
+                            if text:
+                                buffered_agent_messages.append(text)
+                            continue
+                        if text:
+                            _session_manager.add_message(session_id, "assistant", text)
+
+                    await queue.put(event)
+
+                if hide_transient_chat:
+                    if artifact_emitted:
+                        logger.info(
+                            "agent_transient_chat_suppressed session_id=%s buffered=%d",
+                            session_id,
+                            len(buffered_agent_messages),
+                        )
+                    elif buffered_agent_messages:
+                        final_text = buffered_agent_messages[-1]
+                        if final_text:
+                            await queue.put(
+                                {
+                                    "event": "agent_message",
+                                    "data": {"text": final_text},
+                                }
+                            )
+                            _session_manager.add_message(
+                                session_id,
+                                "assistant",
+                                final_text,
+                            )
+            finally:
+                session.agent.emitter_bridge.callback = None
+
+        except Exception as e:
+            logger.error("Agent processing failed for session %s: %s", session_id, e)
+            _mark_first_event("error")
+            await queue.put(
+                {
+                    "event": "error",
+                    "data": {"message": str(e)},
+                }
+            )
 
     # Signal end of response
     await queue.put({"event": "done", "data": {}})
 
-    # Timing log
     elapsed = time.perf_counter() - started_at
     ttfb = (first_event_at - started_at) if first_event_at is not None else -1.0
     agent_turns_count = (
@@ -245,17 +428,43 @@ async def _process_agent_message(session_id: str, content: str) -> None:
         else 0
     )
     logger.info(
-        "agent_timing marker=done_emitted session_id=%s "
-        "agent_turns_count=%d preview_rows_rated=%d preview_total_rows=%d "
-        "first_event_source=%s ttfb=%.3f elapsed=%.3f",
+        "agent_timing marker=done_emitted session_id=%s source_type=%s "
+        "agent_rebuilt=%s agent_turns_count=%d "
+        "preview_rows_rated=%d preview_total_rows=%d batch_concurrency=%s "
+        "interactive_shipping=%s first_event_source=%s ttfb=%.3f elapsed=%.3f",
         session_id,
+        source_type,
+        agent_rebuilt,
         agent_turns_count,
         preview_rows_rated,
         preview_total_rows,
+        os.environ.get("BATCH_CONCURRENCY", "5"),
+        session.interactive_shipping,
         first_event_source,
         ttfb,
         elapsed,
     )
+
+
+def _schedule_agent_message(session_id: str, content: str) -> None:
+    """Schedule agent message processing and bind task to session lifecycle."""
+    session = _session_manager.get_or_create_session(session_id)
+    task = asyncio.create_task(_process_agent_message(session_id, content))
+    session.message_tasks.add(task)
+
+    def _on_done(done_task: asyncio.Task[None]) -> None:
+        session.message_tasks.discard(done_task)
+        try:
+            done_task.result()
+        except asyncio.CancelledError:
+            logger.info("Agent message task cancelled for session %s", session_id)
+        except Exception:
+            logger.exception(
+                "Unhandled exception in agent message task for session %s",
+                session_id,
+            )
+
+    task.add_done_callback(_on_done)
 
 
 async def _event_generator(
@@ -338,12 +547,13 @@ async def create_conversation(
     # with FastAPI's request lifecycle).
     try:
         gw = get_data_gateway_if_connected()
-        if gw is not None:
-            source_info = await gw.get_source_info()
-            if source_info is not None and not session.interactive_shipping:
-                session.prewarm_task = asyncio.create_task(
-                    _prewarm_session_agent(session_id)
-                )
+        if gw is not None and not session.interactive_shipping:
+            # Intentionally avoid awaiting get_source_info() here. Even with an
+            # existing connected client, MCP tool calls in request scope can
+            # conflict with FastAPI/AnyIO cancellation semantics in tests.
+            session.prewarm_task = asyncio.create_task(
+                _prewarm_session_agent(session_id)
+            )
     except Exception as e:
         logger.warning("Failed to schedule agent prewarm for %s: %s", session_id, e)
 
@@ -362,7 +572,6 @@ async def create_conversation(
 async def send_message(
     session_id: str,
     payload: SendMessageRequest,
-    background_tasks: BackgroundTasks,
 ) -> SendMessageResponse:
     """Send a user message to the conversation agent.
 
@@ -372,7 +581,6 @@ async def send_message(
     Args:
         session_id: Conversation session ID.
         payload: User message request body.
-        background_tasks: FastAPI background task manager.
 
     Returns:
         SendMessageResponse confirming acceptance.
@@ -390,14 +598,12 @@ async def send_message(
     # Store user message in history
     _session_manager.add_message(session_id, "user", payload.content)
 
-    # Process via agent in background
-    background_tasks.add_task(_process_agent_message, session_id, payload.content)
+    # Process via app-level task (not request-scoped background task)
+    _schedule_agent_message(session_id, payload.content)
 
     return SendMessageResponse(status="accepted", session_id=session_id)
 
 
-# UPS paperless document upload — allowed file extensions.
-_ALLOWED_EXTENSIONS = {"pdf", "doc", "docx", "xls", "xlsx", "gif", "jpg", "jpeg", "png", "tif"}
 # UPS max file size: 10 MB.
 _MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
@@ -408,7 +614,6 @@ _MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 )
 async def upload_document(
     session_id: str,
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     document_type: str = Form(...),
     notes: str = Form(""),
@@ -424,7 +629,6 @@ async def upload_document(
         file: Uploaded file (multipart).
         document_type: UPS document type code (e.g. '002').
         notes: Optional notes to include in the agent message.
-        background_tasks: FastAPI background task manager.
 
     Returns:
         UploadDocumentResponse with file metadata.
@@ -445,11 +649,15 @@ async def upload_document(
 
     # Validate file extension
     file_name = file.filename or "document"
-    ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
-    if ext not in _ALLOWED_EXTENSIONS:
+    file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+    normalized_ext = normalize_paperless_extension(file_ext)
+    if normalized_ext is None or file_ext not in UPS_PAPERLESS_ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file format '{ext}'. Allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))}",
+            detail=(
+                f"Unsupported file format '{file_ext}'. "
+                f"Allowed: {', '.join(UPS_PAPERLESS_UI_ACCEPTED_FORMATS)}"
+            ),
         )
 
     # Read and validate file size
@@ -467,7 +675,7 @@ async def upload_document(
     attachment_store.stage(session_id, {
         "file_content_base64": file_content_base64,
         "file_name": file_name,
-        "file_format": ext,
+        "file_format": normalized_ext,
         "document_type": document_type,
         "file_size_bytes": len(file_bytes),
     })
@@ -476,17 +684,17 @@ async def upload_document(
     doc_type_label = DOCUMENT_TYPE_LABELS.get(document_type, f"Type {document_type}")
     notes_suffix = f" Notes: {notes}" if notes.strip() else ""
     agent_message = (
-        f"[DOCUMENT_ATTACHED: {file_name} ({ext}, {doc_type_label})]{notes_suffix}"
+        f"[DOCUMENT_ATTACHED: {file_name} ({normalized_ext}, {doc_type_label})]{notes_suffix}"
     )
 
     # Store in conversation history and trigger agent processing
     _session_manager.add_message(session_id, "user", agent_message)
-    background_tasks.add_task(_process_agent_message, session_id, agent_message)
+    _schedule_agent_message(session_id, agent_message)
 
     return UploadDocumentResponse(
         success=True,
         file_name=file_name,
-        file_format=ext,
+        file_format=normalized_ext,
         file_size_bytes=len(file_bytes),
     )
 
@@ -569,8 +777,22 @@ async def delete_conversation(session_id: str) -> Response:
 
     # Stop prewarm and agent before removing session
     await _session_manager.cancel_session_prewarm_task(session_id)
+    await _session_manager.cancel_session_message_tasks(session_id)
     await _session_manager.stop_session_agent(session_id)
     _session_manager.remove_session(session_id)
     _event_queues.pop(session_id, None)
     logger.info("Deleted conversation session: %s", session_id)
     return Response(status_code=204)
+
+
+async def shutdown_conversation_runtime() -> None:
+    """Shutdown hook to stop all session-scoped async work."""
+    for session_id in list(_session_manager.list_sessions()):
+        session = _session_manager.get_session(session_id)
+        if session is not None:
+            session.terminating = True
+        await _session_manager.cancel_session_prewarm_task(session_id)
+        await _session_manager.cancel_session_message_tasks(session_id)
+        await _session_manager.stop_session_agent(session_id)
+        _session_manager.remove_session(session_id)
+        _event_queues.pop(session_id, None)

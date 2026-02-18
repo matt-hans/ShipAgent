@@ -13,7 +13,8 @@ import sys
 import time as _time
 import uuid
 import warnings
-from datetime import UTC, datetime
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta, timezone
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
@@ -44,31 +45,18 @@ from src.api.routes import (
     saved_data_sources,
 )
 from src.db.connection import init_db
+from src.db.models import JobStatus
 from src.errors import ShipAgentError
+from src.services.batch_engine import BatchEngine
+from src.services.ups_mcp_client import UPSMCPClient
 
 # Frontend build directory
 FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
 logger = logging.getLogger(__name__)
 
-# Module-level state for health endpoint
+# Module-level state for health endpoint and watchdog
 _startup_time: float = 0.0
 _watchdog_service = None  # Set by watchdog startup in lifespan
-
-# Create FastAPI app
-app = FastAPI(
-    title="ShipAgent API",
-    description="Natural language interface for batch shipment processing",
-    version="0.1.0",
-)
-
-# CORS middleware for development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 def _ensure_agent_sdk_available() -> None:
@@ -261,14 +249,177 @@ async def _process_watched_file(file_path: str, config) -> None:
             })
 
 
-@app.on_event("startup")
-async def startup_event() -> None:
-    """Initialize database and start watchdog if configured."""
+def _parse_iso_timestamp(value: str | None) -> datetime | None:
+    """Parse ISO8601 timestamp to UTC datetime."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _reap_orphan_pending_jobs(job_service: object) -> int:
+    """Delete stale pending jobs with zero rows (crash leftovers)."""
+    from src.services.job_service import JobService
+
+    js: JobService = job_service  # type: ignore[assignment]
+    raw_hours = os.environ.get("ORPHAN_JOB_REAPER_HOURS", "6")
+    try:
+        max_age_hours = float(raw_hours)
+    except ValueError:
+        max_age_hours = 6.0
+    if max_age_hours <= 0:
+        return 0
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    try:
+        pending_jobs = js.list_jobs(status=JobStatus.pending, limit=500)
+    except Exception as e:
+        logger.warning("Failed listing pending jobs for orphan reaper: %s", e)
+        return 0
+
+    deleted = 0
+    for job in pending_jobs:
+        created_at = _parse_iso_timestamp(getattr(job, "created_at", None))
+        if created_at is None or created_at > cutoff:
+            continue
+        try:
+            rows = js.get_rows(job.id)
+        except Exception:
+            continue
+        if rows:
+            continue
+        try:
+            if js.delete_job(job.id):
+                deleted += 1
+        except Exception as e:
+            logger.warning("Failed deleting orphan pending job %s: %s", job.id, e)
+    return deleted
+
+
+async def run_startup_recovery(db: object, job_service: object) -> None:
+    """Run crash recovery on startup: recover in-flight rows, then clean staging.
+
+    Order matters: recovery MUST run before staging cleanup, because recovery
+    may need staging labels for verification. Cleanup only removes staging
+    files for jobs with no in_flight/needs_review rows.
+
+    Creates a temporary UPSMCPClient for recovery so track_package works.
+    Falls back gracefully if UPS MCP is unavailable (rows stay in_flight
+    for next restart attempt).
+
+    Args:
+        db: Database session.
+        job_service: JobService instance for querying jobs and rows.
+    """
+    from src.services.job_service import JobService
+
+    js: JobService = job_service  # type: ignore[assignment]
+
+    # 0. Reap stale zero-row pending jobs (created before crash, never populated).
+    try:
+        deleted_orphans = _reap_orphan_pending_jobs(js)
+        if deleted_orphans:
+            logger.info("Orphan pending jobs reaped: %d", deleted_orphans)
+    except Exception as e:
+        logger.warning("Orphan pending job reaper failed (non-blocking): %s", e)
+
+    # 1. Find interrupted jobs (running or paused)
+    interrupted: list = []
+    for st in (JobStatus.running,):
+        try:
+            interrupted.extend(js.list_jobs(status=st, limit=500))
+        except Exception:
+            pass  # Status may not exist in older schemas
+
+    # 2. Recover in-flight rows for each interrupted job
+    jobs_needing_recovery = []
+    for job in interrupted:
+        rows = js.get_rows(job.id)
+        in_flight = [r for r in rows if r.status == "in_flight"]
+        if in_flight:
+            jobs_needing_recovery.append((job, rows))
+
+    if jobs_needing_recovery:
+        # Create a real UPS MCP client for recovery (track_package needs it)
+        ups_client = None
+        try:
+            ups_client = UPSMCPClient()
+            await ups_client.connect()
+        except Exception as e:
+            logger.warning(
+                "UPS MCP unavailable for recovery (rows stay in_flight): %s", e,
+            )
+            ups_client = None
+
+        for job, rows in jobs_needing_recovery:
+            try:
+                engine = BatchEngine(
+                    ups_service=ups_client,
+                    db_session=db,
+                    account_number="",
+                )
+                recovery_result = await engine.recover_in_flight_rows(
+                    job.id, rows,
+                )
+                logger.info(
+                    "Job %s recovery: %d recovered, %d needs_review, %d unresolved",
+                    job.id,
+                    recovery_result["recovered"],
+                    recovery_result["needs_review"],
+                    recovery_result["unresolved"],
+                )
+                if recovery_result.get("details"):
+                    logger.warning(
+                        "Rows requiring operator review for job %s: %s",
+                        job.id,
+                        recovery_result["details"],
+                    )
+            except Exception as e:
+                logger.error(
+                    "Recovery failed for job %s (non-blocking): %s",
+                    job.id, e,
+                )
+
+        # Clean up the temporary UPS client
+        if ups_client is not None:
+            try:
+                await ups_client.disconnect()
+            except Exception:
+                pass
+
+    # 3. Clean up orphaned staging labels (skips jobs with unresolved rows)
+    try:
+        orphans = BatchEngine.cleanup_staging(js)
+        if orphans:
+            logger.info("Cleaned up %d orphaned staging labels", orphans)
+    except Exception as e:
+        logger.error("Staging cleanup failed (non-blocking): %s", e)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Async lifespan: startup recovery + shutdown cleanup."""
     global _startup_time, _watchdog_service
 
+    from src.db.connection import get_db_context
+    from src.services.gateway_provider import shutdown_gateways
+    from src.services.job_service import JobService
+
+    # --- Startup ---
     _startup_time = _time.time()
     _ensure_agent_sdk_available()
     warnings.filterwarnings("default", category=DeprecationWarning, module="claude_agent_sdk")
+
+    # Fail fast if filter token secret is missing or too short
+    from src.orchestrator.filter_config import validate_filter_config
+
+    validate_filter_config()
+
     init_db()
 
     allow_multi_worker = os.environ.get("SHIPAGENT_ALLOW_MULTI_WORKER", "false").lower()
@@ -279,6 +430,21 @@ async def startup_event() -> None:
             "shared state is configured. Set SHIPAGENT_ALLOW_MULTI_WORKER=true "
             "to suppress this warning."
         )
+
+    queue_mode = os.environ.get("CONVERSATION_TASK_QUEUE_MODE", "memory").lower()
+    if queue_mode in {"", "memory", "in-memory", "in_memory"}:
+        logger.warning(
+            "Conversation task queue mode is in-memory; pending agent responses "
+            "are not crash-durable. Use an external queue for hard-failure durability."
+        )
+
+    # Run crash recovery (non-blocking — failures logged, not propagated)
+    try:
+        with get_db_context() as db:
+            js = JobService(db)
+            await run_startup_recovery(db, js)
+    except Exception as e:
+        logger.error("Startup recovery failed (non-blocking): %s", e)
 
     # Start watchdog if configured
     config_path = os.environ.get("SHIPAGENT_CONFIG_PATH")
@@ -306,18 +472,33 @@ async def startup_event() -> None:
             await _watchdog_service.start(process_callback=_process_watched_file)
             logger.info("Watchdog started with %d watch folders", len(cfg.watch_folders))
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    """Clean up watchdog and MCP gateways on shutdown."""
-    global _watchdog_service
-    from src.services.gateway_provider import shutdown_gateways
-
+    # --- Shutdown ---
     if _watchdog_service:
         await _watchdog_service.stop()
         _watchdog_service = None
 
+    await conversations.shutdown_conversation_runtime()
     await shutdown_gateways()
+
+
+# Create FastAPI app with async lifespan for startup recovery + shutdown cleanup
+app = FastAPI(
+    title="ShipAgent API",
+    description="Natural language interface for batch shipment processing",
+    version="0.1.0",
+    lifespan=lifespan,
+)
+
+# CORS middleware for development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.exception_handler(ShipAgentError)

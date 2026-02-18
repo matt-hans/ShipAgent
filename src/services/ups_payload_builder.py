@@ -209,9 +209,16 @@ def build_ship_to(order_data: dict[str, Any]) -> dict[str, str]:
         last = order_data.get("ship_to_last_name", "")
         name = f"{first} {last}".strip()
 
+    normalized_name = truncate_address(name, UPS_ADDRESS_MAX_LEN) or "Recipient"
+    attention_name = (
+        order_data.get("ship_to_attention_name")
+        or order_data.get("ship_to_company")
+        or normalized_name
+    )
+
     return {
-        "name": truncate_address(name, UPS_ADDRESS_MAX_LEN) or "Recipient",
-        "attentionName": truncate_address(order_data.get("ship_to_company"), UPS_ADDRESS_MAX_LEN),
+        "name": normalized_name,
+        "attentionName": truncate_address(attention_name, UPS_ADDRESS_MAX_LEN),
         "phone": normalize_phone(order_data.get("ship_to_phone")),
         "addressLine1": truncate_address(order_data.get("ship_to_address1", "")),
         "addressLine2": truncate_address(order_data.get("ship_to_address2")),
@@ -637,6 +644,7 @@ def _is_truthy(value: Any) -> bool:
 def build_ups_api_payload(
     simplified: dict[str, Any],
     account_number: str,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     """Transform simplified format to full UPS ShipmentRequest.
 
@@ -645,6 +653,9 @@ def build_ups_api_payload(
             Keys: shipper, shipTo, packages, serviceCode, description,
             reference, reference2, saturdayDelivery, signatureRequired.
         account_number: UPS account number for billing.
+        idempotency_key: Optional idempotency key for TransactionReference.
+            When provided, included as CustomerContext for exactly-once
+            shipment creation and crash recovery audit.
 
     Returns:
         Full UPS API ShipmentRequest wrapper.
@@ -811,9 +822,13 @@ def build_ups_api_payload(
     if options:
         shipment["ShipmentServiceOptions"] = options
 
+    request: dict[str, Any] = {"RequestOption": "nonvalidate"}
+    if idempotency_key:
+        request["TransactionReference"] = {"CustomerContext": idempotency_key}
+
     return {
         "ShipmentRequest": {
-            "Request": {"RequestOption": "nonvalidate"},
+            "Request": request,
             "Shipment": shipment,
             "LabelSpecification": {
                 "LabelImageFormat": {"Code": DEFAULT_LABEL_FORMAT},
@@ -829,12 +844,18 @@ def build_ups_api_payload(
 def build_ups_rate_payload(
     simplified: dict[str, Any],
     account_number: str,
+    request_option: str = "Rate",
+    include_service: bool = True,
 ) -> dict[str, Any]:
     """Transform simplified format to full UPS RateRequest.
 
     Args:
         simplified: Simplified payload from build_shipment_request().
         account_number: UPS account number.
+        request_option: UPS rating request option ("Rate", "Shop",
+            or "Shoptimeintransit").
+        include_service: Whether to include Shipment.Service in payload.
+            Use False with Shop requests to discover all available services.
 
     Returns:
         Full UPS API RateRequest wrapper.
@@ -930,7 +951,7 @@ def build_ups_rate_payload(
         },
     }
 
-    if service_code:
+    if include_service and service_code:
         shipment["Service"] = {"Code": service_code}
 
     # Delivery confirmation affects rate
@@ -963,7 +984,7 @@ def build_ups_rate_payload(
 
     return {
         "RateRequest": {
-            "Request": {"RequestOption": "Rate"},
+            "Request": {"RequestOption": request_option},
             "Shipment": shipment,
         }
     }

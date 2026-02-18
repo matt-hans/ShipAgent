@@ -26,22 +26,19 @@ async def get_source_info(ctx: Context) -> dict:
 
     await ctx.info("Retrieving source info")
 
-    # Build signature from schema if available.
-    # Mirrors DataSourceService.get_source_signature() format:
+    # Build signature from schema if available as:
     # full SHA-256 hex digest of "name:type:nullable|..." (no truncation).
     db = ctx.request_context.lifespan_context["db"]
     signature = None
     columns = []
     try:
         schema_rows = db.execute("DESCRIBE imported_data").fetchall()
-        # col[2] is "YES" or "NO" from DuckDB DESCRIBE — use real nullability,
-        # matching schema_tools.get_schema() at line 42 and
-        # DataSourceService.get_source_signature() at line 443.
+        # col[2] is "YES" or "NO" from DuckDB DESCRIBE — use real nullability.
         columns = [
             {"name": col[0], "type": col[1], "nullable": col[2] == "YES"}
             for col in schema_rows
         ]
-        # Match DataSourceService fingerprint format exactly:
+        # Fingerprint format:
         # "name:type:nullable_int|name:type:nullable_int|..."
         schema_parts = [
             f"{c['name']}:{c['type']}:{int(c['nullable'])}"
@@ -62,6 +59,9 @@ async def get_source_info(ctx: Context) -> dict:
         "row_count": current_source.get("row_count", 0),
         "columns": columns,
         "signature": signature,
+        "deterministic_ready": current_source.get("deterministic_ready", True),
+        "row_key_strategy": current_source.get("row_key_strategy", "source_row_num"),
+        "row_key_columns": current_source.get("row_key_columns", []),
     }
 
 
@@ -115,6 +115,9 @@ async def import_records(
     ctx.request_context.lifespan_context["current_source"] = {
         "type": source_label,
         "row_count": row_count,
+        "deterministic_ready": True,
+        "row_key_strategy": "source_row_num",
+        "row_key_columns": [SOURCE_ROW_NUM_COLUMN],
     }
 
     await ctx.info(f"Imported {row_count} records with {len(columns)} columns")
@@ -129,8 +132,7 @@ async def import_records(
 async def clear_source(ctx: Context) -> dict:
     """Clear the active data source, dropping imported data.
 
-    Mirrors DataSourceService.disconnect() behavior:
-    drops imported_data table, clears current_source metadata,
+    Drops imported_data table, clears current_source metadata,
     and resets type_overrides to prevent stale CASTs.
 
     Returns:

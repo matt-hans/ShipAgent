@@ -92,6 +92,7 @@ from src.mcp.data_source.tools.commodity_tools import (
     import_commodities,
     get_commodities_bulk,
 )
+from src.mcp.data_source.tools.sample_tools import get_column_samples
 
 # EDI tools require pydifact — import lazily so missing dependency
 # does not break CSV/Excel/Database operations.
@@ -121,6 +122,7 @@ mcp.tool()(import_records)
 mcp.tool()(clear_source)
 mcp.tool()(import_commodities)
 mcp.tool()(get_commodities_bulk)
+mcp.tool()(get_column_samples)
 if _edi_available:
     mcp.tool()(import_edi)
 

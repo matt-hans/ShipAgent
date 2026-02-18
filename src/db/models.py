@@ -12,6 +12,7 @@ from uuid import uuid4
 from sqlalchemy import (
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -55,14 +56,16 @@ class JobStatus(str, Enum):
 class RowStatus(str, Enum):
     """Status values for individual rows within a job.
 
-    Enables retry of failed rows without reprocessing successful ones.
+    Lifecycle: pending → in_flight → completed/failed
+               in_flight → needs_review (crash recovery, ambiguous outcome)
     """
 
     pending = "pending"
-    processing = "processing"
+    in_flight = "in_flight"
     completed = "completed"
     failed = "failed"
     skipped = "skipped"
+    needs_review = "needs_review"
 
 
 class LogLevel(str, Enum):
@@ -197,7 +200,7 @@ class JobRow(Base):
         id: UUID primary key
         job_id: Foreign key to parent job
         row_number: 1-based row number from source data
-        row_checksum: SHA-256 hash of row data for integrity verification
+        row_checksum: MD5 hash of row data for integrity verification
         status: Current row status
         tracking_number: UPS tracking number if shipment created
         label_path: File path to saved shipping label
@@ -235,6 +238,20 @@ class JobRow(Base):
     duties_taxes_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
     charge_breakdown: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Execution determinism — idempotency and recovery
+    idempotency_key: Mapped[Optional[str]] = mapped_column(
+        String(200), nullable=True, index=True
+    )
+    ups_shipment_id: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True
+    )
+    ups_tracking_number: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True
+    )
+    recovery_attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
     # Error info (if failed)
     error_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -253,6 +270,8 @@ class JobRow(Base):
         UniqueConstraint("job_id", "row_number", name="uq_job_row_number"),
         Index("idx_job_rows_job_id", "job_id"),
         Index("idx_job_rows_status", "status"),
+        Index("idx_job_rows_idempotency", "idempotency_key"),
+        Index("idx_job_rows_tracking", "ups_tracking_number"),
     )
 
     def __repr__(self) -> str:
@@ -308,6 +327,63 @@ class AuditLog(Base):
 
     def __repr__(self) -> str:
         return f"<AuditLog(id={self.id!r}, job_id={self.job_id!r}, level={self.level!r}, type={self.event_type!r})>"
+
+
+class WriteBackTask(Base):
+    """Durable write-back task for tracking number persistence.
+
+    Each successful shipment enqueues a task; the worker processes
+    them with per-task retry and dead-letter semantics. Survives
+    crashes because tasks are DB-persisted before write-back runs.
+
+    Attributes:
+        id: UUID primary key.
+        job_id: Foreign key to parent job.
+        row_number: 1-based row number within the job.
+        tracking_number: UPS tracking number to write back.
+        shipped_at: ISO8601 timestamp of shipment creation.
+        status: Task status (pending, completed, dead_letter).
+        retry_count: Number of failed attempts so far.
+        created_at: ISO8601 timestamp of task creation.
+    """
+
+    __tablename__ = "write_back_tasks"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    row_number: Mapped[int] = mapped_column(nullable=False)
+    tracking_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    shipped_at: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending"
+    )
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+    created_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+
+    # Indexes
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "row_number",
+            name="uq_write_back_tasks_job_row_number",
+        ),
+        Index("idx_wb_tasks_status", "status"),
+        Index("idx_wb_tasks_job_id", "job_id"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<WriteBackTask(id={self.id!r}, job_id={self.job_id!r}, "
+            f"row={self.row_number}, status={self.status!r})>"
+        )
 
 
 class SavedDataSource(Base):

@@ -221,6 +221,36 @@ describe('CommandCenter interactive mode UX', () => {
     expect(refineButton?.disabled).toBe(true);
   });
 
+  it('does not render preview UI from incremental preview_partial events', () => {
+    mockConversation = buildBaseConversation({
+      events: [
+        {
+          id: 'evt-1',
+          type: 'preview_partial',
+          data: {
+            job_id: 'job-1',
+            total_rows: 2,
+            rows_rated: 1,
+            is_final: false,
+            preview_rows: [
+              {
+                row_number: 1,
+                recipient_name: 'John Smith',
+                city_state: 'Austin, TX',
+                estimated_cost_cents: 1200,
+              },
+            ],
+          },
+          timestamp: new Date(),
+        },
+      ],
+    });
+
+    render(<CommandCenter activeJob={null} />);
+
+    expect(screen.queryByText('Confirm & Execute')).toBeNull();
+  });
+
   it('removes superseded pending preview job when refinement returns a new job id', async () => {
     const firstPreviewEvent = {
       id: 'evt-1',

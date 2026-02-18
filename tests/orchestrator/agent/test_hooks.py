@@ -752,6 +752,86 @@ class TestValidateCancelPickup:
         assert "orchestrator tool" in result["hookSpecificOutput"]["permissionDecisionReason"]
 
 
+class TestValidateLocatorHooks:
+    """Tests for locator safety hooks — deterministic denial."""
+
+    def test_find_locations_hook_matcher_exists(self):
+        """Hook matchers must include mcp__ups__find_locations."""
+        matchers = create_hook_matchers(interactive_shipping=False)
+        pre_matchers = matchers["PreToolUse"]
+        found = [m for m in pre_matchers if m.matcher == "mcp__ups__find_locations"]
+        assert len(found) == 1, "Missing mcp__ups__find_locations hook matcher"
+
+    def test_get_service_center_facilities_hook_matcher_exists(self):
+        """Hook matchers must include mcp__ups__get_service_center_facilities."""
+        matchers = create_hook_matchers(interactive_shipping=False)
+        pre_matchers = matchers["PreToolUse"]
+        found = [
+            m
+            for m in pre_matchers
+            if m.matcher == "mcp__ups__get_service_center_facilities"
+        ]
+        assert len(found) == 1, (
+            "Missing mcp__ups__get_service_center_facilities hook matcher"
+        )
+
+    @pytest.mark.asyncio
+    async def test_find_locations_hook_always_denies(self):
+        """Direct mcp__ups__find_locations is unconditionally denied."""
+        from src.orchestrator.agent.hooks import validate_find_locations
+
+        result = await validate_find_locations(
+            {"tool_name": "mcp__ups__find_locations", "tool_input": {}},
+            "test-id",
+            None,
+        )
+        assert result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+        assert "orchestrator tool" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+    @pytest.mark.asyncio
+    async def test_get_service_center_facilities_hook_always_denies(self):
+        """Direct mcp__ups__get_service_center_facilities is denied."""
+        from src.orchestrator.agent.hooks import validate_get_service_center_facilities
+
+        result = await validate_get_service_center_facilities(
+            {
+                "tool_name": "mcp__ups__get_service_center_facilities",
+                "tool_input": {},
+            },
+            "test-id",
+            None,
+        )
+        assert result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+        assert "orchestrator tool" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+class TestValidateLandedCostHooks:
+    """Tests for landed-cost safety hook — deterministic denial."""
+
+    def test_landed_cost_hook_matcher_exists(self):
+        """Hook matchers must include mcp__ups__get_landed_cost_quote."""
+        matchers = create_hook_matchers(interactive_shipping=False)
+        pre_matchers = matchers["PreToolUse"]
+        found = [
+            m for m in pre_matchers
+            if m.matcher == "mcp__ups__get_landed_cost_quote"
+        ]
+        assert len(found) == 1, "Missing mcp__ups__get_landed_cost_quote hook matcher"
+
+    @pytest.mark.asyncio
+    async def test_landed_cost_hook_always_denies(self):
+        """Direct mcp__ups__get_landed_cost_quote is denied."""
+        from src.orchestrator.agent.hooks import validate_landed_cost_quote
+
+        result = await validate_landed_cost_quote(
+            {"tool_name": "mcp__ups__get_landed_cost_quote", "tool_input": {}},
+            "test-id",
+            None,
+        )
+        assert result.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+        assert "orchestrator tool" in result["hookSpecificOutput"]["permissionDecisionReason"]
+
+
 class TestLogToStderr:
     """Tests for _log_to_stderr fallback behavior."""
 

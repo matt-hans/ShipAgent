@@ -1,9 +1,8 @@
 /**
  * Inline card for UPS location search results in the chat thread.
  *
- * Renders numbered location entries with expand/collapse detail panels
- * (hours, full address, phone) and a show-more toggle. Service center
- * facilities render as a simpler numbered list. Uses teal domain color.
+ * Renders numbered location/facility entries with expand/collapse detail
+ * panels and full flattened UPS response fields for each item.
  */
 
 import * as React from 'react';
@@ -11,11 +10,23 @@ import { cn } from '@/lib/utils';
 import type { LocationResult } from '@/types/api';
 import { MapPinIcon, ChevronDownIcon, PhoneIcon, HistoryIcon } from '@/components/ui/icons';
 
-const COLLAPSED_COUNT = 5;
+type LocationItem = NonNullable<LocationResult['locations']>[number];
+type FacilityItem = NonNullable<LocationResult['facilities']>[number];
+
+type DisplayItem = {
+  id: string;
+  title: string;
+  subtitle: string;
+  address?: Record<string, string> | string;
+  phone?: string;
+  hours?: Record<string, string>;
+  details?: Record<string, unknown>;
+};
 
 /** Extract multi-line address parts from the UPS address record. */
 function formatAddressLines(addr: Record<string, string>): string[] {
   return [
+    addr.ConsigneeName || '',
     addr.AddressLine || addr.line || addr.address_line || '',
     [addr.City || addr.city, addr.StateProvinceCode || addr.state]
       .filter(Boolean)
@@ -32,6 +43,7 @@ function formatAddressLines(addr: Record<string, string>): string[] {
 /** Compact single-line address for collapsed rows. */
 function formatAddressCompact(addr: Record<string, string>): string {
   return [
+    addr.ConsigneeName,
     addr.AddressLine || addr.line || addr.address_line,
     [addr.City || addr.city, addr.StateProvinceCode || addr.state]
       .filter(Boolean)
@@ -42,18 +54,91 @@ function formatAddressCompact(addr: Record<string, string>): string {
     .join(' · ');
 }
 
+function stringifyDetailValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function flattenDetails(
+  value: unknown,
+  prefix: string,
+  rows: Array<[string, string]>
+): void {
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      rows.push([prefix, '[]']);
+      return;
+    }
+    value.forEach((item, index) => {
+      flattenDetails(item, `${prefix}[${index}]`, rows);
+    });
+    return;
+  }
+
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const entries = Object.entries(record);
+    if (entries.length === 0) {
+      rows.push([prefix, '{}']);
+      return;
+    }
+    entries.forEach(([key, item]) => {
+      const path = prefix ? `${prefix}.${key}` : key;
+      flattenDetails(item, path, rows);
+    });
+    return;
+  }
+
+  rows.push([prefix, stringifyDetailValue(value)]);
+}
+
+function collectDetails(details?: Record<string, unknown>): Array<[string, string]> {
+  if (!details) return [];
+  const rows: Array<[string, string]> = [];
+  flattenDetails(details, '', rows);
+  return rows.filter(([key]) => key.trim().length > 0);
+}
+
 export function LocationCard({ data }: { data: LocationResult }) {
-  const [expandedLocations, setExpandedLocations] = React.useState<Set<number>>(new Set());
-  const [isListExpanded, setIsListExpanded] = React.useState(false);
+  const [expandedItems, setExpandedItems] = React.useState<Set<number>>(new Set());
 
   const isServiceCenters = data.action === 'service_centers';
   const title = isServiceCenters ? 'UPS Service Centers' : 'UPS Locations';
-  const items = isServiceCenters ? data.facilities : data.locations;
-  const count = items?.length ?? 0;
+  const items: DisplayItem[] = React.useMemo(() => {
+    if (isServiceCenters) {
+      return (data.facilities ?? []).map((fac: FacilityItem, index) => ({
+        id: `facility-${index}-${fac.name || 'unknown'}`,
+        title: fac.name || `Service Center ${index + 1}`,
+        subtitle: fac.address || 'No address provided',
+        address: fac.address,
+        phone: fac.phone || fac.phones?.[0] || '',
+        hours: fac.hours,
+        details: fac.details,
+      }));
+    }
 
-  /** Toggle individual location detail panel. */
-  function toggleLocation(index: number) {
-    setExpandedLocations((prev) => {
+    return (data.locations ?? []).map((loc: LocationItem, index) => ({
+      id: `location-${index}-${loc.id || 'unknown'}`,
+      title: loc.address?.ConsigneeName || `Location ${index + 1}`,
+      subtitle: formatAddressCompact(loc.address) || `Location ID ${loc.id || 'N/A'}`,
+      address: loc.address,
+      phone: loc.phone || loc.phones?.[0] || '',
+      hours: loc.hours,
+      details: loc.details,
+    }));
+  }, [data.facilities, data.locations, isServiceCenters]);
+  const count = items.length;
+
+  /** Toggle individual detail panel. */
+  function toggleItem(index: number) {
+    setExpandedItems((prev) => {
       const next = new Set(prev);
       if (next.has(index)) {
         next.delete(index);
@@ -80,33 +165,31 @@ export function LocationCard({ data }: { data: LocationResult }) {
         <p className="text-xs text-muted-foreground">No locations found for the given criteria.</p>
       )}
 
-      {/* Locations list */}
-      {data.locations && data.locations.length > 0 && (
-        <div className={cn(
-          'rounded-md border border-border/50 overflow-hidden',
-          isListExpanded && data.locations.length > COLLAPSED_COUNT && 'max-h-[400px] overflow-y-auto scrollable'
-        )}>
-          {(isListExpanded ? data.locations : data.locations.slice(0, COLLAPSED_COUNT)).map((loc, i) => {
-            const isExpanded = expandedLocations.has(i);
+      {/* Locations / facilities list */}
+      {items.length > 0 && (
+        <div className="rounded-md border border-border/50 overflow-hidden">
+          {items.map((item, i) => {
+            const isExpanded = expandedItems.has(i);
+            const detailsRows = isExpanded ? collectDetails(item.details) : [];
             return (
-              <div key={loc.id || i} className="border-b border-border/30 last:border-0">
+              <div key={item.id} className="border-b border-border/30 last:border-0">
                 {/* Collapsed row */}
                 <button
-                  onClick={() => toggleLocation(i)}
+                  onClick={() => toggleItem(i)}
                   className="w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-muted/50 transition-colors cursor-pointer"
                 >
                   {/* Number badge */}
                   <span className="w-6 h-6 rounded-full bg-[var(--color-domain-locator)]/15 text-[var(--color-domain-locator)] text-[10px] font-mono font-bold flex items-center justify-center flex-shrink-0">
                     {i + 1}
                   </span>
-                  {/* Address summary */}
-                  <span className="text-xs text-foreground truncate flex-1 min-w-0">
-                    {formatAddressCompact(loc.address)}
-                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-foreground truncate">{item.title}</p>
+                    <p className="text-[11px] font-mono text-muted-foreground truncate">{item.subtitle}</p>
+                  </div>
                   {/* Phone (collapsed) */}
-                  {loc.phone && (
+                  {item.phone && (
                     <span className="text-[10px] font-mono text-muted-foreground hidden sm:block flex-shrink-0">
-                      {loc.phone}
+                      {item.phone}
                     </span>
                   )}
                   {/* Chevron */}
@@ -120,27 +203,33 @@ export function LocationCard({ data }: { data: LocationResult }) {
                 {isExpanded && (
                   <div className="animate-fade-in px-3 pb-3 pt-1 border-t border-border/30 ml-9">
                     {/* Full address */}
-                    <div className="space-y-0.5 mb-2">
-                      {formatAddressLines(loc.address).map((line, li) => (
-                        <p key={li} className="text-xs text-foreground">{line}</p>
-                      ))}
-                    </div>
+                    {item.address && (
+                      <div className="space-y-0.5 mb-2">
+                        {typeof item.address === 'string' ? (
+                          <p className="text-xs text-foreground">{item.address}</p>
+                        ) : (
+                          formatAddressLines(item.address).map((line, li) => (
+                            <p key={li} className="text-xs text-foreground">{line}</p>
+                          ))
+                        )}
+                      </div>
+                    )}
 
                     {/* Phone link */}
-                    {loc.phone && (
+                    {item.phone && (
                       <div className="flex items-center gap-1.5 mb-2">
                         <PhoneIcon className="w-3 h-3 text-muted-foreground" />
                         <a
-                          href={`tel:${loc.phone}`}
+                          href={`tel:${item.phone}`}
                           className="text-[10px] font-mono text-[var(--color-domain-locator)] hover:underline"
                         >
-                          {loc.phone}
+                          {item.phone}
                         </a>
                       </div>
                     )}
 
                     {/* Operating hours */}
-                    {loc.hours && Object.keys(loc.hours).length > 0 && (
+                    {item.hours && Object.keys(item.hours).length > 0 && (
                       <div className="mt-2">
                         <div className="flex items-center gap-1.5 mb-1.5">
                           <HistoryIcon className="w-3 h-3 text-muted-foreground" />
@@ -149,11 +238,28 @@ export function LocationCard({ data }: { data: LocationResult }) {
                           </span>
                         </div>
                         <div className="grid grid-cols-2 gap-x-4 gap-y-0.5">
-                          {Object.entries(loc.hours).map(([day, hours]) => (
+                          {Object.entries(item.hours).map(([day, hours]) => (
                             <React.Fragment key={day}>
                               <span className="text-[10px] font-mono text-muted-foreground">{day}</span>
                               <span className="text-[10px] font-mono text-foreground">{hours}</span>
                             </React.Fragment>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Full detail payload */}
+                    {detailsRows.length > 0 && (
+                      <div className="mt-2">
+                        <div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider mb-1.5">
+                          Full UPS Details
+                        </div>
+                        <div className="max-h-56 overflow-y-auto rounded border border-border/40 bg-background/40 p-2 space-y-1 scrollable">
+                          {detailsRows.map(([key, value]) => (
+                            <div key={`${item.id}-${key}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-2">
+                              <span className="text-[10px] font-mono text-muted-foreground break-all">{key}</span>
+                              <span className="text-[10px] font-mono text-foreground break-all">{value}</span>
+                            </div>
                           ))}
                         </div>
                       </div>
@@ -163,41 +269,6 @@ export function LocationCard({ data }: { data: LocationResult }) {
               </div>
             );
           })}
-
-          {/* Show more / show less toggle */}
-          {data.locations.length > COLLAPSED_COUNT && (
-            <button
-              onClick={() => setIsListExpanded(!isListExpanded)}
-              className="w-full py-2 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors flex items-center justify-center gap-1.5 border-t border-border/30"
-            >
-              <ChevronDownIcon className={cn(
-                'w-3.5 h-3.5 transition-transform duration-200',
-                isListExpanded && 'rotate-180'
-              )} />
-              <span>
-                {isListExpanded
-                  ? 'Show less'
-                  : `Show all ${data.locations.length} locations`}
-              </span>
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Service center facilities */}
-      {isServiceCenters && data.facilities && data.facilities.length > 0 && (
-        <div className="rounded-md border border-border/50 overflow-hidden">
-          {data.facilities.map((fac, i) => (
-            <div key={i} className="flex items-center gap-3 px-3 py-2.5 border-b border-border/30 last:border-0">
-              <span className="w-6 h-6 rounded-full bg-[var(--color-domain-locator)]/15 text-[var(--color-domain-locator)] text-[10px] font-mono font-bold flex items-center justify-center flex-shrink-0">
-                {i + 1}
-              </span>
-              <div className="flex-1 min-w-0">
-                <p className="text-xs font-medium text-foreground">{fac.name}</p>
-                <p className="text-[10px] font-mono text-muted-foreground">{fac.address}</p>
-              </div>
-            </div>
-          ))}
         </div>
       )}
     </div>

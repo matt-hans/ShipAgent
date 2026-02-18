@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
 from mcp import StdioServerParameters
 
@@ -27,6 +27,7 @@ from src.services.mcp_client import (
     MCPToolError,
     _auto_decline_elicitation,
 )
+from src.services.ups_service_codes import SERVICE_CODE_NAMES
 from src.services.ups_specs import ensure_ups_specs_dir
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,9 @@ class UPSMCPClient:
             elicitation_callback=_auto_decline_elicitation,
         )
         self._reconnect_count = 0
+        # Serialize reconnect attempts only. Tool calls remain concurrent.
+        self._reconnect_lock = asyncio.Lock()
+        self._connection_generation = 0
 
     def _build_server_params(self) -> StdioServerParameters:
         """Build StdioServerParameters for the UPS MCP server.
@@ -190,15 +194,14 @@ class UPSMCPClient:
 
     async def connect(self) -> None:
         """Connect to UPS MCP if disconnected."""
-        connected = getattr(self._mcp, "is_connected", False)
-        if isinstance(connected, bool) and connected:
-            return
-        await self._mcp.connect()
-        logger.info("UPS MCP client connected (env=%s)", self._environment)
+        async with self._reconnect_lock:
+            await self._connect_unlocked()
 
     async def disconnect(self) -> None:
         """Disconnect from UPS MCP."""
-        await self._mcp.disconnect()
+        async with self._reconnect_lock:
+            await self._disconnect_unlocked()
+            self._connection_generation += 1
 
     @property
     def is_connected(self) -> bool:
@@ -220,26 +223,42 @@ class UPSMCPClient:
 
     # ── Public API ─────────────────────────────────────────────────────
 
-    async def get_rate(self, request_body: dict[str, Any]) -> dict[str, Any]:
-        """Get a rate quote for a single service.
+    async def get_rate(
+        self,
+        request_body: dict[str, Any],
+        requestoption: Literal["Rate", "Shop", "Shoptimeintransit"] = "Rate",
+    ) -> dict[str, Any]:
+        """Get a rate quote for one or more services.
 
         Args:
             request_body: Full UPS RateRequest payload.
+            requestoption: UPS rating mode.
+                - "Rate": quote the specified service only
+                - "Shop": return all available services
+                - "Shoptimeintransit": shop + transit data
 
         Returns:
-            Normalised dict with: success, totalCharges.
+            Normalised dict.
+            - Rate mode: success, totalCharges, chargeBreakdown
+            - Shop modes: success, ratedShipments (available services)
 
         Raises:
             UPSServiceError: On UPS API error.
         """
+        normalized_option = str(requestoption or "Rate")
+        if normalized_option not in ("Rate", "Shop", "Shoptimeintransit"):
+            normalized_option = "Rate"
+
         try:
             raw = await self._call("rate_shipment", {
-                "requestoption": "Rate",
+                "requestoption": normalized_option,
                 "request_body": request_body,
             })
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
+        if normalized_option in ("Shop", "Shoptimeintransit"):
+            return self._normalize_shop_rate_response(raw)
         return self._normalize_rate_response(raw)
 
     async def create_shipment(self, request_body: dict[str, Any]) -> dict[str, Any]:
@@ -654,11 +673,11 @@ class UPSMCPClient:
         if shipper_number:
             args["shipper_number"] = shipper_number
         try:
-            await self._call("push_document_to_shipment", args)
+            raw = await self._call("push_document_to_shipment", args)
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
-        return {"success": True}
+        return self._normalize_push_document_response(raw)
 
     async def delete_document(
         self,
@@ -681,11 +700,11 @@ class UPSMCPClient:
         if shipper_number:
             args["shipper_number"] = shipper_number
         try:
-            await self._call("delete_paperless_document", args)
+            raw = await self._call("delete_paperless_document", args)
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
-        return {"success": True}
+        return self._normalize_delete_document_response(raw)
 
     # ── Locator methods ────────────────────────────────────────────────
 
@@ -804,6 +823,7 @@ class UPSMCPClient:
         else:
             retry_kwargs = {"max_retries": 0, "base_delay": 1.0}
 
+        call_generation = self._connection_generation
         try:
             return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
         except MCPToolError as e:
@@ -825,26 +845,77 @@ class UPSMCPClient:
         except Exception as e:
             is_non_mutating = tool_name in self._READ_ONLY_TOOLS
             # For non-mutating operations, treat ANY non-MCPToolError as a
-            # transport failure worth reconnecting for.  This handles stale
+            # transport failure worth reconnecting for. This handles stale
             # subprocess connections (anyio ClosedResourceError, etc.) that
             # may not appear in the explicit type list.
             if not (is_non_mutating or self._is_transport_error(e)):
                 raise
 
-            logger.warning(
-                "UPS MCP transport failure during '%s', reconnecting once: %s [%s]",
-                tool_name,
-                e or type(e).__name__,
-                type(e).__name__,
-            )
-            self._reconnect_count += 1
-            await self.disconnect()
-            await self.connect()
+            await self._recover_transport(tool_name, e, call_generation)
 
             # Replay only non-mutating operations after reconnect.
             if is_non_mutating:
-                return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
+                try:
+                    return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
+                except Exception as replay_error:
+                    # One more bounded transport recovery for race windows where
+                    # another coroutine disconnects/reconnects between recovery
+                    # completion and replay invocation.
+                    if not self._is_transport_error(replay_error):
+                        raise
+                    await self._recover_transport(
+                        tool_name,
+                        replay_error,
+                        self._connection_generation,
+                    )
+                    return await self._mcp.call_tool(
+                        tool_name,
+                        arguments,
+                        **retry_kwargs,
+                    )
             raise
+
+    async def _connect_unlocked(self) -> None:
+        """Connect to MCP without acquiring _reconnect_lock."""
+        connected = getattr(self._mcp, "is_connected", False)
+        if isinstance(connected, bool) and connected:
+            return
+        await self._mcp.connect()
+        logger.info("UPS MCP client connected (env=%s)", self._environment)
+
+    async def _disconnect_unlocked(self) -> None:
+        """Disconnect from MCP without acquiring _reconnect_lock."""
+        await self._mcp.disconnect()
+
+    async def _recover_transport(
+        self,
+        tool_name: str,
+        error: Exception,
+        call_generation: int,
+    ) -> None:
+        """Reconnect once for transport failures, coalescing concurrent recoveries."""
+        async with self._reconnect_lock:
+            # Another coroutine already repaired the transport while we waited.
+            if call_generation != self._connection_generation and self.is_connected:
+                return
+
+            logger.warning(
+                "UPS MCP transport failure during '%s', reconnecting once: %s [%s]",
+                tool_name,
+                error or type(error).__name__,
+                type(error).__name__,
+            )
+            self._reconnect_count += 1
+            try:
+                await self._disconnect_unlocked()
+            except Exception as disconnect_error:
+                logger.debug(
+                    "UPS MCP disconnect during transport recovery failed (continuing): %s [%s]",
+                    disconnect_error or type(disconnect_error).__name__,
+                    type(disconnect_error).__name__,
+                )
+            await self._connect_unlocked()
+            self._connection_generation += 1
 
     @staticmethod
     def _is_safe_mutating_retry_error(error_text: str) -> bool:
@@ -1047,6 +1118,67 @@ class UPSMCPClient:
             "chargeBreakdown": charge_breakdown,
         }
 
+    @staticmethod
+    def _parse_amount(value: str | None) -> float:
+        """Parse UPS monetary strings to float for deterministic sorting."""
+        try:
+            return float(str(value or "0").strip())
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _normalize_shop_rate_response(self, raw: dict) -> dict[str, Any]:
+        """Extract all available services from a UPS Shop response."""
+        rated = (
+            raw.get("RateResponse", {})
+            .get("RatedShipment", [])
+        )
+        if isinstance(rated, dict):
+            rated = [rated]
+
+        services: list[dict[str, Any]] = []
+        for shipment in rated or []:
+            service = shipment.get("Service", {}) if isinstance(shipment, dict) else {}
+            code = str(service.get("Code", "")).strip()
+            if not code:
+                continue
+
+            desc = str(service.get("Description", "")).strip()
+            negotiated = (
+                shipment.get("NegotiatedRateCharges", {})
+                .get("TotalCharge", {})
+            )
+            published = shipment.get("TotalCharges", {})
+            charges = negotiated if negotiated.get("MonetaryValue") else published
+            amount = str(charges.get("MonetaryValue", "0"))
+            currency = str(charges.get("CurrencyCode", "USD"))
+
+            delivery_days = (
+                shipment.get("GuaranteedDelivery", {})
+                .get("BusinessDaysInTransit")
+            )
+
+            services.append({
+                "serviceCode": code,
+                "serviceName": SERVICE_CODE_NAMES.get(code, desc or f"UPS Service {code}"),
+                "serviceDescription": desc or SERVICE_CODE_NAMES.get(code, ""),
+                "totalCharges": {
+                    "monetaryValue": amount,
+                    "amount": amount,
+                    "currencyCode": currency,
+                },
+                "deliveryDays": str(delivery_days).strip() if delivery_days else None,
+            })
+
+        services.sort(
+            key=lambda s: self._parse_amount(
+                s.get("totalCharges", {}).get("monetaryValue"),
+            )
+        )
+        return {
+            "success": True,
+            "ratedShipments": services,
+        }
+
     def _normalize_address_response(self, raw: dict) -> dict[str, Any]:
         """Extract validation status from raw UPS address response.
 
@@ -1199,6 +1331,23 @@ class UPSMCPClient:
             currencyCode, totalDuties, totalVAT, totalBrokerageFees,
             and per-commodity items.
         """
+        def _first_present(mapping: dict[str, Any], *keys: str, default: Any) -> Any:
+            """Return the first present non-None value for a sequence of keys."""
+            for key in keys:
+                if key in mapping and mapping.get(key) is not None:
+                    return mapping.get(key)
+            return default
+
+        def _to_bool(value: Any) -> bool:
+            """Normalize bool-like values from UPS payloads."""
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return value != 0
+            if isinstance(value, str):
+                return value.strip().lower() in {"true", "1", "yes", "y"}
+            return bool(value)
+
         # UPS returns shipment at top level (production verified).
         shipment = raw.get("shipment", {})
         grand_total = shipment.get("grandTotal", 0)
@@ -1209,43 +1358,199 @@ class UPSMCPClient:
             items_raw = [items_raw]
         items = [
             {
-                "commodityId": item.get("commodityId", ""),
+                "commodityId": str(
+                    _first_present(item, "commodityId", "commodityID", default="")
+                ),
                 "duties": str(item.get("commodityDuty", 0)),
                 "taxes": str(item.get("commodityVAT", 0)),
-                "fees": str(item.get("totalCommodityTaxesAndFees", 0)),
+                "fees": str(
+                    _first_present(
+                        item,
+                        "totalCommodityTaxesAndFees",
+                        "totalCommodityTaxAndFee",
+                        default=0,
+                    )
+                ),
+                "totalDutyAndTax": str(
+                    _first_present(
+                        item,
+                        "totalCommodityDutyAndTax",
+                        "totalCommodityDutyandTax",
+                        default=0,
+                    )
+                ),
+                "currencyCode": str(item.get("commodityCurrencyCode", "") or currency),
+                "isCalculable": _to_bool(
+                    _first_present(item, "isCalculable", default=True)
+                ),
                 "hsCode": item.get("hsCode", ""),
             }
             for item in items_raw
+        ]
+
+        brokerage_raw = shipment.get("brokerageFeeItems", [])
+        if isinstance(brokerage_raw, dict):
+            brokerage_raw = [brokerage_raw]
+        brokerage_items = [
+            {
+                "chargeName": str(item.get("chargeName", "")),
+                "chargeAmount": str(item.get("chargeAmount", 0)),
+            }
+            for item in brokerage_raw
+            if isinstance(item, dict)
         ]
         return {
             "success": True,
             "totalLandedCost": str(grand_total),
             "currencyCode": currency,
+            "shipmentId": str(shipment.get("id", "")),
+            "importCountryCode": str(shipment.get("importCountryCode", "")),
             "totalDuties": str(shipment.get("totalDuties", 0)),
             "totalVAT": str(shipment.get("totalVAT", 0)),
+            "totalCommodityLevelTaxesAndFees": str(
+                shipment.get("totalCommodityLevelTaxesAndFees", 0)
+            ),
+            "totalShipmentLevelTaxesAndFees": str(
+                shipment.get("totalShipmentLevelTaxesAndFees", 0)
+            ),
+            "totalDutyAndTax": str(
+                _first_present(
+                    shipment,
+                    "totalDutyAndTax",
+                    "totalDutyandTax",
+                    default=0,
+                )
+            ),
             "totalBrokerageFees": str(shipment.get("totalBrokerageFees", 0)),
+            "brokerageFeeItems": brokerage_items,
+            "transId": str(
+                _first_present(raw, "transID", "transId", default="")
+            ),
+            "alVersion": _first_present(raw, "alVersion", "alversion", default=0),
+            "perfStats": (
+                raw.get("perfStats", {}) if isinstance(raw.get("perfStats", {}), dict) else {}
+            ),
             "items": items,
         }
 
     def _normalize_upload_response(self, raw: dict) -> dict[str, Any]:
-        """Extract document ID from raw UPS upload response.
+        """Extract upload details from raw UPS upload response.
 
         Args:
             raw: Raw UPS UploadResponse dict.
 
         Returns:
-            Normalised response dict with success and documentId.
+            Normalised response dict with success, documentId/documentIds,
+            and response metadata when available.
         """
-        upload = raw.get("UploadResponse", {})
-        doc_id = (
-            upload
-            .get("FormsHistoryDocumentID", {})
-            .get("DocumentID", "")
+        upload = raw.get("UploadResponse", {}) if isinstance(raw, dict) else {}
+        forms_history = upload.get("FormsHistoryDocumentID", {})
+        doc_ids = self._extract_document_ids(
+            forms_history.get("DocumentID", forms_history),
         )
-        return {
+        result: dict[str, Any] = {
             "success": True,
-            "documentId": doc_id,
         }
+        if doc_ids:
+            result["documentIds"] = doc_ids
+            result["documentId"] = doc_ids[0]
+        result.update(self._extract_paperless_response_meta(upload.get("Response", {})))
+        return result
+
+    def _normalize_push_document_response(self, raw: dict) -> dict[str, Any]:
+        """Extract details from raw UPS push-document response."""
+        push = raw.get("PushToImageRepositoryResponse", {}) if isinstance(raw, dict) else {}
+        result: dict[str, Any] = {"success": True}
+
+        forms_group_id = push.get("FormsGroupID")
+        if forms_group_id:
+            result["formsGroupId"] = str(forms_group_id)
+
+        forms_history = push.get("FormsHistoryDocumentID", {})
+        doc_ids = self._extract_document_ids(
+            forms_history.get("DocumentID", forms_history),
+        )
+        if doc_ids:
+            result["documentIds"] = doc_ids
+            result["documentId"] = doc_ids[0]
+
+        result.update(self._extract_paperless_response_meta(push.get("Response", {})))
+        return result
+
+    def _normalize_delete_document_response(self, raw: dict) -> dict[str, Any]:
+        """Extract details from raw UPS delete-document response."""
+        delete = raw.get("DeleteResponse", {}) if isinstance(raw, dict) else {}
+        result: dict[str, Any] = {"success": True}
+        result.update(self._extract_paperless_response_meta(delete.get("Response", {})))
+        return result
+
+    def _extract_paperless_response_meta(self, response: Any) -> dict[str, Any]:
+        """Extract common response metadata for paperless endpoints."""
+        if not isinstance(response, dict):
+            return {}
+
+        status = response.get("ResponseStatus", {})
+        transaction = response.get("TransactionReference", {})
+        alerts_raw = response.get("Alert", [])
+
+        out: dict[str, Any] = {}
+
+        if isinstance(status, dict):
+            code = status.get("Code")
+            description = status.get("Description")
+            if code is not None and str(code).strip():
+                out["statusCode"] = str(code)
+            if description is not None and str(description).strip():
+                out["statusDescription"] = str(description)
+
+        if isinstance(transaction, dict):
+            customer_context = transaction.get("CustomerContext")
+            if customer_context is not None and str(customer_context).strip():
+                out["customerContext"] = str(customer_context)
+
+        if isinstance(alerts_raw, dict):
+            alerts_raw = [alerts_raw]
+        alerts: list[dict[str, str]] = []
+        if isinstance(alerts_raw, list):
+            for alert in alerts_raw:
+                if isinstance(alert, dict):
+                    code = str(alert.get("Code", "")).strip()
+                    message = str(alert.get("Description", "")).strip()
+                else:
+                    code = ""
+                    message = str(alert).strip()
+                if code or message:
+                    alerts.append({"code": code, "message": message})
+        if alerts:
+            out["alerts"] = alerts
+
+        return out
+
+    @staticmethod
+    def _extract_document_ids(raw_value: Any) -> list[str]:
+        """Normalize one-or-many UPS DocumentID values into a clean list."""
+        if raw_value is None:
+            return []
+        if isinstance(raw_value, str):
+            value = raw_value.strip()
+            return [value] if value else []
+        if isinstance(raw_value, dict):
+            # Defensive fallback for unexpected nested wrappers.
+            return UPSMCPClient._extract_document_ids(raw_value.get("DocumentID"))
+        if isinstance(raw_value, list):
+            out: list[str] = []
+            for item in raw_value:
+                if isinstance(item, str):
+                    value = item.strip()
+                    if value:
+                        out.append(value)
+                elif item is not None:
+                    value = str(item).strip()
+                    if value:
+                        out.append(value)
+            return out
+        value = str(raw_value).strip()
+        return [value] if value else []
 
     def _normalize_locations_response(self, raw: dict) -> dict[str, Any]:
         """Extract locations from raw UPS locator response.
@@ -1261,17 +1566,74 @@ class UPSMCPClient:
         if isinstance(drop_locs, dict):
             drop_locs = [drop_locs]
         locations = [
-            {
-                "id": loc.get("LocationID", ""),
-                "address": loc.get("AddressKeyFormat", {}),
-                "phone": loc.get("PhoneNumber", ""),
-                "hours": loc.get("OperatingHours", {}),
-            }
+            self._normalize_locator_location(loc)
             for loc in drop_locs
         ]
         return {
             "success": True,
             "locations": locations,
+        }
+
+    def _normalize_locator_location(self, loc: dict[str, Any]) -> dict[str, Any]:
+        """Normalize one Locator.yaml v3 DropLocation object for frontend use."""
+        addr = loc.get("AddressKeyFormat", {})
+        if not isinstance(addr, dict):
+            addr = {}
+
+        address_line = addr.get("AddressLine", "")
+        if isinstance(address_line, list):
+            address_line = ", ".join(str(x) for x in address_line if x)
+
+        phone_value = loc.get("PhoneNumber", "")
+        if isinstance(phone_value, list):
+            phones = [str(p) for p in phone_value if p]
+        elif phone_value:
+            phones = [str(phone_value)]
+        else:
+            phones = []
+        phone = phones[0] if phones else ""
+
+        hours: dict[str, str] = {}
+        op_hours = loc.get("OperatingHours", {})
+        if isinstance(op_hours, dict):
+            standard = op_hours.get("StandardHours", {})
+            if isinstance(standard, dict):
+                day_entries = standard.get("DayOfWeek", [])
+                if isinstance(day_entries, dict):
+                    day_entries = [day_entries]
+                if isinstance(day_entries, list):
+                    for entry in day_entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        day = str(entry.get("Day", "")).strip()
+                        open_hours = str(entry.get("OpenHours", "")).strip()
+                        close_hours = str(entry.get("CloseHours", "")).strip()
+                        if not day:
+                            continue
+                        if open_hours and close_hours:
+                            hours[day] = f"{open_hours}-{close_hours}"
+                        elif open_hours:
+                            hours[day] = open_hours
+                        elif close_hours:
+                            hours[day] = close_hours
+
+        return {
+            "id": loc.get("LocationID", ""),
+            "address": {
+                "ConsigneeName": addr.get("ConsigneeName", ""),
+                "AddressLine": address_line,
+                "City": addr.get("City", addr.get("PoliticalDivision2", "")),
+                "StateProvinceCode": addr.get(
+                    "StateProvinceCode",
+                    addr.get("PoliticalDivision1", ""),
+                ),
+                "PostalCode": addr.get("PostalCode", addr.get("PostcodePrimaryLow", "")),
+                "CountryCode": addr.get("CountryCode", ""),
+            },
+            "phone": phone,
+            "phones": phones,
+            "hours": hours,
+            "details": loc,
         }
 
     def _normalize_service_center_response(self, raw: dict) -> dict[str, Any]:
@@ -1286,31 +1648,104 @@ class UPSMCPClient:
         Returns:
             Normalised response dict with success and facilities list.
         """
-        center = raw.get("ServiceCenterResponse", {})
-        facilities_raw = center.get("ServiceCenterList", [])
-        if isinstance(facilities_raw, dict):
-            facilities_raw = [facilities_raw]
+        facilities_raw: list[Any] = []
+        pickup_resp = raw.get("PickupGetServiceCenterFacilitiesResponse", {})
+        svc_location = pickup_resp.get("ServiceCenterLocation", {})
+
+        drop_off = svc_location.get("DropOffFacilities", [])
+        if isinstance(drop_off, dict):
+            drop_off = [drop_off]
+        if isinstance(drop_off, list):
+            facilities_raw.extend(drop_off)
+
+        pickup = svc_location.get("PickupFacilities", [])
+        if isinstance(pickup, dict):
+            pickup = [pickup]
+        if isinstance(pickup, list):
+            facilities_raw.extend(pickup)
+
         facilities = []
         for fac in facilities_raw:
-            name = fac.get("FacilityName", fac.get("name", ""))
-            addr_obj = fac.get("FacilityAddress", {})
+            if not isinstance(fac, dict):
+                continue
+            name = fac.get("Name", "")
+
+            addr_obj = fac.get("Address", {})
             if isinstance(addr_obj, str):
                 address = addr_obj
+            elif isinstance(addr_obj, list):
+                address = ", ".join(str(x) for x in addr_obj if x)
             elif isinstance(addr_obj, dict):
+                address_line = addr_obj.get("AddressLine", "")
+                if isinstance(address_line, list):
+                    address_line = ", ".join(str(x) for x in address_line if x)
+
+                state = (
+                    addr_obj.get("StateProvinceCode")
+                    or addr_obj.get("StateProvince")
+                )
+                postal = (
+                    addr_obj.get("PostalCode")
+                    or addr_obj.get("PostcodePrimaryLow")
+                )
                 parts = [
-                    addr_obj.get("AddressLine", ""),
+                    address_line,
                     ", ".join(
                         p for p in [
                             addr_obj.get("City", ""),
-                            addr_obj.get("StateProvinceCode", ""),
+                            state,
                         ] if p
                     ),
-                    addr_obj.get("PostalCode", ""),
+                    postal,
                 ]
                 address = " ".join(p for p in parts if p)
             else:
                 address = str(addr_obj) if addr_obj else ""
-            facilities.append({"name": name, "address": address})
+
+            phone_value = fac.get("Phone", "")
+            if isinstance(phone_value, list):
+                phones = [str(p) for p in phone_value if p]
+            elif phone_value:
+                phones = [str(phone_value)]
+            else:
+                phones = []
+            phone = phones[0] if phones else ""
+
+            hours: dict[str, str] = {}
+            facility_time = fac.get("FacilityTime", {})
+            if isinstance(facility_time, dict):
+                day_entries = facility_time.get("DayOfWeek", [])
+                if isinstance(day_entries, dict):
+                    day_entries = [day_entries]
+                if isinstance(day_entries, list):
+                    for entry in day_entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        day = str(entry.get("Day", "")).strip()
+                        open_hours = str(entry.get("OpenHours", "")).strip()
+                        close_hours = str(entry.get("CloseHours", "")).strip()
+                        if not day:
+                            continue
+                        if open_hours and close_hours:
+                            hours[day] = f"{open_hours}-{close_hours}"
+                        elif open_hours:
+                            hours[day] = open_hours
+                        elif close_hours:
+                            hours[day] = close_hours
+
+            facilities.append(
+                {
+                    "name": name,
+                    "address": address,
+                    "phone": phone,
+                    "phones": phones,
+                    "timezone": fac.get("Timezone", ""),
+                    "slic": fac.get("SLIC", ""),
+                    "type": fac.get("Type", ""),
+                    "hours": hours,
+                    "details": fac,
+                }
+            )
         return {
             "success": True,
             "facilities": facilities,
