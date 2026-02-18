@@ -26,6 +26,8 @@ from src.orchestrator.models.filter_spec import (
     TypedLiteral,
 )
 
+COMPILER_VERSION = "filter_compiler_v2"
+
 
 def compile_filter_spec(
     spec: ResolvedFilterSpec,

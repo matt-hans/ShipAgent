@@ -39,14 +39,17 @@ def _sample_rows() -> list[dict[str, str]]:
 
 
 def test_cache_miss_computes_and_persists(_cache_env):
-    mapping = mapping_cache.get_or_compute_mapping(
+    mapping, mapping_hash = mapping_cache.get_or_compute_mapping_with_metadata(
         source_columns=_source_columns(),
         schema_fingerprint="sig-1",
         sample_rows=_sample_rows(),
     )
 
     assert mapping.get("shipTo.name") == "Name"
+    assert isinstance(mapping_hash, str) and len(mapping_hash) == 64
     assert _cache_env.exists()
+    on_disk = _cache_env.read_text()
+    assert "mapping_hash" in on_disk
 
 
 def test_cache_hit_returns_memory_cached_mapping(monkeypatch):
@@ -71,6 +74,23 @@ def test_cache_hit_returns_memory_cached_mapping(monkeypatch):
 
     assert calls["count"] == 1
     assert first == second
+
+
+def test_cache_hit_returns_stable_mapping_hash():
+    first_mapping, first_hash = mapping_cache.get_or_compute_mapping_with_metadata(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-hash",
+        sample_rows=_sample_rows(),
+    )
+    second_mapping, second_hash = mapping_cache.get_or_compute_mapping_with_metadata(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-hash",
+        sample_rows=_sample_rows(),
+    )
+
+    assert second_mapping == first_mapping
+    assert second_hash == first_hash
+    assert second_hash == mapping_cache.compute_mapping_hash(second_mapping)
 
 
 def test_cold_process_loads_from_disk_cache(monkeypatch):

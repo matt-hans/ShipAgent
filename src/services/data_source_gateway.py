@@ -29,7 +29,11 @@ class DataSourceGateway(Protocol):
         ...
 
     async def import_database(
-        self, connection_string: str, query: str, schema: str = "public"
+        self,
+        connection_string: str,
+        query: str,
+        schema: str = "public",
+        row_key_columns: list[str] | None = None,
     ) -> dict[str, Any]:
         """Import database query results as active data source."""
         ...

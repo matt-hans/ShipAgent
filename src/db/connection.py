@@ -301,6 +301,53 @@ def _ensure_columns_exist(conn: Any) -> None:
         except OperationalError:
             pass  # Column doesn't exist yet (pre-Phase-8 DB)
 
+    # write_back_tasks migration: deduplicate historical duplicates before
+    # enforcing uniqueness on (job_id, row_number).
+    try:
+        table_exists = conn.execute(
+            text(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='write_back_tasks' LIMIT 1"
+            )
+        ).fetchone()
+        if table_exists:
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM write_back_tasks
+                    WHERE rowid IN (
+                        SELECT rowid FROM (
+                            SELECT
+                                rowid,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY job_id, row_number
+                                    ORDER BY
+                                        CASE status
+                                            WHEN 'pending' THEN 3
+                                            WHEN 'completed' THEN 2
+                                            WHEN 'dead_letter' THEN 1
+                                            ELSE 0
+                                        END DESC,
+                                        created_at DESC,
+                                        rowid DESC
+                                ) AS rn
+                            FROM write_back_tasks
+                        ) ranked
+                        WHERE rn > 1
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_write_back_tasks_job_row_number "
+                    "ON write_back_tasks (job_id, row_number)"
+                )
+            )
+    except OperationalError as e:
+        log.warning("write_back_tasks uniqueness migration skipped: %s", e)
+
 
 def init_db() -> None:
     """Create all database tables synchronously.

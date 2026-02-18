@@ -102,6 +102,29 @@ async def test_import_database_invalidates_mapping_cache(client, mock_mcp):
 
 
 @pytest.mark.asyncio
+async def test_import_database_threads_row_key_columns(client, mock_mcp):
+    """import_database should pass optional row_key_columns through to MCP."""
+    mock_mcp.call_tool.return_value = {
+        "row_count": 22, "columns": [{"name": "id", "type": "INTEGER"}],
+        "source_type": "database", "warnings": [],
+    }
+    await client.import_database(
+        "postgres://u:p@localhost/db",
+        "SELECT * FROM orders",
+        row_key_columns=["id"],
+    )
+    mock_mcp.call_tool.assert_called_once_with(
+        "import_database",
+        {
+            "connection_string": "postgres://u:p@localhost/db",
+            "query": "SELECT * FROM orders",
+            "schema": "public",
+            "row_key_columns": ["id"],
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_source_info_returns_none_when_inactive(client, mock_mcp):
     """get_source_info should return None when no source is active."""
     mock_mcp.call_tool.return_value = {"active": False}
@@ -118,6 +141,27 @@ async def test_get_source_info_returns_dict_when_active(client, mock_mcp):
     result = await client.get_source_info()
     assert result["source_type"] == "csv"
     assert result["row_count"] == 10
+
+
+@pytest.mark.asyncio
+async def test_get_source_info_typed_includes_determinism_metadata(client, mock_mcp):
+    """Typed source info should include deterministic row-key metadata."""
+    mock_mcp.call_tool.return_value = {
+        "active": True,
+        "source_type": "database",
+        "path": None,
+        "row_count": 10,
+        "signature": "sig123",
+        "deterministic_ready": False,
+        "row_key_strategy": "none",
+        "row_key_columns": [],
+        "columns": [{"name": "id", "type": "INTEGER", "nullable": False}],
+    }
+    typed = await client.get_source_info_typed()
+    assert typed is not None
+    assert typed.deterministic_ready is False
+    assert typed.row_key_strategy == "none"
+    assert typed.row_key_columns == []
 
 
 @pytest.mark.asyncio

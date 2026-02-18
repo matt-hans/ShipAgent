@@ -11,6 +11,7 @@ any pending tasks can be drained via process_write_back_queue().
 import logging
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.db.models import WriteBackTask
@@ -40,6 +41,21 @@ def enqueue_write_back(
     Returns:
         The created WriteBackTask ORM instance.
     """
+    existing = (
+        db.query(WriteBackTask)
+        .filter(
+            WriteBackTask.job_id == job_id,
+            WriteBackTask.row_number == row_number,
+        )
+        .one_or_none()
+    )
+    if existing is not None:
+        if existing.status == "pending":
+            existing.tracking_number = tracking_number
+            existing.shipped_at = shipped_at
+            db.commit()
+        return existing
+
     task = WriteBackTask(
         job_id=job_id,
         row_number=row_number,
@@ -49,8 +65,27 @@ def enqueue_write_back(
         retry_count=0,
     )
     db.add(task)
-    db.commit()
-    return task
+    try:
+        db.commit()
+        return task
+    except IntegrityError:
+        # Race-safe fallback when another worker inserts the task first.
+        db.rollback()
+        existing = (
+            db.query(WriteBackTask)
+            .filter(
+                WriteBackTask.job_id == job_id,
+                WriteBackTask.row_number == row_number,
+            )
+            .one_or_none()
+        )
+        if existing is not None:
+            if existing.status == "pending":
+                existing.tracking_number = tracking_number
+                existing.shipped_at = shipped_at
+                db.commit()
+            return existing
+        raise
 
 
 def get_pending_tasks(db: Session, job_id: str | None = None) -> list[WriteBackTask]:

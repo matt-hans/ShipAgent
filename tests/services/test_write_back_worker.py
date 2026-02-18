@@ -84,6 +84,54 @@ class TestWriteBackQueue:
         row_numbers = {t.row_number for t in all_tasks}
         assert row_numbers == {1, 2, 3}
 
+    def test_enqueue_is_idempotent_for_same_job_row(self, db_session: Session) -> None:
+        """Re-enqueue for same (job_id,row_number) should update pending task."""
+        first = enqueue_write_back(
+            db_session,
+            job_id="job-abc",
+            row_number=1,
+            tracking_number="1ZOLD",
+            shipped_at="2026-02-17T00:00:00Z",
+        )
+        second = enqueue_write_back(
+            db_session,
+            job_id="job-abc",
+            row_number=1,
+            tracking_number="1ZNEW",
+            shipped_at="2026-02-18T00:00:00Z",
+        )
+
+        assert first.id == second.id
+        tasks = db_session.query(WriteBackTask).all()
+        assert len(tasks) == 1
+        assert tasks[0].tracking_number == "1ZNEW"
+        assert tasks[0].shipped_at == "2026-02-18T00:00:00Z"
+
+    def test_enqueue_noops_when_task_already_completed(self, db_session: Session) -> None:
+        """Completed task should not be duplicated or reverted to pending."""
+        task = enqueue_write_back(
+            db_session,
+            job_id="job-abc",
+            row_number=2,
+            tracking_number="1ZDONE",
+            shipped_at="2026-02-17T00:00:00Z",
+        )
+        task.status = "completed"
+        db_session.commit()
+
+        second = enqueue_write_back(
+            db_session,
+            job_id="job-abc",
+            row_number=2,
+            tracking_number="1ZIGNORED",
+            shipped_at="2026-02-18T00:00:00Z",
+        )
+
+        assert second.id == task.id
+        stored = db_session.query(WriteBackTask).filter_by(id=task.id).one()
+        assert stored.status == "completed"
+        assert stored.tracking_number == "1ZDONE"
+
     def test_get_pending_tasks(self, db_session: Session) -> None:
         """get_pending_tasks returns only pending tasks."""
         enqueue_write_back(db_session, "job-abc", 1, "1Z001", "2026-02-17T00:00:00Z")

@@ -281,6 +281,13 @@ class DataSourceImportRequest(BaseModel):
         None, description="Database connection URL"
     )
     query: str | None = Field(None, description="SQL query for database import")
+    row_key_columns: list[str] | None = Field(
+        None,
+        description=(
+            "Optional deterministic row key columns for database imports. "
+            "If omitted, server auto-detects PRIMARY KEY/UNIQUE constraints."
+        ),
+    )
 
 
 class DataSourceColumnInfo(BaseModel):
@@ -350,6 +357,12 @@ class ReconnectRequest(BaseModel):
     source_id: str = Field(..., description="UUID of the saved data source")
     connection_string: str | None = Field(
         None, description="Database connection string (required for database sources)"
+    )
+    row_key_columns: list[str] | None = Field(
+        None,
+        description=(
+            "Optional deterministic row key columns for database reconnect imports."
+        ),
     )
 
 

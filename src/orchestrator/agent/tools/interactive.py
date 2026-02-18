@@ -16,6 +16,7 @@ from src.orchestrator.agent.tools.core import (
     SERVICE_CODE_NAMES,
     EventEmitterBridge,
     _build_job_row_data,
+    _emit_event,
     _emit_preview_ready,
     _enrich_preview_rows_from_map,
     _err,
@@ -275,12 +276,15 @@ async def preview_interactive_shipment_tool(
                 account_number=account_number,
             )
             db_rows = job_service.get_rows(job.id)
+            def _emit_preview_partial(payload: dict[str, Any]) -> None:
+                _emit_event("preview_partial", payload, bridge=bridge)
             try:
                 result = await engine.preview(
                     job_id=job.id,
                     rows=db_rows,
                     shipper=shipper,
                     service_code=service_code,
+                    on_preview_partial=_emit_preview_partial,
                 )
             except Exception as e:
                 job_service.update_status(job.id, JobStatus.failed)

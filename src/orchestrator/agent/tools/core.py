@@ -23,7 +23,10 @@ from src.services.column_mapping import (
 )
 from src.services.gateway_provider import get_data_gateway, get_external_sources_client  # noqa: F401
 from src.services.job_service import JobService
-from src.services.mapping_cache import get_or_compute_mapping
+from src.services.mapping_cache import (
+    compute_mapping_hash,
+    get_or_compute_mapping_with_metadata,
+)
 from src.services.ups_service_codes import (
     SERVICE_ALIASES,
     SERVICE_CODE_NAMES,
@@ -242,6 +245,41 @@ def _build_job_row_data(
     return row_data
 
 
+def _build_job_row_data_with_metadata(
+    rows: list[dict[str, Any]],
+    service_code_override: str | None = None,
+    schema_fingerprint: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Build job row payloads and return mapping_hash metadata."""
+    normalized_rows, mapping_hash = _normalize_rows_for_shipping_with_metadata(
+        rows,
+        schema_fingerprint=schema_fingerprint,
+    )
+    if service_code_override:
+        for row in normalized_rows:
+            if isinstance(row, dict):
+                row["service_code"] = service_code_override
+
+    row_data = []
+    for idx, row in enumerate(normalized_rows, start=1):
+        source_row = (
+            row.pop("_row_number", None)
+            or row.pop(SOURCE_ROW_NUM_COLUMN, None)
+            or idx
+        )
+        row.pop("_checksum", None)
+        row_json = json.dumps(row, sort_keys=True, default=str)
+        checksum = hashlib.md5(row_json.encode()).hexdigest()
+        row_data.append(
+            {
+                "row_number": source_row,
+                "row_checksum": checksum,
+                "order_data": row_json,
+            }
+        )
+    return row_data, mapping_hash
+
+
 def _normalize_rows_for_shipping(
     rows: list[dict[str, Any]],
     schema_fingerprint: str | None = None,
@@ -252,20 +290,33 @@ def _normalize_rows_for_shipping(
     those headers into the canonical ship_to_* keys expected by
     build_shipment_request().
     """
+    normalized_rows, _ = _normalize_rows_for_shipping_with_metadata(
+        rows,
+        schema_fingerprint=schema_fingerprint,
+    )
+    return normalized_rows
+
+
+def _normalize_rows_for_shipping_with_metadata(
+    rows: list[dict[str, Any]],
+    schema_fingerprint: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Normalize rows and return deterministic mapping_hash when available."""
     if not rows:
-        return rows
+        return rows, None
 
     source_columns: list[str] = sorted(
         {str(k) for row in rows if isinstance(row, dict) for k in row.keys()}
     )
     if schema_fingerprint:
-        mapping = get_or_compute_mapping(
+        mapping, mapping_hash = get_or_compute_mapping_with_metadata(
             source_columns=source_columns,
             schema_fingerprint=schema_fingerprint,
             sample_rows=rows,
         )
     else:
         mapping = auto_map_columns(source_columns)
+        mapping_hash = compute_mapping_hash(mapping)
     missing_required = validate_mapping(mapping)
     if missing_required:
         logger.warning(
@@ -301,7 +352,7 @@ def _normalize_rows_for_shipping(
 
         normalized.append(out)
 
-    return normalized
+    return normalized, mapping_hash
 
 
 def _command_explicitly_requests_service(command: str) -> bool:

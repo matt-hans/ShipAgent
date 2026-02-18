@@ -48,6 +48,9 @@ async def test_get_source_info_returns_metadata(mock_ctx_with_source):
     result = await get_source_info(mock_ctx_with_source)
     assert result["source_type"] == "csv"
     assert result["row_count"] == 150
+    assert result["deterministic_ready"] is True
+    assert result["row_key_strategy"] == "source_row_num"
+    assert result["row_key_columns"] == []
 
 
 @pytest.mark.asyncio
@@ -80,6 +83,10 @@ async def test_import_records_creates_table(mock_ctx_no_source):
     )
     assert result["row_count"] == 3
     assert result["source_type"] == "shopify"
+    current_source = mock_ctx_no_source.request_context.lifespan_context["current_source"]
+    assert current_source["deterministic_ready"] is True
+    assert current_source["row_key_strategy"] == "source_row_num"
+    assert current_source["row_key_columns"] == ["_source_row_num"]
 
 
 @pytest.mark.asyncio

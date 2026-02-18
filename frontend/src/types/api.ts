@@ -286,7 +286,21 @@ export interface BatchPreview {
     compiled_hash: string;
     schema_signature: string;
     dict_version: string;
+    source_fingerprint?: string;
+    compiler_version?: string;
+    mapping_version?: string;
+    normalizer_version?: string;
+    mapping_hash?: string;
   };
+}
+
+/** Incremental preview update streamed before preview_ready. */
+export interface PreviewPartialPayload {
+  job_id: string;
+  preview_rows: PreviewRow[];
+  rows_rated: number;
+  total_rows: number;
+  is_final: boolean;
 }
 
 // === Progress Types ===
@@ -572,6 +586,7 @@ export interface DataSourceImportRequest {
   sheet?: string;
   connection_string?: string;
   query?: string;
+  row_key_columns?: string[];
 }
 
 /** Response from a data source import operation. */
@@ -621,6 +636,7 @@ export interface SavedDataSourceListResponse {
 export interface ReconnectRequest {
   source_id: string;
   connection_string?: string;
+  row_key_columns?: string[];
 }
 
 // === Conversation Types ===
@@ -632,6 +648,7 @@ export type AgentEventType =
   | 'tool_result'
   | 'agent_message'
   | 'agent_message_delta'
+  | 'preview_partial'
   | 'preview_ready'
   | 'pickup_preview'
   | 'pickup_result'
