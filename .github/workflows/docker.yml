@@ -1,0 +1,61 @@
+name: Docker Build and Smoke Test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  docker-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: shipagent:test
+
+      - name: Start container
+        run: |
+          docker run -d --name shipagent-smoke \
+            -p 18000:8000 \
+            -e ANTHROPIC_API_KEY=test-key \
+            -e UPS_CLIENT_ID=test-id \
+            -e UPS_CLIENT_SECRET=test-secret \
+            -e UPS_ACCOUNT_NUMBER=A12345 \
+            -e FILTER_TOKEN_SECRET=test-filter-token-secret-with-32chars \
+            shipagent:test
+
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:18000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs shipagent-smoke
+          exit 1
+
+      - name: Smoke checks
+        run: |
+          curl -fsS http://127.0.0.1:18000/health
+          curl -fsS http://127.0.0.1:18000/readyz
+          curl -fsS http://127.0.0.1:18000/ | head -n 5
+          docker exec shipagent-smoke shipagent version
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f shipagent-smoke || true
+

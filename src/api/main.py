@@ -33,6 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from src.api.middleware.auth import maybe_require_api_key
 from src.api.routes import (
     agent_audit,
     conversations,
@@ -58,6 +59,14 @@ logger = logging.getLogger(__name__)
 # Module-level state for health endpoint and watchdog
 _startup_time: float = 0.0
 _watchdog_service = None  # Set by watchdog startup in lifespan
+
+
+def _parse_allowed_origins() -> list[str]:
+    """Parse comma-separated CORS allowlist from ALLOWED_ORIGINS env var."""
+    raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        return []
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 def _ensure_agent_sdk_available() -> None:
@@ -488,6 +497,7 @@ async def lifespan(app: FastAPI):
         await _watchdog_service.stop()
         _watchdog_service = None
 
+    await preview.shutdown_batch_runtime()
     await conversations.shutdown_conversation_runtime()
     await shutdown_gateways()
 
@@ -500,14 +510,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware for development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Restrict in production
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Optional API auth for /api/* when SHIPAGENT_API_KEY is configured.
+app.middleware("http")(maybe_require_api_key)
+
+# CORS allowlist is env-driven. If unset, CORS is disabled (same-origin only).
+allowed_origins = _parse_allowed_origins()
+if allowed_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+    )
 
 
 @app.exception_handler(ShipAgentError)
@@ -592,6 +607,62 @@ def health_check() -> dict:
     }
 
 
+@app.get("/readyz")
+def readiness_check():
+    """Dependency-aware readiness check for local/container deployments."""
+    from sqlalchemy import text
+
+    from src.db.connection import get_db_context
+
+    uptime = int(_time.time() - _startup_time) if _startup_time else 0
+    checks: dict[str, dict[str, Any]] = {}
+
+    # DB connectivity gate.
+    try:
+        with get_db_context() as db:
+            db.execute(text("SELECT 1"))
+        checks["database"] = {"status": "ok"}
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "uptime_seconds": uptime,
+                "checks": {
+                    "database": {"status": "error", "message": str(exc)},
+                },
+            },
+        )
+
+    filter_secret = os.environ.get("FILTER_TOKEN_SECRET", "")
+    if len(filter_secret) < 32:
+        checks["filter_token_secret"] = {
+            "status": "error",
+            "message": "FILTER_TOKEN_SECRET missing or too short",
+        }
+        status = "degraded"
+    else:
+        checks["filter_token_secret"] = {"status": "ok"}
+        status = "ready"
+
+    missing_ups = [
+        key
+        for key in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET", "UPS_ACCOUNT_NUMBER")
+        if not os.environ.get(key)
+    ]
+    if missing_ups:
+        checks["ups_credentials"] = {"status": "degraded", "missing": missing_ups}
+        status = "degraded"
+    else:
+        checks["ups_credentials"] = {"status": "configured"}
+
+    return {
+        "status": status,
+        "uptime_seconds": uptime,
+        "checks": checks,
+    }
+
+
 @app.get("/api")
 def api_root() -> dict:
     """API root with links to docs.
@@ -631,7 +702,9 @@ if FRONTEND_DIR.exists():
             FileResponse with index.html for SPA routing.
         """
         # Check if the path is an API or docs route (should be handled above)
-        if full_path.startswith(("api/", "docs", "redoc", "openapi.json", "health")):
+        if full_path.startswith(
+            ("api/", "docs", "redoc", "openapi.json", "health", "readyz")
+        ):
             # This shouldn't be reached as those routes are defined above
             # but return 404 just in case
             return FileResponse(FRONTEND_DIR / "index.html")

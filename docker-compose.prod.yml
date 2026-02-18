@@ -1,0 +1,35 @@
+services:
+  shipagent:
+    image: ghcr.io/matt-hans/shipagent:latest
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////app/data/shipagent.db}
+      UPS_LABELS_OUTPUT_DIR: ${UPS_LABELS_OUTPUT_DIR:-/app/labels}
+      FILTER_TOKEN_SECRET: ${FILTER_TOKEN_SECRET:?FILTER_TOKEN_SECRET must be set}
+      AGENT_AUDIT_ENABLED: ${AGENT_AUDIT_ENABLED:-true}
+      AGENT_AUDIT_JSONL_PATH: ${AGENT_AUDIT_JSONL_PATH:-/app/data/agent-decision-log.jsonl}
+      AGENT_AUDIT_RETENTION_DAYS: ${AGENT_AUDIT_RETENTION_DAYS:-30}
+      AGENT_AUDIT_MAX_PAYLOAD_BYTES: ${AGENT_AUDIT_MAX_PAYLOAD_BYTES:-16384}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      SHIPAGENT_API_KEY: ${SHIPAGENT_API_KEY:-}
+    volumes:
+      - shipagent-data:/app/data
+      - shipagent-labels:/app/labels
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: always
+
+volumes:
+  shipagent-data:
+    driver: local
+  shipagent-labels:
+    driver: local

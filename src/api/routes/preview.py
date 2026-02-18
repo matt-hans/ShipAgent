@@ -21,7 +21,7 @@ from src.api.schemas import (
     PreviewRowResponse,
 )
 from src.db.connection import get_db
-from src.db.models import Job, JobRow, RowStatus
+from src.db.models import Job, JobRow
 from src.services.decision_audit_service import DecisionAuditService
 from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
 from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
@@ -29,6 +29,36 @@ from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["preview"])
+
+# Background batch tasks created by confirm endpoint (process-local runtime).
+_batch_tasks: set[asyncio.Task[None]] = set()
+
+
+def _track_batch_task(task: asyncio.Task[None]) -> None:
+    """Register a background batch task for graceful shutdown drain."""
+    _batch_tasks.add(task)
+    task.add_done_callback(lambda done: _batch_tasks.discard(done))
+
+
+async def shutdown_batch_runtime(timeout_seconds: float = 15.0) -> None:
+    """Drain/cancel outstanding background batch tasks on service shutdown."""
+    pending = [task for task in list(_batch_tasks) if not task.done()]
+    if not pending:
+        return
+
+    done, still_pending = await asyncio.wait(pending, timeout=timeout_seconds)
+    if done:
+        logger.info("Batch runtime drain completed %d task(s)", len(done))
+
+    if still_pending:
+        logger.warning(
+            "Cancelling %d batch task(s) still pending after %.1fs",
+            len(still_pending),
+            timeout_seconds,
+        )
+        for task in still_pending:
+            task.cancel()
+        await asyncio.gather(*still_pending, return_exceptions=True)
 
 @router.get("/jobs/{job_id}/preview", response_model=BatchPreviewResponse)
 def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewResponse:
@@ -303,7 +333,8 @@ async def confirm_job(
     # Schedule async batch execution on the event loop
     # Note: BackgroundTasks.add_task() does NOT properly await async functions,
     # so we use asyncio.create_task() which correctly schedules the coroutine.
-    asyncio.create_task(_execute_batch_safe(job_id))
+    task = asyncio.create_task(_execute_batch_safe(job_id))
+    _track_batch_task(task)
 
     return ConfirmResponse(
         status="confirmed",

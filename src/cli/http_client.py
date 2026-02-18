@@ -8,6 +8,7 @@ for scripts, tests, and non-CLI consumers.
 
 import json
 import logging
+import os
 from typing import AsyncIterator
 
 from src.cli.protocol import (
@@ -35,11 +36,19 @@ class HttpClient:
         """
         self._base_url = base_url
         self._client = None
+        self._api_key = os.environ.get("SHIPAGENT_API_KEY", "").strip()
 
     async def __aenter__(self):
         """Open httpx async client."""
         import httpx
-        self._client = httpx.AsyncClient(base_url=self._base_url, timeout=30.0)
+        headers = {}
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+        self._client = httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=30.0,
+            headers=headers,
+        )
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -194,8 +203,11 @@ class HttpClient:
 
         captured_job_id: str | None = None
         try:
+            headers = {}
+            if self._api_key:
+                headers["X-API-Key"] = self._api_key
             async with httpx.AsyncClient(
-                base_url=self._base_url, timeout=120.0
+                base_url=self._base_url, timeout=120.0, headers=headers
             ) as stream_client:
                 async with stream_client.stream(
                     "GET", f"/api/v1/conversations/{session_id}/stream"
