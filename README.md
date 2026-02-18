@@ -82,11 +82,12 @@ The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets u
 
 ### Prerequisites
 
+- Docker + Docker Compose v2 (recommended path), or
 - Python 3.12 or higher
 - Node.js 18 or higher (for frontend only)
 - UPS Developer Account (for API credentials)
 
-### Installation
+### Quick Start (Docker, Recommended)
 
 1. **Clone the repository**
    ```bash
@@ -94,23 +95,35 @@ The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets u
    cd shipagent
    ```
 
-2. **Set up Python environment**
+2. **Create env file**
    ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   pip install -e ".[dev]"
+   cp .env.example .env
    ```
 
-3. **Install frontend dependencies**
+3. **Edit `.env` and set required credentials**
+   - `ANTHROPIC_API_KEY`
+   - `UPS_CLIENT_ID`
+   - `UPS_CLIENT_SECRET`
+   - `UPS_ACCOUNT_NUMBER`
+   - `FILTER_TOKEN_SECRET` (required; 64 hex chars recommended)
+
+4. **Start ShipAgent**
    ```bash
-   cd frontend
-   npm install
-   cd ..
+   docker compose up -d --build
+   ```
+
+5. **Open the app**
+   - [http://localhost:8000](http://localhost:8000)
+
+6. **Use CLI from host without pip**
+   ```bash
+   ./scripts/shipagent version
+   ./scripts/shipagent job list
    ```
 
 ### Configuration
 
-Create a `.env` file in the project root:
+Key runtime values for Docker/local:
 
 ```bash
 # Anthropic API (required)
@@ -124,31 +137,44 @@ UPS_CLIENT_ID=your_client_id
 UPS_CLIENT_SECRET=your_client_secret
 UPS_ACCOUNT_NUMBER=your_account_number
 
-# UPS Environment (sandbox or production)
-UPS_ENVIRONMENT=sandbox
+# Required for filter-confirmation token signing
+FILTER_TOKEN_SECRET=replace-with-64-char-hex-secret
+
+# Database (canonical setting)
+# Docker default:
+DATABASE_URL=sqlite:////app/data/shipagent.db
 
 # Shopify Integration (optional)
 SHOPIFY_ACCESS_TOKEN=shpat_xxxxxxxxxxxxxxxxxxxxx
 SHOPIFY_STORE_DOMAIN=mystore.myshopify.com
 
-# Database (optional, defaults to SQLite)
-DATABASE_URL=sqlite:///./shipagent.db
+# Optional API hardening
+# SHIPAGENT_API_KEY=your_api_key
+# ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-### Running the Application
+### Local Dev (Without Docker)
 
-1. **Start the backend API server**
+1. **Set up Python environment**
    ```bash
-   ./scripts/start-backend.sh
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -e ".[dev]"
    ```
 
-2. **Start the frontend development server**
+2. **Install frontend dependencies**
    ```bash
    cd frontend
-   npm run dev
+   npm install
+   cd ..
    ```
 
-3. **Open your browser** at http://localhost:5173
+3. **Start backend + frontend**
+   ```bash
+   ./scripts/start-backend.sh
+   cd frontend && npm run dev
+   ```
+   Open [http://localhost:5173](http://localhost:5173)
 
 ### Runtime Policy (Current)
 
@@ -156,6 +182,22 @@ DATABASE_URL=sqlite:///./shipagent.db
 - Use one backend worker (`--workers 1`) while state is process-local (conversation agents, in-memory caches).
 - Startup warns by default unless you set `SHIPAGENT_ALLOW_MULTI_WORKER=true`.
 - Redis/distributed worker support is deferred for a future migration.
+- Liveness endpoint: `GET /health`
+- Readiness endpoint: `GET /readyz`
+
+### Docker Operations
+
+```bash
+# Stop/start
+docker compose stop
+docker compose up -d
+
+# Create backup inside container volume
+docker compose exec shipagent /app/scripts/backup.sh
+
+# Restore from backup (run with service stopped, then start)
+docker compose run --rm shipagent /app/scripts/restore.sh /app/data/backups/shipagent_YYYYMMDD_HHMMSS.db /app/data/backups/labels_YYYYMMDD_HHMMSS.tar.gz
+```
 
 ---
 

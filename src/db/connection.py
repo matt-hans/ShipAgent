@@ -37,8 +37,24 @@ from src.db.models import Base
 
 # Configuration
 def get_database_url() -> str:
-    """Get database URL from environment or use default SQLite."""
-    return os.environ.get("DATABASE_URL", "sqlite:///./shipagent.db")
+    """Get database URL from environment or use default SQLite.
+
+    Precedence:
+    1. DATABASE_URL (canonical)
+    2. SHIPAGENT_DB_PATH (compat fallback, converted to sqlite URL)
+    3. sqlite:///./shipagent.db
+    """
+    database_url = os.environ.get("DATABASE_URL", "").strip()
+    if database_url:
+        return database_url
+
+    db_path = os.environ.get("SHIPAGENT_DB_PATH", "").strip()
+    if db_path:
+        if db_path.startswith("sqlite:"):
+            return db_path
+        return f"sqlite:///{db_path}"
+
+    return "sqlite:///./shipagent.db"
 
 
 def get_async_database_url() -> str:
