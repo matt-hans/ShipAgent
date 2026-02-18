@@ -100,8 +100,6 @@ class InProcessRunner:
             SubmitResult with the real job ID (or session_id as fallback
             if the agent did not create a job).
         """
-        from datetime import UTC, datetime
-
         from src.services.gateway_provider import get_data_gateway
 
         gw = await get_data_gateway()
@@ -115,39 +113,25 @@ class InProcessRunner:
 
         row_count = result.get("rows", 0) if isinstance(result, dict) else 0
 
-        # Record timestamp before processing so we can identify the new job
-        before_ts = datetime.now(UTC).isoformat()
-
         # Create session and send command
         session_id = await self.create_session(interactive=False)
         final_command = command or "Ship all orders"
 
-        # Process through agent — drain all events so the job is created
+        # Process through agent — consume all events and capture job_id from
+        # the preview_ready event, which is the same deterministic source used
+        # by HttpClient.  This avoids the timestamp-based DB query that was
+        # race-prone under concurrent job creation against the same database.
         from src.services.conversation_handler import process_message
 
         session = self._session_manager.get_session(session_id)
         session.add_message("user", final_command)
 
-        async for _event in process_message(session, final_command):
-            pass  # Events consumed — CLI polls for status separately
-
-        # Resolve the job created during this processing window
-        from src.db.connection import get_db as _get_db
-        from src.db.models import Job
-
         job_id = session_id  # fallback if agent did not create a job
-        db = next(_get_db())
-        try:
-            job = (
-                db.query(Job)
-                .filter(Job.created_at >= before_ts)
-                .order_by(Job.created_at.desc())
-                .first()
-            )
-            if job:
-                job_id = job.id
-        finally:
-            db.close()
+        async for event in process_message(session, final_command):
+            if event.get("event") == "preview_ready":
+                captured = event.get("data", {}).get("job_id")
+                if captured:
+                    job_id = captured
 
         return SubmitResult(
             job_id=job_id,
