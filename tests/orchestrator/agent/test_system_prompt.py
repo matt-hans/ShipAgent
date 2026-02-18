@@ -5,7 +5,7 @@ containing all required domain knowledge for the SDK orchestration agent.
 """
 
 from src.orchestrator.agent.system_prompt import build_system_prompt
-from src.services.data_source_service import DataSourceInfo, SchemaColumnInfo
+from src.services.data_source_mcp_client import DataSourceInfo, SchemaColumnInfo
 
 
 def _make_source_info() -> DataSourceInfo:
@@ -43,17 +43,16 @@ def test_prompt_contains_service_codes():
 
 
 def test_prompt_contains_filter_rules():
-    """System prompt includes filter generation rules from filter_generator.py."""
+    """System prompt includes FilterIntent schema documentation."""
     prompt = build_system_prompt()
-    # Person name disambiguation
-    assert "customer_name" in prompt
-    assert "ship_to_name" in prompt
-    # Status handling
-    assert "financial_status" in prompt or "fulfillment_status" in prompt
-    # Weight handling
-    assert "total_weight_grams" in prompt or "453" in prompt
-    # Tag handling
-    assert "tags" in prompt.lower()
+    # FilterIntent schema
+    assert "FilterIntent" in prompt
+    assert "resolve_filter_intent" in prompt
+    # NEVER generate SQL instruction
+    assert "NEVER generate" in prompt
+    # Operator reference
+    assert "eq" in prompt
+    assert "contains_ci" in prompt
 
 
 def test_prompt_includes_source_schema():
@@ -67,6 +66,22 @@ def test_prompt_includes_source_schema():
     assert "created_at" in prompt
     assert "150" in prompt  # row count
     assert "csv" in prompt.lower()
+
+
+def test_prompt_truncates_long_column_samples(monkeypatch):
+    """Long sample values should be truncated to control token usage."""
+    monkeypatch.setenv("SYSTEM_PROMPT_SAMPLE_MAX_CHARS", "30")
+    source = _make_source_info()
+    prompt = build_system_prompt(
+        source_info=source,
+        column_samples={
+            "customer_name": [
+                "A" * 120,
+            ],
+        },
+    )
+    assert "..." in prompt
+    assert "A" * 80 not in prompt
 
 
 def test_prompt_without_source_shows_no_connection():
@@ -212,6 +227,12 @@ class TestInteractiveShippingPromptConditioning:
         prompt = build_system_prompt(interactive_shipping=True)
         assert "preview_interactive_shipment" in prompt
 
+    def test_interactive_prompt_defaults_attention_without_confirmation_question(self):
+        """Interactive prompt should default attention name and avoid confirmation asks."""
+        prompt = build_system_prompt(interactive_shipping=True)
+        assert "Default `ship_to_attention_name` to recipient name automatically." in prompt
+        assert "Do NOT ask \"is recipient name the attention name?\"" in prompt
+
     def test_interactive_prompt_denies_direct_create_shipment(self):
         """Interactive prompt tells agent not to call create_shipment directly."""
         prompt = build_system_prompt(interactive_shipping=True)
@@ -219,10 +240,10 @@ class TestInteractiveShippingPromptConditioning:
         assert "mcp__ups__create_shipment" in prompt
 
     def test_interactive_prompt_requires_service_parameter(self):
-        """Interactive prompt enforces explicit service parameter passing."""
+        """Interactive prompt carries explicit service + discovery guidance."""
         prompt = build_system_prompt(interactive_shipping=True)
         assert "ALWAYS pass this as the `service` parameter" in prompt
-        assert "NEVER omit the `service` parameter" in prompt
+        assert "optional at first pass" in prompt
 
     def test_safety_rules_always_present(self):
         """Safety rules are present regardless of interactive flag."""

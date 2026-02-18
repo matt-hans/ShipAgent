@@ -152,6 +152,13 @@ def test_session_has_prewarm_task_attribute():
     assert session.prewarm_task is None
 
 
+def test_session_has_message_tasks_set():
+    """Session tracks in-flight message tasks."""
+    session = AgentSession("test")
+    assert isinstance(session.message_tasks, set)
+    assert len(session.message_tasks) == 0
+
+
 def test_session_agent_can_be_set():
     """Agent can be set on a session externally."""
     session = AgentSession("test")
@@ -258,4 +265,22 @@ async def test_cancel_session_prewarm_task_cancels_active_task():
     session.prewarm_task = task
     await mgr.cancel_session_prewarm_task("sess-1")
     assert session.prewarm_task is None
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_message_tasks_cancels_active_tasks():
+    """Active message tasks are cancelled and cleared."""
+    mgr = AgentSessionManager()
+    session = mgr.get_or_create_session("sess-1")
+
+    async def _work() -> None:
+        await asyncio.sleep(5)
+
+    task = asyncio.create_task(_work())
+    session.message_tasks.add(task)
+
+    await mgr.cancel_session_message_tasks("sess-1")
+
+    assert len(session.message_tasks) == 0
     assert task.cancelled()

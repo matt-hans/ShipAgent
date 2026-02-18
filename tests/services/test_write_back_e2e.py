@@ -180,7 +180,7 @@ async def _import_and_build_job(
     mcp_client: DataSourceMCPClient,
     file_path: str,
     job_service: JobService,
-    where_clause: str | None = None,
+    where_sql: str | None = None,
     is_excel: bool = False,
 ) -> tuple[str, list[Any]]:
     """Import file via MCP, fetch rows, create job + rows, return (job_id, db_rows).
@@ -194,7 +194,7 @@ async def _import_and_build_job(
 
     # Fetch rows through MCP (applies _source_row_num)
     flat_rows = await mcp_client.get_rows_by_filter(
-        where_clause=where_clause, limit=1000
+        where_sql=where_sql, limit=1000
     )
 
     # Build job row data (uses _row_number from normalized rows)
@@ -437,7 +437,7 @@ class TestWriteBackE2E:
         try:
             job_id, db_rows = await _import_and_build_job(
                 mcp, csv_path, job_service,
-                where_clause="state = 'CA'",
+                where_sql="state = 'CA'",
             )
             assert len(db_rows) == 3
             source_positions = sorted(r.row_number for r in db_rows)
@@ -506,7 +506,7 @@ class TestWriteBackE2E:
         try:
             job_id, db_rows = await _import_and_build_job(
                 mcp, xlsx_path, job_service,
-                where_clause="state = 'CA'",
+                where_sql="state = 'CA'",
                 is_excel=True,
             )
             assert len(db_rows) == 3
@@ -570,7 +570,7 @@ class TestWriteBackE2E:
         try:
             job_id, db_rows = await _import_and_build_job(
                 mcp, csv_path, job_service,
-                where_clause="state = 'HI'",
+                where_sql="state = 'HI'",
             )
             assert len(db_rows) == 4
             source_positions = sorted(r.row_number for r in db_rows)

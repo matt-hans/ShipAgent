@@ -39,6 +39,7 @@ class TestMixedBatchValidation:
             assert "MISSING_SHIPPER_PHONE" in codes
             assert "MISSING_RECIPIENT_PHONE" in codes
             assert "MISSING_SHIPPER_ATTENTION_NAME" in codes
+            # Without recipient name, no fallback attention can be derived.
             assert "MISSING_RECIPIENT_ATTENTION_NAME" in codes
 
     def test_international_row_missing_description_fails(self):

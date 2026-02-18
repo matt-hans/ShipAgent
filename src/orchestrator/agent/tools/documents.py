@@ -17,6 +17,7 @@ from src.orchestrator.agent.tools.core import (
     _ok,
 )
 from src.services.errors import UPSServiceError
+from src.services.paperless_constants import UPS_PAPERLESS_UI_ACCEPTED_FORMATS
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +54,7 @@ async def request_document_upload_tool(
         Tool response confirming the upload form was displayed.
     """
     payload: dict[str, Any] = {
-        "accepted_formats": [
-            "pdf", "doc", "docx", "xls", "xlsx",
-            "jpg", "jpeg", "png", "tif", "gif",
-        ],
+        "accepted_formats": list(UPS_PAPERLESS_UI_ACCEPTED_FORMATS),
         "document_types": DOCUMENT_TYPE_OPTIONS,
         "prompt": args.get("prompt", "Please upload your customs document."),
     }
@@ -110,21 +108,28 @@ async def upload_paperless_document_tool(
     try:
         client = await _get_ups_client()
         result = await client.upload_document(**args)
-        doc_id = result.get("documentId", "")
+        document_ids = result.get("documentIds", [])
+        doc_id = str(result.get("documentId", "") or "")
+        if not doc_id and isinstance(document_ids, list) and document_ids:
+            doc_id = str(document_ids[0])
 
         payload: dict[str, Any] = {
             "action": "uploaded",
-            "success": True,
-            "documentId": doc_id,
+            **result,
             "fileName": file_name,
             "fileFormat": file_format,
             "documentType": document_type,
         }
+        payload.setdefault("success", True)
+        if doc_id:
+            payload["documentId"] = doc_id
         if file_size_bytes is not None:
             payload["fileSizeBytes"] = file_size_bytes
 
         _emit_event("paperless_result", payload, bridge=bridge)
-        return _ok(f"Document uploaded. ID: {doc_id}")
+        if doc_id:
+            return _ok(f"Document uploaded. ID: {doc_id}")
+        return _ok("Document uploaded to UPS Forms History.")
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
     except Exception as e:

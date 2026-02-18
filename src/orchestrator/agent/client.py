@@ -69,6 +69,7 @@ DEFAULT_MODEL = (
 )
 
 logger = logging.getLogger(__name__)
+_HAS_STREAM_EVENT = True
 
 
 def _create_orchestrator_mcp_server(

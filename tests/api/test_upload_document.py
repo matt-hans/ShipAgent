@@ -161,7 +161,10 @@ class TestUploadDocument:
         """Various allowed formats are accepted."""
         session_id = _create_session()
 
-        for ext in ["pdf", "doc", "docx", "xls", "xlsx", "jpg", "png", "tif", "gif"]:
+        for ext in [
+            "bmp", "doc", "docx", "gif", "jpg", "pdf",
+            "png", "rtf", "tif", "txt", "xls", "xlsx",
+        ]:
             files = {"file": (f"file.{ext}", io.BytesIO(b"data"), "application/octet-stream")}
             data = {"document_type": "002"}
 
@@ -175,3 +178,22 @@ class TestUploadDocument:
                     data=data,
                 )
             assert resp.status_code == 200, f"Format {ext} should be allowed"
+
+    def test_upload_alias_extension_is_normalized(self):
+        """Compatibility aliases normalize to UPS canonical formats."""
+        session_id = _create_session()
+        files = {"file": ("invoice.jpeg", io.BytesIO(b"img"), "image/jpeg")}
+        data = {"document_type": "002"}
+
+        with patch(
+            "src.api.routes.conversations._process_agent_message",
+            new_callable=AsyncMock,
+        ):
+            resp = client.post(
+                f"/api/v1/conversations/{session_id}/upload-document",
+                files=files,
+                data=data,
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["file_format"] == "jpg"

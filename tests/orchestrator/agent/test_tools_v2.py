@@ -24,13 +24,9 @@ from src.orchestrator.agent.tools.data import (
     get_platform_status_tool,
     get_schema_tool,
     get_source_info_tool,
-    validate_filter_syntax_tool,
 )
 from src.orchestrator.agent.tools.pipeline import (
-    add_rows_to_job_tool,
     batch_execute_tool,
-    batch_preview_tool,
-    create_job_tool,
     get_job_status_tool,
     ship_command_pipeline_tool,
 )
@@ -116,8 +112,8 @@ async def test_get_schema_returns_columns():
 
 
 @pytest.mark.asyncio
-async def test_fetch_rows_with_valid_filter():
-    """Fetches rows using the provided WHERE clause."""
+async def test_fetch_rows_with_all_rows():
+    """Fetches all rows using the all_rows=true path."""
     rows = [{"order_id": 1, "state": "CA"}]
     bridge = EventEmitterBridge()
 
@@ -129,7 +125,7 @@ async def test_fetch_rows_with_valid_filter():
         mock_gw_fn.return_value = mock_gw
 
         result = await fetch_rows_tool(
-            {"where_clause": "state = 'CA'", "limit": 10},
+            {"all_rows": True, "limit": 10},
             bridge=bridge,
         )
 
@@ -156,7 +152,7 @@ async def test_fetch_rows_include_rows_returns_full_payload():
 
         result = await fetch_rows_tool(
             {
-                "where_clause": "state = 'CA'",
+                "all_rows": True,
                 "limit": 10,
                 "include_rows": True,
             },
@@ -168,160 +164,14 @@ async def test_fetch_rows_include_rows_returns_full_payload():
     assert data["rows"][0]["state"] == "CA"
 
 
-@pytest.mark.asyncio
-async def test_add_rows_to_job_uses_fetch_id_cache():
-    """add_rows_to_job accepts fetch_id and resolves rows from cache."""
-    rows = [{"order_id": 1, "state": "CA"}]
-    bridge = EventEmitterBridge()
-
-    with patch(
-        "src.orchestrator.agent.tools.data.get_data_gateway"
-    ) as mock_gw_fn:
-        mock_gw = AsyncMock()
-        mock_gw.get_rows_by_filter.return_value = rows
-        mock_gw_fn.return_value = mock_gw
-        fetch_res = await fetch_rows_tool(
-            {"where_clause": "state = 'CA'"},
-            bridge=bridge,
-        )
-
-    fetch_data = json.loads(fetch_res["content"][0]["text"])
-    fetch_id = fetch_data["fetch_id"]
-
-    with patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx:
-        mock_db = MagicMock()
-        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
-
-        with patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS:
-            MockJS.return_value.create_rows.return_value = [MagicMock()]
-            result = await add_rows_to_job_tool(
-                {
-                    "job_id": "job-123",
-                    "fetch_id": fetch_id,
-                },
-                bridge=bridge,
-            )
-
-    assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["rows_added"] == 1
-
-
-@pytest.mark.asyncio
-async def test_add_rows_to_job_auto_maps_csv_columns_to_canonical_order_data():
-    """CSV-style headers are normalized to ship_to_* fields before persistence."""
-    rows = [
-        {
-            "Recipient Name": "Alice",
-            "Address": "123 Main St",
-            "City": "Los Angeles",
-            "State": "CA",
-            "ZIP": "90001",
-            "Country": "US",
-            "Weight": 2.5,
-            "Service": "Ground",
-        }
-    ]
-
-    captured_row_data: list[dict[str, Any]] = []
-
-    with patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx:
-        mock_db = MagicMock()
-        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
-
-        with patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS:
-
-            def _capture(job_id, row_data):
-                captured_row_data.extend(row_data)
-                return [MagicMock()]
-
-            MockJS.return_value.create_rows.side_effect = _capture
-            result = await add_rows_to_job_tool(
-                {
-                    "job_id": "job-123",
-                    "rows": rows,
-                }
-            )
-
-    assert result["isError"] is False
-    assert captured_row_data
-    order_data = json.loads(captured_row_data[0]["order_data"])
-    assert order_data["ship_to_name"] == "Alice"
-    assert order_data["ship_to_address1"] == "123 Main St"
-    assert order_data["ship_to_city"] == "Los Angeles"
-    assert order_data["ship_to_state"] == "CA"
-    assert order_data["ship_to_postal_code"] == "90001"
-    assert order_data["ship_to_country"] == "US"
-    assert order_data["service_code"] == "03"
-
-
-# ---------------------------------------------------------------------------
-# validate_filter_syntax_tool
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_validate_filter_syntax_valid():
-    """Valid SQL WHERE clause passes validation."""
-    result = await validate_filter_syntax_tool({"where_clause": "state = 'CA'"})
-    assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["valid"] is True
-
-
-@pytest.mark.asyncio
-async def test_validate_filter_syntax_invalid():
-    """Invalid SQL WHERE clause is caught."""
-    result = await validate_filter_syntax_tool({"where_clause": "SELECT DROP TABLE"})
-    assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["valid"] is False
-
-
-# ---------------------------------------------------------------------------
-# create_job_tool
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_create_job_returns_job_id():
-    """Creates a job and returns its ID."""
-    mock_job = MagicMock()
-    mock_job.id = "test-job-123"
-    mock_job.status = "pending"
-
-    with (
-        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
-        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
-        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
-    ):
-        mock_db = MagicMock()
-        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
-        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
-        MockJS.return_value.create_job.return_value = mock_job
-
-        result = await create_job_tool(
-            {
-                "name": "Ship CA orders",
-                "command": "Ship California orders via Ground",
-            }
-        )
-
-    assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["job_id"] == "test-job-123"
-
-
 # ---------------------------------------------------------------------------
 # ship_command_pipeline_tool
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_ship_command_pipeline_success_with_where_clause_none():
-    """Pipeline fetches all rows when where_clause is omitted/None."""
+async def test_ship_command_pipeline_success_with_all_rows():
+    """Pipeline fetches all rows when all_rows=true is provided."""
     fetched_rows = [{"order_id": "1", "service_code": "03"}]
     preview_result = {
         "job_id": "job-1",
@@ -365,15 +215,142 @@ async def test_ship_command_pipeline_success_with_where_clause_none():
         result = await ship_command_pipeline_tool(
             {
                 "command": "Ship all orders",
-                "where_clause": None,
+                "all_rows": True,
             }
         )
 
     assert result["isError"] is False
-    mock_gw.get_rows_by_filter.assert_awaited_once_with(where_clause=None, limit=250)
+    mock_gw.get_rows_by_filter.assert_awaited_once_with(
+        where_sql="1=1", limit=250, params=[],
+    )
     payload = json.loads(result["content"][0]["text"])
     assert payload["status"] == "preview_ready"
     assert payload["job_id"] == "job-1"
+
+
+@pytest.mark.asyncio
+async def test_ship_command_pipeline_threads_schema_fingerprint_to_build_job_row_data():
+    """Pipeline passes source signature to row normalization/build path."""
+    fetched_rows = [{"order_id": "1", "service_code": "03"}]
+    preview_result = {
+        "job_id": "job-fp",
+        "total_rows": 1,
+        "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
+        "total_estimated_cost_cents": 1000,
+    }
+
+    with (
+        patch("src.orchestrator.agent.tools.pipeline.get_data_gateway") as mock_gw_fn,
+        patch(
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch("src.services.ups_payload_builder.build_shipper", return_value={"name": "Store"}),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
+        patch(
+            "src.orchestrator.agent.tools.pipeline._build_job_row_data_with_metadata",
+            return_value=(
+                [
+                    {
+                        "row_number": 1,
+                        "row_checksum": "abc",
+                        "order_data": json.dumps({"service_code": "03"}),
+                    }
+                ],
+                "map-hash-123",
+            ),
+        ) as mock_build,
+    ):
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info.return_value = {
+            "source_type": "csv",
+            "row_count": 1,
+            "columns": [{"name": "order_id", "type": "VARCHAR", "nullable": True}],
+            "signature": "sig-thread-test",
+        }
+        mock_gw.get_rows_by_filter.return_value = fetched_rows
+        mock_gw_fn.return_value = mock_gw
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-fp"
+        MockJS.return_value.create_job.return_value = mock_job
+        MockJS.return_value.get_rows.return_value = [
+            MagicMock(row_number=1, order_data=json.dumps({"service_code": "03"})),
+        ]
+
+        MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
+
+        result = await ship_command_pipeline_tool(
+            {"command": "Ship all orders", "all_rows": True}
+        )
+
+    assert result["isError"] is False
+    mock_build.assert_called_once()
+    kwargs = mock_build.call_args.kwargs
+    assert kwargs["schema_fingerprint"] == "sig-thread-test"
+
+
+@pytest.mark.asyncio
+async def test_ship_command_pipeline_enriches_preview_from_persisted_job_rows():
+    """Preview row enrichment should use persisted order_data, not fetched_rows re-normalization."""
+    fetched_rows = [{"order_id": "1", "service_code": "01"}]
+    preview_result = {
+        "job_id": "job-row-map",
+        "total_rows": 1,
+        "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
+        "total_estimated_cost_cents": 1000,
+    }
+
+    with (
+        patch("src.orchestrator.agent.tools.pipeline.get_data_gateway") as mock_gw_fn,
+        patch(
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch("src.services.ups_payload_builder.build_shipper", return_value={"name": "Store"}),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
+    ):
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info.return_value = {
+            "source_type": "csv",
+            "row_count": 1,
+            "columns": [{"name": "order_id", "type": "VARCHAR", "nullable": True}],
+            "signature": "sig-row-map",
+        }
+        mock_gw.get_rows_by_filter.return_value = fetched_rows
+        mock_gw_fn.return_value = mock_gw
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-row-map"
+        mock_job_service = MockJS.return_value
+        mock_job_service.create_job.return_value = mock_job
+        mock_job_service.get_rows.return_value = [
+            MagicMock(row_number=1, order_data=json.dumps({"service_code": "03"})),
+        ]
+        mock_job_service.create_rows.return_value = [MagicMock()]
+
+        MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
+
+        result = await ship_command_pipeline_tool(
+            {"command": "Ship all orders", "all_rows": True}
+        )
+
+    assert result["isError"] is False
+    assert preview_result["preview_rows"][0]["service"] == "UPS Ground"
 
 
 @pytest.mark.asyncio
@@ -431,8 +408,9 @@ async def test_ship_command_pipeline_applies_explicit_service_override_to_rows()
 
         result = await ship_command_pipeline_tool(
             {
-                "command": "ship all california orders via UPS Ground",
+                "command": "ship all orders via UPS Ground",
                 "service_code": "03",
+                "all_rows": True,
             }
         )
 
@@ -502,9 +480,10 @@ async def test_ship_command_pipeline_ignores_implicit_service_code_default():
 
         result = await ship_command_pipeline_tool(
             {
-                "command": "ship all california orders",
+                "command": "ship all orders",
                 # Simulates agent filling an implicit default even though user did not.
                 "service_code": "03",
+                "all_rows": True,
             }
         )
 
@@ -555,7 +534,7 @@ async def test_ship_command_pipeline_create_rows_failure_deletes_job():
         result = await ship_command_pipeline_tool(
             {
                 "command": "Ship all orders",
-                "where_clause": None,
+                "all_rows": True,
             }
         )
 
@@ -606,6 +585,7 @@ async def test_ship_command_pipeline_preview_failure_preserves_job_and_returns_j
         result = await ship_command_pipeline_tool(
             {
                 "command": "Ship all orders",
+                "all_rows": True,
             }
         )
 
@@ -673,63 +653,6 @@ async def test_get_job_status_returns_summary():
     assert data["total_rows"] == 10
 
 
-# ---------------------------------------------------------------------------
-# batch_preview_tool
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_batch_preview_returns_preview_data():
-    """Preview tool returns a slim LLM payload while keeping SSE payload full."""
-    preview_result = {
-        "job_id": "test-job",
-        "total_rows": 5,
-        "total_estimated_cost_cents": 3500,
-        "preview_rows": [],
-    }
-
-    with patch("src.orchestrator.agent.tools.pipeline._run_batch_preview") as mock_preview:
-        mock_preview.return_value = preview_result
-        result = await batch_preview_tool({"job_id": "test-job"})
-
-    assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert data["status"] == "preview_ready"
-    assert data["total_rows"] == 5
-    assert data["total_estimated_cost_cents"] == 3500
-    assert "preview_rows" not in data
-    assert "STOP HERE" in data["message"]
-
-
-@pytest.mark.asyncio
-async def test_batch_preview_uses_emit_preview_ready_helper():
-    """batch_preview_tool delegates response construction to _emit_preview_ready."""
-    preview_result = {
-        "job_id": "test-job",
-        "total_rows": 5,
-        "total_estimated_cost_cents": 3500,
-        "preview_rows": [],
-    }
-    bridge = EventEmitterBridge()
-
-    with (
-        patch(
-            "src.orchestrator.agent.tools.pipeline._run_batch_preview",
-            new=AsyncMock(return_value=preview_result),
-        ),
-        patch(
-            "src.orchestrator.agent.tools.pipeline._emit_preview_ready",
-            return_value={
-                "isError": False,
-                "content": [{"type": "text", "text": "{}"}],
-            },
-        ) as mock_emit,
-    ):
-        await batch_preview_tool({"job_id": "test-job"}, bridge=bridge)
-
-    mock_emit.assert_called_once()
-
-
 @pytest.mark.asyncio
 async def test_ship_command_pipeline_uses_emit_preview_ready_helper():
     """ship_command_pipeline_tool delegates final payload to _emit_preview_ready."""
@@ -781,7 +704,7 @@ async def test_ship_command_pipeline_uses_emit_preview_ready_helper():
         MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
 
         await ship_command_pipeline_tool(
-            {"command": "Ship all orders"},
+            {"command": "Ship all orders", "all_rows": True},
             bridge=bridge,
         )
 
@@ -853,8 +776,10 @@ def test_tool_definitions_unfiltered_when_interactive_disabled():
     defs = get_all_tool_definitions(interactive_shipping=False)
     names = {d["name"] for d in defs}
     assert "ship_command_pipeline" in names
-    assert "batch_preview" in names
     assert "fetch_rows" in names
+    assert "create_job" not in names
+    assert "add_rows_to_job" not in names
+    assert "batch_preview" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -902,86 +827,6 @@ def test_emit_event_isolated_between_bridges():
     assert captured_b == []
 
 
-@pytest.mark.asyncio
-async def test_batch_preview_emits_preview_ready():
-    """batch_preview_tool emits preview_ready event to the registered callback."""
-    preview_result = {
-        "job_id": "test-job",
-        "total_rows": 2,
-        "total_estimated_cost_cents": 2400,
-        "preview_rows": [
-            {"row_number": 1, "recipient_name": "Alice", "estimated_cost_cents": 1200},
-            {
-                "row_number": 2,
-                "recipient_name": "Bob",
-                "estimated_cost_cents": 1200,
-                "rate_error": "Bad address",
-            },
-        ],
-    }
-
-    captured = []
-    bridge = EventEmitterBridge()
-
-    def callback(event_type: str, data: dict) -> None:
-        captured.append((event_type, data))
-
-    bridge.callback = callback
-    with (
-        patch("src.orchestrator.agent.tools.pipeline._run_batch_preview") as mock_preview,
-        patch("src.orchestrator.agent.tools.pipeline._enrich_preview_rows") as mock_enrich,
-    ):
-        mock_preview.return_value = preview_result
-        # _enrich_preview_rows modifies rows in place; simulate no-op
-        mock_enrich.return_value = preview_result["preview_rows"]
-
-        result = await batch_preview_tool({"job_id": "test-job"}, bridge=bridge)
-
-    assert result["isError"] is False
-    assert len(captured) == 1
-    assert captured[0][0] == "preview_ready"
-    assert captured[0][1]["job_id"] == "test-job"
-    assert "preview_rows" in captured[0][1]
-
-
-@pytest.mark.asyncio
-async def test_batch_preview_emits_before_ok_return():
-    """_emit_event is called before _ok return construction."""
-    preview_result = {
-        "job_id": "test-job",
-        "total_rows": 1,
-        "total_estimated_cost_cents": 123,
-        "preview_rows": [],
-    }
-    call_order: list[str] = []
-
-    def _capture_emit(*_args, **_kwargs) -> None:
-        call_order.append("emit")
-
-    def _capture_ok(payload: dict) -> dict:
-        call_order.append("ok")
-        return {
-            "isError": False,
-            "content": [{"type": "text", "text": json.dumps(payload)}],
-        }
-
-    with (
-        patch(
-            "src.orchestrator.agent.tools.pipeline._run_batch_preview",
-            new=AsyncMock(return_value=preview_result),
-        ),
-        patch(
-            "src.orchestrator.agent.tools.pipeline._enrich_preview_rows",
-            return_value=preview_result["preview_rows"],
-        ),
-        patch("src.orchestrator.agent.tools.core._emit_event", side_effect=_capture_emit),
-        patch("src.orchestrator.agent.tools.core._ok", side_effect=_capture_ok),
-    ):
-        await batch_preview_tool({"job_id": "test-job"})
-
-    assert call_order == ["emit", "ok"]
-
-
 def test_emit_preview_ready_payload_shape():
     """_emit_preview_ready returns the expected slim payload schema."""
     bridge = EventEmitterBridge()
@@ -999,33 +844,6 @@ def test_emit_preview_ready_payload_shape():
     assert payload["status"] == "preview_ready"
     assert payload["job_id"] == "job-1"
     assert payload["rows_with_warnings"] == 1
-
-
-@pytest.mark.asyncio
-async def test_fetch_cache_isolated_between_bridges():
-    """fetch_id created on one bridge is not visible to another bridge."""
-    rows = [{"order_id": 1, "state": "CA"}]
-    bridge_a = EventEmitterBridge()
-    bridge_b = EventEmitterBridge()
-
-    with patch(
-        "src.orchestrator.agent.tools.data.get_data_gateway"
-    ) as mock_gw_fn:
-        mock_gw = AsyncMock()
-        mock_gw.get_rows_by_filter.return_value = rows
-        mock_gw_fn.return_value = mock_gw
-        fetch_res = await fetch_rows_tool(
-            {"where_clause": "state = 'CA'"},
-            bridge=bridge_a,
-        )
-
-    fetch_id = json.loads(fetch_res["content"][0]["text"])["fetch_id"]
-    result = await add_rows_to_job_tool(
-        {"job_id": "job-123", "fetch_id": fetch_id},
-        bridge=bridge_b,
-    )
-    assert result["isError"] is True
-    assert "fetch_id not found" in result["content"][0]["text"]
 
 
 def test_preview_data_normalization():
@@ -1317,7 +1135,6 @@ async def test_rate_pickup_tool_success():
 
         result = await rate_pickup_tool(
             {
-                "pickup_type": "oncall",
                 "address_line": "123 Main",
                 "city": "Austin",
                 "state": "TX",
@@ -1336,6 +1153,7 @@ async def test_rate_pickup_tool_success():
 
     assert len(captured) == 1
     assert captured[0][0] == "pickup_preview"
+    assert mock_ups.rate_pickup.await_args.kwargs["pickup_type"] == "oncall"
 
 
 @pytest.mark.asyncio
@@ -1362,7 +1180,7 @@ async def test_rate_pickup_tool_emits_pickup_preview_event():
 
         result = await rate_pickup_tool(
             {
-                "pickup_type": "oncall",
+                "pickup_type": "smart",
                 "address_line": "123 Main St",
                 "city": "Dallas",
                 "state": "TX",
@@ -1386,6 +1204,8 @@ async def test_rate_pickup_tool_emits_pickup_preview_event():
     assert payload["contact_name"] == "John Smith"
     assert payload["grand_total"] == "9.65"
     assert payload["charges"][0]["chargeLabel"] == "Base Charge"
+    assert payload["pickup_type"] == "oncall"
+    assert mock_ups.rate_pickup.await_args.kwargs["pickup_type"] == "oncall"
 
 
 @pytest.mark.asyncio
@@ -1408,7 +1228,7 @@ async def test_get_pickup_status_tool_success():
         from src.orchestrator.agent.tools.pickup import get_pickup_status_tool
 
         result = await get_pickup_status_tool(
-            {"pickup_type": "oncall"},
+            {},
             bridge=bridge,
         )
 
@@ -1419,6 +1239,7 @@ async def test_get_pickup_status_tool_success():
     assert len(captured) == 1
     assert captured[0][0] == "pickup_result"
     assert captured[0][1]["action"] == "status"
+    assert mock_ups.get_pickup_status.await_args.kwargs["pickup_type"] == "oncall"
 
 
 @pytest.mark.asyncio
@@ -1456,6 +1277,86 @@ async def test_find_locations_tool_emits_location_result():
     assert len(captured) == 1
     assert captured[0][0] == "location_result"
     assert len(captured[0][1]["locations"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_find_locations_tool_maps_services_to_general():
+    """location_type=services is coerced to general for drop-off list results."""
+    mock_ups = AsyncMock()
+    mock_ups.find_locations.return_value = {"success": True, "locations": [{"id": "L1"}]}
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import find_locations_tool
+
+        result = await find_locations_tool(
+            {
+                "location_type": "services",
+                "address_line": "",
+                "city": "Atlanta",
+                "state": "GA",
+                "postal_code": "",
+                "country_code": "us",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    assert captured[0][0] == "location_result"
+    mock_ups.find_locations.assert_awaited_once()
+    call_kwargs = mock_ups.find_locations.await_args.kwargs
+    assert call_kwargs["location_type"] == "general"
+    assert call_kwargs["country_code"] == "US"
+
+
+@pytest.mark.asyncio
+async def test_find_locations_tool_retries_general_when_empty():
+    """If a narrow mode is empty, tool retries once with general mode."""
+    mock_ups = AsyncMock()
+    mock_ups.find_locations = AsyncMock(
+        side_effect=[
+            {"success": True, "locations": []},
+            {"success": True, "locations": [{"id": "L2"}]},
+        ]
+    )
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import find_locations_tool
+
+        result = await find_locations_tool(
+            {
+                "location_type": "retail",
+                "address_line": "",
+                "city": "Atlanta",
+                "state": "GA",
+                "postal_code": "",
+                "country_code": "US",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    assert captured[0][1]["locations"] == [{"id": "L2"}]
+    assert mock_ups.find_locations.await_count == 2
+    first_kwargs = mock_ups.find_locations.await_args_list[0].kwargs
+    second_kwargs = mock_ups.find_locations.await_args_list[1].kwargs
+    assert first_kwargs["location_type"] == "retail"
+    assert second_kwargs["location_type"] == "general"
 
 
 @pytest.mark.asyncio
@@ -1698,7 +1599,9 @@ async def test_get_landed_cost_tool_emits_event():
                 "currency_code": "USD",
                 "export_country_code": "US",
                 "import_country_code": "GB",
-                "commodities": [{"price": 25.00, "quantity": 2}],
+                "commodities": [
+                    {"price": 25.00, "quantity": 2, "description": "Widget"},
+                ],
             },
             bridge=bridge,
         )
@@ -1710,6 +1613,10 @@ async def test_get_landed_cost_tool_emits_event():
     assert len(captured) == 1
     assert captured[0][0] == "landed_cost_result"
     assert captured[0][1]["totalLandedCost"] == "45.23"
+    assert captured[0][1]["requestSummary"]["exportCountryCode"] == "US"
+    assert captured[0][1]["requestSummary"]["importCountryCode"] == "GB"
+    assert captured[0][1]["requestSummary"]["commodityCount"] == 1
+    assert captured[0][1]["items"][0]["itemLabel"] == "Widget"
 
 
 @pytest.mark.asyncio
@@ -1884,8 +1791,8 @@ async def test_e2e_landed_cost_flow_tool_to_event():
                 "export_country_code": "US",
                 "import_country_code": "GB",
                 "commodities": [
-                    {"price": 50.00, "quantity": 1, "hs_code": "6109.10"},
-                    {"price": 75.00, "quantity": 1, "hs_code": "6110.20"},
+                    {"price": 50.00, "quantity": 1, "hs_code": "6109.10", "description": "Cotton Shirt"},
+                    {"price": 75.00, "quantity": 1, "hs_code": "6110.20", "description": "Wool Sweater"},
                 ],
             },
             bridge=bridge,
@@ -1902,6 +1809,10 @@ async def test_e2e_landed_cost_flow_tool_to_event():
     assert event_type == "landed_cost_result"
     assert event_data["totalLandedCost"] == "87.50"
     assert len(event_data["items"]) == 2
+    assert event_data["items"][0]["itemLabel"] == "Cotton Shirt"
+    assert event_data["items"][1]["itemLabel"] == "Wool Sweater"
+    assert event_data["requestSummary"]["commodityCount"] == 2
+    assert event_data["requestSummary"]["totalUnits"] == 2
 
 
 # ---------------------------------------------------------------------------

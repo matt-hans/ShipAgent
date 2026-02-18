@@ -136,6 +136,47 @@ function ChargeBreakdownDetail({ breakdown }: { breakdown: ChargeBreakdown }) {
   );
 }
 
+/** Collapsible filter explanation bar for batch preview transparency. */
+function FilterExplanationBar({
+  explanation,
+  compiledFilter,
+  filterAudit,
+}: {
+  explanation: string;
+  compiledFilter?: string;
+  filterAudit?: { spec_hash: string; compiled_hash: string; schema_signature: string; dict_version: string };
+}) {
+  const [showCompiled, setShowCompiled] = React.useState(false);
+
+  return (
+    <div
+      className="rounded-lg bg-slate-800/40 border border-slate-700/50 px-3 py-2 space-y-1.5"
+      data-spec-hash={filterAudit?.spec_hash}
+      data-compiled-hash={filterAudit?.compiled_hash}
+      data-schema-signature={filterAudit?.schema_signature}
+      data-dict-version={filterAudit?.dict_version}
+    >
+      <p className="text-sm text-slate-300">{explanation}</p>
+      {compiledFilter && (
+        <>
+          <button
+            onClick={() => setShowCompiled(!showCompiled)}
+            className="flex items-center gap-1 text-[10px] font-mono text-slate-500 hover:text-slate-300 transition-colors"
+          >
+            <ChevronDownIcon className={cn('w-3 h-3 transition-transform', showCompiled && 'rotate-180')} />
+            <span>View compiled filter</span>
+          </button>
+          {showCompiled && (
+            <pre className="mt-1 bg-slate-900/80 border border-slate-700/50 rounded px-2.5 py-2 text-[10px] font-mono text-slate-400 overflow-x-auto max-h-32 overflow-y-auto">
+              {compiledFilter}
+            </pre>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Single collapsible shipment row with warnings. */
 export function ShipmentRow({
   row,
@@ -156,7 +197,7 @@ export function ShipmentRow({
       <button
         onClick={hasDetails ? onToggle : undefined}
         className={cn(
-          'w-full flex items-center justify-between px-3 py-2.5 text-xs transition-colors',
+          'w-full flex items-center justify-between px-3 py-2 text-xs transition-colors',
           hasDetails && 'hover:bg-slate-800/30 cursor-pointer',
           !hasDetails && 'cursor-default',
           isExpanded && 'bg-slate-800/20'
@@ -238,9 +279,9 @@ export function ShipmentRow({
   );
 }
 
-const COLLAPSED_ROW_COUNT = 6;
+const COLLAPSED_ROW_COUNT = 4;
 
-/** List of shipment rows with expand/collapse for 6+ rows. */
+/** List of shipment rows with expand/collapse for larger batches. */
 export function ShipmentList({
   rows,
   expandedRows,
@@ -258,7 +299,7 @@ export function ShipmentList({
     <div className="space-y-0">
       <div className={cn(
         'overflow-y-auto rounded-md border border-slate-800 scrollable',
-        isListExpanded ? 'max-h-[60vh]' : 'max-h-none'
+        isListExpanded ? 'max-h-[52vh]' : 'max-h-[15rem]'
       )}>
         {visibleRows.map((row) => (
           <ShipmentRow
@@ -314,8 +355,12 @@ export function PreviewCard({
   const [refinementInput, setRefinementInput] = React.useState('');
   const [showWarningGate, setShowWarningGate] = React.useState(false);
   const refinementInputRef = React.useRef<HTMLInputElement>(null);
+  const sortedPreviewRows = React.useMemo(
+    () => [...(preview.preview_rows || [])].sort((a, b) => a.row_number - b.row_number),
+    [preview.preview_rows]
+  );
 
-  const warningRows = preview.preview_rows.filter(
+  const warningRows = sortedPreviewRows.filter(
     (r) => r.warnings && r.warnings.length > 0
   );
   const hasWarnings = warningRows.length > 0;
@@ -357,7 +402,7 @@ export function PreviewCard({
 
   return (
     <div className={cn(
-      'card-premium p-4 space-y-4 animate-scale-in border-gradient transition-opacity',
+      'card-premium p-4 space-y-4 animate-scale-in border-gradient transition-opacity max-h-[72vh] overflow-y-auto scrollable',
       isRefining && 'opacity-70'
     )}>
       {/* Header */}
@@ -397,18 +442,27 @@ export function PreviewCard({
         </div>
       </div>
 
+      {/* Filter explanation (batch mode transparency) */}
+      {preview.filter_explanation && (
+        <FilterExplanationBar
+          explanation={preview.filter_explanation}
+          compiledFilter={preview.compiled_filter}
+          filterAudit={preview.filter_audit}
+        />
+      )}
+
       {preview.additional_rows > 0 && (
         <div className="p-3 rounded-lg bg-slate-800/50 border border-slate-700/50">
           <p className="text-[11px] font-mono text-slate-400">
-            Rated {preview.preview_rows.length} row(s) directly. Remaining {preview.additional_rows} row(s) are estimated.
+            Rated {sortedPreviewRows.length} row(s) directly. Remaining {preview.additional_rows} row(s) are estimated.
           </p>
         </div>
       )}
 
       {/* Shipment rows */}
-      {preview.preview_rows.length > 0 && (
+      {sortedPreviewRows.length > 0 && (
         <ShipmentList
-          rows={preview.preview_rows}
+          rows={sortedPreviewRows}
           expandedRows={expandedRows}
           onToggleRow={toggleRow}
         />
@@ -547,18 +601,32 @@ export function InteractivePreviewCard({
   preview,
   onConfirm,
   onCancel,
+  onRefine,
   isConfirming,
+  isRefining,
   isProcessing,
 }: {
   preview: BatchPreview;
   onConfirm: (opts?: ConfirmOptions) => void;
   onCancel: () => void;
+  onRefine: (text: string) => void;
   isConfirming: boolean;
+  isRefining: boolean;
   isProcessing: boolean;
 }) {
   const [showPayload, setShowPayload] = React.useState(false);
+  const [refinementInput, setRefinementInput] = React.useState('');
   const { shipper, ship_to: shipTo } = preview;
   const hasWarnings = preview.preview_rows?.some(r => r.warnings?.length > 0);
+  const availableServices = preview.available_services || [];
+  const refinementDisabled = isRefining || isConfirming || isProcessing;
+
+  const submitRefinement = () => {
+    const text = refinementInput.trim();
+    if (!text || refinementDisabled) return;
+    onRefine(text);
+    setRefinementInput('');
+  };
 
   return (
     <div className="card-premium p-5 animate-scale-in max-w-lg">
@@ -636,6 +704,54 @@ export function InteractivePreviewCard({
         </div>
       </div>
 
+      {/* Available services from UPS Shop */}
+      {availableServices.length > 0 && (
+        <div className="mb-4 rounded-lg border border-slate-700/60 bg-slate-900/40 p-3">
+          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-2">
+            Available Services
+          </p>
+          <div className="space-y-1.5 max-h-36 overflow-y-auto scrollable pr-1">
+            {availableServices.map((svc) => {
+              const isSelected = svc.code === preview.service_code || !!svc.selected;
+              const label = `${svc.name} (${svc.code})`;
+              return (
+                <button
+                  key={svc.code}
+                  type="button"
+                  onClick={() => {
+                    if (isSelected || refinementDisabled) return;
+                    onRefine(`Change service to ${svc.code} (${svc.name})`);
+                  }}
+                  disabled={refinementDisabled}
+                  className={cn(
+                    'w-full rounded-md border px-2.5 py-2 text-left transition-colors',
+                    isSelected
+                      ? 'border-primary/40 bg-primary/10'
+                      : 'border-slate-700/70 bg-slate-800/40 hover:border-primary/30 hover:bg-slate-800/70',
+                    refinementDisabled && 'opacity-60 cursor-not-allowed'
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-slate-200">{label}</span>
+                    <span className={cn('text-xs font-mono', isSelected ? 'text-primary' : 'text-slate-300')}>
+                      {formatCurrency(svc.estimated_cost_cents)}
+                    </span>
+                  </div>
+                  {svc.delivery_days && (
+                    <p className="text-[10px] text-slate-500 mt-0.5">
+                      Est. transit: {svc.delivery_days} day{svc.delivery_days === '1' ? '' : 's'}
+                    </p>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          {preview.service_selection_notice && (
+            <p className="mt-2 text-[10px] text-slate-400">{preview.service_selection_notice}</p>
+          )}
+        </div>
+      )}
+
       {/* Estimated Cost */}
       <div className="bg-gradient-to-r from-emerald-500/10 to-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 mb-4 text-center">
         <p className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider mb-1">Estimated Cost</p>
@@ -655,6 +771,37 @@ export function InteractivePreviewCard({
           )}
         </div>
       )}
+
+      {/* Refinement input */}
+      <div className="mb-4">
+        <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1.5">
+          Refine Shipment
+        </p>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={refinementInput}
+            onChange={(e) => setRefinementInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submitRefinement();
+              }
+            }}
+            placeholder='e.g. "make it 3 lbs"'
+            disabled={refinementDisabled}
+            className="flex-1 px-3 py-2 text-xs bg-slate-800/70 border border-slate-700 rounded-md text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/25 disabled:opacity-50"
+          />
+          <button
+            type="button"
+            onClick={submitRefinement}
+            disabled={!refinementInput.trim() || refinementDisabled}
+            className="px-3 py-2 text-xs btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isRefining ? 'Applying...' : 'Apply'}
+          </button>
+        </div>
+      </div>
 
       {/* Expandable Full Payload */}
       {preview.resolved_payload && (
@@ -678,14 +825,14 @@ export function InteractivePreviewCard({
       <div className="flex gap-3">
         <button
           onClick={onCancel}
-          disabled={isConfirming || isProcessing}
+          disabled={isConfirming || isProcessing || isRefining}
           className="btn-secondary flex-1 h-9 text-sm"
         >
           Cancel
         </button>
         <button
           onClick={() => onConfirm()}
-          disabled={isConfirming || isProcessing}
+          disabled={isConfirming || isProcessing || isRefining}
           className="btn-primary flex-1 h-9 text-sm flex items-center justify-center gap-2"
         >
           {isConfirming ? (

@@ -7,7 +7,18 @@ import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
 import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows } from '@/lib/api';
 import { useConversation } from '@/hooks/useConversation';
-import type { Job, BatchPreview, PickupResult, PickupPreview, LocationResult, LandedCostResult, PaperlessResult, PaperlessUploadPrompt, TrackingResult } from '@/types/api';
+import type {
+  Job,
+  BatchPreview,
+  PreviewRow,
+  PickupResult,
+  PickupPreview,
+  LocationResult,
+  LandedCostResult,
+  PaperlessResult,
+  PaperlessUploadPrompt,
+  TrackingResult,
+} from '@/types/api';
 import { LabelPreview } from '@/components/LabelPreview';
 import { JobDetailPanel } from '@/components/JobDetailPanel';
 import { SendIcon, StopIcon, EditIcon } from '@/components/ui/icons';
@@ -69,6 +80,20 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const [isRefining, setIsRefining] = React.useState(false);
   const [pickupPreview, setPickupPreview] = React.useState<PickupPreview | null>(null);
   const [isPickupConfirming, setIsPickupConfirming] = React.useState(false);
+
+  const _normalizePreviewRow = React.useCallback((row: PreviewRow): PreviewRow => {
+    const rateError = (row as unknown as { rate_error?: string }).rate_error;
+    const warnings = Array.isArray(row.warnings)
+      ? row.warnings
+      : rateError
+        ? [rateError]
+        : [];
+    return {
+      ...row,
+      service: row.service || 'UPS Ground',
+      warnings,
+    };
+  }, []);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -173,10 +198,16 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         if (text && !text.includes('API Error: 400 due to tool use concurrency issues')) {
           addMessage({ role: 'system', content: text });
         }
+      } else if (event.type === 'preview_partial') {
+        // Keep preview rendering stable until the fully enriched preview_ready payload arrives.
+        continue;
       } else if (event.type === 'preview_ready') {
         const previewData = event.data as unknown as BatchPreview;
         const previousJobId = currentJobId;
         const nextJobId = previewData.job_id;
+        previewData.preview_rows = [...(previewData.preview_rows || [])]
+          .map((row) => _normalizePreviewRow(row))
+          .sort((a, b) => a.row_number - b.row_number);
 
         setPreview(previewData);
         setCurrentJobId(nextJobId);
@@ -269,7 +300,15 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         suppressNextMessageRef.current = true;
       }
     }
-  }, [conv.events, addMessage, refreshJobList, currentJobId, preview, executingJobId]);
+  }, [
+    conv.events,
+    addMessage,
+    refreshJobList,
+    currentJobId,
+    preview,
+    executingJobId,
+    _normalizePreviewRow,
+  ]);
 
   // Clear transient agent events after each completed run to bound memory.
   React.useEffect(() => {
@@ -509,7 +548,9 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                     preview={preview}
                     onConfirm={(opts) => handleConfirm(opts)}
                     onCancel={handleCancel}
+                    onRefine={handleRefine}
                     isConfirming={isConfirming}
+                    isRefining={isRefining}
                     isProcessing={conv.isProcessing}
                   />
                 ) : (

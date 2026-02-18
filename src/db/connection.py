@@ -259,6 +259,23 @@ def _ensure_columns_exist(conn: Any) -> None:
             "charge_breakdown",
             "ALTER TABLE job_rows ADD COLUMN charge_breakdown TEXT",
         ),
+        # Phase 8: Execution determinism columns
+        (
+            "idempotency_key",
+            "ALTER TABLE job_rows ADD COLUMN idempotency_key VARCHAR(200)",
+        ),
+        (
+            "ups_shipment_id",
+            "ALTER TABLE job_rows ADD COLUMN ups_shipment_id VARCHAR(50)",
+        ),
+        (
+            "ups_tracking_number",
+            "ALTER TABLE job_rows ADD COLUMN ups_tracking_number VARCHAR(50)",
+        ),
+        (
+            "recovery_attempt_count",
+            "ALTER TABLE job_rows ADD COLUMN recovery_attempt_count INTEGER NOT NULL DEFAULT 0",
+        ),
     ]
 
     for col_name, ddl in row_migrations:
@@ -271,6 +288,65 @@ def _ensure_columns_exist(conn: Any) -> None:
                 else:
                     log.error("Failed to add column %s: %s", col_name, e)
                     raise
+
+    # Always attempt index creation — CREATE INDEX IF NOT EXISTS is
+    # safe to run repeatedly and handles partial-upgrade states where
+    # a column was added but the index creation failed or was skipped.
+    for idx_stmt in [
+        "CREATE INDEX IF NOT EXISTS idx_job_rows_idempotency ON job_rows (idempotency_key)",
+        "CREATE INDEX IF NOT EXISTS idx_job_rows_tracking ON job_rows (ups_tracking_number)",
+    ]:
+        try:
+            conn.execute(text(idx_stmt))
+        except OperationalError:
+            pass  # Column doesn't exist yet (pre-Phase-8 DB)
+
+    # write_back_tasks migration: deduplicate historical duplicates before
+    # enforcing uniqueness on (job_id, row_number).
+    try:
+        table_exists = conn.execute(
+            text(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='write_back_tasks' LIMIT 1"
+            )
+        ).fetchone()
+        if table_exists:
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM write_back_tasks
+                    WHERE rowid IN (
+                        SELECT rowid FROM (
+                            SELECT
+                                rowid,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY job_id, row_number
+                                    ORDER BY
+                                        CASE status
+                                            WHEN 'pending' THEN 3
+                                            WHEN 'completed' THEN 2
+                                            WHEN 'dead_letter' THEN 1
+                                            ELSE 0
+                                        END DESC,
+                                        created_at DESC,
+                                        rowid DESC
+                                ) AS rn
+                            FROM write_back_tasks
+                        ) ranked
+                        WHERE rn > 1
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS "
+                    "uq_write_back_tasks_job_row_number "
+                    "ON write_back_tasks (job_id, row_number)"
+                )
+            )
+    except OperationalError as e:
+        log.warning("write_back_tasks uniqueness migration skipped: %s", e)
 
 
 def init_db() -> None:

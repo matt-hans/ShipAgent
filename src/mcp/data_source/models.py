@@ -51,6 +51,18 @@ class ImportResult(BaseModel):
         default_factory=list, description="Import-level warnings"
     )
     source_type: str = Field(..., description="Type of data source")
+    deterministic_ready: bool = Field(
+        default=True,
+        description="Whether imported rows have deterministic ordering guarantees.",
+    )
+    row_key_strategy: str | None = Field(
+        default=None,
+        description="How deterministic row ordering was derived (explicit, auto_pk, auto_unique, none).",
+    )
+    row_key_columns: list[str] = Field(
+        default_factory=list,
+        description="Columns used for deterministic row ordering when available.",
+    )
 
 
 class RowData(BaseModel):

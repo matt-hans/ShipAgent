@@ -23,6 +23,10 @@ from src.services.column_mapping import (
 )
 from src.services.gateway_provider import get_data_gateway, get_external_sources_client  # noqa: F401
 from src.services.job_service import JobService
+from src.services.mapping_cache import (
+    compute_mapping_hash,
+    get_or_compute_mapping_with_metadata,
+)
 from src.services.ups_service_codes import (
     SERVICE_ALIASES,
     SERVICE_CODE_NAMES,
@@ -45,6 +49,13 @@ class EventEmitterBridge:
     def __init__(self) -> None:
         self.callback: Callable[[str, dict], None] | None = None
         self.session_id: str | None = None
+        self.last_user_message: str | None = None
+        self.last_shipping_command: str | None = None
+        # Best-effort recovery cache for same-turn resolve -> pipeline flows.
+        self.last_resolved_filter_spec: dict[str, Any] | None = None
+        self.last_resolved_filter_command: str | None = None
+        self.last_resolved_filter_schema_signature: str | None = None
+        self.confirmed_resolutions: dict[str, Any] = {}
         self._fetched_rows_cache: dict[str, list[dict[str, Any]]] = {}
         self._fetched_rows_order: list[str] = []
 
@@ -158,10 +169,20 @@ def _bind_bridge(
 # ---------------------------------------------------------------------------
 
 
-async def _persist_job_source_signature(job_id: str, db: Any) -> None:
-    """Persist source signature metadata for replay safety checks."""
-    gw = await get_data_gateway()
-    signature = await gw.get_source_signature()
+async def _persist_job_source_signature(
+    job_id: str,
+    db: Any,
+    source_signature: dict[str, Any] | None = None,
+) -> None:
+    """Persist source signature metadata for replay safety checks.
+
+    Accepts an optional precomputed signature to avoid an extra MCP round trip
+    when the caller already fetched source metadata in the same flow.
+    """
+    signature = source_signature
+    if signature is None:
+        gw = await get_data_gateway()
+        signature = await gw.get_source_signature()
     if signature is None:
         return
 
@@ -184,14 +205,19 @@ async def _persist_job_source_signature(job_id: str, db: Any) -> None:
 def _build_job_row_data(
     rows: list[dict[str, Any]],
     service_code_override: str | None = None,
+    schema_fingerprint: str | None = None,
 ) -> list[dict[str, Any]]:
     """Convert source rows into JobRow create payload with checksums.
 
     Args:
         rows: Source rows fetched from the connected data source.
         service_code_override: Optional UPS service code to force across all rows.
+        schema_fingerprint: Optional source schema fingerprint for cache lookup.
     """
-    normalized_rows = _normalize_rows_for_shipping(rows)
+    normalized_rows = _normalize_rows_for_shipping(
+        rows,
+        schema_fingerprint=schema_fingerprint,
+    )
     if service_code_override:
         for row in normalized_rows:
             if isinstance(row, dict):
@@ -219,20 +245,78 @@ def _build_job_row_data(
     return row_data
 
 
-def _normalize_rows_for_shipping(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _build_job_row_data_with_metadata(
+    rows: list[dict[str, Any]],
+    service_code_override: str | None = None,
+    schema_fingerprint: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Build job row payloads and return mapping_hash metadata."""
+    normalized_rows, mapping_hash = _normalize_rows_for_shipping_with_metadata(
+        rows,
+        schema_fingerprint=schema_fingerprint,
+    )
+    if service_code_override:
+        for row in normalized_rows:
+            if isinstance(row, dict):
+                row["service_code"] = service_code_override
+
+    row_data = []
+    for idx, row in enumerate(normalized_rows, start=1):
+        source_row = (
+            row.pop("_row_number", None)
+            or row.pop(SOURCE_ROW_NUM_COLUMN, None)
+            or idx
+        )
+        row.pop("_checksum", None)
+        row_json = json.dumps(row, sort_keys=True, default=str)
+        checksum = hashlib.md5(row_json.encode()).hexdigest()
+        row_data.append(
+            {
+                "row_number": source_row,
+                "row_checksum": checksum,
+                "order_data": row_json,
+            }
+        )
+    return row_data, mapping_hash
+
+
+def _normalize_rows_for_shipping(
+    rows: list[dict[str, Any]],
+    schema_fingerprint: str | None = None,
+) -> list[dict[str, Any]]:
     """Normalize source rows into canonical order_data keys for UPS payloads.
 
     CSV/Excel imports often use arbitrary headers. This function auto-maps
     those headers into the canonical ship_to_* keys expected by
     build_shipment_request().
     """
+    normalized_rows, _ = _normalize_rows_for_shipping_with_metadata(
+        rows,
+        schema_fingerprint=schema_fingerprint,
+    )
+    return normalized_rows
+
+
+def _normalize_rows_for_shipping_with_metadata(
+    rows: list[dict[str, Any]],
+    schema_fingerprint: str | None = None,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Normalize rows and return deterministic mapping_hash when available."""
     if not rows:
-        return rows
+        return rows, None
 
     source_columns: list[str] = sorted(
         {str(k) for row in rows if isinstance(row, dict) for k in row.keys()}
     )
-    mapping = auto_map_columns(source_columns)
+    if schema_fingerprint:
+        mapping, mapping_hash = get_or_compute_mapping_with_metadata(
+            source_columns=source_columns,
+            schema_fingerprint=schema_fingerprint,
+            sample_rows=rows,
+        )
+    else:
+        mapping = auto_map_columns(source_columns)
+        mapping_hash = compute_mapping_hash(mapping)
     missing_required = validate_mapping(mapping)
     if missing_required:
         logger.warning(
@@ -250,7 +334,8 @@ def _normalize_rows_for_shipping(rows: list[dict[str, Any]]) -> list[dict[str, A
         out: dict[str, Any] = dict(row)
         mapped = apply_mapping(mapping, row)
         for key, value in mapped.items():
-            if value is not None and value != "":
+            existing = out.get(key)
+            if (existing is None or existing == "") and value is not None and value != "":
                 out[key] = value
 
         if not out.get("ship_to_name"):
@@ -267,7 +352,7 @@ def _normalize_rows_for_shipping(rows: list[dict[str, Any]]) -> list[dict[str, A
 
         normalized.append(out)
 
-    return normalized
+    return normalized, mapping_hash
 
 
 def _command_explicitly_requests_service(command: str) -> bool:
@@ -347,17 +432,23 @@ def _emit_preview_ready(
 ) -> dict[str, Any]:
     """Emit preview SSE payload and return slim LLM tool payload."""
     _emit_event("preview_ready", result, bridge=bridge)
-    return _ok(
-        {
-            "status": "preview_ready",
-            "job_id": job_id_override or result.get("job_id"),
-            "total_rows": result.get("total_rows", 0),
-            "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
-            "rows_with_warnings": rows_with_warnings,
-            "message": (
-                "Preview card has been displayed to the user. STOP HERE. "
-                "Respond with one brief sentence asking the user to review "
-                "the preview and click Confirm or Cancel."
-            ),
-        }
-    )
+    # Reset shipping turn context after a preview has been emitted.
+    if bridge is not None:
+        bridge.last_shipping_command = None
+    response = {
+        "status": "preview_ready",
+        "job_id": job_id_override or result.get("job_id"),
+        "total_rows": result.get("total_rows", 0),
+        "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
+        "rows_with_warnings": rows_with_warnings,
+        "message": (
+            "Preview card has been displayed to the user. STOP HERE. "
+            "Respond with one brief sentence asking the user to review "
+            "the preview and click Confirm or Cancel."
+        ),
+    }
+    # Include filter metadata fields for transparency and audit
+    for key in ("filter_explanation", "compiled_filter", "filter_audit"):
+        if key in result:
+            response[key] = result[key]
+    return _ok(response)

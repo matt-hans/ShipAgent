@@ -218,6 +218,68 @@ class TestAutoMapColumns:
         mapping = auto_map_columns(cols)
         assert mapping.get("packages[0].weight") == "Weight"
 
+    def test_mapping_is_permutation_invariant(self):
+        """Column order should not change deterministic auto-mapping output."""
+        cols = [
+            "Recipient Name",
+            "Customer Name",
+            "Address Line 1",
+            "City",
+            "State",
+            "Zip",
+            "Country",
+            "Weight",
+            "Order Number",
+        ]
+        expected = auto_map_columns(cols)
+        for variant in (
+            list(reversed(cols)),
+            cols[2:] + cols[:2],
+            cols[1:] + cols[:1],
+        ):
+            assert auto_map_columns(variant) == expected
+
+    def test_tie_break_prefers_more_specific_header(self):
+        """When multiple headers match, deterministic ranking picks the best one."""
+        cols = [
+            "Name",
+            "Recipient Name",
+            "Address",
+            "City",
+            "State",
+            "Zip",
+            "Country",
+            "Weight",
+        ]
+        mapping = auto_map_columns(cols)
+        assert mapping.get("shipTo.name") == "Recipient Name"
+
+    def test_header_normalization_is_deterministic(self):
+        """Whitespace/casing variants map identically after normalization."""
+        cols_a = [
+            "  Recipient   Name  ",
+            "Address Line 1",
+            "City",
+            "State",
+            "Zip",
+            "Country",
+            "Weight",
+        ]
+        cols_b = [
+            "recipient_name",
+            "address-line-1",
+            "CITY",
+            "state",
+            "ZIP",
+            "country",
+            "weight",
+        ]
+        mapping_a = auto_map_columns(cols_a)
+        mapping_b = auto_map_columns(cols_b)
+        assert mapping_a.get("shipTo.name") == "  Recipient   Name  "
+        assert mapping_b.get("shipTo.name") == "recipient_name"
+        assert set(mapping_a.keys()) == set(mapping_b.keys())
+
 
 class TestNormalizeRowsEndToEnd:
     """End-to-end test of auto_map + apply_mapping with data from all sources.

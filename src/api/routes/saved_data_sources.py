@@ -123,7 +123,9 @@ async def reconnect_saved_source(
                 )
             query = source.db_query or "SELECT * FROM shipments"
             result = await gw.import_database(
-                connection_string=payload.connection_string, query=query
+                connection_string=payload.connection_string,
+                query=query,
+                row_key_columns=payload.row_key_columns,
             )
 
         else:

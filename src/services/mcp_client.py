@@ -124,7 +124,7 @@ class MCPClient:
         max_retries: int = 3,
         base_delay: float = 1.0,
         is_retryable: Callable[[str], bool] | None = None,
-        elicitation_callback: Any | None = None,  # TODO: tighten type when MCP SDK stabilizes ElicitationCallback
+        elicitation_callback: Any | None = None,
     ) -> None:
         """Initialize MCP client.
 

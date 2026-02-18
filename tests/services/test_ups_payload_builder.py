@@ -276,6 +276,22 @@ class TestBuildShipTo:
 
         assert ship_to["name"] == "Recipient"
 
+    def test_prefers_ship_to_attention_name_over_company(self):
+        """ship_to_attention_name should take precedence over company mapping."""
+        order_data = {
+            "ship_to_name": "Maria Garcia",
+            "ship_to_attention_name": "Maria Garcia",
+            "ship_to_company": "Legacy Company",
+            "ship_to_city": "Miami",
+            "ship_to_state": "FL",
+            "ship_to_postal_code": "33139",
+            "ship_to_country": "US",
+        }
+
+        ship_to = build_ship_to(order_data)
+
+        assert ship_to["attentionName"] == "Maria Garcia"
+
 
 class TestBuildPackages:
     """Test package building."""
@@ -540,6 +556,7 @@ class TestBuildShipmentRequest:
 
         assert request["shipper"]["name"] == "Test Store"
         assert request["shipTo"]["name"] == "John Doe"
+        assert request["shipTo"]["attentionName"] == "John Doe"
         assert request["packages"][0]["weight"] == 2.0
         assert request["serviceCode"] == "03"
         assert request["reference"] == "1001"
@@ -648,6 +665,25 @@ class TestBuildUpsApiPayload:
         assert shipment["ShipTo"]["Address"]["City"] == "Los Angeles"
         assert shipment["Service"]["Code"] == "03"
         assert shipment["Package"][0]["PackageWeight"]["Weight"] == "2.0"
+
+    def test_domestic_payload_includes_attention_name_from_order_data(self):
+        """Domestic payload should carry ShipTo.AttentionName from ship_to_attention_name."""
+        order_data = {
+            "ship_to_name": "Maria Garcia",
+            "ship_to_attention_name": "Maria Garcia",
+            "ship_to_phone": "10012345667",
+            "ship_to_address1": "123 Ocean Drive",
+            "ship_to_city": "Miami",
+            "ship_to_state": "FL",
+            "ship_to_postal_code": "33139",
+            "ship_to_country": "US",
+            "service_code": "14",
+            "weight": 5.0,
+        }
+        simplified = build_shipment_request(order_data)
+        full = build_ups_api_payload(simplified, account_number="ABC123")
+        ship_to = full["ShipmentRequest"]["Shipment"]["ShipTo"]
+        assert ship_to["AttentionName"] == "Maria Garcia"
 
     def test_includes_label_specification(self):
         """Test PDF label specification is included."""
@@ -785,6 +821,41 @@ class TestBuildUpsApiPayload:
         assert "ReferenceNumber" not in shipment
         assert "ReferenceNumber2" not in shipment
 
+    def test_includes_transaction_reference_when_idempotency_key_provided(self):
+        """When idempotency_key is provided, payload includes TransactionReference."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_api_payload(
+            simplified, account_number="X", idempotency_key="job:1:hash"
+        )
+        ref = result["ShipmentRequest"]["Request"]["TransactionReference"]
+        assert ref["CustomerContext"] == "job:1:hash"
+
+    def test_omits_transaction_reference_when_no_idempotency_key(self):
+        """When no idempotency_key, no TransactionReference in payload."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+
+        result = build_ups_api_payload(simplified, account_number="X")
+        assert "TransactionReference" not in result["ShipmentRequest"]["Request"]
+
 
 class TestBuildUpsRatePayload:
     """Test simplified → UPS Rate API format."""
@@ -827,6 +898,29 @@ class TestBuildUpsRatePayload:
         assert "Packaging" in pkg
         assert "PackagingType" not in pkg
         assert pkg["Packaging"]["Code"] == "02"
+
+    def test_shop_request_option_supported(self):
+        """Rate payload can emit Shop request option for service discovery."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+        result = build_ups_rate_payload(
+            simplified,
+            account_number="X",
+            request_option="Shop",
+            include_service=False,
+        )
+        request = result["RateRequest"]["Request"]
+        shipment = result["RateRequest"]["Shipment"]
+        assert request["RequestOption"] == "Shop"
+        assert "Service" not in shipment
 
 
 # ── Helper to build minimal simplified payloads ──

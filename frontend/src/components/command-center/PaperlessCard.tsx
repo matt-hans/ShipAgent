@@ -39,6 +39,12 @@ export function PaperlessCard({ data }: { data: PaperlessResult }) {
   const meta = ACTION_META[data.action] ?? ACTION_META.uploaded;
   const hasFileInfo = data.fileName || data.fileFormat || data.documentType;
   const docTypeLabel = data.documentType ? DOCUMENT_TYPE_LABELS[data.documentType] || data.documentType : null;
+  const documentIds = (Array.isArray(data.documentIds) && data.documentIds.length > 0)
+    ? data.documentIds
+    : (data.documentId ? [data.documentId] : []);
+  const hasMultipleDocIds = documentIds.length > 1;
+  const statusText = [data.statusCode, data.statusDescription].filter(Boolean).join(' · ');
+  const hasAlerts = Array.isArray(data.alerts) && data.alerts.length > 0;
 
   return (
     <div className={cn('card-premium p-4 space-y-3 border-l-4 card-domain-paperless')}>
@@ -74,10 +80,44 @@ export function PaperlessCard({ data }: { data: PaperlessResult }) {
         </div>
       )}
 
-      {data.documentId && (
+      {documentIds.length > 0 && (
         <div className="flex items-center gap-2 text-xs font-mono px-2 py-1.5 rounded bg-muted">
-          <span className="text-muted-foreground">Document ID:</span>
-          <span className="text-foreground">{data.documentId}</span>
+          <span className="text-muted-foreground">
+            {hasMultipleDocIds ? 'Document IDs:' : 'Document ID:'}
+          </span>
+          <span className="text-foreground break-all">{documentIds.join(', ')}</span>
+        </div>
+      )}
+
+      {data.formsGroupId && (
+        <div className="flex items-center gap-2 text-xs font-mono px-2 py-1.5 rounded bg-muted">
+          <span className="text-muted-foreground">Forms Group ID:</span>
+          <span className="text-foreground break-all">{data.formsGroupId}</span>
+        </div>
+      )}
+
+      {statusText && (
+        <div className="text-xs px-2 py-1.5 rounded bg-muted/70">
+          <span className="text-muted-foreground">UPS Response:</span>{' '}
+          <span className="text-foreground">{statusText}</span>
+        </div>
+      )}
+
+      {data.customerContext && (
+        <div className="text-xs px-2 py-1.5 rounded bg-muted/70">
+          <span className="text-muted-foreground">Customer Context:</span>{' '}
+          <span className="text-foreground break-all">{data.customerContext}</span>
+        </div>
+      )}
+
+      {hasAlerts && (
+        <div className="text-xs px-2 py-1.5 rounded bg-muted/70 space-y-1">
+          <p className="text-muted-foreground">UPS Alerts:</p>
+          {data.alerts?.map((alert, index) => (
+            <p key={`${alert.code || 'alert'}-${index}`} className="text-foreground">
+              {[alert.code, alert.message].filter(Boolean).join(': ')}
+            </p>
+          ))}
         </div>
       )}
     </div>

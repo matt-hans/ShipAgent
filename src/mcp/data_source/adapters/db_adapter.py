@@ -16,6 +16,7 @@ Security:
 """
 
 import re
+from collections import OrderedDict
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -78,6 +79,109 @@ class DatabaseAdapter(BaseSourceAdapter):
                 "Supported: postgresql://, postgres://, mysql://"
             )
 
+    def _get_key_candidates(
+        self,
+        conn: DuckDBPyConnection,
+        db_type: Literal["postgres", "mysql"],
+        schema: str,
+        table_name: str,
+    ) -> list[tuple[str, list[str]]]:
+        """Return deterministic row-key candidates ordered by preference.
+
+        Preference order:
+        1. PRIMARY KEY constraints
+        2. UNIQUE constraints
+        """
+        try:
+            if db_type == "postgres":
+                rows = conn.execute(
+                    """
+                    SELECT
+                        tc.constraint_type,
+                        tc.constraint_name,
+                        kcu.column_name,
+                        kcu.ordinal_position
+                    FROM remote_db.information_schema.table_constraints tc
+                    JOIN remote_db.information_schema.key_column_usage kcu
+                      ON tc.constraint_name = kcu.constraint_name
+                     AND tc.table_schema = kcu.table_schema
+                     AND tc.table_name = kcu.table_name
+                    WHERE tc.table_schema = ?
+                      AND tc.table_name = ?
+                      AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+                    ORDER BY
+                      CASE WHEN tc.constraint_type = 'PRIMARY KEY' THEN 0 ELSE 1 END,
+                      tc.constraint_name,
+                      kcu.ordinal_position
+                    """,
+                    [schema, table_name],
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT
+                        tc.constraint_type,
+                        tc.constraint_name,
+                        kcu.column_name,
+                        kcu.ordinal_position
+                    FROM remote_db.information_schema.table_constraints tc
+                    JOIN remote_db.information_schema.key_column_usage kcu
+                      ON tc.constraint_name = kcu.constraint_name
+                     AND tc.table_schema = kcu.table_schema
+                     AND tc.table_name = kcu.table_name
+                    WHERE tc.table_schema = DATABASE()
+                      AND tc.table_name = ?
+                      AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
+                    ORDER BY
+                      CASE WHEN tc.constraint_type = 'PRIMARY KEY' THEN 0 ELSE 1 END,
+                      tc.constraint_name,
+                      kcu.ordinal_position
+                    """,
+                    [table_name],
+                ).fetchall()
+        except Exception:
+            return []
+
+        grouped: "OrderedDict[tuple[str, str], list[str]]" = OrderedDict()
+        for ctype, cname, col_name, _ordinal in rows:
+            key = (str(ctype), str(cname))
+            grouped.setdefault(key, []).append(str(col_name))
+
+        candidates: list[tuple[str, list[str]]] = []
+        for (ctype, _), cols in grouped.items():
+            if cols:
+                candidates.append((ctype, cols))
+        return candidates
+
+    def _get_query_output_columns(
+        self,
+        conn: DuckDBPyConnection,
+        modified_query: str,
+    ) -> list[str]:
+        """Return output columns for a query snapshot."""
+        try:
+            rows = conn.execute(
+                f"DESCRIBE SELECT * FROM ({modified_query}) AS sub"
+            ).fetchall()
+            return [str(r[0]) for r in rows]
+        except Exception:
+            return []
+
+    @staticmethod
+    def _resolve_casefold_columns(
+        requested: list[str],
+        available: list[str],
+    ) -> list[str] | None:
+        """Resolve requested columns against available columns case-insensitively."""
+        lookup = {c.casefold(): c for c in available}
+        resolved: list[str] = []
+        for col in requested:
+            match = lookup.get(col.casefold())
+            if match is None:
+                return None
+            resolved.append(match)
+        return resolved
+
     def list_tables(
         self,
         conn: DuckDBPyConnection,
@@ -137,12 +241,27 @@ class DatabaseAdapter(BaseSourceAdapter):
                 except Exception:
                     count = None
 
+                key_candidates = self._get_key_candidates(
+                    conn=conn,
+                    db_type=db_type,
+                    schema=schema,
+                    table_name=table_name,
+                )
+                deterministic_candidates = [cols for _, cols in key_candidates]
+
                 result.append(
                     {
                         "name": table_name,
                         "row_count": count,
                         "requires_filter": count is not None
                         and count > LARGE_TABLE_THRESHOLD,
+                        "row_key_candidates": deterministic_candidates,
+                        "preferred_row_key": (
+                            deterministic_candidates[0]
+                            if deterministic_candidates
+                            else []
+                        ),
+                        "deterministic_ready": bool(deterministic_candidates),
                     }
                 )
 
@@ -158,6 +277,7 @@ class DatabaseAdapter(BaseSourceAdapter):
         connection_string: str,
         query: str,
         schema: str = "public",
+        row_key_columns: list[str] | None = None,
     ) -> ImportResult:
         """Import data from database using a query.
 
@@ -186,9 +306,16 @@ class DatabaseAdapter(BaseSourceAdapter):
         try:
             # Extract table name from query for validation
             # Simple regex - handles "FROM table" and "FROM schema.table"
-            table_match = re.search(r"FROM\s+(\w+\.)?(\w+)", query, re.IGNORECASE)
+            table_match = re.search(
+                r"FROM\s+((\w+)\.)?(\w+)",
+                query,
+                re.IGNORECASE,
+            )
+            table_schema = schema
+            table_name = None
             if table_match:
-                table_name = table_match.group(2)
+                table_name = table_match.group(3)
+                table_schema = table_match.group(2) or schema
 
                 # Check if large table without filter
                 has_where = re.search(r"\bWHERE\b", query, re.IGNORECASE) is not None
@@ -198,7 +325,7 @@ class DatabaseAdapter(BaseSourceAdapter):
                     try:
                         count_result = conn.execute(
                             f"""
-                            SELECT COUNT(*) FROM remote_db.{schema}.{table_name}
+                            SELECT COUNT(*) FROM remote_db.{table_schema}.{table_name}
                         """
                         ).fetchone()
                         row_count = count_result[0] if count_result else 0
@@ -218,17 +345,77 @@ class DatabaseAdapter(BaseSourceAdapter):
             # Rewrite query to use remote_db prefix
             # Add remote_db.schema. prefix to table references
             modified_query = re.sub(
-                r"FROM\s+(\w+)(\s|$)",
-                f"FROM remote_db.{schema}.\\1\\2",
+                r"FROM\s+((\w+)\.)?(\w+)(\s|$)",
+                f"FROM remote_db.{table_schema}.\\3\\4",
                 query,
                 flags=re.IGNORECASE,
             )
+            query_columns = self._get_query_output_columns(conn, modified_query)
+
+            # Resolve deterministic row-key strategy.
+            effective_row_keys: list[str] = []
+            row_key_strategy = "none"
+            explicit_row_keys = [
+                str(c).strip()
+                for c in (row_key_columns or [])
+                if str(c).strip()
+            ]
+            if explicit_row_keys:
+                if not query_columns:
+                    raise ValueError(
+                        "Unable to inspect query output columns for row_key_columns "
+                        "validation. Provide a simpler SELECT query or omit "
+                        "row_key_columns to use auto-detection."
+                    )
+                resolved = self._resolve_casefold_columns(
+                    requested=explicit_row_keys,
+                    available=query_columns,
+                )
+                if resolved is None:
+                    raise ValueError(
+                        "row_key_columns must exist in query output columns. "
+                        f"Requested={explicit_row_keys}; "
+                        f"available={sorted(query_columns)}"
+                    )
+                effective_row_keys = resolved
+                row_key_strategy = "explicit"
+            elif table_name:
+                key_candidates = self._get_key_candidates(
+                    conn=conn,
+                    db_type=db_type,
+                    schema=table_schema,
+                    table_name=table_name,
+                )
+                if key_candidates:
+                    key_type, cols = key_candidates[0]
+                    if query_columns:
+                        resolved = self._resolve_casefold_columns(
+                            requested=cols,
+                            available=query_columns,
+                        )
+                        if resolved:
+                            effective_row_keys = resolved
+                            row_key_strategy = (
+                                "auto_pk"
+                                if key_type == "PRIMARY KEY"
+                                else "auto_unique"
+                            )
+
+            deterministic_ready = bool(effective_row_keys)
+            if deterministic_ready:
+                order_expr = ", ".join(
+                    f'sub."{col.replace("\"", "\"\"")}" ASC'
+                    for col in effective_row_keys
+                )
+                row_number_expr = f"ROW_NUMBER() OVER (ORDER BY {order_expr})"
+            else:
+                row_number_expr = "ROW_NUMBER() OVER ()"
 
             # Create snapshot table with identity tracking column
             conn.execute(
                 f"""
                 CREATE OR REPLACE TABLE imported_data AS
-                SELECT ROW_NUMBER() OVER () AS {SOURCE_ROW_NUM_COLUMN}, sub.*
+                SELECT {row_number_expr} AS {SOURCE_ROW_NUM_COLUMN}, sub.*
                 FROM ({modified_query}) AS sub
             """
             )
@@ -251,11 +438,22 @@ class DatabaseAdapter(BaseSourceAdapter):
                 "SELECT COUNT(*) FROM imported_data"
             ).fetchone()[0]
 
+            warnings: list[str] = []
+            if not deterministic_ready:
+                warnings.append(
+                    "NON_DETERMINISTIC_ROW_ORDER: No PRIMARY KEY/UNIQUE row key "
+                    "could be inferred. Shipping determinism guard may block execution. "
+                    "Provide row_key_columns on import_database."
+                )
+
             return ImportResult(
                 row_count=row_count,
                 columns=columns,
-                warnings=[],
+                warnings=warnings,
                 source_type="database",
+                deterministic_ready=deterministic_ready,
+                row_key_strategy=row_key_strategy,
+                row_key_columns=effective_row_keys,
             )
 
         finally:

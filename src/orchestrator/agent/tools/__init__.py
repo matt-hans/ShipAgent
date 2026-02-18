@@ -18,12 +18,13 @@ class ToolDefinition(TypedDict):
 
 from src.orchestrator.agent.tools.core import EventEmitterBridge, _bind_bridge
 from src.orchestrator.agent.tools.data import (
+    confirm_filter_interpretation_tool,
     connect_shopify_tool,
     fetch_rows_tool,
     get_platform_status_tool,
     get_schema_tool,
     get_source_info_tool,
-    validate_filter_syntax_tool,
+    resolve_filter_intent_tool,
 )
 from src.orchestrator.agent.tools.documents import (
     delete_paperless_document_tool,
@@ -43,10 +44,7 @@ from src.orchestrator.agent.tools.pickup import (
     schedule_pickup_tool,
 )
 from src.orchestrator.agent.tools.pipeline import (
-    add_rows_to_job_tool,
     batch_execute_tool,
-    batch_preview_tool,
-    create_job_tool,
     get_job_status_tool,
     get_landed_cost_tool,
     ship_command_pipeline_tool,
@@ -95,12 +93,20 @@ def get_all_tool_definitions(
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "where_clause": {
-                        "type": "string",
+                    "filter_spec": {
+                        "type": "object",
                         "description": (
-                            "Optional SQL WHERE clause without the 'WHERE' keyword. "
-                            "Omit to ship all rows."
+                            "Resolved FilterSpec from resolve_filter_intent. "
+                            "Provide this OR all_rows=true, not both."
                         ),
+                    },
+                    "all_rows": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true to ship all rows without filtering. "
+                            "Provide this OR filter_spec, not both."
+                        ),
+                        "default": False,
                     },
                     "command": {
                         "type": "string",
@@ -127,16 +133,29 @@ def get_all_tool_definitions(
         {
             "name": "fetch_rows",
             "description": (
-                "Fetch rows from the data source and return a compact fetch_id "
-                "reference for downstream tools. Avoid sending full row arrays "
-                "through model context unless explicitly needed."
+                "Fetch rows from the data source using a compiled FilterSpec. "
+                "Returns row samples and counts for exploratory analysis. "
+                "Response includes total_count (authoritative matches) and "
+                "returned_count (current page size). "
+                "Provide filter_spec OR all_rows=true, not both."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "where_clause": {
-                        "type": "string",
-                        "description": "SQL WHERE clause without the 'WHERE' keyword. Omit for all rows.",
+                    "filter_spec": {
+                        "type": "object",
+                        "description": (
+                            "Resolved FilterSpec from resolve_filter_intent. "
+                            "Provide this OR all_rows=true, not both."
+                        ),
+                    },
+                    "all_rows": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true to fetch all rows without filtering. "
+                            "Provide this OR filter_spec, not both."
+                        ),
+                        "default": False,
                     },
                     "limit": {
                         "type": "integer",
@@ -156,70 +175,57 @@ def get_all_tool_definitions(
             "handler": _bind_bridge(fetch_rows_tool, bridge),
         },
         {
-            "name": "validate_filter_syntax",
-            "description": "Validate a SQL WHERE clause for syntax correctness before using it.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "where_clause": {
-                        "type": "string",
-                        "description": "SQL WHERE clause to validate.",
-                    },
-                },
-                "required": ["where_clause"],
-            },
-            "handler": validate_filter_syntax_tool,
-        },
-        {
-            "name": "create_job",
-            "description": "Create a new shipping job in the state database.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Human-readable job name.",
-                    },
-                    "command": {
-                        "type": "string",
-                        "description": "The original user command.",
-                    },
-                },
-                "required": ["name", "command"],
-            },
-            "handler": create_job_tool,
-        },
-        {
-            "name": "add_rows_to_job",
+            "name": "resolve_filter_intent",
             "description": (
-                "Add fetched rows to a job. Call this AFTER create_job and "
-                "BEFORE batch_preview. Prefer passing fetch_id from fetch_rows "
-                "instead of full rows for faster execution."
+                "Resolve a structured FilterIntent into a concrete FilterSpec. "
+                "Takes a FilterIntent JSON, resolves semantic references "
+                "(regions, business predicates) against the active data source, "
+                "and returns a ResolvedFilterSpec with status and explanation."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "Job UUID from create_job.",
-                    },
-                    "rows": {
-                        "type": "array",
+                    "intent": {
+                        "type": "object",
                         "description": (
-                            "Optional full row array from fetch_rows. Prefer fetch_id."
-                        ),
-                        "items": {"type": "object"},
-                    },
-                    "fetch_id": {
-                        "type": "string",
-                        "description": (
-                            "Preferred compact reference returned by fetch_rows."
+                            "FilterIntent JSON with root FilterGroup containing "
+                            "conditions and/or semantic references."
                         ),
                     },
                 },
-                "required": ["job_id"],
+                "required": ["intent"],
             },
-            "handler": _bind_bridge(add_rows_to_job_tool, bridge),
+            "handler": _bind_bridge(resolve_filter_intent_tool, bridge),
+        },
+        {
+            "name": "confirm_filter_interpretation",
+            "description": (
+                "Confirm a Tier-B filter interpretation after user approval. "
+                "Call this after resolve_filter_intent returns NEEDS_CONFIRMATION "
+                "and the user has confirmed the pending interpretations. "
+                "Pass the resolution_token and the original intent to get a "
+                "RESOLVED spec with a valid execution token."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "resolution_token": {
+                        "type": "string",
+                        "description": (
+                            "The resolution_token from the NEEDS_CONFIRMATION response."
+                        ),
+                    },
+                    "intent": {
+                        "type": "object",
+                        "description": (
+                            "The same FilterIntent JSON originally passed to "
+                            "resolve_filter_intent."
+                        ),
+                    },
+                },
+                "required": ["resolution_token", "intent"],
+            },
+            "handler": _bind_bridge(confirm_filter_interpretation_tool, bridge),
         },
         {
             "name": "get_job_status",
@@ -235,21 +241,6 @@ def get_all_tool_definitions(
                 "required": ["job_id"],
             },
             "handler": get_job_status_tool,
-        },
-        {
-            "name": "batch_preview",
-            "description": "Run batch preview (rate all rows) for a job. Shows estimated costs before execution.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "Job UUID to preview.",
-                    },
-                },
-                "required": ["job_id"],
-            },
-            "handler": _bind_bridge(batch_preview_tool, bridge),
         },
         {
             "name": "batch_execute",
@@ -373,17 +364,13 @@ def get_all_tool_definitions(
                 "Rate a UPS pickup and display the preview card. ALWAYS call this BEFORE "
                 "schedule_pickup. Collects address, contact, and schedule details, gets "
                 "the rate estimate, and displays a preview card to the user with Confirm/"
-                "Cancel buttons. Include contact_name and phone_number in the args so "
-                "they appear in the preview."
+                "Cancel buttons. Pickup type is always on-call and set automatically. "
+                "Include contact_name and phone_number in the args so they appear in "
+                "the preview."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "pickup_type": {
-                        "type": "string",
-                        "description": "Pickup type.",
-                        "enum": ["oncall", "smart", "both"],
-                    },
                     "address_line": {"type": "string", "description": "Pickup address."},
                     "city": {"type": "string", "description": "City."},
                     "state": {"type": "string", "description": "State/province code."},
@@ -396,8 +383,7 @@ def get_all_tool_definitions(
                     "phone_number": {"type": "string", "description": "Contact phone number."},
                 },
                 "required": [
-                    "pickup_type", "address_line", "city", "state",
-                    "postal_code", "country_code", "pickup_date",
+                    "address_line", "city", "state", "postal_code", "country_code", "pickup_date",
                     "ready_time", "close_time",
                 ],
             },
@@ -405,21 +391,15 @@ def get_all_tool_definitions(
         },
         {
             "name": "get_pickup_status",
-            "description": "Get pending pickup status for the UPS account.",
+            "description": "Get pending on-call pickup status for the UPS account.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "pickup_type": {
-                        "type": "string",
-                        "description": "Pickup type.",
-                        "enum": ["oncall", "smart", "both"],
-                    },
                     "account_number": {
                         "type": "string",
                         "description": "UPS account number (optional, uses env fallback).",
                     },
                 },
-                "required": ["pickup_type"],
             },
             "handler": _bind_bridge(get_pickup_status_tool, bridge),
         },
@@ -437,7 +417,7 @@ def get_all_tool_definitions(
                     "location_type": {
                         "type": "string",
                         "description": "Type of location to search.",
-                        "enum": ["access_point", "retail", "general", "services"],
+                        "enum": ["access_point", "retail", "general"],
                     },
                     "address_line": {"type": "string", "description": "Street address."},
                     "city": {"type": "string", "description": "City."},
@@ -692,7 +672,10 @@ def get_all_tool_definitions(
                     },
                     "ship_to_state": {
                         "type": "string",
-                        "description": "Recipient state/province code (e.g. CA, NY).",
+                        "description": (
+                            "Recipient state/province code (e.g. CA, NY). "
+                            "Required for some international destinations (e.g. GB)."
+                        ),
                     },
                     "ship_to_zip": {
                         "type": "string",
@@ -709,7 +692,11 @@ def get_all_tool_definitions(
                     },
                     "ship_to_attention_name": {
                         "type": "string",
-                        "description": "Recipient attention name (required for international).",
+                        "description": (
+                            "Recipient attention/contact name override. "
+                            "Optional override only: defaults to ship_to_name when omitted. "
+                            "Do not ask user to confirm equality with recipient name."
+                        ),
                     },
                     "shipment_description": {
                         "type": "string",
@@ -724,8 +711,9 @@ def get_all_tool_definitions(
                         "description": (
                             "UPS service name or code. ALWAYS extract and pass the user's "
                             "service preference (e.g. 'Ground', 'Next Day Air', '2nd Day Air', "
-                            "'3 Day Select', 'UPS Standard'). Only use 'Ground' when the user "
-                            "explicitly says Ground or does not mention any service."
+                            "'3 Day Select', 'UPS Standard'). If the user does not provide a "
+                            "service, you may omit this field and the system will discover route-"
+                            "available services via UPS Shop and pick a default for preview."
                         ),
                     },
                     "weight": {
