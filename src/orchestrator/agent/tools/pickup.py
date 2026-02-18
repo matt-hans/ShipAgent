@@ -216,7 +216,60 @@ async def find_locations_tool(
     """
     try:
         client = await _get_ups_client()
-        result = await client.find_locations(**args)
+        # Normalize and harden location search inputs so UPS receives a
+        # location-returning query shape for drop-off searches.
+        location_type_raw = str(args.get("location_type", "general")).strip().lower()
+        location_type = location_type_raw if location_type_raw in {
+            "access_point", "retail", "general", "services",
+        } else "general"
+        if location_type == "services":
+            # Locator reqOption=8 returns available service attributes, not
+            # DropLocation rows. For drop-off UX, prefer location-returning mode.
+            location_type = "general"
+
+        unit = str(args.get("unit_of_measure", "MI")).strip().upper() or "MI"
+        if unit not in {"MI", "KM"}:
+            unit = "MI"
+
+        radius_raw = args.get("radius", 15.0)
+        try:
+            radius = float(radius_raw)
+        except (TypeError, ValueError):
+            radius = 15.0
+        radius = max(1.0, radius)
+
+        max_results_raw = args.get("max_results", 10)
+        try:
+            max_results = int(max_results_raw)
+        except (TypeError, ValueError):
+            max_results = 10
+        max_results = max(1, min(max_results, 50))
+
+        call_args = {
+            "location_type": location_type,
+            "address_line": str(args.get("address_line", "")).strip(),
+            "city": str(args.get("city", "")).strip(),
+            "state": str(args.get("state", "")).strip(),
+            "postal_code": str(args.get("postal_code", "")).strip(),
+            "country_code": str(args.get("country_code", "US")).strip().upper() or "US",
+            "radius": radius,
+            "unit_of_measure": unit,
+            "max_results": max_results,
+        }
+
+        result = await client.find_locations(**call_args)
+
+        # If a narrower mode returns nothing, retry once in general mode
+        # to maximize location coverage for the UI card.
+        if (
+            (result.get("locations") or []) == []
+            and call_args["location_type"] != "general"
+        ):
+            fallback_args = {**call_args, "location_type": "general"}
+            fallback = await client.find_locations(**fallback_args)
+            if fallback.get("locations"):
+                result = fallback
+
         payload = {"action": "locations", "success": True, **result}
         _emit_event("location_result", payload, bridge=bridge)
         return _ok("Location results displayed.")

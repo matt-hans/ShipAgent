@@ -46,6 +46,8 @@ __all__ = [
     "validate_schedule_pickup",
     "validate_cancel_pickup",
     "validate_track_package",
+    "validate_find_locations",
+    "validate_get_service_center_facilities",
     "deny_raw_sql_in_filter_tools",
     "validate_intent_on_resolve",
     "validate_filter_spec_on_pipeline",
@@ -508,6 +510,64 @@ async def validate_track_package(
     )
 
 
+async def validate_find_locations(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """Deny direct MCP find_locations calls — force orchestrator wrapper.
+
+    The orchestrator wrapper ``find_locations_tool`` emits a
+    ``location_result`` event for the frontend LocationCard.
+    Direct MCP calls bypass that event path and fall back to plain text.
+
+    Args:
+        input_data: Contains 'tool_name' and 'tool_input' keys.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context from Claude Agent SDK.
+
+    Returns:
+        hookSpecificOutput with denial.
+    """
+    _log_to_stderr(
+        f"[VALIDATION] Pre-hook DENYING direct find_locations | ID: {tool_use_id}"
+    )
+    return _deny_with_reason(
+        "Direct mcp__ups__find_locations is not allowed. "
+        "Use the find_locations orchestrator tool instead, which emits "
+        "location result events for the UI."
+    )
+
+
+async def validate_get_service_center_facilities(
+    input_data: dict[str, Any],
+    tool_use_id: str | None,
+    context: Any,
+) -> dict[str, Any]:
+    """Deny direct MCP get_service_center_facilities calls.
+
+    Forces usage through the orchestrator wrapper so the frontend receives
+    ``location_result`` events and renders the LocationCard.
+
+    Args:
+        input_data: Contains 'tool_name' and 'tool_input' keys.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context from Claude Agent SDK.
+
+    Returns:
+        hookSpecificOutput with denial.
+    """
+    _log_to_stderr(
+        "[VALIDATION] Pre-hook DENYING direct get_service_center_facilities "
+        f"| ID: {tool_use_id}"
+    )
+    return _deny_with_reason(
+        "Direct mcp__ups__get_service_center_facilities is not allowed. "
+        "Use the get_service_center_facilities orchestrator tool instead, "
+        "which emits location result events for the UI."
+    )
+
+
 # =============================================================================
 # Filter Enforcement Hooks
 # =============================================================================
@@ -943,6 +1003,14 @@ def create_hook_matchers(
             HookMatcher(
                 matcher="mcp__ups__track_package",
                 hooks=[validate_track_package],
+            ),
+            HookMatcher(
+                matcher="mcp__ups__find_locations",
+                hooks=[validate_find_locations],
+            ),
+            HookMatcher(
+                matcher="mcp__ups__get_service_center_facilities",
+                hooks=[validate_get_service_center_facilities],
             ),
             HookMatcher(
                 matcher=None,

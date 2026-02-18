@@ -1652,6 +1652,86 @@ async def test_find_locations_tool_emits_location_result():
 
 
 @pytest.mark.asyncio
+async def test_find_locations_tool_maps_services_to_general():
+    """location_type=services is coerced to general for drop-off list results."""
+    mock_ups = AsyncMock()
+    mock_ups.find_locations.return_value = {"success": True, "locations": [{"id": "L1"}]}
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import find_locations_tool
+
+        result = await find_locations_tool(
+            {
+                "location_type": "services",
+                "address_line": "",
+                "city": "Atlanta",
+                "state": "GA",
+                "postal_code": "",
+                "country_code": "us",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    assert captured[0][0] == "location_result"
+    mock_ups.find_locations.assert_awaited_once()
+    call_kwargs = mock_ups.find_locations.await_args.kwargs
+    assert call_kwargs["location_type"] == "general"
+    assert call_kwargs["country_code"] == "US"
+
+
+@pytest.mark.asyncio
+async def test_find_locations_tool_retries_general_when_empty():
+    """If a narrow mode is empty, tool retries once with general mode."""
+    mock_ups = AsyncMock()
+    mock_ups.find_locations = AsyncMock(
+        side_effect=[
+            {"success": True, "locations": []},
+            {"success": True, "locations": [{"id": "L2"}]},
+        ]
+    )
+
+    bridge = EventEmitterBridge()
+    captured: list[tuple[str, dict]] = []
+    bridge.callback = lambda event_type, data: captured.append((event_type, data))
+
+    with patch(
+        "src.orchestrator.agent.tools.pickup._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.pickup import find_locations_tool
+
+        result = await find_locations_tool(
+            {
+                "location_type": "retail",
+                "address_line": "",
+                "city": "Atlanta",
+                "state": "GA",
+                "postal_code": "",
+                "country_code": "US",
+            },
+            bridge=bridge,
+        )
+
+    assert result["isError"] is False
+    assert len(captured) == 1
+    assert captured[0][1]["locations"] == [{"id": "L2"}]
+    assert mock_ups.find_locations.await_count == 2
+    first_kwargs = mock_ups.find_locations.await_args_list[0].kwargs
+    second_kwargs = mock_ups.find_locations.await_args_list[1].kwargs
+    assert first_kwargs["location_type"] == "retail"
+    assert second_kwargs["location_type"] == "general"
+
+
+@pytest.mark.asyncio
 async def test_find_locations_tool_handles_malformed_args():
     """find_locations_tool returns _err for TypeError from bad model args."""
     mock_ups = AsyncMock()

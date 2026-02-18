@@ -1315,17 +1315,74 @@ class UPSMCPClient:
         if isinstance(drop_locs, dict):
             drop_locs = [drop_locs]
         locations = [
-            {
-                "id": loc.get("LocationID", ""),
-                "address": loc.get("AddressKeyFormat", {}),
-                "phone": loc.get("PhoneNumber", ""),
-                "hours": loc.get("OperatingHours", {}),
-            }
+            self._normalize_locator_location(loc)
             for loc in drop_locs
         ]
         return {
             "success": True,
             "locations": locations,
+        }
+
+    def _normalize_locator_location(self, loc: dict[str, Any]) -> dict[str, Any]:
+        """Normalize one Locator.yaml v3 DropLocation object for frontend use."""
+        addr = loc.get("AddressKeyFormat", {})
+        if not isinstance(addr, dict):
+            addr = {}
+
+        address_line = addr.get("AddressLine", "")
+        if isinstance(address_line, list):
+            address_line = ", ".join(str(x) for x in address_line if x)
+
+        phone_value = loc.get("PhoneNumber", "")
+        if isinstance(phone_value, list):
+            phones = [str(p) for p in phone_value if p]
+        elif phone_value:
+            phones = [str(phone_value)]
+        else:
+            phones = []
+        phone = phones[0] if phones else ""
+
+        hours: dict[str, str] = {}
+        op_hours = loc.get("OperatingHours", {})
+        if isinstance(op_hours, dict):
+            standard = op_hours.get("StandardHours", {})
+            if isinstance(standard, dict):
+                day_entries = standard.get("DayOfWeek", [])
+                if isinstance(day_entries, dict):
+                    day_entries = [day_entries]
+                if isinstance(day_entries, list):
+                    for entry in day_entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        day = str(entry.get("Day", "")).strip()
+                        open_hours = str(entry.get("OpenHours", "")).strip()
+                        close_hours = str(entry.get("CloseHours", "")).strip()
+                        if not day:
+                            continue
+                        if open_hours and close_hours:
+                            hours[day] = f"{open_hours}-{close_hours}"
+                        elif open_hours:
+                            hours[day] = open_hours
+                        elif close_hours:
+                            hours[day] = close_hours
+
+        return {
+            "id": loc.get("LocationID", ""),
+            "address": {
+                "ConsigneeName": addr.get("ConsigneeName", ""),
+                "AddressLine": address_line,
+                "City": addr.get("City", addr.get("PoliticalDivision2", "")),
+                "StateProvinceCode": addr.get(
+                    "StateProvinceCode",
+                    addr.get("PoliticalDivision1", ""),
+                ),
+                "PostalCode": addr.get("PostalCode", addr.get("PostcodePrimaryLow", "")),
+                "CountryCode": addr.get("CountryCode", ""),
+            },
+            "phone": phone,
+            "phones": phones,
+            "hours": hours,
+            "details": loc,
         }
 
     def _normalize_service_center_response(self, raw: dict) -> dict[str, Any]:
@@ -1340,31 +1397,104 @@ class UPSMCPClient:
         Returns:
             Normalised response dict with success and facilities list.
         """
-        center = raw.get("ServiceCenterResponse", {})
-        facilities_raw = center.get("ServiceCenterList", [])
-        if isinstance(facilities_raw, dict):
-            facilities_raw = [facilities_raw]
+        facilities_raw: list[Any] = []
+        pickup_resp = raw.get("PickupGetServiceCenterFacilitiesResponse", {})
+        svc_location = pickup_resp.get("ServiceCenterLocation", {})
+
+        drop_off = svc_location.get("DropOffFacilities", [])
+        if isinstance(drop_off, dict):
+            drop_off = [drop_off]
+        if isinstance(drop_off, list):
+            facilities_raw.extend(drop_off)
+
+        pickup = svc_location.get("PickupFacilities", [])
+        if isinstance(pickup, dict):
+            pickup = [pickup]
+        if isinstance(pickup, list):
+            facilities_raw.extend(pickup)
+
         facilities = []
         for fac in facilities_raw:
-            name = fac.get("FacilityName", fac.get("name", ""))
-            addr_obj = fac.get("FacilityAddress", {})
+            if not isinstance(fac, dict):
+                continue
+            name = fac.get("Name", "")
+
+            addr_obj = fac.get("Address", {})
             if isinstance(addr_obj, str):
                 address = addr_obj
+            elif isinstance(addr_obj, list):
+                address = ", ".join(str(x) for x in addr_obj if x)
             elif isinstance(addr_obj, dict):
+                address_line = addr_obj.get("AddressLine", "")
+                if isinstance(address_line, list):
+                    address_line = ", ".join(str(x) for x in address_line if x)
+
+                state = (
+                    addr_obj.get("StateProvinceCode")
+                    or addr_obj.get("StateProvince")
+                )
+                postal = (
+                    addr_obj.get("PostalCode")
+                    or addr_obj.get("PostcodePrimaryLow")
+                )
                 parts = [
-                    addr_obj.get("AddressLine", ""),
+                    address_line,
                     ", ".join(
                         p for p in [
                             addr_obj.get("City", ""),
-                            addr_obj.get("StateProvinceCode", ""),
+                            state,
                         ] if p
                     ),
-                    addr_obj.get("PostalCode", ""),
+                    postal,
                 ]
                 address = " ".join(p for p in parts if p)
             else:
                 address = str(addr_obj) if addr_obj else ""
-            facilities.append({"name": name, "address": address})
+
+            phone_value = fac.get("Phone", "")
+            if isinstance(phone_value, list):
+                phones = [str(p) for p in phone_value if p]
+            elif phone_value:
+                phones = [str(phone_value)]
+            else:
+                phones = []
+            phone = phones[0] if phones else ""
+
+            hours: dict[str, str] = {}
+            facility_time = fac.get("FacilityTime", {})
+            if isinstance(facility_time, dict):
+                day_entries = facility_time.get("DayOfWeek", [])
+                if isinstance(day_entries, dict):
+                    day_entries = [day_entries]
+                if isinstance(day_entries, list):
+                    for entry in day_entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        day = str(entry.get("Day", "")).strip()
+                        open_hours = str(entry.get("OpenHours", "")).strip()
+                        close_hours = str(entry.get("CloseHours", "")).strip()
+                        if not day:
+                            continue
+                        if open_hours and close_hours:
+                            hours[day] = f"{open_hours}-{close_hours}"
+                        elif open_hours:
+                            hours[day] = open_hours
+                        elif close_hours:
+                            hours[day] = close_hours
+
+            facilities.append(
+                {
+                    "name": name,
+                    "address": address,
+                    "phone": phone,
+                    "phones": phones,
+                    "timezone": fac.get("Timezone", ""),
+                    "slic": fac.get("SLIC", ""),
+                    "type": fac.get("Type", ""),
+                    "hours": hours,
+                    "details": fac,
+                }
+            )
         return {
             "success": True,
             "facilities": facilities,

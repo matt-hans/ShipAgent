@@ -727,11 +727,20 @@ export interface LocationResult {
     id: string;
     address: Record<string, string>;
     phone?: string;
+    phones?: string[];
     hours?: Record<string, string>;
+    details?: Record<string, unknown>;
   }>;
   facilities?: Array<{
     name: string;
     address: string;
+    phone?: string;
+    phones?: string[];
+    timezone?: string;
+    slic?: string;
+    type?: string;
+    hours?: Record<string, string>;
+    details?: Record<string, unknown>;
   }>;
 }
 
