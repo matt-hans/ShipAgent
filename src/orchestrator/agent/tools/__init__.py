@@ -174,13 +174,6 @@ def get_all_tool_definitions(
                         "default": False,
                     },
                 },
-                "oneOf": [
-                    {"required": ["filter_spec"]},
-                    {
-                        "required": ["all_rows"],
-                        "properties": {"all_rows": {"const": True}},
-                    },
-                ],
             },
             "handler": _bind_bridge(fetch_rows_tool, bridge),
         },
@@ -504,7 +497,7 @@ def get_all_tool_definitions(
                     "location_type": {
                         "type": "string",
                         "description": "Type of location to search.",
-                        "enum": ["access_point", "retail", "general", "services"],
+                        "enum": ["access_point", "retail", "general"],
                     },
                     "address_line": {"type": "string", "description": "Street address."},
                     "city": {"type": "string", "description": "City."},

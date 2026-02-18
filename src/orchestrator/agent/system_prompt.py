@@ -462,13 +462,13 @@ administrator.
 ## UPS Location Finder
 
 - Use `find_locations` to find nearby UPS Access Points, retail stores, and service centers
-- Supports 4 location types: access_point, retail, general, services
+- Use location_type `general` for broad drop-off searches; `access_point` or `retail` only when explicitly requested
 - Default search radius: 15 miles (configurable with radius and unit_of_measure)
 - Present results with address, phone, and operating hours
 
 ## Landed Cost (International)
 
-- Use `get_landed_cost_quote` to estimate duties, taxes, and fees for international shipments
+- Use `get_landed_cost` to estimate duties, taxes, and fees for international shipments
 - Required: currency_code, export_country_code, import_country_code, commodities list
 - Each commodity needs at minimum: price, quantity. HS code (hs_code) recommended for accuracy
 - Present per-commodity breakdown: duties, taxes, fees + total landed cost

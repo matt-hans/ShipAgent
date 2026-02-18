@@ -1156,9 +1156,25 @@ class TestFindLocations:
                     "DropLocation": [
                         {
                             "LocationID": "L1",
-                            "AddressKeyFormat": {"AddressLine": "123 Main"},
-                            "PhoneNumber": "555-1234",
-                            "OperatingHours": {"StandardHours": {"DayOfWeek": []}},
+                            "AddressKeyFormat": {
+                                "AddressLine": "123 Main",
+                                "PoliticalDivision2": "Austin",
+                                "PoliticalDivision1": "TX",
+                                "PostcodePrimaryLow": "78701",
+                                "CountryCode": "US",
+                            },
+                            "PhoneNumber": ["555-1234"],
+                            "OperatingHours": {
+                                "StandardHours": {
+                                    "DayOfWeek": [
+                                        {
+                                            "Day": "Monday",
+                                            "OpenHours": "0900",
+                                            "CloseHours": "1700",
+                                        }
+                                    ]
+                                }
+                            },
                         }
                     ]
                 }
@@ -1170,7 +1186,15 @@ class TestFindLocations:
         )
         assert result["success"] is True
         assert len(result["locations"]) == 1
-        assert result["locations"][0]["id"] == "L1"
+        loc = result["locations"][0]
+        assert loc["id"] == "L1"
+        assert loc["address"]["City"] == "Austin"
+        assert loc["address"]["StateProvinceCode"] == "TX"
+        assert loc["address"]["PostalCode"] == "78701"
+        assert loc["phone"] == "555-1234"
+        assert loc["phones"] == ["555-1234"]
+        assert loc["hours"]["Monday"] == "0900-1700"
+        assert "AddressKeyFormat" in loc["details"]
 
     @pytest.mark.asyncio
     async def test_find_locations_uses_read_only_retry(self, ups_client, mock_mcp_client):
@@ -1183,31 +1207,48 @@ class TestGetServiceCenterFacilities:
 
     @pytest.mark.asyncio
     async def test_get_service_center_facilities(self, ups_client, mock_mcp_client):
-        """get_service_center_facilities returns normalised facility list."""
+        """get_service_center_facilities normalizes v2409 PickupFacilities."""
         mock_mcp_client.call_tool.return_value = {
-            "ServiceCenterResponse": {
-                "ServiceCenterList": [
-                    {
-                        "FacilityName": "UPS Store #1234",
-                        "FacilityAddress": {
-                            "AddressLine": "123 Main St",
-                            "City": "Austin",
-                            "StateProvinceCode": "TX",
-                            "PostalCode": "78701",
+            "PickupGetServiceCenterFacilitiesResponse": {
+                "Response": {"ResponseStatus": {"Code": "1", "Description": "Success"}},
+                "ServiceCenterLocation": {
+                    "PickupFacilities": {
+                        "Name": "ATLANTA",
+                        "Address": {
+                            "AddressLine": ["5356 GEORGIA HWY 85, SUITE 100"],
+                            "City": "FOREST PARK",
+                            "StateProvince": "GA",
+                            "PostalCode": "30297",
+                            "CountryCode": "US",
+                        },
+                        "Phone": "8004238848",
+                        "Timezone": "Eastern Standard Time",
+                        "SLIC": "0973",
+                        "Type": "FRT",
+                        "FacilityTime": {
+                            "DayOfWeek": [
+                                {"Day": "Monday", "OpenHours": "0600", "CloseHours": "2100"}
+                            ]
                         },
                     }
-                ]
+                },
             }
         }
         result = await ups_client.get_service_center_facilities(
-            city="Austin", state="TX", postal_code="78701", country_code="US",
+            city="Atlanta", state="GA", postal_code="30301", country_code="US",
         )
         assert result["success"] is True
         assert len(result["facilities"]) == 1
         fac = result["facilities"][0]
-        assert fac["name"] == "UPS Store #1234"
-        assert "Austin" in fac["address"]
-        assert "TX" in fac["address"]
+        assert fac["name"] == "ATLANTA"
+        assert "FOREST PARK" in fac["address"]
+        assert "GA" in fac["address"]
+        assert fac["phone"] == "8004238848"
+        assert fac["timezone"] == "Eastern Standard Time"
+        assert fac["slic"] == "0973"
+        assert fac["type"] == "FRT"
+        assert fac["hours"]["Monday"] == "0600-2100"
+        assert "Address" in fac["details"]
 
 
 class TestTrackPackage:
