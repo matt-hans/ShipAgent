@@ -863,6 +863,29 @@ class TestBuildUpsRatePayload:
         assert "PackagingType" not in pkg
         assert pkg["Packaging"]["Code"] == "02"
 
+    def test_shop_request_option_supported(self):
+        """Rate payload can emit Shop request option for service discovery."""
+        simplified = {
+            "shipper": {"name": "S", "addressLine1": "A", "city": "C",
+                        "stateProvinceCode": "CA", "postalCode": "90001",
+                        "countryCode": "US"},
+            "shipTo": {"name": "R", "addressLine1": "B", "city": "D",
+                       "stateProvinceCode": "NY", "postalCode": "10001",
+                       "countryCode": "US"},
+            "packages": [{"weight": 1.0}],
+            "serviceCode": "03",
+        }
+        result = build_ups_rate_payload(
+            simplified,
+            account_number="X",
+            request_option="Shop",
+            include_service=False,
+        )
+        request = result["RateRequest"]["Request"]
+        shipment = result["RateRequest"]["Shipment"]
+        assert request["RequestOption"] == "Shop"
+        assert "Service" not in shipment
+
 
 # ── Helper to build minimal simplified payloads ──
 

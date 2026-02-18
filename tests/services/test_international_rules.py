@@ -184,6 +184,31 @@ class TestValidateInternationalReadiness:
             assert errors[0].machine_code == "MISSING_RECIPIENT_PHONE"
             assert errors[0].field_path == "ShipTo.Phone.Number"
 
+    def test_missing_recipient_state_for_gb(self):
+        """Destination-specific rule: GB requires ship_to_state."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-GB"}, clear=False):
+            order = {
+                "ship_to_country": "GB",
+                "ship_to_phone": "442079430800",
+                "ship_to_attention_name": "Elizabeth Taylor",
+                "shipper_phone": "12125551234",
+                "shipper_attention_name": "Warehouse Desk",
+                "shipment_description": "Books",
+                "commodities": [{
+                    "description": "Books",
+                    "commodity_code": "490199",
+                    "origin_country": "US",
+                    "quantity": 1,
+                    "unit_value": "75.00",
+                }],
+            }
+            req = get_requirements("US", "GB", "07")
+            errors = validate_international_readiness(order, req)
+            codes = [e.machine_code for e in errors]
+            assert "MISSING_RECIPIENT_STATE" in codes
+            state_error = next(e for e in errors if e.machine_code == "MISSING_RECIPIENT_STATE")
+            assert state_error.field_path == "ShipTo.Address.StateProvinceCode"
+
     def test_missing_commodities(self):
         with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
             order = {

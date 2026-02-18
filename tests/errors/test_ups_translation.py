@@ -173,6 +173,13 @@ class TestRegressionExistingMappings:
         code, _, _ = translate_ups_error("120100", "Address validation failed")
         assert code == "E-3003"
 
+    def test_120206_maps_to_e3003(self):
+        """UPS missing/invalid state-province still maps to E-3003."""
+        code, _, _ = translate_ups_error(
+            "120206", "Missing or invalid ship to state province code"
+        )
+        assert code == "E-3003"
+
     def test_111030_maps_to_e3004(self):
         """UPS service unavailable still maps to E-3004."""
         code, _, _ = translate_ups_error("111030", "Service not available")

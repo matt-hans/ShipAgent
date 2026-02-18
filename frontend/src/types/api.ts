@@ -248,6 +248,20 @@ export interface ShipperInfo {
   countryCode: string;
 }
 
+/** Service option discovered from UPS Shop for a route. */
+export interface AvailableServiceOption {
+  code: string;
+  name: string;
+  description?: string;
+  estimated_cost_cents: number;
+  total_charges: {
+    monetary_value: string;
+    currency_code: string;
+  };
+  delivery_days?: string | null;
+  selected?: boolean;
+}
+
 /** Batch preview before execution. */
 export interface BatchPreview {
   job_id: string;
@@ -264,6 +278,7 @@ export interface BatchPreview {
   shipper?: ShipperInfo;
   ship_to?: {
     name: string;
+    attention_name?: string;
     address1: string;
     address2?: string;
     city: string;
@@ -275,6 +290,8 @@ export interface BatchPreview {
   account_number?: string;
   service_name?: string;
   service_code?: string;
+  available_services?: AvailableServiceOption[];
+  service_selection_notice?: string;
   weight_lbs?: number;
   packaging_type?: string;
   resolved_payload?: Record<string, unknown>;

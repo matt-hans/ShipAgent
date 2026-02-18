@@ -7,6 +7,7 @@ address normalization, and account masking.
 import json
 import logging
 import os
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.db.connection import get_db_context
@@ -100,6 +101,59 @@ def _mask_account(acct: str) -> str:
     return acct[:2] + "*" * (len(acct) - 4) + acct[-2:]
 
 
+def _to_cents(amount: Any) -> int:
+    """Convert UPS monetary values to integer cents with safe fallback."""
+    try:
+        value = Decimal(str(amount if amount is not None else "0"))
+    except (InvalidOperation, TypeError, ValueError):
+        return 0
+    return int((value * 100).quantize(Decimal("1")))
+
+
+def _extract_available_services(shop_result: Any) -> list[dict[str, Any]]:
+    """Extract and normalize available service options from UPS Shop response."""
+    if not isinstance(shop_result, dict):
+        return []
+    rated = shop_result.get("ratedShipments", [])
+    if not isinstance(rated, list):
+        return []
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for item in rated:
+        if not isinstance(item, dict):
+            continue
+        code = str(item.get("serviceCode", "")).strip()
+        if not code:
+            continue
+        total = item.get("totalCharges", {}) if isinstance(item.get("totalCharges"), dict) else {}
+        monetary = str(total.get("monetaryValue", "0"))
+        svc = {
+            "code": code,
+            "name": str(item.get("serviceName") or SERVICE_CODE_NAMES.get(code, f"UPS Service {code}")),
+            "description": str(item.get("serviceDescription") or ""),
+            "estimated_cost_cents": _to_cents(monetary),
+            "total_charges": {
+                "monetary_value": monetary,
+                "currency_code": str(total.get("currencyCode", "USD")),
+            },
+            "delivery_days": item.get("deliveryDays"),
+            "selected": False,
+        }
+        prev = deduped.get(code)
+        if prev is None or svc["estimated_cost_cents"] < prev["estimated_cost_cents"]:
+            deduped[code] = svc
+
+    return sorted(deduped.values(), key=lambda s: (s["estimated_cost_cents"], s["code"]))
+
+
+def _format_services_for_error(services: list[dict[str, Any]], limit: int = 6) -> str:
+    """Render a short, human-readable service list for validation errors."""
+    labels: list[str] = []
+    for svc in services[:limit]:
+        labels.append(f"{svc['name']} ({svc['code']})")
+    return ", ".join(labels)
+
+
 async def preview_interactive_shipment_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
@@ -118,8 +172,14 @@ async def preview_interactive_shipment_tool(
     """
     from src.db.models import JobStatus
     from src.services.batch_engine import BatchEngine
+    from src.services.errors import UPSServiceError
+    from src.services.international_rules import (
+        get_requirements,
+        validate_international_readiness,
+    )
     from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, DEFAULT_PACKAGE_WEIGHT_LBS, UPS_ADDRESS_MAX_LEN
     from src.services.ups_payload_builder import (
+        build_ups_rate_payload,
         build_shipment_request,
         build_shipper,
         resolve_packaging_code,
@@ -152,12 +212,17 @@ async def preview_interactive_shipment_tool(
     ship_to_state = _str(args.get("ship_to_state"))
     ship_to_country = (_str(args.get("ship_to_country"), DEFAULT_ORIGIN_COUNTRY) or DEFAULT_ORIGIN_COUNTRY).upper()
     ship_to_attention_name = _str(args.get("ship_to_attention_name"))
+    # Operational default: if user gives a recipient, use that same name
+    # for attention unless they explicitly provide an alternate contact.
+    effective_attention_name = ship_to_attention_name or ship_to_name
     shipment_description = _str(args.get("shipment_description")) or _str(args.get("description"))
     commodities = args.get("commodities")
     invoice_currency_code = _str(args.get("invoice_currency_code")).upper()
     invoice_monetary_value = _str(args.get("invoice_monetary_value"))
     reason_for_export = _str(args.get("reason_for_export")).upper()
-    service = _str(args.get("service"), "Ground")
+    raw_service = _str(args.get("service"))
+    service_explicit = bool(raw_service)
+    service = raw_service or "Ground"
     raw_packaging = args.get("packaging_type")
     packaging_type = str(raw_packaging).strip() if raw_packaging is not None else None
 
@@ -190,9 +255,16 @@ async def preview_interactive_shipment_tool(
                 shipper[k] = v
 
     # Resolve service code, auto-upgrade for international destinations
-    service_code = resolve_service_code(service)
-    shipper_country = os.environ.get("SHIPPER_COUNTRY", DEFAULT_ORIGIN_COUNTRY).upper()
-    service_code = upgrade_to_international(service_code, shipper_country, ship_to_country)
+    requested_service_code = resolve_service_code(service)
+    shipper_country = (
+        _str(shipper.get("countryCode"), DEFAULT_ORIGIN_COUNTRY)
+        or DEFAULT_ORIGIN_COUNTRY
+    ).upper()
+    service_code = upgrade_to_international(
+        requested_service_code,
+        shipper_country,
+        ship_to_country,
+    )
 
     # Auto-derive shipment_description from commodities if not provided
     if not shipment_description and isinstance(commodities, list) and commodities:
@@ -217,8 +289,8 @@ async def preview_interactive_shipment_tool(
         order_data["ship_to_address2"] = ship_to_address2
     if ship_to_phone:
         order_data["ship_to_phone"] = ship_to_phone
-    if ship_to_attention_name:
-        order_data["ship_to_attention_name"] = ship_to_attention_name
+    if effective_attention_name:
+        order_data["ship_to_attention_name"] = effective_attention_name
     if shipment_description:
         order_data["shipment_description"] = shipment_description[:UPS_ADDRESS_MAX_LEN]
     if isinstance(commodities, list) and commodities:
@@ -237,6 +309,84 @@ async def preview_interactive_shipment_tool(
             order_data["shipper_attention_name"] = shipper_attention_name
         if shipper_phone:
             order_data["shipper_phone"] = shipper_phone
+
+    # Deterministic pre-validation: fail fast on missing required fields
+    # before any external discovery/rating calls.
+    requirements = get_requirements(shipper_country, ship_to_country, service_code)
+    if requirements.not_shippable_reason:
+        return _err(requirements.not_shippable_reason)
+
+    if requirements.is_international or requirements.requires_invoice_line_total:
+        validation_errors = validate_international_readiness(order_data, requirements)
+        if validation_errors:
+            unique_messages: list[str] = []
+            for err in validation_errors:
+                if err.message not in unique_messages:
+                    unique_messages.append(err.message)
+            return _err("; ".join(unique_messages))
+
+    # Reuse one UPS client for service discovery and preview rating.
+    initial_service_code = service_code
+    ups = await _get_ups_client()
+
+    # Discover route-available services via UPS Shop.
+    available_services: list[dict[str, Any]] = []
+    service_selection_notice = ""
+    try:
+        shop_simplified = build_shipment_request(
+            order_data=order_data,
+            shipper=shipper,
+            service_code=service_code,
+        )
+        shop_payload = build_ups_rate_payload(
+            shop_simplified,
+            account_number=account_number,
+            request_option="Shop",
+            include_service=False,
+        )
+        shop_result = await ups.get_rate(
+            request_body=shop_payload,
+            requestoption="Shop",
+        )
+        available_services = _extract_available_services(shop_result)
+    except UPSServiceError as e:
+        logger.warning("interactive service discovery failed: %s", e)
+    except Exception as e:
+        logger.warning("interactive service discovery error: %s", e)
+
+    if available_services:
+        available_codes = {svc["code"] for svc in available_services}
+        if service_code not in available_codes:
+            if service_explicit:
+                options = _format_services_for_error(available_services)
+                return _err(
+                    f"Requested service '{service}' is not available for this route. "
+                    f"Available services: {options}."
+                )
+            service_code = available_services[0]["code"]
+            order_data["service_code"] = service_code
+            service_selection_notice = (
+                "No explicit service was provided. "
+                f"Defaulted to the lowest-cost available option: "
+                f"{SERVICE_CODE_NAMES.get(service_code, service_code)} ({service_code})."
+            )
+
+        for svc in available_services:
+            svc["selected"] = svc["code"] == service_code
+
+    # If service changed after discovery, re-validate requirements for the final service.
+    if service_code != initial_service_code:
+        requirements = get_requirements(shipper_country, ship_to_country, service_code)
+        if requirements.not_shippable_reason:
+            return _err(requirements.not_shippable_reason)
+        if requirements.is_international or requirements.requires_invoice_line_total:
+            validation_errors = validate_international_readiness(order_data, requirements)
+            if validation_errors:
+                unique_messages: list[str] = []
+                for err in validation_errors:
+                    if err.message not in unique_messages:
+                        unique_messages.append(err.message)
+                return _err("; ".join(unique_messages))
 
     # Create Job with interactive flag
     try:
@@ -269,7 +419,6 @@ async def preview_interactive_shipment_tool(
                 return _err(f"Failed to create shipment row: {e}")
 
             # Rate via BatchEngine preview
-            ups = await _get_ups_client()
             engine = BatchEngine(
                 ups_service=ups,
                 db_session=db,
@@ -319,6 +468,7 @@ async def preview_interactive_shipment_tool(
     result["shipper"] = shipper
     result["ship_to"] = {
         "name": ship_to_name,
+        "attention_name": effective_attention_name,
         "address1": ship_to_address1,
         "address2": ship_to_address2,
         "city": ship_to_city,
@@ -330,6 +480,9 @@ async def preview_interactive_shipment_tool(
     result["account_number"] = _mask_account(account_number)
     result["service_name"] = SERVICE_CODE_NAMES.get(service_code, f"UPS Service {service_code}")
     result["service_code"] = service_code
+    result["available_services"] = available_services
+    if service_selection_notice:
+        result["service_selection_notice"] = service_selection_notice
     result["weight_lbs"] = weight
     result["packaging_type"] = resolve_packaging_code(packaging_type)
     result["resolved_payload"] = resolved_payload
