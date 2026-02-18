@@ -750,9 +750,24 @@ export interface LandedCostResult {
   success: boolean;
   totalLandedCost: string;
   currencyCode: string;
+  shipmentId?: string;
+  importCountryCode?: string;
   totalDuties?: string;
   totalVAT?: string;
   totalBrokerageFees?: string;
+  brokerageFeeItems?: Array<{
+    chargeName: string;
+    chargeAmount: string;
+  }>;
+  requestSummary?: {
+    exportCountryCode: string;
+    importCountryCode: string;
+    currencyCode: string;
+    shipmentType: string;
+    commodityCount: number;
+    totalUnits: number;
+    declaredMerchandiseValue: string;
+  };
   items: Array<{
     commodityId: string;
     duties: string;

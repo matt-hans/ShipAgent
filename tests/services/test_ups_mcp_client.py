@@ -1037,6 +1037,11 @@ class TestGetLandedCost:
         assert result["totalDuties"] == "12.5"
         assert result["totalVAT"] == "7.73"
         assert result["totalBrokerageFees"] == "16.8"
+        assert result["shipmentId"] == "test-shipment-1"
+        assert result["importCountryCode"] == "GB"
+        assert result["brokerageFeeItems"] == [
+            {"chargeName": "Disbursement Fee", "chargeAmount": "16.8"},
+        ]
         assert len(result["items"]) == 1
         assert result["items"][0]["duties"] == "12.5"
         assert result["items"][0]["taxes"] == "7.73"

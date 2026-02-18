@@ -94,6 +94,34 @@ def _make_northeast_resolved_spec():
     ).model_dump()
 
 
+def _make_northeast_business_resolved_spec():
+    """Create a RESOLVED FilterSpec for Northeast business recipients."""
+    return ResolvedFilterSpec(
+        status=ResolutionStatus.RESOLVED,
+        root=FilterGroup(
+            logic="AND",
+            conditions=[
+                FilterCondition(
+                    column="state",
+                    operator=FilterOperator.in_,
+                    operands=[
+                        TypedLiteral(type="string", value="NY"),
+                        TypedLiteral(type="string", value="NJ"),
+                    ],
+                ),
+                FilterCondition(
+                    column="company",
+                    operator=FilterOperator.is_not_blank,
+                    operands=[],
+                ),
+            ],
+        ),
+        explanation="state in [NY, NJ] and company is populated",
+        schema_signature="test_sig",
+        canonical_dict_version="1.0",
+    ).model_dump()
+
+
 def _make_shopify_range_spec_without_fulfillment():
     """Spec with state + price constraints but no fulfillment_status condition."""
     return ResolvedFilterSpec(
@@ -670,6 +698,60 @@ class TestPipelineFilterSpec:
         is_error, content = _parse_tool_result(result)
         assert is_error is True
         assert "Cached filter_spec no longer matches" in content
+
+    @pytest.mark.asyncio
+    async def test_pipeline_reuses_cached_filter_spec_for_semantically_equivalent_followup(self):
+        """Paraphrased follow-up with same filters should reuse cached resolved spec."""
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        bridge = EventEmitterBridge()
+        bridge.last_user_message = "Ship all orders going to companies in the Northeast using ground."
+        bridge.last_resolved_filter_command = "shipments to business recipients in the northeast"
+        bridge.last_resolved_filter_spec = _make_northeast_business_resolved_spec()
+        bridge.last_resolved_filter_schema_signature = "test_sig"
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool(
+                {
+                    "command": "Ship all orders going to companies in the Northeast using ground.",
+                    "service_code": "03",
+                },
+                bridge=bridge,
+            )
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "preview_ready"
+
+    @pytest.mark.asyncio
+    async def test_pipeline_does_not_reuse_cache_when_filter_semantics_change(self):
+        """Cache reuse must not apply when follow-up changes the requested region."""
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        bridge = EventEmitterBridge()
+        bridge.last_user_message = "Ship all orders going to companies in the Southeast using ground."
+        bridge.last_resolved_filter_command = "shipments to business recipients in the northeast"
+        bridge.last_resolved_filter_spec = _make_northeast_business_resolved_spec()
+        bridge.last_resolved_filter_schema_signature = "test_sig"
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool(
+                {
+                    "command": "Ship all orders going to companies in the Southeast using ground.",
+                    "service_code": "03",
+                },
+                bridge=bridge,
+            )
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "Either filter_spec or all_rows=true is required" in content
 
     @pytest.mark.asyncio
     async def test_pipeline_attaches_filter_audit(self):

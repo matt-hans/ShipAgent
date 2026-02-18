@@ -1983,6 +1983,9 @@ async def test_get_landed_cost_tool_emits_event():
     assert len(captured) == 1
     assert captured[0][0] == "landed_cost_result"
     assert captured[0][1]["totalLandedCost"] == "45.23"
+    assert captured[0][1]["requestSummary"]["exportCountryCode"] == "US"
+    assert captured[0][1]["requestSummary"]["importCountryCode"] == "GB"
+    assert captured[0][1]["requestSummary"]["commodityCount"] == 1
 
 
 @pytest.mark.asyncio
@@ -2175,6 +2178,8 @@ async def test_e2e_landed_cost_flow_tool_to_event():
     assert event_type == "landed_cost_result"
     assert event_data["totalLandedCost"] == "87.50"
     assert len(event_data["items"]) == 2
+    assert event_data["requestSummary"]["commodityCount"] == 2
+    assert event_data["requestSummary"]["totalUnits"] == 2
 
 
 # ---------------------------------------------------------------------------
