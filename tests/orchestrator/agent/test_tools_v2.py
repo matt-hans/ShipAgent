@@ -347,6 +347,24 @@ async def test_create_job_returns_job_id():
     assert data["job_id"] == "test-job-123"
 
 
+@pytest.mark.asyncio
+async def test_create_job_rejects_shipping_fast_path_context():
+    """create_job is blocked during shipping-intent turns; force fast path."""
+    bridge = EventEmitterBridge()
+    bridge.last_user_message = "Ship all orders going to companies in the Northeast."
+
+    result = await create_job_tool(
+        {
+            "name": "Ship Northeast Companies",
+            "command": "Ship all orders going to companies in the Northeast.",
+        },
+        bridge=bridge,
+    )
+
+    assert result["isError"] is True
+    assert "ship_command_pipeline" in result["content"][0]["text"]
+
+
 # ---------------------------------------------------------------------------
 # ship_command_pipeline_tool
 # ---------------------------------------------------------------------------

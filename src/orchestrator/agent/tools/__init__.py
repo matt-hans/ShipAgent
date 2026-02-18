@@ -174,6 +174,13 @@ def get_all_tool_definitions(
                         "default": False,
                     },
                 },
+                "oneOf": [
+                    {"required": ["filter_spec"]},
+                    {
+                        "required": ["all_rows"],
+                        "properties": {"all_rows": {"const": True}},
+                    },
+                ],
             },
             "handler": _bind_bridge(fetch_rows_tool, bridge),
         },
@@ -247,7 +254,7 @@ def get_all_tool_definitions(
                 },
                 "required": ["name", "command"],
             },
-            "handler": create_job_tool,
+            "handler": _bind_bridge(create_job_tool, bridge),
         },
         {
             "name": "add_rows_to_job",

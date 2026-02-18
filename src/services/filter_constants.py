@@ -188,6 +188,17 @@ def normalize_term(term: str) -> str:
     return result
 
 
+def _normalize_business_key(term: str) -> str:
+    """Normalize business semantic keys to underscore form."""
+    return normalize_term(term).replace(" ", "_")
+
+
+_BUSINESS_PREDICATE_BY_NORMALIZED_KEY: dict[str, tuple[str, dict]] = {
+    _normalize_business_key(key): (key, value)
+    for key, value in BUSINESS_PREDICATES.items()
+}
+
+
 # ---------------------------------------------------------------------------
 # Tier Classification
 # ---------------------------------------------------------------------------
@@ -215,8 +226,8 @@ def get_tier(term: str) -> str:
     if normalized in REGION_ALIASES:
         return "B"
 
-    # Tier B: business predicates (check original term too for UPPER keys)
-    if term in BUSINESS_PREDICATES:
+    # Tier B: business predicates (case-insensitive)
+    if _normalize_business_key(term) in _BUSINESS_PREDICATE_BY_NORMALIZED_KEY:
         return "B"
 
     # Tier C: unknown
@@ -240,8 +251,21 @@ def match_column_pattern(
     Returns:
         List of matched column names (may be empty).
     """
-    matched = []
+    matched: list[str] = []
+    # Build deterministic case-insensitive lookup preserving source column names.
+    normalized_index: dict[str, list[str]] = {}
+    for column in sorted(schema_columns):
+        normalized_index.setdefault(column.casefold(), []).append(column)
+
     for pattern in patterns:
-        if pattern in schema_columns:
-            matched.append(pattern)
+        candidates = normalized_index.get(pattern.casefold(), [])
+        matched.extend(candidates)
     return matched
+
+
+def resolve_business_predicate(term: str) -> tuple[str, dict] | None:
+    """Resolve business predicate key case-insensitively.
+
+    Returns the canonical key and predicate definition when matched.
+    """
+    return _BUSINESS_PREDICATE_BY_NORMALIZED_KEY.get(_normalize_business_key(term))

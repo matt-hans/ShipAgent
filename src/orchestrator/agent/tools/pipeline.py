@@ -74,6 +74,7 @@ _NUMERIC_QUALIFIER_PATTERNS = (
 _STATE_NAME_PATTERN = re.compile(
     r"\b(" + "|".join(sorted(map(re.escape, STATE_ABBREVIATIONS.keys()), key=len, reverse=True)) + r")\b"
 )
+_STATE_CODE_UPPER_PATTERN = re.compile(r"\b[A-Z]{2}\b")
 
 
 def _command_implies_filter(command: str) -> bool:
@@ -86,6 +87,70 @@ def _command_implies_filter(command: str) -> bool:
     if _STATE_NAME_PATTERN.search(normalized):
         return True
     return False
+
+
+def _command_specificity_score(command: str) -> tuple[int, int]:
+    """Score command richness for deterministic validation source selection."""
+    normalized = normalize_term(command)
+    score = 0
+    if _expected_region_from_command(command):
+        score += 6
+    states = _expected_state_codes_from_command(command)
+    if states:
+        score += 4 + min(len(states), 6)
+    if _command_requests_business_filter(command):
+        score += 3
+    lower, upper = _requested_total_bounds_from_command(command)
+    if lower:
+        score += 2
+    if upper:
+        score += 2
+    if _requested_fulfillment_status_from_command(command):
+        score += 2
+    if _command_explicitly_requests_service(command):
+        score += 1
+    if _command_implies_filter(command):
+        score += 1
+    return score, len(normalized)
+
+
+def _select_validation_command(
+    arg_command: str,
+    bridge: EventEmitterBridge | None,
+) -> tuple[str, str]:
+    """Choose the most constrained available command text for safety checks."""
+    candidates: list[tuple[str, str]] = [("arg_command", arg_command)]
+    if bridge is not None:
+        bridge_shipping = getattr(bridge, "last_shipping_command", None)
+        if isinstance(bridge_shipping, str):
+            candidates.append(("bridge_last_shipping_command", bridge_shipping))
+        bridge_message = getattr(bridge, "last_user_message", None)
+        if isinstance(bridge_message, str):
+            candidates.append(("bridge_last_user_message", bridge_message))
+        bridge_resolved = getattr(bridge, "last_resolved_filter_command", None)
+        if isinstance(bridge_resolved, str):
+            candidates.append(("bridge_last_resolved_filter_command", bridge_resolved))
+
+    best_source = "arg_command"
+    best_command = arg_command.strip()
+    best_score = _command_specificity_score(best_command)
+    seen_norm: set[str] = set()
+
+    for source, raw in candidates:
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        normalized = normalize_term(candidate)
+        if normalized in seen_norm:
+            continue
+        seen_norm.add(normalized)
+        score = _command_specificity_score(candidate)
+        if score > best_score:
+            best_source = source
+            best_command = candidate
+            best_score = score
+
+    return best_command, best_source
 
 
 def _is_confirmation_response(message: str | None) -> bool:
@@ -133,6 +198,267 @@ def _expected_region_from_command(command: str) -> str | None:
     return None
 
 
+def _expected_state_codes_from_command(command: str) -> set[str]:
+    """Extract explicit state constraints from command text."""
+    expected: set[str] = set()
+    normalized = normalize_term(command)
+
+    for match in _STATE_NAME_PATTERN.findall(normalized):
+        code = STATE_ABBREVIATIONS.get(match)
+        if code:
+            expected.add(code)
+
+    # Support explicit uppercase 2-letter state codes in user command.
+    for token in _STATE_CODE_UPPER_PATTERN.findall(command):
+        if token in REGIONS["ALL_US"]:
+            expected.add(token)
+
+    return expected
+
+
+def _resolve_state_column(schema_columns: set[str]) -> str | None:
+    """Resolve the most likely state column case-insensitively."""
+    preferred = (
+        "ship_to_state",
+        "state",
+        "stateprovincecode",
+        "state_province_code",
+        "province",
+    )
+    normalized_lookup = {col.casefold(): col for col in schema_columns}
+    for key in preferred:
+        match = normalized_lookup.get(key.casefold())
+        if match:
+            return match
+    return None
+
+
+def _literal_to_state_code(value: object) -> str | None:
+    """Normalize state literal to two-letter code when possible."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    upper = candidate.upper()
+    if upper in REGIONS["ALL_US"]:
+        return upper
+    return STATE_ABBREVIATIONS.get(normalize_term(candidate))
+
+
+def _spec_state_codes(spec: Any, state_column: str) -> set[str]:
+    """Collect explicit state codes constrained by spec on target column."""
+    codes: set[str] = set()
+    for cond in _iter_conditions(spec.root):
+        column = str(getattr(cond, "column", ""))
+        if column.casefold() != state_column.casefold():
+            continue
+        op = str(getattr(cond, "operator", ""))
+        raw_values = [getattr(o, "value", None) for o in getattr(cond, "operands", [])]
+        if op.endswith("eq") and raw_values:
+            code = _literal_to_state_code(raw_values[0])
+            if code:
+                codes.add(code)
+        elif op.endswith("in_") or op.endswith("in"):
+            for raw in raw_values:
+                code = _literal_to_state_code(raw)
+                if code:
+                    codes.add(code)
+    return codes
+
+
+def _append_state_filter(spec: Any, state_column: str, states: set[str]) -> None:
+    """Append deterministic state IN condition to spec root."""
+    from src.orchestrator.models.filter_spec import (
+        FilterCondition,
+        FilterOperator,
+        TypedLiteral,
+    )
+
+    spec.root.conditions.append(
+        FilterCondition(
+            column=state_column,
+            operator=FilterOperator.in_,
+            operands=[
+                TypedLiteral(type="string", value=s)
+                for s in sorted(states)
+            ],
+        )
+    )
+
+
+def _requested_total_bounds_from_command(
+    command: str,
+) -> tuple[tuple[float, bool] | None, tuple[float, bool] | None]:
+    """Extract lower/upper total bounds from command.
+
+    Returns:
+        (lower_bound, upper_bound) where each bound is (value, inclusive).
+    """
+    normalized = normalize_term(command)
+    if "total" not in normalized and "amount" not in normalized:
+        return None, None
+
+    def _as_float(raw: str) -> float | None:
+        cleaned = raw.replace(",", "").strip()
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+
+    lower: tuple[float, bool] | None = None
+    upper: tuple[float, bool] | None = None
+
+    lower_patterns = (
+        (r"(?:over|greater than|above)\s*\$?\s*([0-9]+(?:\.[0-9]+)?)", False),
+        (r"(?:at least|>=?)\s*\$?\s*([0-9]+(?:\.[0-9]+)?)", True),
+    )
+    upper_patterns = (
+        (r"(?:under|less than|below)\s*\$?\s*([0-9]+(?:\.[0-9]+)?)", False),
+        (r"(?:at most|<=?)\s*\$?\s*([0-9]+(?:\.[0-9]+)?)", True),
+    )
+
+    for pattern, inclusive in lower_patterns:
+        m = re.search(pattern, normalized)
+        if m:
+            value = _as_float(m.group(1))
+            if value is not None:
+                lower = (value, inclusive)
+                break
+    for pattern, inclusive in upper_patterns:
+        m = re.search(pattern, normalized)
+        if m:
+            value = _as_float(m.group(1))
+            if value is not None:
+                upper = (value, inclusive)
+                break
+
+    between = re.search(
+        r"between\s*\$?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:and|to)\s*\$?\s*([0-9]+(?:\.[0-9]+)?)",
+        normalized,
+    )
+    if between:
+        lo = _as_float(between.group(1))
+        hi = _as_float(between.group(2))
+        if lo is not None and hi is not None:
+            lower = (lo, True)
+            upper = (hi, True)
+
+    return lower, upper
+
+
+def _resolve_total_column(schema_columns: set[str]) -> str | None:
+    """Resolve likely monetary total column from schema."""
+    preferred = (
+        "total_price",
+        "order_total",
+        "total_amount",
+        "subtotal_price",
+        "subtotal",
+        "total",
+        "amount",
+    )
+    normalized_lookup = {col.casefold(): col for col in schema_columns}
+    for key in preferred:
+        match = normalized_lookup.get(key.casefold())
+        if match:
+            return match
+    for col in sorted(schema_columns):
+        lowered = col.casefold()
+        if "total" in lowered or "amount" in lowered or "price" in lowered:
+            return col
+    return None
+
+
+def _coerce_numeric(value: object) -> float | None:
+    """Best-effort numeric conversion for filter literal operands."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.strip().replace(",", "").replace("$", "")
+        if not cleaned:
+            return None
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
+
+
+def _spec_total_bounds(
+    spec: Any,
+    total_column: str,
+) -> tuple[tuple[float, bool] | None, tuple[float, bool] | None]:
+    """Extract lower/upper numeric bounds from spec on total column."""
+    lower: tuple[float, bool] | None = None
+    upper: tuple[float, bool] | None = None
+
+    for cond in _iter_conditions(spec.root):
+        column = str(getattr(cond, "column", ""))
+        if column.casefold() != total_column.casefold():
+            continue
+        op = str(getattr(cond, "operator", ""))
+        raw_values = [getattr(o, "value", None) for o in getattr(cond, "operands", [])]
+
+        if op.endswith("between") and len(raw_values) >= 2:
+            lo = _coerce_numeric(raw_values[0])
+            hi = _coerce_numeric(raw_values[1])
+            if lo is not None:
+                lower = (lo, True)
+            if hi is not None:
+                upper = (hi, True)
+            continue
+
+        if not raw_values:
+            continue
+        value = _coerce_numeric(raw_values[0])
+        if value is None:
+            continue
+        if op.endswith("gt"):
+            lower = (value, False)
+        elif op.endswith("gte"):
+            lower = (value, True)
+        elif op.endswith("lt"):
+            upper = (value, False)
+        elif op.endswith("lte"):
+            upper = (value, True)
+
+    return lower, upper
+
+
+def _append_total_bounds_filter(
+    spec: Any,
+    total_column: str,
+    lower: tuple[float, bool] | None,
+    upper: tuple[float, bool] | None,
+) -> None:
+    """Append missing lower/upper total bound conditions to spec root."""
+    from src.orchestrator.models.filter_spec import (
+        FilterCondition,
+        FilterOperator,
+        TypedLiteral,
+    )
+
+    if lower is not None:
+        lo, inclusive = lower
+        spec.root.conditions.append(
+            FilterCondition(
+                column=total_column,
+                operator=FilterOperator.gte if inclusive else FilterOperator.gt,
+                operands=[TypedLiteral(type="number", value=lo)],
+            )
+        )
+    if upper is not None:
+        hi, inclusive = upper
+        spec.root.conditions.append(
+            FilterCondition(
+                column=total_column,
+                operator=FilterOperator.lte if inclusive else FilterOperator.lt,
+                operands=[TypedLiteral(type="number", value=hi)],
+            )
+        )
+
+
 def _spec_includes_region(spec: Any, region_key: str) -> bool:
     """Check whether resolved spec contains a condition matching region states."""
     expected = {s.upper() for s in REGIONS.get(region_key, [])}
@@ -165,7 +491,100 @@ def _spec_includes_business_filter(spec: Any) -> bool:
     return False
 
 
-async def create_job_tool(args: dict[str, Any]) -> dict[str, Any]:
+def _requested_fulfillment_status_from_command(command: str) -> str | None:
+    """Infer requested fulfillment status from command text."""
+    normalized = normalize_term(command)
+    has_unfulfilled = (
+        "unfulfilled" in normalized
+        or "not fulfilled" in normalized
+        or "pending fulfillment" in normalized
+    )
+    # Avoid classifying "unfulfilled" as "fulfilled" because of substring overlap.
+    has_fulfilled = "fulfilled" in normalized and not has_unfulfilled
+    if has_unfulfilled and not has_fulfilled:
+        return "unfulfilled"
+    if has_fulfilled and not has_unfulfilled:
+        return "fulfilled"
+    return None
+
+
+def _resolve_fulfillment_status_column(schema_columns: set[str]) -> str | None:
+    """Resolve fulfillment status column name case-insensitively."""
+    candidates = {"fulfillment_status", "fulfilment_status"}
+    for column in sorted(schema_columns):
+        if column.casefold() in candidates:
+            return column
+    return None
+
+
+def _spec_includes_expected_fulfillment_status(
+    spec: Any,
+    fulfillment_column: str,
+    expected_status: str,
+) -> bool:
+    """Return True if spec already enforces expected fulfillment status."""
+    expected_norm = expected_status.casefold()
+    for cond in _iter_conditions(spec.root):
+        column = str(getattr(cond, "column", ""))
+        if column.casefold() != fulfillment_column.casefold():
+            continue
+        op = str(getattr(cond, "operator", ""))
+        raw_values = [getattr(o, "value", None) for o in getattr(cond, "operands", [])]
+        values = {str(v).casefold() for v in raw_values if isinstance(v, str)}
+        if op.endswith("eq") and values == {expected_norm}:
+            return True
+        if (op.endswith("in_") or op.endswith("in")) and expected_norm in values:
+            return True
+    return False
+
+
+def _spec_conflicts_with_expected_fulfillment_status(
+    spec: Any,
+    fulfillment_column: str,
+    expected_status: str,
+) -> bool:
+    """Return True if spec contains an explicit opposite fulfillment status filter."""
+    expected_norm = expected_status.casefold()
+    known = {"fulfilled", "unfulfilled", "partial", "restocked", "open"}
+    for cond in _iter_conditions(spec.root):
+        column = str(getattr(cond, "column", ""))
+        if column.casefold() != fulfillment_column.casefold():
+            continue
+        op = str(getattr(cond, "operator", ""))
+        raw_values = [getattr(o, "value", None) for o in getattr(cond, "operands", [])]
+        values = {str(v).casefold() for v in raw_values if isinstance(v, str)}
+        if op.endswith("eq") and values and values != {expected_norm} and values <= known:
+            return True
+        if (op.endswith("in_") or op.endswith("in")) and values and expected_norm not in values and values <= known:
+            return True
+    return False
+
+
+def _append_fulfillment_status_condition(
+    spec: Any,
+    fulfillment_column: str,
+    expected_status: str,
+) -> None:
+    """Append deterministic fulfillment status condition to spec root."""
+    from src.orchestrator.models.filter_spec import (
+        FilterCondition,
+        FilterOperator,
+        TypedLiteral,
+    )
+
+    spec.root.conditions.append(
+        FilterCondition(
+            column=fulfillment_column,
+            operator=FilterOperator.eq,
+            operands=[TypedLiteral(type="string", value=expected_status)],
+        )
+    )
+
+
+async def create_job_tool(
+    args: dict[str, Any],
+    bridge: EventEmitterBridge | None = None,
+) -> dict[str, Any]:
     """Create a new job in the state database.
 
     Args:
@@ -176,6 +595,11 @@ async def create_job_tool(args: dict[str, Any]) -> dict[str, Any]:
     """
     name = args.get("name", "Untitled Job")
     command = args.get("command", "")
+    if _should_force_fast_path(bridge):
+        return _err(
+            "For shipping execution commands, do not use create_job directly. "
+            "Use ship_command_pipeline with a resolved filter_spec."
+        )
 
     try:
         with get_db_context() as db:
@@ -364,19 +788,15 @@ async def ship_command_pipeline_tool(
     if not command:
         return _err("command is required")
 
-    validation_command = command
-    if bridge is not None:
-        bridge_message = getattr(bridge, "last_user_message", None)
-        bridge_command = bridge_message.strip() if isinstance(bridge_message, str) else ""
-        if bridge_command:
-            validation_command = bridge_command
-            if bridge_command != command:
-                logger.info(
-                    "ship_command_pipeline using bridge command for validation "
-                    "arg_command=%r bridge_command=%r",
-                    command[:120],
-                    bridge_command[:120],
-                )
+    validation_command, validation_source = _select_validation_command(command, bridge)
+    if validation_command != command:
+        logger.info(
+            "ship_command_pipeline selected validation command source=%s "
+            "arg_command=%r selected_command=%r",
+            validation_source,
+            command[:120],
+            validation_command[:120],
+        )
 
     # Hard cutover: reject legacy where_clause
     if "where_clause" in args:
@@ -387,6 +807,7 @@ async def ship_command_pipeline_tool(
 
     filter_spec_raw = args.get("filter_spec")
     all_rows = bool(args.get("all_rows", False))
+    used_cached_filter_spec = False
 
     # Exactly one of filter_spec or all_rows must be provided
     if filter_spec_raw and all_rows:
@@ -394,11 +815,26 @@ async def ship_command_pipeline_tool(
             "Conflicting arguments: provide filter_spec OR all_rows=true, not both."
         )
     if not filter_spec_raw and not all_rows:
-        return _err(
-            "Either filter_spec or all_rows=true is required. "
-            "Use resolve_filter_intent to create a filter, or set "
-            "all_rows=true to ship everything."
-        )
+        cached_spec: dict[str, Any] | None = None
+        if bridge is not None:
+            cached_spec_raw = getattr(bridge, "last_resolved_filter_spec", None)
+            cached_command_raw = getattr(bridge, "last_resolved_filter_command", None)
+            if isinstance(cached_spec_raw, dict) and isinstance(cached_command_raw, str):
+                if normalize_term(cached_command_raw) == normalize_term(validation_command):
+                    cached_spec = cached_spec_raw
+
+        if cached_spec is not None:
+            filter_spec_raw = cached_spec
+            used_cached_filter_spec = True
+            logger.info(
+                "ship_command_pipeline recovered missing filter_spec from bridge cache",
+            )
+        else:
+            return _err(
+                "Either filter_spec or all_rows=true is required. "
+                "Use resolve_filter_intent to create a filter, or set "
+                "all_rows=true to ship everything."
+            )
     if all_rows and _command_implies_filter(validation_command):
         return _err(
             "all_rows=true is not allowed when the command contains filters "
@@ -433,6 +869,9 @@ async def ship_command_pipeline_tool(
     # Compile filter or use all-rows path
     filter_explanation = ""
     filter_audit: dict[str, Any] = {}
+    enforced_state_codes: list[str] | None = None
+    enforced_total_bounds: dict[str, Any] | None = None
+    enforced_fulfillment_status: str | None = None
     gw = await get_data_gateway()
     source_info = await gw.get_source_info()
     if source_info is None:
@@ -446,6 +885,22 @@ async def ship_command_pipeline_tool(
         source_info = {}
     raw_signature = source_info.get("signature", "")
     schema_signature = raw_signature if isinstance(raw_signature, str) else ""
+    if used_cached_filter_spec and bridge is not None:
+        cached_signature_raw = getattr(
+            bridge,
+            "last_resolved_filter_schema_signature",
+            None,
+        )
+        cached_signature = (
+            cached_signature_raw.strip()
+            if isinstance(cached_signature_raw, str)
+            else ""
+        )
+        if not cached_signature or not schema_signature or cached_signature != schema_signature:
+            return _err(
+                "Cached filter_spec no longer matches the active source schema. "
+                "Re-run resolve_filter_intent before shipping."
+            )
 
     if filter_spec_raw:
         # Compile FilterSpec → parameterized SQL
@@ -471,6 +926,129 @@ async def ship_command_pipeline_tool(
                 "but filter_spec does not include a business/company predicate. "
                 "Re-run resolve_filter_intent and include BUSINESS_RECIPIENT."
             )
+        expected_states = _expected_state_codes_from_command(validation_command)
+        state_column = _resolve_state_column(schema_columns)
+        if expected_states and not state_column:
+            return _err(
+                "Filter mismatch: command includes explicit state constraints "
+                f"{sorted(expected_states)}, but this data source has no recognized "
+                "state column. Reconnect source and re-run resolve_filter_intent."
+            )
+        if expected_states and state_column:
+            spec_states = _spec_state_codes(spec, state_column)
+            if spec_states and not expected_states.issubset(spec_states):
+                return _err(
+                    "Filter mismatch: command constrains states to "
+                    f"{sorted(expected_states)}, but filter_spec uses "
+                    f"{sorted(spec_states)}. Re-run resolve_filter_intent with "
+                    "the exact state set."
+                )
+            if not spec_states:
+                _append_state_filter(spec, state_column, expected_states)
+                filter_spec_raw = spec.model_dump()
+                enforced_state_codes = sorted(expected_states)
+                logger.info(
+                    "ship_command_pipeline enforced state set=%s on column=%s",
+                    enforced_state_codes,
+                    state_column,
+                )
+
+        expected_lower, expected_upper = _requested_total_bounds_from_command(
+            validation_command
+        )
+        total_column = _resolve_total_column(schema_columns)
+        if (expected_lower or expected_upper) and not total_column:
+            return _err(
+                "Filter mismatch: command includes total/amount bounds, but this "
+                "data source has no recognized total column. Re-run "
+                "resolve_filter_intent with a source that includes totals."
+            )
+        if (expected_lower or expected_upper) and total_column:
+            actual_lower, actual_upper = _spec_total_bounds(spec, total_column)
+            if (
+                expected_lower
+                and actual_lower
+                and (
+                    abs(expected_lower[0] - actual_lower[0]) > 1e-9
+                    or expected_lower[1] != actual_lower[1]
+                )
+            ):
+                return _err(
+                    "Filter mismatch: command lower total bound is "
+                    f"{expected_lower[0]}, but filter_spec uses {actual_lower[0]}. "
+                    "Re-run resolve_filter_intent with the exact price range."
+                )
+            if (
+                expected_upper
+                and actual_upper
+                and (
+                    abs(expected_upper[0] - actual_upper[0]) > 1e-9
+                    or expected_upper[1] != actual_upper[1]
+                )
+            ):
+                return _err(
+                    "Filter mismatch: command upper total bound is "
+                    f"{expected_upper[0]}, but filter_spec uses {actual_upper[0]}. "
+                    "Re-run resolve_filter_intent with the exact price range."
+                )
+            if (
+                (expected_lower and not actual_lower)
+                or (expected_upper and not actual_upper)
+            ):
+                _append_total_bounds_filter(
+                    spec,
+                    total_column,
+                    expected_lower if not actual_lower else None,
+                    expected_upper if not actual_upper else None,
+                )
+                filter_spec_raw = spec.model_dump()
+                enforced_total_bounds = {
+                    "column": total_column,
+                    "lower": expected_lower[0] if expected_lower else None,
+                    "upper": expected_upper[0] if expected_upper else None,
+                }
+                logger.info(
+                    "ship_command_pipeline enforced total bounds=%s on column=%s",
+                    enforced_total_bounds,
+                    total_column,
+                )
+
+        expected_fulfillment = _requested_fulfillment_status_from_command(validation_command)
+        fulfillment_column = _resolve_fulfillment_status_column(schema_columns)
+        if expected_fulfillment and not fulfillment_column:
+            return _err(
+                "Filter mismatch: command requests fulfillment status filtering, "
+                "but this data source has no recognized fulfillment_status column."
+            )
+        if expected_fulfillment and fulfillment_column:
+            if _spec_conflicts_with_expected_fulfillment_status(
+                spec,
+                fulfillment_column,
+                expected_fulfillment,
+            ):
+                return _err(
+                    "Filter mismatch: command requests "
+                    f"'{expected_fulfillment}' orders, but filter_spec enforces a "
+                    "different fulfillment_status. Re-run resolve_filter_intent "
+                    "with the exact fulfillment status."
+                )
+            if not _spec_includes_expected_fulfillment_status(
+                spec,
+                fulfillment_column,
+                expected_fulfillment,
+            ):
+                _append_fulfillment_status_condition(
+                    spec,
+                    fulfillment_column,
+                    expected_fulfillment,
+                )
+                filter_spec_raw = spec.model_dump()
+                enforced_fulfillment_status = expected_fulfillment
+                logger.info(
+                    "ship_command_pipeline enforced fulfillment_status=%s on column=%s",
+                    expected_fulfillment,
+                    fulfillment_column,
+                )
 
         try:
             compiled = compile_filter_spec(
@@ -500,7 +1078,16 @@ async def ship_command_pipeline_tool(
             "compiled_hash": compiled_hash,
             "schema_signature": schema_signature,
             "dict_version": spec.canonical_dict_version,
+            "validation_command_source": validation_source,
         }
+        if used_cached_filter_spec:
+            filter_audit["recovered_from_cache"] = True
+        if enforced_state_codes:
+            filter_audit["enforced_state_codes"] = enforced_state_codes
+        if enforced_total_bounds:
+            filter_audit["enforced_total_bounds"] = enforced_total_bounds
+        if enforced_fulfillment_status:
+            filter_audit["enforced_fulfillment_status"] = enforced_fulfillment_status
     else:
         # all_rows path
         where_sql = "1=1"

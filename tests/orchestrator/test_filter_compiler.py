@@ -134,7 +134,7 @@ class TestFilterCompiler:
         assert result.params == []
 
     def test_is_blank_condition(self):
-        """4. is_blank → ("company" IS NULL OR "company" = $1) with param ''."""
+        """4. is_blank treats null/empty/whitespace as blank with param ''."""
         from src.orchestrator.filter_compiler import compile_filter_spec
 
         spec = _make_spec(
@@ -144,12 +144,12 @@ class TestFilterCompiler:
             )
         )
         result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
-        assert "IS NULL" in result.where_sql
+        assert "TRIM(CAST(COALESCE(\"company\", '') AS VARCHAR))" in result.where_sql
         assert "= $1" in result.where_sql or "=$1" in result.where_sql
         assert "" in result.params
 
     def test_is_not_blank_condition(self):
-        """5. is_not_blank → ("company" IS NOT NULL AND "company" != $1)."""
+        """5. is_not_blank excludes null/empty/whitespace-only values."""
         from src.orchestrator.filter_compiler import compile_filter_spec
 
         spec = _make_spec(
@@ -159,7 +159,7 @@ class TestFilterCompiler:
             )
         )
         result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
-        assert "IS NOT NULL" in result.where_sql
+        assert "TRIM(CAST(COALESCE(\"company\", '') AS VARCHAR))" in result.where_sql
         assert "!= $" in result.where_sql or "<> $" in result.where_sql
         assert "" in result.params
 

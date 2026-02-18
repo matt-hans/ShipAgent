@@ -48,6 +48,10 @@ class EventEmitterBridge:
         self.session_id: str | None = None
         self.last_user_message: str | None = None
         self.last_shipping_command: str | None = None
+        # Best-effort recovery cache for same-turn resolve -> pipeline flows.
+        self.last_resolved_filter_spec: dict[str, Any] | None = None
+        self.last_resolved_filter_command: str | None = None
+        self.last_resolved_filter_schema_signature: str | None = None
         self.confirmed_resolutions: dict[str, Any] = {}
         self._fetched_rows_cache: dict[str, list[dict[str, Any]]] = {}
         self._fetched_rows_order: list[str] = []

@@ -717,6 +717,27 @@ class TestUPSMCPReconnectBehavior:
         mock_mcp_client.connect.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_rate_call_reconnects_again_if_replay_hits_transport_error(
+        self, ups_client, mock_mcp_client
+    ):
+        """Non-mutating replay gets one bounded extra transport recovery."""
+        mock_mcp_client._session = object()
+        mock_mcp_client.call_tool = AsyncMock(side_effect=[
+            MCPConnectionError(command="test", reason="transport down"),
+            MCPConnectionError(command="test", reason="session not initialized"),
+            {"ok": True},
+        ])
+        mock_mcp_client.disconnect = AsyncMock(return_value=None)
+        mock_mcp_client.connect = AsyncMock(return_value=None)
+
+        result = await ups_client._call("rate_shipment", {"request_body": {}})
+
+        assert result == {"ok": True}
+        assert mock_mcp_client.call_tool.call_count == 3
+        assert mock_mcp_client.disconnect.await_count == 2
+        assert mock_mcp_client.connect.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_create_shipment_reconnects_without_replay(self, ups_client, mock_mcp_client):
         """Mutating create_shipment calls reconnect but do not auto-replay."""
         mock_mcp_client._session = object()

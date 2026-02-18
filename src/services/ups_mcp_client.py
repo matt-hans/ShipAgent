@@ -838,7 +838,24 @@ class UPSMCPClient:
 
             # Replay only non-mutating operations after reconnect.
             if is_non_mutating:
-                return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
+                try:
+                    return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
+                except Exception as replay_error:
+                    # One more bounded transport recovery for race windows where
+                    # another coroutine disconnects/reconnects between recovery
+                    # completion and replay invocation.
+                    if not self._is_transport_error(replay_error):
+                        raise
+                    await self._recover_transport(
+                        tool_name,
+                        replay_error,
+                        self._connection_generation,
+                    )
+                    return await self._mcp.call_tool(
+                        tool_name,
+                        arguments,
+                        **retry_kwargs,
+                    )
             raise
 
     async def _connect_unlocked(self) -> None:

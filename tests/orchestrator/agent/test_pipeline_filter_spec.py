@@ -94,6 +94,80 @@ def _make_northeast_resolved_spec():
     ).model_dump()
 
 
+def _make_shopify_range_spec_without_fulfillment():
+    """Spec with state + price constraints but no fulfillment_status condition."""
+    return ResolvedFilterSpec(
+        status=ResolutionStatus.RESOLVED,
+        root=FilterGroup(
+            logic="AND",
+            conditions=[
+                FilterCondition(
+                    column="ship_to_state",
+                    operator=FilterOperator.in_,
+                    operands=[
+                        TypedLiteral(type="string", value="CA"),
+                        TypedLiteral(type="string", value="NY"),
+                        TypedLiteral(type="string", value="TX"),
+                    ],
+                ),
+                FilterCondition(
+                    column="total_price",
+                    operator=FilterOperator.gt,
+                    operands=[TypedLiteral(type="number", value=50)],
+                ),
+                FilterCondition(
+                    column="total_price",
+                    operator=FilterOperator.lt,
+                    operands=[TypedLiteral(type="number", value=500)],
+                ),
+            ],
+        ),
+        explanation="state in [CA, NY, TX]; total_price > 50; total_price < 500",
+        schema_signature="test_sig",
+        canonical_dict_version="1.0",
+    ).model_dump()
+
+
+def _make_shopify_conflicting_fulfillment_spec():
+    """Spec that explicitly requests fulfilled orders (conflicts with unfulfilled command)."""
+    return ResolvedFilterSpec(
+        status=ResolutionStatus.RESOLVED,
+        root=FilterGroup(
+            logic="AND",
+            conditions=[
+                FilterCondition(
+                    column="fulfillment_status",
+                    operator=FilterOperator.eq,
+                    operands=[TypedLiteral(type="string", value="fulfilled")],
+                ),
+            ],
+        ),
+        explanation="fulfillment_status equals fulfilled",
+        schema_signature="test_sig",
+        canonical_dict_version="1.0",
+    ).model_dump()
+
+
+def _make_shopify_fulfillment_only_spec(status: str = "unfulfilled"):
+    """Spec that only constrains fulfillment status."""
+    return ResolvedFilterSpec(
+        status=ResolutionStatus.RESOLVED,
+        root=FilterGroup(
+            logic="AND",
+            conditions=[
+                FilterCondition(
+                    column="fulfillment_status",
+                    operator=FilterOperator.eq,
+                    operands=[TypedLiteral(type="string", value=status)],
+                ),
+            ],
+        ),
+        explanation=f"fulfillment_status equals {status}",
+        schema_signature="test_sig",
+        canonical_dict_version="1.0",
+    ).model_dump()
+
+
 def _parse_tool_result(result: dict) -> tuple[bool, dict | str]:
     """Parse MCP tool response."""
     is_error = result.get("isError", False)
@@ -284,6 +358,173 @@ class TestPipelineFilterSpec:
         assert "all_rows=true is not allowed" in content
 
     @pytest.mark.asyncio
+    async def test_pipeline_enforces_unfulfilled_status_when_command_requests_it(self):
+        """If command says unfulfilled, pipeline injects deterministic status filter."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        source_info = {
+            "source_type": "shopify",
+            "row_count": 100,
+            "columns": [
+                {"name": "ship_to_state", "type": "VARCHAR", "nullable": True},
+                {"name": "total_price", "type": "VARCHAR", "nullable": True},
+                {"name": "fulfillment_status", "type": "VARCHAR", "nullable": True},
+            ],
+            "signature": "test_sig",
+        }
+        gw = _mock_gateway(source_info=source_info)
+        p = _pipeline_patches(gw)
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": (
+                    "Ship all orders from customers in California, Texas, or New York "
+                    "where the total is over $50 and under $500, but only the "
+                    "unfulfilled ones using UPS Ground."
+                ),
+                "filter_spec": _make_shopify_range_spec_without_fulfillment(),
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "preview_ready"
+        assert content["filter_audit"]["enforced_fulfillment_status"] == "unfulfilled"
+        # get_rows_by_filter call should include injected status param.
+        params = gw.get_rows_by_filter.call_args.kwargs["params"]
+        assert "unfulfilled" in params
+
+    @pytest.mark.asyncio
+    async def test_pipeline_rejects_conflicting_fulfillment_status(self):
+        """Command/spec status conflict should fail deterministically."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        source_info = {
+            "source_type": "shopify",
+            "row_count": 100,
+            "columns": [
+                {"name": "fulfillment_status", "type": "VARCHAR", "nullable": True},
+            ],
+            "signature": "test_sig",
+        }
+        gw = _mock_gateway(source_info=source_info)
+        p = _pipeline_patches(gw)
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": "Ship only unfulfilled orders.",
+                "filter_spec": _make_shopify_conflicting_fulfillment_spec(),
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "different fulfillment_status" in content
+
+    @pytest.mark.asyncio
+    async def test_pipeline_uses_richest_command_and_enforces_states_and_totals(self):
+        """When args command is underspecified, bridge shipping command drives safety enforcement."""
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        source_info = {
+            "source_type": "shopify",
+            "row_count": 100,
+            "columns": [
+                {"name": "ship_to_state", "type": "VARCHAR", "nullable": True},
+                {"name": "total_price", "type": "VARCHAR", "nullable": True},
+                {"name": "fulfillment_status", "type": "VARCHAR", "nullable": True},
+            ],
+            "signature": "test_sig",
+        }
+        gw = _mock_gateway(source_info=source_info)
+        bridge = EventEmitterBridge()
+        bridge.last_user_message = "yes"
+        bridge.last_shipping_command = (
+            "Ship all orders from customers in California, Texas, or New York "
+            "where the total is over $50 and under $500, but only the "
+            "unfulfilled ones using UPS Ground."
+        )
+        p = _pipeline_patches(gw)
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool(
+                {
+                    "command": "Ship only unfulfilled orders.",
+                    "filter_spec": _make_shopify_fulfillment_only_spec(),
+                },
+                bridge=bridge,
+            )
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "preview_ready"
+        assert content["filter_audit"]["enforced_state_codes"] == ["CA", "NY", "TX"]
+        assert content["filter_audit"]["enforced_total_bounds"] == {
+            "column": "total_price",
+            "lower": 50.0,
+            "upper": 500.0,
+        }
+        params = gw.get_rows_by_filter.call_args.kwargs["params"]
+        assert "CA" in params and "NY" in params and "TX" in params
+        assert 50.0 in params and 500.0 in params
+
+    @pytest.mark.asyncio
+    async def test_pipeline_rejects_state_filtered_command_without_state_column(self):
+        """Fail closed when command has explicit states but schema lacks state column."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        source_info = {
+            "source_type": "shopify",
+            "row_count": 100,
+            "columns": [
+                {"name": "total_price", "type": "VARCHAR", "nullable": True},
+                {"name": "fulfillment_status", "type": "VARCHAR", "nullable": True},
+            ],
+            "signature": "test_sig",
+        }
+        gw = _mock_gateway(source_info=source_info)
+        p = _pipeline_patches(gw)
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": (
+                    "Ship all orders from customers in California, Texas, or New York "
+                    "where the total is over $50 and under $500, but only the "
+                    "unfulfilled ones using UPS Ground."
+                ),
+                "filter_spec": _make_shopify_fulfillment_only_spec(),
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "no recognized state column" in content
+
+    @pytest.mark.asyncio
+    async def test_pipeline_rejects_total_filtered_command_without_total_column(self):
+        """Fail closed when command has total bounds but schema lacks total column."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        source_info = {
+            "source_type": "shopify",
+            "row_count": 100,
+            "columns": [
+                {"name": "ship_to_state", "type": "VARCHAR", "nullable": True},
+                {"name": "fulfillment_status", "type": "VARCHAR", "nullable": True},
+            ],
+            "signature": "test_sig",
+        }
+        gw = _mock_gateway(source_info=source_info)
+        p = _pipeline_patches(gw)
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": (
+                    "Ship all orders from customers in California, Texas, or New York "
+                    "where the total is over $50 and under $500, but only the "
+                    "unfulfilled ones using UPS Ground."
+                ),
+                "filter_spec": _make_shopify_fulfillment_only_spec(),
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "no recognized total column" in content
+
+    @pytest.mark.asyncio
     async def test_pipeline_rejects_region_command_when_spec_missing_region(self):
         """Command mentions Northeast but spec has non-region filter."""
         from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
@@ -377,6 +618,58 @@ class TestPipelineFilterSpec:
         assert content["status"] == "preview_ready"
         gw.get_rows_by_filter.assert_called_once()
         assert gw.get_rows_by_filter.call_args.kwargs["limit"] == 4
+
+    @pytest.mark.asyncio
+    async def test_pipeline_recovers_missing_filter_spec_from_bridge_cache(self):
+        """Pipeline should reuse same-command resolved spec from bridge cache."""
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        bridge = EventEmitterBridge()
+        bridge.last_user_message = "ship CA orders ground"
+        bridge.last_resolved_filter_command = "ship CA orders ground"
+        bridge.last_resolved_filter_spec = _make_resolved_spec()
+        bridge.last_resolved_filter_schema_signature = "test_sig"
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool(
+                {
+                    "command": "ship CA orders ground",
+                },
+                bridge=bridge,
+            )
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "preview_ready"
+
+    @pytest.mark.asyncio
+    async def test_pipeline_rejects_cached_filter_spec_when_schema_signature_mismatches(self):
+        """Cache reuse must be blocked when resolved schema signature is stale."""
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        bridge = EventEmitterBridge()
+        bridge.last_user_message = "ship CA orders ground"
+        bridge.last_resolved_filter_command = "ship CA orders ground"
+        bridge.last_resolved_filter_spec = _make_resolved_spec()
+        bridge.last_resolved_filter_schema_signature = "old_sig"
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool(
+                {
+                    "command": "ship CA orders ground",
+                },
+                bridge=bridge,
+            )
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is True
+        assert "Cached filter_spec no longer matches" in content
 
     @pytest.mark.asyncio
     async def test_pipeline_attaches_filter_audit(self):

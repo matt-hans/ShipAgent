@@ -313,7 +313,23 @@ async def resolve_filter_intent_tool(
         logger.error("resolve_filter_intent_tool failed: %s", e)
         return _err(f"Filter resolution failed: {e}")
 
-    return _ok(resolved.model_dump())
+    resolved_payload = resolved.model_dump()
+    if bridge is not None:
+        if resolved.status.value == "RESOLVED":
+            bridge.last_resolved_filter_spec = resolved_payload
+            last_msg = bridge.last_user_message
+            bridge.last_resolved_filter_command = (
+                last_msg.strip() if isinstance(last_msg, str) else None
+            )
+            bridge.last_resolved_filter_schema_signature = (
+                schema_signature if isinstance(schema_signature, str) and schema_signature else None
+            )
+        else:
+            bridge.last_resolved_filter_spec = None
+            bridge.last_resolved_filter_command = None
+            bridge.last_resolved_filter_schema_signature = None
+
+    return _ok(resolved_payload)
 
 
 async def confirm_filter_interpretation_tool(
@@ -447,7 +463,17 @@ async def confirm_filter_interpretation_tool(
             "'RESOLVED'. There may be additional unresolved terms."
         )
 
-    return _ok(resolved.model_dump())
+    resolved_payload = resolved.model_dump()
+    bridge.last_resolved_filter_spec = resolved_payload
+    last_msg = bridge.last_user_message
+    bridge.last_resolved_filter_command = (
+        last_msg.strip() if isinstance(last_msg, str) else None
+    )
+    bridge.last_resolved_filter_schema_signature = (
+        schema_signature if isinstance(schema_signature, str) and schema_signature else None
+    )
+
+    return _ok(resolved_payload)
 
 
 async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:

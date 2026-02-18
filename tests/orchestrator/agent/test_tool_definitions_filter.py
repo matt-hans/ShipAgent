@@ -43,6 +43,9 @@ class TestToolDefinitionsFilter:
         assert "filter_spec" in props
         assert "all_rows" in props
         assert "where_clause" not in props
+        # Keep schema permissive so command-only retries can reach tool-level
+        # bridge cache recovery (resolve -> pipeline within the same turn).
+        assert "oneOf" not in tool["input_schema"]
 
     def test_fetch_rows_has_filter_spec_not_where_clause(self):
         """fetch_rows has filter_spec and all_rows, not where_clause."""
@@ -52,6 +55,7 @@ class TestToolDefinitionsFilter:
         assert "filter_spec" in props
         assert "all_rows" in props
         assert "where_clause" not in props
+        assert "oneOf" in tool["input_schema"]
 
     def test_resolve_filter_intent_input_schema(self):
         """resolve_filter_intent has intent property in schema."""
