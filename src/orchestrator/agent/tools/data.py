@@ -28,6 +28,61 @@ from src.orchestrator.models.filter_spec import (
 logger = logging.getLogger(__name__)
 
 
+def _determinism_mode() -> str:
+    """Return determinism enforcement mode ('warn' or 'enforce')."""
+    raw = os.environ.get("DETERMINISM_ENFORCEMENT_MODE", "warn").strip().lower()
+    return "enforce" if raw == "enforce" else "warn"
+
+
+def _validate_allowed_args(
+    tool_name: str,
+    args: dict[str, Any],
+    allowed: set[str],
+) -> dict[str, Any] | None:
+    """Warn or deny unknown args based on DETERMINISM_ENFORCEMENT_MODE."""
+    unknown = sorted(k for k in args.keys() if k not in allowed)
+    if not unknown:
+        return None
+    mode = _determinism_mode()
+    logger.warning(
+        "metric=tool_unknown_args_total tool=%s unknown_keys=%s mode=%s",
+        tool_name,
+        unknown,
+        mode,
+    )
+    if mode == "enforce":
+        return _err(
+            f"Unexpected argument(s) for {tool_name}: {', '.join(unknown)}. "
+            "Remove unknown keys and retry."
+        )
+    return None
+
+
+def _build_source_signature(
+    source_info: dict[str, Any],
+    schema_signature: str,
+) -> dict[str, str]:
+    """Construct a stable source signature payload from source info."""
+    return {
+        "source_type": str(source_info.get("source_type", "")),
+        "source_ref": str(source_info.get("path") or source_info.get("query") or ""),
+        "schema_fingerprint": str(schema_signature),
+    }
+
+
+def _determinism_guard_error(source_info: dict[str, Any]) -> str | None:
+    """Return a deterministic guard error for shipping if source isn't stable."""
+    deterministic_ready = bool(source_info.get("deterministic_ready", True))
+    if deterministic_ready:
+        return None
+    strategy = str(source_info.get("row_key_strategy", "none"))
+    return (
+        "Shipping determinism guard: active source does not have stable row ordering "
+        f"(row_key_strategy={strategy}). Re-import with row_key_columns or use a "
+        "source with PRIMARY KEY/UNIQUE constraints."
+    )
+
+
 def _looks_like_shipping_request(message: str | None) -> bool:
     """Heuristic: detect direct shipping intents vs exploratory data analysis."""
     if not message:
@@ -122,6 +177,14 @@ async def fetch_rows_tool(
     Returns:
         Tool response with fetch_id, total_count, returned_count, and sample rows.
     """
+    unknown = _validate_allowed_args(
+        "fetch_rows",
+        args,
+        {"filter_spec", "all_rows", "limit", "include_rows"},
+    )
+    if unknown is not None:
+        return unknown
+
     from src.orchestrator.filter_compiler import compile_filter_spec
     from src.orchestrator.models.filter_spec import (
         FilterCompilationError,
@@ -268,6 +331,14 @@ async def resolve_filter_intent_tool(
         Tool response with resolved spec, status, explanation, and optional
         confirmation/clarification data.
     """
+    unknown = _validate_allowed_args(
+        "resolve_filter_intent",
+        args,
+        {"intent"},
+    )
+    if unknown is not None:
+        return unknown
+
     from src.orchestrator.filter_resolver import resolve_filter_intent
 
     intent_raw = args.get("intent")
@@ -288,6 +359,16 @@ async def resolve_filter_intent_tool(
     schema_columns = {col["name"] for col in columns}
     column_types = {col["name"]: col["type"] for col in columns}
     schema_signature = source_info.get("signature", "")
+    source_signature = _build_source_signature(source_info, schema_signature)
+
+    # Shipping paths must use deterministic sources.
+    if bridge is not None and _looks_like_shipping_request(bridge.last_user_message):
+        guard_error = _determinism_guard_error(source_info)
+        if guard_error:
+            logger.warning(
+                "metric=determinism_guard_blocked_total tool=resolve_filter_intent",
+            )
+            return _err(guard_error)
 
     # Parse intent
     try:
@@ -306,6 +387,7 @@ async def resolve_filter_intent_tool(
             column_types=column_types,
             schema_signature=schema_signature,
             session_confirmations=session_confirmations,
+            source_signature=source_signature,
         )
     except FilterCompilationError as e:
         return _err(f"[{e.code.value}] {e.message}")
@@ -353,6 +435,14 @@ async def confirm_filter_interpretation_tool(
     Returns:
         Tool response with the re-resolved RESOLVED spec.
     """
+    unknown = _validate_allowed_args(
+        "confirm_filter_interpretation",
+        args,
+        {"resolution_token", "intent"},
+    )
+    if unknown is not None:
+        return unknown
+
     from src.orchestrator.filter_resolver import (
         _validate_resolution_token,
         resolve_filter_intent,
@@ -378,6 +468,14 @@ async def confirm_filter_interpretation_tool(
     schema_columns = {col["name"] for col in columns}
     column_types = {col["name"]: col["type"] for col in columns}
     schema_signature = source_info.get("signature", "")
+    source_signature = _build_source_signature(source_info, schema_signature)
+
+    guard_error = _determinism_guard_error(source_info)
+    if guard_error:
+        logger.warning(
+            "metric=determinism_guard_blocked_total tool=confirm_filter_interpretation",
+        )
+        return _err(guard_error)
 
     # Validate the token is genuine and NEEDS_CONFIRMATION
     token_payload = _validate_resolution_token(resolution_token, schema_signature)
@@ -408,6 +506,7 @@ async def confirm_filter_interpretation_tool(
             column_types=column_types,
             schema_signature=schema_signature,
             session_confirmations=None,
+            source_signature=source_signature,
         )
     except FilterCompilationError as e:
         return _err(f"[{e.code.value}] {e.message}")
@@ -450,6 +549,7 @@ async def confirm_filter_interpretation_tool(
             column_types=column_types,
             schema_signature=schema_signature,
             session_confirmations=bridge.confirmed_resolutions,
+            source_signature=source_signature,
         )
     except FilterCompilationError as e:
         return _err(f"[{e.code.value}] {e.message}")
@@ -590,6 +690,14 @@ async def connect_shopify_tool(
             if k not in ("items", "raw_data") and v is not None
         }
         flat_orders.append(flat)
+
+    # Deterministic import order: stable by order_id, then order_number.
+    flat_orders.sort(
+        key=lambda row: (
+            str(row.get("order_id", "")),
+            str(row.get("order_number", "")),
+        ),
+    )
 
     # Import via gateway
     gw = await get_data_gateway()

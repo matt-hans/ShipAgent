@@ -400,6 +400,55 @@ class TestBatchEnginePreview:
         assert result["total_estimated_cost_cents"] > 0
         assert mock_ups_service.get_rate.call_count == 1
 
+    async def test_preview_emits_partial_callback(
+        self, mock_ups_service, mock_db_session
+    ):
+        """preview should stream partial rows through on_preview_partial."""
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="ABC123",
+        )
+        rows = [
+            MagicMock(
+                id="row-1",
+                row_number=1,
+                order_data=json.dumps(
+                    {
+                        "ship_to_name": "John",
+                        "ship_to_address1": "123 Main",
+                        "ship_to_city": "LA",
+                        "ship_to_state": "CA",
+                        "ship_to_postal_code": "90001",
+                        "weight": 2.0,
+                    }
+                ),
+            ),
+        ]
+        shipper = {
+            "name": "Store",
+            "addressLine1": "456 Oak",
+            "city": "SF",
+            "stateProvinceCode": "CA",
+            "postalCode": "94102",
+            "countryCode": "US",
+        }
+        partial_events: list[dict] = []
+
+        result = await engine.preview(
+            job_id="job-partial",
+            rows=rows,
+            shipper=shipper,
+            on_preview_partial=lambda payload: partial_events.append(payload),
+        )
+
+        assert result["total_rows"] == 1
+        assert len(partial_events) == 1
+        assert partial_events[0]["job_id"] == "job-partial"
+        assert partial_events[0]["rows_rated"] == 1
+        assert partial_events[0]["total_rows"] == 1
+        assert partial_events[0]["is_final"] is False
+
     async def test_preview_default_cap_is_50(
         self, mock_ups_service, mock_db_session, monkeypatch
     ):

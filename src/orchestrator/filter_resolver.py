@@ -16,8 +16,10 @@ import hmac
 import json
 import os
 import time
-from typing import Union
+from typing import Any, Union
 
+from src.orchestrator.binding_hash import build_binding_fingerprint
+from src.orchestrator.filter_compiler import COMPILER_VERSION
 from src.orchestrator.models.filter_spec import (
     FilterCompilationError,
     FilterCondition,
@@ -32,6 +34,7 @@ from src.orchestrator.models.filter_spec import (
     TypedLiteral,
     UnresolvedTerm,
 )
+from src.services.column_mapping import NORMALIZER_VERSION
 from src.services.filter_constants import (
     CANONICAL_DICT_VERSION,
     REGION_ALIASES,
@@ -42,6 +45,7 @@ from src.services.filter_constants import (
     normalize_term,
     resolve_business_predicate,
 )
+from src.services.mapping_cache import MAPPING_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +126,7 @@ def resolve_filter_intent(
     column_types: dict[str, str],
     schema_signature: str,
     session_confirmations: dict[str, ResolvedFilterSpec] | None = None,
+    source_signature: dict[str, Any] | None = None,
 ) -> ResolvedFilterSpec:
     """Resolve semantic references in a FilterIntent to concrete conditions.
 
@@ -131,6 +136,8 @@ def resolve_filter_intent(
         column_types: Column name → DuckDB type mapping.
         schema_signature: Hash of the current schema for staleness detection.
         session_confirmations: Prior Tier B confirmations {token → confirmed spec}.
+        source_signature: Optional gateway source signature used to bind tokens
+            and specs to an explicit source identity.
 
     Returns:
         ResolvedFilterSpec with status, resolved AST, and optional
@@ -182,11 +189,26 @@ def resolve_filter_intent(
     # genuine confirmation-then-re-resolve cycle.
     resolution_token = None
     if status in (ResolutionStatus.RESOLVED, ResolutionStatus.NEEDS_CONFIRMATION):
+        binding_fingerprint = build_binding_fingerprint(
+            source_signature=(
+                source_signature
+                or {"schema_fingerprint": schema_signature}
+            ),
+            compiler_version=COMPILER_VERSION,
+            mapping_version=MAPPING_VERSION,
+            normalizer_version=NORMALIZER_VERSION,
+        )
         resolution_token = _generate_resolution_token(
             schema_signature=schema_signature,
             resolved_root=canonicalized_root,
             resolution_status=status.value,
+            source_fingerprint=binding_fingerprint,
+            compiler_version=COMPILER_VERSION,
+            mapping_version=MAPPING_VERSION,
+            normalizer_version=NORMALIZER_VERSION,
         )
+    else:
+        binding_fingerprint = ""
 
     return ResolvedFilterSpec(
         status=status,
@@ -197,6 +219,10 @@ def resolve_filter_intent(
         unresolved_terms=unresolved_terms if unresolved_terms else None,
         schema_signature=schema_signature,
         canonical_dict_version=CANONICAL_DICT_VERSION,
+        source_fingerprint=binding_fingerprint,
+        compiler_version=COMPILER_VERSION,
+        mapping_version=MAPPING_VERSION,
+        normalizer_version=NORMALIZER_VERSION,
     )
 
 
@@ -654,6 +680,10 @@ def _generate_resolution_token(
     schema_signature: str,
     resolved_root: FilterGroup,
     resolution_status: str = "RESOLVED",
+    source_fingerprint: str = "",
+    compiler_version: str = "",
+    mapping_version: str = "",
+    normalizer_version: str = "",
 ) -> str:
     """Generate an HMAC-signed resolution token.
 
@@ -679,6 +709,10 @@ def _generate_resolution_token(
         "canonical_dict_version": CANONICAL_DICT_VERSION,
         "resolved_spec_hash": spec_hash,
         "resolution_status": resolution_status,
+        "source_fingerprint": source_fingerprint,
+        "compiler_version": compiler_version,
+        "mapping_version": mapping_version,
+        "normalizer_version": normalizer_version,
         "expires_at": expires_at,
     }
 

@@ -452,14 +452,17 @@ async def test_ship_command_pipeline_threads_schema_fingerprint_to_build_job_row
         patch("src.services.ups_payload_builder.build_shipper", return_value={"name": "Store"}),
         patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
         patch(
-            "src.orchestrator.agent.tools.pipeline._build_job_row_data",
-            return_value=[
-                {
-                    "row_number": 1,
-                    "row_checksum": "abc",
-                    "order_data": json.dumps({"service_code": "03"}),
-                }
-            ],
+            "src.orchestrator.agent.tools.pipeline._build_job_row_data_with_metadata",
+            return_value=(
+                [
+                    {
+                        "row_number": 1,
+                        "row_checksum": "abc",
+                        "order_data": json.dumps({"service_code": "03"}),
+                    }
+                ],
+                "map-hash-123",
+            ),
         ) as mock_build,
     ):
         mock_gw = AsyncMock()

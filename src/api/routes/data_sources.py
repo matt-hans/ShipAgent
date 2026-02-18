@@ -81,6 +81,7 @@ async def import_data_source(
             result = await gw.import_database(
                 connection_string=payload.connection_string,
                 query=payload.query,
+                row_key_columns=payload.row_key_columns,
             )
 
         else:

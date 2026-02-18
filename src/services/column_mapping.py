@@ -11,9 +11,12 @@ Example:
     order_data = apply_mapping(mapping, row)
 """
 
+import re
 from typing import Any
 
 from src.services.ups_service_codes import SERVICE_NAME_TO_CODE, translate_service_name
+
+NORMALIZER_VERSION = "column_mapping_v2"
 
 
 # Fields that must have a mapping entry for valid shipments
@@ -189,6 +192,36 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
 ]
 
 
+def _canonicalize_header(value: str) -> str:
+    """Normalize a header for deterministic matching and ordering."""
+    lowered = value.strip().lower()
+    lowered = re.sub(r"\s+", "_", lowered)
+    lowered = re.sub(r"[^a-z0-9_]+", "_", lowered)
+    lowered = re.sub(r"_+", "_", lowered)
+    return lowered.strip("_")
+
+
+def _token_set(canonical_header: str) -> set[str]:
+    """Split canonical header into deterministic token set."""
+    return {t for t in canonical_header.split("_") if t}
+
+
+def _match_quality(
+    token: str,
+    canonical_header: str,
+    tokens: set[str],
+) -> int:
+    """Return token match quality (2 exact, 1 substring, 0 no match)."""
+    normalized = _canonicalize_header(token)
+    if not normalized:
+        return 0
+    if normalized == canonical_header or normalized in tokens:
+        return 2
+    if normalized in canonical_header:
+        return 1
+    return 0
+
+
 def auto_map_columns(source_columns: list[str]) -> dict[str, str]:
     """Auto-map source column names to UPS field paths using naming heuristics.
 
@@ -201,23 +234,63 @@ def auto_map_columns(source_columns: list[str]) -> dict[str, str]:
     Returns:
         Dict mapping simplified UPS field paths to source column names.
     """
-    mapping: dict[str, str] = {}
-    used_paths: set[str] = set()
+    # Deterministic candidate pool per target path, independent of source order.
+    by_path: dict[str, list[tuple[int, int, int, int, str, str]]] = {}
+    canonical_columns = sorted(
+        (
+            (
+                _canonicalize_header(col_name),
+                col_name,
+            )
+            for col_name in source_columns
+            if isinstance(col_name, str) and col_name.strip()
+        ),
+        key=lambda item: (item[0], item[1].lower()),
+    )
 
-    for col_name in source_columns:
-        col_lower = col_name.lower()
-
-        for must_have, must_not, path in _AUTO_MAP_RULES:
-            if path in used_paths:
+    for canonical_header, original_header in canonical_columns:
+        tokens = _token_set(canonical_header)
+        for rule_index, (must_have, must_not, path) in enumerate(_AUTO_MAP_RULES):
+            required_scores = [
+                _match_quality(token, canonical_header, tokens) for token in must_have
+            ]
+            if any(score == 0 for score in required_scores):
+                continue
+            blocked = any(
+                _match_quality(token, canonical_header, tokens) > 0
+                for token in must_not
+            )
+            if blocked:
                 continue
 
-            # Check all required tokens present
-            if all(token in col_lower for token in must_have):
-                # Check no excluded tokens present
-                if not any(token in col_lower for token in must_not):
-                    mapping[path] = col_name
-                    used_paths.add(path)
-                    break
+            exact_matches = sum(1 for score in required_scores if score == 2)
+            substring_matches = sum(1 for score in required_scores if score == 1)
+            by_path.setdefault(path, []).append(
+                (
+                    exact_matches,
+                    substring_matches,
+                    -rule_index,              # earlier rules win
+                    -len(canonical_header),   # shorter headers win
+                    canonical_header,         # stable lexical tie-break
+                    original_header,
+                )
+            )
+
+    mapping: dict[str, str] = {}
+    seen_paths: set[str] = set()
+    for _, _, path in _AUTO_MAP_RULES:
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        candidates = by_path.get(path, [])
+        if not candidates:
+            continue
+        # Rank: exact > substring > rule order > shorter header > lexical.
+        best = sorted(
+            candidates,
+            key=lambda c: (-c[0], -c[1], -c[2], -c[3], c[4], c[5].lower()),
+        )[0]
+        mapping[path] = best[5]
 
     return mapping
 

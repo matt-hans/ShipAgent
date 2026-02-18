@@ -208,6 +208,22 @@ class ResolvedFilterSpec(BaseModel):
     canonical_dict_version: str = Field(
         default="", description="Dict version at resolution time."
     )
+    source_fingerprint: str = Field(
+        default="",
+        description="Deterministic source fingerprint bound at resolution time.",
+    )
+    compiler_version: str = Field(
+        default="",
+        description="Compiler version bound at resolution time.",
+    )
+    mapping_version: str = Field(
+        default="",
+        description="Mapping cache/rules version bound at resolution time.",
+    )
+    normalizer_version: str = Field(
+        default="",
+        description="Row normalization version bound at resolution time.",
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,9 @@ class DataSourceInfo:
     columns: list[SchemaColumnInfo] = field(default_factory=list)
     row_count: int = 0
     signature: str | None = None
+    deterministic_ready: bool = True
+    row_key_strategy: str | None = None
+    row_key_columns: list[str] = field(default_factory=list)
 
 logger = logging.getLogger(__name__)
 
@@ -190,17 +193,24 @@ class DataSourceMCPClient:
         return result
 
     async def import_database(
-        self, connection_string: str, query: str, schema: str = "public"
+        self,
+        connection_string: str,
+        query: str,
+        schema: str = "public",
+        row_key_columns: list[str] | None = None,
     ) -> dict[str, Any]:
         """Import database query results as active data source.
 
         Auto-saves source display metadata (no credentials) for future reconnection.
         """
-        result = await self._call_tool("import_database", {
+        args: dict[str, Any] = {
             "connection_string": connection_string,
             "query": query,
             "schema": schema,
-        })
+        }
+        if row_key_columns:
+            args["row_key_columns"] = row_key_columns
+        result = await self._call_tool("import_database", args)
         invalidate_mapping_cache()
         self._auto_save_database(
             connection_string, query,
@@ -258,6 +268,15 @@ class DataSourceMCPClient:
             columns=columns,
             row_count=info.get("row_count", 0),
             signature=info.get("signature"),
+            deterministic_ready=bool(info.get("deterministic_ready", True)),
+            row_key_strategy=(
+                str(info.get("row_key_strategy"))
+                if info.get("row_key_strategy") is not None
+                else None
+            ),
+            row_key_columns=[
+                str(c) for c in info.get("row_key_columns", []) if str(c).strip()
+            ],
         )
 
     async def get_source_signature(self) -> dict[str, Any] | None:

@@ -21,7 +21,7 @@ import logging
 import os
 import re
 import time
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -282,6 +282,8 @@ async def _process_agent_message(session_id: str, content: str) -> None:
     first_event_source = ""
     preview_rows_rated = 0
     preview_total_rows = 0
+    preview_first_partial_logged = False
+    preview_total_logged = False
     source_type = "none"
     agent_rebuilt = False
     raw_hide_transient = os.environ.get("AGENT_HIDE_TRANSIENT_CHAT", "true").strip().lower()
@@ -289,6 +291,7 @@ async def _process_agent_message(session_id: str, content: str) -> None:
     buffered_agent_messages: list[str] = []
     artifact_emitted = False
     artifact_events = {
+        "preview_partial",
         "preview_ready",
         "pickup_preview",
         "pickup_result",
@@ -305,6 +308,42 @@ async def _process_agent_message(session_id: str, content: str) -> None:
         len(content),
         0.0,
     )
+
+    def _track_preview_event(
+        event_type: str,
+        data: dict[str, Any],
+        source: str,
+    ) -> None:
+        nonlocal preview_rows_rated, preview_total_rows
+        nonlocal preview_first_partial_logged, preview_total_logged
+
+        if event_type == "preview_partial":
+            rows_rated = int(data.get("rows_rated", 0))
+            total_rows = int(data.get("total_rows", 0))
+            preview_rows_rated = max(preview_rows_rated, rows_rated)
+            preview_total_rows = max(preview_total_rows, total_rows)
+            if not preview_first_partial_logged:
+                preview_first_partial_logged = True
+                logger.info(
+                    "metric=preview_first_partial_latency_ms session_id=%s "
+                    "source=%s value=%d",
+                    session_id,
+                    source,
+                    int((time.perf_counter() - started_at) * 1000),
+                )
+            return
+
+        if event_type == "preview_ready":
+            preview_total_rows = int(data.get("total_rows", preview_total_rows))
+            preview_rows_rated = len(data.get("preview_rows", []))
+            if not preview_total_logged:
+                preview_total_logged = True
+                logger.info(
+                    "metric=preview_total_latency_ms session_id=%s source=%s value=%d",
+                    session_id,
+                    source,
+                    int((time.perf_counter() - started_at) * 1000),
+                )
 
     def _mark_first_event(source: str) -> None:
         nonlocal first_event_at, first_event_source
@@ -360,6 +399,7 @@ async def _process_agent_message(session_id: str, content: str) -> None:
             def _emit_to_queue(event_type: str, data: dict) -> None:
                 nonlocal artifact_emitted
                 _mark_first_event("tool_emit")
+                _track_preview_event(event_type, data, "tool_emit")
                 if hide_transient_chat and event_type in artifact_events:
                     artifact_emitted = True
                 queue.put_nowait({"event": event_type, "data": data})
@@ -381,10 +421,12 @@ async def _process_agent_message(session_id: str, content: str) -> None:
                 async for event in session.agent.process_message_stream(content):
                     event_type = event.get("event")
                     _mark_first_event(str(event_type or "unknown"))
-                    if event_type == "preview_ready":
-                        preview_data = event.get("data", {})
-                        preview_total_rows = int(preview_data.get("total_rows", 0))
-                        preview_rows_rated = len(preview_data.get("preview_rows", []))
+                    if isinstance(event_type, str):
+                        _track_preview_event(
+                            event_type,
+                            event.get("data", {}),
+                            "agent_stream",
+                        )
                     if hide_transient_chat and event_type in artifact_events:
                         artifact_emitted = True
 

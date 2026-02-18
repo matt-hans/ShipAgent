@@ -71,6 +71,9 @@ async def import_csv(
         "type": "csv",
         "path": file_path,
         "row_count": result.row_count,
+        "deterministic_ready": True,
+        "row_key_strategy": "source_row_num",
+        "row_key_columns": ["_source_row_num"],
     }
 
     await ctx.info(
@@ -158,6 +161,9 @@ async def import_excel(
         "path": file_path,
         "sheet": sheet or "(first sheet)",
         "row_count": result.row_count,
+        "deterministic_ready": True,
+        "row_key_strategy": "source_row_num",
+        "row_key_columns": ["_source_row_num"],
     }
 
     await ctx.info(
@@ -211,6 +217,7 @@ async def import_database(
     query: str,
     ctx: Context,
     schema: str = "public",
+    row_key_columns: list[str] | None = None,
 ) -> dict:
     """Import data from a database using a SQL query.
 
@@ -251,6 +258,7 @@ async def import_database(
         connection_string=connection_string,
         query=query,
         schema=schema,
+        row_key_columns=row_key_columns,
     )
 
     # Update current source tracking (without connection string!)
@@ -258,6 +266,9 @@ async def import_database(
         "type": "database",
         "query": query,
         "row_count": result.row_count,
+        "deterministic_ready": result.deterministic_ready,
+        "row_key_strategy": result.row_key_strategy,
+        "row_key_columns": result.row_key_columns,
     }
 
     await ctx.info(

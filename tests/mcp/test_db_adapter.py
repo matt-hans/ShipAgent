@@ -184,3 +184,71 @@ class TestConnectionStringSecurity:
         assert "password" not in result_str
         assert "connection_string" not in result_str
         assert "credentials" not in result_str
+
+
+class _FakeResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _FakeConn:
+    def __init__(self):
+        self.statements: list[str] = []
+
+    def execute(self, sql, params=None):
+        text_sql = str(sql)
+        self.statements.append(text_sql)
+        if text_sql.startswith("ATTACH ") or text_sql.startswith("DETACH "):
+            return _FakeResult([])
+        if text_sql.startswith("DESCRIBE SELECT * FROM ("):
+            return _FakeResult([("id", "INTEGER"), ("created_at", "VARCHAR")])
+        if text_sql.startswith("DESCRIBE imported_data"):
+            return _FakeResult(
+                [
+                    ("_source_row_num", "INTEGER", "YES"),
+                    ("id", "INTEGER", "NO"),
+                    ("created_at", "VARCHAR", "YES"),
+                ]
+            )
+        if "SELECT COUNT(*) FROM remote_db." in text_sql:
+            return _FakeResult([(100,)])
+        if text_sql.startswith("SELECT COUNT(*) FROM imported_data"):
+            return _FakeResult([(2,)])
+        return _FakeResult([])
+
+
+class TestDeterministicRowKeys:
+    """Test deterministic row-key strategy resolution during import."""
+
+    def test_import_data_uses_auto_pk_row_key_when_available(self, adapter):
+        fake_conn = _FakeConn()
+        adapter._get_key_candidates = lambda **kwargs: [("PRIMARY KEY", ["id"])]  # type: ignore[method-assign]
+
+        result = adapter.import_data(
+            conn=fake_conn,
+            connection_string="postgresql://u:p@localhost/db",
+            query="SELECT * FROM orders WHERE created_at > '2026-01-01'",
+        )
+
+        assert result.deterministic_ready is True
+        assert result.row_key_strategy == "auto_pk"
+        assert result.row_key_columns == ["id"]
+        assert any('ORDER BY sub."id" ASC' in stmt for stmt in fake_conn.statements)
+
+    def test_import_data_rejects_unknown_explicit_row_key_columns(self, adapter):
+        fake_conn = _FakeConn()
+        adapter._get_key_candidates = lambda **kwargs: []  # type: ignore[method-assign]
+
+        with pytest.raises(ValueError, match="row_key_columns must exist"):
+            adapter.import_data(
+                conn=fake_conn,
+                connection_string="postgresql://u:p@localhost/db",
+                query="SELECT * FROM orders WHERE created_at > '2026-01-01'",
+                row_key_columns=["missing_key"],
+            )

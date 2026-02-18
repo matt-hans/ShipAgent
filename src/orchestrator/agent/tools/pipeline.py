@@ -12,10 +12,13 @@ import re
 import time
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
 from src.db.connection import get_db_context
+from src.orchestrator.binding_hash import build_binding_fingerprint
+from src.orchestrator.filter_compiler import COMPILER_VERSION
 from src.services.job_service import JobService
+from src.services.column_mapping import NORMALIZER_VERSION
 from src.services.filter_constants import (
     BUSINESS_PREDICATES,
     REGIONS,
@@ -23,11 +26,13 @@ from src.services.filter_constants import (
     STATE_ABBREVIATIONS,
     normalize_term,
 )
+from src.services.mapping_cache import MAPPING_VERSION
 from src.services.ups_service_codes import translate_service_name
 
 from src.orchestrator.agent.tools.core import (
     EventEmitterBridge,
     _build_job_row_data,
+    _build_job_row_data_with_metadata,
     _command_explicitly_requests_service,
     _consume_fetched_rows,
     _emit_event,
@@ -75,6 +80,34 @@ _STATE_NAME_PATTERN = re.compile(
     r"\b(" + "|".join(sorted(map(re.escape, STATE_ABBREVIATIONS.keys()), key=len, reverse=True)) + r")\b"
 )
 _STATE_CODE_UPPER_PATTERN = re.compile(r"\b[A-Z]{2}\b")
+
+
+def _determinism_mode() -> str:
+    raw = os.environ.get("DETERMINISM_ENFORCEMENT_MODE", "warn").strip().lower()
+    return "enforce" if raw == "enforce" else "warn"
+
+
+def _validate_allowed_args(
+    tool_name: str,
+    args: dict[str, Any],
+    allowed: set[str],
+) -> dict[str, Any] | None:
+    unknown = sorted(k for k in args.keys() if k not in allowed)
+    if not unknown:
+        return None
+    mode = _determinism_mode()
+    logger.warning(
+        "metric=tool_unknown_args_total tool=%s unknown_keys=%s mode=%s",
+        tool_name,
+        unknown,
+        mode,
+    )
+    if mode == "enforce":
+        return _err(
+            f"Unexpected argument(s) for {tool_name}: {', '.join(unknown)}. "
+            "Remove unknown keys and retry."
+        )
+    return None
 
 
 def _command_implies_filter(command: str) -> bool:
@@ -693,7 +726,10 @@ async def get_job_status_tool(args: dict[str, Any]) -> dict[str, Any]:
         return _err(f"Failed to get job status: {e}")
 
 
-async def _run_batch_preview(job_id: str) -> dict[str, Any]:
+async def _run_batch_preview(
+    job_id: str,
+    on_preview_partial: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     """Internal helper — run batch preview via BatchEngine.
 
     Separated for testability. In production this creates a BatchEngine
@@ -724,6 +760,7 @@ async def _run_batch_preview(job_id: str) -> dict[str, Any]:
             job_id=job_id,
             rows=rows,
             shipper=shipper,
+            on_preview_partial=on_preview_partial,
         )
     return result
 
@@ -751,7 +788,11 @@ def _canonical_param(v: Any) -> Any:
     return v
 
 
-def _compute_compiled_hash(where_sql: str, params: list[Any]) -> str:
+def _compute_compiled_hash(
+    where_sql: str,
+    params: list[Any],
+    binding_fingerprint: str = "",
+) -> str:
     """Compute deterministic SHA-256 hash of compiled query payload.
 
     Args:
@@ -762,7 +803,11 @@ def _compute_compiled_hash(where_sql: str, params: list[Any]) -> str:
         Hex digest of the canonical JSON representation.
     """
     canonical = json.dumps(
-        {"where_sql": where_sql, "params": [_canonical_param(p) for p in params]},
+        {
+            "where_sql": where_sql,
+            "params": [_canonical_param(p) for p in params],
+            "binding_fingerprint": binding_fingerprint,
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -783,6 +828,14 @@ async def ship_command_pipeline_tool(
         FilterCompilationError,
         ResolvedFilterSpec,
     )
+
+    unknown = _validate_allowed_args(
+        "ship_command_pipeline",
+        args,
+        {"filter_spec", "all_rows", "command", "job_name", "service_code", "limit"},
+    )
+    if unknown is not None:
+        return unknown
 
     command = str(args.get("command", "")).strip()
     if not command:
@@ -883,8 +936,32 @@ async def ship_command_pipeline_tool(
             type(source_info).__name__,
         )
         source_info = {}
+    deterministic_ready = bool(source_info.get("deterministic_ready", True))
+    if not deterministic_ready:
+        strategy = source_info.get("row_key_strategy", "none")
+        logger.warning(
+            "metric=determinism_guard_blocked_total tool=ship_command_pipeline row_key_strategy=%s",
+            strategy,
+        )
+        return _err(
+            "Shipping determinism guard: active source does not have stable row ordering "
+            f"(row_key_strategy={strategy}). Re-import with row_key_columns or use a "
+            "source with PRIMARY KEY/UNIQUE constraints."
+        )
+
     raw_signature = source_info.get("signature", "")
     schema_signature = raw_signature if isinstance(raw_signature, str) else ""
+    source_signature = {
+        "source_type": source_info.get("source_type", "unknown"),
+        "source_ref": source_info.get("path") or source_info.get("query") or "",
+        "schema_fingerprint": schema_signature,
+    }
+    binding_fingerprint = build_binding_fingerprint(
+        source_signature=source_signature,
+        compiler_version=COMPILER_VERSION,
+        mapping_version=MAPPING_VERSION,
+        normalizer_version=NORMALIZER_VERSION,
+    )
     if used_cached_filter_spec and bridge is not None:
         cached_signature_raw = getattr(
             bridge,
@@ -1071,7 +1148,11 @@ async def ship_command_pipeline_tool(
         spec_hash = hashlib.sha256(
             json.dumps(filter_spec_raw, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        compiled_hash = _compute_compiled_hash(where_sql, params)
+        compiled_hash = _compute_compiled_hash(
+            where_sql,
+            params,
+            binding_fingerprint=binding_fingerprint,
+        )
 
         filter_audit = {
             "spec_hash": spec_hash,
@@ -1079,6 +1160,10 @@ async def ship_command_pipeline_tool(
             "schema_signature": schema_signature,
             "dict_version": spec.canonical_dict_version,
             "validation_command_source": validation_source,
+            "source_fingerprint": binding_fingerprint,
+            "compiler_version": COMPILER_VERSION,
+            "mapping_version": MAPPING_VERSION,
+            "normalizer_version": NORMALIZER_VERSION,
         }
         if used_cached_filter_spec:
             filter_audit["recovered_from_cache"] = True
@@ -1168,11 +1253,6 @@ async def ship_command_pipeline_tool(
                 name=job_name,
                 original_command=validation_command,
             )
-            source_signature = {
-                "source_type": source_info.get("source_type", "unknown"),
-                "source_ref": source_info.get("path") or source_info.get("query") or "",
-                "schema_fingerprint": schema_signature,
-            }
             await _persist_job_source_signature(
                 job.id,
                 db,
@@ -1180,17 +1260,20 @@ async def ship_command_pipeline_tool(
             )
             try:
                 mapping_started = time.perf_counter()
-                row_payload = _build_job_row_data(
+                row_payload, mapping_hash = _build_job_row_data_with_metadata(
                     fetched_rows,
                     service_code_override=service_code,
                     schema_fingerprint=schema_signature,
                 )
+                if filter_audit is not None:
+                    filter_audit["mapping_hash"] = mapping_hash or ""
                 logger.info(
                     "mapping_resolution_timing marker=job_row_data_ready "
-                    "job_id=%s rows=%d fingerprint=%s elapsed=%.3f",
+                    "job_id=%s rows=%d fingerprint=%s mapping_hash=%s elapsed=%.3f",
                     job.id,
                     len(fetched_rows),
                     schema_signature[:12] if schema_signature else "",
+                    (mapping_hash or "")[:12],
                     time.perf_counter() - mapping_started,
                 )
                 job_service.create_rows(
@@ -1216,12 +1299,15 @@ async def ship_command_pipeline_tool(
                 account_number=account_number,
             )
             db_rows = job_service.get_rows(job.id)
+            def _emit_preview_partial(payload: dict[str, Any]) -> None:
+                _emit_event("preview_partial", payload, bridge=bridge)
             try:
                 result = await engine.preview(
                     job_id=job.id,
                     rows=db_rows,
                     shipper=shipper,
                     service_code=service_code,
+                    on_preview_partial=_emit_preview_partial,
                 )
                 for db_row in db_rows:
                     try:
@@ -1274,6 +1360,14 @@ async def batch_preview_tool(
     Returns:
         Tool response with preview data (row count, estimated cost, etc.).
     """
+    unknown = _validate_allowed_args(
+        "batch_preview",
+        args,
+        {"job_id"},
+    )
+    if unknown is not None:
+        return unknown
+
     job_id = args.get("job_id", "")
     if not job_id:
         return _err("job_id is required")
@@ -1284,7 +1378,13 @@ async def batch_preview_tool(
         )
 
     try:
-        result = await _run_batch_preview(job_id)
+        def _emit_preview_partial(payload: dict[str, Any]) -> None:
+            _emit_event("preview_partial", payload, bridge=bridge)
+
+        result = await _run_batch_preview(
+            job_id,
+            on_preview_partial=_emit_preview_partial,
+        )
 
         # Enrich rows for the frontend
         preview_rows = result.get("preview_rows", [])
@@ -1316,6 +1416,14 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Tool response with execution status, or error if not approved.
     """
+    unknown = _validate_allowed_args(
+        "batch_execute",
+        args,
+        {"job_id", "approved"},
+    )
+    if unknown is not None:
+        return unknown
+
     job_id = args.get("job_id", "")
     approved = args.get("approved", False)
 

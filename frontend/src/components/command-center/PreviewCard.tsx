@@ -355,8 +355,12 @@ export function PreviewCard({
   const [refinementInput, setRefinementInput] = React.useState('');
   const [showWarningGate, setShowWarningGate] = React.useState(false);
   const refinementInputRef = React.useRef<HTMLInputElement>(null);
+  const sortedPreviewRows = React.useMemo(
+    () => [...(preview.preview_rows || [])].sort((a, b) => a.row_number - b.row_number),
+    [preview.preview_rows]
+  );
 
-  const warningRows = preview.preview_rows.filter(
+  const warningRows = sortedPreviewRows.filter(
     (r) => r.warnings && r.warnings.length > 0
   );
   const hasWarnings = warningRows.length > 0;
@@ -450,15 +454,15 @@ export function PreviewCard({
       {preview.additional_rows > 0 && (
         <div className="p-3 rounded-lg bg-slate-800/50 border border-slate-700/50">
           <p className="text-[11px] font-mono text-slate-400">
-            Rated {preview.preview_rows.length} row(s) directly. Remaining {preview.additional_rows} row(s) are estimated.
+            Rated {sortedPreviewRows.length} row(s) directly. Remaining {preview.additional_rows} row(s) are estimated.
           </p>
         </div>
       )}
 
       {/* Shipment rows */}
-      {preview.preview_rows.length > 0 && (
+      {sortedPreviewRows.length > 0 && (
         <ShipmentList
-          rows={preview.preview_rows}
+          rows={sortedPreviewRows}
           expandedRows={expandedRows}
           onToggleRow={toggleRow}
         />

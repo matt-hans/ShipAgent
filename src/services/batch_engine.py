@@ -134,6 +134,7 @@ class BatchEngine:
         rows: list[Any],
         shipper: dict[str, str],
         service_code: str | None = None,
+        on_preview_partial: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Generate preview with cost estimates.
 
@@ -164,6 +165,7 @@ class BatchEngine:
         total_cost_cents = 0
         rows_lock = asyncio.Lock()
         row_durations: list[float] = []
+        first_partial_emitted = False
 
         # Pre-hydrate commodities for international rows that need them.
         # Collect order IDs, bulk-fetch from MCP, then inject into order data.
@@ -212,6 +214,7 @@ class BatchEngine:
         async def _rate_row(row: Any) -> None:
             """Rate a single row with concurrency control."""
             nonlocal total_cost_cents
+            nonlocal first_partial_emitted
             row_started = datetime.now(UTC)
 
             async with semaphore:
@@ -310,6 +313,30 @@ class BatchEngine:
                     if rate_error:
                         row_info["rate_error"] = rate_error
                     preview_rows.append(row_info)
+                    if on_preview_partial is not None:
+                        try:
+                            on_preview_partial(
+                                {
+                                    "job_id": job_id,
+                                    "preview_rows": [dict(row_info)],
+                                    "rows_rated": len(preview_rows),
+                                    "total_rows": len(rows),
+                                    "is_final": False,
+                                }
+                            )
+                            if not first_partial_emitted:
+                                first_partial_emitted = True
+                                logger.info(
+                                    "metric=preview_first_partial_latency_ms job_id=%s value=%d",
+                                    job_id,
+                                    int((datetime.now(UTC) - started_at).total_seconds() * 1000),
+                                )
+                        except Exception as callback_err:
+                            logger.warning(
+                                "Preview partial callback failed for job %s: %s",
+                                job_id,
+                                callback_err,
+                            )
 
         try:
             preview_cap = int(
@@ -354,6 +381,11 @@ class BatchEngine:
             total_elapsed,
             avg_row,
             p95_row,
+        )
+        logger.info(
+            "metric=preview_total_latency_ms job_id=%s value=%d",
+            job_id,
+            int(total_elapsed * 1000),
         )
 
         return {

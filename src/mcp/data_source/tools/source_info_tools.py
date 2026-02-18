@@ -62,6 +62,9 @@ async def get_source_info(ctx: Context) -> dict:
         "row_count": current_source.get("row_count", 0),
         "columns": columns,
         "signature": signature,
+        "deterministic_ready": current_source.get("deterministic_ready", True),
+        "row_key_strategy": current_source.get("row_key_strategy", "source_row_num"),
+        "row_key_columns": current_source.get("row_key_columns", []),
     }
 
 
@@ -115,6 +118,9 @@ async def import_records(
     ctx.request_context.lifespan_context["current_source"] = {
         "type": source_label,
         "row_count": row_count,
+        "deterministic_ready": True,
+        "row_key_strategy": "source_row_num",
+        "row_key_columns": [SOURCE_ROW_NUM_COLUMN],
     }
 
     await ctx.info(f"Imported {row_count} records with {len(columns)} columns")

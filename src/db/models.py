@@ -370,6 +370,11 @@ class WriteBackTask(Base):
 
     # Indexes
     __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "row_number",
+            name="uq_write_back_tasks_job_row_number",
+        ),
         Index("idx_wb_tasks_status", "status"),
         Index("idx_wb_tasks_job_id", "job_id"),
     )

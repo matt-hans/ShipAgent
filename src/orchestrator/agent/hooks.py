@@ -24,8 +24,10 @@ import base64
 import hashlib
 import hmac as hmac_mod
 import json
+import os
 import sys
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -50,6 +52,12 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+def _determinism_mode() -> str:
+    """Return determinism enforcement mode ('warn' or 'enforce')."""
+    raw = os.environ.get("DETERMINISM_ENFORCEMENT_MODE", "warn").strip().lower()
+    return "enforce" if raw == "enforce" else "warn"
 
 
 # =============================================================================
@@ -691,32 +699,46 @@ async def validate_filter_spec_on_pipeline(
             "server-side provenance. Use resolve_filter_intent first."
         )
 
-    # Decode and validate token
-    import os
-    import time
+    def _deny_token(reason: str, message: str) -> dict[str, Any]:
+        logger.warning(
+            "metric=token_validation_failure_total reason=%s tool=%s",
+            reason,
+            tool_name,
+        )
+        return _deny_with_reason(message)
 
     secret = os.environ.get("FILTER_TOKEN_SECRET", "")
     if not secret:
-        return _deny_with_reason(
+        return _deny_token(
+            "secret_missing",
             "FILTER_TOKEN_SECRET is not configured. Cannot validate resolution token."
         )
 
     try:
         decoded = json.loads(base64.urlsafe_b64decode(token))
     except (json.JSONDecodeError, ValueError):
-        return _deny_with_reason("Resolution token is malformed (invalid base64/JSON).")
+        return _deny_token(
+            "token_malformed",
+            "Resolution token is malformed (invalid base64/JSON).",
+        )
 
     # Check expiry
     if time.time() > decoded.get("expires_at", 0):
         _log_to_stderr(
             f"[FILTER ENFORCEMENT] DENYING expired token | ID: {tool_use_id}"
         )
-        return _deny_with_reason("Resolution token has expired. Re-resolve the filter.")
+        return _deny_token(
+            "token_expired",
+            "Resolution token has expired. Re-resolve the filter.",
+        )
 
     # Verify HMAC signature
     signature = decoded.pop("signature", None)
     if signature is None:
-        return _deny_with_reason("Resolution token missing HMAC signature.")
+        return _deny_token(
+            "signature_missing",
+            "Resolution token missing HMAC signature.",
+        )
 
     payload_json = json.dumps(decoded, sort_keys=True)
     expected_sig = hmac_mod.new(
@@ -726,18 +748,23 @@ async def validate_filter_spec_on_pipeline(
         _log_to_stderr(
             f"[FILTER ENFORCEMENT] DENYING tampered token | ID: {tool_use_id}"
         )
-        return _deny_with_reason("Resolution token HMAC signature is invalid (tampered).")
+        return _deny_token(
+            "signature_invalid",
+            "Resolution token HMAC signature is invalid (tampered).",
+        )
 
     # Check schema_signature binding
     if decoded.get("schema_signature") != filter_spec.get("schema_signature"):
-        return _deny_with_reason(
+        return _deny_token(
+            "schema_signature_mismatch",
             "Resolution token schema_signature does not match filter_spec. "
             "The data source may have changed."
         )
 
     # Check dict_version binding
     if decoded.get("canonical_dict_version") != filter_spec.get("canonical_dict_version"):
-        return _deny_with_reason(
+        return _deny_token(
+            "dict_version_mismatch",
             "Resolution token dict_version does not match filter_spec. "
             "Canonical dictionaries may have been updated."
         )
@@ -747,10 +774,41 @@ async def validate_filter_spec_on_pipeline(
     root_json = json.dumps(root, sort_keys=True, default=str)
     actual_hash = hashlib.sha256(root_json.encode()).hexdigest()
     if decoded.get("resolved_spec_hash") != actual_hash:
-        return _deny_with_reason(
+        return _deny_token(
+            "spec_hash_mismatch",
             "Resolution token spec hash does not match the filter_spec root. "
             "The filter may have been modified after resolution."
         )
+
+    mode = _determinism_mode()
+    # Transition-safe checks for new deterministic binding fields.
+    for key in (
+        "source_fingerprint",
+        "compiler_version",
+        "mapping_version",
+        "normalizer_version",
+    ):
+        token_val = str(decoded.get(key, "") or "")
+        spec_val = str(filter_spec.get(key, "") or "")
+        if not token_val or not spec_val:
+            logger.warning(
+                "metric=token_binding_missing_total field=%s tool=%s mode=%s",
+                key,
+                tool_name,
+                mode,
+            )
+            if mode == "enforce":
+                return _deny_token(
+                    f"{key}_missing",
+                    f"Resolution token/filter_spec missing required binding field "
+                    f"'{key}'. Re-run resolve_filter_intent.",
+                )
+            continue
+        if token_val != spec_val:
+            return _deny_token(
+                f"{key}_mismatch",
+                f"Resolution token field '{key}' does not match filter_spec.",
+            )
 
     # Check resolution_status — token must prove RESOLVED status.
     # A NEEDS_CONFIRMATION token cannot be used to execute; the agent must
@@ -761,7 +819,8 @@ async def validate_filter_spec_on_pipeline(
             f"[FILTER ENFORCEMENT] DENYING non-RESOLVED token (status={token_status}) "
             f"| ID: {tool_use_id}"
         )
-        return _deny_with_reason(
+        return _deny_token(
+            "status_not_resolved",
             f"Resolution token has status '{token_status}', not 'RESOLVED'. "
             "Tier-B filters require user confirmation before execution. "
             "Use confirm_filter_interpretation then re-resolve."
