@@ -138,7 +138,7 @@ class TestUploadDocument:
 
         agent_messages = []
 
-        async def capture_message(sid, msg):
+        async def capture_message(sid, msg, run_id=None):
             agent_messages.append(msg)
 
         with patch(

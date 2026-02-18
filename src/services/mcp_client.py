@@ -15,11 +15,13 @@ Example:
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Callable
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
+from src.services.decision_audit_service import DecisionAuditService
 
 logger = logging.getLogger(__name__)
 
@@ -290,15 +292,54 @@ class MCPClient:
         delay_base = self._base_delay if base_delay is None else base_delay
 
         last_error: str = ""
+        call_started = time.perf_counter()
         for attempt in range(retries + 1):
+            attempt_started = time.perf_counter()
+            DecisionAuditService.log_event_from_context(
+                phase="tool_call",
+                event_name="mcp.call.started",
+                actor="tool",
+                tool_name=name,
+                payload={
+                    "attempt": attempt + 1,
+                    "max_attempts": retries + 1,
+                    "has_arguments": bool(arguments),
+                },
+            )
             result = await self._session.call_tool(name, arguments)
 
             if not result.isError:
-                return self._parse_response(name, result)
+                parsed = self._parse_response(name, result)
+                DecisionAuditService.log_event_from_context(
+                    phase="tool_result",
+                    event_name="mcp.call.completed",
+                    actor="tool",
+                    tool_name=name,
+                    payload={
+                        "status": "ok",
+                        "attempt": attempt + 1,
+                        "retry_count": attempt,
+                        "total_duration_ms": int((time.perf_counter() - call_started) * 1000),
+                    },
+                    latency_ms=int((time.perf_counter() - attempt_started) * 1000),
+                )
+                return parsed
 
             # Extract error text
             error_text = self._extract_text(result)
             last_error = error_text
+            DecisionAuditService.log_event_from_context(
+                phase="tool_result",
+                event_name="mcp.call.error",
+                actor="tool",
+                tool_name=name,
+                payload={
+                    "attempt": attempt + 1,
+                    "retry_count": attempt,
+                    "error_text": error_text[:500],
+                },
+                latency_ms=int((time.perf_counter() - attempt_started) * 1000),
+            )
 
             # Check if retryable
             if attempt < retries and self._is_retryable(error_text):
@@ -309,12 +350,33 @@ class MCPClient:
                     name, attempt + 1, retries + 1, delay, error_text[:200],
                 )
                 self._retry_attempts_total += 1
+                DecisionAuditService.log_event_from_context(
+                    phase="tool_result",
+                    event_name="mcp.call.retrying",
+                    actor="tool",
+                    tool_name=name,
+                    payload={
+                        "attempt": attempt + 1,
+                        "next_delay_seconds": delay,
+                    },
+                )
                 await asyncio.sleep(delay)
                 continue
 
             # Non-retryable or retries exhausted
             break
 
+        DecisionAuditService.log_event_from_context(
+            phase="tool_result",
+            event_name="mcp.call.failed",
+            actor="tool",
+            tool_name=name,
+            payload={
+                "retry_count": retries,
+                "error_text": last_error[:500],
+                "total_duration_ms": int((time.perf_counter() - call_started) * 1000),
+            },
+        )
         raise MCPToolError(tool_name=name, error_text=last_error)
 
     def _parse_response(self, tool_name: str, result: Any) -> dict[str, Any]:

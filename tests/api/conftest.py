@@ -5,6 +5,7 @@ for testing FastAPI endpoints.
 """
 
 import tempfile
+import os
 from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import patch
@@ -15,6 +16,12 @@ from pypdf import PdfWriter
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+os.environ.setdefault("SHIPAGENT_SKIP_SDK_CHECK", "true")
+os.environ.setdefault(
+    "FILTER_TOKEN_SECRET",
+    "test-filter-token-secret-with-32chars",
+)
 
 from src.api.main import app
 from src.db.connection import get_db
@@ -33,7 +40,11 @@ def mock_agent_processing():
     - asyncio.Lock cancel scope conflicts with TestClient
     """
 
-    async def _noop_process(session_id: str, content: str) -> None:
+    async def _noop_process(
+        session_id: str,
+        content: str,
+        run_id: str | None = None,
+    ) -> None:
         from src.api.routes.conversations import _get_event_queue
 
         queue = _get_event_queue(session_id)

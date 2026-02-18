@@ -18,6 +18,8 @@ from src.db.connection import get_db_context
 from src.orchestrator.binding_hash import build_binding_fingerprint
 from src.orchestrator.filter_compiler import COMPILER_VERSION
 from src.services.job_service import JobService
+from src.services.decision_audit_context import get_decision_run_id, set_decision_job_id
+from src.services.decision_audit_service import DecisionAuditService
 from src.services.column_mapping import NORMALIZER_VERSION
 from src.services.filter_constants import (
     BUSINESS_PREDICATES,
@@ -45,6 +47,26 @@ from src.orchestrator.agent.tools.core import (
 from src.services.errors import UPSServiceError
 
 logger = logging.getLogger(__name__)
+
+
+def _audit_event(
+    phase: str,
+    event_name: str,
+    payload: dict[str, Any],
+    *,
+    actor: str = "tool",
+    tool_name: str | None = None,
+    latency_ms: int | None = None,
+) -> None:
+    """Emit best-effort decision audit event in current run context."""
+    DecisionAuditService.log_event_from_context(
+        phase=phase,
+        event_name=event_name,
+        actor=actor,
+        tool_name=tool_name,
+        payload=payload,
+        latency_ms=latency_ms,
+    )
 
 _FILTER_QUALIFIER_TERMS = frozenset(
     set(REGION_ALIASES.keys())
@@ -736,6 +758,16 @@ async def ship_command_pipeline_tool(
             command[:120],
             validation_command[:120],
         )
+    _audit_event(
+        "pipeline",
+        "ship_command_pipeline.validation_command.selected",
+        {
+            "validation_source": validation_source,
+            "input_command_len": len(command),
+            "selected_command_len": len(validation_command),
+        },
+        tool_name="ship_command_pipeline",
+    )
 
     # Hard cutover: reject legacy where_clause
     if "where_clause" in args:
@@ -1074,6 +1106,22 @@ async def ship_command_pipeline_tool(
             filter_audit["enforced_total_bounds"] = enforced_total_bounds
         if enforced_fulfillment_status:
             filter_audit["enforced_fulfillment_status"] = enforced_fulfillment_status
+        _audit_event(
+            "pipeline",
+            "ship_command_pipeline.filter_compiled",
+            {
+                "validation_command_source": validation_source,
+                "compiled_hash": compiled_hash,
+                "spec_hash": spec_hash,
+                "schema_signature": schema_signature,
+                "source_fingerprint": binding_fingerprint,
+                "enforced_state_codes": enforced_state_codes,
+                "enforced_total_bounds": enforced_total_bounds,
+                "enforced_fulfillment_status": enforced_fulfillment_status,
+                "recovered_from_cache": used_cached_filter_spec,
+            },
+            tool_name="ship_command_pipeline",
+        )
     else:
         # all_rows path
         where_sql = "1=1"
@@ -1154,6 +1202,17 @@ async def ship_command_pipeline_tool(
                 name=job_name,
                 original_command=validation_command,
             )
+            set_decision_job_id(job.id)
+            DecisionAuditService.set_run_job_id(
+                get_decision_run_id(),
+                job.id,
+            )
+            _audit_event(
+                "pipeline",
+                "ship_command_pipeline.job_created",
+                {"job_id": job.id, "job_name": job_name},
+                tool_name="ship_command_pipeline",
+            )
             await _persist_job_source_signature(
                 job.id,
                 db,
@@ -1168,6 +1227,17 @@ async def ship_command_pipeline_tool(
                 )
                 if filter_audit is not None:
                     filter_audit["mapping_hash"] = mapping_hash or ""
+                _audit_event(
+                    "mapping",
+                    "ship_command_pipeline.mapping_resolved",
+                    {
+                        "job_id": job.id,
+                        "row_count": len(fetched_rows),
+                        "mapping_hash": mapping_hash or "",
+                        "schema_fingerprint": schema_signature,
+                    },
+                    tool_name="ship_command_pipeline",
+                )
                 logger.info(
                     "mapping_resolution_timing marker=job_row_data_ready "
                     "job_id=%s rows=%d fingerprint=%s mapping_hash=%s elapsed=%.3f",
@@ -1220,6 +1290,12 @@ async def ship_command_pipeline_tool(
                 logger.error(
                     "ship_command_pipeline preview failed for %s: %s", job.id, e
                 )
+                _audit_event(
+                    "error",
+                    "ship_command_pipeline.preview_failed",
+                    {"job_id": job.id, "message": str(e)},
+                    tool_name="ship_command_pipeline",
+                )
                 return _err(f"Preview failed for job {job.id}: {e}")
     except Exception as e:
         logger.error("ship_command_pipeline create_job failed: %s", e)
@@ -1237,6 +1313,20 @@ async def ship_command_pipeline_tool(
         result["filter_audit"] = filter_audit
     if filter_spec_raw:
         result["compiled_filter"] = where_sql
+
+    _audit_event(
+        "pipeline",
+        "ship_command_pipeline.preview_ready",
+        {
+            "job_id": result.get("job_id"),
+            "total_rows": result.get("total_rows", 0),
+            "rows_with_warnings": rows_with_warnings,
+            "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
+            "mapping_hash": filter_audit.get("mapping_hash") if filter_audit else "",
+            "compiled_hash": filter_audit.get("compiled_hash") if filter_audit else "",
+        },
+        tool_name="ship_command_pipeline",
+    )
 
     return _emit_preview_ready(
         result=result,

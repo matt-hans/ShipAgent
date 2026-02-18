@@ -42,7 +42,16 @@ from src.orchestrator.agent.intent_detection import (
     is_confirmation_response,
     is_shipping_request,
 )
+from src.db.models import AgentDecisionRunStatus
 from src.services.agent_session_manager import AgentSessionManager
+from src.services.decision_audit_context import (
+    get_decision_job_id,
+    reset_decision_job_id,
+    reset_decision_run_id,
+    set_decision_job_id,
+    set_decision_run_id,
+)
+from src.services.decision_audit_service import DecisionAuditService
 from src.services.paperless_constants import (
     UPS_PAPERLESS_ALLOWED_EXTENSIONS,
     UPS_PAPERLESS_UI_ACCEPTED_FORMATS,
@@ -93,6 +102,21 @@ def _compute_source_hash(source_info: "DataSourceInfo | None") -> str:
         str(getattr(source_info, "signature", "") or ""),
     ]
     return "|".join(parts)
+
+
+def _build_source_signature(source_info: "DataSourceInfo | None") -> dict[str, Any] | None:
+    """Build a stable source signature payload from typed source info."""
+    if source_info is None:
+        return None
+    columns = getattr(source_info, "columns", []) or []
+    column_names = [getattr(col, "name", "") for col in columns]
+    return {
+        "source_type": getattr(source_info, "source_type", "unknown"),
+        "source_ref": getattr(source_info, "file_path", "") or "",
+        "schema_fingerprint": getattr(source_info, "signature", "") or "",
+        "row_count": getattr(source_info, "row_count", 0) or 0,
+        "columns": column_names,
+    }
 
 
 async def _ensure_agent(
@@ -200,7 +224,11 @@ async def _prewarm_session_agent(session_id: str) -> None:
         logger.warning("Agent prewarm failed for session %s: %s", session_id, e)
 
 
-async def _process_agent_message(session_id: str, content: str) -> None:
+async def _process_agent_message(
+    session_id: str,
+    content: str,
+    run_id: str | None = None,
+) -> None:
     """Process a user message through the persistent agent.
 
     Runs as a background task. Reuses the session's agent (SDK maintains
@@ -216,6 +244,17 @@ async def _process_agent_message(session_id: str, content: str) -> None:
 
     if session.terminating:
         logger.info("Skipping message for terminating session %s", session_id)
+        DecisionAuditService.log_event(
+            run_id=run_id,
+            phase="error",
+            event_name="conversation.processing.skipped_terminating",
+            actor="api",
+            payload={"session_id": session_id},
+        )
+        DecisionAuditService.complete_run(
+            run_id,
+            status=AgentDecisionRunStatus.cancelled,
+        )
         await queue.put({"event": "done", "data": {}})
         return
 
@@ -232,6 +271,7 @@ async def _process_agent_message(session_id: str, content: str) -> None:
     hide_transient_chat = raw_hide_transient not in {"0", "false", "no", "off"}
     buffered_agent_messages: list[str] = []
     artifact_emitted = False
+    run_status: AgentDecisionRunStatus = AgentDecisionRunStatus.completed
     artifact_events = {
         "preview_partial",
         "preview_ready",
@@ -299,12 +339,32 @@ async def _process_agent_message(session_id: str, content: str) -> None:
                 first_event_at - started_at,
             )
 
+    run_token = set_decision_run_id(run_id)
+    job_token = set_decision_job_id(None)
+
     async with session.lock:
         try:
             from src.services.gateway_provider import get_data_gateway
 
             gw = await get_data_gateway()
             source_info = await gw.get_source_info_typed()
+            DecisionAuditService.update_run_source_signature(
+                run_id,
+                _build_source_signature(source_info),
+            )
+            DecisionAuditService.log_event(
+                run_id=run_id,
+                phase="ingress",
+                event_name="conversation.processing.started",
+                actor="api",
+                payload={
+                    "session_id": session_id,
+                    "content_length": len(content),
+                    "source_type": getattr(source_info, "source_type", "none")
+                    if source_info is not None
+                    else "none",
+                },
+            )
 
             source_type = source_info.source_type if source_info is not None else "none"
             logger.info(
@@ -380,6 +440,23 @@ async def _process_agent_message(session_id: str, content: str) -> None:
                             continue
                         if text:
                             _session_manager.add_message(session_id, "assistant", text)
+                    elif event_type == "error":
+                        run_status = AgentDecisionRunStatus.failed
+                    elif event_type == "preview_ready":
+                        event_job_id = event.get("data", {}).get("job_id")
+                        if isinstance(event_job_id, str) and event_job_id:
+                            set_decision_job_id(event_job_id)
+                            DecisionAuditService.set_run_job_id(run_id, event_job_id)
+                            DecisionAuditService.log_event(
+                                run_id=run_id,
+                                phase="pipeline",
+                                event_name="pipeline.preview_ready",
+                                actor="system",
+                                payload={
+                                    "job_id": event_job_id,
+                                    "total_rows": event.get("data", {}).get("total_rows", 0),
+                                },
+                            )
 
                     await queue.put(event)
 
@@ -410,6 +487,14 @@ async def _process_agent_message(session_id: str, content: str) -> None:
         except Exception as e:
             logger.error("Agent processing failed for session %s: %s", session_id, e)
             _mark_first_event("error")
+            run_status = AgentDecisionRunStatus.failed
+            DecisionAuditService.log_event(
+                run_id=run_id,
+                phase="error",
+                event_name="conversation.processing.failed",
+                actor="system",
+                payload={"error": str(e)},
+            )
             await queue.put(
                 {
                     "event": "error",
@@ -444,12 +529,41 @@ async def _process_agent_message(session_id: str, content: str) -> None:
         ttfb,
         elapsed,
     )
+    try:
+        DecisionAuditService.log_event(
+            run_id=run_id,
+            phase="egress",
+            event_name="conversation.processing.completed",
+            actor="api",
+            payload={
+                "session_id": session_id,
+                "agent_turns_count": agent_turns_count,
+                "preview_rows_rated": preview_rows_rated,
+                "preview_total_rows": preview_total_rows,
+                "first_event_source": first_event_source,
+                "ttfb_ms": int(ttfb * 1000) if ttfb >= 0 else None,
+                "elapsed_ms": int(elapsed * 1000),
+            },
+            latency_ms=int(elapsed * 1000),
+        )
+        DecisionAuditService.complete_run(
+            run_id,
+            status=run_status,
+            job_id=get_decision_job_id(),
+        )
+    finally:
+        reset_decision_job_id(job_token)
+        reset_decision_run_id(run_token)
 
 
-def _schedule_agent_message(session_id: str, content: str) -> None:
+def _schedule_agent_message(
+    session_id: str,
+    content: str,
+    run_id: str | None = None,
+) -> None:
     """Schedule agent message processing and bind task to session lifecycle."""
     session = _session_manager.get_or_create_session(session_id)
-    task = asyncio.create_task(_process_agent_message(session_id, content))
+    task = asyncio.create_task(_process_agent_message(session_id, content, run_id=run_id))
     session.message_tasks.add(task)
 
     def _on_done(done_task: asyncio.Task[None]) -> None:
@@ -598,8 +712,26 @@ async def send_message(
     # Store user message in history
     _session_manager.add_message(session_id, "user", payload.content)
 
+    run_id = DecisionAuditService.start_run(
+        session_id=session_id,
+        user_message=payload.content,
+        model=os.environ.get("AGENT_MODEL") or os.environ.get("ANTHROPIC_MODEL"),
+        interactive_shipping=bool(session.interactive_shipping) if session is not None else False,
+    )
+    DecisionAuditService.log_event(
+        run_id=run_id,
+        phase="ingress",
+        event_name="conversation.message.accepted",
+        actor="api",
+        payload={
+            "session_id": session_id,
+            "content_length": len(payload.content),
+            "interactive_shipping": bool(session.interactive_shipping) if session is not None else False,
+        },
+    )
+
     # Process via app-level task (not request-scoped background task)
-    _schedule_agent_message(session_id, payload.content)
+    _schedule_agent_message(session_id, payload.content, run_id=run_id)
 
     return SendMessageResponse(status="accepted", session_id=session_id)
 
@@ -689,7 +821,26 @@ async def upload_document(
 
     # Store in conversation history and trigger agent processing
     _session_manager.add_message(session_id, "user", agent_message)
-    _schedule_agent_message(session_id, agent_message)
+    run_id = DecisionAuditService.start_run(
+        session_id=session_id,
+        user_message=agent_message,
+        model=os.environ.get("AGENT_MODEL") or os.environ.get("ANTHROPIC_MODEL"),
+        interactive_shipping=bool(session.interactive_shipping) if session is not None else False,
+    )
+    DecisionAuditService.log_event(
+        run_id=run_id,
+        phase="ingress",
+        event_name="conversation.document.accepted",
+        actor="api",
+        payload={
+            "session_id": session_id,
+            "file_name": file_name,
+            "file_format": normalized_ext,
+            "file_size_bytes": len(file_bytes),
+            "document_type": document_type,
+        },
+    )
+    _schedule_agent_message(session_id, agent_message, run_id=run_id)
 
     return UploadDocumentResponse(
         success=True,

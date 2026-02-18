@@ -5,6 +5,7 @@ resolution, platform status, and Shopify connection.
 """
 
 import hashlib
+import json
 import logging
 import os
 from typing import Any
@@ -28,6 +29,7 @@ from src.orchestrator.models.filter_spec import (
     FilterIntent,
     ResolvedFilterSpec,
 )
+from src.services.decision_audit_service import DecisionAuditService
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,24 @@ def _build_source_signature(
         "source_ref": str(source_info.get("path") or source_info.get("query") or ""),
         "schema_fingerprint": str(schema_signature),
     }
+
+
+def _audit_event(
+    phase: str,
+    event_name: str,
+    payload: dict[str, Any],
+    *,
+    actor: str = "tool",
+    tool_name: str | None = None,
+) -> None:
+    """Emit best-effort decision audit event in current run context."""
+    DecisionAuditService.log_event_from_context(
+        phase=phase,
+        event_name=event_name,
+        actor=actor,
+        tool_name=tool_name,
+        payload=payload,
+    )
 
 
 def _determinism_guard_error(source_info: dict[str, Any]) -> str | None:
@@ -346,6 +366,18 @@ async def resolve_filter_intent_tool(
     intent_raw = args.get("intent")
     if not intent_raw:
         return _err("intent is required.")
+    intent_hash = hashlib.sha256(
+        json.dumps(intent_raw, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+    _audit_event(
+        "intent",
+        "resolve_filter_intent.requested",
+        {
+            "intent_hash": intent_hash,
+            "intent_keys": sorted(intent_raw.keys()) if isinstance(intent_raw, dict) else [],
+        },
+        tool_name="resolve_filter_intent",
+    )
 
     # Get schema from gateway
     gw = await get_data_gateway()
@@ -362,6 +394,12 @@ async def resolve_filter_intent_tool(
     column_types = {col["name"]: col["type"] for col in columns}
     schema_signature = source_info.get("signature", "")
     source_signature = _build_source_signature(source_info, schema_signature)
+    _audit_event(
+        "resolution",
+        "resolve_filter_intent.source_signature",
+        {"source_signature": source_signature},
+        tool_name="resolve_filter_intent",
+    )
 
     # Shipping paths must use deterministic sources.
     if bridge is not None and is_shipping_request(bridge.last_user_message):
@@ -392,9 +430,21 @@ async def resolve_filter_intent_tool(
             source_signature=source_signature,
         )
     except FilterCompilationError as e:
+        _audit_event(
+            "error",
+            "resolve_filter_intent.failed",
+            {"code": e.code.value, "message": e.message},
+            tool_name="resolve_filter_intent",
+        )
         return _err(f"[{e.code.value}] {e.message}")
     except Exception as e:
         logger.error("resolve_filter_intent_tool failed: %s", e)
+        _audit_event(
+            "error",
+            "resolve_filter_intent.failed",
+            {"message": str(e)},
+            tool_name="resolve_filter_intent",
+        )
         return _err(f"Filter resolution failed: {e}")
 
     resolved_payload = resolved.model_dump()
@@ -410,6 +460,22 @@ async def resolve_filter_intent_tool(
             bridge.last_resolved_filter_command = None
             bridge.last_resolved_filter_schema_signature = None
 
+    _audit_event(
+        "resolution",
+        "resolve_filter_intent.completed",
+        {
+            "intent_hash": intent_hash,
+            "status": resolved.status.value,
+            "pending_confirmation_count": len(resolved.pending_confirmations or []),
+            "unresolved_count": len(resolved.unresolved_terms or []),
+            "schema_signature": schema_signature,
+            "source_fingerprint": resolved.source_fingerprint,
+            "compiler_version": resolved.compiler_version,
+            "mapping_version": resolved.mapping_version,
+            "normalizer_version": resolved.normalizer_version,
+        },
+        tool_name="resolve_filter_intent",
+    )
     return _ok(resolved_payload)
 
 
@@ -456,6 +522,15 @@ async def confirm_filter_interpretation_tool(
         return _err("intent is required (same FilterIntent used for resolve_filter_intent).")
     if bridge is None:
         return _err("Internal error: bridge not available for confirmation caching.")
+    _audit_event(
+        "resolution",
+        "confirm_filter_interpretation.requested",
+        {
+            "token_present": bool(resolution_token),
+            "intent_keys": sorted(intent_raw.keys()) if isinstance(intent_raw, dict) else [],
+        },
+        tool_name="confirm_filter_interpretation",
+    )
 
     # Get schema context
     gw = await get_data_gateway()
@@ -479,12 +554,24 @@ async def confirm_filter_interpretation_tool(
     # Validate the token is genuine and NEEDS_CONFIRMATION
     token_payload = _validate_resolution_token(resolution_token, schema_signature)
     if token_payload is None:
+        _audit_event(
+            "error",
+            "confirm_filter_interpretation.invalid_token",
+            {"reason": "token_invalid_or_expired"},
+            tool_name="confirm_filter_interpretation",
+        )
         return _err(
             "Invalid or expired resolution token. "
             "Re-run resolve_filter_intent to get a fresh token."
         )
     token_status = token_payload.get("resolution_status", "")
     if token_status != "NEEDS_CONFIRMATION":
+        _audit_event(
+            "error",
+            "confirm_filter_interpretation.invalid_status",
+            {"token_status": token_status},
+            tool_name="confirm_filter_interpretation",
+        )
         return _err(
             f"Token has status '{token_status}', not 'NEEDS_CONFIRMATION'. "
             "Only NEEDS_CONFIRMATION tokens can be confirmed."
@@ -521,6 +608,12 @@ async def confirm_filter_interpretation_tool(
     ).hexdigest()
     token_spec_hash = token_payload.get("resolved_spec_hash", "")
     if fresh_spec_hash != token_spec_hash:
+        _audit_event(
+            "error",
+            "confirm_filter_interpretation.token_intent_mismatch",
+            {},
+            tool_name="confirm_filter_interpretation",
+        )
         return _err(
             "Token/intent mismatch: the resolution token was generated for "
             "a different FilterIntent. Pass the same intent that produced "
@@ -531,6 +624,15 @@ async def confirm_filter_interpretation_tool(
     from src.services.filter_constants import CANONICAL_DICT_VERSION
     token_dict_version = token_payload.get("canonical_dict_version", "")
     if token_dict_version != CANONICAL_DICT_VERSION:
+        _audit_event(
+            "error",
+            "confirm_filter_interpretation.dict_version_mismatch",
+            {
+                "token_dict_version": token_dict_version,
+                "expected_dict_version": CANONICAL_DICT_VERSION,
+            },
+            tool_name="confirm_filter_interpretation",
+        )
         return _err(
             f"Dict version mismatch: token was generated with "
             f"'{token_dict_version}' but current version is "
@@ -557,6 +659,12 @@ async def confirm_filter_interpretation_tool(
         return _err(f"Confirmation re-resolution failed: {e}")
 
     if resolved.status.value != "RESOLVED":
+        _audit_event(
+            "error",
+            "confirm_filter_interpretation.unresolved_after_confirm",
+            {"status": resolved.status.value},
+            tool_name="confirm_filter_interpretation",
+        )
         return _err(
             f"Re-resolution produced status '{resolved.status.value}' instead of "
             "'RESOLVED'. There may be additional unresolved terms."
@@ -567,6 +675,16 @@ async def confirm_filter_interpretation_tool(
     bridge.last_resolved_filter_command = _command_for_filter_cache(bridge)
     bridge.last_resolved_filter_schema_signature = (
         schema_signature if isinstance(schema_signature, str) and schema_signature else None
+    )
+    _audit_event(
+        "resolution",
+        "confirm_filter_interpretation.completed",
+        {
+            "status": resolved.status.value,
+            "schema_signature": schema_signature,
+            "source_fingerprint": resolved.source_fingerprint,
+        },
+        tool_name="confirm_filter_interpretation",
     )
 
     return _ok(resolved_payload)

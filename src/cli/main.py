@@ -272,6 +272,38 @@ def job_logs(
     asyncio.run(_run())
 
 
+@job_app.command("audit")
+def job_audit(
+    job_id: str = typer.Argument(help="Job ID to inspect decision audit events"),
+    limit: int = typer.Option(200, "--limit", "-n", help="Maximum events to fetch"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show centralized agent decision audit events for a job."""
+    cfg = load_config(config_path=_config_path)
+    client = get_client(standalone=_standalone, config=cfg)
+
+    async def _run():
+        async with client:
+            events = await client.get_job_audit_events(job_id=job_id, limit=limit)
+            if json_output:
+                import json
+
+                console.print(json.dumps(events, indent=2, default=str))
+                return
+            if not events:
+                console.print("[yellow]No audit events found for this job.[/yellow]")
+                return
+            for event in events:
+                console.print(
+                    f"{event.get('timestamp', '')} "
+                    f"[{event.get('phase', '')}] "
+                    f"{event.get('event_name', '')} "
+                    f"(seq={event.get('seq', '')})"
+                )
+
+    asyncio.run(_run())
+
+
 # --- Submit command ---
 
 

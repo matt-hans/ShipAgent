@@ -22,6 +22,7 @@ from src.api.schemas import (
 )
 from src.db.connection import get_db
 from src.db.models import Job, JobRow, RowStatus
+from src.services.decision_audit_service import DecisionAuditService
 from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
 from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
 
@@ -286,6 +287,18 @@ async def confirm_job(
     job.status = "running"
     job.started_at = datetime.now(UTC).isoformat()
     db.commit()
+    run_id = DecisionAuditService.resolve_run_id_for_job(job_id)
+    DecisionAuditService.log_event(
+        run_id=run_id,
+        phase="execution",
+        event_name="execution.confirmed",
+        actor="api",
+        payload={
+            "job_id": job_id,
+            "write_back_enabled": job.write_back_enabled,
+            "is_interactive": bool(getattr(job, "is_interactive", False)),
+        },
+    )
 
     # Schedule async batch execution on the event loop
     # Note: BackgroundTasks.add_task() does NOT properly await async functions,

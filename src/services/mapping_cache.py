@@ -15,7 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from src.services.column_mapping import REQUIRED_FIELDS, auto_map_columns
+from src.services.column_mapping import (
+    REQUIRED_FIELDS,
+    auto_map_columns,
+    auto_map_columns_with_trace,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,7 @@ _cached_fingerprint: str | None = None
 _cached_columns: tuple[str, ...] | None = None
 _cached_mapping: dict[str, str] | None = None
 _cached_mapping_hash: str | None = None
+_cached_selection_trace: dict[str, Any] | None = None
 
 _REQUIRED_PATH_TO_CANONICAL: dict[str, str] = {
     "shipTo.name": "ship_to_name",
@@ -109,7 +114,7 @@ def compute_mapping_hash(mapping: dict[str, str]) -> str:
 def _load_from_disk(
     schema_fingerprint: str,
     source_columns: list[str],
-) -> tuple[dict[str, str], str] | None:
+) -> tuple[dict[str, str], str, dict[str, Any]] | None:
     path = _cache_path()
     try:
         raw = json.loads(path.read_text())
@@ -145,7 +150,11 @@ def _load_from_disk(
     mapping_hash = raw.get("mapping_hash")
     if not isinstance(mapping_hash, str) or not mapping_hash:
         mapping_hash = compute_mapping_hash(mapping)
-    return mapping, mapping_hash
+    selection_trace_raw = raw.get("selection_trace")
+    selection_trace: dict[str, Any] = {}
+    if isinstance(selection_trace_raw, dict):
+        selection_trace = selection_trace_raw
+    return mapping, mapping_hash, selection_trace
 
 
 def _persist_to_disk(
@@ -153,6 +162,7 @@ def _persist_to_disk(
     source_columns: list[str],
     mapping: dict[str, str],
     mapping_hash: str,
+    selection_trace: dict[str, Any],
 ) -> None:
     path = _cache_path()
     payload = {
@@ -161,6 +171,7 @@ def _persist_to_disk(
         "source_columns": source_columns,
         "mapping": mapping,
         "mapping_hash": mapping_hash,
+        "selection_trace": selection_trace,
         "verified_at": datetime.now(timezone.utc).isoformat(),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,8 +200,22 @@ def get_or_compute_mapping_with_metadata(
     sample_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, str], str]:
     """Return mapping plus stable mapping_hash for this schema+columns."""
+    mapping, mapping_hash, _ = get_or_compute_mapping_with_diagnostics(
+        source_columns=source_columns,
+        schema_fingerprint=schema_fingerprint,
+        sample_rows=sample_rows,
+    )
+    return mapping, mapping_hash
+
+
+def get_or_compute_mapping_with_diagnostics(
+    source_columns: list[str],
+    schema_fingerprint: str | None,
+    sample_rows: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, str], str, dict[str, Any]]:
+    """Return mapping, hash, and cache/selection diagnostics."""
     global _cached_fingerprint, _cached_columns, _cached_mapping
-    global _cached_mapping_hash
+    global _cached_mapping_hash, _cached_selection_trace
 
     normalized_columns = sorted({str(col) for col in source_columns})
     verify_limit = _resolve_verify_sample_limit()
@@ -198,7 +223,17 @@ def get_or_compute_mapping_with_metadata(
 
     if not schema_fingerprint or not _is_cache_enabled():
         mapping = auto_map_columns(normalized_columns)
-        return mapping, compute_mapping_hash(mapping)
+        _, selection_trace = auto_map_columns_with_trace(normalized_columns)
+        return (
+            mapping,
+            compute_mapping_hash(mapping),
+            {
+                "cache_hit": False,
+                "cache_source": "disabled",
+                "schema_fingerprint": schema_fingerprint or "",
+                "selection_trace": selection_trace,
+            },
+        )
 
     cols_key = tuple(normalized_columns)
     with _lock:
@@ -212,24 +247,44 @@ def get_or_compute_mapping_with_metadata(
                 "mapping_cache_hit source=memory fingerprint=%s",
                 schema_fingerprint[:12],
             )
-            return _cached_mapping, _cached_mapping_hash
+            return (
+                _cached_mapping,
+                _cached_mapping_hash,
+                {
+                    "cache_hit": True,
+                    "cache_source": "memory",
+                    "schema_fingerprint": schema_fingerprint,
+                    "selection_trace": _cached_selection_trace or {},
+                },
+            )
 
     cached_from_disk = _load_from_disk(schema_fingerprint, normalized_columns)
     if cached_from_disk is not None:
-        cached_mapping, cached_hash = cached_from_disk
+        cached_mapping, cached_hash, cached_trace = cached_from_disk
         with _lock:
             _cached_fingerprint = schema_fingerprint
             _cached_columns = cols_key
             _cached_mapping = cached_mapping
             _cached_mapping_hash = cached_hash
+            _cached_selection_trace = cached_trace
         logger.info(
             "mapping_cache_hit source=disk fingerprint=%s mapped_fields=%d",
             schema_fingerprint[:12],
             len(cached_mapping),
         )
-        return cached_mapping, cached_hash
+        return (
+            cached_mapping,
+            cached_hash,
+            {
+                "cache_hit": True,
+                "cache_source": "disk",
+                "schema_fingerprint": schema_fingerprint,
+                "selection_trace": cached_trace,
+            },
+        )
 
     mapping = auto_map_columns(normalized_columns)
+    _, selection_trace = auto_map_columns_with_trace(normalized_columns)
     mapping_hash = compute_mapping_hash(mapping)
     verified, details = _verify_mapping(mapping, normalized_columns, sample)
     if verified:
@@ -239,6 +294,7 @@ def get_or_compute_mapping_with_metadata(
                 normalized_columns,
                 mapping,
                 mapping_hash,
+                selection_trace,
             )
         except Exception as e:
             logger.info("mapping_cache_recompute reason=file_write_error error=%s", e)
@@ -247,6 +303,7 @@ def get_or_compute_mapping_with_metadata(
             _cached_columns = cols_key
             _cached_mapping = mapping
             _cached_mapping_hash = mapping_hash
+            _cached_selection_trace = selection_trace
         logger.info(
             "mapping_cache_miss fingerprint=%s mapped_fields=%d rows_sampled=%d mapping_hash=%s",
             schema_fingerprint[:12],
@@ -254,7 +311,16 @@ def get_or_compute_mapping_with_metadata(
             len(sample),
             mapping_hash[:12],
         )
-        return mapping, mapping_hash
+        return (
+            mapping,
+            mapping_hash,
+            {
+                "cache_hit": False,
+                "cache_source": "computed",
+                "schema_fingerprint": schema_fingerprint,
+                "selection_trace": selection_trace,
+            },
+        )
 
     logger.warning(
         "mapping_cache_verify_fail fingerprint=%s details=%s rows_sampled=%d",
@@ -263,17 +329,28 @@ def get_or_compute_mapping_with_metadata(
         len(sample),
     )
     logger.info("mapping_cache_recompute reason=verification_failed")
-    return mapping, mapping_hash
+    return (
+        mapping,
+        mapping_hash,
+        {
+            "cache_hit": False,
+            "cache_source": "verification_failed",
+            "schema_fingerprint": schema_fingerprint,
+            "selection_trace": selection_trace,
+        },
+    )
 
 
 def invalidate() -> None:
     """Clear in-memory and file cache."""
     global _cached_fingerprint, _cached_columns, _cached_mapping, _cached_mapping_hash
+    global _cached_selection_trace
     with _lock:
         _cached_fingerprint = None
         _cached_columns = None
         _cached_mapping = None
         _cached_mapping_hash = None
+        _cached_selection_trace = None
 
     path = _cache_path()
     try:

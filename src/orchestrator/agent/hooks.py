@@ -31,7 +31,21 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from claude_agent_sdk import HookMatcher
+try:
+    from claude_agent_sdk import HookMatcher
+except ModuleNotFoundError as exc:
+    if exc.name != "claude_agent_sdk":
+        raise
+
+    class HookMatcher:  # type: ignore[no-redef]
+        """Fallback stub when claude_agent_sdk is unavailable."""
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise ModuleNotFoundError(
+                "No module named 'claude_agent_sdk'. "
+                "Start backend with ./scripts/start-backend.sh (project .venv), "
+                "or install deps via .venv/bin/python -m pip install -e '.[dev]'."
+            ) from exc
 
 
 __all__ = [

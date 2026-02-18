@@ -10,6 +10,7 @@ from src.services.audit_service import (
     LogLevel,
     redact_sensitive,
 )
+from src.services.decision_audit_service import DecisionAuditService
 from src.services.job_service import InvalidStateTransition, JobService
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "redact_sensitive",
     "LogLevel",
     "EventType",
+    "DecisionAuditService",
 ]

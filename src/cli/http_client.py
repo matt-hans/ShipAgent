@@ -403,6 +403,20 @@ class HttpClient:
             watchdog_active=False,
         )
 
+    async def get_job_audit_events(self, job_id: str, limit: int = 200) -> list[dict]:
+        """Get centralized decision audit events for a job."""
+        resp = await self._client.get(
+            f"/api/v1/agent-audit/jobs/{job_id}/events",
+            params={"limit": limit},
+        )
+        self._raise_for_status(resp)
+        data = resp.json()
+        if isinstance(data, dict):
+            events = data.get("events", [])
+            if isinstance(events, list):
+                return events
+        return []
+
     async def cleanup(self) -> None:
         """No-op for HTTP client (stateless)."""
         pass

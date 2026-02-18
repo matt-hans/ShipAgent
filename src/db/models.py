@@ -85,6 +85,39 @@ class EventType(str, Enum):
     error = "error"
 
 
+class AgentDecisionRunStatus(str, Enum):
+    """Lifecycle status values for agent decision runs."""
+
+    running = "running"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class AgentDecisionPhase(str, Enum):
+    """Phase categories for agent decision events."""
+
+    ingress = "ingress"
+    intent = "intent"
+    resolution = "resolution"
+    mapping = "mapping"
+    tool_call = "tool_call"
+    tool_result = "tool_result"
+    pipeline = "pipeline"
+    execution = "execution"
+    egress = "egress"
+    error = "error"
+
+
+class AgentDecisionActor(str, Enum):
+    """Actor categories for agent decision events."""
+
+    api = "api"
+    agent = "agent"
+    tool = "tool"
+    system = "system"
+
+
 # SQLAlchemy Base
 
 
@@ -178,6 +211,11 @@ class Job(Base):
     )
     audit_logs: Mapped[list["AuditLog"]] = relationship(
         "AuditLog", back_populates="job", cascade="all, delete-orphan"
+    )
+    decision_runs: Mapped[list["AgentDecisionRun"]] = relationship(
+        "AgentDecisionRun",
+        back_populates="job",
+        cascade="all, delete-orphan",
     )
 
     # Indexes
@@ -327,6 +365,98 @@ class AuditLog(Base):
 
     def __repr__(self) -> str:
         return f"<AuditLog(id={self.id!r}, job_id={self.job_id!r}, level={self.level!r}, type={self.event_type!r})>"
+
+
+class AgentDecisionRun(Base):
+    """Canonical run record for one user message decision cycle."""
+
+    __tablename__ = "agent_decision_runs"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    session_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    job_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    user_message_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_message_redacted: Mapped[str] = mapped_column(Text, nullable=False)
+    source_signature: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=AgentDecisionRunStatus.running.value
+    )
+    model: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    interactive_shipping: Mapped[bool] = mapped_column(nullable=False, default=False)
+    started_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+    completed_at: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+
+    job: Mapped[Optional["Job"]] = relationship("Job", back_populates="decision_runs")
+    events: Mapped[list["AgentDecisionEvent"]] = relationship(
+        "AgentDecisionEvent",
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        Index("idx_agent_decision_runs_session", "session_id"),
+        Index("idx_agent_decision_runs_job", "job_id"),
+        Index("idx_agent_decision_runs_status", "status"),
+        Index("idx_agent_decision_runs_started_at", "started_at"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<AgentDecisionRun(id={self.id!r}, session_id={self.session_id!r}, "
+            f"job_id={self.job_id!r}, status={self.status!r})>"
+        )
+
+
+class AgentDecisionEvent(Base):
+    """Structured event emitted during an AgentDecisionRun lifecycle."""
+
+    __tablename__ = "agent_decision_events"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    run_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("agent_decision_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    timestamp: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    actor: Mapped[str] = mapped_column(String(20), nullable=False)
+    tool_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    payload_redacted: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    latency_ms: Mapped[Optional[int]] = mapped_column(nullable=True)
+    prev_event_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    event_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    run: Mapped["AgentDecisionRun"] = relationship(
+        "AgentDecisionRun", back_populates="events"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "seq", name="uq_agent_decision_events_run_seq"),
+        Index("idx_agent_decision_events_run", "run_id"),
+        Index("idx_agent_decision_events_phase", "phase"),
+        Index("idx_agent_decision_events_event_name", "event_name"),
+        Index("idx_agent_decision_events_timestamp", "timestamp"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<AgentDecisionEvent(id={self.id!r}, run_id={self.run_id!r}, "
+            f"seq={self.seq}, phase={self.phase!r}, event_name={self.event_name!r})>"
+        )
 
 
 class WriteBackTask(Base):

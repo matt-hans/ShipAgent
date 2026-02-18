@@ -25,8 +25,9 @@ from src.services.gateway_provider import get_data_gateway, get_external_sources
 from src.services.job_service import JobService
 from src.services.mapping_cache import (
     compute_mapping_hash,
-    get_or_compute_mapping_with_metadata,
+    get_or_compute_mapping_with_diagnostics,
 )
+from src.services.decision_audit_service import DecisionAuditService
 from src.services.ups_service_codes import (
     SERVICE_ALIASES,
     SERVICE_CODE_NAMES,
@@ -309,7 +310,7 @@ def _normalize_rows_for_shipping_with_metadata(
         {str(k) for row in rows if isinstance(row, dict) for k in row.keys()}
     )
     if schema_fingerprint:
-        mapping, mapping_hash = get_or_compute_mapping_with_metadata(
+        mapping, mapping_hash, mapping_meta = get_or_compute_mapping_with_diagnostics(
             source_columns=source_columns,
             schema_fingerprint=schema_fingerprint,
             sample_rows=rows,
@@ -317,6 +318,12 @@ def _normalize_rows_for_shipping_with_metadata(
     else:
         mapping = auto_map_columns(source_columns)
         mapping_hash = compute_mapping_hash(mapping)
+        mapping_meta = {
+            "cache_hit": False,
+            "cache_source": "none",
+            "schema_fingerprint": schema_fingerprint or "",
+            "selection_trace": {},
+        }
     missing_required = validate_mapping(mapping)
     if missing_required:
         logger.warning(
@@ -324,6 +331,20 @@ def _normalize_rows_for_shipping_with_metadata(
             len(rows),
             "; ".join(missing_required),
         )
+    DecisionAuditService.log_event_from_context(
+        phase="mapping",
+        event_name="mapping.selection_trace",
+        actor="system",
+        payload={
+            "schema_fingerprint": schema_fingerprint or "",
+            "mapping_hash": mapping_hash,
+            "mapped_field_count": len(mapping),
+            "missing_required": missing_required,
+            "cache_hit": mapping_meta.get("cache_hit", False),
+            "cache_source": mapping_meta.get("cache_source", "unknown"),
+            "selection_trace": mapping_meta.get("selection_trace", {}),
+        },
+    )
 
     normalized: list[dict[str, Any]] = []
     for row in rows:
