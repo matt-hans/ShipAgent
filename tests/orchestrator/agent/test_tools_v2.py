@@ -1135,7 +1135,6 @@ async def test_rate_pickup_tool_success():
 
         result = await rate_pickup_tool(
             {
-                "pickup_type": "oncall",
                 "address_line": "123 Main",
                 "city": "Austin",
                 "state": "TX",
@@ -1154,6 +1153,7 @@ async def test_rate_pickup_tool_success():
 
     assert len(captured) == 1
     assert captured[0][0] == "pickup_preview"
+    assert mock_ups.rate_pickup.await_args.kwargs["pickup_type"] == "oncall"
 
 
 @pytest.mark.asyncio
@@ -1180,7 +1180,7 @@ async def test_rate_pickup_tool_emits_pickup_preview_event():
 
         result = await rate_pickup_tool(
             {
-                "pickup_type": "oncall",
+                "pickup_type": "smart",
                 "address_line": "123 Main St",
                 "city": "Dallas",
                 "state": "TX",
@@ -1204,6 +1204,8 @@ async def test_rate_pickup_tool_emits_pickup_preview_event():
     assert payload["contact_name"] == "John Smith"
     assert payload["grand_total"] == "9.65"
     assert payload["charges"][0]["chargeLabel"] == "Base Charge"
+    assert payload["pickup_type"] == "oncall"
+    assert mock_ups.rate_pickup.await_args.kwargs["pickup_type"] == "oncall"
 
 
 @pytest.mark.asyncio
@@ -1226,7 +1228,7 @@ async def test_get_pickup_status_tool_success():
         from src.orchestrator.agent.tools.pickup import get_pickup_status_tool
 
         result = await get_pickup_status_tool(
-            {"pickup_type": "oncall"},
+            {},
             bridge=bridge,
         )
 
@@ -1237,6 +1239,7 @@ async def test_get_pickup_status_tool_success():
     assert len(captured) == 1
     assert captured[0][0] == "pickup_result"
     assert captured[0][1]["action"] == "status"
+    assert mock_ups.get_pickup_status.await_args.kwargs["pickup_type"] == "oncall"
 
 
 @pytest.mark.asyncio

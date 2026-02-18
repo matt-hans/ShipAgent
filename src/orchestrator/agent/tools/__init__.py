@@ -364,17 +364,13 @@ def get_all_tool_definitions(
                 "Rate a UPS pickup and display the preview card. ALWAYS call this BEFORE "
                 "schedule_pickup. Collects address, contact, and schedule details, gets "
                 "the rate estimate, and displays a preview card to the user with Confirm/"
-                "Cancel buttons. Include contact_name and phone_number in the args so "
-                "they appear in the preview."
+                "Cancel buttons. Pickup type is always on-call and set automatically. "
+                "Include contact_name and phone_number in the args so they appear in "
+                "the preview."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "pickup_type": {
-                        "type": "string",
-                        "description": "Pickup type.",
-                        "enum": ["oncall", "smart", "both"],
-                    },
                     "address_line": {"type": "string", "description": "Pickup address."},
                     "city": {"type": "string", "description": "City."},
                     "state": {"type": "string", "description": "State/province code."},
@@ -387,8 +383,7 @@ def get_all_tool_definitions(
                     "phone_number": {"type": "string", "description": "Contact phone number."},
                 },
                 "required": [
-                    "pickup_type", "address_line", "city", "state",
-                    "postal_code", "country_code", "pickup_date",
+                    "address_line", "city", "state", "postal_code", "country_code", "pickup_date",
                     "ready_time", "close_time",
                 ],
             },
@@ -396,21 +391,15 @@ def get_all_tool_definitions(
         },
         {
             "name": "get_pickup_status",
-            "description": "Get pending pickup status for the UPS account.",
+            "description": "Get pending on-call pickup status for the UPS account.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "pickup_type": {
-                        "type": "string",
-                        "description": "Pickup type.",
-                        "enum": ["oncall", "smart", "both"],
-                    },
                     "account_number": {
                         "type": "string",
                         "description": "UPS account number (optional, uses env fallback).",
                     },
                 },
-                "required": ["pickup_type"],
             },
             "handler": _bind_bridge(get_pickup_status_tool, bridge),
         },
@@ -705,7 +694,8 @@ def get_all_tool_definitions(
                         "type": "string",
                         "description": (
                             "Recipient attention/contact name override. "
-                            "Optional: defaults to ship_to_name when omitted."
+                            "Optional override only: defaults to ship_to_name when omitted. "
+                            "Do not ask user to confirm equality with recipient name."
                         ),
                     },
                     "shipment_description": {

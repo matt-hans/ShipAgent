@@ -10,7 +10,6 @@ import { useConversation } from '@/hooks/useConversation';
 import type {
   Job,
   BatchPreview,
-  PreviewPartialPayload,
   PreviewRow,
   PickupResult,
   PickupPreview,
@@ -200,52 +199,8 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
           addMessage({ role: 'system', content: text });
         }
       } else if (event.type === 'preview_partial') {
-        const partial = event.data as unknown as PreviewPartialPayload;
-        setCurrentJobId(partial.job_id);
-        setPreview((prev) => {
-          const base: BatchPreview =
-            prev && prev.job_id === partial.job_id
-              ? prev
-              : {
-                  job_id: partial.job_id,
-                  total_rows: partial.total_rows,
-                  preview_rows: [],
-                  additional_rows: Math.max(partial.total_rows - partial.rows_rated, 0),
-                  total_estimated_cost_cents: 0,
-                  rows_with_warnings: 0,
-                };
-
-          const merged = new Map<number, PreviewRow>();
-          for (const row of base.preview_rows) {
-            merged.set(row.row_number, _normalizePreviewRow(row));
-          }
-          for (const row of partial.preview_rows) {
-            merged.set(row.row_number, _normalizePreviewRow(row));
-          }
-
-          const previewRows = Array.from(merged.values()).sort(
-            (a, b) => a.row_number - b.row_number
-          );
-          const rowsWithWarnings = previewRows.filter(
-            (row) => row.warnings && row.warnings.length > 0
-          ).length;
-          const ratedCost = previewRows.reduce(
-            (sum, row) => sum + (Number(row.estimated_cost_cents) || 0),
-            0
-          );
-
-          return {
-            ...base,
-            total_rows: partial.total_rows,
-            preview_rows: previewRows,
-            rows_with_warnings: rowsWithWarnings,
-            additional_rows: Math.max(partial.total_rows - previewRows.length, 0),
-            total_estimated_cost_cents: Math.max(
-              base.total_estimated_cost_cents || 0,
-              ratedCost
-            ),
-          };
-        });
+        // Keep preview rendering stable until the fully enriched preview_ready payload arrives.
+        continue;
       } else if (event.type === 'preview_ready') {
         const previewData = event.data as unknown as BatchPreview;
         const previousJobId = currentJobId;

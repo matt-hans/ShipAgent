@@ -247,6 +247,117 @@ class TestPreviewInteractiveShipment:
         assert "state/province code is required" in result["content"][0]["text"]
 
     @pytest.mark.asyncio
+    async def test_international_service_requires_explicit_country(self):
+        """Worldwide/international services must provide destination country."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        env = {
+            "UPS_ACCOUNT_NUMBER": "TEST123",
+            "SHIPPER_NAME": "Test",
+            "SHIPPER_ADDRESS1": "123 Main",
+            "SHIPPER_CITY": "LA",
+            "SHIPPER_STATE": "CA",
+            "SHIPPER_ZIP": "90001",
+        }
+
+        args = self._base_args(
+            ship_to_state="",
+            service="UPS Worldwide Express",
+        )
+
+        with patch.dict(os.environ, env, clear=False):
+            result = await preview_interactive_shipment_tool(args)
+
+        assert result["isError"] is True
+        assert "ship_to_country is required" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_uk_alias_normalizes_to_gb_for_state_validation(self):
+        """Country alias 'UK' is normalized to GB before recipient-state checks."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        env = {
+            "UPS_ACCOUNT_NUMBER": "TEST123",
+            "SHIPPER_NAME": "Test",
+            "SHIPPER_ADDRESS1": "123 Main",
+            "SHIPPER_CITY": "LA",
+            "SHIPPER_STATE": "CA",
+            "SHIPPER_ZIP": "90001",
+            "SHIPPER_COUNTRY": "US",
+            "SHIPPER_ATTENTION_NAME": "Warehouse Desk",
+            "SHIPPER_PHONE": "12125551234",
+            "INTERNATIONAL_ENABLED_LANES": "US-GB",
+        }
+
+        args = self._base_args(
+            ship_to_state="",
+            ship_to_country="UK",
+            ship_to_phone="442079430800",
+            ship_to_attention_name="Elizabeth Taylor",
+            service="UPS Worldwide Saver",
+            shipment_description="Books",
+            commodities=[
+                {
+                    "description": "Books",
+                    "commodity_code": "490199",
+                    "origin_country": "US",
+                    "quantity": 1,
+                    "unit_value": "75.00",
+                }
+            ],
+        )
+
+        with patch.dict(os.environ, env, clear=False):
+            result = await preview_interactive_shipment_tool(args)
+
+        assert result["isError"] is True
+        assert "to GB" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_gb_state_cannot_match_postal_code(self):
+        """Preview rejects GB addresses where state is copied from postal code."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        env = {
+            "UPS_ACCOUNT_NUMBER": "TEST123",
+            "SHIPPER_NAME": "Test",
+            "SHIPPER_ADDRESS1": "123 Main",
+            "SHIPPER_CITY": "LA",
+            "SHIPPER_STATE": "CA",
+            "SHIPPER_ZIP": "90001",
+            "SHIPPER_COUNTRY": "US",
+            "SHIPPER_ATTENTION_NAME": "Warehouse Desk",
+            "SHIPPER_PHONE": "12125551234",
+            "INTERNATIONAL_ENABLED_LANES": "US-GB",
+        }
+
+        args = self._base_args(
+            ship_to_city="London",
+            ship_to_country="GB",
+            ship_to_state="W1J 7NT",
+            ship_to_zip="W1J 7NT",
+            ship_to_phone="+44 20 7493 0800",
+            ship_to_attention_name="Elizabeth Taylor",
+            service="UPS Worldwide Saver",
+            shipment_description="Books",
+            commodities=[
+                {
+                    "description": "Books",
+                    "commodity_code": "490199",
+                    "origin_country": "US",
+                    "quantity": 1,
+                    "unit_value": "75.00",
+                }
+            ],
+        )
+
+        with patch.dict(os.environ, env, clear=False):
+            result = await preview_interactive_shipment_tool(args)
+
+        assert result["isError"] is True
+        assert "matches the postal code" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
     async def test_includes_available_services_from_shop_discovery(self):
         """Interactive preview includes UPS Shop-discovered service options."""
         from src.orchestrator.agent.tools.core import EventEmitterBridge

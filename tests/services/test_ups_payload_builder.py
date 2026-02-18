@@ -276,6 +276,22 @@ class TestBuildShipTo:
 
         assert ship_to["name"] == "Recipient"
 
+    def test_prefers_ship_to_attention_name_over_company(self):
+        """ship_to_attention_name should take precedence over company mapping."""
+        order_data = {
+            "ship_to_name": "Maria Garcia",
+            "ship_to_attention_name": "Maria Garcia",
+            "ship_to_company": "Legacy Company",
+            "ship_to_city": "Miami",
+            "ship_to_state": "FL",
+            "ship_to_postal_code": "33139",
+            "ship_to_country": "US",
+        }
+
+        ship_to = build_ship_to(order_data)
+
+        assert ship_to["attentionName"] == "Maria Garcia"
+
 
 class TestBuildPackages:
     """Test package building."""
@@ -540,6 +556,7 @@ class TestBuildShipmentRequest:
 
         assert request["shipper"]["name"] == "Test Store"
         assert request["shipTo"]["name"] == "John Doe"
+        assert request["shipTo"]["attentionName"] == "John Doe"
         assert request["packages"][0]["weight"] == 2.0
         assert request["serviceCode"] == "03"
         assert request["reference"] == "1001"
@@ -648,6 +665,25 @@ class TestBuildUpsApiPayload:
         assert shipment["ShipTo"]["Address"]["City"] == "Los Angeles"
         assert shipment["Service"]["Code"] == "03"
         assert shipment["Package"][0]["PackageWeight"]["Weight"] == "2.0"
+
+    def test_domestic_payload_includes_attention_name_from_order_data(self):
+        """Domestic payload should carry ShipTo.AttentionName from ship_to_attention_name."""
+        order_data = {
+            "ship_to_name": "Maria Garcia",
+            "ship_to_attention_name": "Maria Garcia",
+            "ship_to_phone": "10012345667",
+            "ship_to_address1": "123 Ocean Drive",
+            "ship_to_city": "Miami",
+            "ship_to_state": "FL",
+            "ship_to_postal_code": "33139",
+            "ship_to_country": "US",
+            "service_code": "14",
+            "weight": 5.0,
+        }
+        simplified = build_shipment_request(order_data)
+        full = build_ups_api_payload(simplified, account_number="ABC123")
+        ship_to = full["ShipmentRequest"]["Shipment"]["ShipTo"]
+        assert ship_to["AttentionName"] == "Maria Garcia"
 
     def test_includes_label_specification(self):
         """Test PDF label specification is included."""

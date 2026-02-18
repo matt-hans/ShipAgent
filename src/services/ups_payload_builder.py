@@ -209,9 +209,16 @@ def build_ship_to(order_data: dict[str, Any]) -> dict[str, str]:
         last = order_data.get("ship_to_last_name", "")
         name = f"{first} {last}".strip()
 
+    normalized_name = truncate_address(name, UPS_ADDRESS_MAX_LEN) or "Recipient"
+    attention_name = (
+        order_data.get("ship_to_attention_name")
+        or order_data.get("ship_to_company")
+        or normalized_name
+    )
+
     return {
-        "name": truncate_address(name, UPS_ADDRESS_MAX_LEN) or "Recipient",
-        "attentionName": truncate_address(order_data.get("ship_to_company"), UPS_ADDRESS_MAX_LEN),
+        "name": normalized_name,
+        "attentionName": truncate_address(attention_name, UPS_ADDRESS_MAX_LEN),
         "phone": normalize_phone(order_data.get("ship_to_phone")),
         "addressLine1": truncate_address(order_data.get("ship_to_address1", "")),
         "addressLine2": truncate_address(order_data.get("ship_to_address2")),

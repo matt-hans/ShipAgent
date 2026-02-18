@@ -19,6 +19,7 @@ from src.orchestrator.agent.tools.core import (
 from src.services.errors import UPSServiceError
 
 logger = logging.getLogger(__name__)
+_ON_CALL_PICKUP_TYPE = "oncall"
 
 
 async def schedule_pickup_tool(
@@ -127,9 +128,8 @@ async def rate_pickup_tool(
     frontend can render a rich preview card with Confirm/Cancel buttons.
 
     Args:
-        args: Dict with pickup_type, address fields, pickup_date,
-              ready_time, close_time, contact_name, phone_number,
-              and optional kwargs.
+        args: Dict with address fields, pickup_date, ready_time,
+              close_time, contact_name, phone_number, and optional kwargs.
         bridge: Event bridge for SSE emission.
 
     Returns:
@@ -139,7 +139,7 @@ async def rate_pickup_tool(
         client = await _get_ups_client()
         # Extract input details before passing to client
         input_details = {
-            "pickup_type": args.get("pickup_type", "oncall"),
+            "pickup_type": _ON_CALL_PICKUP_TYPE,
             "address_line": args.get("address_line", ""),
             "city": args.get("city", ""),
             "state": args.get("state", ""),
@@ -151,7 +151,11 @@ async def rate_pickup_tool(
             "contact_name": args.get("contact_name", ""),
             "phone_number": args.get("phone_number", ""),
         }
-        result = await client.rate_pickup(**args)
+        rate_args = {
+            **args,
+            "pickup_type": _ON_CALL_PICKUP_TYPE,
+        }
+        result = await client.rate_pickup(**rate_args)
         # Emit pickup_preview with all details + rate
         payload = {
             **input_details,
@@ -177,7 +181,7 @@ async def get_pickup_status_tool(
     """Get pending pickup status and emit pickup_result event.
 
     Args:
-        args: Dict with pickup_type and optional account_number.
+        args: Dict with optional account_number.
         bridge: Event bridge for SSE emission.
 
     Returns:
@@ -185,7 +189,7 @@ async def get_pickup_status_tool(
     """
     try:
         client = await _get_ups_client()
-        pickup_type = args.get("pickup_type", "oncall")
+        pickup_type = _ON_CALL_PICKUP_TYPE
         account_number = args.get("account_number", "")
         result = await client.get_pickup_status(
             pickup_type=pickup_type,

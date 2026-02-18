@@ -227,6 +227,12 @@ class TestInteractiveShippingPromptConditioning:
         prompt = build_system_prompt(interactive_shipping=True)
         assert "preview_interactive_shipment" in prompt
 
+    def test_interactive_prompt_defaults_attention_without_confirmation_question(self):
+        """Interactive prompt should default attention name and avoid confirmation asks."""
+        prompt = build_system_prompt(interactive_shipping=True)
+        assert "Default `ship_to_attention_name` to recipient name automatically." in prompt
+        assert "Do NOT ask \"is recipient name the attention name?\"" in prompt
+
     def test_interactive_prompt_denies_direct_create_shipment(self):
         """Interactive prompt tells agent not to call create_shipment directly."""
         prompt = build_system_prompt(interactive_shipping=True)

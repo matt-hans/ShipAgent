@@ -276,7 +276,11 @@ You do NOT need to ask for shipper details, account number, or billing informati
 3. Service preference (optional at first pass). ALWAYS pass this as the `service` parameter when the user specifies a service (e.g., "overnight", "Next Day Air", "2nd Day Air", "3 Day Select", "UPS Standard").
 4. Package weight in lbs (optional — defaults to 1.0)
 5. Recipient phone (optional)
-6. Recipient attention name only if different from recipient name (otherwise the system defaults attention to recipient name)
+
+Attention name handling:
+- Default `ship_to_attention_name` to recipient name automatically.
+- Do NOT ask "is recipient name the attention name?" or similar confirmation questions.
+- Only pass `ship_to_attention_name` when the user explicitly provides a different attention/contact name.
 
 **Workflow:**
 1. Collect shipment details from the user's message
@@ -393,6 +397,7 @@ Interactive mode collection requirements:
 - ALWAYS pass `ship_to_country` for non-US destinations and collect recipient phone.
 - Do NOT ask for recipient attention name when recipient name is already known; default attention to recipient name unless the user specifies a different contact.
 - Collect recipient `ship_to_state` (state/province/county code) when required for the destination country (e.g., GB).
+- Never copy postal code into `ship_to_state`; if a required state/province is unknown, ask the user explicitly.
 - Do NOT ask for shipper phone or attention name — these are auto-populated from environment configuration.
 - Collect and pass `commodities` items with description, commodity_code, origin_country, quantity, and unit_value.
 - Collect and pass `invoice_currency_code`, `invoice_monetary_value`, and `reason_for_export` when required.
@@ -449,6 +454,7 @@ administrator.
     ups_v2_section = """
 ## UPS Pickup Scheduling
 
+- Pickup type is fixed to on-call. Do NOT ask the user to choose pickup type.
 - WORKFLOW: When user requests a pickup, call `rate_pickup` with ALL details (address, date, times, contact_name, phone_number). This displays a preview card with Confirm/Cancel buttons.
 - After the user confirms via the preview card, call `schedule_pickup` with the SAME details + confirmed=true.
 - Do NOT call schedule_pickup without first calling rate_pickup — the preview card is mandatory.
