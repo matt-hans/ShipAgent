@@ -154,6 +154,11 @@ def _find_config_file() -> Path | None:
 def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
     """Apply SHIPAGENT_<SECTION>_<KEY> env var overrides to config data.
 
+    Matches section names by longest prefix so multi-word section names
+    like ``auto_confirm`` and ``watch_folders`` are handled correctly.
+    For example, ``SHIPAGENT_AUTO_CONFIRM_ENABLED`` maps to section
+    ``auto_confirm``, field ``enabled``.
+
     Args:
         data: Parsed YAML config dict.
 
@@ -161,24 +166,35 @@ def _apply_env_overrides(data: dict[str, Any]) -> dict[str, Any]:
         Config dict with env var overrides applied.
     """
     prefix = "SHIPAGENT_"
+    # Known sections sorted longest-first so greedy prefix match works.
+    known_sections = sorted(
+        ShipAgentConfig.model_fields.keys(), key=len, reverse=True
+    )
     for key, value in os.environ.items():
         if not key.startswith(prefix):
             continue
-        parts = key[len(prefix):].lower().split("_", 1)
-        if len(parts) != 2:
+        suffix = key[len(prefix):].lower()  # e.g. "auto_confirm_enabled"
+        matched_section = None
+        matched_field = None
+        for section in known_sections:
+            section_prefix = section + "_"
+            if suffix.startswith(section_prefix):
+                matched_section = section
+                matched_field = suffix[len(section_prefix):]
+                break
+        if matched_section is None or not matched_field:
             continue
-        section, field = parts
-        if section not in data:
-            data[section] = {}
-        if isinstance(data[section], dict):
-            # Try to coerce to int if the value looks numeric
+        if matched_section not in data:
+            data[matched_section] = {}
+        if isinstance(data[matched_section], dict):
+            # Coerce to int, bool, or keep as string
             try:
-                data[section][field] = int(value)
+                data[matched_section][matched_field] = int(value)
             except ValueError:
                 if value.lower() in ("true", "false"):
-                    data[section][field] = value.lower() == "true"
+                    data[matched_section][matched_field] = value.lower() == "true"
                 else:
-                    data[section][field] = value
+                    data[matched_section][matched_field] = value
     return data
 
 
