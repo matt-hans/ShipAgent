@@ -8,6 +8,7 @@
  * - per-commodity duty/tax/fee breakdown
  */
 
+import * as React from 'react';
 import { cn } from '@/lib/utils';
 import type { LandedCostResult } from '@/types/api';
 import { PackageIcon } from '@/components/ui/icons';
@@ -46,19 +47,40 @@ function formatLane(exportCode?: string, importCode?: string): string {
 }
 
 export function LandedCostCard({ data }: { data: LandedCostResult }) {
+  const [copyState, setCopyState] = React.useState<'idle' | 'copied' | 'error'>('idle');
   const summary = data.requestSummary;
   const currency = (summary?.currencyCode || data.currencyCode || 'USD').toUpperCase();
   const lane = formatLane(summary?.exportCountryCode, summary?.importCountryCode || data.importCountryCode);
   const brokerageItems = data.brokerageFeeItems ?? [];
   const hasCommodityHs = data.items.some((i) => Boolean(i.hsCode));
+  const hasItemTotalDutyAndTax = data.items.some((i) => Boolean(i.totalDutyAndTax));
+  const hasNonCalculableItem = data.items.some((i) => i.isCalculable === false);
   const totals = [
     summary ? { label: 'Declared Value', value: summary.declaredMerchandiseValue } : null,
     { label: 'Duties', value: data.totalDuties },
     { label: 'VAT / Taxes', value: data.totalVAT },
+    { label: 'Duty + Tax Total', value: data.totalDutyAndTax },
+    { label: 'Commodity Tax/Fee', value: data.totalCommodityLevelTaxesAndFees },
+    { label: 'Shipment Tax/Fee', value: data.totalShipmentLevelTaxesAndFees },
     { label: 'Brokerage', value: data.totalBrokerageFees },
   ].filter(
     (entry): entry is { label: string; value: string | undefined } => entry !== null
   );
+
+  const handleCopyShipmentId = React.useCallback(async () => {
+    if (!data.shipmentId || !navigator?.clipboard?.writeText) {
+      setCopyState('error');
+      window.setTimeout(() => setCopyState('idle'), 1400);
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(data.shipmentId);
+      setCopyState('copied');
+    } catch {
+      setCopyState('error');
+    }
+    window.setTimeout(() => setCopyState('idle'), 1400);
+  }, [data.shipmentId]);
 
   return (
     <div className={cn('card-premium p-4 space-y-3 border-l-4 card-domain-landed-cost')}>
@@ -91,14 +113,34 @@ export function LandedCostCard({ data }: { data: LandedCostResult }) {
           {data.shipmentId && (
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Shipment ID</span>
-              <span className="font-mono text-foreground truncate max-w-[12rem]">{data.shipmentId}</span>
+              <div className="min-w-0 flex items-center gap-2">
+                <span className="font-mono text-foreground truncate max-w-[12rem]" title={data.shipmentId}>
+                  {data.shipmentId}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCopyShipmentId}
+                  className="px-1.5 py-0.5 rounded border border-border/50 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:border-border transition-colors"
+                  aria-label="Copy shipment ID"
+                >
+                  {copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Failed' : 'Copy'}
+                </button>
+              </div>
+            </div>
+          )}
+          {data.transId && (
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-muted-foreground">Trans ID</span>
+              <span className="font-mono text-muted-foreground truncate max-w-[12rem]" title={data.transId}>
+                {data.transId}
+              </span>
             </div>
           )}
         </div>
       )}
 
       {/* Shipment-level totals */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
         {totals.map((entry) => (
           <div key={entry.label} className="rounded-md border border-border/40 bg-background/40 px-2 py-1.5">
             <p className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">{entry.label}</p>
@@ -137,15 +179,32 @@ export function LandedCostCard({ data }: { data: LandedCostResult }) {
                 <th className="text-right py-2 px-3">Duties</th>
                 <th className="text-right py-2 px-3">VAT/Taxes</th>
                 <th className="text-right py-2 px-3">Fees</th>
+                {hasItemTotalDutyAndTax && (
+                  <th className="text-right py-2 px-3">Total</th>
+                )}
                 {hasCommodityHs && (
                   <th className="text-right py-2 px-3">HS Code</th>
+                )}
+                {hasNonCalculableItem && (
+                  <th className="text-right py-2 px-3">Calculable</th>
                 )}
               </tr>
             </thead>
             <tbody>
               {data.items.map((item) => (
                 <tr key={item.commodityId} className="border-b border-border/30 last:border-b-0">
-                  <td className="py-2 px-3 text-muted-foreground">#{item.commodityId}</td>
+                  <td className="py-2 px-3 text-muted-foreground">
+                    {item.itemLabel ? (
+                      <div className="flex flex-col">
+                        <span className="text-foreground truncate max-w-[12rem]" title={item.itemLabel}>
+                          {item.itemLabel}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">#{item.commodityId}</span>
+                      </div>
+                    ) : (
+                      `#${item.commodityId}`
+                    )}
+                  </td>
                   <td className="py-2 px-3 text-right text-foreground">
                     {fmtAmount(item.duties, currency)}
                   </td>
@@ -155,9 +214,19 @@ export function LandedCostCard({ data }: { data: LandedCostResult }) {
                   <td className="py-2 px-3 text-right text-foreground">
                     {fmtAmount(item.fees, currency)}
                   </td>
+                  {hasItemTotalDutyAndTax && (
+                    <td className="py-2 px-3 text-right text-foreground">
+                      {fmtAmount(item.totalDutyAndTax, currency)}
+                    </td>
+                  )}
                   {hasCommodityHs && (
                     <td className="py-2 px-3 text-right text-muted-foreground">
                       {item.hsCode || '-'}
+                    </td>
+                  )}
+                  {hasNonCalculableItem && (
+                    <td className="py-2 px-3 text-right text-muted-foreground">
+                      {item.isCalculable === false ? 'No' : 'Yes'}
                     </td>
                   )}
                 </tr>

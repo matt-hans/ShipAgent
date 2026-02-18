@@ -1971,7 +1971,9 @@ async def test_get_landed_cost_tool_emits_event():
                 "currency_code": "USD",
                 "export_country_code": "US",
                 "import_country_code": "GB",
-                "commodities": [{"price": 25.00, "quantity": 2}],
+                "commodities": [
+                    {"price": 25.00, "quantity": 2, "description": "Widget"},
+                ],
             },
             bridge=bridge,
         )
@@ -1986,6 +1988,7 @@ async def test_get_landed_cost_tool_emits_event():
     assert captured[0][1]["requestSummary"]["exportCountryCode"] == "US"
     assert captured[0][1]["requestSummary"]["importCountryCode"] == "GB"
     assert captured[0][1]["requestSummary"]["commodityCount"] == 1
+    assert captured[0][1]["items"][0]["itemLabel"] == "Widget"
 
 
 @pytest.mark.asyncio
@@ -2160,8 +2163,8 @@ async def test_e2e_landed_cost_flow_tool_to_event():
                 "export_country_code": "US",
                 "import_country_code": "GB",
                 "commodities": [
-                    {"price": 50.00, "quantity": 1, "hs_code": "6109.10"},
-                    {"price": 75.00, "quantity": 1, "hs_code": "6110.20"},
+                    {"price": 50.00, "quantity": 1, "hs_code": "6109.10", "description": "Cotton Shirt"},
+                    {"price": 75.00, "quantity": 1, "hs_code": "6110.20", "description": "Wool Sweater"},
                 ],
             },
             bridge=bridge,
@@ -2178,6 +2181,8 @@ async def test_e2e_landed_cost_flow_tool_to_event():
     assert event_type == "landed_cost_result"
     assert event_data["totalLandedCost"] == "87.50"
     assert len(event_data["items"]) == 2
+    assert event_data["items"][0]["itemLabel"] == "Cotton Shirt"
+    assert event_data["items"][1]["itemLabel"] == "Wool Sweater"
     assert event_data["requestSummary"]["commodityCount"] == 2
     assert event_data["requestSummary"]["totalUnits"] == 2
 

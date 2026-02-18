@@ -43,6 +43,8 @@ class TestRequestDocumentUpload:
         assert event_type == "paperless_upload_prompt"
         assert "accepted_formats" in event_data
         assert "pdf" in event_data["accepted_formats"]
+        assert "txt" in event_data["accepted_formats"]
+        assert "bmp" in event_data["accepted_formats"]
         assert "document_types" in event_data
         assert event_data["prompt"] == "Please upload your customs document."
 

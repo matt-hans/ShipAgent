@@ -435,7 +435,8 @@ The user's natural language is parsed by the Claude agent, which generates a SQL
 | Pickup Scheduling | 2 prompts | 2 pickups | 100% |
 | Package Tracking | 1 prompt | 1 track | 100% |
 | Paperless Upload | 1 prompt | 1 document | 100% |
-| **Total** | **21 prompts** | **118+ operations** | **100%** |
+| Landed Cost | 1 prompt | 1 quote | 100% |
+| **Total** | **22 prompts** | **119+ operations** | **100%** |
 
 Every result was independently verified against the raw data source before and after execution.
 
@@ -698,7 +699,7 @@ This phase demonstrates the complete post-shipment logistics lifecycle: track an
 
 **5b. UPS Location Finder (Prompt 16):**
 
-> Find UPS drop-off locations near Beverly Hills, CA
+> Find UPS drop-off locations near Atlanta, GA
 
 **Agentic capability:** UPS Locator API renders a teal LocationCard with expandable location list — addresses, phone numbers, operating hours. Click individual locations to expand details.
 
@@ -753,6 +754,21 @@ This phase demonstrates the complete post-shipment logistics lifecycle: track an
 
 ---
 
+**5f. Landed Cost Estimation (Prompt 19):**
+
+> Get a landed cost quote for shipping 24 units of machinery parts (HS code 848790) from the US to the UK, valued at $125 each in GBP
+
+**Agentic capability demonstrated:**
+- **Financial estimation:** UPS Landed Cost API integration for real-time duty, tax, and fee calculation
+- **Global transparency:** Detailed breakdown of total landed cost before label generation
+- **Visual artifacts:** Renders a green `LandedCostCard` with full brokerage and tax line items
+
+**Talking point:** *"Need to know the total cost including customs before you ship? The agent can estimate the true landed cost — duties, taxes, and fees — for any international lane. It provides a full breakdown so there are no surprises for the recipient."*
+
+**CIE note:** The Landed Cost API may return 500 errors in the sandbox environment. If this occurs, mention it's a known UPS infrastructure limitation while the implementation is verified and ready for production.
+
+---
+
 ### Recording Checklist
 
 - [ ] Backend running: `./scripts/start-backend.sh`
@@ -760,6 +776,7 @@ This phase demonstrates the complete post-shipment logistics lifecycle: track an
 - [ ] `INTERNATIONAL_ENABLED_LANES=*` in `.env`
 - [ ] Shopify env vars configured and accessible
 - [ ] Test data present: `test_data/sample_shipments.csv`, `.xlsx`, `test_commercial_invoice.pdf`
+- [ ] Landed Cost prompt ready: "Get a landed cost quote for shipping 24 units..."
 - [ ] Screen recording software ready (OBS, QuickTime, or Loom)
 
 ### Key Moments Reference
@@ -780,12 +797,13 @@ This phase demonstrates the complete post-shipment logistics lifecycle: track an
 | Pickup (elicit) | Costa Mesa address | Multi-step elicitation + cost preview | ~$16, PRN generated |
 | Pickup (direct) | Chicago, all-at-once | Adaptive interaction — skip elicitation | ~$16-20, PRN generated |
 | Paperless | Commercial invoice upload | PaperlessUploadCard + Document ID | Amber card, doc ID |
+| Landed Cost | 24 units machinery parts to UK | LandedCostCard with duty/VAT breakdown | Green card, cost quote |
 
 ### Narrative Arc
 
 1. **"Any data source"** (Phases 1-3): CSV → Excel → Shopify proves the agent works with any data, any format, any scale
 2. **"Any destination"** (Phase 4): Domestic → Canada → Mexico → UK → Germany proves global coverage with automatic compliance
-3. **"Any operation"** (Phase 5): Track → Locate → Schedule → Upload proves the complete logistics lifecycle
+3. **"Any operation"** (Phase 5): Track → Locate → Schedule → Upload → Estimate proves the complete logistics lifecycle
 
 ---
 

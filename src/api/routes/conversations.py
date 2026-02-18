@@ -40,6 +40,11 @@ from src.api.schemas_conversations import (
 )
 from src.services.agent_session_manager import AgentSessionManager
 from src.services.filter_constants import STATE_ABBREVIATIONS
+from src.services.paperless_constants import (
+    UPS_PAPERLESS_ALLOWED_EXTENSIONS,
+    UPS_PAPERLESS_UI_ACCEPTED_FORMATS,
+    normalize_paperless_extension,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -662,8 +667,6 @@ async def send_message(
     return SendMessageResponse(status="accepted", session_id=session_id)
 
 
-# UPS paperless document upload — allowed file extensions.
-_ALLOWED_EXTENSIONS = {"pdf", "doc", "docx", "xls", "xlsx", "gif", "jpg", "jpeg", "png", "tif"}
 # UPS max file size: 10 MB.
 _MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
@@ -709,11 +712,15 @@ async def upload_document(
 
     # Validate file extension
     file_name = file.filename or "document"
-    ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
-    if ext not in _ALLOWED_EXTENSIONS:
+    file_ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
+    normalized_ext = normalize_paperless_extension(file_ext)
+    if normalized_ext is None or file_ext not in UPS_PAPERLESS_ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file format '{ext}'. Allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))}",
+            detail=(
+                f"Unsupported file format '{file_ext}'. "
+                f"Allowed: {', '.join(UPS_PAPERLESS_UI_ACCEPTED_FORMATS)}"
+            ),
         )
 
     # Read and validate file size
@@ -731,7 +738,7 @@ async def upload_document(
     attachment_store.stage(session_id, {
         "file_content_base64": file_content_base64,
         "file_name": file_name,
-        "file_format": ext,
+        "file_format": normalized_ext,
         "document_type": document_type,
         "file_size_bytes": len(file_bytes),
     })
@@ -740,7 +747,7 @@ async def upload_document(
     doc_type_label = DOCUMENT_TYPE_LABELS.get(document_type, f"Type {document_type}")
     notes_suffix = f" Notes: {notes}" if notes.strip() else ""
     agent_message = (
-        f"[DOCUMENT_ATTACHED: {file_name} ({ext}, {doc_type_label})]{notes_suffix}"
+        f"[DOCUMENT_ATTACHED: {file_name} ({normalized_ext}, {doc_type_label})]{notes_suffix}"
     )
 
     # Store in conversation history and trigger agent processing
@@ -750,7 +757,7 @@ async def upload_document(
     return UploadDocumentResponse(
         success=True,
         file_name=file_name,
-        file_format=ext,
+        file_format=normalized_ext,
         file_size_bytes=len(file_bytes),
     )
 
