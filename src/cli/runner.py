@@ -86,14 +86,22 @@ class InProcessRunner:
                           auto_confirm: bool) -> SubmitResult:
         """Import file and run agent command in-process.
 
+        After the agent processes the command it creates a job in the
+        database.  We capture the job ID by timestamping before processing
+        and querying for any job created on or after that timestamp.
+
         Args:
             file_path: Path to CSV or Excel file.
             command: Agent command. Defaults to "Ship all orders".
-            auto_confirm: Whether to apply auto-confirm rules.
+            auto_confirm: Unused here — callers handle auto-confirm after
+                receiving the real job_id via SubmitResult.
 
         Returns:
-            SubmitResult with job ID and status.
+            SubmitResult with the real job ID (or session_id as fallback
+            if the agent did not create a job).
         """
+        from datetime import UTC, datetime
+
         from src.services.gateway_provider import get_data_gateway
 
         gw = await get_data_gateway()
@@ -107,11 +115,14 @@ class InProcessRunner:
 
         row_count = result.get("rows", 0) if isinstance(result, dict) else 0
 
+        # Record timestamp before processing so we can identify the new job
+        before_ts = datetime.now(UTC).isoformat()
+
         # Create session and send command
         session_id = await self.create_session(interactive=False)
         final_command = command or "Ship all orders"
 
-        # Process through agent (fire and forget the events)
+        # Process through agent — drain all events so the job is created
         from src.services.conversation_handler import process_message
 
         session = self._session_manager.get_session(session_id)
@@ -120,8 +131,26 @@ class InProcessRunner:
         async for _event in process_message(session, final_command):
             pass  # Events consumed — CLI polls for status separately
 
+        # Resolve the job created during this processing window
+        from src.db.connection import get_db as _get_db
+        from src.db.models import Job
+
+        job_id = session_id  # fallback if agent did not create a job
+        db = next(_get_db())
+        try:
+            job = (
+                db.query(Job)
+                .filter(Job.created_at >= before_ts)
+                .order_by(Job.created_at.desc())
+                .first()
+            )
+            if job:
+                job_id = job.id
+        finally:
+            db.close()
+
         return SubmitResult(
-            job_id=session_id,
+            job_id=job_id,
             status="pending",
             row_count=row_count,
             message=f"File imported and command sent: {final_command}",
@@ -227,6 +256,7 @@ class InProcessRunner:
 
             return [
                 RowDetail.from_api({
+                    "id": str(r.id),
                     "row_number": r.row_number,
                     "status": r.status,
                     "tracking_number": r.tracking_number,

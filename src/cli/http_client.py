@@ -97,13 +97,20 @@ class HttpClient:
                           auto_confirm: bool) -> SubmitResult:
         """Submit file via POST /api/v1/data-sources/upload + agent message.
 
+        Streams the agent SSE response until "done" so the job created by
+        the agent is visible before we query for its ID.  We snapshot
+        existing job IDs before sending the command and diff afterwards to
+        isolate the new job.
+
         Args:
             file_path: Path to CSV or Excel file.
             command: Agent command. Defaults to "Ship all orders" if None.
-            auto_confirm: Whether to apply auto-confirm rules.
+            auto_confirm: Unused here — callers handle auto-confirm after
+                receiving the real job_id via SubmitResult.
 
         Returns:
-            SubmitResult with job ID and status.
+            SubmitResult with the real job ID (or session_id as fallback
+            if the agent did not create a job).
         """
         import os
 
@@ -117,10 +124,18 @@ class HttpClient:
         self._raise_for_status(resp)
         upload_data = resp.json()
 
-        # Step 2: Create a conversation session
+        # Step 2: Snapshot existing job IDs so we can identify the new one
+        existing_ids: set[str] = set()
+        try:
+            existing_jobs = await self.list_jobs()
+            existing_ids = {j.id for j in existing_jobs}
+        except Exception:
+            pass  # Non-fatal — worst case we fall back to session_id
+
+        # Step 3: Create a conversation session
         session_id = await self.create_session(interactive=False)
 
-        # Step 3: Send the command to the agent
+        # Step 4: Send the command to the agent
         final_command = command or "Ship all orders"
         resp = await self._client.post(
             f"/api/v1/conversations/{session_id}/messages",
@@ -128,12 +143,57 @@ class HttpClient:
         )
         self._raise_for_status(resp)
 
+        # Step 5: Stream SSE until "done" so the agent finishes creating the job
+        await self._drain_session_stream(session_id)
+
+        # Step 6: Find the job created during this submission
+        job_id = session_id  # fallback
+        try:
+            new_jobs = await self.list_jobs()
+            for job in new_jobs:
+                if job.id not in existing_ids:
+                    job_id = job.id
+                    break
+        except Exception:
+            pass  # Non-fatal fallback to session_id
+
         return SubmitResult(
-            job_id=session_id,
+            job_id=job_id,
             status="pending",
             row_count=upload_data.get("row_count", 0),
             message=f"File uploaded and command sent: {final_command}",
         )
+
+    async def _drain_session_stream(self, session_id: str) -> None:
+        """Stream the agent SSE response until the "done" event.
+
+        Used after posting a message to ensure the agent has finished
+        processing before callers query the resulting job state.
+
+        Args:
+            session_id: The conversation session to drain.
+        """
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base_url, timeout=120.0
+            ) as stream_client:
+                async with stream_client.stream(
+                    "GET", f"/api/v1/conversations/{session_id}/stream"
+                ) as stream_resp:
+                    async for line in stream_resp.aiter_lines():
+                        line = line.strip()
+                        if line.startswith("data:"):
+                            data_str = line[5:].strip()
+                            try:
+                                data = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+                            if data.get("event") == "done":
+                                return
+        except Exception as exc:
+            logger.warning("Session stream drain failed for %s: %s", session_id, exc)
 
     async def list_jobs(self, status: str | None = None) -> list[JobSummary]:
         """List jobs via GET /api/v1/jobs.
@@ -235,13 +295,15 @@ class HttpClient:
                             data = json.loads(data_str)
                         except json.JSONDecodeError:
                             continue
+                        # SSE payload is envelope-shaped: {"event": "...", "data": {...}}
+                        inner = data.get("data", {})
                         yield ProgressEvent(
                             job_id=job_id,
-                            event_type=event_type or data.get("event_type", "unknown"),
-                            row_number=data.get("row_number"),
-                            total_rows=data.get("total_rows"),
-                            tracking_number=data.get("tracking_number"),
-                            message=data.get("message", ""),
+                            event_type=event_type or data.get("event", "unknown"),
+                            row_number=inner.get("row_number"),
+                            total_rows=inner.get("total_rows"),
+                            tracking_number=inner.get("tracking_number"),
+                            message=inner.get("message", ""),
                         )
 
     async def send_message(self, session_id: str,
@@ -280,11 +342,13 @@ class HttpClient:
                             data = json.loads(data_str)
                         except json.JSONDecodeError:
                             continue
+                        # SSE payload is envelope-shaped: {"event": "...", "data": {...}}
+                        inner = data.get("data", {})
                         yield AgentEvent(
                             event_type=event_type or data.get("event", "unknown"),
-                            content=data.get("text") or data.get("content"),
-                            tool_name=data.get("tool_name"),
-                            tool_input=data.get("tool_input"),
+                            content=inner.get("text") or inner.get("content"),
+                            tool_name=inner.get("tool_name"),
+                            tool_input=inner.get("tool_input"),
                         )
 
     async def health(self) -> HealthStatus:

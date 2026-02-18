@@ -21,7 +21,7 @@ from rich.console import Console
 from src.cli.config import load_config
 from src.cli.factory import get_client
 from src.cli.output import format_job_detail, format_job_table, format_rows_table
-from src.cli.protocol import ShipAgentClientError
+from src.cli.protocol import ShipAgentClientError, SubmitResult
 
 app = typer.Typer(
     name="shipagent",
@@ -310,6 +310,52 @@ def submit(
                 command=command,
                 auto_confirm=auto_confirm,
             )
+
+            # Apply auto-confirm rules after we have the real job_id.
+            # Config is available here; backends do not need to carry it.
+            if auto_confirm and result.job_id:
+                from src.cli.auto_confirm import evaluate_auto_confirm
+                from src.cli.config import AutoConfirmRules
+
+                ac_rules = cfg.auto_confirm if cfg else AutoConfirmRules()
+                try:
+                    job = await client.get_job(result.job_id)
+                    rows = await client.get_job_rows(result.job_id)
+                    max_row_cost = max(
+                        (r.cost_cents or 0 for r in rows), default=0
+                    )
+                    preview_data = {
+                        "total_rows": job.total_rows,
+                        "total_cost_cents": job.total_cost_cents,
+                        "max_row_cost_cents": max_row_cost,
+                        "service_codes": [],
+                        "all_addresses_valid": True,
+                        "has_address_warnings": False,
+                    }
+                    ac_result = evaluate_auto_confirm(ac_rules, preview_data)
+                    if ac_result.approved:
+                        await client.approve_job(result.job_id)
+                        result = SubmitResult(
+                            job_id=result.job_id,
+                            status="running",
+                            row_count=result.row_count,
+                            message="Auto-confirmed and executing",
+                        )
+                    else:
+                        violation_msgs = "; ".join(
+                            v.message for v in ac_result.violations
+                        )
+                        result = SubmitResult(
+                            job_id=result.job_id,
+                            status=result.status,
+                            row_count=result.row_count,
+                            message=f"Auto-confirm blocked: {violation_msgs}",
+                        )
+                except ShipAgentClientError as e:
+                    console.print(
+                        f"[yellow]Auto-confirm skipped:[/yellow] {e.message}"
+                    )
+
             if json_output:
                 import dataclasses, json
                 console.print(json.dumps(dataclasses.asdict(result), indent=2))

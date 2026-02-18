@@ -9,7 +9,6 @@ frontend updates.
 import asyncio
 import json
 import logging
-import os
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -146,56 +145,6 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
     )
 
 
-async def _get_shipper_info() -> dict[str, str]:
-    """Get shipper information from Shopify or environment.
-
-    Checks if Shopify is connected via the ExternalSourcesMCPClient gateway.
-    If connected, fetches shop details via the get_shop_info MCP tool.
-    Falls back to environment variables if Shopify is unavailable.
-
-    Returns:
-        Dict containing shipper address details.
-    """
-    shopify_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-    shopify_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
-
-    if shopify_token and shopify_domain:
-        try:
-            from src.services.gateway_provider import get_external_sources_client
-
-            ext = await get_external_sources_client()
-            connections = await ext.list_connections()
-            shopify_connected = any(
-                (c.get("platform") if isinstance(c, dict) else getattr(c, "platform", None)) == "shopify"
-                and (c.get("status") if isinstance(c, dict) else getattr(c, "status", None)) == "connected"
-                for c in connections.get("connections", [])
-            )
-
-            if not shopify_connected:
-                result = await ext.connect_platform(
-                    platform="shopify",
-                    credentials={"access_token": shopify_token},
-                    store_url=shopify_domain,
-                )
-                shopify_connected = result.get("success", False)
-
-            if shopify_connected:
-                shop_result = await ext.get_shop_info("shopify")
-                if shop_result.get("success"):
-                    shop_info = shop_result.get("shop", {})
-                    if shop_info:
-                        logger.info(
-                            "Using shipper info from Shopify store: %s",
-                            shop_info.get("name"),
-                        )
-                        return build_shipper(shop_info)
-        except Exception as e:
-            logger.warning("Failed to get shop info from Shopify: %s", e)
-
-    logger.info("Using shipper info from environment variables")
-    return build_shipper()
-
-
 def _get_sse_observer():
     """Get the shared SSE observer from the progress module.
 
@@ -221,7 +170,10 @@ async def _execute_batch(job_id: str) -> None:
     observer = _get_sse_observer()
     db = next(get_db_session())
     try:
-        await observer.on_batch_started(job_id, 0)
+        total_rows = db.query(Job).filter(Job.id == job_id).with_entities(
+            Job.total_rows
+        ).scalar() or 0
+        await observer.on_batch_started(job_id, total_rows)
 
         async def on_progress(event_type: str, **kwargs) -> None:
             """Adapt progress events to SSE observer calls."""
