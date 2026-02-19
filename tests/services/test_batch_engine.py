@@ -954,3 +954,24 @@ class TestBatchEngineExternalWriteBack:
         # Should have called PUT (update) not POST (create)
         mock_http_client.put.assert_called_once()
         assert "fulfillments/999" in str(mock_http_client.put.call_args)
+
+
+class TestDomesticValidation:
+    """Domestic pre-flight validation in _process_row."""
+
+    def test_letter_with_ground_detected(self):
+        """Shared validation detects Letter+Ground incompatibility."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"packaging_type": "01"}
+        issues = apply_compatibility_corrections(order_data, "03")
+        # Should auto-correct packaging
+        assert order_data["packaging_type"] == "02"
+        assert "_packaging_auto_reset" in order_data
+
+    def test_overweight_letter_not_auto_corrected(self):
+        """Overweight Letter is not auto-correctable — returns hard error."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"packaging_type": "01", "weight": "5.0"}
+        issues = apply_compatibility_corrections(order_data, "01")
+        errors = [i for i in issues if i.severity == "error" and not i.auto_corrected]
+        assert any("weight" in i.message.lower() for i in errors)
