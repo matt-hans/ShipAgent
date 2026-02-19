@@ -546,3 +546,99 @@ class TestFilterResolver:
         )
         # Both should produce the same canonical order
         assert result_a.root.model_dump() == result_b.root.model_dump()
+
+
+class TestResolverExplanationOperators:
+    """Verify that resolver explanations preserve AND/OR logic."""
+
+    def test_root_or_uses_or_joiner(self):
+        """Root-level OR groups use 'OR' not semicolons in explanation."""
+        from src.orchestrator.filter_resolver import _build_explanation
+
+        root = FilterGroup(
+            logic="OR",
+            conditions=[
+                FilterCondition(
+                    column="weight",
+                    operator=FilterOperator.gt,
+                    operands=[TypedLiteral(type="number", value=24)],
+                ),
+                FilterCondition(
+                    column="state",
+                    operator=FilterOperator.eq,
+                    operands=[TypedLiteral(type="string", value="CA")],
+                ),
+            ],
+        )
+        result = _build_explanation(root)
+        assert "OR" in result or "or" in result
+        assert ";" not in result
+
+    def test_nested_or_inside_and_preserves_child_logic(self):
+        """Nested OR group inside AND parent uses OR joiner, not parent's AND."""
+        from src.orchestrator.filter_resolver import _build_explanation
+
+        root = FilterGroup(
+            logic="AND",
+            conditions=[
+                FilterGroup(
+                    logic="OR",
+                    conditions=[
+                        FilterCondition(
+                            column="state",
+                            operator=FilterOperator.eq,
+                            operands=[TypedLiteral(type="string", value="CA")],
+                        ),
+                        FilterCondition(
+                            column="state",
+                            operator=FilterOperator.eq,
+                            operands=[TypedLiteral(type="string", value="TX")],
+                        ),
+                    ],
+                ),
+                FilterCondition(
+                    column="weight",
+                    operator=FilterOperator.gt,
+                    operands=[TypedLiteral(type="number", value=10)],
+                ),
+            ],
+        )
+        result = _build_explanation(root)
+        # The nested OR group must use "or" joiner, not parent's "and"
+        assert "or" in result.lower()
+        assert "and" in result.lower()
+        assert ";" not in result
+
+    def test_nested_and_inside_or_preserves_child_logic(self):
+        """Nested AND group inside OR parent uses AND joiner, not parent's OR."""
+        from src.orchestrator.filter_resolver import _build_explanation
+
+        root = FilterGroup(
+            logic="OR",
+            conditions=[
+                FilterGroup(
+                    logic="AND",
+                    conditions=[
+                        FilterCondition(
+                            column="state",
+                            operator=FilterOperator.eq,
+                            operands=[TypedLiteral(type="string", value="CA")],
+                        ),
+                        FilterCondition(
+                            column="weight",
+                            operator=FilterOperator.gt,
+                            operands=[TypedLiteral(type="number", value=10)],
+                        ),
+                    ],
+                ),
+                FilterCondition(
+                    column="total_price",
+                    operator=FilterOperator.gt,
+                    operands=[TypedLiteral(type="number", value=200)],
+                ),
+            ],
+        )
+        result = _build_explanation(root)
+        assert "and" in result.lower()
+        assert "or" in result.lower()
+        assert ";" not in result
