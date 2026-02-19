@@ -9,7 +9,14 @@ import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
-import { disconnectDataSource, importDataSource, uploadDataSource, getSavedDataSources, reconnectSavedSource } from '@/lib/api';
+import {
+  disconnectDataSource,
+  importDataSource,
+  uploadDataSource,
+  getSavedDataSources,
+  reconnectSavedSource,
+  getDataSourceStatus,
+} from '@/lib/api';
 import type { DataSourceInfo, PlatformType } from '@/types/api';
 import { RecentSourcesModal } from '@/components/RecentSourcesModal';
 import { toDataSourceColumns } from '@/components/sidebar/dataSourceMappers';
@@ -46,6 +53,7 @@ export function DataSourceSection() {
   const [shopifyAccessToken, setShopifyAccessToken] = React.useState('');
   const [showToken, setShowToken] = React.useState(false);
   const [shopifyError, setShopifyError] = React.useState<string | null>(null);
+  const [backendSourceType, setBackendSourceType] = React.useState<string | null>(null);
 
   // Auto-detected Shopify status from environment
   const shopifyEnvStatus = externalState.shopifyEnvStatus;
@@ -62,6 +70,47 @@ export function DataSourceSection() {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [importError, setImportError] = React.useState<string | null>(null);
 
+  React.useEffect(() => {
+    let isCancelled = false;
+
+    const hydrateSourceStatus = async () => {
+      try {
+        const status = await getDataSourceStatus();
+        if (isCancelled) return;
+
+        if (!status.connected) {
+          setBackendSourceType(null);
+          return;
+        }
+
+        const sourceType = String(status.source_type || '').toLowerCase();
+        setBackendSourceType(sourceType || null);
+
+        if (sourceType === 'csv' || sourceType === 'excel' || sourceType === 'database') {
+          const localType = sourceType as 'csv' | 'excel' | 'database';
+          const path = status.file_path || undefined;
+          setDataSource({
+            type: localType,
+            status: 'connected',
+            row_count: status.row_count,
+            column_count: status.columns?.length,
+            columns: status.columns ? toDataSourceColumns(status.columns) : undefined,
+            connected_at: new Date().toISOString(),
+            csv_path: localType === 'csv' ? path : undefined,
+            excel_path: localType === 'excel' ? path : undefined,
+          });
+        }
+      } catch {
+        // Best-effort hydration; keep current UI state on failure.
+      }
+    };
+
+    void hydrateSourceStatus();
+    return () => {
+      isCancelled = true;
+    };
+  }, [setDataSource]);
+
   // --- Derive active source from existing state ---
   React.useEffect(() => {
     if (dataSource?.status === 'connected') {
@@ -72,7 +121,7 @@ export function DataSourceSection() {
         detail: `${dataSource.row_count?.toLocaleString() ?? '?'} rows`,
         sourceKind: dataSource.type === 'database' ? 'database' : 'file',
       });
-    } else if (shopifyEnvConnected) {
+    } else if (backendSourceType === 'shopify' || (!backendSourceType && shopifyEnvConnected)) {
       setActiveSourceType('shopify');
       setActiveSourceInfo({
         type: 'shopify',
@@ -84,7 +133,14 @@ export function DataSourceSection() {
       setActiveSourceType(null);
       setActiveSourceInfo(null);
     }
-  }, [dataSource, shopifyEnvConnected, shopifyStoreName, setActiveSourceType, setActiveSourceInfo]);
+  }, [
+    dataSource,
+    backendSourceType,
+    shopifyEnvConnected,
+    shopifyStoreName,
+    setActiveSourceType,
+    setActiveSourceInfo,
+  ]);
 
   // --- Source switching handlers ---
 
@@ -98,6 +154,7 @@ export function DataSourceSection() {
     }
     try { await disconnectDataSource(); } catch { /* best-effort */ }
     setDataSource(null);
+    setBackendSourceType(null);
     // useEffect will set Shopify as active
   };
 
@@ -140,6 +197,7 @@ export function DataSourceSection() {
         excel_path: fileType === 'excel' ? file.name : undefined,
       };
       setDataSource(source);
+      setBackendSourceType(fileType);
       setCachedLocalConfig({ type: fileType, file_path: file.name });
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Import failed');
@@ -179,6 +237,7 @@ export function DataSourceSection() {
         excel_path: match.source_type === 'excel' ? match.file_path ?? undefined : undefined,
       };
       setDataSource(source);
+      setBackendSourceType(match.source_type);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Reconnect failed');
     } finally {
@@ -213,6 +272,7 @@ export function DataSourceSection() {
         connected_at: new Date().toISOString(),
       };
       setDataSource(source);
+      setBackendSourceType('database');
       setCachedLocalConfig({ type: 'database' });
       setDbConnectionString('');
       setShowDbForm(false);
@@ -264,6 +324,7 @@ export function DataSourceSection() {
       // Ignore errors - clear local state anyway
     }
     setDataSource(null);
+    setBackendSourceType(null);
     setCachedLocalConfig(null);
     setImportError(null);
   };

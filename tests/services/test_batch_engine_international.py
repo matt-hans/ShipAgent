@@ -7,9 +7,7 @@ Covers:
 - Charge breakdown storage on JobRow
 """
 
-import asyncio
 import json
-from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -136,6 +134,7 @@ class TestInternationalPreviewValidation:
             row_number=row_number,
             order_data=json.dumps(order_data),
             status="pending",
+            row_checksum=f"chk-{row_number}",
         )
         return row
 
@@ -226,6 +225,7 @@ class TestInternationalExecuteValidation:
         row = SimpleNamespace(
             row_number=row_number,
             order_data=json.dumps(order_data),
+            row_checksum=f"chk-{row_number}",
             status="pending",
             tracking_number=None,
             label_path=None,

@@ -225,6 +225,7 @@ export async function skipRows(
 import type {
   DataSourceImportRequest,
   DataSourceImportResponse,
+  DataSourceStatusResponse,
 } from '@/types/api';
 
 /**
@@ -272,6 +273,14 @@ export async function disconnectDataSource(): Promise<void> {
   if (!response.ok) {
     await parseResponse(response); // Will throw ApiError
   }
+}
+
+/**
+ * Get the currently connected data source status.
+ */
+export async function getDataSourceStatus(): Promise<DataSourceStatusResponse> {
+  const response = await fetch(`${API_BASE}/data-sources/status`);
+  return parseResponse<DataSourceStatusResponse>(response);
 }
 
 // === Saved Data Sources API ===
