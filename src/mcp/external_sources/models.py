@@ -87,6 +87,28 @@ class ExternalOrder(BaseModel):
     # Item count
     item_count: int | None = Field(None, description="Total number of items (sum of line item quantities)")
 
+    # Customer enrichment (enables VIP routing, customer-tier filtering)
+    customer_tags: str | None = Field(None, description="Customer tags (comma-separated)")
+    customer_order_count: int | None = Field(None, description="Customer historical order count")
+    customer_total_spent: str | None = Field(None, description="Customer lifetime spend as decimal string")
+
+    # Order enrichment (enables note-based routing, risk filtering)
+    order_note: str | None = Field(None, description="Order note from customer/merchant")
+    risk_level: str | None = Field(None, description="Platform risk assessment (LOW/MEDIUM/HIGH)")
+
+    # Shipping enrichment (enables rate-code-based routing)
+    shipping_rate_code: str | None = Field(None, description="Checkout-selected shipping rate code")
+
+    # Product enrichment
+    line_item_types: str | None = Field(None, description="Distinct product types (comma-separated)")
+    discount_codes: str | None = Field(None, description="Applied discount codes (comma-separated)")
+
+    # Arbitrary extensibility
+    custom_attributes: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Platform-specific custom fields for filtering (e.g., note_attributes)",
+    )
+
     # Items
     items: list[dict[str, Any]] = Field(default_factory=list, description="Order line items")
 
