@@ -257,9 +257,12 @@ def _build_job_row_data_with_metadata(
         schema_fingerprint=schema_fingerprint,
     )
     if service_code_override:
+        from src.services.ups_payload_builder import apply_compatibility_corrections
         for row in normalized_rows:
             if isinstance(row, dict):
                 row["service_code"] = service_code_override
+                # Shared validation + auto-correction (same function used by batch_engine)
+                apply_compatibility_corrections(row, service_code_override)
 
     row_data = []
     for idx, row in enumerate(normalized_rows, start=1):
