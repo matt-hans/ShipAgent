@@ -287,6 +287,31 @@ class TestValidateInternationalReadiness:
             codes = [e.machine_code for e in errors]
             assert "INVALID_RECIPIENT_STATE" in codes
 
+    def test_gb_state_name_is_normalized_to_short_code(self):
+        """GB state names like 'Greater London' normalize to short code."""
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-GB"}, clear=False):
+            order = {
+                "ship_to_country": "GB",
+                "ship_to_state": "Greater London",
+                "ship_to_postal_code": "SW1A 1AA",
+                "ship_to_phone": "442079430800",
+                "ship_to_attention_name": "Elizabeth Taylor",
+                "shipper_phone": "12125551234",
+                "shipper_attention_name": "Warehouse Desk",
+                "shipment_description": "Books",
+                "commodities": [{
+                    "description": "Books",
+                    "commodity_code": "490199",
+                    "origin_country": "US",
+                    "quantity": 1,
+                    "unit_value": "75.00",
+                }],
+            }
+            req = get_requirements("US", "GB", "07")
+            errors = validate_international_readiness(order, req)
+            assert not any(e.machine_code == "INVALID_RECIPIENT_STATE" for e in errors)
+            assert order["ship_to_state"] == "LND"
+
     def test_missing_commodities(self):
         with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "US-CA"}, clear=False):
             order = {

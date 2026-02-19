@@ -101,6 +101,27 @@ class TestBuildInternationalForms:
         assert forms["Product"][0]["Description"] == "Item A"
         assert forms["Product"][1]["Description"] == "Item B"
 
+    def test_sold_to_state_is_normalized_for_gb(self):
+        commodities = [
+            {"description": "Books", "commodity_code": "490199",
+             "origin_country": "US", "quantity": 1, "unit_value": "25.00"},
+        ]
+        forms = build_international_forms(
+            commodities=commodities,
+            currency_code="USD",
+            sold_to={
+                "name": "Elizabeth Taylor",
+                "attentionName": "Elizabeth Taylor",
+                "addressLine1": "10 Downing St",
+                "city": "London",
+                "stateProvinceCode": "Greater London",
+                "postalCode": "SW1A 2AA",
+                "countryCode": "GB",
+            },
+        )
+        sold_to = forms["Contacts"]["SoldTo"]
+        assert sold_to["Address"]["StateProvinceCode"] == "LND"
+
     def test_default_unit_of_measure(self):
         commodities = [
             {"description": "Widget", "commodity_code": "999999",

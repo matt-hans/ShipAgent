@@ -893,6 +893,100 @@ class TestPreviewInteractiveShipment:
         assert order_data["ship_to_attention_name"] == "Franz Becker"
 
     @pytest.mark.asyncio
+    async def test_gb_state_name_normalizes_before_preview_payload(self):
+        """GB free-form state names normalize to short code before preview."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        mock_preview_result = {
+            "job_id": "intl-gb-state-norm-test",
+            "total_rows": 1,
+            "preview_rows": [
+                {
+                    "row_number": 1,
+                    "recipient_name": "Elizabeth Taylor",
+                    "city_state": "London, LND",
+                    "estimated_cost_cents": 4100,
+                    "warnings": [],
+                }
+            ],
+            "additional_rows": 0,
+            "total_estimated_cost_cents": 4100,
+        }
+
+        created_job = MagicMock()
+        created_job.id = "intl-gb-state-norm-test"
+        mock_job_service = MagicMock()
+        mock_job_service.create_job.return_value = created_job
+        mock_job_service.create_rows.return_value = [MagicMock()]
+        mock_job_service.get_rows.return_value = [MagicMock()]
+
+        mock_engine = AsyncMock()
+        mock_engine.preview.return_value = mock_preview_result
+
+        mock_ups = AsyncMock()
+        mock_ups.get_rate.return_value = {
+            "ratedShipments": [
+                {
+                    "serviceCode": "65",
+                    "serviceName": "UPS Worldwide Saver",
+                    "totalCharges": {"monetaryValue": "41.00", "currencyCode": "USD"},
+                }
+            ]
+        }
+
+        env = {
+            "UPS_ACCOUNT_NUMBER": "TEST123",
+            "SHIPPER_NAME": "Test",
+            "SHIPPER_ADDRESS1": "123 Main",
+            "SHIPPER_CITY": "LA",
+            "SHIPPER_STATE": "CA",
+            "SHIPPER_ZIP": "90001",
+            "SHIPPER_COUNTRY": "US",
+            "SHIPPER_ATTENTION_NAME": "Warehouse Desk",
+            "SHIPPER_PHONE": "2125557890",
+            "INTERNATIONAL_ENABLED_LANES": "US-GB",
+        }
+
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch("src.orchestrator.agent.tools.interactive.get_db_context") as mock_db_ctx,
+            patch("src.orchestrator.agent.tools.interactive._get_ups_client", return_value=mock_ups),
+            patch("src.orchestrator.agent.tools.interactive.JobService", return_value=mock_job_service),
+            patch("src.services.batch_engine.BatchEngine.preview", new=mock_engine.preview),
+            patch("src.services.batch_engine.BatchEngine.__init__", return_value=None),
+            patch(
+                "src.orchestrator.agent.tools.interactive._build_job_row_data",
+                side_effect=lambda rows: rows,
+            ) as mock_build,
+        ):
+            mock_db_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_db_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = await preview_interactive_shipment_tool(
+                self._base_args(
+                    ship_to_name="Elizabeth Taylor",
+                    ship_to_city="London",
+                    ship_to_state="greater london",
+                    ship_to_zip="SW1A 2AA",
+                    ship_to_country="GB",
+                    ship_to_phone="+44 20 7493 0800",
+                    service="UPS Worldwide Saver",
+                    shipment_description="Books",
+                    commodities=[{
+                        "description": "Books",
+                        "commodity_code": "490199",
+                        "origin_country": "US",
+                        "quantity": 1,
+                        "unit_value": "150.00",
+                    }],
+                )
+            )
+
+        assert result["isError"] is False
+        order_data = mock_build.call_args[0][0][0]
+        assert order_data["ship_to_state"] == "LND"
+
+    @pytest.mark.asyncio
     async def test_creates_job_with_interactive_flag(self):
         """Job created with is_interactive=True and shipper_json set."""
         from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
