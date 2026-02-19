@@ -834,6 +834,18 @@ async def ship_command_pipeline_tool(
                 raw_service_code,
             )
 
+    raw_packaging = args.get("packaging_type")
+    packaging_override: str | None = None
+    if raw_packaging:
+        from src.services.ups_payload_builder import resolve_packaging_code
+
+        packaging_override = resolve_packaging_code(str(raw_packaging))
+        logger.info(
+            "ship_command_pipeline applying packaging override=%s (raw=%s)",
+            packaging_override,
+            raw_packaging,
+        )
+
     # Compile filter or use all-rows path
     filter_explanation = ""
     filter_audit: dict[str, Any] = {}
@@ -1205,6 +1217,7 @@ async def ship_command_pipeline_tool(
                 row_payload, mapping_hash = _build_job_row_data_with_metadata(
                     fetched_rows,
                     service_code_override=service_code,
+                    packaging_type_override=packaging_override,
                     schema_fingerprint=schema_signature,
                 )
                 if filter_audit is not None:

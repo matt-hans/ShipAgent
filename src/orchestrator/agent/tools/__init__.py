@@ -120,6 +120,14 @@ def get_all_tool_definitions(
                         "type": "string",
                         "description": "Optional UPS service code (e.g., 03 for Ground).",
                     },
+                    "packaging_type": {
+                        "type": "string",
+                        "description": (
+                            "Optional UPS packaging type name or code "
+                            "(e.g., 'Customer Supplied', 'PAK', '02'). "
+                            "Overrides row-level packaging for the entire batch."
+                        ),
+                    },
                     "limit": {
                         "type": "integer",
                         "description": "Max rows to fetch (default 250).",
