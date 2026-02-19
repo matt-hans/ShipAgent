@@ -683,6 +683,8 @@ def build_ups_api_payload(
             "CountryCode": shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
         },
     }
+    if shipper.get("attentionName"):
+        ups_shipper["AttentionName"] = shipper["attentionName"]
     if shipper.get("phone"):
         ups_shipper["Phone"] = {"Number": shipper["phone"]}
 
@@ -882,6 +884,10 @@ def build_ups_rate_payload(
             "CountryCode": shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
         },
     }
+    if shipper.get("attentionName"):
+        ups_shipper["AttentionName"] = shipper["attentionName"]
+    if shipper.get("phone"):
+        ups_shipper["Phone"] = {"Number": shipper["phone"]}
 
     ups_ship_to_addr: dict[str, Any] = {
         "AddressLine": _build_address_lines(ship_to),
@@ -898,6 +904,10 @@ def build_ups_rate_payload(
         "Name": ship_to.get("name", ""),
         "Address": ups_ship_to_addr,
     }
+    if ship_to.get("attentionName"):
+        ups_ship_to["AttentionName"] = ship_to["attentionName"]
+    if ship_to.get("phone"):
+        ups_ship_to["Phone"] = {"Number": ship_to["phone"]}
 
     ups_packages = []
     for pkg in packages:

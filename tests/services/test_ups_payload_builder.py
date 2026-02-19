@@ -10,6 +10,8 @@ from src.services.ups_payload_builder import (
     build_ship_to,
     build_shipment_request,
     build_shipper,
+    build_ups_api_payload,
+    build_ups_rate_payload,
     get_service_code,
     normalize_phone,
     normalize_zip,
@@ -623,9 +625,6 @@ class TestBuildShipmentRequest:
 
 
 # ── Tests for UPS API payload transformation ──────────────────────
-
-
-from src.services.ups_payload_builder import build_ups_api_payload, build_ups_rate_payload
 
 
 class TestBuildUpsApiPayload:
@@ -1357,6 +1356,39 @@ class TestRatePayloadParity:
         rate_payment = rate_result["RateRequest"]["Shipment"]["PaymentInformation"]
         ship_payment = ship_result["ShipmentRequest"]["Shipment"]["PaymentInformation"]
         assert rate_payment == ship_payment
+
+    def test_rate_payload_includes_contact_fields_when_provided(self):
+        """Rate payload should preserve explicit contact fields."""
+        simplified = _minimal_simplified(
+            shipper={
+                "name": "S",
+                "attentionName": "Shipping Desk",
+                "phone": "18005551234",
+                "addressLine1": "A",
+                "city": "C",
+                "stateProvinceCode": "CA",
+                "postalCode": "90001",
+                "countryCode": "US",
+            },
+            shipTo={
+                "name": "R",
+                "attentionName": "Maria Garcia",
+                "phone": "15145551234",
+                "addressLine1": "B",
+                "city": "Montreal",
+                "stateProvinceCode": "QC",
+                "postalCode": "H3A 1E8",
+                "countryCode": "CA",
+            },
+            serviceCode="11",
+        )
+
+        rate_result = build_ups_rate_payload(simplified, account_number="ABC123")
+        shipment = rate_result["RateRequest"]["Shipment"]
+        assert shipment["Shipper"]["AttentionName"] == "Shipping Desk"
+        assert shipment["Shipper"]["Phone"]["Number"] == "18005551234"
+        assert shipment["ShipTo"]["AttentionName"] == "Maria Garcia"
+        assert shipment["ShipTo"]["Phone"]["Number"] == "15145551234"
 
 
 # ── Tests for Shopify weight conversion ──

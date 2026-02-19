@@ -1,6 +1,5 @@
 """Tests for international payload builder enrichment."""
 
-import json
 import os
 from unittest.mock import patch
 
@@ -320,3 +319,8 @@ class TestPayloadIntegration:
             # InvoiceLineTotal present for accurate rate quotes
             assert "InvoiceLineTotal" in rate_shipment
             assert rate_shipment["InvoiceLineTotal"]["CurrencyCode"] == "USD"
+            # Contact fields are required by UPS for international rating
+            assert rate_shipment["Shipper"]["AttentionName"] == "Acme Corp"
+            assert rate_shipment["Shipper"]["Phone"]["Number"] == "2125551234"
+            assert rate_shipment["ShipTo"]["AttentionName"] == "Jane Doe"
+            assert rate_shipment["ShipTo"]["Phone"]["Number"] == "4165551234"
