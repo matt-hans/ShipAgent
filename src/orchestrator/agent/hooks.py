@@ -873,9 +873,23 @@ async def validate_filter_spec_on_pipeline(
             "Canonical dictionaries may have been updated."
         )
 
-    # Check resolved_spec_hash binding
+    # Check resolved_spec_hash binding.
+    # IMPORTANT: use the same serializer that the resolver uses
+    # (FilterGroup.model_dump_json()) so key ordering is identical.
+    # json.dumps(sort_keys=True) produces a different string than Pydantic's
+    # model_dump_json() because their key orderings differ, causing a permanent
+    # hash mismatch that denies every filter_spec that went through resolve_filter_intent.
     root = filter_spec.get("root", {})
-    root_json = json.dumps(root, sort_keys=True, default=str)
+    try:
+        from src.orchestrator.models.filter_spec import FilterGroup as _FilterGroup
+        root_json = _FilterGroup(**root).model_dump_json()
+    except Exception:
+        # Fallback: if the root dict cannot be parsed back into a FilterGroup
+        # (malformed payload), treat it as a tamper attempt.
+        return _deny_token(
+            "spec_hash_malformed",
+            "Resolution token spec hash could not be computed: filter_spec root is malformed.",
+        )
     actual_hash = hashlib.sha256(root_json.encode()).hexdigest()
     if decoded.get("resolved_spec_hash") != actual_hash:
         return _deny_token(
