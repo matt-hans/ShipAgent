@@ -15,6 +15,10 @@ from decimal import Decimal
 from typing import Any
 
 from src.db.connection import get_db_context
+from src.orchestrator.filter_schema_inference import (
+    resolve_fulfillment_status_column,
+    resolve_total_column,
+)
 from src.orchestrator.binding_hash import build_binding_fingerprint
 from src.orchestrator.filter_compiler import COMPILER_VERSION
 from src.services.job_service import JobService
@@ -416,25 +420,7 @@ def _requested_total_bounds_from_command(
 
 def _resolve_total_column(schema_columns: set[str]) -> str | None:
     """Resolve likely monetary total column from schema."""
-    preferred = (
-        "total_price",
-        "order_total",
-        "total_amount",
-        "subtotal_price",
-        "subtotal",
-        "total",
-        "amount",
-    )
-    normalized_lookup = {col.casefold(): col for col in schema_columns}
-    for key in preferred:
-        match = normalized_lookup.get(key.casefold())
-        if match:
-            return match
-    for col in sorted(schema_columns):
-        lowered = col.casefold()
-        if "total" in lowered or "amount" in lowered or "price" in lowered:
-            return col
-    return None
+    return resolve_total_column(schema_columns)
 
 
 def _coerce_numeric(value: object) -> float | None:
@@ -577,11 +563,7 @@ def _requested_fulfillment_status_from_command(command: str) -> str | None:
 
 def _resolve_fulfillment_status_column(schema_columns: set[str]) -> str | None:
     """Resolve fulfillment status column name case-insensitively."""
-    candidates = {"fulfillment_status", "fulfilment_status"}
-    for column in sorted(schema_columns):
-        if column.casefold() in candidates:
-            return column
-    return None
+    return resolve_fulfillment_status_column(schema_columns)
 
 
 def _spec_includes_expected_fulfillment_status(

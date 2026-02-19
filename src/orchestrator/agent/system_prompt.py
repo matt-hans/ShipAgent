@@ -12,6 +12,10 @@ Example:
 import os
 from datetime import datetime
 
+from src.orchestrator.filter_schema_inference import (
+    resolve_fulfillment_status_column,
+    resolve_total_column,
+)
 from src.orchestrator.models.filter_spec import FilterOperator
 from src.orchestrator.models.intent import SERVICE_ALIASES, ServiceCode
 from src.services.data_source_mcp_client import DataSourceInfo
@@ -129,9 +133,15 @@ def _build_filter_rules(schema_columns: set[str] | None = None) -> str:
     if tag_cols:
         cols_str = "` or `".join(tag_cols)
         hint_lines.append(f"- For tag searches, use `contains_ci` operator on `{cols_str}`.")
-    if "fulfillment_status" in _cols:
+    total_col = resolve_total_column(_cols)
+    if total_col:
         hint_lines.append(
-            "- For fulfillment filters: use `fulfillment_status` equals "
+            f"- For total/amount filters, prefer `{total_col}` for numeric bounds."
+        )
+    fulfillment_col = resolve_fulfillment_status_column(_cols)
+    if fulfillment_col:
+        hint_lines.append(
+            f"- For fulfillment filters: use `{fulfillment_col}` equals "
             "`\"unfulfilled\"` or `\"fulfilled\"` (not null checks)."
         )
     _schema_hints = "\n".join(hint_lines)
@@ -186,7 +196,10 @@ and all US state names (e.g., "california" → "CA").
 - NEVER generate SQL WHERE clauses. Always use FilterIntent JSON.
 - ONLY reference columns that exist in the connected data source schema above.
 - Use `all_rows=true` (not a FilterIntent) when the user wants all rows shipped.
-- If the filter is ambiguous, ask the user for clarification — never guess.
+- For explicit batch shipping commands, attempt one deterministic pass first:
+  call `resolve_filter_intent`, then call `ship_command_pipeline` with the result.
+- Ask clarifying questions only if tool outputs are unresolved/blocking
+  (`UNRESOLVED`, `NEEDS_CONFIRMATION`, or deterministic mismatch errors).
 - Never claim a row/order count unless it comes from a tool response field (`total_rows`, `total_count`, or `row_count`).
 - If both `total_count` and `returned_count` are present, treat `total_count` as authoritative.
 {_schema_hints}
@@ -335,6 +348,7 @@ If `ship_command_pipeline` returns an error:
 - FilterSpec compilation error: fix the intent and retry once.
 - UPS/preview failure: report the error with `job_id` and suggest user action.
 - Do NOT ask the user to choose a manual fallback for the same command.
+- Do not ask clarifying questions before this first deterministic tool pass.
 
 ### Data Exploration (non-execution path)
 
@@ -361,7 +375,7 @@ deterministically (e.g., SQL validation, column mapping, payload building).
 
     # Safety rules: common block applies to both modes, batch block only when not interactive.
     common_safety = """
-- If the user's command is ambiguous, ask clarifying questions instead of guessing.
+- If the user's command is ambiguous after deterministic tool checks, ask clarifying questions instead of guessing.
 - Report errors clearly with the error code and a suggested remediation.
 """
 
