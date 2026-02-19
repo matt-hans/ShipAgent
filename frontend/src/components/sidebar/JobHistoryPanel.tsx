@@ -13,11 +13,27 @@ import type { Job, JobSummary } from '@/types/api';
 import { SearchIcon, TrashIcon, PrinterIcon } from '@/components/ui/icons';
 
 /** Status badge for job cards. */
-export function StatusBadge({ status }: { status: string }) {
+export function StatusBadge({ status, successfulRows, failedRows }: {
+  status: string;
+  successfulRows?: number;
+  failedRows?: number;
+}) {
+  // Determine if partial success (some failed, some succeeded)
+  const isPartial = status === 'completed' &&
+    successfulRows !== undefined &&
+    failedRows !== undefined &&
+    successfulRows > 0 &&
+    failedRows > 0;
+
+  const displayStatus = isPartial ? 'partial' : status;
+  const displayText = isPartial ? 'PARTIAL' : status.toUpperCase();
+
   const getStatusStyle = (s: string) => {
     switch (s) {
       case 'completed':
         return 'badge-success';
+      case 'partial':
+        return 'badge-warning';
       case 'running':
         return 'badge-info';
       case 'failed':
@@ -32,8 +48,8 @@ export function StatusBadge({ status }: { status: string }) {
   };
 
   return (
-    <span className={cn('badge text-[10px]', getStatusStyle(status))}>
-      {status}
+    <span className={cn('badge text-[10px]', getStatusStyle(displayStatus))}>
+      {displayText}
     </span>
   );
 }
@@ -93,7 +109,12 @@ export function JobHistorySection({
   const filteredJobs = React.useMemo(() => {
     return jobs.filter((job) => {
       const matchesSearch = !search || job.original_command?.toLowerCase().includes(search.toLowerCase());
-      const matchesFilter = filter === 'all' || job.status === filter;
+      // Handle partial as derived status
+      const isPartial = job.status === 'completed' &&
+        job.successful_rows > 0 &&
+        job.failed_rows > 0;
+      const effectiveStatus = isPartial ? 'partial' : job.status;
+      const matchesFilter = filter === 'all' || effectiveStatus === filter;
       return matchesSearch && matchesFilter;
     });
   }, [jobs, search, filter]);
@@ -130,7 +151,7 @@ export function JobHistorySection({
 
       {/* Filter */}
       <div className="flex gap-1">
-        {['all', 'completed', 'running', 'failed'].map((f) => (
+        {['all', 'completed', 'partial', 'failed'].map((f) => (
           <button
             key={f}
             onClick={() => setFilter(f)}
@@ -197,7 +218,11 @@ export function JobHistorySection({
                   })()}
                 </div>
                 <div className="flex items-center gap-1.5 flex-shrink-0">
-                  <StatusBadge status={job.status} />
+                  <StatusBadge
+                    status={job.status}
+                    successfulRows={job.successful_rows}
+                    failedRows={job.failed_rows}
+                  />
                   {job.status === 'completed' && (
                     <button
                       onClick={(e) => {
