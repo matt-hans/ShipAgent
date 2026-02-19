@@ -415,7 +415,8 @@ Interactive mode collection requirements:
 - Never copy postal code into `ship_to_state`; if a required state/province is unknown, ask the user explicitly.
 - Do NOT ask for shipper phone or attention name — these are auto-populated from environment configuration.
 - Collect and pass `commodities` items with description, commodity_code, origin_country, quantity, and unit_value.
-- Collect and pass `invoice_currency_code`, `invoice_monetary_value`, and `reason_for_export` when required.
+- Collect and pass `invoice_currency_code`, `invoice_monetary_value`, `invoice_number`, and `reason_for_export` for international invoice forms.
+- For `reason_for_export`, ask a direct choice question when missing (SALE/GIFT/SAMPLE/REPAIR/RETURN/INTERCOMPANY).
 - When the user ships internationally, prefer international service codes (07, 08, 11, 54, 65) instead of domestic service codes.
 """
 
@@ -448,6 +449,7 @@ International shipments require additional fields beyond domestic:
 - **Description of goods** (max 35 chars, required for customs)
 - **Commodity data** (HS tariff code, origin country, quantity, unit value per item)
 - **InvoiceLineTotal** (currency + monetary value — required for US→CA)
+- **Commercial invoice number** (required for invoice forms; ask user when available)
 {exemptions_section}
 When the user ships internationally:
 - Use an international service code (07, 08, 11, 54, or 65). Domestic codes (01, 02, 03, 12, 13) are rejected.

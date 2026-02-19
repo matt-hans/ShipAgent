@@ -782,6 +782,7 @@ class TestPreviewInteractiveShipment:
                     commodities=commodities,
                     invoice_currency_code="usd",
                     invoice_monetary_value="50.00",
+                    invoice_number="CI-2026-0009",
                     reason_for_export="sale",
                 )
             )
@@ -792,6 +793,7 @@ class TestPreviewInteractiveShipment:
         assert order_data["commodities"] == commodities
         assert order_data["invoice_currency_code"] == "USD"
         assert order_data["invoice_monetary_value"] == "50.00"
+        assert order_data["invoice_number"] == "CI-2026-0009"
         assert order_data["reason_for_export"] == "SALE"
         assert order_data["shipper_attention_name"] == "Warehouse Desk"
         assert order_data["shipper_phone"] == "2125557890"

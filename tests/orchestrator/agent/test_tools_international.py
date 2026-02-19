@@ -96,6 +96,8 @@ class TestInteractiveToolSchema:
         assert "commodities" in props
         assert "invoice_currency_code" in props
         assert "invoice_monetary_value" in props
+        assert "invoice_number" in props
+        assert "intl_forms_invoice_number" in props
         assert "reason_for_export" in props
 
         commodity_item = props["commodities"]["items"]

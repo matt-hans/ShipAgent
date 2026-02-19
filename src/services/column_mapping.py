@@ -70,6 +70,7 @@ _FIELD_TO_ORDER_DATA: dict[str, str] = {
     "shipTo.attentionName": "ship_to_attention_name",
     "invoiceLineTotal.currencyCode": "invoice_currency_code",
     "invoiceLineTotal.monetaryValue": "invoice_monetary_value",
+    "internationalForms.invoiceNumber": "invoice_number",
     "shipmentDescription": "shipment_description",
 }
 
@@ -172,6 +173,10 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["insured", "value"], [], "packages[0].declaredValue"),
     # Description
     (["description"], ["package"], "description"),
+    # International invoice metadata
+    (["invoice", "number"], [], "internationalForms.invoiceNumber"),
+    (["invoice_no"], [], "internationalForms.invoiceNumber"),
+    (["invoice_num"], [], "internationalForms.invoiceNumber"),
     # Reference / order — prefer order_number over order_id for human-readable refs.
     # Columns are iterated alphabetically, so order_id comes before order_number.
     # Exclude "_id" from the first rule to prevent order_id from claiming the slot.

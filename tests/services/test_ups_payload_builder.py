@@ -1682,6 +1682,40 @@ class TestBuildShipmentRequestSoldTo:
         sold = request["internationalForms"]["Contacts"]["SoldTo"]
         assert sold["Phone"]["Number"] == "4165559999"
 
+    def test_international_forms_uses_explicit_invoice_number(self):
+        """Explicit invoice_number should flow to InternationalForms.InvoiceNumber."""
+        order_data = {
+            "ship_to_name": "Test Recipient",
+            "ship_to_phone": "416-555-9999",
+            "ship_to_address1": "100 King St",
+            "ship_to_city": "Toronto",
+            "ship_to_state": "ON",
+            "ship_to_postal_code": "M5H 1A1",
+            "ship_to_country": "CA",
+            "weight": 1.0,
+            "service_code": "11",
+            "invoice_number": "CI-2026-0001",
+            "commodities": [{
+                "description": "Widget",
+                "commodity_code": "8471300000",
+                "origin_country": "US",
+                "quantity": 1,
+                "unit_value": "50.00",
+            }],
+        }
+        shipper = {
+            "name": "Shipper",
+            "phone": "5551110000",
+            "addressLine1": "1 Elm St",
+            "city": "New York",
+            "stateProvinceCode": "NY",
+            "postalCode": "10001",
+            "countryCode": "US",
+        }
+
+        request = build_shipment_request(order_data, shipper)
+        assert request["internationalForms"]["InvoiceNumber"] == "CI-2026-0001"
+
 
 # ── Tests for consolidated build_shipper ──
 

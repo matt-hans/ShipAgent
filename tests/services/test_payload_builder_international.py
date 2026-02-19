@@ -75,6 +75,7 @@ class TestBuildInternationalForms:
             reason_for_export="SALE",
         )
         assert forms["FormType"] == "01"
+        assert forms["InvoiceNumber"].startswith("INV-")
         assert forms["CurrencyCode"] == "USD"
         assert forms["ReasonForExport"] == "SALE"
         assert len(forms["Product"]) == 1
@@ -187,6 +188,7 @@ class TestPayloadIntegration:
             assert "InternationalForms" in sso
             forms = sso["InternationalForms"]
             assert forms["FormType"] == "01"
+            assert forms["InvoiceNumber"].startswith("INV-")
             assert len(forms["Product"]) == 1
             assert forms["Product"][0]["CommodityCode"] == "090111"
             # Contact fields
