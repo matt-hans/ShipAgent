@@ -105,6 +105,60 @@ PACKAGING_ALIASES: dict[str, PackagingCode] = {
 
 
 # ---------------------------------------------------------------------------
+# Service-packaging compatibility matrices
+# ---------------------------------------------------------------------------
+
+# Packaging codes restricted to express-class services
+EXPRESS_ONLY_PACKAGING: frozenset[str] = frozenset({
+    PackagingCode.LETTER.value,              # "01"
+    PackagingCode.PAK.value,                 # "04"
+    PackagingCode.TUBE.value,                # "03"
+    PackagingCode.EXPRESS_BOX.value,         # "21"
+    PackagingCode.SMALL_EXPRESS_BOX.value,   # "2a"
+    PackagingCode.MEDIUM_EXPRESS_BOX.value,  # "2b"
+    PackagingCode.LARGE_EXPRESS_BOX.value,   # "2c"
+})
+
+# Services compatible with express-only packaging
+EXPRESS_CLASS_SERVICES: frozenset[str] = frozenset({
+    "01",  # Next Day Air
+    "02",  # 2nd Day Air
+    "13",  # Next Day Air Saver
+    "14",  # Next Day Air Early
+    "59",  # 2nd Day Air A.M.
+    "07",  # Worldwide Express
+    "54",  # Worldwide Express Plus
+    "65",  # Worldwide Saver
+})
+
+# Services supporting Saturday Delivery
+SATURDAY_DELIVERY_SERVICES: frozenset[str] = frozenset({
+    "01",  # Next Day Air
+    "02",  # 2nd Day Air
+    "13",  # Next Day Air Saver
+    "14",  # Next Day Air Early
+    "59",  # 2nd Day Air A.M.
+})
+
+# Per-service weight limits (lbs)
+SERVICE_WEIGHT_LIMITS_LBS: dict[str, float] = {
+    "01": 150.0, "02": 150.0, "03": 150.0, "07": 150.0,
+    "12": 150.0, "13": 150.0, "14": 150.0, "54": 150.0,
+    "59": 150.0, "65": 150.0,
+}
+DEFAULT_WEIGHT_LIMIT_LBS: float = 150.0
+
+# UPS Letter weight limit (~0.5 kg)
+LETTER_MAX_WEIGHT_LBS: float = 1.1
+
+# International-only packaging
+INTERNATIONAL_ONLY_PACKAGING: frozenset[str] = frozenset({
+    PackagingCode.BOX_25KG.value,   # "24"
+    PackagingCode.BOX_10KG.value,   # "25"
+})
+
+
+# ---------------------------------------------------------------------------
 # Weight / dimension defaults
 # ---------------------------------------------------------------------------
 
