@@ -13,12 +13,15 @@ from typing import AsyncIterator
 
 from src.cli.protocol import (
     AgentEvent,
+    DataSourceStatus,
     HealthStatus,
     JobDetail,
     JobSummary,
     ProgressEvent,
     RowDetail,
+    SavedSourceSummary,
     ShipAgentClientError,
+    SourceSchemaColumn,
     SubmitResult,
 )
 
@@ -428,6 +431,133 @@ class HttpClient:
             if isinstance(events, list):
                 return events
         return []
+
+    async def get_source_status(self) -> DataSourceStatus:
+        """Get current data source connection status via GET /api/v1/data-sources/status."""
+        resp = await self._client.get("/api/v1/data-sources/status")
+        if resp.status_code == 200:
+            data = resp.json()
+            columns_raw = data.get("columns", [])
+            col_names = [
+                c["name"] if isinstance(c, dict) else str(c)
+                for c in columns_raw
+            ]
+            return DataSourceStatus(
+                connected=data.get("connected", False),
+                source_type=data.get("source_type"),
+                file_path=data.get("file_path"),
+                row_count=data.get("row_count"),
+                column_count=len(col_names),
+                columns=col_names,
+            )
+        if resp.status_code == 404:
+            return DataSourceStatus(connected=False)
+        raise ShipAgentClientError(
+            f"Failed to get source status: {resp.text}", resp.status_code
+        )
+
+    async def connect_source(self, file_path: str) -> DataSourceStatus:
+        """Import a local file via POST /api/v1/data-sources/upload."""
+        from pathlib import Path
+
+        path = Path(file_path)
+        if not path.exists():
+            raise ShipAgentClientError(f"File not found: {file_path}")
+        with open(path, "rb") as f:
+            files = {"file": (path.name, f, "application/octet-stream")}
+            resp = await self._client.post(
+                "/api/v1/data-sources/upload", files=files
+            )
+        if resp.status_code in (200, 201):
+            return await self.get_source_status()
+        raise ShipAgentClientError(
+            f"Failed to connect source: {resp.text}", resp.status_code
+        )
+
+    async def connect_db(
+        self, connection_string: str, query: str
+    ) -> DataSourceStatus:
+        """Import from database via POST /api/v1/data-sources/import."""
+        payload = {
+            "type": "database",
+            "connection_string": connection_string,
+            "query": query,
+        }
+        resp = await self._client.post(
+            "/api/v1/data-sources/import", json=payload
+        )
+        if resp.status_code in (200, 201):
+            return await self.get_source_status()
+        raise ShipAgentClientError(
+            f"Failed to connect DB: {resp.text}", resp.status_code
+        )
+
+    async def disconnect_source(self) -> None:
+        """Disconnect via POST /api/v1/data-sources/disconnect."""
+        resp = await self._client.post("/api/v1/data-sources/disconnect")
+        if resp.status_code not in (200, 204):
+            raise ShipAgentClientError(
+                f"Failed to disconnect: {resp.text}", resp.status_code
+            )
+
+    async def list_saved_sources(self) -> list[SavedSourceSummary]:
+        """List saved sources via GET /api/v1/saved-sources."""
+        resp = await self._client.get("/api/v1/saved-sources")
+        self._raise_for_status(resp)
+        data = resp.json()
+        sources = data.get("sources", data) if isinstance(data, dict) else data
+        return [SavedSourceSummary.from_api(s) for s in sources]
+
+    async def reconnect_saved_source(
+        self, identifier: str, by_name: bool = True
+    ) -> DataSourceStatus:
+        """Reconnect saved source via POST /api/v1/saved-sources/reconnect."""
+        payload = {"name": identifier} if by_name else {"id": identifier}
+        resp = await self._client.post(
+            "/api/v1/saved-sources/reconnect", json=payload
+        )
+        if resp.status_code in (200, 201):
+            return await self.get_source_status()
+        raise ShipAgentClientError(
+            f"Failed to reconnect: {resp.text}", resp.status_code
+        )
+
+    async def get_source_schema(self) -> list[SourceSchemaColumn]:
+        """Get schema via GET /api/v1/data-sources/schema."""
+        resp = await self._client.get("/api/v1/data-sources/schema")
+        if resp.status_code == 404:
+            raise ShipAgentClientError("No data source connected")
+        self._raise_for_status(resp)
+        data = resp.json()
+        columns_raw = data.get("columns", [])
+        return [
+            SourceSchemaColumn(
+                name=c["name"],
+                type=c.get("type", "VARCHAR"),
+                nullable=c.get("nullable", True),
+            )
+            for c in columns_raw
+        ]
+
+    async def connect_platform(self, platform: str) -> DataSourceStatus:
+        """Connect env-configured platform via GET /api/v1/platforms/shopify/env-status.
+
+        Only Shopify supports env-based auto-connect. Other platforms
+        require credential-based connection via the agent conversation.
+        """
+        if platform.lower() != "shopify":
+            raise ShipAgentClientError(
+                f"Only 'shopify' supports env-based auto-connect. "
+                f"Use the agent conversation for {platform}."
+            )
+        resp = await self._client.get(
+            "/api/v1/platforms/shopify/env-status"
+        )
+        if resp.status_code != 200:
+            raise ShipAgentClientError(
+                f"Shopify not configured: {resp.text}", resp.status_code
+            )
+        return await self.get_source_status()
 
     async def cleanup(self) -> None:
         """No-op for HTTP client (stateless)."""
