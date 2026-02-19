@@ -242,6 +242,7 @@ class ConfirmRequest(BaseModel):
     """Request schema for confirming a batch for execution."""
 
     write_back_enabled: bool = True
+    selected_service_code: str | None = None
 
 
 class ConfirmResponse(BaseModel):

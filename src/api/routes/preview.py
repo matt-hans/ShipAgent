@@ -24,7 +24,7 @@ from src.db.connection import get_db
 from src.db.models import Job, JobRow
 from src.services.decision_audit_service import DecisionAuditService
 from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
-from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
+from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode, resolve_service_code
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,10 @@ def _get_sse_observer():
     return sse_observer
 
 
-async def _execute_batch(job_id: str) -> None:
+async def _execute_batch(
+    job_id: str,
+    selected_service_code: str | None = None,
+) -> None:
     """Execute batch shipment processing — delegates to shared service.
 
     Args:
@@ -221,7 +224,12 @@ async def _execute_batch(job_id: str) -> None:
                     kwargs.get("error_message", "Unknown error"),
                 )
 
-        result = await execute_batch(job_id, db, on_progress=on_progress)
+        result = await execute_batch(
+            job_id,
+            db,
+            on_progress=on_progress,
+            service_code_override=selected_service_code,
+        )
 
         if result["failed"] == 0:
             await observer.on_batch_completed(
@@ -245,7 +253,10 @@ async def _execute_batch(job_id: str) -> None:
         db.close()
 
 
-async def _execute_batch_safe(job_id: str) -> None:
+async def _execute_batch_safe(
+    job_id: str,
+    selected_service_code: str | None = None,
+) -> None:
     """Wrapper that catches and logs errors from batch execution.
 
     Ensures background task failures are logged and job status is updated
@@ -255,7 +266,7 @@ async def _execute_batch_safe(job_id: str) -> None:
         job_id: The job UUID to process.
     """
     try:
-        await _execute_batch(job_id)
+        await _execute_batch(job_id, selected_service_code=selected_service_code)
     except Exception as e:
         logger.exception("Background batch execution failed for job %s: %s", job_id, e)
         # Update job to failed status
@@ -313,6 +324,25 @@ async def confirm_job(
     else:
         job.write_back_enabled = not job.is_interactive
 
+    selected_service_code: str | None = None
+    if req and req.selected_service_code is not None:
+        if not job.is_interactive:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "selected_service_code is only valid for interactive shipment jobs."
+                ),
+            )
+        selected_service_code = resolve_service_code(
+            str(req.selected_service_code).strip(),
+            default="",
+        )
+        if not selected_service_code:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid selected_service_code.",
+            )
+
     # Update job status to running
     job.status = "running"
     job.started_at = datetime.now(UTC).isoformat()
@@ -327,13 +357,16 @@ async def confirm_job(
             "job_id": job_id,
             "write_back_enabled": job.write_back_enabled,
             "is_interactive": bool(getattr(job, "is_interactive", False)),
+            "selected_service_code": selected_service_code,
         },
     )
 
     # Schedule async batch execution on the event loop
     # Note: BackgroundTasks.add_task() does NOT properly await async functions,
     # so we use asyncio.create_task() which correctly schedules the coroutine.
-    task = asyncio.create_task(_execute_batch_safe(job_id))
+    task = asyncio.create_task(
+        _execute_batch_safe(job_id, selected_service_code=selected_service_code)
+    )
     _track_batch_task(task)
 
     return ConfirmResponse(

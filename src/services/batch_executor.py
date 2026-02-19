@@ -96,6 +96,7 @@ async def execute_batch(
     job_id: str,
     db_session: Any,
     on_progress: ProgressCallback | None = None,
+    service_code_override: str | None = None,
 ) -> dict:
     """Execute batch shipment processing — full lifecycle.
 
@@ -192,6 +193,7 @@ async def execute_batch(
                 job_id=job_id,
                 rows=rows,
                 shipper=shipper,
+                service_code=service_code_override,
                 on_progress=_progress_adapter,
                 write_back_enabled=getattr(job, "write_back_enabled", True),
             )

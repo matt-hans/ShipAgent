@@ -7,6 +7,7 @@ endpoints for batch preview and execution confirmation.
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+from unittest.mock import AsyncMock, MagicMock
 
 from src.db.models import Job, JobRow, JobStatus, RowStatus
 
@@ -267,3 +268,60 @@ class TestConfirmJob:
         assert response.status_code == 200
         test_db.refresh(job)
         assert job.write_back_enabled is False
+
+    def test_confirm_selected_service_code_rejected_for_non_interactive(
+        self, client: TestClient, test_db: Session
+    ):
+        """selected_service_code is only supported for interactive jobs."""
+        job = Job(
+            name="Batch Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+            is_interactive=False,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        response = client.post(
+            f"/api/v1/jobs/{job.id}/confirm",
+            json={"selected_service_code": "01"},
+        )
+
+        assert response.status_code == 400
+        assert "interactive shipment jobs" in response.json()["detail"].lower()
+
+    def test_confirm_interactive_passes_selected_service_code_to_executor(
+        self, client: TestClient, test_db: Session, monkeypatch
+    ):
+        """Interactive confirm forwards selected_service_code to background executor."""
+        from src.api.routes import preview as preview_routes
+
+        job = Job(
+            name="Interactive Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+            is_interactive=True,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        mocked_execute = AsyncMock()
+        fake_task = MagicMock()
+        fake_task.add_done_callback = MagicMock()
+
+        def _fake_create_task(coro):
+            coro.close()
+            return fake_task
+
+        monkeypatch.setattr(preview_routes, "_execute_batch_safe", mocked_execute)
+        monkeypatch.setattr(preview_routes.asyncio, "create_task", _fake_create_task)
+
+        response = client.post(
+            f"/api/v1/jobs/{job.id}/confirm",
+            json={"selected_service_code": "01"},
+        )
+
+        assert response.status_code == 200
+        mocked_execute.assert_called_once_with(job.id, selected_service_code="01")

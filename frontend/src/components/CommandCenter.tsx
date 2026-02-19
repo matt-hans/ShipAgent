@@ -80,6 +80,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const [isRefining, setIsRefining] = React.useState(false);
   const [pickupPreview, setPickupPreview] = React.useState<PickupPreview | null>(null);
   const [isPickupConfirming, setIsPickupConfirming] = React.useState(false);
+  const [selectedInteractiveServiceCode, setSelectedInteractiveServiceCode] = React.useState<string | null>(null);
 
   const _normalizePreviewRow = React.useCallback((row: PreviewRow): PreviewRow => {
     const rateError = (row as unknown as { rate_error?: string }).rate_error;
@@ -138,6 +139,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       clearConversation();
       setPreview(null);
       setCurrentJobId(null);
+      setSelectedInteractiveServiceCode(null);
       setExecutingJobId(null);
       setIsRefining(false);
       setPickupPreview(null);
@@ -210,6 +212,9 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
           .sort((a, b) => a.row_number - b.row_number);
 
         setPreview(previewData);
+        setSelectedInteractiveServiceCode(
+          previewData.interactive ? (previewData.service_code || null) : null
+        );
         setCurrentJobId(nextJobId);
         setIsRefining(false);
         refreshJobList();
@@ -358,9 +363,13 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         await skipRows(currentJobId, opts.warningRowNumbers);
       }
 
-      await confirmJob(currentJobId, writeBackEnabled);
+      const selectedServiceCode = preview?.interactive
+        ? (opts?.selectedServiceCode || selectedInteractiveServiceCode || undefined)
+        : undefined;
+      await confirmJob(currentJobId, writeBackEnabled, selectedServiceCode);
       setExecutingJobId(currentJobId);
       setPreview(null);
+      setSelectedInteractiveServiceCode(null);
 
       addMessage({
         role: 'system',
@@ -393,6 +402,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       await cancelJob(currentJobId);
       setPreview(null);
       setCurrentJobId(null);
+      setSelectedInteractiveServiceCode(null);
       refreshJobList();
 
       addMessage({
@@ -549,6 +559,8 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                     onConfirm={(opts) => handleConfirm(opts)}
                     onCancel={handleCancel}
                     onRefine={handleRefine}
+                    onSelectService={setSelectedInteractiveServiceCode}
+                    selectedServiceCode={selectedInteractiveServiceCode}
                     isConfirming={isConfirming}
                     isRefining={isRefining}
                     isProcessing={conv.isProcessing}
@@ -617,6 +629,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                     setShowLabelPreview(true);
                     setExecutingJobId(null);
                     setCurrentJobId(null);
+                    setSelectedInteractiveServiceCode(null);
                     setActiveJob(null);
                     refreshJobList();
                   }}
@@ -646,6 +659,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                     }
                     setExecutingJobId(null);
                     setCurrentJobId(null);
+                    setSelectedInteractiveServiceCode(null);
                     setActiveJob(null);
                     refreshJobList();
                   }}

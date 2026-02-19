@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CommandCenter } from '@/components/CommandCenter';
 
 let mockAppState: any;
 let mockConversation: any;
-const { mockDeleteJob } = vi.hoisted(() => ({
+const { mockConfirmJob, mockDeleteJob } = vi.hoisted(() => ({
+  mockConfirmJob: vi.fn(),
   mockDeleteJob: vi.fn(),
 }));
 
@@ -20,12 +21,17 @@ vi.mock('@/components/LabelPreview', () => ({
   LabelPreview: () => null,
 }));
 
+vi.mock('@/components/command-center/ProgressDisplay', () => ({
+  ProgressDisplay: () => null,
+}));
+
 vi.mock('@/lib/api', () => ({
-  confirmJob: vi.fn(),
+  confirmJob: mockConfirmJob,
   cancelJob: vi.fn(),
   deleteJob: mockDeleteJob,
   getJob: vi.fn(),
   getMergedLabelsUrl: vi.fn(() => '/labels.pdf'),
+  getProgressStreamUrl: vi.fn(() => '/api/v1/jobs/test/progress/stream'),
   skipRows: vi.fn(),
 }));
 
@@ -48,6 +54,7 @@ function buildBaseAppState(overrides: Record<string, unknown> = {}) {
     warningPreference: 'ask',
     setConversationSessionId: vi.fn(),
     interactiveShipping: true,
+    writeBackEnabled: true,
     setInteractiveShipping: vi.fn(),
     setIsToggleLocked: vi.fn(),
     ...overrides,
@@ -71,6 +78,7 @@ function buildBaseConversation(overrides: Record<string, unknown> = {}) {
 describe('CommandCenter interactive mode UX', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    mockConfirmJob.mockReset();
     mockDeleteJob.mockReset();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
@@ -310,6 +318,55 @@ describe('CommandCenter interactive mode UX', () => {
 
     await waitFor(() => {
       expect(mockDeleteJob).toHaveBeenCalledWith('job-1');
+    });
+  });
+
+  it('switches interactive service locally without sending refinement and confirms with selected code', async () => {
+    mockConversation = buildBaseConversation({
+      events: [
+        {
+          id: 'evt-1',
+          type: 'preview_ready',
+          data: {
+            job_id: 'job-int-1',
+            interactive: true,
+            total_rows: 1,
+            total_estimated_cost_cents: 1200,
+            rows_with_warnings: 0,
+            additional_rows: 0,
+            service_name: 'UPS Ground',
+            service_code: '03',
+            available_services: [
+              { code: '03', name: 'UPS Ground', estimated_cost_cents: 1200, selected: true },
+              { code: '01', name: 'UPS Next Day Air', estimated_cost_cents: 3400, selected: false },
+            ],
+            preview_rows: [
+              {
+                row_number: 1,
+                recipient_name: 'John Smith',
+                city_state: 'Austin, TX',
+                service: 'UPS Ground',
+                estimated_cost_cents: 1200,
+                warnings: [],
+              },
+            ],
+          },
+          timestamp: new Date(),
+        },
+      ],
+    });
+
+    render(<CommandCenter activeJob={null} />);
+
+    const nextDayButton = await screen.findByRole('button', { name: /UPS Next Day Air \(01\)/i });
+    fireEvent.click(nextDayButton);
+    expect(mockConversation.sendMessage).not.toHaveBeenCalled();
+
+    const confirmButton = screen.getByRole('button', { name: /Confirm & Ship/i });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => {
+      expect(mockConfirmJob).toHaveBeenCalledWith('job-int-1', true, '01');
     });
   });
 });
