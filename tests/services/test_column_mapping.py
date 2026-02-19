@@ -1,6 +1,7 @@
 """Tests for column mapping service."""
 
 from src.services.column_mapping import (
+    _FIELD_TO_ORDER_DATA,
     apply_mapping,
     auto_map_columns,
     validate_mapping,
@@ -437,3 +438,49 @@ class TestNormalizeRowsEndToEnd:
         assert pkg["weight"] == 4.2
         assert pkg.get("length") == 16.0
         assert pkg.get("declaredValue") == 275.0
+
+
+class TestNewFieldMappings:
+    """New field mapping entries for P0+P1 UPS fields."""
+
+    def test_shipment_date_in_field_map(self):
+        """shipmentDate is a recognized field path."""
+        assert "shipmentDate" in _FIELD_TO_ORDER_DATA
+
+    def test_ship_from_fields_in_field_map(self):
+        """ShipFrom address fields are recognized."""
+        assert "shipFrom.name" in _FIELD_TO_ORDER_DATA
+        assert "shipFrom.addressLine1" in _FIELD_TO_ORDER_DATA
+        assert "shipFrom.city" in _FIELD_TO_ORDER_DATA
+        assert "shipFrom.postalCode" in _FIELD_TO_ORDER_DATA
+
+    def test_service_options_in_field_map(self):
+        """Service option fields are recognized."""
+        for key in ["costCenter", "holdForPickup", "liftGatePickup",
+                     "liftGateDelivery", "carbonNeutral", "notification.email"]:
+            assert key in _FIELD_TO_ORDER_DATA, f"{key} missing from _FIELD_TO_ORDER_DATA"
+
+    def test_international_forms_in_field_map(self):
+        """International forms fields are recognized."""
+        for key in ["termsOfShipment", "purchaseOrderNumber", "invoiceComments"]:
+            assert key in _FIELD_TO_ORDER_DATA, f"{key} missing from _FIELD_TO_ORDER_DATA"
+
+    def test_package_indicators_in_field_map(self):
+        """Package-level indicators are recognized."""
+        assert "largePackage" in _FIELD_TO_ORDER_DATA
+        assert "additionalHandling" in _FIELD_TO_ORDER_DATA
+
+    def test_auto_map_detects_ship_date_column(self):
+        """A column named 'ship_date' auto-maps to shipmentDate."""
+        mapping = auto_map_columns(["ship_date", "name", "address", "city", "state", "zip"])
+        assert mapping.get("shipmentDate") == "ship_date"
+
+    def test_auto_map_detects_cost_center_column(self):
+        """A column named 'cost_center' auto-maps to costCenter."""
+        mapping = auto_map_columns(["cost_center", "name", "address", "city", "state", "zip"])
+        assert mapping.get("costCenter") == "cost_center"
+
+    def test_auto_map_detects_ship_from_name(self):
+        """A column named 'ship_from_name' auto-maps to shipFrom.name."""
+        mapping = auto_map_columns(["ship_from_name", "name", "address", "city", "state", "zip"])
+        assert mapping.get("shipFrom.name") == "ship_from_name"
