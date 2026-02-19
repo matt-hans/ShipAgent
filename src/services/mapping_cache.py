@@ -27,6 +27,7 @@ _CACHE_VERSION = 1
 MAPPING_VERSION = "mapping_cache_v2"
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_VERIFY_SAMPLE_ROWS = 5
+_DEFAULT_MAX_DISK_CACHE_FILES = 10
 
 _lock = threading.Lock()
 _cached_fingerprint: str | None = None
@@ -51,7 +52,8 @@ def _is_cache_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
-def _cache_path() -> Path:
+def _cache_dir() -> Path:
+    """Return the directory used for per-fingerprint cache files."""
     raw = os.environ.get(
         "COLUMN_MAPPING_CACHE_FILE",
         ".cache/column_mapping/active.json",
@@ -59,7 +61,14 @@ def _cache_path() -> Path:
     path = Path(raw) if raw else Path(".cache/column_mapping/active.json")
     if not path.is_absolute():
         path = _PROJECT_ROOT / path
-    return path
+    return path.parent
+
+
+def _fingerprint_cache_path(schema_fingerprint: str) -> Path:
+    """Return per-fingerprint disk cache path inside the cache directory."""
+    short = schema_fingerprint[:8]
+    medium = schema_fingerprint[:12]
+    return _cache_dir() / f"{short}_{medium}.json"
 
 
 def _resolve_verify_sample_limit() -> int:
@@ -86,7 +95,17 @@ def _verify_mapping(
     persistence remains stable across filtered subsets where required fields may
     be blank in the sampled rows.
     """
-    _ = sample_rows  # Signature retained for test hooks and call-site stability.
+    # sample_rows is intentionally unused for data-value checks.
+    # Verification is schema-structural only: we confirm mapped column names
+    # exist in the source and required UPS fields are covered. Checking whether
+    # individual row values are non-empty would cause valid mappings to be
+    # rejected for filtered subsets where required fields are legitimately blank.
+    # See: test_valid_mapping_persists_even_when_sample_values_are_blank
+    logger.debug(
+        "mapping_verify schema_columns=%d sample_rows=%d",
+        len(source_columns),
+        len(sample_rows),
+    )
     column_set = set(source_columns)
     for mapped_col in mapping.values():
         if mapped_col not in column_set:
@@ -115,7 +134,7 @@ def _load_from_disk(
     schema_fingerprint: str,
     source_columns: list[str],
 ) -> tuple[dict[str, str], str, dict[str, Any]] | None:
-    path = _cache_path()
+    path = _fingerprint_cache_path(schema_fingerprint)
     try:
         raw = json.loads(path.read_text())
     except FileNotFoundError:
@@ -164,7 +183,7 @@ def _persist_to_disk(
     mapping_hash: str,
     selection_trace: dict[str, Any],
 ) -> None:
-    path = _cache_path()
+    path = _fingerprint_cache_path(schema_fingerprint)
     payload = {
         "version": _CACHE_VERSION,
         "schema_fingerprint": schema_fingerprint,
@@ -178,6 +197,33 @@ def _persist_to_disk(
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(payload, sort_keys=True))
     os.replace(tmp_path, path)
+    _evict_old_cache_files(path)
+
+
+def _evict_old_cache_files(just_written: Path) -> None:
+    """Remove oldest *.json files if the cache directory exceeds the max limit."""
+    raw = os.environ.get(
+        "COLUMN_MAPPING_MAX_DISK_CACHE_FILES",
+        str(_DEFAULT_MAX_DISK_CACHE_FILES),
+    ).strip()
+    try:
+        max_files = max(1, int(raw))
+    except ValueError:
+        max_files = _DEFAULT_MAX_DISK_CACHE_FILES
+    try:
+        existing = sorted(
+            just_written.parent.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+        )
+    except Exception:
+        return
+    while len(existing) > max_files:
+        oldest = existing.pop(0)
+        try:
+            oldest.unlink(missing_ok=True)
+            logger.info("mapping_cache_evict file=%s", oldest.name)
+        except Exception as exc:
+            logger.info("mapping_cache_evict_error file=%s error=%s", oldest.name, exc)
 
 
 def get_or_compute_mapping(
@@ -342,7 +388,7 @@ def get_or_compute_mapping_with_diagnostics(
 
 
 def invalidate() -> None:
-    """Clear in-memory and file cache."""
+    """Clear in-memory cache and all per-fingerprint disk cache files."""
     global _cached_fingerprint, _cached_columns, _cached_mapping, _cached_mapping_hash
     global _cached_selection_trace
     with _lock:
@@ -352,9 +398,24 @@ def invalidate() -> None:
         _cached_mapping_hash = None
         _cached_selection_trace = None
 
-    path = _cache_path()
     try:
-        path.unlink(missing_ok=True)
-    except Exception as e:
-        logger.info("mapping_cache_invalidate file_error=%s", e)
+        for file_path in _cache_dir().glob("*.json"):
+            file_path.unlink(missing_ok=True)
+    except Exception as exc:
+        logger.info("mapping_cache_invalidate dir_error=%s", exc)
     logger.info("mapping_cache_invalidate")
+
+
+def should_invalidate(new_fingerprint: str | None) -> bool:
+    """Return True when the cache should be invalidated for a new import.
+
+    Returns False only when ``new_fingerprint`` is non-empty and matches
+    the currently cached fingerprint exactly.
+
+    Callers that cannot supply a fingerprint (e.g. disconnect) should call
+    ``invalidate()`` unconditionally rather than using this function.
+    """
+    if not new_fingerprint:
+        return True
+    with _lock:
+        return _cached_fingerprint != new_fingerprint

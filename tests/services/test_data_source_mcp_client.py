@@ -8,6 +8,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from src.services.data_source_mcp_client import DataSourceMCPClient, _get_python_command
+import src.services.mapping_cache as mapping_cache
 
 
 @pytest.fixture
@@ -47,6 +48,80 @@ async def test_import_csv(client, mock_mcp):
         mock_mcp.call_tool.assert_called_once_with(
             "import_csv", {"file_path": "/tmp/orders.csv", "delimiter": ",", "header": True}
         )
+        invalidate.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_import_csv_skips_invalidation_when_fingerprint_unchanged(client, mock_mcp):
+    """import_csv should preserve cache when the new fingerprint matches memory cache."""
+    mapping_cache.invalidate()
+    mapping_cache.get_or_compute_mapping(
+        source_columns=["Name", "Address", "City", "State", "ZIP", "Country", "Weight"],
+        schema_fingerprint="fp-same",
+        sample_rows=[{"Name": "Alice"}],
+    )
+    mock_mcp.call_tool.return_value = {
+        "row_count": 50,
+        "columns": [{"name": "id", "type": "INTEGER"}],
+        "source_type": "csv",
+        "signature": "fp-same",
+        "warnings": [],
+    }
+    with pytest.MonkeyPatch.context() as mp:
+        invalidate = MagicMock()
+        mp.setattr(
+            "src.services.data_source_mcp_client.invalidate_mapping_cache",
+            invalidate,
+        )
+        await client.import_csv("/tmp/orders.csv")
+        invalidate.assert_not_called()
+    mapping_cache.invalidate()
+
+
+@pytest.mark.asyncio
+async def test_import_csv_invalidates_when_fingerprint_changes(client, mock_mcp):
+    """import_csv should invalidate cache when the new fingerprint differs."""
+    mapping_cache.invalidate()
+    mapping_cache.get_or_compute_mapping(
+        source_columns=["Name", "Address", "City", "State", "ZIP", "Country", "Weight"],
+        schema_fingerprint="fp-old",
+        sample_rows=[{"Name": "Alice"}],
+    )
+    mock_mcp.call_tool.return_value = {
+        "row_count": 50,
+        "columns": [{"name": "id", "type": "INTEGER"}],
+        "source_type": "csv",
+        "signature": "fp-new",
+        "warnings": [],
+    }
+    with pytest.MonkeyPatch.context() as mp:
+        invalidate = MagicMock()
+        mp.setattr(
+            "src.services.data_source_mcp_client.invalidate_mapping_cache",
+            invalidate,
+        )
+        await client.import_csv("/tmp/orders.csv")
+        invalidate.assert_called_once_with()
+    mapping_cache.invalidate()
+
+
+@pytest.mark.asyncio
+async def test_import_csv_invalidates_when_signature_absent(client, mock_mcp):
+    """import_csv should invalidate cache when no signature is returned."""
+    mapping_cache.invalidate()
+    mock_mcp.call_tool.return_value = {
+        "row_count": 50,
+        "columns": [{"name": "id", "type": "INTEGER"}],
+        "source_type": "csv",
+        "warnings": [],
+    }
+    with pytest.MonkeyPatch.context() as mp:
+        invalidate = MagicMock()
+        mp.setattr(
+            "src.services.data_source_mcp_client.invalidate_mapping_cache",
+            invalidate,
+        )
+        await client.import_csv("/tmp/orders.csv")
         invalidate.assert_called_once_with()
 
 
@@ -246,6 +321,26 @@ async def test_disconnect_calls_clear_source(client, mock_mcp):
         await client.disconnect()
         mock_mcp.call_tool.assert_called_once_with("clear_source", {})
         invalidate.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_always_invalidates(client, mock_mcp):
+    """disconnect should invalidate unconditionally, without fingerprint checks."""
+    mock_mcp.call_tool.return_value = {"status": "disconnected"}
+    with pytest.MonkeyPatch.context() as mp:
+        invalidate = MagicMock()
+        should_invalidate = MagicMock(return_value=False)
+        mp.setattr(
+            "src.services.data_source_mcp_client.invalidate_mapping_cache",
+            invalidate,
+        )
+        mp.setattr(
+            "src.services.data_source_mcp_client.mapping_cache_should_invalidate",
+            should_invalidate,
+        )
+        await client.disconnect()
+        invalidate.assert_called_once_with()
+        should_invalidate.assert_not_called()
 
 
 @pytest.mark.asyncio

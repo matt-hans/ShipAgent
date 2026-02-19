@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -16,7 +18,7 @@ def _cache_env(monkeypatch, tmp_path):
     monkeypatch.setenv("COLUMN_MAPPING_CACHE_ENABLED", "true")
     monkeypatch.setenv("COLUMN_MAPPING_CACHE_FILE", str(cache_file))
     mapping_cache.invalidate()
-    yield cache_file
+    yield cache_file.parent
     mapping_cache.invalidate()
 
 
@@ -47,8 +49,8 @@ def test_cache_miss_computes_and_persists(_cache_env):
 
     assert mapping.get("shipTo.name") == "Name"
     assert isinstance(mapping_hash, str) and len(mapping_hash) == 64
-    assert _cache_env.exists()
-    on_disk = _cache_env.read_text()
+    assert any(_cache_env.glob("*.json"))
+    on_disk = next(_cache_env.glob("*.json")).read_text()
     assert "mapping_hash" in on_disk
 
 
@@ -141,8 +143,9 @@ def test_fingerprint_change_forces_recompute(monkeypatch):
 
 
 def test_invalid_cache_file_is_ignored_and_recomputed(_cache_env, monkeypatch):
-    _cache_env.parent.mkdir(parents=True, exist_ok=True)
-    _cache_env.write_text("not-json")
+    path = mapping_cache._fingerprint_cache_path("sig-4")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not-json")
 
     calls = {"count": 0}
     real = mapping_cache.auto_map_columns
@@ -184,7 +187,7 @@ def test_verification_failure_is_not_persisted(_cache_env, monkeypatch):
     assert first == {"shipTo.name": "Name"}
     assert second == {"shipTo.name": "Name"}
     assert calls["count"] == 2
-    assert not _cache_env.exists()
+    assert not any(_cache_env.glob("*.json"))
 
 
 def test_valid_mapping_persists_even_when_sample_values_are_blank(_cache_env, monkeypatch):
@@ -228,7 +231,7 @@ def test_valid_mapping_persists_even_when_sample_values_are_blank(_cache_env, mo
 
     assert first == second
     assert calls["count"] == 1
-    assert _cache_env.exists()
+    assert any(_cache_env.glob("*.json"))
 
 
 def test_invalidate_clears_cache_and_file(_cache_env):
@@ -237,10 +240,10 @@ def test_invalidate_clears_cache_and_file(_cache_env):
         schema_fingerprint="sig-5",
         sample_rows=_sample_rows(),
     )
-    assert _cache_env.exists()
+    assert any(_cache_env.glob("*.json"))
 
     mapping_cache.invalidate()
-    assert not _cache_env.exists()
+    assert not any(_cache_env.glob("*.json"))
 
 
 def test_thread_safety_returns_consistent_results():
@@ -283,3 +286,97 @@ def test_verification_sample_rows_are_capped(monkeypatch):
     )
 
     assert observed["rows"] == 5
+
+
+def test_two_fingerprints_produce_separate_disk_files(_cache_env):
+    mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-A",
+        sample_rows=_sample_rows(),
+    )
+    mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-B",
+        sample_rows=_sample_rows(),
+    )
+
+    files = sorted(_cache_env.glob("*.json"))
+    assert len(files) == 2
+    payloads = [json.loads(path.read_text()) for path in files]
+    fingerprints = {payload["schema_fingerprint"] for payload in payloads}
+    assert fingerprints == {"sig-A", "sig-B"}
+
+
+def test_disk_hit_for_previously_evicted_memory_session(monkeypatch):
+    mapping_a = mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-disk-A",
+        sample_rows=_sample_rows(),
+    )
+    mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-disk-B",
+        sample_rows=_sample_rows(),
+    )
+
+    mapping_cache._cached_fingerprint = None
+    mapping_cache._cached_columns = None
+    mapping_cache._cached_mapping = None
+    mapping_cache._cached_mapping_hash = None
+    mapping_cache._cached_selection_trace = None
+
+    def _fail(_columns):
+        raise AssertionError("auto_map_columns should not run for disk cache hit")
+
+    monkeypatch.setattr(mapping_cache, "auto_map_columns", _fail)
+    second = mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-disk-A",
+        sample_rows=_sample_rows(),
+    )
+
+    assert second == mapping_a
+
+
+def test_eviction_removes_oldest_file_when_limit_exceeded(monkeypatch, _cache_env):
+    monkeypatch.setenv("COLUMN_MAPPING_MAX_DISK_CACHE_FILES", "2")
+    mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-evict-1",
+        sample_rows=_sample_rows(),
+    )
+    time.sleep(0.01)
+    mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-evict-2",
+        sample_rows=_sample_rows(),
+    )
+    time.sleep(0.01)
+    mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="sig-evict-3",
+        sample_rows=_sample_rows(),
+    )
+
+    files = sorted(_cache_env.glob("*.json"))
+    assert len(files) == 2
+    fingerprints = {json.loads(path.read_text())["schema_fingerprint"] for path in files}
+    assert fingerprints == {"sig-evict-2", "sig-evict-3"}
+
+
+def test_should_invalidate_returns_false_for_matching_fingerprint():
+    mapping_cache.get_or_compute_mapping(
+        source_columns=_source_columns(),
+        schema_fingerprint="fp-1",
+        sample_rows=_sample_rows(),
+    )
+
+    assert mapping_cache.should_invalidate("fp-1") is False
+    assert mapping_cache.should_invalidate("fp-2") is True
+    assert mapping_cache.should_invalidate(None) is True
+    assert mapping_cache.should_invalidate("") is True
+
+
+def test_should_invalidate_returns_true_when_cache_empty():
+    mapping_cache.invalidate()
+    assert mapping_cache.should_invalidate("any-fp") is True
