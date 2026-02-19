@@ -709,17 +709,18 @@ def get_all_tool_definitions(
                     "service": {
                         "type": "string",
                         "description": (
-                            "UPS service name or code. ALWAYS extract and pass the user's "
-                            "service preference (e.g. 'Ground', 'Next Day Air', '2nd Day Air', "
-                            "'3 Day Select', 'UPS Standard'). If the user does not provide a "
-                            "service, you may omit this field and the system will discover route-"
-                            "available services via UPS Shop and pick a default for preview."
+                            "UPS service name or code (required). ALWAYS elicit and pass "
+                            "the user's service preference (e.g. 'Ground', 'Next Day Air', "
+                            "'2nd Day Air', '3 Day Select', 'UPS Standard') before calling "
+                            "this tool."
                         ),
                     },
                     "weight": {
                         "type": "number",
-                        "description": "Package weight in lbs (default 1.0).",
-                        "default": 1.0,
+                        "description": (
+                            "Package weight in lbs (required). Elicit an explicit weight "
+                            "before calling this tool."
+                        ),
                     },
                     "packaging_type": {
                         "type": "string",
@@ -802,6 +803,8 @@ def get_all_tool_definitions(
                     "ship_to_address1",
                     "ship_to_city",
                     "ship_to_zip",
+                    "service",
+                    "weight",
                     "command",
                 ],
             },

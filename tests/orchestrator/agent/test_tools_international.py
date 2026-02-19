@@ -73,7 +73,17 @@ class TestInteractiveToolSchema:
         preview_def = next(d for d in defs if d["name"] == "preview_interactive_shipment")
         service = preview_def["input_schema"]["properties"]["service"]
         assert "default" not in service
-        assert "ALWAYS extract and pass" in service["description"]
+        assert "ALWAYS elicit and pass" in service["description"]
+
+    def test_interactive_schema_requires_service_and_weight(self):
+        """Interactive schema should require service + weight for shipment creation."""
+        from src.orchestrator.agent.tools import get_all_tool_definitions
+
+        defs = get_all_tool_definitions(interactive_shipping=True)
+        preview_def = next(d for d in defs if d["name"] == "preview_interactive_shipment")
+        required = set(preview_def["input_schema"]["required"])
+        assert "service" in required
+        assert "weight" in required
 
     def test_interactive_schema_has_international_fields(self):
         """Interactive schema includes commodity/invoice/export inputs."""

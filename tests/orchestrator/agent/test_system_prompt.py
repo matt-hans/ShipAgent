@@ -265,10 +265,11 @@ class TestInteractiveShippingPromptConditioning:
         assert "mcp__ups__create_shipment" in prompt
 
     def test_interactive_prompt_requires_service_parameter(self):
-        """Interactive prompt carries explicit service + discovery guidance."""
+        """Interactive prompt requires explicit service + weight elicitation."""
         prompt = build_system_prompt(interactive_shipping=True)
         assert "ALWAYS pass this as the `service` parameter" in prompt
-        assert "optional at first pass" in prompt
+        assert "Service preference (required)" in prompt
+        assert "Package weight in lbs (required)" in prompt
 
     def test_safety_rules_always_present(self):
         """Safety rules are present regardless of interactive flag."""
