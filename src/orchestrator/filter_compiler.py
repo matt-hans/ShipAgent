@@ -244,19 +244,33 @@ def _compile_condition(
     Raises:
         FilterCompilationError: On unknown column, empty IN list, type mismatch, etc.
     """
-    # Validate column
-    if cond.column not in schema_columns:
-        raise FilterCompilationError(
-            FilterErrorCode.UNKNOWN_COLUMN,
-            f"Column {cond.column!r} not found in schema. "
-            f"Available: {sorted(schema_columns)}.",
-        )
+    # Handle custom_attributes.* JSON path access
+    is_json_path = False
+    if cond.column.startswith("custom_attributes."):
+        json_key = cond.column.split(".", 1)[1]
+        if "custom_attributes" not in schema_columns:
+            raise FilterCompilationError(
+                FilterErrorCode.UNKNOWN_COLUMN,
+                f"Column 'custom_attributes' not found in schema. "
+                f"Cannot use JSON path {cond.column!r}.",
+            )
+        col = f"""json_extract_string("custom_attributes", '$.{json_key}')"""
+        is_json_path = True
+        columns_used.add("custom_attributes")
+    else:
+        # Validate column
+        if cond.column not in schema_columns:
+            raise FilterCompilationError(
+                FilterErrorCode.UNKNOWN_COLUMN,
+                f"Column {cond.column!r} not found in schema. "
+                f"Available: {sorted(schema_columns)}.",
+            )
+        columns_used.add(cond.column)
+        col = f'"{cond.column}"'
 
-    # Type-check operator/column compatibility
-    _check_operator_type_compat(cond.column, cond.operator, column_types)
-
-    columns_used.add(cond.column)
-    col = f'"{cond.column}"'
+    # Type-check operator/column compatibility (skip for JSON path — always VARCHAR)
+    if not is_json_path:
+        _check_operator_type_compat(cond.column, cond.operator, column_types)
     op = cond.operator
     blank_normalized_col = f"TRIM(CAST(COALESCE({col}, '') AS VARCHAR))"
 
