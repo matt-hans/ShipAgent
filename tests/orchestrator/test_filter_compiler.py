@@ -606,3 +606,116 @@ class TestFilterCompiler:
         )
         result = compile_filter_spec(spec, SCHEMA_COLS, {}, SCHEMA_SIG)
         assert '"state" > $1' in result.where_sql
+
+
+class TestExplanationOperators:
+    """Verify that compiled explanations preserve AND/OR logic."""
+
+    def test_single_condition_explanation(self):
+        """Single condition produces no operator in explanation."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterCondition(
+                        column="state",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="NY")],
+                    ),
+                ],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert result.explanation == "Filter: state equals NY."
+
+    def test_multi_condition_and_explanation(self):
+        """Multi-condition AND uses 'AND' in explanation, not semicolons."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterCondition(
+                        column="state",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="NY")],
+                    ),
+                    FilterCondition(
+                        column="weight",
+                        operator=FilterOperator.gt,
+                        operands=[TypedLiteral(type="number", value=10)],
+                    ),
+                ],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert "AND" in result.explanation
+        assert ";" not in result.explanation
+
+    def test_multi_condition_or_explanation(self):
+        """Multi-condition OR uses 'OR' in explanation."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="OR",
+                conditions=[
+                    FilterCondition(
+                        column="weight",
+                        operator=FilterOperator.gt,
+                        operands=[TypedLiteral(type="number", value=24)],
+                    ),
+                    FilterCondition(
+                        column="state",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="CA")],
+                    ),
+                ],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert "OR" in result.explanation
+        assert ";" not in result.explanation
+
+    def test_nested_mixed_explanation(self):
+        """Nested mixed AND/OR preserves grouping with parentheses."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterGroup(
+                        logic="OR",
+                        conditions=[
+                            FilterCondition(
+                                column="state",
+                                operator=FilterOperator.in_,
+                                operands=[
+                                    TypedLiteral(type="string", value="CA"),
+                                    TypedLiteral(type="string", value="TX"),
+                                ],
+                            ),
+                            FilterCondition(
+                                column="weight",
+                                operator=FilterOperator.gt,
+                                operands=[TypedLiteral(type="number", value=10)],
+                            ),
+                        ],
+                    ),
+                    FilterCondition(
+                        column="total_price",
+                        operator=FilterOperator.gt,
+                        operands=[TypedLiteral(type="number", value=200)],
+                    ),
+                ],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert "OR" in result.explanation
+        assert "AND" in result.explanation
+        assert "(" in result.explanation
+        assert ";" not in result.explanation
