@@ -10,7 +10,7 @@ from typing import Literal
 
 import json
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 # Enums for API validation
@@ -84,10 +84,7 @@ class JobRowResponse(BaseModel):
                 return None
         return v
 
-    class Config:
-        """Pydantic config for ORM model conversion."""
-
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JobResponse(BaseModel):
@@ -116,10 +113,7 @@ class JobResponse(BaseModel):
     completed_at: str | None
     updated_at: str
 
-    class Config:
-        """Pydantic config for ORM model conversion."""
-
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JobSummaryResponse(BaseModel):
@@ -137,10 +131,7 @@ class JobSummaryResponse(BaseModel):
     created_at: str
     completed_at: str | None
 
-    class Config:
-        """Pydantic config for ORM model conversion."""
-
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class JobListResponse(BaseModel):
@@ -167,10 +158,7 @@ class AuditLogResponse(BaseModel):
     details: dict | None
     row_number: int | None
 
-    class Config:
-        """Pydantic config for ORM model conversion."""
-
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LogExportResponse(BaseModel):
@@ -338,10 +326,7 @@ class SavedDataSourceResponse(BaseModel):
     connected_at: str
     last_used_at: str
 
-    class Config:
-        """Pydantic config for ORM model conversion."""
-
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SavedDataSourceListResponse(BaseModel):

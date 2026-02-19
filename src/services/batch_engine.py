@@ -12,6 +12,7 @@ Example:
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -528,9 +529,26 @@ class BatchEngine:
                         service_code=eff_service,
                     )
 
+                    row_checksum = getattr(row, "row_checksum", "")
+                    if not isinstance(row_checksum, str) or not row_checksum.strip():
+                        # Fallback for legacy/test rows that do not carry checksums.
+                        row_checksum = hashlib.sha256(
+                            json.dumps(
+                                order_data,
+                                sort_keys=True,
+                                separators=(",", ":"),
+                                default=str,
+                            ).encode("utf-8")
+                        ).hexdigest()
+                        logger.warning(
+                            "batch_execute_missing_row_checksum job=%s row=%s",
+                            job_id,
+                            row.row_number,
+                        )
+
                     # Generate idempotency key for exactly-once semantics
                     idem_key = generate_idempotency_key(
-                        job_id, row.row_number, row.row_checksum,
+                        job_id, row.row_number, row_checksum,
                     )
 
                     # PHASE 1: Mark in-flight BEFORE UPS call

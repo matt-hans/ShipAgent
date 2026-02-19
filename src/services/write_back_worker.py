@@ -22,6 +22,23 @@ logger = logging.getLogger(__name__)
 MAX_RETRIES = 3
 
 
+def _find_existing_task(
+    db: Session,
+    job_id: str,
+    row_number: int,
+) -> WriteBackTask | None:
+    """Return an existing write-back task for a job row, if present."""
+    existing = (
+        db.query(WriteBackTask)
+        .filter(
+            WriteBackTask.job_id == job_id,
+            WriteBackTask.row_number == row_number,
+        )
+        .one_or_none()
+    )
+    return existing if isinstance(existing, WriteBackTask) else None
+
+
 def enqueue_write_back(
     db: Session,
     job_id: str,
@@ -41,14 +58,7 @@ def enqueue_write_back(
     Returns:
         The created WriteBackTask ORM instance.
     """
-    existing = (
-        db.query(WriteBackTask)
-        .filter(
-            WriteBackTask.job_id == job_id,
-            WriteBackTask.row_number == row_number,
-        )
-        .one_or_none()
-    )
+    existing = _find_existing_task(db, job_id, row_number)
     if existing is not None:
         if existing.status == "pending":
             existing.tracking_number = tracking_number
@@ -71,14 +81,7 @@ def enqueue_write_back(
     except IntegrityError:
         # Race-safe fallback when another worker inserts the task first.
         db.rollback()
-        existing = (
-            db.query(WriteBackTask)
-            .filter(
-                WriteBackTask.job_id == job_id,
-                WriteBackTask.row_number == row_number,
-            )
-            .one_or_none()
-        )
+        existing = _find_existing_task(db, job_id, row_number)
         if existing is not None:
             if existing.status == "pending":
                 existing.tracking_number = tracking_number

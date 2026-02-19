@@ -13,7 +13,10 @@ from typing import Any
 from mcp import StdioServerParameters
 
 from src.services.mcp_client import MCPClient
-from src.services.mapping_cache import invalidate as invalidate_mapping_cache
+from src.services.mapping_cache import (
+    invalidate as invalidate_mapping_cache,
+    should_invalidate as mapping_cache_should_invalidate,
+)
 
 
 # -- Gateway-local DTOs --------------------------------------------------------
@@ -169,7 +172,9 @@ class DataSourceMCPClient:
         result = await self._call_tool("import_csv", {
             "file_path": file_path, "delimiter": delimiter, "header": header,
         })
-        invalidate_mapping_cache()
+        new_fp = result.get("signature") or result.get("schema_fingerprint") or ""
+        if mapping_cache_should_invalidate(new_fp):
+            invalidate_mapping_cache()
         self._auto_save_csv(
             file_path, result.get("row_count", 0), len(result.get("columns", []))
         )
@@ -186,7 +191,9 @@ class DataSourceMCPClient:
         if sheet:
             args["sheet"] = sheet
         result = await self._call_tool("import_excel", args)
-        invalidate_mapping_cache()
+        new_fp = result.get("signature") or result.get("schema_fingerprint") or ""
+        if mapping_cache_should_invalidate(new_fp):
+            invalidate_mapping_cache()
         self._auto_save_excel(
             file_path, sheet, result.get("row_count", 0), len(result.get("columns", []))
         )
@@ -211,7 +218,9 @@ class DataSourceMCPClient:
         if row_key_columns:
             args["row_key_columns"] = row_key_columns
         result = await self._call_tool("import_database", args)
-        invalidate_mapping_cache()
+        new_fp = result.get("signature") or result.get("schema_fingerprint") or ""
+        if mapping_cache_should_invalidate(new_fp):
+            invalidate_mapping_cache()
         self._auto_save_database(
             connection_string, query,
             result.get("row_count", 0), len(result.get("columns", [])),
@@ -226,7 +235,9 @@ class DataSourceMCPClient:
             "records": records,
             "source_label": source_label,
         })
-        invalidate_mapping_cache()
+        new_fp = result.get("signature") or result.get("schema_fingerprint") or ""
+        if mapping_cache_should_invalidate(new_fp):
+            invalidate_mapping_cache()
         return result
 
     # -- Query operations --------------------------------------------------
