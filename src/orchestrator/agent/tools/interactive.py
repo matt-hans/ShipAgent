@@ -259,6 +259,9 @@ async def preview_interactive_shipment_tool(
     commodities = args.get("commodities")
     invoice_currency_code = _str(args.get("invoice_currency_code")).upper()
     invoice_monetary_value = _str(args.get("invoice_monetary_value"))
+    invoice_number = _str(
+        args.get("invoice_number") or args.get("intl_forms_invoice_number")
+    )
     reason_for_export = _str(args.get("reason_for_export")).upper()
     service = raw_service
     raw_packaging = args.get("packaging_type")
@@ -345,6 +348,8 @@ async def preview_interactive_shipment_tool(
         order_data["invoice_currency_code"] = invoice_currency_code
     if invoice_monetary_value:
         order_data["invoice_monetary_value"] = invoice_monetary_value
+    if invoice_number:
+        order_data["invoice_number"] = invoice_number[:UPS_ADDRESS_MAX_LEN]
     if reason_for_export:
         order_data["reason_for_export"] = reason_for_export
 

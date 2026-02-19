@@ -365,6 +365,7 @@ def build_international_forms(
     form_type: str = DEFAULT_FORM_TYPE,
     reason_for_export: str = DEFAULT_REASON_FOR_EXPORT,
     invoice_date: str | None = None,
+    invoice_number: str | None = None,
     sold_to: dict[str, str] | None = None,
 ) -> dict:
     """Build UPS InternationalForms section for customs documentation.
@@ -376,6 +377,8 @@ def build_international_forms(
         form_type: InternationalForms type (01 = commercial invoice).
         reason_for_export: Export reason code (SALE, GIFT, SAMPLE, etc.).
         invoice_date: Invoice date in YYYYMMDD format. Defaults to today.
+        invoice_number: Commercial invoice number. If omitted, a deterministic
+            fallback (INV-YYYYMMDD) is generated.
         sold_to: Recipient address dict for Contacts.SoldTo (required by UPS
             when FormType=01). Keys: name, attentionName, phone, addressLine1,
             addressLine2, city, stateProvinceCode, postalCode, countryCode.
@@ -387,6 +390,10 @@ def build_international_forms(
 
     if invoice_date is None:
         invoice_date = date_type.today().strftime("%Y%m%d")
+    resolved_invoice_number = str(invoice_number or "").strip()
+    if not resolved_invoice_number:
+        resolved_invoice_number = f"INV-{invoice_date}"
+    resolved_invoice_number = resolved_invoice_number[:UPS_REFERENCE_MAX_LEN]
 
     products = []
     for comm in commodities:
@@ -407,6 +414,7 @@ def build_international_forms(
 
     forms: dict[str, Any] = {
         "FormType": form_type,
+        "InvoiceNumber": resolved_invoice_number,
         "InvoiceDate": invoice_date,
         "ReasonForExport": reason_for_export,
         "CurrencyCode": currency_code,
@@ -559,11 +567,24 @@ def build_shipment_request(
             reason_for_export = str(
                 order_data.get("reason_for_export", DEFAULT_REASON_FOR_EXPORT)
             ).upper()
+            invoice_number = str(
+                order_data.get("intl_forms_invoice_number")
+                or order_data.get("invoice_number")
+                or order_data.get("commercial_invoice_number")
+                or ""
+            ).strip()
+            if not invoice_number and reference:
+                invoice_number = f"INV-{reference}"
+            intl_currency = (
+                str(order_data.get("invoice_currency_code", "")).upper().strip()
+                or requirements.currency_code
+            )
             result["internationalForms"] = build_international_forms(
                 commodities=commodities,
-                currency_code=requirements.currency_code,
+                currency_code=intl_currency,
                 form_type=requirements.form_type,
                 reason_for_export=reason_for_export,
+                invoice_number=invoice_number or None,
                 sold_to=ship_to,
             )
 

@@ -337,6 +337,7 @@ class TestInternationalShippingPrompt:
         assert "Description of goods" in prompt
         assert "Commodity data" in prompt
         assert "InvoiceLineTotal" in prompt
+        assert "Commercial invoice number" in prompt
 
     def test_international_section_includes_filter_examples(self, monkeypatch):
         """International section includes country-based SQL filter examples."""

@@ -785,9 +785,25 @@ def get_all_tool_definitions(
                         "type": "string",
                         "description": "Invoice total monetary value.",
                     },
+                    "invoice_number": {
+                        "type": "string",
+                        "description": (
+                            "Commercial invoice number for international invoice forms. "
+                            "Elicit from user when available."
+                        ),
+                    },
+                    "intl_forms_invoice_number": {
+                        "type": "string",
+                        "description": (
+                            "Alias of invoice_number for InternationalForms.InvoiceNumber."
+                        ),
+                    },
                     "reason_for_export": {
                         "type": "string",
-                        "description": "Reason for export.",
+                        "description": (
+                            "Reason for export. For international invoice forms, "
+                            "elicit explicitly (SALE, GIFT, SAMPLE, REPAIR, RETURN, INTERCOMPANY)."
+                        ),
                         "enum": [
                             "SALE",
                             "GIFT",

@@ -24,6 +24,10 @@ class TestInternationalFieldMappings:
     def test_invoice_value_mappable(self):
         assert "invoiceLineTotal.monetaryValue" in _FIELD_TO_ORDER_DATA
 
+    def test_invoice_number_mappable(self):
+        assert "internationalForms.invoiceNumber" in _FIELD_TO_ORDER_DATA
+        assert _FIELD_TO_ORDER_DATA["internationalForms.invoiceNumber"] == "invoice_number"
+
     def test_shipment_description_mappable(self):
         assert "shipmentDescription" in _FIELD_TO_ORDER_DATA
 
