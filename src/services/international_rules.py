@@ -53,6 +53,12 @@ RECIPIENT_STATE_REQUIRED_COUNTRIES_ENV = (
     "INTERNATIONAL_RECIPIENT_STATE_REQUIRED_COUNTRIES"
 )
 
+GB_STATE_CODE_ALIASES: dict[str, str] = {
+    # UPS accepts short alphanumeric state/county codes for GB.
+    "GREATER LONDON": "LND",
+    "LONDON": "LND",
+}
+
 
 @dataclass
 class ValidationError:
@@ -153,6 +159,48 @@ def recipient_state_required(destination: str) -> bool:
             if c.strip()
         }
     return country in required
+
+
+def normalize_recipient_state_code(destination: str, raw_state: str | None) -> str:
+    """Normalize recipient state/province to a UPS-compatible short code.
+
+    For destinations that require state/province codes in structured
+    sections (e.g., InternationalForms SoldTo.Address.StateProvinceCode),
+    UPS expects 1-5 alphanumeric characters.
+
+    Args:
+        destination: Destination country code (ISO-2).
+        raw_state: User/source-provided state value.
+
+    Returns:
+        Normalized 1-5 character alphanumeric code, or empty string when the
+        value cannot be safely normalized.
+    """
+    country = destination.upper().strip()
+    state = str(raw_state or "").strip()
+    if not state:
+        return ""
+
+    upper = state.upper()
+    spaced = re.sub(r"[^A-Z0-9 ]", " ", upper)
+    compact_spaced = re.sub(r"\s+", " ", spaced).strip()
+
+    if country == "GB":
+        alias = GB_STATE_CODE_ALIASES.get(compact_spaced)
+        if alias:
+            return alias
+
+    alnum = re.sub(r"[^A-Z0-9]", "", upper)
+    if 1 <= len(alnum) <= 5:
+        return alnum
+
+    tokens = [tok for tok in re.findall(r"[A-Z0-9]+", upper) if tok]
+    if len(tokens) >= 2:
+        acronym = "".join(tok[0] for tok in tokens)[:5]
+        if 1 <= len(acronym) <= 5:
+            return acronym
+
+    return ""
 
 
 def _is_ups_letter(packaging_code: str | None) -> bool:
@@ -403,6 +451,21 @@ def validate_international_readiness(
                     ),
                     field_path="ShipTo.Address.StateProvinceCode",
                 ))
+            else:
+                normalized_state = normalize_recipient_state_code(
+                    destination_country, ship_to_state,
+                )
+                if normalized_state:
+                    order_data["ship_to_state"] = normalized_state
+                else:
+                    errors.append(ValidationError(
+                        machine_code="INVALID_RECIPIENT_STATE",
+                        message=(
+                            "Recipient state/province code must be a 1-5 character "
+                            f"alphanumeric code for {destination_country}."
+                        ),
+                        field_path="ShipTo.Address.StateProvinceCode",
+                    ))
 
     # Description
     if requirements.requires_description:

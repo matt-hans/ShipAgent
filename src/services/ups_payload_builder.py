@@ -422,24 +422,34 @@ def build_international_forms(
     }
 
     if sold_to:
+        from src.services.international_rules import normalize_recipient_state_code
+
+        sold_to_country = str(sold_to.get("countryCode", "")).upper()
+        sold_to_state = normalize_recipient_state_code(
+            sold_to_country,
+            sold_to.get("stateProvinceCode"),
+        )
         address_lines = [
             line for line in [
                 sold_to.get("addressLine1", ""),
                 sold_to.get("addressLine2", ""),
             ] if line
         ]
+        contacts_sold_to_address: dict[str, Any] = {
+            "AddressLine": address_lines or [""],
+            "City": sold_to.get("city", ""),
+            "PostalCode": sold_to.get("postalCode", ""),
+            "CountryCode": sold_to.get("countryCode", ""),
+        }
+        if sold_to_state:
+            contacts_sold_to_address["StateProvinceCode"] = sold_to_state
+
         contacts_sold_to: dict[str, Any] = {
             "Name": sold_to.get("name", "")[:UPS_ADDRESS_MAX_LEN],
             "AttentionName": sold_to.get(
                 "attentionName", sold_to.get("name", "")
             )[:UPS_ADDRESS_MAX_LEN],
-            "Address": {
-                "AddressLine": address_lines or [""],
-                "City": sold_to.get("city", ""),
-                "StateProvinceCode": sold_to.get("stateProvinceCode", ""),
-                "PostalCode": sold_to.get("postalCode", ""),
-                "CountryCode": sold_to.get("countryCode", ""),
-            },
+            "Address": contacts_sold_to_address,
         }
         if sold_to.get("phone"):
             contacts_sold_to["Phone"] = {"Number": sold_to["phone"]}
