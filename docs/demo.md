@@ -147,6 +147,9 @@ This document contains curated prompts designed to showcase ShipAgent's full cap
 ### Prompt 12 — Domestic Shipment (VERIFIED 2026-02-16)
 
 > Ship a package to Maria Garcia at 123 Ocean Drive, Miami, FL 33139
+>
+> **Alternative Option:**
+> Ship a package to James Miller at 789 Citrus Lane, Tampa, FL 33602
 
 **What it demonstrates:** Conversational data collection for ad-hoc shipments. The agent elicits missing required fields (phone, description, weight, dimensions) through natural dialogue. Shows the elicitation workflow for domestic shipments.
 
@@ -619,6 +622,9 @@ Each phase demonstrates a distinct agentic capability. The sequence progresses f
 **4a. Domestic — Conversational Elicitation (Prompt 12):**
 
 > Use my default shipper info. Ship a package to Maria Garcia at 123 Ocean Drive, Miami, FL 33139
+>
+> **Alternative Option:**
+> Use my default shipper info. Ship a package to James Miller at 789 Citrus Lane, Tampa, FL 33602
 
 **Agent will ask for missing fields.** Provide:
 > phone 3055551234, description electronics, weight 5 lbs, dimensions 10x8x6

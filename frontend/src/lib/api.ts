@@ -121,11 +121,18 @@ export interface ConfirmResponse {
 export async function confirmJob(
   jobId: string,
   writeBackEnabled: boolean = true,
+  selectedServiceCode?: string,
 ): Promise<ConfirmResponse> {
+  const payload: Record<string, unknown> = {
+    write_back_enabled: writeBackEnabled,
+  };
+  if (selectedServiceCode) {
+    payload.selected_service_code = selectedServiceCode;
+  }
   const response = await fetch(`${API_BASE}/jobs/${jobId}/confirm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ write_back_enabled: writeBackEnabled }),
+    body: JSON.stringify(payload),
   });
   return parseResponse<ConfirmResponse>(response);
 }

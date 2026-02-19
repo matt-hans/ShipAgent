@@ -18,6 +18,7 @@ import {
 export interface ConfirmOptions {
   skipWarningRows?: boolean;
   warningRowNumbers?: number[];
+  selectedServiceCode?: string;
 }
 
 /** Expanded shipment details (customer, recipient, address, order reference). */
@@ -602,6 +603,8 @@ export function InteractivePreviewCard({
   onConfirm,
   onCancel,
   onRefine,
+  onSelectService,
+  selectedServiceCode,
   isConfirming,
   isRefining,
   isProcessing,
@@ -610,6 +613,8 @@ export function InteractivePreviewCard({
   onConfirm: (opts?: ConfirmOptions) => void;
   onCancel: () => void;
   onRefine: (text: string) => void;
+  onSelectService?: (serviceCode: string) => void;
+  selectedServiceCode?: string | null;
   isConfirming: boolean;
   isRefining: boolean;
   isProcessing: boolean;
@@ -620,6 +625,10 @@ export function InteractivePreviewCard({
   const hasWarnings = preview.preview_rows?.some(r => r.warnings?.length > 0);
   const availableServices = preview.available_services || [];
   const refinementDisabled = isRefining || isConfirming || isProcessing;
+  const effectiveServiceCode = selectedServiceCode || preview.service_code || null;
+  const selectedService = availableServices.find((svc) => svc.code === effectiveServiceCode);
+  const displayedServiceName = selectedService?.name || preview.service_name || 'UPS Ground';
+  const displayedTotalCostCents = selectedService?.estimated_cost_cents ?? preview.total_estimated_cost_cents;
 
   const submitRefinement = () => {
     const text = refinementInput.trim();
@@ -692,7 +701,7 @@ export function InteractivePreviewCard({
       <div className="grid grid-cols-3 gap-3 mb-4">
         <div className="bg-slate-800/50 rounded-lg p-2.5 text-center">
           <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">Service</p>
-          <p className="text-sm font-semibold text-white">{preview.service_name || 'UPS Ground'}</p>
+          <p className="text-sm font-semibold text-white">{displayedServiceName}</p>
         </div>
         <div className="bg-slate-800/50 rounded-lg p-2.5 text-center">
           <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">Weight</p>
@@ -712,7 +721,7 @@ export function InteractivePreviewCard({
           </p>
           <div className="space-y-1.5 max-h-36 overflow-y-auto scrollable pr-1">
             {availableServices.map((svc) => {
-              const isSelected = svc.code === preview.service_code || !!svc.selected;
+              const isSelected = svc.code === effectiveServiceCode;
               const label = `${svc.name} (${svc.code})`;
               return (
                 <button
@@ -720,7 +729,7 @@ export function InteractivePreviewCard({
                   type="button"
                   onClick={() => {
                     if (isSelected || refinementDisabled) return;
-                    onRefine(`Change service to ${svc.code} (${svc.name})`);
+                    onSelectService?.(svc.code);
                   }}
                   disabled={refinementDisabled}
                   className={cn(
@@ -756,7 +765,7 @@ export function InteractivePreviewCard({
       <div className="bg-gradient-to-r from-emerald-500/10 to-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 mb-4 text-center">
         <p className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider mb-1">Estimated Cost</p>
         <p className="text-2xl font-bold text-emerald-400">
-          {formatCurrency(preview.total_estimated_cost_cents)}
+          {formatCurrency(displayedTotalCostCents)}
         </p>
       </div>
 
@@ -831,7 +840,7 @@ export function InteractivePreviewCard({
           Cancel
         </button>
         <button
-          onClick={() => onConfirm()}
+          onClick={() => onConfirm({ selectedServiceCode: effectiveServiceCode || undefined })}
           disabled={isConfirming || isProcessing || isRefining}
           className="btn-primary flex-1 h-9 text-sm flex items-center justify-center gap-2"
         >
