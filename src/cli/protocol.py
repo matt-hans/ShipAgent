@@ -182,6 +182,52 @@ class AgentEvent:
     tool_input: str | None = None
 
 
+@dataclass
+class DataSourceStatus:
+    """Current data source connection status."""
+
+    connected: bool
+    source_type: str | None = None
+    file_path: str | None = None
+    row_count: int | None = None
+    column_count: int | None = None
+    columns: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SavedSourceSummary:
+    """Saved data source profile summary."""
+
+    id: str
+    name: str
+    source_type: str
+    file_path: str | None = None
+    last_connected: str | None = None
+    row_count: int | None = None
+
+    @classmethod
+    def from_api(cls, data: dict) -> "SavedSourceSummary":
+        """Construct from API JSON, tolerating extra fields."""
+        return cls(
+            id=data["id"],
+            name=data.get("name", ""),
+            source_type=data.get("source_type", ""),
+            file_path=data.get("file_path"),
+            last_connected=data.get("last_connected"),
+            row_count=data.get("row_count"),
+        )
+
+
+@dataclass
+class SourceSchemaColumn:
+    """Column metadata from current data source."""
+
+    name: str
+    type: str
+    nullable: bool = True
+    sample_values: list[str] = field(default_factory=list)
+
+
 class ShipAgentClientError(Exception):
     """Transport-neutral error raised by ShipAgentClient implementations.
 
@@ -339,4 +385,42 @@ class ShipAgentClient(Protocol):
         limit: int = 200,
     ) -> list[dict]:
         """Get centralized agent audit events for a job."""
+        ...
+
+    async def get_source_status(self) -> DataSourceStatus:
+        """Get current data source connection status."""
+        ...
+
+    async def connect_source(self, file_path: str) -> DataSourceStatus:
+        """Import a local file as the active data source."""
+        ...
+
+    async def connect_db(self, connection_string: str, query: str) -> DataSourceStatus:
+        """Import from a database using connection string and query.
+
+        Both parameters are required — the backend rejects DB imports
+        without a query.
+        """
+        ...
+
+    async def disconnect_source(self) -> None:
+        """Disconnect the current data source."""
+        ...
+
+    async def list_saved_sources(self) -> list[SavedSourceSummary]:
+        """List saved data source profiles."""
+        ...
+
+    async def reconnect_saved_source(
+        self, identifier: str, by_name: bool = True
+    ) -> DataSourceStatus:
+        """Reconnect a saved source by name or ID."""
+        ...
+
+    async def get_source_schema(self) -> list[SourceSchemaColumn]:
+        """Get schema of current data source."""
+        ...
+
+    async def connect_platform(self, platform: str) -> DataSourceStatus:
+        """Connect an env-configured external platform."""
         ...
