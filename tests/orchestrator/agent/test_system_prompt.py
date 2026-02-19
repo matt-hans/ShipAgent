@@ -55,6 +55,31 @@ def test_prompt_contains_filter_rules():
     assert "contains_ci" in prompt
 
 
+def test_prompt_enforces_tool_first_batch_execution_before_clarification():
+    """Batch prompt should instruct deterministic tool pass before clarification."""
+    prompt = build_system_prompt(source_info=_make_source_info(), interactive_shipping=False)
+    lower = prompt.lower()
+    assert "attempt one deterministic pass first" in lower
+    assert "resolve_filter_intent" in lower
+    assert "ship_command_pipeline" in lower
+
+
+def test_prompt_infers_total_and_fulfillment_hints_from_alias_columns():
+    """Schema hints should include inferred amount/fulfillment alias columns."""
+    source = DataSourceInfo(
+        source_type="shopify",
+        file_path=None,
+        row_count=12,
+        columns=[
+            SchemaColumnInfo(name="declared_value", type="VARCHAR", nullable=True),
+            SchemaColumnInfo(name="displayFulfillmentStatus", type="VARCHAR", nullable=True),
+        ],
+    )
+    prompt = build_system_prompt(source_info=source, interactive_shipping=False)
+    assert "`declared_value`" in prompt
+    assert "`displayFulfillmentStatus`" in prompt
+
+
 def test_prompt_includes_source_schema():
     """System prompt includes dynamic schema when source_info is provided."""
     source = _make_source_info()

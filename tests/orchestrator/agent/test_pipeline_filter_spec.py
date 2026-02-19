@@ -421,6 +421,78 @@ class TestPipelineFilterSpec:
         assert "unfulfilled" in params
 
     @pytest.mark.asyncio
+    async def test_pipeline_enforces_unfulfilled_for_fulfillment_alias_column(self):
+        """Fulfillment enforcement should work for Shopify-style alias columns."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        source_info = {
+            "source_type": "shopify",
+            "row_count": 100,
+            "columns": [
+                {"name": "ship_to_state", "type": "VARCHAR", "nullable": True},
+                {"name": "total_price", "type": "VARCHAR", "nullable": True},
+                {"name": "display_fulfillment_status", "type": "VARCHAR", "nullable": True},
+            ],
+            "signature": "test_sig",
+        }
+        gw = _mock_gateway(source_info=source_info)
+        p = _pipeline_patches(gw)
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": (
+                    "Ship all orders from customers in California, Texas, or New York "
+                    "where the total is over $50 and under $500, but only the "
+                    "unfulfilled ones using UPS Ground."
+                ),
+                "filter_spec": _make_shopify_range_spec_without_fulfillment(),
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "preview_ready"
+        assert content["filter_audit"]["enforced_fulfillment_status"] == "unfulfilled"
+        params = gw.get_rows_by_filter.call_args.kwargs["params"]
+        assert "unfulfilled" in params
+
+    @pytest.mark.asyncio
+    async def test_pipeline_uses_declared_value_as_total_fallback(self):
+        """Total-bound enforcement should fall back to declared_value when needed."""
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        source_info = {
+            "source_type": "shopify",
+            "row_count": 100,
+            "columns": [
+                {"name": "ship_to_state", "type": "VARCHAR", "nullable": True},
+                {"name": "declared_value", "type": "VARCHAR", "nullable": True},
+                {"name": "fulfillment_status", "type": "VARCHAR", "nullable": True},
+            ],
+            "signature": "test_sig",
+        }
+        gw = _mock_gateway(source_info=source_info)
+        p = _pipeline_patches(gw)
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool({
+                "command": (
+                    "Ship all orders from customers in California, Texas, or New York "
+                    "where the total is over $50 and under $500, but only the "
+                    "unfulfilled ones using UPS Ground."
+                ),
+                "filter_spec": _make_shopify_fulfillment_only_spec(),
+            })
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "preview_ready"
+        assert content["filter_audit"]["enforced_total_bounds"] == {
+            "column": "declared_value",
+            "lower": 50.0,
+            "upper": 500.0,
+        }
+        params = gw.get_rows_by_filter.call_args.kwargs["params"]
+        assert 50.0 in params and 500.0 in params
+
+    @pytest.mark.asyncio
     async def test_pipeline_rejects_conflicting_fulfillment_status(self):
         """Command/spec status conflict should fail deterministically."""
         from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
