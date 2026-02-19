@@ -17,6 +17,7 @@ Example:
 """
 
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from src.services.ups_constants import (
@@ -29,8 +30,16 @@ from src.services.ups_constants import (
     DEFAULT_PACKAGE_WEIGHT_LBS,
     DEFAULT_PACKAGING_CODE,
     DEFAULT_REASON_FOR_EXPORT,
+    DEFAULT_WEIGHT_LIMIT_LBS,
+    EXPRESS_CLASS_SERVICES,
+    EXPRESS_ONLY_PACKAGING,
     GRAMS_PER_LB,
+    INTERNATIONAL_ONLY_PACKAGING,
+    LETTER_MAX_WEIGHT_LBS,
     PACKAGING_ALIASES,
+    PackagingCode,
+    SATURDAY_DELIVERY_SERVICES,
+    SERVICE_WEIGHT_LIMITS_LBS,
     UPS_ADDRESS_MAX_LEN,
     UPS_DIMENSION_UNIT,
     UPS_PHONE_MAX_DIGITS,
@@ -670,6 +679,185 @@ def _is_truthy(value: Any) -> bool:
         return bool(value)
     s = str(value).strip().lower()
     return s in ("true", "yes", "1", "y", "x")
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight validation — service-packaging-weight compatibility
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ValidationIssue:
+    """A pre-flight validation issue detected before UPS API call."""
+
+    field: str
+    message: str
+    severity: str  # "error" | "warning"
+    auto_corrected: bool = False
+
+
+def _get_weight_lbs(order_data: dict[str, Any]) -> float | None:
+    """Extract weight in lbs from order_data, handling grams conversion.
+
+    Args:
+        order_data: Order data dict.
+
+    Returns:
+        Weight in lbs, or None if not available.
+    """
+    weight = order_data.get("weight") or order_data.get("total_weight")
+    if weight:
+        try:
+            return float(weight)
+        except (ValueError, TypeError):
+            return None
+    weight_grams = order_data.get("total_weight_grams")
+    if weight_grams:
+        try:
+            return float(weight_grams) / GRAMS_PER_LB
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def validate_domestic_payload(
+    order_data: dict[str, Any],
+    service_code: str,
+) -> list[ValidationIssue]:
+    """Pre-flight validation for service-packaging-weight compatibility.
+
+    Checks field interdependencies that cause UPS API rejections.
+
+    Args:
+        order_data: Order data dict.
+        service_code: Effective UPS service code.
+
+    Returns:
+        List of ValidationIssue objects. Empty list means payload is valid.
+    """
+    issues: list[ValidationIssue] = []
+    pkg_code = resolve_packaging_code(order_data.get("packaging_type"))
+
+    # 1. Packaging-service compatibility
+    if pkg_code in EXPRESS_ONLY_PACKAGING and service_code not in EXPRESS_CLASS_SERVICES:
+        pkg_name = order_data.get("packaging_type", pkg_code)
+        issues.append(ValidationIssue(
+            field="packaging_type",
+            message=(
+                f"Packaging '{pkg_name}' (code {pkg_code}) is only valid with "
+                f"express-class services. Current service: {service_code}. "
+                f"Use Customer Supplied (02) or change service."
+            ),
+            severity="error",
+        ))
+
+    # 2. International-only packaging with domestic service
+    from src.services.ups_service_codes import DOMESTIC_ONLY_SERVICES
+    if pkg_code in INTERNATIONAL_ONLY_PACKAGING and service_code in DOMESTIC_ONLY_SERVICES:
+        issues.append(ValidationIssue(
+            field="packaging_type",
+            message=(
+                f"Packaging code {pkg_code} is only valid with international services."
+            ),
+            severity="error",
+        ))
+
+    # 3. Letter weight limit
+    if pkg_code == PackagingCode.LETTER.value:
+        weight = _get_weight_lbs(order_data)
+        if weight and weight > LETTER_MAX_WEIGHT_LBS:
+            issues.append(ValidationIssue(
+                field="weight",
+                message=(
+                    f"UPS Letter max weight is {LETTER_MAX_WEIGHT_LBS} lbs. "
+                    f"Current weight: {weight:.1f} lbs."
+                ),
+                severity="error",
+            ))
+
+    # 4. Saturday Delivery compatibility
+    if _is_truthy(order_data.get("saturday_delivery")):
+        if service_code not in SATURDAY_DELIVERY_SERVICES:
+            issues.append(ValidationIssue(
+                field="saturday_delivery",
+                message=(
+                    f"Saturday Delivery is not supported by service {service_code}. "
+                    f"Flag will be stripped."
+                ),
+                severity="warning",
+                auto_corrected=True,
+            ))
+
+    # 5. Per-service weight limit
+    weight = _get_weight_lbs(order_data)
+    if weight:
+        limit = SERVICE_WEIGHT_LIMITS_LBS.get(service_code, DEFAULT_WEIGHT_LIMIT_LBS)
+        if weight > limit:
+            issues.append(ValidationIssue(
+                field="weight",
+                message=(
+                    f"Package weight {weight:.1f} lbs exceeds service "
+                    f"{service_code} limit of {limit:.0f} lbs."
+                ),
+                severity="error",
+            ))
+
+    return issues
+
+
+def apply_compatibility_corrections(
+    order_data: dict[str, Any],
+    service_code: str,
+) -> list[ValidationIssue]:
+    """Validate and auto-correct compatibility issues in-place.
+
+    This is the SINGLE shared validation path called from both:
+    - core.py._build_job_row_data_with_metadata() (preview-time)
+    - batch_engine._process_row() (execution-time, including confirm-time overrides)
+
+    Auto-correctable issues are fixed in order_data in-place.
+    Non-correctable errors are returned for the caller to handle.
+
+    Args:
+        order_data: Order data dict (mutated in-place for auto-corrections).
+        service_code: Effective UPS service code.
+
+    Returns:
+        List of ValidationIssue objects.
+    """
+    issues = validate_domestic_payload(order_data, service_code)
+    warnings: list[str] = []
+
+    for issue in issues:
+        if issue.field == "packaging_type" and issue.severity == "error":
+            # Auto-correct express-only packaging to Customer Supplied
+            pkg_code = resolve_packaging_code(order_data.get("packaging_type"))
+            if pkg_code in EXPRESS_ONLY_PACKAGING and service_code not in EXPRESS_CLASS_SERVICES:
+                original = order_data.get("packaging_type", pkg_code)
+                order_data["packaging_type"] = DEFAULT_PACKAGING_CODE.value
+                order_data["_packaging_auto_reset"] = (
+                    f"Packaging reset from '{original}' to Customer Supplied: "
+                    f"incompatible with service {service_code}"
+                )
+                issue.auto_corrected = True
+                issue.severity = "warning"
+                warnings.append(order_data["_packaging_auto_reset"])
+
+        if issue.field == "saturday_delivery" and issue.auto_corrected:
+            # Clear Saturday Delivery flag
+            order_data["saturday_delivery"] = ""
+            order_data["_saturday_delivery_stripped"] = (
+                f"Saturday Delivery removed: not supported by service {service_code}"
+            )
+            warnings.append(order_data["_saturday_delivery_stripped"])
+
+    # Surface auto-corrections as row warnings for preview display
+    existing_warnings = order_data.get("_validation_warnings", [])
+    if isinstance(existing_warnings, str):
+        existing_warnings = [existing_warnings] if existing_warnings else []
+    order_data["_validation_warnings"] = existing_warnings + warnings
+
+    return issues
 
 
 def build_ups_api_payload(
