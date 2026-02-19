@@ -1,7 +1,7 @@
 # GitHub Issues #8, #9, #10, #11 — Unified Resolution Design
 
 **Date:** 2026-02-19
-**Status:** Approved
+**Status:** Revised (10 findings resolved — see Design Decisions table)
 **Branch:** `fix/github-issues-8-9-10-11` (single branch, atomic commits per issue)
 **Implementation order:** #10 → #9 → #11 → #8
 
@@ -24,12 +24,14 @@ Four open GitHub issues resolved in a single development cycle. Two bugs (#9, #1
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Service-packaging auto-reset | Auto-correct + visible notice in PreviewCard | Least friction; user sees what was adjusted |
+| Service-packaging auto-reset | Auto-correct via shared `apply_compatibility_corrections()` + surface as warnings (existing PreviewCard warning system) | Single shared path for both preview (core.py) and execute (batch_engine.py); no new `adjustments` API field needed |
 | Issue #11 scope | P0 + P1 fields only | P2/P3 tracked as follow-up issues |
-| Filter explanation fix | Option B — AST-based recursive explanation | Single source of truth; removes stale accumulator |
-| CLI connect scope | Files + DB strings + env-based platforms | Full headless coverage |
-| Domestic validation mode | Per-row validation | Matches existing international validation pattern |
-| custom_attributes | Full JSON path filtering via DuckDB json_extract | Complete solution |
+| Filter explanation fix | Option B — AST-based recursive explanation + recursive nested group fix in resolver | Single source of truth; fixes both root joiner AND nested group logic bug (line 874) |
+| CLI connect scope | Files + DB strings (with query) + Shopify env-based only | `--db` requires `--query` per backend; only Shopify has env-status endpoint |
+| Domestic validation mode | Per-row validation via shared function | Same function called from both core.py preview path and batch_engine execute path |
+| custom_attributes | json.dumps() at ingestion + DuckDB json_extract_string on VARCHAR | Ensures valid JSON in DuckDB (not Python repr from str()) |
+| ShipFrom precedence | Row-level ship_from_* overrides Shipper for ShipFrom block; Shipper always from env | Supports multi-warehouse; Shipper is billing entity |
+| Rate payload parity | Mirror surcharge-affecting indicators in build_rate_payload() | Accurate preview cost estimation |
 | Branch strategy | Single branch, atomic commits per issue | Handles co-dependencies cleanly |
 
 ---
@@ -64,6 +66,9 @@ Replace the flat accumulator pattern with a recursive `_explain_ast()` function 
 **`src/orchestrator/filter_resolver.py`:**
 
 7. **Fix** `_build_explanation(root)` at line 843-855: replace `"; ".join(parts)` with `f" {root.logic.upper()} ".join(parts)` at root level
+8. **Fix** `_explain_group(group)` at line 874: change `group.logic` (parent's logic) to `child.logic` (child group's own logic) — this is the nested group bug where an OR group inside an AND group incorrectly renders child conditions joined by "and"
+
+The resolver fix requires **both** changes: root-level joiner (line 855) AND nested group joiner (line 874). The nested bug is that `_explain_group` uses the parameter `group` (which is the parent) to determine the joiner for child groups, when it should use `child.logic` instead.
 
 ### Example Outputs
 
@@ -131,23 +136,39 @@ Checks:
 4. Saturday Delivery with non-express services (warning, auto-strip)
 5. Per-service weight limit exceeded
 
-### Part C: Auto-Reset on Service Override
+### Part C: Shared Compatibility Validation + Auto-Reset
 
-**File:** `src/orchestrator/agent/tools/core.py` (after line 262)
+**File:** `src/services/ups_payload_builder.py`
 
-When `service_code_override` applied:
-- If packaging ∈ `EXPRESS_ONLY_PACKAGING` and service ∉ `EXPRESS_CLASS_SERVICES`: reset to `DEFAULT_PACKAGING_CODE`, store `_packaging_auto_reset` metadata
-- If `saturday_delivery` truthy and service ∉ `SATURDAY_DELIVERY_SERVICES`: clear flag, store `_saturday_delivery_stripped` metadata
+A single function `apply_compatibility_corrections(order_data: dict, service_code: str) -> list[ValidationIssue]` that:
+1. Runs `validate_domestic_payload()` to detect issues
+2. For auto-correctable issues (express-only packaging with non-express service, Saturday Delivery with non-express): mutates `order_data` in-place and returns issues with `auto_corrected=True`
+3. For non-correctable errors (overweight, international-only packaging): returns issues with `severity="error"`
+
+This function is the **single shared path** called from:
+- `src/orchestrator/agent/tools/core.py:_build_job_row_data_with_metadata()` — at preview-time row building when `service_code_override` is applied
+- `src/services/batch_engine.py:_process_row()` — at execution-time after `eff_service` is resolved (line 503), covering the confirm-time `selected_service_code` override from `preview.py:231`
+
+Both paths call the same function, ensuring identical validation regardless of whether the service code was set at preview time (via pipeline tool) or at confirm time (via `selected_service_code` in the confirm request).
 
 ### Part D: BatchEngine Integration
 
 **File:** `src/services/batch_engine.py` (after international validation ~line 524)
 
-Per-row validation — incompatible rows get `needs_review` status, valid rows proceed.
+After `eff_service` is resolved at line 503:
+1. Call `apply_compatibility_corrections(order_data, eff_service)`
+2. Hard errors → raise `ValueError` (row gets `needs_review` status)
+3. Auto-corrected warnings → log to stderr, row proceeds with corrected data
 
-### Part E: Preview Notice
+### Part E: Preview Notice (Reuses Existing Warnings Pattern)
 
-`_packaging_auto_reset` and `_saturday_delivery_stripped` metadata keys included in preview response as `adjustments` field. PreviewCard shows subtle notice bar.
+Auto-corrections surface through the **existing** `warnings` field on `PreviewRowResponse` — no new `adjustments` field needed. The existing `rows_with_warnings` counter and PreviewCard warning rendering already handle this.
+
+When `apply_compatibility_corrections()` auto-corrects packaging or strips Saturday Delivery:
+- Add a warning string to the row's `warnings` list: e.g., `"Packaging auto-reset from UPS Letter to Customer Supplied: incompatible with Ground"`
+- The metadata keys `_packaging_auto_reset` and `_saturday_delivery_stripped` are stored in `order_data` for audit but are NOT exposed as a separate API field
+
+This avoids adding new schema fields (`adjustments`) to `BatchPreviewResponse`, `BatchPreview` TS type, and `PreviewCard`. The existing warning rendering in `PreviewCard.tsx:250-264` already handles per-row warnings.
 
 ### Part F: System Prompt Update
 
@@ -163,10 +184,10 @@ Add optional `packaging_type` parameter to `ship_command_pipeline` tool definiti
 
 ### Tests
 
-- `tests/services/test_ups_constants.py` — frozenset validation
-- `tests/services/test_ups_payload_builder.py` — validate_domestic_payload() cases
-- `tests/orchestrator/agent/test_core_override.py` — auto-reset behavior
-- `tests/services/test_batch_engine.py` — per-row validation integration
+- `tests/services/test_ups_constants.py` — frozenset validation (existing file, extend)
+- `tests/services/test_ups_payload_builder.py` — validate_domestic_payload() + apply_compatibility_corrections() (existing file, add new test classes)
+- `tests/orchestrator/agent/test_tools_core.py` — auto-reset behavior in _build_job_row_data_with_metadata (new file, follows existing `test_tools_*.py` pattern)
+- `tests/services/test_batch_engine.py` — per-row domestic validation integration (existing file, add new test class)
 
 ---
 
@@ -212,9 +233,30 @@ Populate new fields from Shopify API response:
 - `discount_codes` from `discount_codes[].code`
 - `custom_attributes` from `note_attributes[]` + `line_items[].properties[]`
 
-#### A3: Other Platform Clients
+#### A2.1: custom_attributes JSON Serialization Strategy
 
-WooCommerce, SAP, Oracle clients updated for equivalent fields where available.
+**Critical**: `import_records()` in `source_info_tools.py:100-109` creates ALL DuckDB columns as VARCHAR and serializes values with `str(record.get(col, ""))`. A Python dict like `{"gift_message": "yes"}` becomes the string `"{'gift_message': 'yes'}"` (Python repr) — this is NOT valid JSON and `json_extract_string()` will fail on it.
+
+**Fix:** In `_prepare_shopify_import_rows()` (`src/orchestrator/agent/tools/data.py:743-769`), serialize `custom_attributes` with `json.dumps()` BEFORE the row dict is passed to `import_records`:
+
+```python
+import json
+
+for row in rows:
+    custom_attrs = row.get("custom_attributes")
+    if isinstance(custom_attrs, dict):
+        row["custom_attributes"] = json.dumps(custom_attrs)
+    elif custom_attrs is None:
+        row["custom_attributes"] = "{}"
+```
+
+This ensures the DuckDB VARCHAR column contains valid JSON strings like `'{"gift_message": "yes"}'` instead of Python repr strings like `"{'gift_message': 'yes'}"`. The `json_extract_string()` SQL function in A4 will then work correctly.
+
+#### A3: Other Platform Clients — Backward Compatibility
+
+All new ExternalOrder fields use `Optional[T] = None` defaults (or `dict = Field(default_factory=dict)` for `custom_attributes`). This ensures **zero breaking changes** for WooCommerce (`woocommerce.py:359`), SAP (`sap.py:397`), and Oracle (`oracle.py:434`) clients — they construct ExternalOrder without the new fields, which safely default to None/empty.
+
+**No code changes required** in Woo/SAP/Oracle clients for this PR. These clients can be enriched in follow-up PRs when equivalent platform fields are identified. A backward-compat test validates that constructing ExternalOrder with only the existing 27 fields succeeds.
 
 #### A4: DuckDB JSON Path Filter Support
 
@@ -270,7 +312,7 @@ New `_AUTO_MAP_RULES` entries for auto-detection.
 
 Read each new field from `order_data`, include in simplified dict with appropriate key naming.
 
-#### B3: UPS JSON
+#### B3: UPS JSON + ShipFrom Precedence
 
 **File:** `src/services/ups_payload_builder.py` (`build_ups_api_payload()`)
 
@@ -282,6 +324,28 @@ Map simplified keys to UPS JSON structures:
 - `Notification` → `ShipmentServiceOptions.Notification` (code + email)
 - Package-level indicators → per-package `PackageServiceOptions`
 
+**ShipFrom vs Shipper Precedence Rules:**
+- **Shipper** (line 478): Always from system config (`build_shipper()` → env vars `UPS_SHIPPER_*`). This is the billing entity and never changes per-row.
+- **ShipFrom** (new): Row-level `ship_from_*` fields override the system shipper for the physical origin address. This supports multi-warehouse scenarios where each row ships from a different location.
+- If no `ship_from_*` fields are present in `order_data`, the `ShipFrom` block is **omitted entirely** — UPS defaults to using the Shipper address as the ship-from address.
+- If ANY `ship_from_*` field is present, the full `ShipFrom` block is built from row data with `ship_from_country` defaulting to `"US"`.
+
+#### B3.1: Rate Payload Parity
+
+**File:** `src/services/ups_payload_builder.py` (`build_rate_payload()` at line 990+)
+
+The rate payload must mirror surcharge-affecting indicators for accurate preview cost estimation. Add the following to `build_rate_payload()` alongside the existing `SaturdayDeliveryIndicator` and `DeliveryConfirmation`:
+
+- `HoldForPickupIndicator` (affects surcharge)
+- `LiftGateForPickUpIndicator` (affects surcharge)
+- `LiftGateForDeliveryIndicator` (affects surcharge)
+- `UPScarbonneutralIndicator` (affects cost)
+- `InsideDelivery` (affects surcharge)
+- `LargePackageIndicator` (affects surcharge)
+- `AdditionalHandlingIndicator` (affects surcharge)
+
+Without these, preview costs will be lower than actual execution costs when these options are enabled.
+
 #### B4: International Forms Enrichment
 
 **File:** `src/services/ups_payload_builder.py` (`_enrich_international_forms()`)
@@ -290,9 +354,10 @@ Add: TermsOfShipment, PurchaseOrderNumber, Comments, FreightCharges, InsuranceCh
 
 #### B5: Tests
 
-- `tests/services/test_ups_payload_builder.py` — all P0/P1 fields end-to-end
-- `tests/services/test_column_mapping.py` — new auto-map rules
-- `tests/mcp/external_sources/test_shopify_normalization.py` — new ExternalOrder fields
+- `tests/services/test_ups_payload_builder.py` — all P0/P1 fields end-to-end (existing file, add new test class)
+- `tests/services/test_column_mapping.py` — new auto-map rules (existing file, add new test class)
+- `tests/mcp/external_sources/test_shopify_normalize.py` — new ExternalOrder fields (existing file, extend)
+- `tests/mcp/external_sources/test_clients.py` — backward compat: ExternalOrder with only original fields (existing file)
 
 ### Fields Deferred to Follow-Up (P2/P3)
 
@@ -329,13 +394,12 @@ New data models:
 New protocol methods:
 - `get_source_status() -> DataSourceStatus`
 - `connect_source(file_path: str) -> DataSourceStatus`
-- `connect_db(connection_string: str) -> DataSourceStatus`
+- `connect_db(connection_string: str, query: str) -> DataSourceStatus`
 - `disconnect_source() -> None`
 - `list_saved_sources() -> list[SavedSourceSummary]`
 - `reconnect_saved_source(identifier: str, by_name: bool) -> DataSourceStatus`
 - `get_source_schema() -> list[SchemaColumn]`
-- `get_platform_env_status(platform: str) -> dict`
-- `connect_platform(platform: str) -> DataSourceStatus`
+- `connect_platform(platform: str) -> DataSourceStatus` (Shopify only — validates env vars via `/shopify/env-status`)
 
 ### Part B: HttpClient Implementation
 
@@ -344,12 +408,12 @@ New protocol methods:
 Maps to existing REST endpoints:
 - `GET /api/v1/data-sources/status`
 - `POST /api/v1/data-sources/upload` (multipart)
-- `POST /api/v1/data-sources/import`
+- `POST /api/v1/data-sources/import` (requires `connection_string` + `query` for DB type)
 - `POST /api/v1/data-sources/disconnect`
 - `GET /api/v1/saved-sources`
 - `POST /api/v1/saved-sources/reconnect`
-- `GET /api/v1/platforms/{platform}/env-status`
-- `POST /api/v1/platforms/{platform}/connect`
+- `GET /api/v1/platforms/shopify/env-status` (Shopify only — no generic `/{platform}/env-status`)
+- `POST /api/v1/platforms/{platform}/connect` (credential-based, not used by CLI auto-connect)
 
 ### Part C: InProcessRunner Implementation
 
@@ -366,13 +430,17 @@ New `data_source` sub-app:
 ```
 shipagent data-source status
 shipagent data-source connect <file>
-shipagent data-source connect --db <conn-string>
-shipagent data-source connect --platform <name>
+shipagent data-source connect --db <conn-string> --query <sql>
+shipagent data-source connect --platform shopify
 shipagent data-source list-saved
 shipagent data-source reconnect <name-or-id>
 shipagent data-source disconnect
 shipagent data-source schema
 ```
+
+**Note on `--db`**: The backend requires BOTH `connection_string` AND `query` for database imports (`data_sources.py:75-85`). The `--query` parameter is mandatory when using `--db`. Example: `shipagent data-source connect --db "postgresql://..." --query "SELECT * FROM orders WHERE status = 'open'"`.
+
+**Note on `--platform`**: Only Shopify has an env-status auto-reconnect endpoint (`/shopify/env-status`). The `--platform` flag is scoped to `shopify` only. Other platforms (WooCommerce, SAP, Oracle) require explicit credential-based connection via the agent conversation or REST API. A generic `/{platform}/env-status` endpoint is not in scope for this PR.
 
 ### Part E: Interact Enhancement
 
@@ -397,9 +465,10 @@ New formatters: `format_source_status()`, `format_saved_sources()`, `format_sche
 
 ### Tests
 
-- `tests/cli/test_data_source_commands.py`
-- `tests/cli/test_protocol_data_source.py`
-- `tests/cli/test_config_data_source.py`
+- `tests/cli/test_protocol.py` — extend with data source protocol method tests (existing file)
+- `tests/cli/test_http_client.py` — extend with data source HTTP method tests (existing file)
+- `tests/cli/test_config.py` — extend with DefaultDataSourceConfig tests (existing file)
+- `tests/cli/test_data_source_commands.py` — new file for Typer sub-app command tests
 
 ---
 

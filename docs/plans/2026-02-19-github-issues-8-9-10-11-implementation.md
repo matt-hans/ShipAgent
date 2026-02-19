@@ -271,47 +271,123 @@ Closes #10"
 
 ---
 
-## Task 2: Fix filter_resolver.py explanation
+## Task 2: Fix filter_resolver.py explanation (root AND nested groups)
 
 **Files:**
-- Modify: `src/orchestrator/filter_resolver.py:843-855`
+- Modify: `src/orchestrator/filter_resolver.py:843-876`
+- Test: `tests/orchestrator/test_filter_resolver.py` (existing file, add tests)
 
-**Step 1: Write the failing test**
+**Step 1: Write the failing tests**
 
-Add to a new test or existing test file `tests/orchestrator/test_filter_resolver.py`:
+Add to `tests/orchestrator/test_filter_resolver.py`:
 
 ```python
-def test_resolver_explanation_preserves_root_logic():
-    """Root-level OR groups use 'OR' not semicolons in explanation."""
-    root = FilterGroup(
-        logic="OR",
-        conditions=[
-            FilterCondition(
-                column="weight",
-                operator=FilterOperator.gt,
-                operands=[TypedLiteral(type="number", value=24)],
-            ),
-            FilterCondition(
-                column="state",
-                operator=FilterOperator.eq,
-                operands=[TypedLiteral(type="string", value="CA")],
-            ),
-        ],
-    )
-    from src.orchestrator.filter_resolver import _build_explanation
-    result = _build_explanation(root)
-    assert "OR" in result or "or" in result
-    assert ";" not in result
+from src.orchestrator.filter_resolver import _build_explanation
+from src.orchestrator.models.filter_spec import (
+    FilterCondition, FilterGroup, FilterOperator, TypedLiteral,
+)
+
+
+class TestResolverExplanationOperators:
+    """Verify that resolver explanations preserve AND/OR logic."""
+
+    def test_root_or_uses_or_joiner(self):
+        """Root-level OR groups use 'OR' not semicolons in explanation."""
+        root = FilterGroup(
+            logic="OR",
+            conditions=[
+                FilterCondition(
+                    column="weight",
+                    operator=FilterOperator.gt,
+                    operands=[TypedLiteral(type="number", value=24)],
+                ),
+                FilterCondition(
+                    column="state",
+                    operator=FilterOperator.eq,
+                    operands=[TypedLiteral(type="string", value="CA")],
+                ),
+            ],
+        )
+        result = _build_explanation(root)
+        assert "OR" in result or "or" in result
+        assert ";" not in result
+
+    def test_nested_or_inside_and_preserves_child_logic(self):
+        """Nested OR group inside AND parent uses OR joiner, not parent's AND."""
+        root = FilterGroup(
+            logic="AND",
+            conditions=[
+                FilterGroup(
+                    logic="OR",
+                    conditions=[
+                        FilterCondition(
+                            column="state",
+                            operator=FilterOperator.eq,
+                            operands=[TypedLiteral(type="string", value="CA")],
+                        ),
+                        FilterCondition(
+                            column="state",
+                            operator=FilterOperator.eq,
+                            operands=[TypedLiteral(type="string", value="TX")],
+                        ),
+                    ],
+                ),
+                FilterCondition(
+                    column="weight",
+                    operator=FilterOperator.gt,
+                    operands=[TypedLiteral(type="number", value=10)],
+                ),
+            ],
+        )
+        result = _build_explanation(root)
+        # The nested OR group must use "or" joiner, not parent's "and"
+        assert "or" in result.lower()
+        assert "and" in result.lower()
+        assert ";" not in result
+
+    def test_nested_and_inside_or_preserves_child_logic(self):
+        """Nested AND group inside OR parent uses AND joiner, not parent's OR."""
+        root = FilterGroup(
+            logic="OR",
+            conditions=[
+                FilterGroup(
+                    logic="AND",
+                    conditions=[
+                        FilterCondition(
+                            column="state",
+                            operator=FilterOperator.eq,
+                            operands=[TypedLiteral(type="string", value="CA")],
+                        ),
+                        FilterCondition(
+                            column="weight",
+                            operator=FilterOperator.gt,
+                            operands=[TypedLiteral(type="number", value=10)],
+                        ),
+                    ],
+                ),
+                FilterCondition(
+                    column="value",
+                    operator=FilterOperator.gt,
+                    operands=[TypedLiteral(type="number", value=200)],
+                ),
+            ],
+        )
+        result = _build_explanation(root)
+        assert "and" in result.lower()
+        assert "or" in result.lower()
+        assert ";" not in result
 ```
 
-**Step 2: Run test to verify it fails**
+**Step 2: Run tests to verify they fail**
 
-Run: `pytest tests/orchestrator/test_filter_resolver.py::test_resolver_explanation_preserves_root_logic -v`
-Expected: FAIL — current uses `"; ".join`.
+Run: `pytest tests/orchestrator/test_filter_resolver.py::TestResolverExplanationOperators -v`
+Expected: FAIL — root uses `"; ".join` and nested groups use parent's logic.
 
-**Step 3: Fix `_build_explanation` in filter_resolver.py**
+**Step 3: Fix both `_build_explanation` AND `_explain_group` in filter_resolver.py**
 
-Replace lines 843-855 in `src/orchestrator/filter_resolver.py`:
+Two bugs require two fixes:
+
+Fix 1: Replace lines 843-855 (`_build_explanation`):
 
 ```python
 def _build_explanation(root: FilterGroup) -> str:
@@ -332,7 +408,31 @@ def _build_explanation(root: FilterGroup) -> str:
     return "Filter: " + joiner.join(parts) + "."
 ```
 
-**Step 4: Run test to verify it passes**
+Fix 2: Replace line 874 in `_explain_group` — change `group.logic` to `child.logic`:
+
+```python
+def _explain_group(group: FilterGroup) -> list[str]:
+    """Recursively explain a filter group.
+
+    Args:
+        group: The group to explain.
+
+    Returns:
+        List of explanation strings.
+    """
+    parts = []
+    for child in group.conditions:
+        if isinstance(child, FilterCondition):
+            parts.append(_explain_condition(child))
+        elif isinstance(child, FilterGroup):
+            sub = _explain_group(child)
+            if sub:
+                joiner = f" {child.logic.lower()} "  # BUG FIX: was group.logic (parent), now child.logic
+                parts.append(f"({joiner.join(sub)})")
+    return parts
+```
+
+**Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/orchestrator/test_filter_resolver.py -v`
 Expected: ALL PASS.
@@ -348,8 +448,12 @@ Expected: ALL PASS.
 git add src/orchestrator/filter_resolver.py tests/orchestrator/test_filter_resolver.py
 git commit -m "fix(#10): preserve AND/OR logic in filter_resolver explanation
 
-Same root cause as filter_compiler — _build_explanation used semicolons
-at root level. Now uses root.logic as the joiner."
+Two fixes:
+1. _build_explanation: semicolons -> root.logic joiner at root level
+2. _explain_group: group.logic (parent) -> child.logic (child) for nested groups
+
+Before: OR-inside-AND rendered as '(state equals CA and state equals TX)'
+After:  OR-inside-AND renders as '(state equals CA or state equals TX)'"
 ```
 
 ---
@@ -576,7 +680,7 @@ class TestValidateDomesticPayload:
 Run: `pytest tests/services/test_ups_payload_builder.py::TestValidateDomesticPayload -v`
 Expected: FAIL — `ImportError: cannot import name 'validate_domestic_payload'`
 
-**Step 3: Implement `validate_domestic_payload()`**
+**Step 3: Implement `validate_domestic_payload()` and `apply_compatibility_corrections()`**
 
 Add to `src/services/ups_payload_builder.py` (after imports, before `resolve_packaging_code`):
 
@@ -707,35 +811,129 @@ def _get_weight_lbs(order_data: dict[str, Any]) -> float | None:
     return None
 ```
 
+Also add `apply_compatibility_corrections()` — the shared function that BOTH core.py (preview) and batch_engine.py (execute) will call:
+
+```python
+def apply_compatibility_corrections(
+    order_data: dict[str, Any],
+    service_code: str,
+) -> list[ValidationIssue]:
+    """Validate and auto-correct compatibility issues in-place.
+
+    This is the SINGLE shared validation path called from both:
+    - core.py._build_job_row_data_with_metadata() (preview-time)
+    - batch_engine._process_row() (execution-time, including confirm-time overrides)
+
+    Auto-correctable issues are fixed in order_data in-place.
+    Non-correctable errors are returned for the caller to handle.
+
+    Args:
+        order_data: Order data dict (mutated in-place for auto-corrections).
+        service_code: Effective UPS service code.
+
+    Returns:
+        List of ValidationIssue objects.
+    """
+    issues = validate_domestic_payload(order_data, service_code)
+    warnings: list[str] = []
+
+    for issue in issues:
+        if issue.field == "packaging_type" and issue.severity == "error":
+            # Auto-correct express-only packaging to Customer Supplied
+            pkg_code = resolve_packaging_code(order_data.get("packaging_type"))
+            if pkg_code in EXPRESS_ONLY_PACKAGING and service_code not in EXPRESS_CLASS_SERVICES:
+                original = order_data.get("packaging_type", pkg_code)
+                order_data["packaging_type"] = DEFAULT_PACKAGING_CODE.value
+                order_data["_packaging_auto_reset"] = (
+                    f"Packaging reset from '{original}' to Customer Supplied: "
+                    f"incompatible with service {service_code}"
+                )
+                issue.auto_corrected = True
+                issue.severity = "warning"
+                warnings.append(order_data["_packaging_auto_reset"])
+
+        if issue.field == "saturday_delivery" and issue.auto_corrected:
+            # Clear Saturday Delivery flag
+            order_data["saturday_delivery"] = ""
+            order_data["_saturday_delivery_stripped"] = (
+                f"Saturday Delivery removed: not supported by service {service_code}"
+            )
+            warnings.append(order_data["_saturday_delivery_stripped"])
+
+    # Surface auto-corrections as row warnings for preview display
+    existing_warnings = order_data.get("_validation_warnings", [])
+    if isinstance(existing_warnings, str):
+        existing_warnings = [existing_warnings] if existing_warnings else []
+    order_data["_validation_warnings"] = existing_warnings + warnings
+
+    return issues
+```
+
+And add tests for `apply_compatibility_corrections`:
+
+```python
+class TestApplyCompatibilityCorrections:
+    """Shared validation + auto-correction function."""
+
+    def test_letter_with_ground_auto_corrected(self):
+        """Letter packaging auto-corrected to Customer Supplied for Ground."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"packaging_type": "01"}
+        issues = apply_compatibility_corrections(order_data, "03")
+        assert order_data["packaging_type"] == "02"  # Customer Supplied
+        assert "_packaging_auto_reset" in order_data
+        assert any(i.auto_corrected for i in issues)
+
+    def test_saturday_delivery_stripped_for_ground(self):
+        """Saturday Delivery auto-stripped for Ground."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"saturday_delivery": "true"}
+        issues = apply_compatibility_corrections(order_data, "03")
+        assert not order_data.get("saturday_delivery")
+        assert "_saturday_delivery_stripped" in order_data
+
+    def test_overweight_not_auto_corrected(self):
+        """Overweight errors are NOT auto-corrected."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"packaging_type": "01", "weight": "5.0"}
+        issues = apply_compatibility_corrections(order_data, "01")
+        errors = [i for i in issues if i.severity == "error" and not i.auto_corrected]
+        assert any("weight" in i.message.lower() for i in errors)
+```
+
 **Step 4: Run tests to verify they pass**
 
-Run: `pytest tests/services/test_ups_payload_builder.py::TestValidateDomesticPayload -v`
+Run: `pytest tests/services/test_ups_payload_builder.py::TestValidateDomesticPayload tests/services/test_ups_payload_builder.py::TestApplyCompatibilityCorrections -v`
 Expected: ALL PASS.
 
 **Step 5: Commit**
 
 ```bash
 git add src/services/ups_payload_builder.py tests/services/test_ups_payload_builder.py
-git commit -m "feat(#9): add validate_domestic_payload() pre-flight validation
+git commit -m "feat(#9): add validate_domestic_payload() + apply_compatibility_corrections()
 
-Checks: packaging-service compatibility, international-only packaging,
-Letter weight limit, Saturday Delivery compatibility, per-service weight limit.
-Returns list of ValidationIssue objects."
+validate_domestic_payload: pre-flight validation for service-packaging-weight.
+apply_compatibility_corrections: shared auto-correct path called from both
+core.py (preview) and batch_engine._process_row (execute). Auto-corrects
+express-only packaging and Saturday Delivery for non-express services."
 ```
 
 ---
 
-## Task 5: Add auto-reset on service override in core.py
+## Task 5: Integrate shared validation in core.py (preview-time path)
 
 **Files:**
 - Modify: `src/orchestrator/agent/tools/core.py:259-262`
-- Test: `tests/orchestrator/agent/test_tools_core.py` (or new test file)
+- Test: `tests/orchestrator/agent/test_tools_core.py` (new file, follows existing `test_tools_*.py` pattern)
 
 **Step 1: Write the failing test**
+
+Create `tests/orchestrator/agent/test_tools_core.py`:
 
 ```python
 """Tests for service override auto-reset in core.py."""
 
+import json
 from src.orchestrator.agent.tools.core import _build_job_row_data_with_metadata
 
 
@@ -746,9 +944,7 @@ class TestServiceOverrideAutoReset:
         """UPS Letter packaging auto-resets to Customer Supplied for Ground."""
         rows = [{"ship_to_name": "Test", "packaging_type": "01", "weight": "0.5"}]
         result, _ = _build_job_row_data_with_metadata(rows, service_code_override="03")
-        import json
         order_data = json.loads(result[0]["order_data"])
-        # Packaging should have been reset
         assert order_data.get("packaging_type") != "01"
         assert order_data.get("_packaging_auto_reset") is not None
 
@@ -756,7 +952,6 @@ class TestServiceOverrideAutoReset:
         """Customer Supplied packaging is not touched on Ground override."""
         rows = [{"ship_to_name": "Test", "packaging_type": "02", "weight": "5.0"}]
         result, _ = _build_job_row_data_with_metadata(rows, service_code_override="03")
-        import json
         order_data = json.loads(result[0]["order_data"])
         assert "_packaging_auto_reset" not in order_data
 
@@ -764,7 +959,6 @@ class TestServiceOverrideAutoReset:
         """Saturday Delivery flag is stripped when overriding to Ground."""
         rows = [{"ship_to_name": "Test", "saturday_delivery": "true"}]
         result, _ = _build_job_row_data_with_metadata(rows, service_code_override="03")
-        import json
         order_data = json.loads(result[0]["order_data"])
         assert not order_data.get("saturday_delivery")
 ```
@@ -774,58 +968,21 @@ class TestServiceOverrideAutoReset:
 Run: `pytest tests/orchestrator/agent/test_tools_core.py::TestServiceOverrideAutoReset -v`
 Expected: FAIL — no auto-reset logic exists.
 
-**Step 3: Implement auto-reset**
+**Step 3: Implement using shared `apply_compatibility_corrections()`**
 
 In `src/orchestrator/agent/tools/core.py`, in `_build_job_row_data_with_metadata()`, after line 262 (`row["service_code"] = service_code_override`):
 
 ```python
     if service_code_override:
+        from src.services.ups_payload_builder import apply_compatibility_corrections
         for row in normalized_rows:
             if isinstance(row, dict):
                 row["service_code"] = service_code_override
-                # Auto-reset incompatible packaging
-                current_pkg = resolve_packaging_code(row.get("packaging_type"))
-                if (current_pkg in EXPRESS_ONLY_PACKAGING
-                        and service_code_override not in EXPRESS_CLASS_SERVICES):
-                    original_pkg = row.get("packaging_type", "")
-                    row["packaging_type"] = DEFAULT_PACKAGING_CODE.value
-                    row["_packaging_auto_reset"] = (
-                        f"Packaging reset from '{original_pkg}' to Customer Supplied: "
-                        f"incompatible with service {service_code_override}"
-                    )
-                # Auto-strip Saturday Delivery for non-express services
-                if (_is_truthy(row.get("saturday_delivery"))
-                        and service_code_override not in SATURDAY_DELIVERY_SERVICES):
-                    row["saturday_delivery"] = ""
-                    row["_saturday_delivery_stripped"] = (
-                        f"Saturday Delivery removed: not supported by service "
-                        f"{service_code_override}"
-                    )
+                # Shared validation + auto-correction (same function used by batch_engine)
+                apply_compatibility_corrections(row, service_code_override)
 ```
 
-Add imports at top of `core.py`:
-
-```python
-from src.services.ups_constants import (
-    DEFAULT_PACKAGING_CODE,
-    EXPRESS_CLASS_SERVICES,
-    EXPRESS_ONLY_PACKAGING,
-    SATURDAY_DELIVERY_SERVICES,
-)
-from src.services.ups_payload_builder import resolve_packaging_code
-```
-
-Also add a `_is_truthy` helper (or import if already available):
-
-```python
-def _is_truthy(value: Any) -> bool:
-    """Check if a value represents a truthy flag."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in ("true", "1", "yes", "y")
-    return bool(value)
-```
+This delegates ALL compatibility logic to the shared `apply_compatibility_corrections()` function from Task 4. No inline auto-reset logic in core.py — it calls the same function that batch_engine will call in Task 6.
 
 **Step 4: Run tests to verify they pass**
 
@@ -836,22 +993,22 @@ Expected: ALL PASS.
 
 ```bash
 git add src/orchestrator/agent/tools/core.py tests/orchestrator/agent/test_tools_core.py
-git commit -m "feat(#9): auto-reset incompatible packaging on service override
+git commit -m "feat(#9): integrate shared compatibility validation in core.py preview path
 
-When service_code_override changes the service class, auto-resets
-express-only packaging (Letter, PAK, Express Box, Tube) to Customer
-Supplied and strips Saturday Delivery for non-express services.
-Metadata keys _packaging_auto_reset and _saturday_delivery_stripped
-surface adjustments in preview."
+Calls apply_compatibility_corrections() from ups_payload_builder for
+service override validation. Same function used by batch_engine (Task 6)
+ensuring identical validation in both preview and execute paths."
 ```
 
 ---
 
-## Task 6: Integrate domestic validation into batch_engine.py
+## Task 6: Integrate shared validation into batch_engine.py (execute-time path)
 
 **Files:**
 - Modify: `src/services/batch_engine.py` (after international validation ~line 524)
-- Test: `tests/services/test_batch_engine.py`
+- Test: `tests/services/test_batch_engine.py` (existing file, add new test class)
+
+This is the **critical second integration point** for the shared validation. The confirm endpoint (`preview.py:231`) passes `selected_service_code` to `batch_executor.py:196` which passes it to `BatchEngine.execute()` as `service_code`. At line 503 of `_process_row()`, `eff_service = service_code or order_data.get("service_code", ...)` — this means the confirm-time service override is applied HERE, bypassing core.py entirely. We MUST validate here too.
 
 **Step 1: Write the failing test**
 
@@ -861,15 +1018,22 @@ Add to `tests/services/test_batch_engine.py`:
 class TestDomesticValidation:
     """Domestic pre-flight validation in _process_row."""
 
-    @pytest.mark.asyncio
-    async def test_letter_with_ground_fails_row(self):
-        """Row with Letter+Ground gets needs_review status."""
-        # This test verifies that validate_domestic_payload is called
-        # during row processing. The exact integration depends on
-        # batch_engine internals — see Step 3 for the implementation.
-        from src.services.ups_payload_builder import validate_domestic_payload
-        issues = validate_domestic_payload({"packaging_type": "01"}, "03")
-        assert any(i.severity == "error" for i in issues)
+    def test_letter_with_ground_detected(self):
+        """Shared validation detects Letter+Ground incompatibility."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"packaging_type": "01"}
+        issues = apply_compatibility_corrections(order_data, "03")
+        # Should auto-correct packaging
+        assert order_data["packaging_type"] == "02"
+        assert "_packaging_auto_reset" in order_data
+
+    def test_overweight_letter_not_auto_corrected(self):
+        """Overweight Letter is not auto-correctable — returns hard error."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"packaging_type": "01", "weight": "5.0"}
+        issues = apply_compatibility_corrections(order_data, "01")
+        errors = [i for i in issues if i.severity == "error" and not i.auto_corrected]
+        assert any("weight" in i.message.lower() for i in errors)
 ```
 
 **Step 2: Implement integration**
@@ -877,21 +1041,28 @@ class TestDomesticValidation:
 In `src/services/batch_engine.py`, add import:
 
 ```python
-from src.services.ups_payload_builder import validate_domestic_payload
+from src.services.ups_payload_builder import apply_compatibility_corrections
 ```
 
-In `_process_row()`, after the international validation block (after the block that calls `validate_international_readiness`), add:
+In `_process_row()`, after the international validation block (after the block that calls `validate_international_readiness` ~line 524), and AFTER `eff_service` is resolved at line 503, add:
 
 ```python
-        # Domestic pre-flight validation
-        domestic_issues = validate_domestic_payload(order_data, eff_service)
-        domestic_errors = [i for i in domestic_issues if i.severity == "error"]
+        # Shared domestic pre-flight validation + auto-correction
+        # This covers confirm-time service overrides (selected_service_code
+        # from preview.py:231 → batch_executor → BatchEngine.execute)
+        domestic_issues = apply_compatibility_corrections(order_data, eff_service)
+        domestic_errors = [
+            i for i in domestic_issues
+            if i.severity == "error" and not i.auto_corrected
+        ]
         if domestic_errors:
             raise ValueError(
                 "Pre-flight validation failed: "
                 + "; ".join(i.message for i in domestic_errors)
             )
 ```
+
+This calls the **same shared function** as core.py (Task 5), ensuring identical validation whether the service code was set at preview time or at confirm time.
 
 **Step 3: Run tests**
 
@@ -902,21 +1073,23 @@ Expected: ALL PASS.
 
 ```bash
 git add src/services/batch_engine.py tests/services/test_batch_engine.py
-git commit -m "feat(#9): integrate domestic validation into batch_engine._process_row
+git commit -m "feat(#9): integrate shared validation into batch_engine execute path
 
-Calls validate_domestic_payload() after international validation.
-Rows with errors get needs_review status. Warnings are logged."
+Calls apply_compatibility_corrections() after eff_service resolution
+in _process_row(). Covers confirm-time selected_service_code overrides
+from preview.py → batch_executor → BatchEngine. Same shared function
+as core.py preview path."
 ```
 
 ---
 
-## Task 7: Add multi-field override support to pipeline.py
+## Task 7: Add multi-field override support to pipeline.py + system prompt
 
 **Files:**
 - Modify: `src/orchestrator/agent/tools/pipeline.py` (~line 820-835)
 - Modify: `src/orchestrator/agent/system_prompt.py`
 
-**Step 1: Implement**
+**Step 1: Implement pipeline packaging override**
 
 In `src/orchestrator/agent/tools/pipeline.py`, extend the tool definition for `ship_command_pipeline` to accept `packaging_type` as an optional parameter. In the override extraction block:
 
@@ -930,6 +1103,8 @@ if raw_packaging:
 
 Then pass `packaging_override` through to `_build_job_row_data_with_metadata` or apply directly to rows before the service override check.
 
+**Step 2: Update system prompt**
+
 In `src/orchestrator/agent/system_prompt.py`, add guidance:
 
 ```
@@ -937,21 +1112,27 @@ When overriding service for a batch, the system auto-resets incompatible packagi
 (Letter, PAK, Express Box, Tube → Customer Supplied for Ground/3 Day Select).
 Saturday Delivery is also auto-stripped for non-express services. If specific
 packaging is needed, include packaging_type in the tool call.
+
+Auto-corrections appear as warnings in the preview card — no separate
+"adjustments" field. The existing warning rendering handles this.
 ```
 
-**Step 2: Run tests**
+**Note on UX:** Auto-corrections surface through the **existing `warnings` field** on `PreviewRowResponse` and `rows_with_warnings` counter. No new `adjustments` API field, TypeScript type, or PreviewCard rendering is needed. The `_validation_warnings` list added by `apply_compatibility_corrections()` is included in the row's warnings during preview response construction.
+
+**Step 3: Run tests**
 
 Run: `pytest tests/orchestrator/agent/ -v -k "not stream and not sse"`
 Expected: ALL PASS.
 
-**Step 3: Commit**
+**Step 4: Commit**
 
 ```bash
 git add src/orchestrator/agent/tools/pipeline.py src/orchestrator/agent/system_prompt.py
 git commit -m "feat(#9): add packaging_type override to pipeline tool + system prompt guidance
 
 Allows agent to specify packaging alongside service in ship_command_pipeline.
-System prompt documents auto-reset behavior.
+System prompt documents auto-reset behavior and that auto-corrections
+surface as warnings in the existing preview card warning system.
 
 Closes #9"
 ```
@@ -962,7 +1143,7 @@ Closes #9"
 
 **Files:**
 - Modify: `src/mcp/external_sources/models.py:47-94`
-- Test: `tests/mcp/external_sources/test_models.py` (new or existing)
+- Test: `tests/mcp/external_sources/test_clients.py` (existing file, add new ExternalOrder test class)
 
 **Step 1: Write the failing test**
 
@@ -1015,6 +1196,29 @@ class TestExternalOrderExpansion:
             custom_attributes={"gift_message": "Happy Birthday", "priority": "high"},
         )
         assert order.custom_attributes["gift_message"] == "Happy Birthday"
+
+    def test_backward_compat_without_new_fields(self):
+        """ExternalOrder constructed without new fields still works (backward compat).
+
+        This validates that WooCommerce, SAP, and Oracle clients won't break
+        since they don't pass the new fields.
+        """
+        order = ExternalOrder(
+            platform="woocommerce",
+            order_id="456",
+            status="processing",
+            created_at="2026-01-15",
+            customer_name="Existing Customer",
+            ship_to_name="Existing Customer",
+            ship_to_address1="789 Oak Ave",
+            ship_to_city="Chicago",
+            ship_to_state="IL",
+            ship_to_postal_code="60601",
+        )
+        # All new fields should have safe defaults
+        assert order.customer_tags is None
+        assert order.order_note is None
+        assert order.custom_attributes == {}
 ```
 
 **Step 2: Run test to verify it fails**
@@ -1057,7 +1261,7 @@ Expected: ALL PASS.
 **Step 5: Commit**
 
 ```bash
-git add src/mcp/external_sources/models.py tests/mcp/external_sources/test_models.py
+git add src/mcp/external_sources/models.py tests/mcp/external_sources/test_clients.py
 git commit -m "feat(#11): expand ExternalOrder with 9 new fields + custom_attributes
 
 Adds customer_tags, customer_order_count, customer_total_spent, order_note,
@@ -1071,7 +1275,7 @@ and custom_attributes dict for arbitrary platform extensibility."
 
 **Files:**
 - Modify: `src/mcp/external_sources/clients/shopify.py` (`_normalize_order()`)
-- Test: `tests/mcp/external_sources/test_shopify_normalization.py`
+- Test: `tests/mcp/external_sources/test_shopify_normalize.py`
 
 **Step 1: Write the failing test**
 
@@ -1129,7 +1333,41 @@ Note: You will need to create a `_make_shopify_order()` test helper that builds 
 
 **Step 3: Update `_normalize_order()` in shopify.py**
 
-Add new field population in `_normalize_order()`:
+**CRITICAL**: Also update `_prepare_shopify_import_rows()` in `src/orchestrator/agent/tools/data.py:743-769` to serialize `custom_attributes` as valid JSON before it reaches `import_records()`. The import pipeline (`source_info_tools.py:109`) calls `str(record.get(col, ""))` on every value, which converts a Python dict to repr format (e.g., `"{'gift_message': 'yes'}"`) — NOT valid JSON. DuckDB's `json_extract_string()` will fail on this.
+
+In `_prepare_shopify_import_rows()`, after building the row dict (around line 755):
+
+```python
+import json
+
+# Serialize custom_attributes as valid JSON for DuckDB json_extract_string()
+custom_attrs = row.get("custom_attributes")
+if isinstance(custom_attrs, dict):
+    row["custom_attributes"] = json.dumps(custom_attrs)
+elif custom_attrs is None:
+    row["custom_attributes"] = "{}"
+```
+
+Add test for this serialization:
+
+```python
+def test_custom_attributes_serialized_as_json(self):
+    """custom_attributes dict is serialized as valid JSON string, not Python repr."""
+    import json
+    shopify_order = _make_shopify_order(
+        note_attributes=[{"name": "gift_message", "value": "Happy Birthday"}]
+    )
+    order = _normalize_order(shopify_order)
+    # Simulate what _prepare_shopify_import_rows does
+    row = {k: v for k, v in order.dict().items() if k not in ("items", "raw_data")}
+    if isinstance(row.get("custom_attributes"), dict):
+        row["custom_attributes"] = json.dumps(row["custom_attributes"])
+    # Verify it's valid JSON
+    parsed = json.loads(row["custom_attributes"])
+    assert parsed["gift_message"] == "Happy Birthday"
+```
+
+Now, add new field population in `_normalize_order()`:
 
 ```python
 # Customer enrichment
@@ -1200,7 +1438,7 @@ Expected: ALL PASS.
 **Step 5: Commit**
 
 ```bash
-git add src/mcp/external_sources/clients/shopify.py tests/mcp/external_sources/test_shopify_normalization.py
+git add src/mcp/external_sources/clients/shopify.py tests/mcp/external_sources/test_shopify_normalize.py
 git commit -m "feat(#11): populate new ExternalOrder fields in Shopify normalization
 
 Extracts customer_tags, customer_order_count, customer_total_spent,
@@ -1419,6 +1657,10 @@ Add field reading after existing field handling:
         result["shipmentDate"] = order_data["shipment_date"]
 
     # ShipFrom (dynamic, for multi-warehouse)
+    # PRECEDENCE: ShipFrom from row-level data overrides system Shipper for
+    # the physical origin address. Shipper block always uses system/env config.
+    # If no ship_from_* fields present, ShipFrom is omitted entirely —
+    # UPS defaults to using Shipper address as ship-from.
     ship_from_keys = [
         "ship_from_name", "ship_from_address1", "ship_from_address2",
         "ship_from_city", "ship_from_state", "ship_from_postal_code",
@@ -1559,21 +1801,82 @@ Also add to `_enrich_international_forms()`:
         intl_forms["InsuranceCharges"] = {"MonetaryValue": simplified["insuranceCharges"]}
 ```
 
-**Step 4: Run tests**
+**Step 4: Add rate payload parity for surcharge-affecting indicators**
+
+Also update `build_rate_payload()` (around line 990+) to include surcharge-affecting indicators. Without these, preview costs will be lower than actual execution costs when these options are enabled:
+
+```python
+# In build_rate_payload(), after existing SaturdayDeliveryIndicator handling:
+rate_svc_options = rate_shipment.setdefault("ShipmentServiceOptions", {})
+
+_RATE_INDICATOR_MAP = [
+    ("holdForPickup", "HoldForPickupIndicator"),
+    ("liftGatePickup", "LiftGateForPickUpIndicator"),
+    ("liftGateDelivery", "LiftGateForDeliveryIndicator"),
+    ("carbonNeutral", "UPScarbonneutralIndicator"),
+]
+for simplified_key, ups_key in _RATE_INDICATOR_MAP:
+    if simplified.get(simplified_key):
+        rate_svc_options[ups_key] = ""
+
+if simplified.get("insideDelivery"):
+    rate_svc_options["InsideDelivery"] = {"Code": str(simplified["insideDelivery"])}
+
+# Package-level surcharge indicators for rating
+for pkg in rate_shipment.get("Package", []):
+    if simplified.get("largePackage"):
+        pkg["LargePackageIndicator"] = ""
+    if simplified.get("additionalHandling"):
+        pkg["AdditionalHandlingIndicator"] = ""
+```
+
+Add a test for rate payload parity:
+
+```python
+class TestRatePayloadParity:
+    """Rate payload includes surcharge-affecting indicators."""
+
+    def test_lift_gate_in_rate_payload(self):
+        """LiftGateDelivery affects surcharges — must be in rate payload."""
+        order_data = {"lift_gate_delivery": "true",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        simplified = build_shipment_request(order_data)
+        rate = build_rate_payload(simplified)
+        options = rate["RateRequest"]["Shipment"].get("ShipmentServiceOptions", {})
+        assert "LiftGateForDeliveryIndicator" in options
+
+    def test_large_package_in_rate_payload(self):
+        """LargePackageIndicator affects surcharges — must be in rate payload."""
+        order_data = {"large_package": "true",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        simplified = build_shipment_request(order_data)
+        rate = build_rate_payload(simplified)
+        packages = rate["RateRequest"]["Shipment"].get("Package", [])
+        assert any("LargePackageIndicator" in pkg for pkg in packages)
+```
+
+**Step 5: Run tests**
 
 Run: `pytest tests/services/test_ups_payload_builder.py -v`
 Expected: ALL PASS.
 
-**Step 5: Commit**
+**Step 6: Commit**
 
 ```bash
 git add src/services/ups_payload_builder.py tests/services/test_ups_payload_builder.py
-git commit -m "feat(#11): add P0+P1 UPS payload field support
+git commit -m "feat(#11): add P0+P1 UPS payload field support + rate payload parity
 
-Implements end-to-end support for: ShipmentDate, ShipFrom (dynamic),
+Implements end-to-end support for: ShipmentDate, ShipFrom (dynamic w/ precedence),
 CostCenter, 10 boolean service/package indicators, notification email,
-InsideDelivery, and 5 international forms fields (TermsOfShipment, PO#,
-Comments, FreightCharges, InsuranceCharges).
+InsideDelivery, and 5 international forms fields.
+
+Rate payload mirrors surcharge-affecting indicators (LiftGate, LargePackage,
+AdditionalHandling, CarbonNeutral, InsideDelivery, HoldForPickup) for
+accurate preview cost estimation.
 
 Closes #11"
 ```
@@ -1582,9 +1885,11 @@ Closes #11"
 
 ## Task 12: Add DuckDB JSON path filter support for custom_attributes
 
+**Depends on:** Task 9 (json.dumps serialization ensures the VARCHAR column contains valid JSON)
+
 **Files:**
 - Modify: `src/orchestrator/filter_compiler.py` (`_compile_condition()`)
-- Test: `tests/orchestrator/test_filter_compiler.py`
+- Test: `tests/orchestrator/test_filter_compiler.py` (existing file, add new test class)
 
 **Step 1: Write the failing test**
 
@@ -1607,7 +1912,7 @@ class TestCustomAttributesFiltering:
             )
         )
         schema = SCHEMA_COLS | {"custom_attributes"}
-        col_types = {**COL_TYPES, "custom_attributes": "JSON"}
+        col_types = {**COL_TYPES, "custom_attributes": "VARCHAR"}  # VARCHAR containing valid JSON strings
         result = compile_filter_spec(spec, schema, col_types, SCHEMA_SIG)
         assert "json_extract_string" in result.where_sql
         assert "gift_message" in result.where_sql
@@ -1663,7 +1968,7 @@ custom_attributes JSON column."
 
 **Files:**
 - Modify: `src/cli/protocol.py`
-- Test: (verified by type check)
+- Test: `tests/cli/test_protocol.py` (existing file, extend)
 
 **Step 1: Add data models and protocol methods**
 
@@ -1721,6 +2026,14 @@ Add methods to `ShipAgentClient` protocol:
         """Import a local file as the active data source."""
         ...
 
+    async def connect_db(self, connection_string: str, query: str) -> DataSourceStatus:
+        """Import from a database using connection string and query.
+
+        Both parameters are required — the backend (data_sources.py:75)
+        rejects DB imports without a query.
+        """
+        ...
+
     async def disconnect_source(self) -> None:
         """Disconnect the current data source."""
         ...
@@ -1766,7 +2079,7 @@ get_source_schema, and connect_platform methods."
 
 **Files:**
 - Modify: `src/cli/http_client.py`
-- Test: `tests/cli/test_http_client_data_source.py`
+- Test: `tests/cli/test_http_client.py` (existing file, extend with data source tests)
 
 **Step 1: Implement methods**
 
@@ -1834,11 +2147,28 @@ Add to `HttpClient` class in `src/cli/http_client.py`:
         # Schema details are in the status response
         return [SourceSchemaColumn(name=col, type="VARCHAR") for col in status.columns]
 
+    async def connect_db(self, connection_string: str, query: str) -> DataSourceStatus:
+        """Import from a database using connection string and query."""
+        payload = {"type": "database", "connection_string": connection_string, "query": query}
+        resp = await self._session.post(f"{self._base}/data-sources/import", json=payload)
+        if resp.status_code in (200, 201):
+            return await self.get_source_status()
+        raise ShipAgentClientError(f"Failed to connect DB: {resp.text}", resp.status_code)
+
     async def connect_platform(self, platform: str) -> DataSourceStatus:
-        """Connect an env-configured external platform."""
-        resp = await self._session.get(f"{self._base}/platforms/{platform}/env-status")
+        """Connect an env-configured external platform (Shopify only).
+
+        Only Shopify has an env-status endpoint (/shopify/env-status).
+        Other platforms require credential-based connection via the agent.
+        """
+        if platform.lower() != "shopify":
+            raise ShipAgentClientError(
+                f"Only 'shopify' supports env-based auto-connect. "
+                f"Use the agent conversation for {platform}."
+            )
+        resp = await self._session.get(f"{self._base}/platforms/shopify/env-status")
         if resp.status_code != 200:
-            raise ShipAgentClientError(f"Platform {platform} not configured: {resp.text}")
+            raise ShipAgentClientError(f"Shopify not configured: {resp.text}")
         return await self.get_source_status()
 ```
 
@@ -1922,11 +2252,23 @@ Add to `InProcessRunner` class. These call the gateway directly:
         schema = await gw.get_schema()
         return [SourceSchemaColumn(name=c.name, type=c.type) for c in schema]
 
+    async def connect_db(self, connection_string: str, query: str) -> DataSourceStatus:
+        """Import from a database using connection string and query."""
+        from src.services.gateway_provider import get_data_gateway
+        gw = await get_data_gateway()
+        await gw.import_database(connection_string, query)
+        return await self.get_source_status()
+
     async def connect_platform(self, platform: str) -> DataSourceStatus:
-        """Connect an env-configured external platform."""
+        """Connect an env-configured external platform (Shopify only)."""
+        if platform.lower() != "shopify":
+            raise ValueError(
+                f"Only 'shopify' supports env-based auto-connect. "
+                f"Use the agent conversation for {platform}."
+            )
         from src.services.gateway_provider import get_external_sources_client
         client = await get_external_sources_client()
-        await client.connect_platform(platform)
+        await client.connect_platform("shopify")
         return await self.get_source_status()
 ```
 
@@ -1946,7 +2288,9 @@ Direct gateway calls for standalone mode data source management."
 **Files:**
 - Modify: `src/cli/main.py`
 - Modify: `src/cli/output.py`
-- Test: `tests/cli/test_data_source_commands.py`
+- Modify: `src/cli/config.py`
+- Test: `tests/cli/test_data_source_commands.py` (new file for CLI sub-app tests)
+- Test: `tests/cli/test_config.py` (existing file, extend for DefaultDataSourceConfig)
 
 **Step 1: Add Rich formatters to output.py**
 
@@ -2005,19 +2349,32 @@ def data_source_status():
 def data_source_connect(
     file: str = typer.Argument(None, help="Path to CSV or Excel file"),
     db: str = typer.Option(None, "--db", help="Database connection string"),
-    platform: str = typer.Option(None, "--platform", help="Platform name (e.g., shopify)"),
+    query: str = typer.Option(None, "--query", help="SQL query (required with --db)"),
+    platform: str = typer.Option(None, "--platform", help="Platform name (shopify only)"),
 ):
     """Connect a data source (file, database, or platform)."""
     async def _run():
         async with get_client() as client:
             if platform:
+                if platform.lower() != "shopify":
+                    console.print(
+                        f"[red]Only 'shopify' supports env-based auto-connect. "
+                        f"Use the agent conversation for {platform}.[/red]"
+                    )
+                    raise typer.Exit(1)
                 status = await client.connect_platform(platform)
             elif db:
-                status = await client.connect_source(db)
+                if not query:
+                    console.print(
+                        "[red]--query is required with --db. "
+                        "Example: --db 'postgresql://...' --query 'SELECT * FROM orders'[/red]"
+                    )
+                    raise typer.Exit(1)
+                status = await client.connect_db(db, query)
             elif file:
                 status = await client.connect_source(file)
             else:
-                console.print("[red]Specify a file path, --db, or --platform[/red]")
+                console.print("[red]Specify a file path, --db + --query, or --platform shopify[/red]")
                 raise typer.Exit(1)
             console.print(format_source_status(status))
     asyncio.run(_run())
