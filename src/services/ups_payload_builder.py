@@ -542,6 +542,67 @@ def build_shipment_request(
     if _is_truthy(order_data.get("saturday_delivery")):
         result["saturdayDelivery"] = True
 
+    # --- P0+P1 new field support ---
+
+    # Shipment date
+    if order_data.get("shipment_date"):
+        result["shipmentDate"] = order_data["shipment_date"]
+
+    # ShipFrom (dynamic, for multi-warehouse)
+    # PRECEDENCE: ShipFrom from row-level data overrides system Shipper for
+    # the physical origin address. Shipper block always uses system/env config.
+    # If no ship_from_* fields present, ShipFrom is omitted entirely —
+    # UPS defaults to using Shipper address as ship-from.
+    ship_from_keys = [
+        "ship_from_name", "ship_from_address1", "ship_from_address2",
+        "ship_from_city", "ship_from_state", "ship_from_postal_code",
+        "ship_from_country", "ship_from_phone",
+    ]
+    ship_from_data = {k: order_data[k] for k in ship_from_keys if order_data.get(k)}
+    if ship_from_data:
+        result["shipFrom"] = ship_from_data
+
+    # Boolean service option indicators
+    _BOOLEAN_FLAGS = [
+        ("hold_for_pickup", "holdForPickup"),
+        ("lift_gate_pickup", "liftGatePickup"),
+        ("lift_gate_delivery", "liftGateDelivery"),
+        ("direct_delivery_only", "directDeliveryOnly"),
+        ("deliver_to_addressee_only", "deliverToAddresseeOnly"),
+        ("carbon_neutral", "carbonNeutral"),
+        ("dropoff_at_facility", "dropoffAtFacility"),
+        ("shipper_release", "shipperRelease"),
+        ("large_package", "largePackage"),
+        ("additional_handling", "additionalHandling"),
+    ]
+    for order_key, simplified_key in _BOOLEAN_FLAGS:
+        if _is_truthy(order_data.get(order_key)):
+            result[simplified_key] = True
+
+    # Cost center
+    if order_data.get("cost_center"):
+        result["costCenter"] = order_data["cost_center"]
+
+    # Notification email
+    if order_data.get("notification_email"):
+        result["notificationEmail"] = order_data["notification_email"]
+
+    # Inside delivery
+    if order_data.get("inside_delivery"):
+        result["insideDelivery"] = order_data["inside_delivery"]
+
+    # International forms enrichment (P1)
+    if order_data.get("terms_of_shipment"):
+        result["termsOfShipment"] = order_data["terms_of_shipment"]
+    if order_data.get("purchase_order_number"):
+        result["purchaseOrderNumber"] = order_data["purchase_order_number"]
+    if order_data.get("invoice_comments"):
+        result["invoiceComments"] = order_data["invoice_comments"]
+    if order_data.get("freight_charges"):
+        result["freightCharges"] = order_data["freight_charges"]
+    if order_data.get("insurance_charges"):
+        result["insuranceCharges"] = order_data["insurance_charges"]
+
     # --- International enrichment ---
     from src.services.international_rules import get_requirements
 
@@ -1007,6 +1068,36 @@ def build_ups_api_payload(
     if simplified.get("residential"):
         ups_ship_to["Address"]["ResidentialAddressIndicator"] = ""
 
+    # --- P0+P1 new field support ---
+
+    # ShipmentDate
+    if simplified.get("shipmentDate"):
+        shipment["ShipmentDate"] = simplified["shipmentDate"]
+
+    # ShipFrom (dynamic, for multi-warehouse)
+    if simplified.get("shipFrom"):
+        sf = simplified["shipFrom"]
+        shipment["ShipFrom"] = {
+            "Name": truncate_address(sf.get("ship_from_name", ""), UPS_ADDRESS_MAX_LEN),
+            "Address": {
+                "AddressLine": [
+                    truncate_address(sf.get("ship_from_address1", "")),
+                    *([] if not sf.get("ship_from_address2") else [
+                        truncate_address(sf["ship_from_address2"])
+                    ]),
+                ],
+                "City": sf.get("ship_from_city", ""),
+                "StateProvinceCode": sf.get("ship_from_state", ""),
+                "PostalCode": sf.get("ship_from_postal_code", ""),
+                "CountryCode": sf.get("ship_from_country", "US"),
+            },
+            "Phone": {"Number": normalize_phone(sf.get("ship_from_phone"))},
+        }
+
+    # CostCenter
+    if simplified.get("costCenter"):
+        shipment["CostCenter"] = simplified["costCenter"]
+
     # Shipment-level options
     options: dict[str, Any] = shipment.get("ShipmentServiceOptions", {})
     if simplified.get("saturdayDelivery"):
@@ -1015,6 +1106,47 @@ def build_ups_api_payload(
     dc = simplified.get("deliveryConfirmation")
     if dc:
         options["DeliveryConfirmation"] = {"DCISType": str(dc)}
+
+    # ShipmentServiceOptions — boolean indicators
+    _UPS_INDICATOR_MAP = [
+        ("holdForPickup", "HoldForPickupIndicator"),
+        ("liftGatePickup", "LiftGateForPickUpIndicator"),
+        ("liftGateDelivery", "LiftGateForDeliveryIndicator"),
+        ("directDeliveryOnly", "DirectDeliveryOnlyIndicator"),
+        ("deliverToAddresseeOnly", "DeliverToAddresseeOnlyIndicator"),
+        ("carbonNeutral", "UPScarbonneutralIndicator"),
+        ("dropoffAtFacility", "DropoffAtUPSFacilityIndicator"),
+    ]
+    for simplified_key, ups_key in _UPS_INDICATOR_MAP:
+        if simplified.get(simplified_key):
+            options[ups_key] = ""
+
+    # Notification email
+    if simplified.get("notificationEmail"):
+        options["Notification"] = {
+            "NotificationCode": "6",
+            "EMail": {"EMailAddress": [simplified["notificationEmail"]]},
+        }
+
+    # InsideDelivery
+    if simplified.get("insideDelivery"):
+        options["InsideDelivery"] = {"Code": str(simplified["insideDelivery"])}
+
+    # Remove empty ShipmentServiceOptions
+    if not options:
+        shipment.pop("ShipmentServiceOptions", None)
+
+    # Package-level indicators
+    for pkg in ups_packages:
+        pkg_opts = pkg.setdefault("PackageServiceOptions", {})
+        if simplified.get("shipperRelease"):
+            pkg_opts["ShipperReleaseIndicator"] = ""
+        if simplified.get("largePackage"):
+            pkg["LargePackageIndicator"] = ""
+        if simplified.get("additionalHandling"):
+            pkg["AdditionalHandlingIndicator"] = ""
+        if not pkg_opts:
+            pkg.pop("PackageServiceOptions", None)
 
     # --- International enrichment (reads from simplified, set by build_shipment_request) ---
 
@@ -1038,6 +1170,17 @@ def build_ups_api_payload(
     # InternationalForms
     intl_forms = simplified.get("internationalForms")
     if intl_forms:
+        # Enrich with P1 international forms fields
+        if simplified.get("termsOfShipment"):
+            intl_forms["TermsOfShipment"] = simplified["termsOfShipment"]
+        if simplified.get("purchaseOrderNumber"):
+            intl_forms["PurchaseOrderNumber"] = simplified["purchaseOrderNumber"]
+        if simplified.get("invoiceComments"):
+            intl_forms["Comments"] = simplified["invoiceComments"]
+        if simplified.get("freightCharges"):
+            intl_forms["FreightCharges"] = {"MonetaryValue": simplified["freightCharges"]}
+        if simplified.get("insuranceCharges"):
+            intl_forms["InsuranceCharges"] = {"MonetaryValue": simplified["insuranceCharges"]}
         options["InternationalForms"] = intl_forms
 
     if options:
@@ -1195,6 +1338,33 @@ def build_ups_rate_payload(
         shipment.setdefault("ShipmentServiceOptions", {})[
             "SaturdayDeliveryIndicator"
         ] = ""
+
+    # --- P0+P1 surcharge-affecting indicators for rate accuracy ---
+    rate_svc_options = shipment.setdefault("ShipmentServiceOptions", {})
+
+    _RATE_INDICATOR_MAP = [
+        ("holdForPickup", "HoldForPickupIndicator"),
+        ("liftGatePickup", "LiftGateForPickUpIndicator"),
+        ("liftGateDelivery", "LiftGateForDeliveryIndicator"),
+        ("carbonNeutral", "UPScarbonneutralIndicator"),
+    ]
+    for simplified_key, ups_key in _RATE_INDICATOR_MAP:
+        if simplified.get(simplified_key):
+            rate_svc_options[ups_key] = ""
+
+    if simplified.get("insideDelivery"):
+        rate_svc_options["InsideDelivery"] = {"Code": str(simplified["insideDelivery"])}
+
+    # Package-level surcharge indicators for rating
+    for pkg in ups_packages:
+        if simplified.get("largePackage"):
+            pkg["LargePackageIndicator"] = ""
+        if simplified.get("additionalHandling"):
+            pkg["AdditionalHandlingIndicator"] = ""
+
+    # Remove empty ShipmentServiceOptions
+    if not rate_svc_options:
+        shipment.pop("ShipmentServiceOptions", None)
 
     # --- International enrichment for rate accuracy ---
 

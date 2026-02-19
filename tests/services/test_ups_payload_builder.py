@@ -1919,3 +1919,190 @@ class TestApplyCompatibilityCorrections:
         issues = apply_compatibility_corrections(order_data, "01")
         errors = [i for i in issues if i.severity == "error" and not i.auto_corrected]
         assert any("weight" in i.message.lower() for i in errors)
+
+
+# ── Tests for P0+P1 new payload fields ──
+
+
+class TestNewPayloadFields:
+    """P0+P1 UPS payload field coverage."""
+
+    def test_shipment_date_in_simplified(self):
+        """ShipmentDate flows from order_data to simplified payload."""
+        order_data = {"shipment_date": "20260220", "ship_to_name": "Test",
+                      "ship_to_address1": "123 Main", "ship_to_city": "NYC",
+                      "ship_to_state": "NY", "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert result.get("shipmentDate") == "20260220"
+
+    def test_ship_from_in_simplified(self):
+        """ShipFrom populated from ship_from_* fields."""
+        order_data = {"ship_from_name": "Warehouse A",
+                      "ship_from_address1": "456 Elm St",
+                      "ship_from_city": "Chicago", "ship_from_state": "IL",
+                      "ship_from_postal_code": "60601",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert "shipFrom" in result
+        assert result["shipFrom"]["ship_from_name"] == "Warehouse A"
+
+    def test_boolean_indicators_in_simplified(self):
+        """Boolean service options parsed from truthy strings."""
+        order_data = {"hold_for_pickup": "true", "carbon_neutral": "yes",
+                      "lift_gate_delivery": "1",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert result.get("holdForPickup") is True
+        assert result.get("carbonNeutral") is True
+        assert result.get("liftGateDelivery") is True
+
+    def test_notification_email_in_simplified(self):
+        """Notification email flows to simplified payload."""
+        order_data = {"notification_email": "buyer@example.com",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert result.get("notificationEmail") == "buyer@example.com"
+
+    def test_cost_center_in_simplified(self):
+        """CostCenter flows to simplified payload."""
+        order_data = {"cost_center": "DEPT-42",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert result.get("costCenter") == "DEPT-42"
+
+    def test_terms_of_shipment_in_simplified(self):
+        """TermsOfShipment flows to simplified payload."""
+        order_data = {"terms_of_shipment": "DDP",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert result.get("termsOfShipment") == "DDP"
+
+    def test_clean_payload_has_no_empty_objects(self):
+        """Payload without new fields produces no empty structures."""
+        order_data = {"ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert "shipFrom" not in result
+        assert "notificationEmail" not in result
+        assert "costCenter" not in result
+
+
+class TestNewFieldsInUpsApiPayload:
+    """P0+P1 fields in full UPS ShipmentRequest payload."""
+
+    def test_shipment_date_in_api_payload(self):
+        """ShipmentDate appears in Shipment block."""
+        simplified = _minimal_simplified(shipmentDate="20260220")
+        result = build_ups_api_payload(simplified, account_number="X")
+        shipment = result["ShipmentRequest"]["Shipment"]
+        assert shipment.get("ShipmentDate") == "20260220"
+
+    def test_ship_from_in_api_payload(self):
+        """ShipFrom block built from simplified shipFrom data."""
+        simplified = _minimal_simplified(
+            shipFrom={
+                "ship_from_name": "Warehouse A",
+                "ship_from_address1": "456 Elm St",
+                "ship_from_city": "Chicago",
+                "ship_from_state": "IL",
+                "ship_from_postal_code": "60601",
+                "ship_from_country": "US",
+            }
+        )
+        result = build_ups_api_payload(simplified, account_number="X")
+        ship_from = result["ShipmentRequest"]["Shipment"]["ShipFrom"]
+        assert ship_from["Name"] == "Warehouse A"
+        assert ship_from["Address"]["City"] == "Chicago"
+        assert ship_from["Address"]["StateProvinceCode"] == "IL"
+
+    def test_boolean_indicators_in_api_payload(self):
+        """Boolean service indicators emit UPS indicator keys."""
+        simplified = _minimal_simplified(
+            holdForPickup=True, carbonNeutral=True, liftGateDelivery=True
+        )
+        result = build_ups_api_payload(simplified, account_number="X")
+        opts = result["ShipmentRequest"]["Shipment"]["ShipmentServiceOptions"]
+        assert "HoldForPickupIndicator" in opts
+        assert "UPScarbonneutralIndicator" in opts
+        assert "LiftGateForDeliveryIndicator" in opts
+
+    def test_notification_email_in_api_payload(self):
+        """Notification email creates Notification block."""
+        simplified = _minimal_simplified(notificationEmail="buyer@example.com")
+        result = build_ups_api_payload(simplified, account_number="X")
+        opts = result["ShipmentRequest"]["Shipment"]["ShipmentServiceOptions"]
+        assert opts["Notification"]["EMail"]["EMailAddress"] == ["buyer@example.com"]
+
+    def test_cost_center_in_api_payload(self):
+        """CostCenter appears in Shipment block."""
+        simplified = _minimal_simplified(costCenter="DEPT-42")
+        result = build_ups_api_payload(simplified, account_number="X")
+        shipment = result["ShipmentRequest"]["Shipment"]
+        assert shipment.get("CostCenter") == "DEPT-42"
+
+    def test_package_indicators_in_api_payload(self):
+        """Package-level indicators (largePackage, additionalHandling)."""
+        simplified = _minimal_simplified(
+            largePackage=True, additionalHandling=True, shipperRelease=True
+        )
+        result = build_ups_api_payload(simplified, account_number="X")
+        pkg = result["ShipmentRequest"]["Shipment"]["Package"][0]
+        assert "LargePackageIndicator" in pkg
+        assert "AdditionalHandlingIndicator" in pkg
+        assert "ShipperReleaseIndicator" in pkg.get("PackageServiceOptions", {})
+
+    def test_no_empty_options_when_no_indicators(self):
+        """No empty ShipmentServiceOptions when no indicators set."""
+        simplified = _minimal_simplified()
+        result = build_ups_api_payload(simplified, account_number="X")
+        shipment = result["ShipmentRequest"]["Shipment"]
+        # ShipmentServiceOptions should not be present (no indicators set)
+        assert "ShipmentServiceOptions" not in shipment
+
+
+class TestNewFieldsRatePayloadParity:
+    """Rate payload includes surcharge-affecting indicators."""
+
+    def test_lift_gate_in_rate_payload(self):
+        """LiftGateDelivery affects surcharges — must be in rate payload."""
+        order_data = {"lift_gate_delivery": "true",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        simplified = build_shipment_request(order_data)
+        rate = build_ups_rate_payload(simplified, account_number="X")
+        options = rate["RateRequest"]["Shipment"].get("ShipmentServiceOptions", {})
+        assert "LiftGateForDeliveryIndicator" in options
+
+    def test_large_package_in_rate_payload(self):
+        """LargePackageIndicator affects surcharges — must be in rate payload."""
+        order_data = {"large_package": "true",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        simplified = build_shipment_request(order_data)
+        rate = build_ups_rate_payload(simplified, account_number="X")
+        packages = rate["RateRequest"]["Shipment"].get("Package", [])
+        assert any("LargePackageIndicator" in pkg for pkg in packages)
+
+    def test_carbon_neutral_in_rate_payload(self):
+        """CarbonNeutral affects surcharges — must be in rate payload."""
+        order_data = {"carbon_neutral": "true",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        simplified = build_shipment_request(order_data)
+        rate = build_ups_rate_payload(simplified, account_number="X")
+        options = rate["RateRequest"]["Shipment"].get("ShipmentServiceOptions", {})
+        assert "UPScarbonneutralIndicator" in options
