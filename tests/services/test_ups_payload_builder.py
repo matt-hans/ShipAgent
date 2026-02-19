@@ -1830,3 +1830,92 @@ class TestBuildShipper:
         }
         shipper = build_shipper(shop_info)
         assert shipper["postalCode"] == "90210-1234"
+
+
+class TestValidateDomesticPayload:
+    """Pre-flight domestic validation checks."""
+
+    def test_letter_with_ground_returns_error(self):
+        """UPS Letter is incompatible with Ground."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "01"}
+        issues = validate_domestic_payload(order_data, "03")
+        assert any(i.severity == "error" and "packaging" in i.message.lower() for i in issues)
+
+    def test_letter_with_next_day_air_passes(self):
+        """UPS Letter is compatible with Next Day Air."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "01"}
+        issues = validate_domestic_payload(order_data, "01")
+        assert not any(i.severity == "error" and "packaging" in i.message.lower() for i in issues)
+
+    def test_customer_supplied_with_ground_passes(self):
+        """Customer Supplied packaging is always valid."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "02"}
+        issues = validate_domestic_payload(order_data, "03")
+        assert not any(i.severity == "error" for i in issues)
+
+    def test_letter_overweight_returns_error(self):
+        """UPS Letter over 1.1 lbs is rejected."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "01", "weight": "2.0"}
+        issues = validate_domestic_payload(order_data, "01")
+        assert any(i.severity == "error" and "weight" in i.message.lower() for i in issues)
+
+    def test_saturday_delivery_with_ground_returns_warning(self):
+        """Saturday Delivery with Ground produces a warning."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"saturday_delivery": "true"}
+        issues = validate_domestic_payload(order_data, "03")
+        assert any(i.severity == "warning" and "saturday" in i.message.lower() for i in issues)
+
+    def test_saturday_delivery_with_next_day_passes(self):
+        """Saturday Delivery with Next Day Air is valid."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"saturday_delivery": "true"}
+        issues = validate_domestic_payload(order_data, "01")
+        assert not any("saturday" in i.message.lower() for i in issues)
+
+    def test_no_issues_for_clean_payload(self):
+        """Standard payload with no flags returns no issues."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "02", "weight": "5.0"}
+        issues = validate_domestic_payload(order_data, "03")
+        assert len(issues) == 0
+
+    def test_express_box_with_3day_select_returns_error(self):
+        """Express Box is incompatible with 3 Day Select."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "21"}
+        issues = validate_domestic_payload(order_data, "12")
+        assert any(i.severity == "error" for i in issues)
+
+
+class TestApplyCompatibilityCorrections:
+    """Shared validation + auto-correction function."""
+
+    def test_letter_with_ground_auto_corrected(self):
+        """Letter packaging auto-corrected to Customer Supplied for Ground."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"packaging_type": "01"}
+        issues = apply_compatibility_corrections(order_data, "03")
+        assert order_data["packaging_type"] == "02"  # Customer Supplied
+        assert "_packaging_auto_reset" in order_data
+        assert any(i.auto_corrected for i in issues)
+
+    def test_saturday_delivery_stripped_for_ground(self):
+        """Saturday Delivery auto-stripped for Ground."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"saturday_delivery": "true"}
+        issues = apply_compatibility_corrections(order_data, "03")
+        assert not order_data.get("saturday_delivery")
+        assert "_saturday_delivery_stripped" in order_data
+
+    def test_overweight_not_auto_corrected(self):
+        """Overweight errors are NOT auto-corrected."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"packaging_type": "01", "weight": "5.0"}
+        issues = apply_compatibility_corrections(order_data, "01")
+        errors = [i for i in issues if i.severity == "error" and not i.auto_corrected]
+        assert any("weight" in i.message.lower() for i in errors)
