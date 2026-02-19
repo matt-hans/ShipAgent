@@ -15,6 +15,7 @@ from src.orchestrator.agent.hooks import (
     validate_filter_spec_on_pipeline,
     validate_intent_on_resolve,
 )
+from src.orchestrator.models.filter_spec import FilterGroup
 
 
 def _is_denied(result: dict) -> bool:
@@ -333,8 +334,9 @@ class TestValidateFilterSpecOnPipeline:
     async def test_allows_valid_tier_b_token(self):
         """Allows pipeline with valid Tier-B token (all bindings match)."""
         spec = _filter_spec_with_confirmation()
-        # Compute spec hash the same way the hook will
-        root_json = json.dumps(spec["root"], sort_keys=True, default=str)
+        # Compute spec hash the same way the hook will — using FilterGroup.model_dump_json()
+        # to match the serialization used by filter_resolver.py when generating the token.
+        root_json = FilterGroup(**spec["root"]).model_dump_json()
         spec_hash = hashlib.sha256(root_json.encode()).hexdigest()
         spec["resolution_token"] = _make_valid_token(
             schema_signature="sig123",
@@ -370,7 +372,8 @@ class TestValidateFilterSpecOnPipeline:
     async def test_allows_tier_a_with_valid_token(self):
         """Allows pipeline with RESOLVED spec and valid token."""
         spec = _filter_spec_resolved()
-        root_json = json.dumps(spec["root"], sort_keys=True, default=str)
+        # Compute spec hash the same way the hook will — using FilterGroup.model_dump_json()
+        root_json = FilterGroup(**spec["root"]).model_dump_json()
         spec_hash = hashlib.sha256(root_json.encode()).hexdigest()
         spec["resolution_token"] = _make_valid_token(
             schema_signature="sig123",
@@ -391,7 +394,8 @@ class TestValidateFilterSpecOnPipeline:
     async def test_denies_needs_confirmation_token(self):
         """Denies pipeline with valid token that carries NEEDS_CONFIRMATION status."""
         spec = _filter_spec_with_confirmation()
-        root_json = json.dumps(spec["root"], sort_keys=True, default=str)
+        # Compute spec hash the same way the hook will — using FilterGroup.model_dump_json()
+        root_json = FilterGroup(**spec["root"]).model_dump_json()
         spec_hash = hashlib.sha256(root_json.encode()).hexdigest()
         spec["resolution_token"] = _make_valid_token(
             schema_signature="sig123",
