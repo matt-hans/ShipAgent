@@ -194,7 +194,7 @@ async def preview_interactive_shipment_tool(
         recipient_state_required,
         validate_international_readiness,
     )
-    from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, DEFAULT_PACKAGE_WEIGHT_LBS, UPS_ADDRESS_MAX_LEN
+    from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, UPS_ADDRESS_MAX_LEN
     from src.services.ups_payload_builder import (
         build_ups_rate_payload,
         build_shipment_request,
@@ -220,11 +220,26 @@ async def preview_interactive_shipment_tool(
     ship_to_state = _str(args.get("ship_to_state"))
     ship_to_zip = _str(args.get("ship_to_zip"))
     command = _str(args.get("command"))
+    raw_service = _str(args.get("service"))
+    raw_weight = args.get("weight")
 
-    if not all([ship_to_name, ship_to_address1, ship_to_city, ship_to_zip]):
+    missing_fields: list[str] = []
+    if not ship_to_name:
+        missing_fields.append("ship_to_name")
+    if not ship_to_address1:
+        missing_fields.append("ship_to_address1")
+    if not ship_to_city:
+        missing_fields.append("ship_to_city")
+    if not ship_to_zip:
+        missing_fields.append("ship_to_zip")
+    if not raw_service:
+        missing_fields.append("service")
+    if raw_weight is None or (isinstance(raw_weight, str) and not raw_weight.strip()):
+        missing_fields.append("weight")
+    if missing_fields:
         return _err(
-            "Missing required fields: ship_to_name, ship_to_address1, "
-            "ship_to_city, ship_to_zip are all required."
+            "Missing required fields: "
+            f"{', '.join(missing_fields)}."
         )
 
     # Optional fields
@@ -245,20 +260,18 @@ async def preview_interactive_shipment_tool(
     invoice_currency_code = _str(args.get("invoice_currency_code")).upper()
     invoice_monetary_value = _str(args.get("invoice_monetary_value"))
     reason_for_export = _str(args.get("reason_for_export")).upper()
-    raw_service = _str(args.get("service"))
-    service_explicit = bool(raw_service)
-    service = raw_service or "Ground"
+    service = raw_service
     raw_packaging = args.get("packaging_type")
     packaging_type = str(raw_packaging).strip() if raw_packaging is not None else None
 
     # Validate weight
     try:
-        weight = float(args.get("weight", DEFAULT_PACKAGE_WEIGHT_LBS))
+        weight = float(raw_weight)
         if weight <= 0:
             return _err("Weight must be a positive number.")
     except (ValueError, TypeError):
         return _err(
-            f"Invalid weight value: {args.get('weight')!r}. "
+            f"Invalid weight value: {raw_weight!r}. "
             "Provide a numeric weight in pounds (e.g., 1.0, 5, 10.5)."
         )
 
@@ -371,12 +384,10 @@ async def preview_interactive_shipment_tool(
             return _err("; ".join(unique_messages))
 
     # Reuse one UPS client for service discovery and preview rating.
-    initial_service_code = service_code
     ups = await _get_ups_client()
 
     # Discover route-available services via UPS Shop.
     available_services: list[dict[str, Any]] = []
-    service_selection_notice = ""
     try:
         shop_simplified = build_shipment_request(
             order_data=order_data,
@@ -402,36 +413,14 @@ async def preview_interactive_shipment_tool(
     if available_services:
         available_codes = {svc["code"] for svc in available_services}
         if service_code not in available_codes:
-            if service_explicit:
-                options = _format_services_for_error(available_services)
-                return _err(
-                    f"Requested service '{service}' is not available for this route. "
-                    f"Available services: {options}."
-                )
-            service_code = available_services[0]["code"]
-            order_data["service_code"] = service_code
-            service_selection_notice = (
-                "No explicit service was provided. "
-                f"Defaulted to the lowest-cost available option: "
-                f"{SERVICE_CODE_NAMES.get(service_code, service_code)} ({service_code})."
+            options = _format_services_for_error(available_services)
+            return _err(
+                f"Requested service '{service}' is not available for this route. "
+                f"Available services: {options}."
             )
 
         for svc in available_services:
             svc["selected"] = svc["code"] == service_code
-
-    # If service changed after discovery, re-validate requirements for the final service.
-    if service_code != initial_service_code:
-        requirements = get_requirements(shipper_country, ship_to_country, service_code)
-        if requirements.not_shippable_reason:
-            return _err(requirements.not_shippable_reason)
-        if requirements.is_international or requirements.requires_invoice_line_total:
-            validation_errors = validate_international_readiness(order_data, requirements)
-            if validation_errors:
-                unique_messages: list[str] = []
-                for err in validation_errors:
-                    if err.message not in unique_messages:
-                        unique_messages.append(err.message)
-                return _err("; ".join(unique_messages))
 
     # Create Job with interactive flag
     try:
@@ -526,8 +515,6 @@ async def preview_interactive_shipment_tool(
     result["service_name"] = SERVICE_CODE_NAMES.get(service_code, f"UPS Service {service_code}")
     result["service_code"] = service_code
     result["available_services"] = available_services
-    if service_selection_notice:
-        result["service_selection_notice"] = service_selection_notice
     result["weight_lbs"] = weight
     result["packaging_type"] = resolve_packaging_code(packaging_type)
     result["resolved_payload"] = resolved_payload

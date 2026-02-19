@@ -170,6 +170,8 @@ class TestPreviewInteractiveShipment:
             "ship_to_city": "Austin",
             "ship_to_state": "TX",
             "ship_to_zip": "78701",
+            "service": "UPS Ground",
+            "weight": 1.0,
             "command": "Ship to John Smith",
         }
         args.update(overrides)
@@ -203,6 +205,24 @@ class TestPreviewInteractiveShipment:
         result = await preview_interactive_shipment_tool(args)
         assert result["isError"] is True
         assert "Missing required" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_missing_service_is_rejected(self):
+        """Service is required and must be explicitly provided."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        result = await preview_interactive_shipment_tool(self._base_args(service=""))
+        assert result["isError"] is True
+        assert "service" in result["content"][0]["text"]
+
+    @pytest.mark.asyncio
+    async def test_missing_weight_is_rejected(self):
+        """Weight is required and must be explicitly provided."""
+        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+
+        result = await preview_interactive_shipment_tool(self._base_args(weight=None))
+        assert result["isError"] is True
+        assert "weight" in result["content"][0]["text"]
 
     @pytest.mark.asyncio
     async def test_international_gb_missing_state_is_blocked_before_preview(self):
