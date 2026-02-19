@@ -1,7 +1,8 @@
 """Tests for connect_shopify agent tool."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 @pytest.mark.asyncio
@@ -117,3 +118,37 @@ def test_connect_shopify_registered_in_definitions():
     defs = get_all_tool_definitions()
     names = [d["name"] for d in defs]
     assert "connect_shopify" in names
+
+
+def test_prepare_shopify_import_rows_unions_keys_and_keeps_optional_fields():
+    """Import rows should expose a stable union schema across all orders."""
+    from src.orchestrator.agent.tools.data import _prepare_shopify_import_rows
+
+    rows = _prepare_shopify_import_rows(
+        [
+            {
+                "order_id": "2",
+                "order_number": "1002",
+                "ship_to_state": "NY",
+                "fulfillment_status": "unfulfilled",
+                "total_price": "75.00",
+                "items": [{"sku": "ABC"}],
+            },
+            {
+                "order_id": "1",
+                "order_number": "1001",
+                "ship_to_state": "CA",
+                "fulfillment_status": None,
+                "total_price": None,
+                "raw_data": {"id": 1},
+            },
+        ]
+    )
+
+    assert [row["order_id"] for row in rows] == ["1", "2"]
+    assert all("fulfillment_status" in row for row in rows)
+    assert all("total_price" in row for row in rows)
+    assert all("items" not in row for row in rows)
+    assert all("raw_data" not in row for row in rows)
+    assert rows[0]["fulfillment_status"] is None
+    assert rows[0]["total_price"] is None

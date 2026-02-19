@@ -10,8 +10,6 @@ import logging
 import os
 from typing import Any
 
-
-
 from src.orchestrator.agent.intent_detection import (
     is_confirmation_response,
     is_shipping_request,
@@ -27,7 +25,6 @@ from src.orchestrator.agent.tools.core import (
 from src.orchestrator.models.filter_spec import (
     FilterCompilationError,
     FilterIntent,
-    ResolvedFilterSpec,
 )
 from src.services.decision_audit_service import DecisionAuditService
 
@@ -743,6 +740,35 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
     return _ok({"platforms": platforms})
 
 
+def _prepare_shopify_import_rows(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize Shopify rows for deterministic import schema.
+
+    Preserves optional keys (including None values) and unions keys across all
+    rows so schema coverage does not depend on the first record.
+    """
+    filtered_rows: list[dict[str, Any]] = []
+    all_keys: set[str] = set()
+
+    for order in orders:
+        row = {
+            key: value
+            for key, value in order.items()
+            if key not in ("items", "raw_data")
+        }
+        filtered_rows.append(row)
+        all_keys.update(row.keys())
+
+    ordered_keys = sorted(all_keys)
+    normalized_rows = [{key: row.get(key) for key in ordered_keys} for row in filtered_rows]
+    normalized_rows.sort(
+        key=lambda row: (
+            str(row.get("order_id", "")),
+            str(row.get("order_number", "")),
+        )
+    )
+    return normalized_rows
+
+
 async def connect_shopify_tool(
     args: dict[str, Any],
     bridge: "EventEmitterBridge | None" = None,
@@ -795,23 +821,8 @@ async def connect_shopify_tool(
     if not orders:
         return _err("No orders found in Shopify store.")
 
-    # Flatten orders for import (exclude nested objects)
-    flat_orders = []
-    for o in orders:
-        flat = {
-            k: v
-            for k, v in o.items()
-            if k not in ("items", "raw_data") and v is not None
-        }
-        flat_orders.append(flat)
-
-    # Deterministic import order: stable by order_id, then order_number.
-    flat_orders.sort(
-        key=lambda row: (
-            str(row.get("order_id", "")),
-            str(row.get("order_number", "")),
-        ),
-    )
+    # Deterministic import with stable schema coverage across all rows.
+    flat_orders = _prepare_shopify_import_rows(orders)
 
     # Import via gateway
     gw = await get_data_gateway()
