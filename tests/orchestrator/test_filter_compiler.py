@@ -719,3 +719,71 @@ class TestExplanationOperators:
         assert "AND" in result.explanation
         assert "(" in result.explanation
         assert ";" not in result.explanation
+
+
+class TestCustomAttributesFiltering:
+    """JSON path filtering for custom_attributes column."""
+
+    def test_custom_attributes_dot_path_compiles(self):
+        """custom_attributes.gift_message generates json_extract SQL."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterCondition(
+                        column="custom_attributes.gift_message",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="yes")],
+                    ),
+                ],
+            )
+        )
+        schema = SCHEMA_COLS | {"custom_attributes"}
+        col_types = {**COL_TYPES, "custom_attributes": "VARCHAR"}
+        result = compile_filter_spec(spec, schema, col_types, SCHEMA_SIG)
+        assert "json_extract_string" in result.where_sql
+        assert "gift_message" in result.where_sql
+
+    def test_custom_attributes_missing_base_column_raises(self):
+        """custom_attributes.key raises error when custom_attributes not in schema."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterCondition(
+                        column="custom_attributes.some_key",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="x")],
+                    ),
+                ],
+            )
+        )
+        # Schema does NOT include custom_attributes
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert exc_info.value.code == FilterErrorCode.UNKNOWN_COLUMN
+
+    def test_custom_attributes_tracks_column_usage(self):
+        """custom_attributes.key adds 'custom_attributes' to columns_used."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterCondition(
+                        column="custom_attributes.priority_flag",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="true")],
+                    ),
+                ],
+            )
+        )
+        schema = SCHEMA_COLS | {"custom_attributes"}
+        col_types = {**COL_TYPES, "custom_attributes": "VARCHAR"}
+        result = compile_filter_spec(spec, schema, col_types, SCHEMA_SIG)
+        assert "custom_attributes" in result.columns_used
