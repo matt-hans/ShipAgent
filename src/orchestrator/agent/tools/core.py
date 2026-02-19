@@ -249,6 +249,7 @@ def _build_job_row_data(
 def _build_job_row_data_with_metadata(
     rows: list[dict[str, Any]],
     service_code_override: str | None = None,
+    packaging_type_override: str | None = None,
     schema_fingerprint: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Build job row payloads and return mapping_hash metadata."""
@@ -256,6 +257,10 @@ def _build_job_row_data_with_metadata(
         rows,
         schema_fingerprint=schema_fingerprint,
     )
+    if packaging_type_override:
+        for row in normalized_rows:
+            if isinstance(row, dict):
+                row["packaging_type"] = packaging_type_override
     if service_code_override:
         from src.services.ups_payload_builder import apply_compatibility_corrections
         for row in normalized_rows:

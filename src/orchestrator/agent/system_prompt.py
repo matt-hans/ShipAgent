@@ -335,9 +335,11 @@ For straightforward shipping commands (for example: "ship all CA orders via Grou
 
 1. **Parse + Build FilterIntent**: Build a FilterIntent JSON from the user's request (or use `all_rows=true` for all rows)
 2. **Resolve Filter**: Call `resolve_filter_intent` with the FilterIntent to get a `filter_spec`
-3. **Single Tool Call**: Call `ship_command_pipeline` with the `filter_spec` and command text. Include `service_code` ONLY when the user explicitly requests a service (e.g., Ground, 2nd Day Air)
+3. **Single Tool Call**: Call `ship_command_pipeline` with the `filter_spec` and command text. Include `service_code` ONLY when the user explicitly requests a service (e.g., Ground, 2nd Day Air). Include `packaging_type` only when the user explicitly requests a packaging type.
 4. **Post-Preview Message**: After preview appears, respond with ONLY one brief sentence:
    "Preview ready — X rows at $Y estimated total. Please review and click Confirm or Cancel."
+
+**Auto-corrections:** When overriding service for a batch, the system auto-resets incompatible packaging (Letter, PAK, Express Box, Tube → Customer Supplied for Ground/3 Day Select). Saturday Delivery is also auto-stripped for non-express services. Auto-corrections appear as warnings in the preview card — no separate user confirmation needed.
 
 Important:
 - `ship_command_pipeline` fetches rows internally. Do NOT call `fetch_rows` first.
