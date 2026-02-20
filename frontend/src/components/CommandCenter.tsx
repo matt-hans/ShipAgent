@@ -42,12 +42,20 @@ import {
 } from '@/components/command-center/messages';
 import { RichChatInput } from './chat/RichChatInput';
 import { expandTokens } from '@/lib/expandTokens';
+import type { ConversationMessage } from '@/hooks/useAppState';
 
 interface CommandCenterProps {
   activeJob: Job | null;
 }
 
-export function CommandCenter({ activeJob }: CommandCenterProps) {
+/** Imperative methods exposed to parent via ref. */
+export interface CommandCenterHandle {
+  loadSession: (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[]) => Promise<void>;
+  newChat: () => Promise<void>;
+}
+
+export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenterProps>(
+  function CommandCenter({ activeJob }, ref) {
   const {
     conversation,
     addMessage,
@@ -67,6 +75,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     contacts,
     customCommands,
     setSettingsFlyoutOpen,
+    refreshChatSessions,
   } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
@@ -454,6 +463,47 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     }
   };
 
+  /** Load a persisted session from the sidebar. */
+  const handleLoadSession = React.useCallback(async (
+    sessionId: string,
+    mode: 'batch' | 'interactive',
+    messages: ConversationMessage[],
+  ) => {
+    // Set mode BEFORE rendering to prevent flicker
+    setInteractiveShipping(mode === 'interactive');
+
+    // Clear current state
+    clearConversation();
+    setPreview(null);
+    setCurrentJobId(null);
+    setExecutingJobId(null);
+
+    // Populate conversation from loaded messages
+    for (const msg of messages) {
+      addMessage(msg);
+    }
+
+    // Connect to the session
+    await conv.loadSession(sessionId, mode);
+    setConversationSessionId(sessionId);
+  }, [conv, setInteractiveShipping, clearConversation, addMessage, setConversationSessionId]);
+
+  /** Start a fresh chat without deleting the current session. */
+  const handleNewChat = React.useCallback(async () => {
+    await conv.startNewChat();
+    clearConversation();
+    setPreview(null);
+    setCurrentJobId(null);
+    setExecutingJobId(null);
+    setConversationSessionId(null);
+    refreshChatSessions();
+  }, [conv, clearConversation, setConversationSessionId, refreshChatSessions]);
+
+  // Expose session management to parent
+  React.useImperativeHandle(ref, () => ({
+    loadSession: handleLoadSession,
+    newChat: handleNewChat,
+  }), [handleLoadSession, handleNewChat]);
 
   // Show job detail panel when a sidebar job is selected (takes priority over conversation)
   const showJobDetail = activeJob && !preview && !executingJobId;
@@ -799,6 +849,6 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       )}
     </div>
   );
-}
+});
 
 export default CommandCenter;
