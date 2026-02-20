@@ -37,9 +37,11 @@ These rules are non-negotiable. Violating them creates architectural debt that u
 
 **Phases 1-6:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent SDK, Batch Execution)
 **Phase 7:** Web Interface (Chat UI + Interactive Shipping operational)
-**Key Features:** International (CA/MX), Headless CLI, API Key Auth, Decision Auditing.
+**Key Features:** International (CA/MX), Headless CLI, API Key Auth, Decision Auditing, Chat Persistence, Universal Data Ingestion.
+**Chat Persistence:** DB-backed conversation sessions with sidebar history, visual timeline minimap, copy-to-clipboard, JSON export, auto-generated titles (Haiku).
+**Universal Data Ingestion:** JSON, XML, fixed-width, TSV/PSV adapters with auto-flattening, type inference, and DuckDB loading.
 **UPS MCP v2:** 18 UPS tools across 6 domains (Shipping, Rating, Tracking, Pickup, Locator, Paperless, Landed Cost).
-**Test Count:** ~1887 across 80+ files (as of 2026-02-18)
+**Test Count:** ~2260 across 90+ files (as of 2026-02-20)
 
 ## Architecture
 
@@ -74,22 +76,13 @@ User → Browser UI (React) → FastAPI REST API → Conversation SSE Route
 
 ### System Components
 
-| Component | Technology | Role in Agent Architecture |
-|-----------|------------|---------------------------|
-| **OrchestrationAgent** | Claude Agent SDK | Primary orchestrator — interprets intent, coordinates all operations via deterministic tools |
-| **Agent Tools** | Python (9 modules) | Deterministic execution layer — data ops, pipeline ops, interactive ops, pickup, locator, paperless, landed cost, tracking |
-| **Agent Hooks** | Pre/PostToolUse | Validation + audit — enforce business rules before/after tool execution |
-| **Agent Session Manager** | Python | Per-conversation lifecycle — session isolation, agent persistence, prewarm |
-| **Data Source MCP** | FastMCP + DuckDB (stdio) | Data connectivity — CSV, Excel, DB, EDI abstracted behind SQL interface |
-| **UPS MCP** | `ups-mcp` local fork (stdio) | Carrier connectivity — 18 UPS tools across 6 domains (shipping, rating, tracking, pickup, locator, paperless, landed cost) |
-| **UPS MCP Client** | MCPClient (stdio) | Programmatic batch connectivity — deterministic UPS calls for high-volume execution |
-| **External Sources MCP** | FastMCP (stdio) | Platform connectivity — Shopify, WooCommerce, SAP, Oracle |
-| **Batch Engine** | Python | Batch execution — concurrent preview/execute with per-row state tracking |
-| **Gateway Provider** | Python singletons | MCP lifecycle — process-global singleton factory for all MCP clients |
-| **State Database** | SQLite + SQLAlchemy | Persistence — jobs, rows, audit logs, saved sources |
-| **FastAPI Backend** | Python + FastAPI | HTTP layer — REST API, SSE streaming, SPA serving |
-| **Headless CLI** | Python + Typer + Rich | CLI automation — daemon management, job control, conversational REPL, hot-folder watchdog |
-| **Browser UI** | React + Vite + TypeScript | Presentation — agent-driven chat, preview cards, progress, labels |
+**Agent Layer:** `OrchestrationAgent` (Claude SDK) → 9 tool modules → Pre/PostToolUse hooks → `AgentSessionManager` (per-conversation lifecycle).
+
+**MCP Layer:** Data Source MCP (FastMCP+DuckDB, stdio), UPS MCP (local fork, stdio, 18 tools), External Sources MCP (FastMCP, stdio — Shopify/WooCommerce/SAP/Oracle). Gateway singletons in `gateway_provider.py`.
+
+**Execution Layer:** `BatchEngine` (concurrent preview+execute), `UPSMCPClient` (programmatic batch), `ConversationPersistenceService` (session/message DB).
+
+**Presentation:** FastAPI backend (REST+SSE), React+Vite+TypeScript frontend, Typer+Rich headless CLI. SQLite+SQLAlchemy for persistence.
 
 ### Agent Tool Architecture
 
@@ -160,7 +153,7 @@ All integration constants, enums, and defaults are centralized in dedicated modu
 | **External Order Schema** | `src/mcp/external_sources/models.py` | `ExternalOrder` (normalized across Shopify/WooCommerce/SAP/Oracle), `PlatformType`, `ConnectionStatus` |
 | **Data Source Schema** | `src/mcp/data_source/models.py` | `SchemaColumn`, `ImportResult`, `RowData` — discovered (not hardcoded) per-source metadata |
 
-**Pattern for new integrations:** When adding a new carrier (e.g., FedEx), create `src/services/fedex_constants.py` and `src/services/fedex_service_codes.py` following the UPS pattern. All consumers import from the canonical module. The agent's system prompt dynamically generates service catalogs from these modules — never from hardcoded strings in prompts.
+**Pattern for new integrations:** Create `<carrier>_constants.py` + `<carrier>_service_codes.py` in `src/services/`. All consumers import from canonical modules. See Extension Points for details.
 
 ### MCP Gateway Architecture
 
@@ -173,9 +166,7 @@ Two distinct MCP paths — **Agent MCP** (interactive, SDK-managed) and **Progra
 | **Data Source MCP** | `DataSourceMCPClient` singleton | Process-global, lazy init | Agent tools call `get_data_gateway()` |
 | **External Sources MCP** | `ExternalSourcesMCPClient` singleton | Process-global, lazy init | Agent tools call `get_external_sources_client()` |
 
-All clients inherit from `MCPClient` (base) with retry + exponential backoff. Gateway singletons use double-checked locking with `asyncio.Lock`, disconnected via `shutdown_gateways()` in `src/api/main.py`.
-
-**UPS retry strategy (batch):** Non-mutating ops: 2 retries, 0.2s exponential backoff. Mutating ops: 0 retries (prevent duplicates). Transport failures: reconnect + 1 replay (non-mutating only).
+All clients inherit from `MCPClient` (base) with retry + exponential backoff. Gateway singletons use `asyncio.Lock`, disconnected via `shutdown_gateways()`. UPS batch retries: 2 for reads (0.2s backoff), 0 for writes (prevent duplicates).
 
 ## Source Structure
 
@@ -208,7 +199,7 @@ src/
 │   ├── auto_confirm.py         # Auto-confirm engine — rule evaluation for headless execution
 │   └── watchdog_service.py     # HotFolderService — filesystem watcher with debouncing + file lifecycle
 ├── db/                         # Database layer
-│   ├── models.py               # SQLAlchemy models (Job, JobRow, AuditLog, SavedDataSource)
+│   ├── models.py               # SQLAlchemy models (Job, JobRow, AuditLog, SavedDataSource, ConversationSession, ConversationMessage)
 │   └── connection.py           # Session management
 ├── errors/                     # Error handling
 │   ├── registry.py             # E-XXXX error code registry
@@ -235,13 +226,15 @@ src/
 │   ├── gateway_provider.py     # Centralized singleton factory for MCP client gateways
 │   ├── batch_executor.py       # Shared batch execution service (used by HTTP routes + CLI)
 │   ├── conversation_handler.py # Shared conversation handling (agent session + message streaming)
+│   ├── conversation_persistence_service.py # DB-backed session/message CRUD + auto title generation
 │   ├── saved_data_source_service.py # Saved source CRUD (list, upsert, delete, reconnect)
 │   └── write_back_utils.py     # Atomic CSV/Excel write-back utilities
 ├── mcp/
 │   ├── data_source/            # Data Source MCP server (DuckDB-backed SQL interface)
 │   │   ├── server.py           # FastMCP server with stdio transport
 │   │   ├── models.py           # Canonical: SchemaColumn, ImportResult, RowData
-│   │   ├── adapters/           # Pluggable: base.py, csv, excel, db, edi adapters
+│   │   ├── adapters/           # Pluggable: base, csv, excel, json, xml, fixed_width, db, edi adapters
+│   │   ├── utils.py            # Shared: flatten_record, type inference, DuckDB loading helpers
 │   │   ├── tools/              # import, schema, query, checksum, commodity, writeback, edi tools
 │   │   └── edi/                # X12 + EDIFACT parsers
 │   └── external_sources/       # External platform MCP
@@ -284,12 +277,13 @@ frontend/src/
 ├── App.tsx, main.tsx, index.css    # Entry point + design system (OKLCH, DM Sans, Instrument Serif)
 ├── components/
 │   ├── CommandCenter.tsx           # Main chat UI — SSE event orchestration, preview/progress/completion
-│   ├── command-center/             # PreviewCard, ProgressDisplay, CompletionArtifact, ToolCallChip, messages, PickupCard, LocationCard, LandedCostCard, PaperlessCard, TrackingCard
-│   ├── sidebar/                    # DataSourcePanel, JobHistoryPanel
+│   ├── command-center/             # PreviewCard, ProgressDisplay, CompletionArtifact, ToolCallChip, messages, domain cards
+│   ├── chat/                       # ChatTimeline (visual minimap), RichChatInput
+│   ├── sidebar/                    # DataSourcePanel, JobHistoryPanel, ChatSessionsPanel
 │   ├── ui/                         # shadcn/ui primitives + icons.tsx + brand-icons.tsx
 │   └── layout/                     # Sidebar, Header (with interactive shipping toggle)
 ├── hooks/
-│   ├── useAppState.tsx             # Global state context (conversation, jobs, data source, mode)
+│   ├── useAppState.tsx             # Global state context (conversation, jobs, data source, mode, chat sessions)
 │   ├── useConversation.ts          # Agent SSE lifecycle (session + events + mode switching)
 │   └── useJobProgress.ts, useSSE.ts, useExternalSources.ts
 ├── lib/api.ts                      # REST client (all /api/v1 endpoints)
@@ -342,19 +336,29 @@ Optional gate controlled by `SHIPAGENT_API_KEY` env var. When set, all `/api/*` 
 
 Centralized agent decision ledger. Writes to `agent_decision_runs` + `agent_decision_events` SQLite tables; mirrors best-effort to JSONL. Context propagation via `src/services/decision_audit_context.py`. Config env vars: `AGENT_AUDIT_ENABLED`, `AGENT_AUDIT_JSONL_PATH`, `AGENT_AUDIT_RETENTION_DAYS`, `AGENT_AUDIT_MAX_PAYLOAD_BYTES`.
 
+### ConversationPersistenceService (`src/services/conversation_persistence_service.py`)
+
+DB-backed CRUD for `ConversationSession` and `ConversationMessage` tables. Provides: `create_session`, `save_message` (auto-incrementing sequence), `list_sessions` (DB-level LIMIT/OFFSET), `get_session_with_messages`, `update_session_title`, `update_session_context`, `soft_delete_session`, `export_session_json`. Background title generation via `generate_session_title()` (fire-and-forget `asyncio.create_task`; calls Haiku via `TITLE_MODEL` env var). Note: This is an **approved exception** to Agent Design Invariant #3 — the title-generation LLM call is a lightweight background task that does not participate in the agent reasoning loop.
+
 ## Frontend Architecture
 
-The UI is an agent-driven chat interface. `useConversation` hook manages session lifecycle and SSE event streaming. `useAppState` context holds conversation, jobs, data source, and mode state (`interactiveShipping` persisted to localStorage).
+The UI is an agent-driven chat interface. `useConversation` hook manages session lifecycle and SSE event streaming. `useAppState` context holds conversation, jobs, data source, mode, and chat session state (`interactiveShipping` persisted to localStorage).
 
 **Chat flow**: User types command → SSE events stream (deltas, tool calls) → PreviewCard renders with Confirm/Cancel/Refine → ProgressDisplay streams per-row execution → CompletionArtifact card with label access → input re-enables for next command.
 
-**Key patterns**: `ConversationMessage.action` routes to renderers (`preview`, `execute`, `complete`, `error`). `jobListVersion` counter triggers sidebar refresh. `isToggleLocked` prevents mode toggle during processing.
+**Chat persistence**: Sessions are DB-backed. `ChatSessionsPanel` in the sidebar lists sessions grouped by date (Today/Yesterday/Previous 7 Days). Selecting a session loads its history and restores context (mode, data source). Sessions get auto-generated titles via background Haiku call after the first assistant response. `chatSessionsVersion` counter triggers sidebar re-fetch.
+
+**Visual timeline**: `ChatTimeline` component renders a thin vertical minimap on the right edge with color-coded dots (grey=user, cyan=assistant, amber=artifact). Uses `IntersectionObserver` for viewport sync. Clicking a dot scrolls to that message.
+
+**Key patterns**: `ConversationMessage.action` routes to renderers (`preview`, `execute`, `complete`, `error`). `jobListVersion` counter triggers sidebar refresh. `isToggleLocked` prevents mode toggle during processing. Copy-to-clipboard on hover for all message bubbles with visual feedback.
 
 ## API Endpoints
 
 All endpoints use `/api/v1/` prefix. See route files in `src/api/routes/` for full details.
 
 **Primary agent path** (conversations.py): `POST /conversations/` (create session) → `POST /conversations/{id}/messages` (send to agent) → `GET /conversations/{id}/stream` (SSE events) → `DELETE /conversations/{id}` (cleanup)
+
+**Chat persistence** (conversations.py): `GET /conversations/` (list sessions, paginated) → `GET /conversations/{id}/messages` (load history) → `PATCH /conversations/{id}` (rename) → `GET /conversations/{id}/export` (JSON download)
 
 **Jobs** (jobs.py): CRUD on `/jobs/`, status via `PATCH /jobs/{id}/status`, preview via `GET /jobs/{id}/preview`, confirm via `POST /jobs/{id}/confirm`, SSE progress via `GET /jobs/{id}/progress/stream`
 
@@ -437,26 +441,12 @@ ruff format src/ tests/
 ### Headless CLI
 
 ```bash
-# Standalone mode (no daemon required)
-shipagent --standalone submit orders.csv --service "UPS Ground"
-shipagent --standalone job list
-shipagent --standalone interact
-
-# Daemon mode
-shipagent daemon start --config shipagent.yaml
-shipagent daemon status
-shipagent submit orders.csv --auto-confirm
-shipagent job inspect <job-id>
-shipagent job approve <job-id>
-shipagent job logs <job-id> -f
-shipagent daemon stop
-
-# Config management
-shipagent config show
-shipagent config validate --config shipagent.yaml
-
-# CLI tests
-pytest tests/cli/ -v
+shipagent --standalone submit orders.csv --service "UPS Ground"  # No daemon
+shipagent --standalone interact                                   # REPL mode
+shipagent daemon start --config shipagent.yaml                    # Daemon mode
+shipagent submit orders.csv --auto-confirm                        # With daemon
+shipagent job inspect <job-id>                                    # Job details
+pytest tests/cli/ -v                                              # CLI tests
 ```
 
 ### Frontend
@@ -513,6 +503,9 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 - Icons: `ui/icons.tsx` (general), `ui/brand-icons.tsx` (platform logos)
 - shadcn/ui primitives in `components/ui/`
 - Labels stored on disk, paths in `JobRow.label_path`; `order_data` as JSON text in `JobRow.order_data`
+- Chat sessions: `chatSessionsVersion` counter + `refreshChatSessions()` in AppState (same pattern as `jobListVersion`)
+- Timeline dots: grey(user), cyan(assistant), amber(artifact) — `ChatTimeline.tsx` with `IntersectionObserver`
+- Copy button: hover-reveal on all message bubbles, visual error/success states
 
 ## Known Issues
 
@@ -536,7 +529,7 @@ These are hard-won fixes — do not revert:
 All extensions MUST integrate through agent tools/MCP and follow canonical data model patterns:
 
 - **New Carrier**: Create `<carrier>_constants.py` + `<carrier>_service_codes.py` in `src/services/`, build MCP server (stdio), add client wrapper, register tools. Never hardcode constants.
-- **New Data Source**: Implement `BaseSourceAdapter` in `src/mcp/data_source/adapters/`. Must produce `ImportResult` with `SchemaColumn`.
+- **New Data Source**: Implement `BaseSourceAdapter` in `src/mcp/data_source/adapters/`. Must produce `ImportResult` with `SchemaColumn`. Use `utils.py` helpers (`flatten_record`, `load_flat_records_to_duckdb`) for nested formats. See JSON/XML adapters as examples.
 - **New Platform**: Add client in `src/mcp/external_sources/clients/`. Must normalize to `ExternalOrder`.
 - **New Agent Tool**: Add handler in appropriate tool module, register in `tools/__init__.py`. Import constants from canonical modules.
 - **New Batch Capability**: Extend `BatchEngine`, expose via pipeline tool.
