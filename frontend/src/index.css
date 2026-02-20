@@ -656,6 +656,77 @@
   }
 }
 
+/* Settings Flyout Styles */
+.settings-backdrop {
+  @apply fixed inset-0 bg-black/50 z-40;
+  animation: fade-in 0.2s ease-out;
+}
+
+.settings-flyout {
+  @apply fixed top-0 right-0 h-full w-[360px] bg-card border-l border-border z-50;
+  @apply flex flex-col;
+  animation: slide-in-right 0.3s ease-out;
+}
+
+@media (min-width: 1024px) {
+  .settings-flyout {
+    @apply top-12; /* Below header */
+    @apply h-[calc(100vh-3rem)];
+  }
+}
+
+.settings-flyout-content {
+  @apply flex-1 overflow-y-auto p-4 space-y-2;
+}
+
+.settings-section {
+  @apply rounded-lg border border-border overflow-hidden;
+}
+
+.settings-section-header {
+  @apply w-full flex items-center justify-between p-3 bg-muted/30 hover:bg-muted/50 transition-colors;
+}
+
+.settings-section-content {
+  @apply p-3 border-t border-border bg-card;
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Token highlight colors for rich input (Task 17 prep) */
+.token-handle {
+  @apply text-domain-locator;
+}
+
+.token-handle--unknown {
+  @apply text-warning;
+}
+
+.token-handle--incomplete {
+  @apply text-muted-foreground italic;
+}
+
+.token-command {
+  @apply text-domain-paperless;
+}
+
+.token-command--unknown {
+  @apply text-warning;
+}
+
+.token-command--incomplete {
+  @apply text-muted-foreground italic;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 8px;
