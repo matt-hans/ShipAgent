@@ -123,6 +123,17 @@ class UPSConfig(BaseModel):
     client_secret: str = ""
 
 
+class DefaultDataSourceConfig(BaseModel):
+    """Default data source loaded on daemon/CLI startup.
+
+    Exactly one of path, saved_source, or platform should be set.
+    """
+
+    path: str | None = None
+    saved_source: str | None = None
+    platform: str | None = None
+
+
 class ShipAgentConfig(BaseModel):
     """Top-level configuration for the ShipAgent headless automation suite."""
 
@@ -131,6 +142,7 @@ class ShipAgentConfig(BaseModel):
     watch_folders: list[WatchFolderConfig] = []
     shipper: ShipperConfig | None = None
     ups: UPSConfig | None = None
+    default_data_source: DefaultDataSourceConfig | None = None
 
 
 def _find_config_file() -> Path | None:
