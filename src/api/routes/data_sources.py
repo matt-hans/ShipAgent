@@ -167,6 +167,15 @@ async def upload_data_source(
                 f"Supported: {', '.join(sorted(EXTENSION_MAP.keys()))}"
             ),
         )
+    if source_type == "fixed_width":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Fixed-width files require column specs that must be configured "
+                "through the chat agent. Use the chat to import this file — "
+                "the agent will guide you through column setup."
+            ),
+        )
 
     # Save uploaded file to disk
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)

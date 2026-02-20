@@ -148,6 +148,12 @@ class XMLAdapter(BaseSourceAdapter):
         """
         if record_path:
             for key in record_path.split("/"):
+                if not isinstance(data, dict) or key not in data:
+                    available = list(data.keys()) if isinstance(data, dict) else []
+                    raise ValueError(
+                        f"record_path segment '{key}' not found in XML. "
+                        f"Available keys: {available or '<not a dict>'}"
+                    )
                 data = data[key]
             return data if isinstance(data, list) else [data]
         return self._find_largest_list(data) or ([data] if isinstance(data, dict) else [])
