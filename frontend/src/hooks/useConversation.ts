@@ -120,8 +120,8 @@ export function useConversation(): UseConversationReturn {
         };
 
         setEvents((prev) => [...prev, newEvent]);
-      } catch {
-        // Ignore unparseable messages
+      } catch (parseErr) {
+        console.warn('Unparseable SSE message:', parseErr);
       }
     };
 

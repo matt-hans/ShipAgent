@@ -18,15 +18,17 @@ import remarkGfm from 'remark-gfm';
 
 /** Copy-to-clipboard button with brief checkmark feedback. */
 function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = React.useState(false);
+  const [state, setState] = React.useState<'idle' | 'copied' | 'error'>('idle');
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      console.error('Failed to copy to clipboard');
+      setState('copied');
+      setTimeout(() => setState('idle'), 1500);
+    } catch (err) {
+      console.error('Failed to copy to clipboard:', err);
+      setState('error');
+      setTimeout(() => setState('idle'), 2000);
     }
   };
 
@@ -34,10 +36,12 @@ function CopyButton({ text }: { text: string }) {
     <button
       onClick={handleCopy}
       className="absolute top-2 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200"
-      title="Copy to clipboard"
+      title={state === 'error' ? 'Copy failed' : 'Copy to clipboard'}
     >
-      {copied ? (
+      {state === 'copied' ? (
         <CheckIcon className="w-3.5 h-3.5 text-green-400" />
+      ) : state === 'error' ? (
+        <span className="text-red-400 text-[10px] font-medium px-0.5">!</span>
       ) : (
         <CopyIcon className="w-3.5 h-3.5" />
       )}

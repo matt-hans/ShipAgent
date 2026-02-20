@@ -102,7 +102,7 @@ class PersistedMessageResponse(BaseModel):
 
     id: str
     role: Literal["user", "assistant", "system"]
-    message_type: str
+    message_type: Literal["text", "system_artifact", "error"]
     content: str
     metadata: dict | None
     sequence: int
