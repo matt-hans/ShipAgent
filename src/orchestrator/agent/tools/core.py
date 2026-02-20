@@ -273,29 +273,40 @@ def _build_job_row_data_with_metadata(
         rows,
         schema_fingerprint=schema_fingerprint,
     )
+    # Apply overrides before validation so compatibility checks see final values.
     if packaging_type_override:
         for row in normalized_rows:
             if isinstance(row, dict):
                 row["packaging_type"] = packaging_type_override
     if service_code_override:
-        from src.services.ups_payload_builder import apply_compatibility_corrections
         for row in normalized_rows:
             if isinstance(row, dict):
                 row["service_code"] = service_code_override
-                # Shared validation + auto-correction (same function used by batch_engine).
-                # Check returned issues for hard errors so preview surfaces them.
-                issues = apply_compatibility_corrections(row, service_code_override)
-                hard_errors = [
-                    i for i in issues
-                    if i.severity == "error" and not i.auto_corrected
+
+    # Run compatibility validation when any override is active.  Uses
+    # the row's own service_code when no service_code_override is given
+    # (packaging-only override still needs validation).
+    if service_code_override or packaging_type_override:
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        from src.services.ups_service_codes import ServiceCode
+        for row in normalized_rows:
+            if not isinstance(row, dict):
+                continue
+            effective_service = service_code_override or row.get(
+                "service_code", ServiceCode.GROUND.value,
+            )
+            issues = apply_compatibility_corrections(row, effective_service)
+            hard_errors = [
+                i for i in issues
+                if i.severity == "error" and not i.auto_corrected
+            ]
+            if hard_errors:
+                existing = row.get("_validation_warnings", [])
+                if isinstance(existing, str):
+                    existing = [existing] if existing else []
+                row["_validation_warnings"] = existing + [
+                    f"[VALIDATION] {i.message}" for i in hard_errors
                 ]
-                if hard_errors:
-                    existing = row.get("_validation_warnings", [])
-                    if isinstance(existing, str):
-                        existing = [existing] if existing else []
-                    row["_validation_warnings"] = existing + [
-                        f"[VALIDATION] {i.message}" for i in hard_errors
-                    ]
 
     row_data = []
     for idx, row in enumerate(normalized_rows, start=1):

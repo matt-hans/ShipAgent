@@ -408,6 +408,7 @@ def submit(
                         "total_cost_cents": total_cost_from_rows,
                         "max_row_cost_cents": max_row_cost,
                         "service_codes": service_codes,
+                        "service_parse_failures": _parse_failures,
                         "all_addresses_valid": False,
                         "has_address_warnings": True,
                     }

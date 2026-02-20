@@ -556,22 +556,38 @@ class HttpClient:
         return [SourceSchemaColumn.from_api(c) for c in columns_raw]
 
     async def connect_platform(self, platform: str) -> DataSourceStatus:
-        """Connect env-configured platform via GET /api/v1/platforms/shopify/env-status.
+        """Connect env-configured platform via POST /api/v1/platforms/{platform}/connect.
 
-        Only Shopify supports env-based auto-connect. Other platforms
-        require credential-based connection via the agent conversation.
+        Reads credentials from local environment variables and sends them
+        to the daemon's connect endpoint, mirroring InProcessRunner behavior.
+        Only Shopify supports env-based auto-connect.
         """
+        import os
+
         if platform.lower() != "shopify":
             raise ShipAgentClientError(
                 f"Only 'shopify' supports env-based auto-connect. "
                 f"Use the agent conversation for {platform}."
             )
-        resp = await self._client.get(
-            "/api/v1/platforms/shopify/env-status"
-        )
-        if resp.status_code != 200:
+        access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+        store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+        if not access_token or not store_domain:
             raise ShipAgentClientError(
-                f"Shopify not configured: {resp.text}", resp.status_code
+                "SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN environment "
+                "variables must be set for Shopify auto-connect."
+            )
+        resp = await self._client.post(
+            "/api/v1/platforms/shopify/connect",
+            json={
+                "credentials": {"access_token": access_token},
+                "store_url": store_domain,
+            },
+        )
+        self._raise_for_status(resp)
+        data = resp.json()
+        if not data.get("success"):
+            raise ShipAgentClientError(
+                data.get("error", "Shopify connection failed")
             )
         return await self.get_source_status()
 
