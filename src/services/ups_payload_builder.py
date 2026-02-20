@@ -1017,15 +1017,19 @@ def build_ups_api_payload(
         ups_shipper["Phone"] = {"Number": shipper["phone"]}
 
     # Build ShipTo
+    ups_ship_to_addr: dict[str, Any] = {
+        "AddressLine": _build_address_lines(ship_to),
+        "City": ship_to.get("city", ""),
+        "PostalCode": ship_to.get("postalCode", ""),
+        "CountryCode": ship_to.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
+    }
+    # Omit StateProvinceCode when empty — UPS rejects empty strings for
+    # countries that don't use province codes (e.g. DE, FR, NL).
+    if ship_to.get("stateProvinceCode"):
+        ups_ship_to_addr["StateProvinceCode"] = ship_to["stateProvinceCode"]
     ups_ship_to: dict[str, Any] = {
         "Name": ship_to.get("name", ""),
-        "Address": {
-            "AddressLine": _build_address_lines(ship_to),
-            "City": ship_to.get("city", ""),
-            "StateProvinceCode": ship_to.get("stateProvinceCode", ""),
-            "PostalCode": ship_to.get("postalCode", ""),
-            "CountryCode": ship_to.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
-        },
+        "Address": ups_ship_to_addr,
     }
     if ship_to.get("attentionName"):
         ups_ship_to["AttentionName"] = ship_to["attentionName"]
@@ -1304,10 +1308,11 @@ def build_ups_rate_payload(
     ups_ship_to_addr: dict[str, Any] = {
         "AddressLine": _build_address_lines(ship_to),
         "City": ship_to.get("city", ""),
-        "StateProvinceCode": ship_to.get("stateProvinceCode", ""),
         "PostalCode": ship_to.get("postalCode", ""),
         "CountryCode": ship_to.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
     }
+    if ship_to.get("stateProvinceCode"):
+        ups_ship_to_addr["StateProvinceCode"] = ship_to["stateProvinceCode"]
     # Residential indicator affects rate (residential surcharge)
     if simplified.get("residential"):
         ups_ship_to_addr["ResidentialAddressIndicator"] = ""

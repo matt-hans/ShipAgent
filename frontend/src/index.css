@@ -58,6 +58,7 @@
   --color-domain-paperless: oklch(0.78 0.15 85);
   --color-domain-landed-cost: oklch(0.65 0.18 265);
   --color-domain-tracking: oklch(0.70 0.15 230);
+  --color-domain-contacts: oklch(0.72 0.16 345);
 
   /* Status colors */
   --color-success: oklch(0.65 0.2 150);
@@ -332,6 +333,9 @@
   .card-domain-tracking {
     border-color: var(--color-domain-tracking);
   }
+  .card-domain-contacts {
+    border-color: var(--color-domain-contacts);
+  }
 
   /* Message styles */
   .message-system {
@@ -520,6 +524,10 @@
 
   .border-error {
     border-color: var(--color-destructive);
+  }
+
+  .text-domain-contacts {
+    color: var(--color-domain-contacts);
   }
 
   /* Text gradient */
@@ -731,23 +739,29 @@
 .rich-input-mirror {
   @apply absolute inset-0 p-4 font-mono text-sm whitespace-pre-wrap break-words pointer-events-none overflow-hidden;
   @apply bg-card border border-border rounded-lg;
-  color: transparent;
+  color: var(--color-foreground);
 }
 
 .rich-input-textarea {
   @apply w-full p-4 font-mono text-sm rounded-lg resize-none;
-  @apply bg-transparent border border-border text-foreground;
+  @apply bg-transparent border border-border;
   @apply placeholder:text-muted-foreground;
   @apply focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent;
   @apply transition-colors duration-200;
   position: relative;
   z-index: 1;
   background-color: transparent;
+  color: transparent;
   caret-color: var(--color-foreground);
 }
 
 .rich-input-textarea::placeholder {
   color: var(--color-muted-foreground);
+}
+
+.rich-input-textarea::selection {
+  background: oklch(0.72 0.18 45 / 0.3);
+  color: transparent;
 }
 
 /* Autocomplete popover */

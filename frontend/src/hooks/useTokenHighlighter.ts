@@ -84,7 +84,11 @@ export function useTokenHighlighter({
       const isHandle = tokenText.startsWith('@');
       const isCommand = tokenText.startsWith('/');
 
-      if (isHandle) {
+      // Check if this token is at the start of a word/sequence after a space or at start of text
+      const beforeMatch = text.slice(0, matchStart);
+      const isStartOfWord = matchStart === 0 || /\s$/.test(beforeMatch);
+
+      if (isStartOfWord && isHandle) {
         const handleName = tokenText.slice(1).toLowerCase();
         const status: TokenStatus =
           handleName.length === 0
@@ -98,7 +102,7 @@ export function useTokenHighlighter({
           type: 'handle',
           status,
         });
-      } else if (isCommand) {
+      } else if (isStartOfWord && isCommand) {
         const commandName = tokenText.slice(1).toLowerCase();
         const status: TokenStatus =
           commandName.length === 0
@@ -111,6 +115,13 @@ export function useTokenHighlighter({
           text: tokenText,
           type: 'command',
           status,
+        });
+      } else {
+        // Treat as plain if not at start of word
+        segments.push({
+          text: tokenText,
+          type: 'plain',
+          status: 'known',
         });
       }
 

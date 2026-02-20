@@ -26,9 +26,9 @@ export function SettingsFlyout() {
 
   return (
     <>
-      {/* Backdrop for mobile */}
+      {/* Backdrop — closes flyout on click outside */}
       <div
-        className="settings-backdrop lg:hidden"
+        className="settings-backdrop"
         onClick={() => setSettingsFlyoutOpen(false)}
       />
 

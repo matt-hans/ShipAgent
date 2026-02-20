@@ -674,6 +674,7 @@ export type AgentEventType =
   | 'paperless_upload_prompt'
   | 'paperless_result'
   | 'tracking_result'
+  | 'contact_saved'
   | 'confirmation_needed'
   | 'execution_progress'
   | 'completion'
@@ -893,7 +894,7 @@ export interface Contact {
   address_line_1: string;
   address_line_2: string | null;
   city: string;
-  state_province: string;
+  state_province: string | null;
   postal_code: string;
   country_code: string;
   use_as_ship_to: boolean;
@@ -917,7 +918,7 @@ export interface ContactCreate {
   address_line_1: string;
   address_line_2?: string;
   city: string;
-  state_province: string;
+  state_province?: string;
   postal_code: string;
   country_code?: string;
   use_as_ship_to?: boolean;
@@ -952,6 +953,24 @@ export interface ContactUpdate {
 export interface ContactListResponse {
   contacts: Contact[];
   total: number;
+}
+
+/** Agent-driven contact save result from SSE stream. */
+export interface ContactSavedResult {
+  action: 'created' | 'updated';
+  handle: string;
+  display_name: string;
+  attention_name: string | null;
+  company: string | null;
+  phone: string | null;
+  email: string | null;
+  address_line_1: string;
+  address_line_2: string | null;
+  city: string;
+  state_province: string | null;
+  postal_code: string;
+  country_code: string;
+  tags: string[];
 }
 
 // === Custom Command Types ===

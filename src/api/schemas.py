@@ -373,7 +373,7 @@ class ContactCreate(BaseModel):
     address_line_1: str = Field(..., min_length=1, max_length=255)
     address_line_2: str | None = Field(None, max_length=255)
     city: str = Field(..., min_length=1, max_length=100)
-    state_province: str = Field(..., min_length=1, max_length=50)
+    state_province: str | None = Field(None, max_length=50)
     postal_code: str = Field(..., min_length=1, max_length=20)
     country_code: str = Field("US", max_length=2)
     use_as_ship_to: bool = True
@@ -418,7 +418,7 @@ class ContactResponse(BaseModel):
     address_line_1: str
     address_line_2: str | None = None
     city: str
-    state_province: str
+    state_province: str | None = None
     postal_code: str
     country_code: str
     use_as_ship_to: bool

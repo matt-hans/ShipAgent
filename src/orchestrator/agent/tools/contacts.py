@@ -134,6 +134,32 @@ async def resolve_contact_tool(
         return _err(f"Error resolving contact: {e}")
 
 
+def _build_contact_payload(contact: Any) -> dict[str, Any]:
+    """Build a full contact payload dict for SSE event emission.
+
+    Args:
+        contact: A ContactRow ORM object with address book fields.
+
+    Returns:
+        Dict with all contact fields suitable for frontend rendering.
+    """
+    return {
+        "handle": contact.handle,
+        "display_name": contact.display_name,
+        "attention_name": contact.attention_name,
+        "company": contact.company,
+        "phone": contact.phone,
+        "email": contact.email,
+        "address_line_1": contact.address_line_1,
+        "address_line_2": contact.address_line_2,
+        "city": contact.city,
+        "state_province": contact.state_province,
+        "postal_code": contact.postal_code,
+        "country_code": contact.country_code,
+        "tags": contact.tag_list,
+    }
+
+
 async def save_contact_tool(
     args: dict[str, Any],
     bridge: EventEmitterBridge | None = None,
@@ -176,21 +202,24 @@ async def save_contact_tool(
                         svc.update_contact(existing.id, **update_fields)
                         db.commit()
 
+                    # Re-read to get resolved fields after update
+                    updated = svc.get_by_handle(existing.handle) or existing
+                    contact_payload = _build_contact_payload(updated)
+
                     # Emit event (non-critical - don't fail on error)
                     try:
                         _emit_event("contact_saved", {
                             "action": "updated",
-                            "handle": existing.handle,
-                            "display_name": existing.display_name,
+                            **contact_payload,
                         }, bridge=bridge)
                     except Exception:
                         logger.warning("Failed to emit contact_saved event")
 
                     return _ok({
                         "action": "updated",
-                        "handle": existing.handle,
-                        "display_name": existing.display_name,
-                        "message": f"Updated contact @{existing.handle}",
+                        "handle": updated.handle,
+                        "display_name": updated.display_name,
+                        "message": f"Updated contact @{updated.handle}",
                     })
 
             # Create new contact
@@ -199,8 +228,8 @@ async def save_contact_tool(
                 display_name=args.get("display_name"),
                 address_line_1=args.get("address_line_1", ""),
                 city=args.get("city", ""),
-                state_province=args.get("state_province", ""),
                 postal_code=args.get("postal_code", ""),
+                state_province=args.get("state_province") or None,
                 country_code=args.get("country_code", "US"),
                 attention_name=args.get("attention_name"),
                 company=args.get("company"),
@@ -215,12 +244,13 @@ async def save_contact_tool(
             )
             db.commit()
 
+            contact_payload = _build_contact_payload(contact)
+
             # Emit event (non-critical - don't fail on error)
             try:
                 _emit_event("contact_saved", {
                     "action": "created",
-                    "handle": contact.handle,
-                    "display_name": contact.display_name,
+                    **contact_payload,
                 }, bridge=bridge)
             except Exception:
                 logger.warning("Failed to emit contact_saved event")

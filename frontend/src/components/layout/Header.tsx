@@ -4,10 +4,10 @@
  * Features:
  * - Logo and app name
  * - Interactive shipping mode toggle (persisted via AppState)
- * - Settings gear button to open flyout
+ * - Settings gear to open settings flyout
  */
 
-import { Package, Settings } from 'lucide-react';
+import { Package } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { useAppState } from '@/hooks/useAppState';
 
@@ -16,8 +16,6 @@ export function Header() {
     interactiveShipping,
     setInteractiveShipping,
     isToggleLocked,
-    settingsFlyoutOpen,
-    setSettingsFlyoutOpen,
   } = useAppState();
 
   return (
@@ -35,7 +33,7 @@ export function Header() {
         </div>
 
         {/* Right side: toggle + settings */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3">
           {/* Interactive shipping toggle */}
           <div className="flex items-center gap-2">
             <label
@@ -52,19 +50,6 @@ export function Header() {
             />
           </div>
 
-          {/* Settings button */}
-          <button
-            onClick={() => setSettingsFlyoutOpen(!settingsFlyoutOpen)}
-            className={`p-2 rounded-md transition-colors ${
-              settingsFlyoutOpen
-                ? 'bg-primary text-primary-foreground'
-                : 'hover:bg-muted text-muted-foreground hover:text-foreground'
-            }`}
-            aria-label="Open settings"
-            aria-pressed={settingsFlyoutOpen}
-          >
-            <Settings className="h-4 w-4" />
-          </button>
         </div>
       </div>
     </header>
