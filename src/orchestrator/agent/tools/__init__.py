@@ -16,6 +16,12 @@ class ToolDefinition(TypedDict):
     input_schema: dict[str, Any]
     handler: Callable[..., Awaitable[Any]]
 
+from src.orchestrator.agent.tools.contacts import (
+    delete_contact_tool,
+    list_contacts_tool,
+    resolve_contact_tool,
+    save_contact_tool,
+)
 from src.orchestrator.agent.tools.core import EventEmitterBridge, _bind_bridge
 from src.orchestrator.agent.tools.data import (
     confirm_filter_interpretation_tool,
@@ -564,6 +570,119 @@ def get_all_tool_definitions(
             "handler": _bind_bridge(delete_paperless_document_tool, bridge),
         },
         # ---------------------------------------------------------------
+        # Contact Book tools (both batch and interactive)
+        # ---------------------------------------------------------------
+        {
+            "name": "resolve_contact",
+            "description": (
+                "Resolve an @handle to a contact record with address data. "
+                "Returns order_data with ship_to_* keys ready for UPS payload. "
+                "Also supports prefix search for autocomplete."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "handle": {
+                        "type": "string",
+                        "description": "Contact handle (with or without @).",
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Role for order_data mapping.",
+                        "enum": ["ship_to", "shipper"],
+                        "default": "ship_to",
+                    },
+                },
+                "required": ["handle"],
+            },
+            "handler": _bind_bridge(resolve_contact_tool, bridge),
+        },
+        {
+            "name": "save_contact",
+            "description": (
+                "Create or update a contact in the address book. "
+                "Handle is auto-generated from display_name if omitted."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "handle": {
+                        "type": "string",
+                        "description": "@mention handle (auto-generated if omitted).",
+                    },
+                    "display_name": {
+                        "type": "string",
+                        "description": "Human-readable contact name.",
+                    },
+                    "address_line_1": {
+                        "type": "string",
+                        "description": "Street address line 1.",
+                    },
+                    "address_line_2": {
+                        "type": "string",
+                        "description": "Street address line 2.",
+                    },
+                    "city": {"type": "string", "description": "City."},
+                    "state_province": {"type": "string", "description": "State/province code."},
+                    "postal_code": {"type": "string", "description": "Postal/ZIP code."},
+                    "country_code": {"type": "string", "description": "Country code.", "default": "US"},
+                    "phone": {"type": "string", "description": "Phone number."},
+                    "email": {"type": "string", "description": "Email address."},
+                    "company": {"type": "string", "description": "Company name."},
+                    "attention_name": {"type": "string", "description": "UPS AttentionName."},
+                    "use_as_ship_to": {"type": "boolean", "description": "Can be ShipTo.", "default": True},
+                    "use_as_shipper": {"type": "boolean", "description": "Can be Shipper.", "default": False},
+                    "use_as_third_party": {"type": "boolean", "description": "Can be ThirdParty.", "default": False},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags for organization.",
+                    },
+                    "notes": {"type": "string", "description": "Internal notes."},
+                },
+                "required": ["display_name"],
+            },
+            "handler": _bind_bridge(save_contact_tool, bridge),
+        },
+        {
+            "name": "list_contacts",
+            "description": "List contacts with optional search filter.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "search": {
+                        "type": "string",
+                        "description": "Search term (handle, name, or city).",
+                    },
+                    "tag": {
+                        "type": "string",
+                        "description": "Filter by tag.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default 50, max 100).",
+                        "default": 50,
+                    },
+                },
+            },
+            "handler": _bind_bridge(list_contacts_tool, bridge),
+        },
+        {
+            "name": "delete_contact",
+            "description": "Delete a contact by handle.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "handle": {
+                        "type": "string",
+                        "description": "Contact handle to delete.",
+                    },
+                },
+                "required": ["handle"],
+            },
+            "handler": _bind_bridge(delete_contact_tool, bridge),
+        },
+        # ---------------------------------------------------------------
         # UPS MCP v2 — Tracking tool
         # ---------------------------------------------------------------
         {
@@ -647,6 +766,8 @@ def get_all_tool_definitions(
         "push_document_to_shipment", "delete_paperless_document",
         "get_landed_cost",
         "track_package",
+        # Contact tools — useful in both modes for @handle resolution
+        "resolve_contact", "save_contact", "list_contacts", "delete_contact",
     }
     interactive_defs = [d for d in definitions if d["name"] in interactive_allowed]
 
