@@ -959,3 +959,68 @@ class TestCustomAttributeJsonPath:
                 spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
             )
         assert exc_info.value.code == FilterErrorCode.UNKNOWN_COLUMN
+
+    def test_non_numeric_ordering_on_json_path_raises(self):
+        """custom_attributes.priority > 'high' raises TYPE_MISMATCH at compile time."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.priority",
+                        FilterOperator.gt,
+                        [_lit("high")],
+                    )
+                ],
+            )
+        )
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(
+                spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+            )
+        assert exc_info.value.code == FilterErrorCode.TYPE_MISMATCH
+
+    def test_non_numeric_between_on_json_path_raises(self):
+        """custom_attributes.score BETWEEN 'low' AND 'high' raises TYPE_MISMATCH."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.score",
+                        FilterOperator.between,
+                        [_lit("low"), _lit("high")],
+                    )
+                ],
+            )
+        )
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(
+                spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+            )
+        assert exc_info.value.code == FilterErrorCode.TYPE_MISMATCH
+
+    def test_numeric_string_ordering_on_json_path_accepted(self):
+        """custom_attributes.priority > '5' compiles (numeric string is valid)."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.priority",
+                        FilterOperator.gt,
+                        [_lit("5")],
+                    )
+                ],
+            )
+        )
+        result = compile_filter_spec(
+            spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+        )
+        assert result.params == [5.0]

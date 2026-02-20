@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from decimal import Decimal
 from typing import Union
 
 logger = logging.getLogger(__name__)
+
+# Compiled regex for JSON key sanitization (used on every custom_attributes
+# filter condition). Allows alphanumerics, underscores, hyphens, and dots.
+_JSON_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
 from src.orchestrator.models.filter_spec import (
     CompiledFilter,
@@ -253,8 +258,7 @@ def _compile_condition(
         json_key = cond.column.split(".", 1)[1]
         # Sanitize JSON key — allow alphanumerics, underscores, hyphens, dots.
         # Hyphens are common in Shopify note_attributes (e.g. "gift-message").
-        import re as _re
-        if not _re.match(r"^[a-zA-Z0-9_.\-]+$", json_key):
+        if not _JSON_KEY_PATTERN.match(json_key):
             raise FilterCompilationError(
                 FilterErrorCode.UNKNOWN_COLUMN,
                 f"Invalid JSON path key: {json_key!r}. "
@@ -299,7 +303,10 @@ def _compile_condition(
         idx = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[0], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
         ordering_col = _ordering_column_sql(
             cond.column, column_types, col_expr=col if is_json_path else None,
@@ -310,7 +317,10 @@ def _compile_condition(
         idx = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[0], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
         ordering_col = _ordering_column_sql(
             cond.column, column_types, col_expr=col if is_json_path else None,
@@ -321,7 +331,10 @@ def _compile_condition(
         idx = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[0], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
         ordering_col = _ordering_column_sql(
             cond.column, column_types, col_expr=col if is_json_path else None,
@@ -332,7 +345,10 @@ def _compile_condition(
         idx = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[0], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
         ordering_col = _ordering_column_sql(
             cond.column, column_types, col_expr=col if is_json_path else None,
@@ -416,12 +432,18 @@ def _compile_condition(
         idx_lo = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[0], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
         idx_hi = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[1], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[1], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
         ordering_col = _ordering_column_sql(
             cond.column, column_types, col_expr=col if is_json_path else None,
@@ -577,12 +599,22 @@ def _extract_ordering_value(
     literal: TypedLiteral,
     column: str,
     column_types: dict[str, str],
+    *,
+    is_json_path: bool = False,
 ) -> object:
-    """Extract value for ordering operations with deterministic coercion."""
+    """Extract value for ordering operations with deterministic coercion.
+
+    JSON-path columns are always VARCHAR in DuckDB but ordering
+    expressions cast them to DOUBLE. Enforce numeric operand validation
+    at compile time so ``custom_attributes.priority > "high"`` fails
+    early instead of producing a DuckDB runtime conversion error.
+    """
     raw_type = column_types.get(column, "").upper()
     col_type = raw_type.split("(")[0].strip() if raw_type else ""
     value = _extract_value(literal)
 
+    if is_json_path:
+        return _coerce_numeric_literal(value, column)
     if not _is_numeric_text_column(column, col_type):
         return value
     return _coerce_numeric_literal(value, column)

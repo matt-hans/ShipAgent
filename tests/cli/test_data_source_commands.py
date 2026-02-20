@@ -89,10 +89,10 @@ def _make_client(responses: dict) -> HttpClient:
     Returns:
         HttpClient wired to the fake transport.
     """
-    client = HttpClient(base_url="http://test:8000")
+    client = HttpClient(base_url="http://127.0.0.1:8000")
     transport = FakeTransport(responses)
     client._client = httpx.AsyncClient(
-        transport=transport, base_url="http://test:8000"
+        transport=transport, base_url="http://127.0.0.1:8000"
     )
     return client
 

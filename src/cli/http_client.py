@@ -27,6 +27,25 @@ from src.cli.protocol import (
 
 logger = logging.getLogger(__name__)
 
+# Hosts considered safe for plain HTTP credential transport.
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
+
+
+def _reject_insecure_credential_transport(base_url: str) -> None:
+    """Raise if base_url sends credentials over plain HTTP to a remote host."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    if parsed.scheme == "https":
+        return
+    host = (parsed.hostname or "").lower()
+    if host in _LOCAL_HOSTS:
+        return
+    raise ShipAgentClientError(
+        f"Refusing to send platform credentials over plain HTTP to "
+        f"non-local host {host!r}. Use HTTPS or connect to localhost."
+    )
+
 
 class HttpClient:
     """ShipAgentClient implementation that talks to the daemon over HTTP."""
@@ -576,6 +595,8 @@ class HttpClient:
                 "SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN environment "
                 "variables must be set for Shopify auto-connect."
             )
+        # Block credential transmission over plain HTTP to non-local hosts.
+        _reject_insecure_credential_transport(self._base_url)
         resp = await self._client.post(
             "/api/v1/platforms/shopify/connect",
             json={
