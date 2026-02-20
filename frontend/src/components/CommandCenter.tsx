@@ -31,6 +31,7 @@ import { PaperlessCard } from '@/components/command-center/PaperlessCard';
 import { PaperlessUploadCard } from '@/components/command-center/PaperlessUploadCard';
 import { TrackingCard } from '@/components/command-center/TrackingCard';
 import { ContactCard } from '@/components/command-center/ContactCard';
+import { ChatTimeline } from '@/components/command-center/ChatTimeline';
 import {
   ActiveSourceBanner,
   InteractiveModeBanner,
@@ -41,12 +42,20 @@ import {
 } from '@/components/command-center/messages';
 import { RichChatInput } from './chat/RichChatInput';
 import { expandTokens } from '@/lib/expandTokens';
+import type { ConversationMessage } from '@/hooks/useAppState';
 
 interface CommandCenterProps {
   activeJob: Job | null;
 }
 
-export function CommandCenter({ activeJob }: CommandCenterProps) {
+/** Imperative methods exposed to parent via ref. */
+export interface CommandCenterHandle {
+  loadSession: (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[]) => Promise<void>;
+  newChat: () => Promise<void>;
+}
+
+export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenterProps>(
+  function CommandCenter({ activeJob }, ref) {
   const {
     conversation,
     addMessage,
@@ -66,6 +75,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     contacts,
     customCommands,
     setSettingsFlyoutOpen,
+    refreshChatSessions,
   } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
@@ -101,6 +111,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   }, []);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
+  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
   const lastCommandRef = React.useRef<string>('');
   const lastJobNameRef = React.useRef<string>('');
   const prevInteractiveRef = React.useRef(interactiveShipping);
@@ -452,6 +463,47 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     }
   };
 
+  /** Load a persisted session from the sidebar. */
+  const handleLoadSession = React.useCallback(async (
+    sessionId: string,
+    mode: 'batch' | 'interactive',
+    messages: ConversationMessage[],
+  ) => {
+    // Set mode BEFORE rendering to prevent flicker
+    setInteractiveShipping(mode === 'interactive');
+
+    // Clear current state
+    clearConversation();
+    setPreview(null);
+    setCurrentJobId(null);
+    setExecutingJobId(null);
+
+    // Populate conversation from loaded messages
+    for (const msg of messages) {
+      addMessage(msg);
+    }
+
+    // Connect to the session
+    await conv.loadSession(sessionId, mode);
+    setConversationSessionId(sessionId);
+  }, [conv, setInteractiveShipping, clearConversation, addMessage, setConversationSessionId]);
+
+  /** Start a fresh chat without deleting the current session. */
+  const handleNewChat = React.useCallback(async () => {
+    await conv.startNewChat();
+    clearConversation();
+    setPreview(null);
+    setCurrentJobId(null);
+    setExecutingJobId(null);
+    setConversationSessionId(null);
+    refreshChatSessions();
+  }, [conv, clearConversation, setConversationSessionId, refreshChatSessions]);
+
+  // Expose session management to parent
+  React.useImperativeHandle(ref, () => ({
+    loadSession: handleLoadSession,
+    newChat: handleNewChat,
+  }), [handleLoadSession, handleNewChat]);
 
   // Show job detail panel when a sidebar job is selected (takes priority over conversation)
   const showJobDetail = activeJob && !preview && !executingJobId;
@@ -474,15 +526,17 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   return (
     <div className={cn('flex flex-col h-full', interactiveShipping && 'command-center--interactive')}>
       {interactiveShipping ? <InteractiveModeBanner /> : <ActiveSourceBanner />}
-      {/* Messages area */}
-      <div className="command-messages-shell flex-1 overflow-y-auto scrollable p-6">
+      {/* Messages area with timeline */}
+      <div className="flex flex-1 overflow-hidden">
+        <div ref={scrollContainerRef} className="command-messages-shell flex-1 overflow-y-auto scrollable p-6">
         {conversation.length === 0 && !preview && !executingJobId ? (
           <WelcomeMessage onExampleClick={(text) => setInputValue(text)} interactiveShipping={interactiveShipping} />
         ) : (
           <div className="max-w-3xl mx-auto space-y-6">
             {conversation.map((message) => (
-              message.metadata?.action === 'complete' ? (
-                <div key={message.id} className="pl-11">
+              <div key={message.id} data-message-id={message.id}>
+              {message.metadata?.action === 'complete' ? (
+                <div className="pl-11">
                   <CompletionArtifact
                     message={message}
                     onViewLabels={(jobId) => {
@@ -495,7 +549,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                   />
                 </div>
               ) : message.metadata?.action === 'pickup_preview' && message.metadata.pickupPreview ? (
-                <div key={message.id} className="pl-11">
+                <div className="pl-11">
                   <PickupPreviewCard
                     data={message.metadata.pickupPreview}
                     onConfirm={async () => {
@@ -515,19 +569,19 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                   />
                 </div>
               ) : message.metadata?.action === 'pickup_result' && message.metadata.pickup ? (
-                <div key={message.id} className="pl-11">
+                <div className="pl-11">
                   <PickupCompletionCard data={message.metadata.pickup} />
                 </div>
               ) : message.metadata?.action === 'location_result' && message.metadata.location ? (
-                <div key={message.id} className="pl-11">
+                <div className="pl-11">
                   <LocationCard data={message.metadata.location} />
                 </div>
               ) : message.metadata?.action === 'landed_cost_result' && message.metadata.landedCost ? (
-                <div key={message.id} className="pl-11">
+                <div className="pl-11">
                   <LandedCostCard data={message.metadata.landedCost} />
                 </div>
               ) : message.metadata?.action === 'paperless_upload_prompt' && message.metadata.paperlessUpload ? (
-                <div key={message.id} className="pl-11">
+                <div className="pl-11">
                   <PaperlessUploadCard
                     data={message.metadata.paperlessUpload}
                     sessionId={conv.sessionId ?? ''}
@@ -542,15 +596,15 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                   />
                 </div>
               ) : message.metadata?.action === 'paperless_result' && message.metadata.paperless ? (
-                <div key={message.id} className="pl-11">
+                <div className="pl-11">
                   <PaperlessCard data={message.metadata.paperless} />
                 </div>
               ) : message.metadata?.action === 'tracking_result' && message.metadata.tracking ? (
-                <div key={message.id} className="pl-11">
+                <div className="pl-11">
                   <TrackingCard data={message.metadata.tracking} />
                 </div>
               ) : message.metadata?.action === 'contact_saved' && message.metadata.contactSaved ? (
-                <div key={message.id} className="pl-11">
+                <div className="pl-11">
                   <ContactCard
                     data={message.metadata.contactSaved}
                     onEdit={() => {
@@ -560,10 +614,11 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                   />
                 </div>
               ) : message.role === 'user' ? (
-                <UserMessage key={message.id} message={message} />
+                <UserMessage message={message} />
               ) : (
-                <SystemMessage key={message.id} message={message} />
-              )
+                <SystemMessage message={message} />
+              )}
+              </div>
             ))}
 
             {/* Preview card */}
@@ -708,6 +763,15 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
             <div ref={messagesEndRef} />
           </div>
         )}
+        </div>
+
+        {/* Visual Timeline */}
+        {conversation.length > 3 && (
+          <ChatTimeline
+            messages={conversation}
+            scrollContainerRef={scrollContainerRef}
+          />
+        )}
       </div>
 
       {/* Input area */}
@@ -785,6 +849,6 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
       )}
     </div>
   );
-}
+});
 
 export default CommandCenter;

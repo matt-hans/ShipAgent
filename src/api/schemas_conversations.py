@@ -4,6 +4,8 @@ Defines the request/response contracts for the agent-driven SSE
 conversation flow that replaces the legacy command endpoint.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 # UPS document type code → human-readable label mapping.
@@ -79,3 +81,42 @@ class UploadDocumentResponse(BaseModel):
     file_name: str
     file_format: str
     file_size_bytes: int
+
+
+# === Chat Session Persistence Schemas ===
+
+
+class ChatSessionSummary(BaseModel):
+    """Lightweight session summary for sidebar listing."""
+
+    id: str
+    title: str | None
+    mode: Literal["batch", "interactive"]
+    created_at: str
+    updated_at: str
+    message_count: int
+
+
+class PersistedMessageResponse(BaseModel):
+    """Persisted message for history display."""
+
+    id: str
+    role: Literal["user", "assistant", "system"]
+    message_type: Literal["text", "system_artifact", "error"]
+    content: str
+    metadata: dict | None
+    sequence: int
+    created_at: str
+
+
+class SessionDetailResponse(BaseModel):
+    """Full session with messages for resume."""
+
+    session: ChatSessionSummary
+    messages: list[PersistedMessageResponse]
+
+
+class UpdateTitleRequest(BaseModel):
+    """Request to rename a session."""
+
+    title: str = Field(..., min_length=1, max_length=255)

@@ -279,11 +279,86 @@ and all US state names (e.g., "california" → "CA").
 """
 
 
+MAX_RESUME_MESSAGES = 30
+MAX_RESUME_TOKENS = 4000  # ~16K chars at ~4 chars/token
+
+
+def _estimate_token_count(text: str) -> int:
+    """Rough token estimate at ~4 characters per token.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        Estimated token count.
+    """
+    return len(text) // 4
+
+
+def _build_prior_conversation_section(
+    messages: list[dict],
+) -> str:
+    """Build a prior conversation section for session resume.
+
+    Applies two limits to control prompt size:
+    1. MAX_RESUME_MESSAGES — hard cap on message count.
+    2. MAX_RESUME_TOKENS — estimated token budget. Messages are
+       included newest-first until the budget is exhausted.
+
+    Args:
+        messages: List of {role, content} dicts from persisted history.
+
+    Returns:
+        Formatted conversation history section, or empty string.
+    """
+    if not messages:
+        return ""
+
+    # Start from the most recent messages and work backwards
+    candidates = messages[-MAX_RESUME_MESSAGES:]
+    included: list[dict] = []
+    token_budget = MAX_RESUME_TOKENS
+
+    for msg in reversed(candidates):
+        content = msg.get("content", "")
+        # Truncate very long individual messages
+        if len(content) > 500:
+            content = content[:497] + "..."
+        cost = _estimate_token_count(content) + 10  # overhead for role label
+        if token_budget - cost < 0 and included:
+            break  # budget exhausted
+        token_budget -= cost
+        included.append({"role": msg.get("role", "unknown"), "content": content})
+
+    included.reverse()  # Restore chronological order
+
+    if not included:
+        return ""
+
+    lines = [
+        "## Prior Conversation (Resumed Session)",
+        "",
+        "You are resuming a prior conversation. Here is the recent history:",
+        "",
+    ]
+
+    omitted = len(messages) - len(included)
+    if omitted > 0:
+        lines.append(f"({omitted} earlier messages omitted)")
+        lines.append("")
+
+    for msg in included:
+        lines.append(f"[{msg['role']}]: {msg['content']}")
+
+    return "\n".join(lines)
+
+
 def build_system_prompt(
     source_info: DataSourceInfo | None = None,
     interactive_shipping: bool = False,
     column_samples: dict[str, list] | None = None,
     contacts: list[dict] | None = None,
+    prior_conversation: list[dict] | None = None,
 ) -> str:
     """Build the complete system prompt for the orchestration agent.
 
@@ -300,6 +375,7 @@ def build_system_prompt(
         interactive_shipping: Whether interactive single-shipment mode is enabled.
         column_samples: Optional sample values per column for filter grounding.
         contacts: Optional list of saved contacts for @handle resolution.
+        prior_conversation: Optional list of {role, content} dicts for session resume.
 
     Returns:
         Complete system prompt string.
@@ -603,6 +679,11 @@ administrator.
     # Build contacts section if contacts are provided
     contacts_section = _build_contacts_section(contacts) if contacts else ""
 
+    # Prior conversation section for session resume
+    prior_section = ""
+    if prior_conversation:
+        prior_section = _build_prior_conversation_section(prior_conversation)
+
     return f"""You are ShipAgent, an AI shipping assistant that helps users create, rate, and manage UPS shipments from their data sources.
 
 Current date: {current_date}
@@ -616,6 +697,7 @@ Current date: {current_date}
 
 {data_section}
 {contacts_section}
+{prior_section}
 ## Filter Generation Rules
 
 {filter_rules_section}
