@@ -1,11 +1,16 @@
 """Tests for the shared conversation handler service."""
 
 import asyncio
+import hashlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.services.conversation_handler import compute_source_hash, ensure_agent, process_message
+
+# Precompute the expected hash for empty contacts list
+_EMPTY_CONTACTS_HASH = hashlib.sha256(str([]).encode()).hexdigest()[:8]
+_NONE_HASH = f"none|interactive=False|contacts={_EMPTY_CONTACTS_HASH}"
 
 
 class TestComputeSourceHash:
@@ -60,9 +65,13 @@ class TestEnsureAgent:
         """Reuses existing agent when source hash matches."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "none|interactive=False"
+        session.agent_source_hash = _NONE_HASH
 
-        result = await ensure_agent(session, source_info=None)
+        with patch(
+            "src.services.conversation_handler._get_mru_contacts_for_prompt",
+            return_value=[],
+        ):
+            result = await ensure_agent(session, source_info=None)
 
         assert result is False  # No new agent created
 
@@ -102,7 +111,7 @@ class TestProcessMessage:
         """Yields events from the agent stream."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "none|interactive=False"
+        session.agent_source_hash = _NONE_HASH
         session.lock = asyncio.Lock()
 
         # Mock agent stream
@@ -113,10 +122,16 @@ class TestProcessMessage:
         session.agent.process_message_stream = fake_stream
         session.agent.emitter_bridge = MagicMock()
 
-        with patch(
-            "src.services.conversation_handler.get_data_gateway",
-            new_callable=AsyncMock,
-        ) as mock_gw:
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(
+                "src.services.conversation_handler._get_mru_contacts_for_prompt",
+                return_value=[],
+            ),
+        ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             events = []
             async for event in process_message(session, "Hello"):
@@ -131,7 +146,7 @@ class TestProcessMessage:
         """Stores assistant text in session history."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "none|interactive=False"
+        session.agent_source_hash = _NONE_HASH
         session.lock = asyncio.Lock()
 
         async def fake_stream(content):
@@ -140,10 +155,16 @@ class TestProcessMessage:
         session.agent.process_message_stream = fake_stream
         session.agent.emitter_bridge = MagicMock()
 
-        with patch(
-            "src.services.conversation_handler.get_data_gateway",
-            new_callable=AsyncMock,
-        ) as mock_gw:
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(
+                "src.services.conversation_handler._get_mru_contacts_for_prompt",
+                return_value=[],
+            ),
+        ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             async for _ in process_message(session, "Hello"):
                 pass
@@ -155,7 +176,7 @@ class TestProcessMessage:
         """Does NOT store user message — caller owns that."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "none|interactive=False"
+        session.agent_source_hash = _NONE_HASH
         session.lock = asyncio.Lock()
 
         async def fake_stream(content):
@@ -164,10 +185,16 @@ class TestProcessMessage:
         session.agent.process_message_stream = fake_stream
         session.agent.emitter_bridge = MagicMock()
 
-        with patch(
-            "src.services.conversation_handler.get_data_gateway",
-            new_callable=AsyncMock,
-        ) as mock_gw:
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(
+                "src.services.conversation_handler._get_mru_contacts_for_prompt",
+                return_value=[],
+            ),
+        ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             async for _ in process_message(session, "User says hello"):
                 pass
@@ -182,7 +209,7 @@ class TestProcessMessage:
         """Sets emitter bridge callback before processing and clears after."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "none|interactive=False"
+        session.agent_source_hash = _NONE_HASH
         session.lock = asyncio.Lock()
         bridge = MagicMock()
         session.agent.emitter_bridge = bridge
@@ -197,10 +224,16 @@ class TestProcessMessage:
         session.agent.process_message_stream = fake_stream
 
         callback = MagicMock()
-        with patch(
-            "src.services.conversation_handler.get_data_gateway",
-            new_callable=AsyncMock,
-        ) as mock_gw:
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(
+                "src.services.conversation_handler._get_mru_contacts_for_prompt",
+                return_value=[],
+            ),
+        ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             async for _ in process_message(
                 session, "Test", emit_callback=callback
