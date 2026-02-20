@@ -727,6 +727,46 @@
   @apply text-muted-foreground italic;
 }
 
+/* Rich input styling (mirror div technique) */
+.rich-input-mirror {
+  @apply absolute inset-0 p-4 font-mono text-sm whitespace-pre-wrap break-words pointer-events-none overflow-hidden;
+  @apply bg-card border border-border rounded-lg;
+  color: transparent;
+}
+
+.rich-input-textarea {
+  @apply w-full p-4 font-mono text-sm rounded-lg resize-none;
+  @apply bg-transparent border border-border text-foreground;
+  @apply placeholder:text-muted-foreground;
+  @apply focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent;
+  @apply transition-colors duration-200;
+  position: relative;
+  z-index: 1;
+  background-color: transparent;
+  caret-color: var(--color-foreground);
+}
+
+.rich-input-textarea::placeholder {
+  color: var(--color-muted-foreground);
+}
+
+/* Autocomplete popover */
+.autocomplete-popover {
+  @apply absolute left-0 right-0 bottom-full mb-1 z-50;
+  @apply bg-popover border border-border rounded-lg shadow-lg;
+  @apply max-h-48 overflow-y-auto;
+  animation: slide-up 0.15s ease-out;
+}
+
+.autocomplete-item {
+  @apply w-full flex items-center px-3 py-2 text-left text-sm;
+  @apply hover:bg-muted transition-colors;
+}
+
+.autocomplete-item--selected {
+  @apply bg-primary/10;
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 8px;
