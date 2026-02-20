@@ -19,6 +19,7 @@ import type {
   PaperlessResult,
   PaperlessUploadPrompt,
   TrackingResult,
+  ContactSavedResult,
   Contact,
   CustomCommand,
 } from '@/types/api';
@@ -55,7 +56,7 @@ interface ConversationMessage {
       | 'preview' | 'execute' | 'complete' | 'error' | 'elicit'
       | 'pickup_preview' | 'pickup_result' | 'location_result' | 'landed_cost_result'
       | 'paperless_upload_prompt' | 'paperless_result'
-      | 'tracking_result';
+      | 'tracking_result' | 'contact_saved';
     preview?: {
       rowCount: number;
       estimatedCost: number;
@@ -97,6 +98,7 @@ interface ConversationMessage {
     paperlessUpload?: PaperlessUploadPrompt;
     paperless?: PaperlessResult;
     tracking?: TrackingResult;
+    contactSaved?: ContactSavedResult;
   };
 }
 
@@ -170,9 +172,6 @@ interface AppState {
   settingsFlyoutOpen: boolean;
   setSettingsFlyoutOpen: (open: boolean) => void;
 
-  // Address Book modal visibility (app-level to avoid flyout unmount issue)
-  addressBookModalOpen: boolean;
-  setAddressBookModalOpen: (open: boolean) => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -226,9 +225,6 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   // Settings flyout state
   const [settingsFlyoutOpen, setSettingsFlyoutOpen] = React.useState(false);
-
-  // Address Book modal state (app-level to survive flyout unmount)
-  const [addressBookModalOpen, setAddressBookModalOpen] = React.useState(false);
 
   // Refresh contacts from API
   const refreshContacts = React.useCallback(async () => {
@@ -314,8 +310,6 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     refreshCommands,
     settingsFlyoutOpen,
     setSettingsFlyoutOpen,
-    addressBookModalOpen,
-    setAddressBookModalOpen,
   };
 
   return (

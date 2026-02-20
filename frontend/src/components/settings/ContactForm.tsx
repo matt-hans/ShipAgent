@@ -64,9 +64,6 @@ export function ContactForm({
   const [stateProvince, setStateProvince] = React.useState(contact?.state_province || '');
   const [postalCode, setPostalCode] = React.useState(contact?.postal_code || '');
   const [countryCode, setCountryCode] = React.useState(contact?.country_code || 'US');
-  const [useAsShipTo, setUseAsShipTo] = React.useState(contact?.use_as_ship_to ?? true);
-  const [useAsShipper, setUseAsShipper] = React.useState(contact?.use_as_shipper ?? false);
-  const [useAsThirdParty, setUseAsThirdParty] = React.useState(contact?.use_as_third_party ?? false);
   const [tags, setTags] = React.useState<string[]>(contact?.tags || []);
   const [tagInput, setTagInput] = React.useState('');
   const [notes, setNotes] = React.useState(contact?.notes || '');
@@ -121,12 +118,9 @@ export function ContactForm({
       address_line_1: addressLine1,
       address_line_2: addressLine2 || undefined,
       city,
-      state_province: stateProvince,
+      state_province: stateProvince || undefined,
       postal_code: postalCode,
       country_code: countryCode,
-      use_as_ship_to: useAsShipTo,
-      use_as_shipper: useAsShipper,
-      use_as_third_party: useAsThirdParty,
       tags: tags.length > 0 ? tags : undefined,
       notes: notes || undefined,
     };
@@ -134,21 +128,23 @@ export function ContactForm({
     await onSubmit(data);
   };
 
-  const isValid = displayName && addressLine1 && city && stateProvince && postalCode;
+  const isValid = displayName && addressLine1 && city && postalCode;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       {/* Handle */}
       <div className="space-y-1.5">
         <Label htmlFor="handle">Handle</Label>
-        <div className="flex items-center gap-1">
-          <span className="text-muted-foreground">@</span>
+        <div className="relative">
+          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-mono text-sm pointer-events-none">
+            @
+          </span>
           <Input
             id="handle"
             value={handle}
             onChange={(e) => handleHandleChange(e.target.value)}
             placeholder="auto-generated if empty"
-            className="font-mono"
+            className="font-mono pl-7"
           />
         </div>
       </div>
@@ -246,13 +242,12 @@ export function ContactForm({
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="state">State/Province *</Label>
+          <Label htmlFor="state">State/Province</Label>
           <Input
             id="state"
             value={stateProvince}
             onChange={(e) => setStateProvince(e.target.value)}
             placeholder="CA"
-            required
           />
         </div>
       </div>
@@ -285,39 +280,6 @@ export function ContactForm({
         </div>
       </div>
 
-      {/* Usage checkboxes */}
-      <div className="space-y-2">
-        <Label>Usage</Label>
-        <div className="flex gap-4">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={useAsShipTo}
-              onChange={(e) => setUseAsShipTo(e.target.checked)}
-              className="h-4 w-4 rounded border-input"
-            />
-            <span className="text-sm">Ship To</span>
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={useAsShipper}
-              onChange={(e) => setUseAsShipper(e.target.checked)}
-              className="h-4 w-4 rounded border-input"
-            />
-            <span className="text-sm">Shipper</span>
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={useAsThirdParty}
-              onChange={(e) => setUseAsThirdParty(e.target.checked)}
-              className="h-4 w-4 rounded border-input"
-            />
-            <span className="text-sm">Third Party</span>
-          </label>
-        </div>
-      </div>
 
       {/* Tags */}
       <div className="space-y-2">

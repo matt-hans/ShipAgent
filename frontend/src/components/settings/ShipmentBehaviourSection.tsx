@@ -2,14 +2,13 @@
  * Shipment Behaviour Section - Settings accordion section.
  *
  * Contains:
- * - Write-back toggle
  * - Warning handling preference
  * - Default service selection (future)
  */
 
 import { ChevronDown, FileOutput, AlertTriangle } from 'lucide-react';
-import { Switch } from '@/components/ui/switch';
 import { useAppState } from '@/hooks/useAppState';
+import { cn } from '@/lib/utils';
 
 interface ShipmentBehaviourSectionProps {
   isOpen: boolean;
@@ -21,8 +20,6 @@ export function ShipmentBehaviourSection({
   onToggle,
 }: ShipmentBehaviourSectionProps) {
   const {
-    writeBackEnabled,
-    setWriteBackEnabled,
     warningPreference,
     setWarningPreference,
   } = useAppState();
@@ -39,52 +36,49 @@ export function ShipmentBehaviourSection({
           <span className="font-medium text-foreground">Shipment Behaviour</span>
         </div>
         <ChevronDown
-          className={`h-4 w-4 text-muted-foreground transition-transform ${
-            isOpen ? 'rotate-180' : ''
-          }`}
+          className={`h-4 w-4 text-muted-foreground transition-transform ${isOpen ? 'rotate-180' : ''
+            }`}
         />
       </button>
 
       {isOpen && (
         <div className="settings-section-content space-y-4">
-          {/* Write-back toggle */}
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <label className="text-sm font-medium text-foreground">
-                Write-back tracking numbers
-              </label>
-              <p className="text-xs text-muted-foreground">
-                Automatically update source with tracking numbers after shipment
-              </p>
-            </div>
-            <Switch
-              checked={writeBackEnabled}
-              onCheckedChange={setWriteBackEnabled}
-            />
-          </div>
-
           {/* Warning handling */}
-          <div className="space-y-2">
+          <div className="space-y-3">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-4 w-4 text-warning" />
               <label className="text-sm font-medium text-foreground">
-                Rows with warnings
+                Warning Rows
               </label>
             </div>
-            <div className="flex gap-2">
-              {(['ask', 'ship-all', 'skip-warnings'] as const).map((pref) => (
+
+            <div className="space-y-1.5">
+              {[
+                { value: 'ask', label: 'Ask me each time', desc: 'Show options when rows have warnings' },
+                { value: 'ship-all', label: 'Always try all rows', desc: 'Ship everything, failures handled per-row' },
+                { value: 'skip-warnings', label: 'Skip warning rows', desc: 'Auto-exclude rows that failed rate validation' },
+              ].map((opt) => (
                 <button
-                  key={pref}
-                  onClick={() => setWarningPreference(pref)}
-                  className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                    warningPreference === pref
-                      ? 'bg-primary text-primary-foreground'
-                      : 'bg-muted text-muted-foreground hover:bg-muted/80'
-                  }`}
+                  key={opt.value}
+                  onClick={() => setWarningPreference(opt.value as any)}
+                  className={cn(
+                    'w-full text-left px-3 py-2 rounded-md text-xs transition-colors border',
+                    warningPreference === opt.value
+                      ? opt.value === 'ship-all'
+                        ? 'bg-info/10 border-info/30 text-info'
+                        : opt.value === 'skip-warnings'
+                          ? 'bg-warning/10 border-warning/30 text-warning'
+                          : 'bg-primary/10 border-primary/30 text-primary'
+                      : 'border-transparent text-slate-400 hover:bg-muted/50'
+                  )}
                 >
-                  {pref === 'ask' && 'Ask each time'}
-                  {pref === 'ship-all' && 'Ship all'}
-                  {pref === 'skip-warnings' && 'Skip warnings'}
+                  <span className="font-medium">{opt.label}</span>
+                  <p className={cn(
+                    "text-[10px] mt-0.5",
+                    warningPreference === opt.value ? "opacity-90" : "text-slate-500"
+                  )}>
+                    {opt.desc}
+                  </p>
                 </button>
               ))}
             </div>

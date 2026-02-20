@@ -609,7 +609,7 @@ class Contact(Base):
     address_line_1: Mapped[str] = mapped_column(String(255), nullable=False)
     address_line_2: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     city: Mapped[str] = mapped_column(String(100), nullable=False)
-    state_province: Mapped[str] = mapped_column(String(50), nullable=False)
+    state_province: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     postal_code: Mapped[str] = mapped_column(String(20), nullable=False)
     country_code: Mapped[str] = mapped_column(
         String(2), nullable=False, server_default="US"

@@ -1,7 +1,3 @@
-/**
- * CommandCenter - Conversational interface orchestrator shell.
- */
-
 import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
@@ -18,6 +14,7 @@ import type {
   PaperlessResult,
   PaperlessUploadPrompt,
   TrackingResult,
+  ContactSavedResult,
 } from '@/types/api';
 import { LabelPreview } from '@/components/LabelPreview';
 import { JobDetailPanel } from '@/components/JobDetailPanel';
@@ -33,6 +30,7 @@ import { LandedCostCard } from '@/components/command-center/LandedCostCard';
 import { PaperlessCard } from '@/components/command-center/PaperlessCard';
 import { PaperlessUploadCard } from '@/components/command-center/PaperlessUploadCard';
 import { TrackingCard } from '@/components/command-center/TrackingCard';
+import { ContactCard } from '@/components/command-center/ContactCard';
 import {
   ActiveSourceBanner,
   InteractiveModeBanner,
@@ -41,6 +39,8 @@ import {
   UserMessage,
   WelcomeMessage,
 } from '@/components/command-center/messages';
+import { RichChatInput } from './chat/RichChatInput';
+import { expandTokens } from '@/lib/expandTokens';
 
 interface CommandCenterProps {
   activeJob: Job | null;
@@ -62,7 +62,10 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     setInteractiveShipping,
     writeBackEnabled,
     setIsToggleLocked,
+    refreshContacts,
+    contacts,
     customCommands,
+    setSettingsFlyoutOpen,
   } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
@@ -72,7 +75,6 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const conv = useConversation();
 
   const [inputValue, setInputValue] = React.useState('');
-  const [isCommandExpanded, setIsCommandExpanded] = React.useState(false);
   const [preview, setPreview] = React.useState<BatchPreview | null>(null);
   const [currentJobId, setCurrentJobId] = React.useState<string | null>(null);
   const [isConfirming, setIsConfirming] = React.useState(false);
@@ -99,7 +101,6 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   }, []);
 
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
-  const inputRef = React.useRef<HTMLInputElement>(null);
   const lastCommandRef = React.useRef<string>('');
   const lastJobNameRef = React.useRef<string>('');
   const prevInteractiveRef = React.useRef(interactiveShipping);
@@ -257,7 +258,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         addMessage({
           role: 'system',
           content: '',
-          metadata: { action: 'pickup_preview' as any, pickupPreview: previewData },
+          metadata: { action: 'pickup_preview', pickupPreview: previewData },
         });
         suppressNextMessageRef.current = true;
       } else if (event.type === 'pickup_result') {
@@ -305,12 +306,21 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
           metadata: { action: 'tracking_result', tracking: event.data as unknown as TrackingResult },
         });
         suppressNextMessageRef.current = true;
+      } else if (event.type === 'contact_saved') {
+        addMessage({
+          role: 'system',
+          content: '',
+          metadata: { action: 'contact_saved', contactSaved: event.data as unknown as ContactSavedResult },
+        });
+        refreshContacts();
+        suppressNextMessageRef.current = true;
       }
     }
   }, [
     conv.events,
     addMessage,
     refreshJobList,
+    refreshContacts,
     currentJobId,
     preview,
     executingJobId,
@@ -337,21 +347,21 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [conversation, preview, executingJobId, activeJob, conv.events]);
 
-  // Handle command submit — uses agent-driven conversation flow
   const handleSubmit = async () => {
     const command = inputValue.trim();
     if (!command || isProcessing || !canInput) return;
 
     lastCommandRef.current = command;
     setInputValue('');
-    setIsCommandExpanded(false); // Reset expansion flag on submit
 
-    // Add user message
+    // Show original (unexpanded) text in user bubble
     addMessage({ role: 'user', content: command });
 
-    // Send via agent conversation — the hook manages SSE events,
-    // which are rendered as system messages via the effect above
-    await conv.sendMessage(command, interactiveShipping);
+    // Expand /command and @handle tokens before sending to agent
+    const expanded = expandTokens(command, contacts, customCommands);
+
+    // Send expanded text via agent conversation
+    await conv.sendMessage(expanded, interactiveShipping);
   };
 
   // Handle confirm with optional row skipping
@@ -442,36 +452,6 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     }
   };
 
-  // Handle key press
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-
-      // Two-phase Enter for command expansion (N1 fix)
-      // 1. If input starts with `/` AND is not already expanded AND matches a command → expand
-      // 2. Otherwise → submit normally
-      const trimmedInput = inputValue.trim();
-      if (
-        trimmedInput.startsWith('/') &&
-        !isCommandExpanded &&
-        !trimmedInput.includes(' ') // Single token = potential command
-      ) {
-        const commandName = trimmedInput.slice(1).toLowerCase();
-        const matchedCommand = customCommands.find(
-          (cmd) => cmd.name.toLowerCase() === commandName
-        );
-
-        if (matchedCommand) {
-          // Expand command: replace input with body
-          setInputValue(matchedCommand.body);
-          setIsCommandExpanded(true);
-          return;
-        }
-      }
-
-      handleSubmit();
-    }
-  };
 
   // Show job detail panel when a sidebar job is selected (takes priority over conversation)
   const showJobDetail = activeJob && !preview && !executingJobId;
@@ -568,6 +548,16 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
               ) : message.metadata?.action === 'tracking_result' && message.metadata.tracking ? (
                 <div key={message.id} className="pl-11">
                   <TrackingCard data={message.metadata.tracking} />
+                </div>
+              ) : message.metadata?.action === 'contact_saved' && message.metadata.contactSaved ? (
+                <div key={message.id} className="pl-11">
+                  <ContactCard
+                    data={message.metadata.contactSaved}
+                    onEdit={() => {
+                      // Open settings flyout — address book is inline
+                      setSettingsFlyoutOpen(true);
+                    }}
+                  />
                 </div>
               ) : message.role === 'user' ? (
                 <UserMessage key={message.id} message={message} />
@@ -725,36 +715,28 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
         <div className="max-w-3xl mx-auto">
           <div className="flex gap-2">
             <div className="relative flex-1">
-              <input
-                ref={inputRef}
-                type="text"
+              <RichChatInput
                 value={inputValue}
-                onChange={(e) => {
-                  const newValue = e.target.value;
+                onChange={(newValue) => {
                   setInputValue(newValue);
-                  // Reset expansion flag when user clears input or backspaces to empty
-                  if (!newValue.trim()) {
-                    setIsCommandExpanded(false);
-                  }
                 }}
-                onKeyDown={handleKeyDown}
+                onSubmit={handleSubmit}
                 placeholder={
                   interactiveShipping
                     ? 'Describe one shipment from scratch...'
                     : !hasDataSource
-                        ? 'Track a package, find locations, or connect a data source...'
-                        : 'Enter a shipping command...'
+                      ? 'Track a package, find locations, or connect a data source...'
+                      : 'Enter a shipping command...'
                 }
                 disabled={!canInput || isProcessing || !!preview || !!executingJobId || !!pickupPreview || isResettingSession}
                 className={cn(
-                  'input-command pr-12',
                   (!canInput || isProcessing || !!preview || !!executingJobId || !!pickupPreview || isResettingSession) && 'opacity-50 cursor-not-allowed'
                 )}
               />
 
               {/* Character count */}
               {inputValue.length > 0 && (
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-500">
+                <span className="absolute right-4 bottom-2 text-[10px] font-mono text-slate-500 z-10">
                   {inputValue.length}
                 </span>
               )}

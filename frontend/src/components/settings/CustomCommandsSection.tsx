@@ -282,7 +282,7 @@ export function CustomCommandsSection({
         <div className="settings-section-content space-y-3">
           {/* Command list */}
           {customCommands.length > 0 && (
-            <div className="space-y-2">
+            <div className="max-h-64 overflow-y-auto space-y-2">
               {customCommands.map(renderCommandItem)}
             </div>
           )}

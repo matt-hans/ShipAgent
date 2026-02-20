@@ -302,7 +302,7 @@ export function RichChatInput({
             >
               <span className="font-mono text-domain-locator">@{candidate.handle}</span>
               <span className="text-muted-foreground ml-2 text-xs">
-                {candidate.display_name} — {candidate.city}, {candidate.state_province}
+                {candidate.display_name} — {candidate.city}{candidate.state_province ? `, ${candidate.state_province}` : ''}
               </span>
             </button>
           ))}

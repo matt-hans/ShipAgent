@@ -7,8 +7,7 @@
  * WelcomeMessage for onboarding and example commands.
  */
 
-import * as React from 'react';
-import { useAppState, type ConversationMessage, type WarningPreference } from '@/hooks/useAppState';
+import { useAppState, type ConversationMessage } from '@/hooks/useAppState';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { Package } from 'lucide-react';
 import { PackageIcon, GearIcon, HardDriveIcon } from '@/components/ui/icons';
@@ -75,59 +74,21 @@ export function TypingIndicator() {
   );
 }
 
-/** Popover menu for warning row handling preferences. */
-export function SettingsPopover() {
-  const { warningPreference, setWarningPreference } = useAppState();
-  const [open, setOpen] = React.useState(false);
-  const ref = React.useRef<HTMLDivElement>(null);
-
-  React.useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  const options: { value: WarningPreference; label: string; desc: string }[] = [
-    { value: 'ask', label: 'Ask me each time', desc: 'Show options when rows have warnings' },
-    { value: 'ship-all', label: 'Always try all rows', desc: 'Ship everything, failures handled per-row' },
-    { value: 'skip-warnings', label: 'Skip warning rows', desc: 'Auto-exclude rows that failed rate validation' },
-  ];
+/** Button to open settings flyout from the banner. */
+export function SettingsButton() {
+  const { settingsFlyoutOpen, setSettingsFlyoutOpen } = useAppState();
 
   return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="p-1.5 rounded hover:bg-slate-800 transition-colors"
-        title="Shipment settings"
-      >
-        <GearIcon className="w-4 h-4 text-slate-400" />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 w-72 card-premium p-2 z-50 shadow-xl">
-          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider px-2 py-1">
-            Warning Rows
-          </p>
-          {options.map((opt) => (
-            <button
-              key={opt.value}
-              onClick={() => { setWarningPreference(opt.value); setOpen(false); }}
-              className={cn(
-                'w-full text-left px-3 py-2 rounded text-xs transition-colors',
-                warningPreference === opt.value
-                  ? 'bg-primary/10 text-primary'
-                  : 'text-slate-300 hover:bg-slate-800'
-              )}
-            >
-              <span className="font-medium">{opt.label}</span>
-              <p className="text-[10px] text-slate-500 mt-0.5">{opt.desc}</p>
-            </button>
-          ))}
-        </div>
+    <button
+      onClick={() => setSettingsFlyoutOpen(!settingsFlyoutOpen)}
+      className={cn(
+        "p-1.5 rounded transition-colors",
+        settingsFlyoutOpen ? "bg-slate-700 text-white" : "hover:bg-slate-800 text-slate-400"
       )}
-    </div>
+      title="Open settings"
+    >
+      <GearIcon className="w-4 h-4" />
+    </button>
   );
 }
 
@@ -155,7 +116,7 @@ export function ActiveSourceBanner() {
         </>
       )}
       <div className="ml-auto">
-        <SettingsPopover />
+        <SettingsButton />
       </div>
     </div>
   );

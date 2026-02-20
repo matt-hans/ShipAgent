@@ -14,7 +14,7 @@ export interface ContactCandidate {
   handle: string;
   display_name: string;
   city: string;
-  state_province: string;
+  state_province: string | null;
 }
 
 export interface UseContactAutocompleteOptions {

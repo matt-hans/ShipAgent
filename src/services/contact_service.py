@@ -116,8 +116,8 @@ class ContactService:
         display_name: str,
         address_line_1: str,
         city: str,
-        state_province: str,
         postal_code: str,
+        state_province: str | None = None,
         handle: str | None = None,
         attention_name: str | None = None,
         company: str | None = None,
@@ -137,8 +137,8 @@ class ContactService:
             display_name: Human-readable contact name.
             address_line_1: Street address (required).
             city: City (required).
-            state_province: State or province code (required).
             postal_code: Postal/ZIP code (required).
+            state_province: State or province code (optional).
             handle: Unique slug for @mention. Auto-generated from display_name if omitted.
             attention_name: UPS AttentionName override.
             company: Company name for UPS CompanyName.
@@ -164,7 +164,6 @@ class ContactService:
             "display_name": display_name,
             "address_line_1": address_line_1,
             "city": city,
-            "state_province": state_province,
             "postal_code": postal_code,
         }
         missing = [name for name, value in required_fields.items() if not value or not str(value).strip()]

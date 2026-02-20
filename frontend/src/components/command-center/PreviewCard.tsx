@@ -14,6 +14,164 @@ import {
   ShoppingCartIcon, UserIcon, MapPinIcon, PackageIcon,
 } from '@/components/ui/icons';
 
+/* ──────────────────── Invoice Data Extraction ──────────────────── */
+
+interface InvoiceProduct {
+  description: string;
+  commodityCode?: string;
+  originCountry?: string;
+  quantity?: string;
+  unitValue?: string;
+  lineTotal?: string;
+}
+
+interface InvoiceData {
+  formType: string;
+  invoiceNumber?: string;
+  invoiceDate?: string;
+  reasonForExport?: string;
+  currencyCode?: string;
+  products: InvoiceProduct[];
+  invoiceTotal?: string;
+  invoiceTotalCurrency?: string;
+  freightCharges?: string;
+  insuranceCharges?: string;
+  termsOfShipment?: string;
+  purchaseOrderNumber?: string;
+  comments?: string;
+  shipperName?: string;
+  recipientName?: string;
+}
+
+/**
+ * Extracts international invoice data from the simplified payload format.
+ *
+ * The resolved_payload uses a flat camelCase structure (not the nested UPS API
+ * format). InternationalForms lives at `payload.internationalForms` and
+ * InvoiceLineTotal at `payload.invoiceLineTotal`.
+ */
+function extractInvoiceData(payload: Record<string, unknown>): InvoiceData | null {
+  try {
+    // Simplified format: top-level camelCase keys
+    const forms = payload.internationalForms as Record<string, unknown> | undefined;
+    if (!forms) return null;
+
+    const rawProducts = forms.Product as Record<string, unknown>[] | Record<string, unknown> | undefined;
+    const productList = Array.isArray(rawProducts) ? rawProducts : rawProducts ? [rawProducts] : [];
+
+    const products: InvoiceProduct[] = productList.map((p) => {
+      const unit = p.Unit as Record<string, unknown> | undefined;
+      // Unit.Value is a plain string (e.g. "50.00") in the simplified format,
+      // not an object with MonetaryValue. Handle both shapes defensively.
+      const rawValue = unit?.Value;
+      const valueStr = typeof rawValue === 'string' ? rawValue
+        : typeof rawValue === 'object' && rawValue ? (rawValue as Record<string, unknown>).MonetaryValue as string
+        : undefined;
+      const qtyStr = (unit?.Number as string) || undefined;
+      return {
+        description: (p.Description as string) || '',
+        commodityCode: (p.CommodityCode as string) || undefined,
+        originCountry: (p.OriginCountryCode as string) || undefined,
+        quantity: qtyStr,
+        unitValue: valueStr || undefined,
+        lineTotal: valueStr && qtyStr
+          ? (parseFloat(valueStr) * parseFloat(qtyStr)).toFixed(2)
+          : undefined,
+      };
+    });
+
+    const invoiceLineTotal = payload.invoiceLineTotal as Record<string, unknown> | undefined;
+    const shipper = payload.shipper as Record<string, unknown> | undefined;
+    const shipTo = payload.shipTo as Record<string, unknown> | undefined;
+
+    const freightRaw = forms.FreightCharges;
+    const freightVal = typeof freightRaw === 'string' ? freightRaw
+      : (freightRaw as Record<string, unknown> | undefined)?.MonetaryValue as string | undefined;
+
+    const insuranceRaw = forms.InsuranceCharges;
+    const insuranceVal = typeof insuranceRaw === 'string' ? insuranceRaw
+      : (insuranceRaw as Record<string, unknown> | undefined)?.MonetaryValue as string | undefined;
+
+    return {
+      formType: (forms.FormType as string) || '01',
+      invoiceNumber: forms.InvoiceNumber as string | undefined,
+      invoiceDate: forms.InvoiceDate as string | undefined,
+      reasonForExport: forms.ReasonForExport as string | undefined,
+      currencyCode: forms.CurrencyCode as string | undefined,
+      products,
+      invoiceTotal: (invoiceLineTotal?.monetaryValue as string) || undefined,
+      invoiceTotalCurrency: (invoiceLineTotal?.currencyCode as string) || undefined,
+      freightCharges: freightVal,
+      insuranceCharges: insuranceVal,
+      termsOfShipment: forms.TermsOfShipment as string | undefined,
+      purchaseOrderNumber: forms.PurchaseOrderNumber as string | undefined,
+      comments: forms.Comments as string | undefined,
+      shipperName: (shipper?.name as string) || (shipper?.Name as string) || undefined,
+      recipientName: (shipTo?.name as string) || (shipTo?.Name as string) || undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/* ──────────────────── Accessorial Extraction ──────────────────── */
+
+/**
+ * Simplified-format boolean flag keys → human-readable labels.
+ * These are top-level camelCase keys on the resolved_payload.
+ */
+const SIMPLIFIED_ACCESSORIALS: [string, string][] = [
+  ['saturdayDelivery', 'Saturday Delivery'],
+  ['holdForPickup', 'Hold for Pickup'],
+  ['liftGatePickup', 'Lift Gate Pickup'],
+  ['liftGateDelivery', 'Lift Gate Delivery'],
+  ['directDeliveryOnly', 'Direct Delivery Only'],
+  ['deliverToAddresseeOnly', 'Addressee Only'],
+  ['carbonNeutral', 'Carbon Neutral'],
+  ['dropoffAtFacility', 'Drop-off at Facility'],
+  ['insideDelivery', 'Inside Delivery'],
+  ['shipperRelease', 'Shipper Release'],
+];
+
+/**
+ * Extracts human-readable accessorial labels from the simplified payload.
+ *
+ * The resolved_payload uses flat camelCase boolean flags (e.g.
+ * `saturdayDelivery: true`) and `deliveryConfirmation` as a string code.
+ */
+function extractAccessorials(payload: Record<string, unknown>): string[] {
+  const labels: string[] = [];
+  try {
+    // Top-level boolean flags
+    for (const [key, label] of SIMPLIFIED_ACCESSORIALS) {
+      if (payload[key]) labels.push(label);
+    }
+
+    // Delivery confirmation: "1" = Signature, "2" = Adult Signature
+    const dc = payload.deliveryConfirmation;
+    if (dc === '1' || dc === 1) labels.push('Signature Required');
+    else if (dc === '2' || dc === 2) labels.push('Adult Signature Required');
+
+    // Notification email
+    if (payload.notificationEmail) labels.push('Email Notification');
+
+    // Package-level options
+    const packages = payload.packages as Record<string, unknown>[] | undefined;
+    if (Array.isArray(packages)) {
+      for (const pkg of packages) {
+        if (pkg.largePackage && !labels.includes('Large Package')) labels.push('Large Package');
+        if (pkg.additionalHandling && !labels.includes('Additional Handling')) labels.push('Additional Handling');
+        if (pkg.declaredValue && !labels.some(l => l.startsWith('Declared Value'))) {
+          labels.push(`Declared Value: $${pkg.declaredValue}`);
+        }
+      }
+    }
+  } catch {
+    // Gracefully return whatever we have
+  }
+  return labels;
+}
+
 /** Options passed from the warning gate to handleConfirm. */
 export interface ConfirmOptions {
   skipWarningRows?: boolean;
@@ -629,6 +787,17 @@ export function InteractivePreviewCard({
   const selectedService = availableServices.find((svc) => svc.code === effectiveServiceCode);
   const displayedServiceName = selectedService?.name || preview.service_name || 'UPS Ground';
   const displayedTotalCostCents = selectedService?.estimated_cost_cents ?? preview.total_estimated_cost_cents;
+  const isInternational = !!(shipTo?.country && shipTo.country !== 'US');
+  const accessorials = React.useMemo(
+    () => preview.resolved_payload ? extractAccessorials(preview.resolved_payload) : [],
+    [preview.resolved_payload]
+  );
+  const invoiceData = React.useMemo(
+    () => preview.resolved_payload ? extractInvoiceData(preview.resolved_payload) : null,
+    [preview.resolved_payload]
+  );
+  const [showInvoice, setShowInvoice] = React.useState(false);
+  const [invoiceRefinementInput, setInvoiceRefinementInput] = React.useState('');
 
   const submitRefinement = () => {
     const text = refinementInput.trim();
@@ -638,88 +807,99 @@ export function InteractivePreviewCard({
   };
 
   return (
-    <div className="card-premium p-5 animate-scale-in max-w-lg">
+    <div className="card-premium p-4 animate-scale-in max-w-lg">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <PackageIcon className="w-5 h-5 text-blue-400" />
-          <h3 className="text-base font-semibold text-white">Shipment Preview</h3>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-1.5">
+          <PackageIcon className="w-4 h-4 text-blue-400" />
+          <h3 className="text-sm font-semibold text-white">Shipment Preview</h3>
         </div>
-        <span className="badge-info text-xs px-2 py-0.5">Ready</span>
+        <span className="badge-info text-[10px] px-1.5 py-0.5">Ready</span>
       </div>
 
       {/* Ship From / Ship To */}
-      <div className="grid grid-cols-2 gap-4 mb-4">
-        <div className="bg-slate-800/50 rounded-lg p-3">
-          <div className="flex items-center gap-1.5 mb-2">
-            <MapPinIcon className="w-3.5 h-3.5 text-slate-400" />
-            <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Ship From</span>
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <div className="bg-slate-800/50 rounded-lg px-2.5 py-2">
+          <div className="flex items-center gap-1 mb-0.5">
+            <MapPinIcon className="w-3 h-3 text-slate-500" />
+            <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">From</span>
           </div>
           {shipper ? (
-            <div className="space-y-0.5 text-sm text-slate-200">
-              <p className="font-medium">{shipper.name}</p>
-              <p className="text-slate-300">{shipper.addressLine1}</p>
-              {shipper.addressLine2 && <p className="text-slate-300">{shipper.addressLine2}</p>}
-              <p className="text-slate-300">
+            <div className="text-xs text-slate-200 leading-snug">
+              <p className="font-medium truncate">{shipper.name}</p>
+              <p className="text-slate-400 truncate">
+                {shipper.addressLine1}{shipper.addressLine2 ? `, ${shipper.addressLine2}` : ''}
+              </p>
+              <p className="text-slate-400">
                 {shipper.city}, {shipper.stateProvinceCode} {shipper.postalCode}
               </p>
             </div>
           ) : (
-            <p className="text-sm text-slate-400">From config</p>
+            <p className="text-xs text-slate-400">From config</p>
           )}
         </div>
 
-        <div className="bg-slate-800/50 rounded-lg p-3">
-          <div className="flex items-center gap-1.5 mb-2">
-            <UserIcon className="w-3.5 h-3.5 text-slate-400" />
-            <span className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">Ship To</span>
+        <div className="bg-slate-800/50 rounded-lg px-2.5 py-2">
+          <div className="flex items-center gap-1 mb-0.5">
+            <UserIcon className="w-3 h-3 text-slate-500" />
+            <span className="text-[10px] font-medium text-slate-500 uppercase tracking-wider">To</span>
+            {shipTo?.country && shipTo.country !== 'US' && (
+              <CountryBadge country={shipTo.country} />
+            )}
           </div>
           {shipTo ? (
-            <div className="space-y-0.5 text-sm text-slate-200">
-              <div className="flex items-center gap-1.5">
-                <p className="font-medium">{shipTo.name}</p>
-                {shipTo.country && shipTo.country !== 'US' && (
-                  <CountryBadge country={shipTo.country} />
-                )}
-              </div>
-              <p className="text-slate-300">{shipTo.address1}</p>
-              {shipTo.address2 && <p className="text-slate-300">{shipTo.address2}</p>}
-              <p className="text-slate-300">
+            <div className="text-xs text-slate-200 leading-snug">
+              <p className="font-medium truncate">{shipTo.name}</p>
+              <p className="text-slate-400 truncate">
+                {shipTo.address1}{shipTo.address2 ? `, ${shipTo.address2}` : ''}
+              </p>
+              <p className="text-slate-400">
                 {shipTo.city}, {shipTo.state} {shipTo.postal_code}
               </p>
-              {shipTo.phone && (
-                <p className="text-slate-400 text-xs mt-1">{shipTo.phone}</p>
-              )}
             </div>
           ) : (
-            <p className="text-sm text-slate-400">--</p>
+            <p className="text-xs text-slate-400">--</p>
           )}
         </div>
       </div>
 
       {/* Service / Weight / Account */}
-      <div className="grid grid-cols-3 gap-3 mb-4">
-        <div className="bg-slate-800/50 rounded-lg p-2.5 text-center">
-          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">Service</p>
-          <p className="text-sm font-semibold text-white">{displayedServiceName}</p>
+      <div className="flex items-center justify-between bg-slate-800/50 rounded-lg px-3 py-1.5 mb-2 text-xs">
+        <div className="flex items-center gap-1">
+          <span className="text-slate-500">Service:</span>
+          <span className="font-medium text-white">{displayedServiceName}</span>
         </div>
-        <div className="bg-slate-800/50 rounded-lg p-2.5 text-center">
-          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">Weight</p>
-          <p className="text-sm font-semibold text-white">{preview.weight_lbs ?? 1.0} lbs</p>
+        <div className="flex items-center gap-1">
+          <span className="text-slate-500">Wt:</span>
+          <span className="font-medium text-white">{preview.weight_lbs ?? 1.0} lbs</span>
         </div>
-        <div className="bg-slate-800/50 rounded-lg p-2.5 text-center">
-          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">Account</p>
-          <p className="text-sm font-semibold text-white font-mono">{preview.account_number || '****'}</p>
+        <div className="flex items-center gap-1">
+          <span className="text-slate-500">Acct:</span>
+          <span className="font-medium text-white font-mono">{preview.account_number || '****'}</span>
         </div>
       </div>
 
+      {/* Accessorials */}
+      {accessorials.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {accessorials.map((label) => (
+            <span
+              key={label}
+              className="px-2 py-0.5 rounded-full bg-slate-700/60 border border-slate-600/40 text-[10px] text-slate-300"
+            >
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* Available services from UPS Shop */}
       {availableServices.length > 0 && (
-        <div className="mb-4 rounded-lg border border-slate-700/60 bg-slate-900/40 p-3">
-          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-2">
+        <div className="mb-2 rounded-lg border border-slate-700/60 bg-slate-900/40 p-2">
+          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1">
             Available Services
           </p>
-          <div className="space-y-1.5 max-h-36 overflow-y-auto scrollable pr-1">
+          <div className="space-y-0.5 max-h-24 overflow-y-auto scrollable pr-1">
             {availableServices.map((svc) => {
               const isSelected = svc.code === effectiveServiceCode;
               const label = `${svc.name} (${svc.code})`;
@@ -733,7 +913,7 @@ export function InteractivePreviewCard({
                   }}
                   disabled={refinementDisabled}
                   className={cn(
-                    'w-full rounded-md border px-2.5 py-2 text-left transition-colors',
+                    'w-full rounded-md border px-2 py-1 text-left transition-colors',
                     isSelected
                       ? 'border-primary/40 bg-primary/10'
                       : 'border-slate-700/70 bg-slate-800/40 hover:border-primary/30 hover:bg-slate-800/70',
@@ -762,16 +942,32 @@ export function InteractivePreviewCard({
       )}
 
       {/* Estimated Cost */}
-      <div className="bg-gradient-to-r from-emerald-500/10 to-emerald-500/5 border border-emerald-500/20 rounded-lg p-3 mb-4 text-center">
-        <p className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider mb-1">Estimated Cost</p>
-        <p className="text-2xl font-bold text-emerald-400">
+      <div className="bg-gradient-to-r from-emerald-500/10 to-emerald-500/5 border border-emerald-500/20 rounded-lg px-3 py-1.5 mb-2 flex items-center justify-between">
+        <p className="text-[10px] font-medium text-emerald-400 uppercase tracking-wider">Estimated Cost</p>
+        <p className="text-lg font-bold text-emerald-400">
           {formatCurrency(displayedTotalCostCents)}
         </p>
       </div>
 
+      {/* View Invoice (international only) */}
+      {isInternational && invoiceData && (
+        <div className="flex justify-center mb-2">
+          <button
+            type="button"
+            onClick={() => setShowInvoice(true)}
+            className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            <span>View Invoice</span>
+          </button>
+        </div>
+      )}
+
       {/* Warning (if rate failed) */}
       {hasWarnings && (
-        <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 mb-4">
+        <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-2 mb-2">
           <p className="text-sm text-amber-300 font-medium mb-1">Rating Warning</p>
           {preview.preview_rows?.map((r, i) =>
             r.warnings?.map((w, j) => (
@@ -782,11 +978,8 @@ export function InteractivePreviewCard({
       )}
 
       {/* Refinement input */}
-      <div className="mb-4">
-        <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1.5">
-          Refine Shipment
-        </p>
-        <div className="flex gap-2">
+      <div className="mb-2">
+        <div className="flex gap-1.5">
           <input
             type="text"
             value={refinementInput}
@@ -797,15 +990,15 @@ export function InteractivePreviewCard({
                 submitRefinement();
               }
             }}
-            placeholder='e.g. "make it 3 lbs"'
+            placeholder='Refine: e.g. "make it 3 lbs"'
             disabled={refinementDisabled}
-            className="flex-1 px-3 py-2 text-xs bg-slate-800/70 border border-slate-700 rounded-md text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/25 disabled:opacity-50"
+            className="flex-1 px-2.5 py-1.5 text-xs bg-slate-800/70 border border-slate-700 rounded-md text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/25 disabled:opacity-50"
           />
           <button
             type="button"
             onClick={submitRefinement}
             disabled={!refinementInput.trim() || refinementDisabled}
-            className="px-3 py-2 text-xs btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+            className="px-2.5 py-1.5 text-xs btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isRefining ? 'Applying...' : 'Apply'}
           </button>
@@ -814,7 +1007,7 @@ export function InteractivePreviewCard({
 
       {/* Expandable Full Payload */}
       {preview.resolved_payload && (
-        <div className="mb-4">
+        <div className="mb-2">
           <button
             onClick={() => setShowPayload(!showPayload)}
             className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition-colors"
@@ -857,6 +1050,193 @@ export function InteractivePreviewCard({
           )}
         </button>
       </div>
+
+      {/* Invoice Details Modal */}
+      {showInvoice && invoiceData && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          onClick={(e) => { if (e.target === e.currentTarget) setShowInvoice(false); }}
+        >
+          <div className="relative w-full max-w-md mx-4 max-h-[85vh] overflow-y-auto scrollable bg-slate-900 border border-slate-700/60 rounded-xl p-5 shadow-2xl">
+            {/* Close button */}
+            <button
+              type="button"
+              onClick={() => setShowInvoice(false)}
+              className="absolute top-3 right-3 text-slate-400 hover:text-white transition-colors"
+            >
+              <XIcon className="w-4 h-4" />
+            </button>
+
+            {/* Modal header */}
+            <div className="mb-4">
+              <h4 className="text-sm font-semibold text-white">Commercial Invoice</h4>
+              <div className="flex items-center gap-3 mt-1 text-[10px] font-mono text-slate-400">
+                {invoiceData.invoiceNumber && <span>#{invoiceData.invoiceNumber}</span>}
+                {invoiceData.invoiceDate && <span>{invoiceData.invoiceDate}</span>}
+              </div>
+            </div>
+
+            {/* Parties */}
+            {(invoiceData.shipperName || invoiceData.recipientName) && (
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                {invoiceData.shipperName && (
+                  <div>
+                    <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider mb-0.5">Shipper</p>
+                    <p className="text-xs text-slate-200">{invoiceData.shipperName}</p>
+                  </div>
+                )}
+                {invoiceData.recipientName && (
+                  <div>
+                    <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider mb-0.5">Recipient</p>
+                    <p className="text-xs text-slate-200">{invoiceData.recipientName}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Commodity table */}
+            {invoiceData.products.length > 0 && (
+              <div className="mb-4">
+                <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider mb-1.5">Commodities</p>
+                <div className="border border-slate-700/50 rounded-lg overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-slate-800/60 text-[10px] text-slate-400 uppercase tracking-wider">
+                        <th className="text-left px-2.5 py-1.5 font-medium">Description</th>
+                        <th className="text-left px-2 py-1.5 font-medium">HS Code</th>
+                        <th className="text-center px-2 py-1.5 font-medium">Qty</th>
+                        <th className="text-right px-2.5 py-1.5 font-medium">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {invoiceData.products.map((p, i) => (
+                        <tr key={i} className="border-t border-slate-800/40">
+                          <td className="px-2.5 py-1.5 text-slate-200">
+                            <div>{p.description}</div>
+                            {p.originCountry && (
+                              <span className="text-[9px] text-slate-500">Origin: {p.originCountry}</span>
+                            )}
+                          </td>
+                          <td className="px-2 py-1.5 font-mono text-slate-400 text-[10px]">
+                            {p.commodityCode || '—'}
+                          </td>
+                          <td className="px-2 py-1.5 text-center text-slate-300">
+                            {p.quantity || '—'}
+                          </td>
+                          <td className="px-2.5 py-1.5 text-right font-mono text-slate-300">
+                            {p.lineTotal ? `$${p.lineTotal}` : p.unitValue ? `$${p.unitValue}` : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Summary */}
+            <div className="bg-slate-800/40 rounded-lg p-3 mb-4 space-y-1.5">
+              {(invoiceData.invoiceTotal || invoiceData.invoiceTotalCurrency) && (
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-400">Invoice Total</span>
+                  <span className="font-mono text-white font-medium">
+                    {invoiceData.invoiceTotal ? `$${invoiceData.invoiceTotal}` : '—'}
+                    {invoiceData.invoiceTotalCurrency && (
+                      <span className="text-slate-400 ml-1">{invoiceData.invoiceTotalCurrency}</span>
+                    )}
+                  </span>
+                </div>
+              )}
+              {invoiceData.currencyCode && (
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-400">Currency</span>
+                  <span className="font-mono text-slate-200">{invoiceData.currencyCode}</span>
+                </div>
+              )}
+              {invoiceData.reasonForExport && (
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-400">Reason for Export</span>
+                  <span className="text-slate-200">{invoiceData.reasonForExport}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Footer metadata */}
+            {(invoiceData.termsOfShipment || invoiceData.purchaseOrderNumber ||
+              invoiceData.freightCharges || invoiceData.insuranceCharges || invoiceData.comments) && (
+              <div className="space-y-1 mb-4 text-[10px] font-mono text-slate-400">
+                {invoiceData.termsOfShipment && (
+                  <div className="flex justify-between">
+                    <span>Terms</span><span className="text-slate-300">{invoiceData.termsOfShipment}</span>
+                  </div>
+                )}
+                {invoiceData.purchaseOrderNumber && (
+                  <div className="flex justify-between">
+                    <span>PO Number</span><span className="text-slate-300">{invoiceData.purchaseOrderNumber}</span>
+                  </div>
+                )}
+                {invoiceData.freightCharges && (
+                  <div className="flex justify-between">
+                    <span>Freight Charges</span><span className="text-slate-300">${invoiceData.freightCharges}</span>
+                  </div>
+                )}
+                {invoiceData.insuranceCharges && (
+                  <div className="flex justify-between">
+                    <span>Insurance Charges</span><span className="text-slate-300">${invoiceData.insuranceCharges}</span>
+                  </div>
+                )}
+                {invoiceData.comments && (
+                  <div>
+                    <span className="block text-slate-500 mb-0.5">Comments</span>
+                    <span className="text-slate-300">{invoiceData.comments}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Invoice refinement */}
+            <div className="border-t border-slate-700/50 pt-3">
+              <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wider mb-1.5">
+                Refine Invoice
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={invoiceRefinementInput}
+                  onChange={(e) => setInvoiceRefinementInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      const text = invoiceRefinementInput.trim();
+                      if (text && !refinementDisabled) {
+                        onRefine(text);
+                        setInvoiceRefinementInput('');
+                      }
+                    }
+                  }}
+                  placeholder='e.g. "change currency to CAD"'
+                  disabled={refinementDisabled}
+                  className="flex-1 px-3 py-1.5 text-xs bg-slate-800/70 border border-slate-700 rounded-md text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/25 disabled:opacity-50"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const text = invoiceRefinementInput.trim();
+                    if (text && !refinementDisabled) {
+                      onRefine(text);
+                      setInvoiceRefinementInput('');
+                    }
+                  }}
+                  disabled={!invoiceRefinementInput.trim() || refinementDisabled}
+                  className="px-3 py-1.5 text-xs btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isRefining ? 'Applying...' : 'Apply'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
