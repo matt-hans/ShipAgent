@@ -7,13 +7,43 @@
  * WelcomeMessage for onboarding and example commands.
  */
 
+import * as React from 'react';
 import { useAppState, type ConversationMessage } from '@/hooks/useAppState';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { Package } from 'lucide-react';
-import { PackageIcon, GearIcon, HardDriveIcon } from '@/components/ui/icons';
+import { PackageIcon, GearIcon, HardDriveIcon, CopyIcon, CheckIcon } from '@/components/ui/icons';
 import { ShopifyIcon } from '@/components/ui/brand-icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+
+/** Copy-to-clipboard button with brief checkmark feedback. */
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = React.useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      console.error('Failed to copy to clipboard');
+    }
+  };
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="absolute top-2 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200"
+      title="Copy to clipboard"
+    >
+      {copied ? (
+        <CheckIcon className="w-3.5 h-3.5 text-green-400" />
+      ) : (
+        <CopyIcon className="w-3.5 h-3.5" />
+      )}
+    </button>
+  );
+}
 
 /** System-generated chat message with avatar. */
 export function SystemMessage({ message }: { message: ConversationMessage }) {
@@ -23,12 +53,13 @@ export function SystemMessage({ message }: { message: ConversationMessage }) {
         <PackageIcon className="w-4 h-4 text-cyan-400" />
       </div>
 
-      <div className="flex-1 space-y-2">
+      <div className="flex-1 space-y-2 relative group">
         <div className="message-system prose prose-invert max-w-none prose-sm prose-p:leading-relaxed prose-pre:bg-slate-800/50 prose-pre:border prose-pre:border-slate-700/50">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {message.content}
           </ReactMarkdown>
         </div>
+        <CopyButton text={message.content} />
 
         <span className="text-[10px] font-mono text-slate-500">
           {formatRelativeTime(message.timestamp)}
@@ -42,10 +73,11 @@ export function SystemMessage({ message }: { message: ConversationMessage }) {
 export function UserMessage({ message }: { message: ConversationMessage }) {
   return (
     <div className="flex gap-3 justify-end animate-fade-in-up">
-      <div className="flex-1 space-y-2 flex flex-col items-end">
+      <div className="flex-1 space-y-2 flex flex-col items-end relative group">
         <div className="message-user">
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         </div>
+        <CopyButton text={message.content} />
 
         <span className="text-[10px] font-mono text-slate-500">
           {formatRelativeTime(message.timestamp)}
