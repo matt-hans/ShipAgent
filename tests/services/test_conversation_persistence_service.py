@@ -154,6 +154,16 @@ class TestSoftDelete:
         assert sess.is_active is False
 
 
+class TestTitleGeneration:
+    def test_title_updates_after_generation(self, svc, db_session):
+        svc.create_session(session_id="s1", mode="batch")
+        svc.save_message("s1", "user", "Ship all CA orders via Ground")
+        svc.save_message("s1", "assistant", "I'll help ship those orders.")
+        svc.update_session_title("s1", "Ground Batch - CA Orders")
+        sess = db_session.get(ConversationSession, "s1")
+        assert sess.title == "Ground Batch - CA Orders"
+
+
 class TestExport:
     def test_exports_full_session(self, svc, db_session):
         svc.create_session(session_id="s1", mode="batch")
