@@ -137,7 +137,8 @@ def test_create_contact_auto_slug(db: Session):
 
 
 def test_create_contact_duplicate_handle(db: Session):
-    """Duplicate handle raises ValueError."""
+    """Duplicate handle raises DuplicateHandleError."""
+    from src.errors.domain import DuplicateHandleError
     from src.services.contact_service import ContactService
     svc = ContactService(db)
     svc.create_contact(
@@ -145,7 +146,7 @@ def test_create_contact_duplicate_handle(db: Session):
         city="SF", state_province="CA", postal_code="94105",
     )
     db.commit()
-    with pytest.raises(ValueError, match="already exists"):
+    with pytest.raises(DuplicateHandleError, match="already exists"):
         svc.create_contact(
             handle="matt", display_name="Other", address_line_1="456 Oak",
             city="LA", state_province="CA", postal_code="90001",
@@ -153,10 +154,11 @@ def test_create_contact_duplicate_handle(db: Session):
 
 
 def test_create_contact_invalid_handle(db: Session):
-    """Invalid handle format raises ValueError."""
+    """Invalid handle format raises ValidationError."""
+    from src.errors.domain import ValidationError
     from src.services.contact_service import ContactService
     svc = ContactService(db)
-    with pytest.raises(ValueError, match="Invalid handle"):
+    with pytest.raises(ValidationError, match="Invalid handle"):
         svc.create_contact(
             handle="Bad Handle", display_name="Test", address_line_1="123",
             city="SF", state_province="CA", postal_code="94105",

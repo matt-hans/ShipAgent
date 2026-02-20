@@ -14,6 +14,11 @@ import re
 from sqlalchemy.orm import Session
 
 from src.db.models import CustomCommand, utc_now_iso
+from src.errors.domain import (
+    DuplicateCommandNameError,
+    NotFoundError,
+    ValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,18 +56,19 @@ class CustomCommandService:
             The created CustomCommand record.
 
         Raises:
-            ValueError: If name is invalid or already exists.
+            ValidationError: If name format is invalid.
+            DuplicateCommandNameError: If name already exists.
         """
         clean_name = name.lstrip("/").lower().strip()
         if not COMMAND_NAME_PATTERN.match(clean_name):
-            raise ValueError(
+            raise ValidationError(
                 f"Invalid command name: '{clean_name}'. "
                 "Must be lowercase alphanumeric with hyphens."
             )
 
         existing = self.get_by_name(clean_name)
         if existing:
-            raise ValueError(f"Command '/{clean_name}' already exists.")
+            raise DuplicateCommandNameError(clean_name)
 
         cmd = CustomCommand(
             name=clean_name,
@@ -113,20 +119,22 @@ class CustomCommandService:
             The updated CustomCommand.
 
         Raises:
-            ValueError: If command not found or name validation fails.
+            NotFoundError: If command not found.
+            ValidationError: If name format is invalid.
+            DuplicateCommandNameError: If new name already in use.
         """
         cmd = self.db.query(CustomCommand).filter(CustomCommand.id == command_id).first()
         if not cmd:
-            raise ValueError(f"Command {command_id} not found.")
+            raise NotFoundError("Command", command_id)
 
         if "name" in kwargs and kwargs["name"] is not None:
             new_name = kwargs["name"].lstrip("/").lower().strip()
             if not COMMAND_NAME_PATTERN.match(new_name):
-                raise ValueError(f"Invalid command name: '{new_name}'.")
+                raise ValidationError(f"Invalid command name: '{new_name}'.")
             if new_name != cmd.name:
                 existing = self.get_by_name(new_name)
                 if existing:
-                    raise ValueError(f"Command '/{new_name}' already in use.")
+                    raise DuplicateCommandNameError(new_name)
             kwargs["name"] = new_name
 
         for key, value in kwargs.items():

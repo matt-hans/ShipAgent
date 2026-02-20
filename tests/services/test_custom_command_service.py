@@ -29,18 +29,20 @@ def test_create_command(db: Session):
 
 
 def test_create_command_invalid_name(db: Session):
+    from src.errors.domain import ValidationError
     from src.services.custom_command_service import CustomCommandService
     svc = CustomCommandService(db)
-    with pytest.raises(ValueError, match="Invalid command name"):
+    with pytest.raises(ValidationError, match="Invalid command name"):
         svc.create_command(name="Bad Name", body="test")
 
 
 def test_create_command_duplicate(db: Session):
+    from src.errors.domain import DuplicateCommandNameError
     from src.services.custom_command_service import CustomCommandService
     svc = CustomCommandService(db)
     svc.create_command(name="test-cmd", body="body")
     db.commit()
-    with pytest.raises(ValueError, match="already exists"):
+    with pytest.raises(DuplicateCommandNameError, match="already exists"):
         svc.create_command(name="test-cmd", body="other body")
 
 

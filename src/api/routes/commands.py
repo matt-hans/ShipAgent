@@ -17,25 +17,14 @@ from src.api.schemas import (
     CommandUpdate,
 )
 from src.db.connection import get_db
+from src.errors.domain import (
+    DuplicateCommandNameError,
+    NotFoundError,
+    ValidationError,
+)
 from src.services.custom_command_service import CustomCommandService
 
 logger = logging.getLogger(__name__)
-
-
-def _map_value_error(e: ValueError) -> HTTPException:
-    """Map ValueError to appropriate HTTP status code.
-
-    - 'not found' → 404
-    - 'already exists' / 'already in use' → 409 (conflict)
-    - Other validation errors → 400
-    """
-    msg = str(e).lower()
-    if "not found" in msg:
-        return HTTPException(status_code=404, detail=str(e))
-    if "already exists" in msg or "already in use" in msg:
-        return HTTPException(status_code=409, detail=str(e))
-    return HTTPException(status_code=400, detail=str(e))
-
 
 router = APIRouter(prefix="/commands", tags=["commands"])
 
@@ -87,8 +76,10 @@ def create_command(
         cmd = service.create_command(**data.model_dump())
         db.commit()
         return CommandResponse.model_validate(cmd)
-    except ValueError as e:
-        raise _map_value_error(e)
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except DuplicateCommandNameError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Command with this name already exists")
@@ -120,8 +111,12 @@ def update_command(
         cmd = service.update_command(command_id, **updates)
         db.commit()
         return CommandResponse.model_validate(cmd)
-    except ValueError as e:
-        raise _map_value_error(e)
+    except NotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except DuplicateCommandNameError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=409, detail="Command name already in use")
