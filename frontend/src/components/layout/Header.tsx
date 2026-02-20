@@ -1,17 +1,24 @@
 /**
- * Header component - Branding header with interactive shipping toggle.
+ * Header component - Branding header with interactive shipping toggle and settings.
  *
  * Features:
  * - Logo and app name
  * - Interactive shipping mode toggle (persisted via AppState)
+ * - Settings gear button to open flyout
  */
 
-import { Package } from 'lucide-react';
+import { Package, Settings } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
 import { useAppState } from '@/hooks/useAppState';
 
 export function Header() {
-  const { interactiveShipping, setInteractiveShipping, isToggleLocked } = useAppState();
+  const {
+    interactiveShipping,
+    setInteractiveShipping,
+    isToggleLocked,
+    settingsFlyoutOpen,
+    setSettingsFlyoutOpen,
+  } = useAppState();
 
   return (
     <header className="app-header">
@@ -27,20 +34,37 @@ export function Header() {
           <span className="text-lg font-semibold text-foreground">ShipAgent</span>
         </div>
 
-        {/* Interactive shipping toggle */}
-        <div className="flex items-center gap-2">
-          <label
-            htmlFor="interactive-shipping-toggle"
-            className="text-xs text-slate-400 cursor-pointer select-none"
+        {/* Right side: toggle + settings */}
+        <div className="flex items-center gap-4">
+          {/* Interactive shipping toggle */}
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor="interactive-shipping-toggle"
+              className="text-xs text-slate-400 cursor-pointer select-none"
+            >
+              Single Shipment
+            </label>
+            <Switch
+              id="interactive-shipping-toggle"
+              checked={interactiveShipping}
+              onCheckedChange={setInteractiveShipping}
+              disabled={isToggleLocked}
+            />
+          </div>
+
+          {/* Settings button */}
+          <button
+            onClick={() => setSettingsFlyoutOpen(!settingsFlyoutOpen)}
+            className={`p-2 rounded-md transition-colors ${
+              settingsFlyoutOpen
+                ? 'bg-primary text-primary-foreground'
+                : 'hover:bg-muted text-muted-foreground hover:text-foreground'
+            }`}
+            aria-label="Open settings"
+            aria-pressed={settingsFlyoutOpen}
           >
-            Single Shipment
-          </label>
-          <Switch
-            id="interactive-shipping-toggle"
-            checked={interactiveShipping}
-            onCheckedChange={setInteractiveShipping}
-            disabled={isToggleLocked}
-          />
+            <Settings className="h-4 w-4" />
+          </button>
         </div>
       </div>
     </header>
