@@ -19,7 +19,10 @@ import type {
   PaperlessResult,
   PaperlessUploadPrompt,
   TrackingResult,
+  Contact,
+  CustomCommand,
 } from '@/types/api';
+import * as api from '@/lib/api';
 
 /** Warning row handling preference, persisted in localStorage. */
 type WarningPreference = 'ask' | 'ship-all' | 'skip-warnings';
@@ -152,6 +155,20 @@ interface AppState {
   // Lock flag: disables the toggle while a session reset or creation is in-flight
   isToggleLocked: boolean;
   setIsToggleLocked: (locked: boolean) => void;
+
+  // Contact book state (hydrated on mount, refreshed after mutations)
+  contacts: Contact[];
+  setContacts: (contacts: Contact[]) => void;
+  refreshContacts: () => Promise<void>;
+
+  // Custom commands state (hydrated on mount, refreshed after mutations)
+  customCommands: CustomCommand[];
+  setCustomCommands: (commands: CustomCommand[]) => void;
+  refreshCommands: () => Promise<void>;
+
+  // Settings flyout visibility
+  settingsFlyoutOpen: boolean;
+  setSettingsFlyoutOpen: (open: boolean) => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -196,6 +213,41 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const [isToggleLocked, setIsToggleLocked] = React.useState(false);
+
+  // Contact book state
+  const [contacts, setContacts] = React.useState<Contact[]>([]);
+
+  // Custom commands state
+  const [customCommands, setCustomCommands] = React.useState<CustomCommand[]>([]);
+
+  // Settings flyout state
+  const [settingsFlyoutOpen, setSettingsFlyoutOpen] = React.useState(false);
+
+  // Refresh contacts from API
+  const refreshContacts = React.useCallback(async () => {
+    try {
+      const response = await api.listContacts({ limit: 100 });
+      setContacts(response.contacts);
+    } catch (error) {
+      console.error('Failed to refresh contacts:', error);
+    }
+  }, []);
+
+  // Refresh commands from API
+  const refreshCommands = React.useCallback(async () => {
+    try {
+      const response = await api.listCommands({ limit: 100 });
+      setCustomCommands(response.commands);
+    } catch (error) {
+      console.error('Failed to refresh commands:', error);
+    }
+  }, []);
+
+  // Hydrate contacts and commands on mount
+  React.useEffect(() => {
+    refreshContacts();
+    refreshCommands();
+  }, [refreshContacts, refreshCommands]);
 
   const refreshJobList = React.useCallback(() => {
     setJobListVersion((v) => v + 1);
@@ -247,6 +299,14 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setWriteBackEnabled,
     isToggleLocked,
     setIsToggleLocked,
+    contacts,
+    setContacts,
+    refreshContacts,
+    customCommands,
+    setCustomCommands,
+    refreshCommands,
+    settingsFlyoutOpen,
+    setSettingsFlyoutOpen,
   };
 
   return (

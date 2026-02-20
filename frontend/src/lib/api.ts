@@ -570,3 +570,189 @@ export async function getShopifyEnvStatus(): Promise<ShopifyEnvStatus> {
   const response = await fetch(`${API_BASE}/platforms/shopify/env-status`);
   return parseResponse<ShopifyEnvStatus>(response);
 }
+
+// === Contact Book API ===
+
+import type {
+  Contact,
+  ContactCreate,
+  ContactUpdate,
+  ContactListResponse,
+} from '@/types/api';
+
+/**
+ * List contacts with optional search and filters.
+ *
+ * @param params - Query parameters for filtering and pagination.
+ * @returns Paginated contact list.
+ */
+export async function listContacts(params: {
+  search?: string;
+  tag?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<ContactListResponse> {
+  const searchParams = new URLSearchParams();
+  if (params.search) searchParams.set('search', params.search);
+  if (params.tag) searchParams.set('tag', params.tag);
+  if (params.limit) searchParams.set('limit', String(params.limit));
+  if (params.offset) searchParams.set('offset', String(params.offset));
+
+  const queryString = searchParams.toString();
+  const url = queryString
+    ? `${API_BASE}/contacts?${queryString}`
+    : `${API_BASE}/contacts`;
+
+  const response = await fetch(url);
+  return parseResponse<ContactListResponse>(response);
+}
+
+/**
+ * Get a contact by handle.
+ *
+ * @param handle - The contact handle (without @ prefix).
+ * @returns Contact details.
+ */
+export async function getContactByHandle(handle: string): Promise<Contact> {
+  const response = await fetch(`${API_BASE}/contacts/by-handle/${handle}`);
+  return parseResponse<Contact>(response);
+}
+
+/**
+ * Create a new contact.
+ *
+ * @param data - Contact creation payload.
+ * @returns Created contact.
+ */
+export async function createContact(data: ContactCreate): Promise<Contact> {
+  const response = await fetch(`${API_BASE}/contacts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseResponse<Contact>(response);
+}
+
+/**
+ * Update an existing contact.
+ *
+ * @param contactId - The contact UUID.
+ * @param data - Contact update payload.
+ * @returns Updated contact.
+ */
+export async function updateContact(
+  contactId: string,
+  data: ContactUpdate
+): Promise<Contact> {
+  const response = await fetch(`${API_BASE}/contacts/${contactId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseResponse<Contact>(response);
+}
+
+/**
+ * Delete a contact.
+ *
+ * @param contactId - The contact UUID.
+ */
+export async function deleteContact(contactId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/contacts/${contactId}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    await parseResponse(response);
+  }
+}
+
+// === Custom Commands API ===
+
+import type {
+  CustomCommand,
+  CommandCreate,
+  CommandUpdate,
+  CommandListResponse,
+} from '@/types/api';
+
+/**
+ * List custom commands.
+ *
+ * @param params - Query parameters for pagination.
+ * @returns Paginated command list.
+ */
+export async function listCommands(params: {
+  limit?: number;
+  offset?: number;
+} = {}): Promise<CommandListResponse> {
+  const searchParams = new URLSearchParams();
+  if (params.limit) searchParams.set('limit', String(params.limit));
+  if (params.offset) searchParams.set('offset', String(params.offset));
+
+  const queryString = searchParams.toString();
+  const url = queryString
+    ? `${API_BASE}/commands?${queryString}`
+    : `${API_BASE}/commands`;
+
+  const response = await fetch(url);
+  return parseResponse<CommandListResponse>(response);
+}
+
+/**
+ * Get a command by name.
+ *
+ * @param name - The command name (without / prefix).
+ * @returns Command details.
+ */
+export async function getCommandByName(name: string): Promise<CustomCommand> {
+  const response = await fetch(`${API_BASE}/commands/by-name/${name}`);
+  return parseResponse<CustomCommand>(response);
+}
+
+/**
+ * Create a new custom command.
+ *
+ * @param data - Command creation payload.
+ * @returns Created command.
+ */
+export async function createCommand(data: CommandCreate): Promise<CustomCommand> {
+  const response = await fetch(`${API_BASE}/commands`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseResponse<CustomCommand>(response);
+}
+
+/**
+ * Update an existing command.
+ *
+ * @param commandId - The command UUID.
+ * @param data - Command update payload.
+ * @returns Updated command.
+ */
+export async function updateCommand(
+  commandId: string,
+  data: CommandUpdate
+): Promise<CustomCommand> {
+  const response = await fetch(`${API_BASE}/commands/${commandId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return parseResponse<CustomCommand>(response);
+}
+
+/**
+ * Delete a command.
+ *
+ * @param commandId - The command UUID.
+ */
+export async function deleteCommand(commandId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/commands/${commandId}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    await parseResponse(response);
+  }
+}
