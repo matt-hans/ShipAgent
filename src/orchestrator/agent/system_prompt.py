@@ -24,6 +24,54 @@ from src.services.filter_constants import BUSINESS_PREDICATES, REGIONS
 # International service codes for labeling
 _INTERNATIONAL_SERVICES = frozenset({"07", "08", "11", "54", "65"})
 _MAX_SCHEMA_SAMPLES = 5
+MAX_PROMPT_CONTACTS = 20
+
+
+def _build_contacts_section(contacts: list[dict]) -> str:
+    """Build the saved contacts catalogue for the system prompt.
+
+    Formats contacts as: @handle — City, ST (roles)
+    Roles are inferred from use_as_ship_to and use_as_shipper flags.
+
+    Args:
+        contacts: List of contact dicts with handle, city, state_province,
+                  use_as_ship_to, use_as_shipper keys.
+
+    Returns:
+        Formatted string with contacts section, or empty string if no contacts.
+    """
+    if not contacts:
+        return ""
+
+    lines = ["## Saved Contacts", ""]
+    lines.append(
+        "The user has saved contacts in their address book. When shipping to a "
+        "known contact, use `resolve_contact` with the @handle to get the full "
+        "address. You can reference contacts by @handle in commands."
+    )
+    lines.append("")
+    lines.append("Available contacts:")
+
+    for c in contacts[:MAX_PROMPT_CONTACTS]:
+        handle = c.get("handle", "unknown")
+        city = c.get("city", "")
+        state = c.get("state_province", "")
+
+        # Build roles list
+        roles = []
+        if c.get("use_as_ship_to"):
+            roles.append("ship_to")
+        if c.get("use_as_shipper"):
+            roles.append("shipper")
+        roles_str = ", ".join(roles) if roles else "no roles"
+
+        location = f"{city}, {state}" if city and state else city or state or "no location"
+        lines.append(f"- @{handle} — {location} ({roles_str})")
+
+    if len(contacts) > MAX_PROMPT_CONTACTS:
+        lines.append(f"- ... and {len(contacts) - MAX_PROMPT_CONTACTS} more")
+
+    return "\n".join(lines)
 
 
 def _resolve_sample_char_limit() -> int:
@@ -210,6 +258,7 @@ def build_system_prompt(
     source_info: DataSourceInfo | None = None,
     interactive_shipping: bool = False,
     column_samples: dict[str, list] | None = None,
+    contacts: list[dict] | None = None,
 ) -> str:
     """Build the complete system prompt for the orchestration agent.
 
@@ -224,6 +273,8 @@ def build_system_prompt(
     Args:
         source_info: Current data source metadata. None if no source connected.
         interactive_shipping: Whether interactive single-shipment mode is enabled.
+        column_samples: Optional sample values per column for filter grounding.
+        contacts: Optional list of saved contacts for @handle resolution.
 
     Returns:
         Complete system prompt string.
@@ -523,6 +574,9 @@ administrator.
 - Useful when validating user-provided international addresses
 """
 
+    # Build contacts section if contacts are provided
+    contacts_section = _build_contacts_section(contacts) if contacts else ""
+
     return f"""You are ShipAgent, an AI shipping assistant that helps users create, rate, and manage UPS shipments from their data sources.
 
 Current date: {current_date}
@@ -535,7 +589,7 @@ Current date: {current_date}
 ## Connected Data Source
 
 {data_section}
-
+{contacts_section}
 ## Filter Generation Rules
 
 {filter_rules_section}
