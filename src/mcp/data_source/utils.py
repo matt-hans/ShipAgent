@@ -3,6 +3,8 @@
 Provides helper functions for:
 - Row checksum computation (SHA-256 with deterministic JSON serialization)
 - Date parsing with ambiguity detection (US vs EU format)
+- Hierarchical data flattening (nested dicts → flat dicts for DuckDB)
+- Flat record loading into DuckDB imported_data table
 
 Per RESEARCH.md:
 - Use hashlib + JSON with sorted keys for deterministic checksums
@@ -133,3 +135,168 @@ def parse_date_with_warnings(value: str | None) -> dict[str, Any]:
                 }
             ],
         }
+
+
+def _infer_duckdb_types(
+    records: list[dict[str, Any]], keys: list[str]
+) -> dict[str, str]:
+    """Infer DuckDB column types from Python values.
+
+    Samples the first non-None value per key across all records
+    and maps Python types to DuckDB column types.
+
+    Args:
+        records: List of flat dictionaries.
+        keys: Ordered list of column keys.
+
+    Returns:
+        Mapping of key → DuckDB type string.
+    """
+    _py_to_duckdb = {
+        int: "BIGINT",
+        float: "DOUBLE",
+        bool: "BOOLEAN",
+        str: "VARCHAR",
+    }
+    result: dict[str, str] = {}
+    for key in keys:
+        for record in records:
+            value = record.get(key)
+            if value is not None:
+                result[key] = _py_to_duckdb.get(type(value), "VARCHAR")
+                break
+        else:
+            result[key] = "VARCHAR"
+    return result
+
+
+def flatten_record(
+    record: dict[str, Any],
+    separator: str = "_",
+    prefix: str = "",
+    max_depth: int = 5,
+    _current_depth: int = 0,
+) -> dict[str, Any]:
+    """Recursively flatten a nested dict into a single-level dict.
+
+    Nested dict keys are joined with separator. Lists are serialized
+    as JSON strings to preserve array data without row explosion.
+    Recursion stops at max_depth to prevent stack overflow on deeply
+    nested structures — remaining dicts are serialized as JSON strings.
+
+    Args:
+        record: Nested dictionary to flatten.
+        separator: Key separator for nested paths (default: underscore).
+        prefix: Internal prefix for recursion (callers should not set this).
+        max_depth: Maximum nesting depth before serializing remainder as JSON.
+        _current_depth: Internal recursion counter (callers should not set this).
+
+    Returns:
+        Flat dictionary with all leaf values.
+    """
+    flat: dict[str, Any] = {}
+    for key, value in record.items():
+        full_key = f"{prefix}{separator}{key}" if prefix else key
+        if isinstance(value, dict):
+            if _current_depth >= max_depth:
+                flat[full_key] = json.dumps(value)
+            else:
+                flat.update(
+                    flatten_record(
+                        value, separator, full_key, max_depth, _current_depth + 1
+                    )
+                )
+        elif isinstance(value, list):
+            flat[full_key] = json.dumps(value)
+        else:
+            flat[full_key] = value
+    return flat
+
+
+def load_flat_records_to_duckdb(
+    conn: Any,
+    records: list[dict[str, Any]],
+    source_type: str = "unknown",
+) -> "ImportResult":
+    """Load a list of flat dicts into DuckDB imported_data table.
+
+    Uses executemany for batch insertion (OLAP-friendly, not row-by-row).
+    Preserves Python types (int, float, str) so DuckDB can infer column
+    types instead of defaulting everything to VARCHAR.
+    Adds _source_row_num (1-based). Returns ImportResult with schema.
+
+    Args:
+        conn: DuckDB connection.
+        records: List of flat dictionaries (one per row).
+        source_type: Source type string for ImportResult.
+
+    Returns:
+        ImportResult with row count, schema columns, and warnings.
+    """
+    from src.mcp.data_source.models import (
+        SOURCE_ROW_NUM_COLUMN,
+        ImportResult,
+        SchemaColumn,
+    )
+
+    if not records:
+        conn.execute(f"""
+            CREATE OR REPLACE TABLE imported_data (
+                {SOURCE_ROW_NUM_COLUMN} BIGINT
+            )
+        """)
+        return ImportResult(
+            row_count=0,
+            columns=[],
+            warnings=["No records to import"],
+            source_type=source_type,
+        )
+
+    # Collect all unique keys (union across all records, preserving order)
+    all_keys: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        for key in record:
+            if key not in seen:
+                all_keys.append(key)
+                seen.add(key)
+
+    # Infer DuckDB column types from first non-None Python value per key
+    type_map = _infer_duckdb_types(records, all_keys)
+    col_defs = ", ".join(
+        f'"{key}" {type_map.get(key, "VARCHAR")}' for key in all_keys
+    )
+    conn.execute(f"""
+        CREATE OR REPLACE TABLE imported_data (
+            {SOURCE_ROW_NUM_COLUMN} BIGINT,
+            {col_defs}
+        )
+    """)
+
+    # Batch insert using executemany
+    placeholders = ", ".join(["?"] * (len(all_keys) + 1))
+    insert_sql = f"INSERT INTO imported_data VALUES ({placeholders})"
+
+    batch = []
+    for i, record in enumerate(records, 1):
+        values = [i] + [record.get(key) for key in all_keys]
+        batch.append(values)
+
+    conn.executemany(insert_sql, batch)
+
+    # Build schema (excluding _source_row_num)
+    schema_rows = conn.execute("DESCRIBE imported_data").fetchall()
+    columns = [
+        SchemaColumn(name=col[0], type=col[1], nullable=True, warnings=[])
+        for col in schema_rows
+        if col[0] != SOURCE_ROW_NUM_COLUMN
+    ]
+
+    row_count = conn.execute("SELECT COUNT(*) FROM imported_data").fetchone()[0]
+
+    return ImportResult(
+        row_count=row_count,
+        columns=columns,
+        warnings=[],
+        source_type=source_type,
+    )
