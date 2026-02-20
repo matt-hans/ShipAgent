@@ -29,9 +29,9 @@ class FakeTransport(httpx.AsyncBaseTransport):
 
 def _make_client(responses: dict) -> HttpClient:
     """Create HttpClient with mocked transport."""
-    client = HttpClient(base_url="http://test:8000")
+    client = HttpClient(base_url="http://127.0.0.1:8000")
     transport = FakeTransport(responses)
-    client._client = httpx.AsyncClient(transport=transport, base_url="http://test:8000")
+    client._client = httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8000")
     return client
 
 
@@ -263,9 +263,9 @@ def _make_capturing_client(
     Returns:
         Tuple of (HttpClient, CapturingFakeTransport) so tests can inspect requests.
     """
-    client = HttpClient(base_url="http://test:8000")
+    client = HttpClient(base_url="http://127.0.0.1:8000")
     transport = CapturingFakeTransport(responses)
-    client._client = httpx.AsyncClient(transport=transport, base_url="http://test:8000")
+    client._client = httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8000")
     return client, transport
 
 
@@ -321,3 +321,34 @@ class TestConnectPlatform:
 
         with pytest.raises(ShipAgentClientError, match="Only 'shopify'"):
             await client.connect_platform("woocommerce")
+
+
+class TestInsecureCredentialTransport:
+    """Tests for _reject_insecure_credential_transport."""
+
+    def test_https_allowed(self):
+        """HTTPS base URL passes without error."""
+        from src.cli.http_client import _reject_insecure_credential_transport
+        _reject_insecure_credential_transport("https://daemon.example.com:8443")
+
+    def test_localhost_http_allowed(self):
+        """Plain HTTP to localhost is safe."""
+        from src.cli.http_client import _reject_insecure_credential_transport
+        _reject_insecure_credential_transport("http://127.0.0.1:8000")
+        _reject_insecure_credential_transport("http://localhost:8000")
+
+    def test_remote_http_blocked(self):
+        """Plain HTTP to non-local host raises ShipAgentClientError."""
+        from src.cli.http_client import _reject_insecure_credential_transport
+        with pytest.raises(ShipAgentClientError, match="Refusing to send"):
+            _reject_insecure_credential_transport("http://daemon.example.com:8000")
+
+    @pytest.mark.asyncio
+    async def test_connect_platform_blocks_remote_http(self, monkeypatch):
+        """connect_platform rejects credentials over remote plain HTTP."""
+        monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test")
+        monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "test.myshopify.com")
+        client = HttpClient(base_url="http://remote-daemon.example.com:8000")
+        async with client:
+            with pytest.raises(ShipAgentClientError, match="Refusing to send"):
+                await client.connect_platform("shopify")
