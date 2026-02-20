@@ -70,8 +70,11 @@ from src.mcp.data_source.tools.import_tools import (
     import_csv,
     import_database,
     import_excel,
+    import_file,
+    import_fixed_width,
     list_sheets,
     list_tables,
+    sniff_file,
 )
 from src.mcp.data_source.tools.query_tools import (
     get_row,
@@ -108,8 +111,11 @@ mcp.tool()(compute_checksums)
 mcp.tool()(import_csv)
 mcp.tool()(import_database)
 mcp.tool()(import_excel)
+mcp.tool()(import_file)
+mcp.tool()(import_fixed_width)
 mcp.tool()(list_sheets)
 mcp.tool()(list_tables)
+mcp.tool()(sniff_file)
 mcp.tool()(get_row)
 mcp.tool()(get_rows_by_filter)
 mcp.tool()(query_data)
