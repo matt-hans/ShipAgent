@@ -173,6 +173,9 @@ class Contact(Base):
         String(50), nullable=False, default=utc_now_iso
     )
 
+    # M4 note: CheckConstraint uses GLOB which is SQLite-specific.
+    # Service-layer regex (HANDLE_PATTERN) is the primary enforcement.
+    # If migrating to PostgreSQL, replace GLOB with a CHECK using ~ regex.
     __table_args__ = (
         Index("idx_contacts_handle", "handle"),
         Index("idx_contacts_last_used_at", "last_used_at"),
@@ -266,7 +269,13 @@ git commit -m "feat: add Contact + CustomCommand SQLAlchemy models"
 Append to `tests/services/test_contact_service.py`:
 
 ```python
-from src.services.contact_service import ContactService, HANDLE_PATTERN, BUSINESS_SUFFIXES
+from src.services.contact_service import (
+    ContactService,
+    HANDLE_PATTERN,
+    BUSINESS_SUFFIXES,
+    slugify_display_name,
+    contact_to_order_data,
+)
 
 
 def test_handle_pattern_valid():
@@ -451,6 +460,97 @@ def test_resolve_handles(db: Session):
     assert "matt" in resolved
     assert "bob" in resolved
     assert "unknown" not in resolved
+
+
+# --- C2 FIX: contact_to_order_data mapping tests ---
+
+
+def test_slugify_display_name_basic():
+    """slugify_display_name handles basic names."""
+    assert slugify_display_name("Matt Hans") == "matt-hans"
+    assert slugify_display_name("NYC Warehouse") == "nyc-warehouse"
+
+
+def test_slugify_display_name_strips_suffixes():
+    """slugify_display_name strips business suffixes."""
+    assert slugify_display_name("Matt's LLC") == "matts"
+    assert slugify_display_name("NYC Warehouse Inc.") == "nyc-warehouse"
+    assert slugify_display_name("Acme Corp") == "acme"
+    assert slugify_display_name("Big Co Ltd") == "big"
+
+
+def test_slugify_display_name_preserves_if_all_suffixes():
+    """slugify_display_name keeps all parts if stripping would leave nothing."""
+    assert slugify_display_name("LLC Inc") == "llc-inc"
+
+
+def test_contact_to_order_data_ship_to(db: Session):
+    """contact_to_order_data produces valid ship_to_* keys for build_ship_to()."""
+    svc = ContactService(db)
+    contact = svc.create_contact(
+        handle="matt", display_name="Matt Hans", address_line_1="123 Main St",
+        address_line_2="Suite 4", city="San Francisco", state_province="CA",
+        postal_code="94105", country_code="US", phone="+14155550100",
+        company="ShipCo", attention_name="Matthew H",
+    )
+    db.commit()
+    data = contact_to_order_data(contact, role="ship_to")
+    assert data["ship_to_name"] == "Matt Hans"
+    assert data["ship_to_attention_name"] == "Matthew H"
+    assert data["ship_to_address1"] == "123 Main St"
+    assert data["ship_to_address2"] == "Suite 4"
+    assert data["ship_to_city"] == "San Francisco"
+    assert data["ship_to_state"] == "CA"
+    assert data["ship_to_postal_code"] == "94105"
+    assert data["ship_to_country"] == "US"
+    assert data["ship_to_phone"] == "+14155550100"
+    assert data["ship_to_company"] == "ShipCo"
+
+
+def test_contact_to_order_data_shipper(db: Session):
+    """contact_to_order_data produces valid shipper_* keys when role='shipper'."""
+    svc = ContactService(db)
+    contact = svc.create_contact(
+        handle="warehouse", display_name="NYC Warehouse",
+        address_line_1="456 Broadway", city="New York", state_province="NY",
+        postal_code="10013", use_as_shipper=True,
+    )
+    db.commit()
+    data = contact_to_order_data(contact, role="shipper")
+    assert data["shipper_name"] == "NYC Warehouse"
+    assert data["shipper_address1"] == "456 Broadway"
+    assert data["shipper_city"] == "New York"
+    assert data["shipper_state"] == "NY"
+    assert data["shipper_postal_code"] == "10013"
+
+
+def test_contact_to_order_data_defaults_attention_to_display_name(db: Session):
+    """contact_to_order_data falls back attention_name to display_name."""
+    svc = ContactService(db)
+    contact = svc.create_contact(
+        handle="bob", display_name="Bob Jones", address_line_1="1 Main",
+        city="LA", state_province="CA", postal_code="90001",
+    )
+    db.commit()
+    data = contact_to_order_data(contact, role="ship_to")
+    assert data["ship_to_attention_name"] == "Bob Jones"
+
+
+def test_update_contact_partial_fields(db: Session):
+    """update_contact only modifies provided fields, leaving others untouched."""
+    svc = ContactService(db)
+    contact = svc.create_contact(
+        handle="matt", display_name="Matt Hans", address_line_1="123 Main",
+        city="SF", state_province="CA", postal_code="94105",
+        phone="+14155550100", email="matt@example.com",
+    )
+    db.commit()
+    # Only update phone — everything else stays the same
+    updated = svc.update_contact(contact.id, phone="+14155550199")
+    assert updated.phone == "+14155550199"
+    assert updated.email == "matt@example.com"  # untouched
+    assert updated.display_name == "Matt Hans"  # untouched
+    assert updated.city == "SF"  # untouched
 ```
 
 **Step 2: Run test to verify it fails**
@@ -515,6 +615,42 @@ def slugify_display_name(name: str) -> str:
     # Collapse multiple hyphens
     slug = re.sub(r"-{2,}", "-", slug)
     return slug
+
+
+def contact_to_order_data(contact: "Contact", role: str = "ship_to") -> dict[str, str | None]:
+    """Map a Contact model to order_data keys consumed by UPSPayloadBuilder.
+
+    This is the canonical mapping between Contact field names and the
+    ship_to_* / shipper_* keys that build_ship_to() and build_shipper() expect.
+    Centralised here to avoid duplication across resolve_contact tool,
+    batch @handle injection, and preview_interactive_shipment.
+
+    Args:
+        contact: A Contact ORM instance.
+        role: One of 'ship_to' or 'shipper'. Determines key prefix.
+
+    Returns:
+        Dict with prefixed keys ready for build_ship_to() / build_shipper().
+
+    Raises:
+        ValueError: If role is not 'ship_to' or 'shipper'.
+    """
+    if role not in ("ship_to", "shipper"):
+        raise ValueError(f"Invalid role: {role!r}. Must be 'ship_to' or 'shipper'.")
+
+    prefix = f"{role}_"
+    return {
+        f"{prefix}name": contact.display_name,
+        f"{prefix}attention_name": contact.attention_name or contact.display_name,
+        f"{prefix}address1": contact.address_line_1,
+        f"{prefix}address2": contact.address_line_2,
+        f"{prefix}city": contact.city,
+        f"{prefix}state": contact.state_province,
+        f"{prefix}postal_code": contact.postal_code,
+        f"{prefix}country": contact.country_code,
+        f"{prefix}phone": contact.phone,
+        f"{prefix}company": contact.company,
+    }
 
 
 class ContactService:
@@ -637,6 +773,11 @@ class ContactService:
     def search_by_prefix(self, prefix: str) -> list[Contact]:
         """Find contacts whose handle starts with the given prefix.
 
+        M3 note: LIKE is case-insensitive for ASCII in SQLite by default.
+        Since handles are lowercase-normalized on save, LIKE prefix% is safe.
+        For display_name search in list_contacts(), we use func.lower()
+        explicitly to ensure case-insensitive matching.
+
         Args:
             prefix: Handle prefix to match (case-insensitive).
 
@@ -758,11 +899,15 @@ class ContactService:
     def get_mru_contacts(self, limit: int = 20) -> list[Contact]:
         """Get most-recently-used contacts for system prompt injection.
 
+        Only returns contacts that have been used at least once
+        (last_used_at IS NOT NULL). This naturally handles NULLS LAST
+        since NULL rows are excluded entirely.
+
         Args:
             limit: Maximum contacts to return.
 
         Returns:
-            Contacts sorted by last_used_at DESC (nulls last).
+            Contacts sorted by last_used_at DESC (only used contacts).
         """
         return (
             self.db.query(Contact)
@@ -1430,19 +1575,23 @@ def _get_service(db: Session = Depends(get_db)) -> ContactService:
 def list_contacts(
     search: str | None = None,
     tag: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
     service: ContactService = Depends(_get_service),
 ) -> ContactListResponse:
-    """List all contacts with optional search and tag filters.
+    """List all contacts with optional search, tag filter, and pagination.
 
     Args:
         search: Filter by handle, name, or city.
         tag: Filter by tag value.
+        limit: Max results (default 100, M5 fix).
+        offset: Pagination offset.
         service: ContactService (injected).
 
     Returns:
         List of contacts with total count.
     """
-    contacts = service.list_contacts(search=search, tag=tag)
+    contacts = service.list_contacts(search=search, tag=tag, limit=limit, offset=offset)
     return ContactListResponse(
         contacts=[ContactResponse.model_validate(c) for c in contacts],
         total=len(contacts),
@@ -2046,14 +2195,24 @@ def contacts_import(file_path: str = typer.Argument(..., help="JSON file to impo
     with get_db_context() as db:
         svc = ContactService(db)
         created = 0
+        updated = 0
         for item in data:
             try:
-                svc.create_contact(**item)
-                created += 1
+                # Idempotent import: upsert on handle (DB perf optimization).
+                # If handle exists, update fields instead of failing.
+                handle = item.get("handle", "").lstrip("@").lower().strip()
+                existing = svc.get_by_handle(handle) if handle else None
+                if existing:
+                    update_fields = {k: v for k, v in item.items() if k != "handle" and v is not None}
+                    svc.update_contact(existing.id, **update_fields)
+                    updated += 1
+                else:
+                    svc.create_contact(**item)
+                    created += 1
             except ValueError as e:
                 console.print(f"[yellow]Skipped: {e}[/yellow]")
         db.commit()
-        console.print(f"[green]Imported {created}/{len(data)} contacts[/green]")
+        console.print(f"[green]Imported {created} new, {updated} updated / {len(data)} total[/green]")
 
 
 # --- Commands CLI ---
@@ -2165,7 +2324,7 @@ git commit -m "feat: add contacts and commands CLI sub-commands"
 
 ## Phase B: Agent Tools + System Prompt
 
-### Task 8: Contact Agent Tools
+### Task 8: Contact Agent Tools (C2 + C3 Integration)
 
 **Files:**
 - Create: `src/orchestrator/agent/tools/contacts.py`
@@ -2176,48 +2335,431 @@ This task creates the 4 contact tools (`resolve_contact`, `save_contact`, `list_
 
 The tools follow the same pattern as `tracking.py` and `pickup.py`: handler functions that accept `bridge` + kwargs, call the service, and return `_ok(data)` or `_err(message)`.
 
-**Key integration:** `resolve_contact` auto-calls `touch_last_used()` on success. All tools use `get_db_context()` for DB access inside the tool handler.
+**SOLID note (Interface Segregation):** `touch_last_used()` is a side-effect that must NOT live inside `get_by_handle()`. The service methods stay pure (no side effects on reads). Instead, `touch_last_used()` is called explicitly in the `resolve_contact` tool handler AFTER a successful lookup. This keeps the service testable and the side-effect visible.
 
-**Step 1: Write tests, Step 2: verify failure, Step 3: implement, Step 4: verify pass, Step 5: commit.**
+**C2 integration:** `resolve_contact` returns the full contact data PLUS the pre-mapped `order_data` dict from `contact_to_order_data(contact, role)`. The role is inferred from the contact's `use_as_ship_to`/`use_as_shipper` flags (defaulting to `ship_to`). This means the agent and `preview_interactive_shipment` receive ready-to-use `ship_to_*` keys — no field mapping needed downstream.
 
-Commit message: `feat: add contact agent tools (resolve, save, list, delete)`
+**C3 integration — Batch @handle detection point:**
+
+> This is documented now (Phase A) but implemented in Phase B alongside the tools.
+
+The batch @handle injection happens in `ship_command_pipeline` (in `tools/pipeline.py`), at a specific point:
+
+```
+ship_command_pipeline handler
+    ↓
+    1. Resolve filter → fetch rows from MCP data source
+    2. Build job_row_data list from fetched rows
+    ↓
+    ★ 3. SCAN rows for @handle tokens in ALL string values
+    ★    - Regex: r"@([a-z0-9][a-z0-9-]*[a-z0-9])" per value
+    ★    - Collect unique handles across all rows
+    ★    - Call ContactService.resolve_handles(unique_handles)
+    ★    - For each row with @handle column values:
+    ★        Merge contact_to_order_data(contact, "ship_to") into order_data
+    ★        (contact fields override the raw @handle string values)
+    ↓
+    4. BatchEngine.preview() with enriched rows
+```
+
+This ensures `resolve_handles()` (designed in Task 2) is called once with all unique handles — avoiding N+1. The `contact_to_order_data()` utility (also Task 2) produces the exact `ship_to_*` keys that `build_ship_to()` expects.
+
+**Implementation detail:** A new helper `_resolve_row_handles(rows: list[dict], db: Session) -> list[dict]` will be added to `tools/pipeline.py` that:
+1. Scans all string values in each row dict for `@handle` patterns
+2. Collects unique handles
+3. Calls `ContactService(db).resolve_handles(unique_handles)`
+4. Merges resolved contact fields into each row's data
+5. Also calls `touch_last_used()` for each resolved handle (MRU ranking update)
+
+**Step 1: Write tests**
+
+Create `tests/orchestrator/agent/tools/test_contacts_tools.py`:
+
+```python
+"""Tests for contact agent tools."""
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from unittest.mock import MagicMock
+
+from src.db.models import Base
+from src.services.contact_service import ContactService
+
+
+@pytest.fixture
+def db() -> Session:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    session = sessionmaker(bind=engine)()
+    yield session
+    session.close()
+
+
+def test_resolve_contact_exact_match(db: Session):
+    """resolve_contact returns full contact + order_data for exact handle."""
+    svc = ContactService(db)
+    svc.create_contact(
+        handle="matt", display_name="Matt Hans",
+        address_line_1="123 Main St", city="San Francisco",
+        state_province="CA", postal_code="94105", phone="+14155550100",
+    )
+    db.commit()
+    # Simulate tool handler logic
+    contact = svc.get_by_handle("matt")
+    assert contact is not None
+    from src.services.contact_service import contact_to_order_data
+    data = contact_to_order_data(contact, role="ship_to")
+    assert data["ship_to_name"] == "Matt Hans"
+    assert data["ship_to_address1"] == "123 Main St"
+    assert data["ship_to_city"] == "San Francisco"
+
+
+def test_resolve_contact_prefix_returns_candidates(db: Session):
+    """resolve_contact with prefix match returns candidate list."""
+    svc = ContactService(db)
+    svc.create_contact(handle="matt", display_name="Matt", address_line_1="1",
+                       city="SF", state_province="CA", postal_code="94105")
+    svc.create_contact(handle="mary", display_name="Mary", address_line_1="2",
+                       city="LA", state_province="CA", postal_code="90001")
+    db.commit()
+    candidates = svc.search_by_prefix("ma")
+    assert len(candidates) == 2
+
+
+def test_resolve_contact_auto_touches_last_used(db: Session):
+    """resolve_contact handler calls touch_last_used on success."""
+    svc = ContactService(db)
+    svc.create_contact(handle="matt", display_name="Matt", address_line_1="1",
+                       city="SF", state_province="CA", postal_code="94105")
+    db.commit()
+    contact = svc.get_by_handle("matt")
+    assert contact.last_used_at is None
+    # Tool handler calls touch_last_used explicitly (not inside get_by_handle)
+    svc.touch_last_used("matt")
+    db.commit()
+    refreshed = svc.get_by_handle("matt")
+    assert refreshed.last_used_at is not None
+
+
+def test_resolve_contact_not_found(db: Session):
+    """resolve_contact returns None for unknown handle."""
+    svc = ContactService(db)
+    assert svc.get_by_handle("nonexistent") is None
+```
+
+**Step 2: Run to verify failure**
+
+Run: `pytest tests/orchestrator/agent/tools/test_contacts_tools.py -v -x`
+Expected: PASS (these test service logic; tool module tests come with implementation)
+
+**Step 3: Implement contact tools module**
+
+Create `src/orchestrator/agent/tools/contacts.py` with 4 handlers:
+- `resolve_contact_tool(args, bridge)` — lookup by handle, touch_last_used on success, return contact + order_data
+- `save_contact_tool(args, bridge)` — create/update contact via ContactService
+- `list_contacts_tool(args, bridge)` — list contacts with optional search/tag filter
+- `delete_contact_tool(args, bridge)` — delete by handle
+
+Register in `tools/__init__.py`:
+- Add to imports
+- Add 4 `ToolDefinition` entries
+- Add all 4 to `interactive_allowed` set (contacts available in BOTH modes)
+
+**Step 4: Run tests**
+
+Run: `pytest tests/orchestrator/agent/tools/test_contacts_tools.py -v`
+Expected: All tests PASS
+
+**Step 5: Commit**
+
+```bash
+git add src/orchestrator/agent/tools/contacts.py src/orchestrator/agent/tools/__init__.py tests/orchestrator/agent/tools/test_contacts_tools.py
+git commit -m "feat: add contact agent tools (resolve, save, list, delete) with C2/C3 integration"
+```
 
 ---
 
-### Task 9: System Prompt Contact Injection
+### Task 9: System Prompt Contact Injection (C1 Fix)
 
 **Files:**
-- Modify: `src/orchestrator/agent/system_prompt.py` (add `_build_contacts_section()` helper + inject in `build_system_prompt()`)
+- Modify: `src/orchestrator/agent/system_prompt.py` (add `_build_contacts_section()` helper + `contacts` param to `build_system_prompt()`)
+- Modify: `src/services/conversation_handler.py` (add MRU contact fetch + contacts_hash to `ensure_agent()`)
 - Create: `tests/orchestrator/agent/test_contacts_prompt.py`
 
-Add `MAX_PROMPT_CONTACTS = 20` constant. The `_build_contacts_section()` formats:
+> **C1 Critical Fix:** This task defines the full wiring from DB → `build_system_prompt()` → `ensure_agent()`.
+> Without this, the top-20 MRU contacts never appear in the prompt and the agent always falls back to `resolve_contact` tool calls.
+
+**Step 1: Write failing tests**
+
+Create `tests/orchestrator/agent/test_contacts_prompt.py`:
+
+```python
+"""Tests for contact injection into agent system prompt."""
+
+import pytest
+
+from src.orchestrator.agent.system_prompt import (
+    MAX_PROMPT_CONTACTS,
+    _build_contacts_section,
+    build_system_prompt,
+)
+
+
+def test_build_contacts_section_empty():
+    """Empty contact list produces no section."""
+    result = _build_contacts_section([])
+    assert result == ""
+
+
+def test_build_contacts_section_formats_correctly():
+    """Contacts are formatted as @handle — City, ST (roles)."""
+    contacts = [
+        {"handle": "matt", "city": "San Francisco", "state_province": "CA",
+         "use_as_ship_to": True, "use_as_shipper": False},
+        {"handle": "warehouse", "city": "New York", "state_province": "NY",
+         "use_as_ship_to": True, "use_as_shipper": True},
+    ]
+    result = _build_contacts_section(contacts)
+    assert "@matt" in result
+    assert "San Francisco, CA" in result
+    assert "ship_to" in result
+    assert "@warehouse" in result
+    assert "shipper" in result
+
+
+def test_build_contacts_section_respects_limit():
+    """Only MAX_PROMPT_CONTACTS contacts are included."""
+    contacts = [
+        {"handle": f"c{i}", "city": "City", "state_province": "ST",
+         "use_as_ship_to": True, "use_as_shipper": False}
+        for i in range(MAX_PROMPT_CONTACTS + 10)
+    ]
+    result = _build_contacts_section(contacts)
+    assert f"@c{MAX_PROMPT_CONTACTS - 1}" in result
+    assert f"@c{MAX_PROMPT_CONTACTS}" not in result
+
+
+def test_build_system_prompt_includes_contacts():
+    """build_system_prompt injects contacts section when provided."""
+    prompt = build_system_prompt(
+        contacts=[
+            {"handle": "matt", "city": "SF", "state_province": "CA",
+             "use_as_ship_to": True, "use_as_shipper": False},
+        ],
+    )
+    assert "@matt" in prompt
+    assert "Saved Contacts" in prompt
+    assert "resolve_contact" in prompt
+
+
+def test_build_system_prompt_no_contacts():
+    """build_system_prompt omits contacts section when None."""
+    prompt = build_system_prompt(contacts=None)
+    assert "Saved Contacts" not in prompt
 ```
-## Saved Contacts
-@handle — City, ST (ship_to|shipper)
+
+**Step 2: Run test to verify it fails**
+
+Run: `pytest tests/orchestrator/agent/test_contacts_prompt.py -v -x`
+Expected: FAIL — `ImportError: cannot import name 'MAX_PROMPT_CONTACTS'`
+
+**Step 3a: Add `_build_contacts_section()` + `contacts` param to `system_prompt.py`**
+
+Add constant near the top of `system_prompt.py` (after `_MAX_SCHEMA_SAMPLES = 5`):
+
+```python
+MAX_PROMPT_CONTACTS = 20
 ```
 
-Include instruction: "When you see @handle in a user message, check the catalogue above first. If found, use the contact data directly. If not found, call resolve_contact."
+Add new helper function (after `_build_schema_section`):
 
-`build_system_prompt()` receives a new `contacts: list[dict] | None = None` parameter. The caller (`AgentSessionManager` or `client.py`) fetches MRU contacts from the DB and passes them.
+```python
+def _build_contacts_section(contacts: list[dict]) -> str:
+    """Build the saved contacts catalogue for the system prompt.
 
-**Step 1: Write tests, Step 2: verify failure, Step 3: implement, Step 4: verify pass, Step 5: commit.**
+    Accepts raw dicts (not ORM objects) so the module stays free of DB imports.
+    The caller (ensure_agent) fetches MRU contacts and serialises them.
 
-Commit message: `feat: inject top-20 MRU contacts into agent system prompt`
+    Args:
+        contacts: List of contact dicts with keys: handle, city,
+            state_province, use_as_ship_to, use_as_shipper.
+
+    Returns:
+        Formatted contacts section, or empty string if no contacts.
+    """
+    if not contacts:
+        return ""
+    lines = ["## Saved Contacts", ""]
+    for c in contacts[:MAX_PROMPT_CONTACTS]:
+        roles = []
+        if c.get("use_as_ship_to"):
+            roles.append("ship_to")
+        if c.get("use_as_shipper"):
+            roles.append("shipper")
+        role_str = ", ".join(roles) if roles else "ship_to"
+        lines.append(
+            f"@{c['handle']} — {c.get('city', '?')}, "
+            f"{c.get('state_province', '?')} ({role_str})"
+        )
+    lines.append("")
+    lines.append(
+        "When you see @handle in a user message, check the catalogue above first. "
+        "If found, use the contact data directly via resolve_contact. "
+        "If not found, call resolve_contact to search the full address book."
+    )
+    return "\n".join(lines)
+```
+
+Modify `build_system_prompt()` signature to accept contacts:
+
+```python
+def build_system_prompt(
+    source_info: DataSourceInfo | None = None,
+    interactive_shipping: bool = False,
+    column_samples: dict[str, list] | None = None,
+    contacts: list[dict] | None = None,
+) -> str:
+```
+
+Inject the contacts section in the return template (after `{data_section}`, before `## Filter Generation Rules`):
+
+```python
+    contacts_section = _build_contacts_section(contacts or [])
+```
+
+And in the return f-string:
+
+```
+{contacts_section}
+
+## Filter Generation Rules
+```
+
+**Step 3b: Wire MRU contact fetch into `ensure_agent()` in `conversation_handler.py`**
+
+This is the critical wiring that makes C1 work. Modify `ensure_agent()`:
+
+```python
+async def ensure_agent(
+    session: AgentSession,
+    source_info: Any,
+    interactive_shipping: bool = False,
+) -> bool:
+    from src.orchestrator.agent.client import OrchestrationAgent
+    from src.orchestrator.agent.system_prompt import build_system_prompt
+
+    source_hash = compute_source_hash(source_info)
+
+    # Fetch MRU contacts for system prompt injection (C1 fix).
+    # This is a fast indexed read (~20 rows) that runs every ensure_agent call.
+    # Including contacts_hash forces prompt rebuild when MRU list changes.
+    contacts_data: list[dict] = []
+    contacts_hash = "no-contacts"
+    try:
+        from src.db.connection import get_db_context
+        from src.services.contact_service import ContactService
+
+        with get_db_context() as db:
+            svc = ContactService(db)
+            mru_contacts = svc.get_mru_contacts(limit=20)
+            contacts_data = [
+                {
+                    "handle": c.handle,
+                    "city": c.city,
+                    "state_province": c.state_province,
+                    "use_as_ship_to": c.use_as_ship_to,
+                    "use_as_shipper": c.use_as_shipper,
+                }
+                for c in mru_contacts
+            ]
+            # Hash MRU IDs so agent rebuilds when contact list changes
+            contacts_hash = hashlib.sha256(
+                "|".join(c.id for c in mru_contacts).encode()
+            ).hexdigest()[:8]
+    except Exception as e:
+        logger.warning("Failed to fetch MRU contacts for prompt: %s", e)
+
+    combined_hash = f"{source_hash}|interactive={interactive_shipping}|contacts={contacts_hash}"
+
+    # Reuse existing agent if config hasn't changed
+    if session.agent is not None and session.agent_source_hash == combined_hash:
+        return False
+
+    # Stop existing agent if config changed mid-conversation
+    if session.agent is not None:
+        try:
+            await session.agent.stop()
+        except Exception as e:
+            logger.warning("Error stopping old agent: %s", e)
+
+    system_prompt = build_system_prompt(
+        source_info=source_info,
+        interactive_shipping=interactive_shipping,
+        contacts=contacts_data if contacts_data else None,
+    )
+
+    agent = OrchestrationAgent(
+        system_prompt=system_prompt,
+        interactive_shipping=interactive_shipping,
+        session_id=session.session_id,
+    )
+    await agent.start()
+
+    session.agent = agent
+    session.agent_source_hash = combined_hash
+    session.interactive_shipping = interactive_shipping
+
+    return True
+```
+
+**Key design decisions:**
+- MRU contacts are fetched on EVERY `ensure_agent()` call (not cached), because it's a fast indexed read (~20 rows, single `ORDER BY last_used_at DESC LIMIT 20`).
+- `contacts_hash` (hash of MRU contact IDs) is included in `combined_hash`. When a user adds, edits, or resolves a contact (changing `last_used_at`), the hash changes, forcing agent rebuild with updated prompt.
+- The DB read is wrapped in try/except so contact fetch failures don't break agent creation.
+- `_build_contacts_section()` receives raw dicts (not ORM objects), keeping `system_prompt.py` free of DB imports and fully testable with mock data.
+
+**Step 4: Run tests**
+
+Run: `pytest tests/orchestrator/agent/test_contacts_prompt.py -v`
+Expected: All 5 tests PASS
+
+**Step 5: Commit**
+
+```bash
+git add src/orchestrator/agent/system_prompt.py src/services/conversation_handler.py tests/orchestrator/agent/test_contacts_prompt.py
+git commit -m "feat: inject top-20 MRU contacts into agent system prompt (C1 fix)"
+```
 
 ---
 
 ## Phase C: Settings Flyout + Address Book UI
 
-### Task 10: Frontend TypeScript Types + API Client
+### Task 10: Frontend TypeScript Types + API Client (M2 Fix)
 
 **Files:**
 - Modify: `frontend/src/types/api.ts` — Add `Contact`, `ContactCreate`, `ContactUpdate`, `CustomCommand`, `CommandCreate`, `CommandUpdate`, `ContactListResponse`, `CommandListResponse` interfaces
 - Modify: `frontend/src/lib/api.ts` — Add `listContacts()`, `createContact()`, `updateContact()`, `deleteContact()`, `getContactByHandle()`, `listCommands()`, `createCommand()`, `updateCommand()`, `deleteCommand()`
-- Modify: `frontend/src/hooks/useAppState.tsx` — Add `contacts`, `setContacts`, `customCommands`, `setCustomCommands`, `settingsFlyoutOpen`, `setSettingsFlyoutOpen` + hydration `useEffect`
+- Modify: `frontend/src/hooks/useAppState.tsx` — Add `contacts`, `setContacts`, `customCommands`, `setCustomCommands`, `settingsFlyoutOpen`, `setSettingsFlyoutOpen` + hydration `useEffect` + `refreshContacts()` / `refreshCommands()` helpers
 
-**Step 1: Add types, Step 2: Add API functions, Step 3: Add AppState, Step 4: verify TypeScript compiles (`npx tsc --noEmit`), Step 5: commit.**
+> **M2 Fix (Frontend state invalidation):** After any mutation (create, update, delete), the local state must be refreshed. Two approaches were considered:
+> - **Optimistic update:** Mutate the local array immediately after a successful API call.
+> - **Refetch:** Call `listContacts()` / `listCommands()` after any mutation to sync.
+>
+> **Decision:** Use **refetch** (simpler, no stale-state bugs). AppState exposes `refreshContacts()` and `refreshCommands()` functions that call the list API and update state. All mutation callers (AddressBookModal, ContactForm, CustomCommandsSection) call the appropriate refresh function after a successful API response.
+>
+> Pattern (in any component that mutates contacts):
+> ```tsx
+> const { refreshContacts } = useAppState();
+> const handleSave = async (data: ContactCreate) => {
+>     await api.createContact(data);
+>     refreshContacts(); // re-fetch full list from API
+> };
+> ```
 
-Commit message: `feat: add contacts/commands types, API client, and AppState hydration`
+**Step 1: Add types, Step 2: Add API functions, Step 3: Add AppState with refresh helpers, Step 4: verify TypeScript compiles (`npx tsc --noEmit`), Step 5: commit.**
+
+Commit message: `feat: add contacts/commands types, API client, and AppState hydration with refetch`
 
 ---
 
@@ -2266,31 +2808,55 @@ Commit message: `feat: add custom commands inline editor in settings flyout`
 
 ---
 
-### Task 14: Command Expansion in Chat
+### Task 14: Command Expansion in Chat (N1 Fix)
 
 **Files:**
 - Modify: `frontend/src/components/CommandCenter.tsx` — Add command expansion logic (two-phase Enter: first expands /command, second submits)
 
 When user types `/command-name` and presses Enter, look up command in AppState `customCommands`. If found, replace input value with expanded body. On next Enter, submit normally.
 
+> **N1 Fix:** Add an `isExpanded: boolean` state flag to track whether the current input text came from a /command expansion.
+> - Set `isExpanded = true` after expanding a /command body into the input.
+> - Set `isExpanded = false` on submit, on backspace-to-empty, or when user manually clears the input.
+> - On Enter press:
+>   - If input starts with `/` AND `!isExpanded` AND matches a saved command → expand, set `isExpanded = true`
+>   - Otherwise → submit normally
+> - This prevents re-expansion of already-expanded text and avoids ambiguity when input contains `/` characters naturally.
+
 **Step 1: Implement, Step 2: verify build, Step 3: commit.**
 
-Commit message: `feat: add two-phase /command expansion in chat input`
+Commit message: `feat: add two-phase /command expansion in chat input with isExpanded state`
 
 ---
 
 ## Phase E: Rich Chat Input
 
-### Task 15: Token Highlighting Hook
+### Task 15: Token Highlighting Hook (N3 Fix)
 
 **Files:**
 - Create: `frontend/src/hooks/useTokenHighlighter.ts`
 
 Parses input string, detects `@handle` and `/command` tokens, classifies them (known/unknown/incomplete), returns annotated segments for rendering.
 
+> **N3 Fix (Decoupling):** `useTokenHighlighter` must be a pure hook that works with ANY text input — not coupled to `RichChatInput`. It accepts:
+> - `text: string` — the input to parse
+> - `knownHandles: string[]` — from AppState contacts
+> - `knownCommands: string[]` — from AppState commands
+>
+> It returns `TokenSegment[]` where each segment has `{ text, type, status }`:
+> - `type`: `"plain"` | `"handle"` | `"command"`
+> - `status`: `"known"` | `"unknown"` | `"incomplete"`
+>
+> This decoupling allows the hook to be used in:
+> - `RichChatInput` (main chat) — mirror div rendering
+> - `CustomCommandsSection` (flyout) — command body textarea highlighting
+> - Any future text input that needs token awareness
+>
+> The hook does NOT handle DOM manipulation, cursor management, or event handling — those are the responsibility of the consuming component.
+
 **Step 1: Create hook, Step 2: verify build, Step 3: commit.**
 
-Commit message: `feat: add useTokenHighlighter hook for @handle and /command parsing`
+Commit message: `feat: add decoupled useTokenHighlighter hook for @handle and /command parsing`
 
 ---
 
@@ -2323,12 +2889,44 @@ Commit message: `feat: add RichChatInput with mirror-div syntax highlighting and
 
 ---
 
-## Final Commit
+## Final Verification
 
 After all phases, verify:
 ```bash
-pytest tests/services/test_contact_service.py tests/services/test_custom_command_service.py tests/api/test_contacts_routes.py tests/api/test_commands_routes.py tests/cli/test_contacts_cli.py -v
+# Backend tests (all new test files)
+pytest tests/services/test_contact_service.py tests/services/test_custom_command_service.py tests/api/test_contacts_routes.py tests/api/test_commands_routes.py tests/cli/test_contacts_cli.py tests/orchestrator/agent/test_contacts_prompt.py tests/orchestrator/agent/tools/test_contacts_tools.py -v
+
+# Frontend
 cd frontend && npx tsc --noEmit && npm run build
 ```
 
 All tests pass, frontend compiles and builds.
+
+---
+
+## Review Findings Traceability
+
+This plan addresses all findings from the 2026-02-19 Architectural Review:
+
+| Finding | Severity | Resolution | Task |
+|---------|----------|------------|------|
+| **C1** System prompt MRU wiring | 🔴 Critical | `ensure_agent()` fetches MRU contacts, includes `contacts_hash` in combined_hash, passes to `build_system_prompt()` | Task 9 |
+| **C2** ContactRecord → order_data mapping | 🔴 Critical | `contact_to_order_data(contact, role)` function in `contact_service.py` maps to `ship_to_*`/`shipper_*` keys | Task 2 + Task 8 |
+| **C3** Batch @handle integration point | 🔴 Critical | Documented in Task 8: `_resolve_row_handles()` in `pipeline.py` scans rows after fetch, before preview | Task 8 |
+| **M1** `ensure_agent` combined_hash staleness | 🟡 Moderate | `contacts_hash` included in combined_hash (addressed by C1) | Task 9 |
+| **M2** Frontend state invalidation | 🟡 Moderate | `refreshContacts()`/`refreshCommands()` in AppState, called after every mutation | Task 10 |
+| **M3** LIKE case sensitivity | 🟡 Moderate | Handles are lowercase-normalized; display name search uses `func.lower()` | Task 2 (docstring) |
+| **M4** GLOB CheckConstraint SQLite-specific | 🟡 Moderate | Service-layer regex is primary enforcement; CheckConstraint is safety net with migration note | Task 1 (comment) |
+| **M5** Pagination on GET /contacts | 🟡 Moderate | Default `limit=100`, `offset=0` on REST endpoint | Task 5 |
+| **N1** Two-phase Enter `isExpanded` flag | 🟢 Minor | `isExpanded` boolean state tracks command expansion status | Task 14 |
+| **N2** Export CSV format | 🟢 Minor | Noted as future enhancement (JSON-only for now) | — |
+| **N3** Token highlighter decoupling | 🟢 Minor | `useTokenHighlighter` is a pure hook accepting text + known lists, reusable across components | Task 15 |
+| **SOLID: SRP** Slugify extraction | ✅ | `slugify_display_name()` is a standalone function, not embedded in `create_contact()` | Task 2 |
+| **SOLID: ISP** Touch separation | ✅ | `touch_last_used()` called in tool handler, not inside `get_by_handle()` | Task 8 |
+| **SOLID: DRY** Order data mapping | ✅ | `contact_to_order_data()` centralized, used in resolve_contact tool, batch injection, and interactive preview | Task 2 + Task 8 |
+| **SOLID: OCP** Prompt helper | ✅ | `_build_contacts_section()` accepts raw dicts, no DB imports in `system_prompt.py` | Task 9 |
+| **Test: slugify** | ✅ | `test_slugify_display_name_*` tests covering basic, suffixes, edge cases | Task 2 |
+| **Test: to_order_data** | ✅ | `test_contact_to_order_data_*` tests for ship_to, shipper, attention fallback | Task 2 |
+| **Test: partial update** | ✅ | `test_update_contact_partial_fields` verifies untouched fields | Task 2 |
+| **Test: prompt injection** | ✅ | `test_build_contacts_section_*` + `test_build_system_prompt_includes_contacts` | Task 9 |
+| **Test: idempotent import** | ✅ | CLI import upserts on existing handle instead of failing | Task 7 |
