@@ -37,9 +37,6 @@ class TestMessageTypeEnum:
     def test_error_value(self):
         assert MessageType.error.value == "error"
 
-    def test_tool_call_value(self):
-        assert MessageType.tool_call.value == "tool_call"
-
     def test_is_string(self):
         assert isinstance(MessageType.text, str)
 

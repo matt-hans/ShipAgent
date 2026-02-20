@@ -23,6 +23,9 @@ from src.services.gateway_provider import get_data_gateway
 
 logger = logging.getLogger(__name__)
 
+# Max messages to load for system prompt injection on resume
+MAX_RESUME_MESSAGES = 30
+
 
 def _get_mru_contacts_for_prompt() -> list[dict]:
     """Fetch MRU contacts for system prompt injection.
@@ -79,7 +82,7 @@ def _load_prior_conversation(session_id: str) -> list[dict] | None:
     try:
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
-            result = svc.get_session_with_messages(session_id, limit=30)
+            result = svc.get_session_with_messages(session_id, limit=MAX_RESUME_MESSAGES)
             if result is None or not result["messages"]:
                 return None
             return [

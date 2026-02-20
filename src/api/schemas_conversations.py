@@ -4,6 +4,8 @@ Defines the request/response contracts for the agent-driven SSE
 conversation flow that replaces the legacy command endpoint.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 # UPS document type code → human-readable label mapping.
@@ -89,9 +91,9 @@ class ChatSessionSummary(BaseModel):
 
     id: str
     title: str | None
-    mode: str
+    mode: Literal["batch", "interactive"]
     created_at: str
-    updated_at: str | None
+    updated_at: str
     message_count: int
 
 
@@ -99,7 +101,7 @@ class PersistedMessageResponse(BaseModel):
     """Persisted message for history display."""
 
     id: str
-    role: str
+    role: Literal["user", "assistant", "system"]
     message_type: str
     content: str
     metadata: dict | None
@@ -117,4 +119,4 @@ class SessionDetailResponse(BaseModel):
 class UpdateTitleRequest(BaseModel):
     """Request to rename a session."""
 
-    title: str
+    title: str = Field(..., min_length=1, max_length=255)

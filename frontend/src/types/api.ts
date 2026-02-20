@@ -1013,7 +1013,7 @@ export interface ChatSessionSummary {
   title: string | null;
   mode: 'batch' | 'interactive';
   created_at: string;
-  updated_at: string | null;
+  updated_at: string;
   message_count: number;
 }
 
@@ -1021,7 +1021,7 @@ export interface ChatSessionSummary {
 export interface PersistedMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
-  message_type: 'text' | 'system_artifact' | 'error' | 'tool_call';
+  message_type: 'text' | 'system_artifact' | 'error';
   content: string;
   metadata: Record<string, unknown> | null;
   sequence: number;

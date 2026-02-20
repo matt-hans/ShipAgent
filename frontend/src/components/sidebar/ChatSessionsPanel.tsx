@@ -27,12 +27,14 @@ function ModeBadge({ mode }: { mode: string }) {
   );
 }
 
+const MS_PER_DAY = 86_400_000;
+
 /** Group sessions by relative date. */
 function groupByDate(sessions: ChatSessionSummary[]): Record<string, ChatSessionSummary[]> {
   const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const yesterday = new Date(today.getTime() - 86400000);
-  const weekAgo = new Date(today.getTime() - 7 * 86400000);
+  const yesterday = new Date(today.getTime() - MS_PER_DAY);
+  const weekAgo = new Date(today.getTime() - 7 * MS_PER_DAY);
 
   const groups: Record<string, ChatSessionSummary[]> = {};
 
@@ -70,14 +72,17 @@ export function ChatSessionsPanel({
   const [sessions, setSessions] = React.useState<ChatSessionSummary[]>([]);
   const [isLoading, setIsLoading] = React.useState(true);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
 
   const loadSessions = React.useCallback(async () => {
     try {
+      setError(null);
       const data = await listConversations();
       setSessions(data);
       setChatSessions(data);
     } catch (err) {
       console.error('Failed to load chat sessions:', err);
+      setError('Failed to load sessions');
     } finally {
       setIsLoading(false);
     }
@@ -90,11 +95,13 @@ export function ChatSessionsPanel({
   const handleDelete = async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
     setDeletingId(sessionId);
+    setError(null);
     try {
       await deleteConversation(sessionId);
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
     } catch (err) {
       console.error('Failed to delete session:', err);
+      setError('Failed to delete session');
     } finally {
       setDeletingId(null);
     }
@@ -102,15 +109,18 @@ export function ChatSessionsPanel({
 
   const handleExport = async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
+    setError(null);
     try {
       await exportConversation(sessionId);
     } catch (err) {
       console.error('Failed to export session:', err);
+      setError('Export failed');
     }
   };
 
   const handleSelect = async (session: ChatSessionSummary) => {
     if (session.id === activeSessionId) return;
+    setError(null);
     try {
       const detail = await getConversationMessages(session.id);
       const messages: ConversationMessage[] = detail.messages.map((m: PersistedMessage) => ({
@@ -123,6 +133,7 @@ export function ChatSessionsPanel({
       onLoadSession(session.id, session.mode as 'batch' | 'interactive', messages);
     } catch (err) {
       console.error('Failed to load session:', err);
+      setError('Failed to load session');
     }
   };
 
@@ -152,6 +163,12 @@ export function ChatSessionsPanel({
           New Chat
         </button>
       </div>
+
+      {error && (
+        <p className="text-[10px] text-red-400 bg-red-500/10 px-2 py-1 rounded">
+          {error}
+        </p>
+      )}
 
       <div className="space-y-3 max-h-[250px] overflow-y-auto scrollable">
         {sessions.length === 0 ? (

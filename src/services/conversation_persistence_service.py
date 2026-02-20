@@ -5,10 +5,15 @@ history reads and writes go through this service. The frontend never
 writes messages — the backend owns all persistence.
 """
 
+import asyncio
 import json
+import logging
+import os
 from typing import Any, Optional
 
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from src.db.models import (
     ConversationMessage,
@@ -179,25 +184,37 @@ class ConversationPersistenceService:
         if limit is not None:
             query = query.limit(limit)
 
-        messages = [
-            {
+        messages = []
+        for m in query.all():
+            metadata = None
+            if m.metadata_json:
+                try:
+                    metadata = json.loads(m.metadata_json)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Corrupted metadata_json for message %s", m.id)
+            messages.append({
                 "id": m.id,
                 "role": m.role,
                 "message_type": m.message_type,
                 "content": m.content,
-                "metadata": json.loads(m.metadata_json) if m.metadata_json else None,
+                "metadata": metadata,
                 "sequence": m.sequence,
                 "created_at": m.created_at,
-            }
-            for m in query.all()
-        ]
+            })
+
+        context = None
+        if session.context_data:
+            try:
+                context = json.loads(session.context_data)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("Corrupted context_data for session %s", session.id)
 
         return {
             "session": {
                 "id": session.id,
                 "title": session.title,
                 "mode": session.mode,
-                "context_data": json.loads(session.context_data) if session.context_data else None,
+                "context_data": context,
                 "is_active": session.is_active,
                 "created_at": session.created_at,
                 "updated_at": session.updated_at,
@@ -205,45 +222,87 @@ class ConversationPersistenceService:
             "messages": messages,
         }
 
-    def update_session_title(self, session_id: str, title: str) -> None:
+    def update_session_title(self, session_id: str, title: str) -> bool:
         """Set the session title.
 
         Args:
             session_id: Session ID.
             title: New title string.
+
+        Returns:
+            True if session found and updated, False if not found.
         """
         session = self._db.get(ConversationSession, session_id)
-        if session:
-            session.title = title
-            session.updated_at = utc_now_iso()
-            self._db.commit()
+        if session is None:
+            return False
+        session.title = title
+        session.updated_at = utc_now_iso()
+        self._db.commit()
+        return True
 
     def update_session_context(
         self, session_id: str, context_data: dict[str, Any]
-    ) -> None:
+    ) -> bool:
         """Update the session's context snapshot.
 
         Args:
             session_id: Session ID.
             context_data: New context dict.
+
+        Returns:
+            True if session found and updated, False if not found.
         """
         session = self._db.get(ConversationSession, session_id)
-        if session:
-            session.context_data = json.dumps(context_data)
-            session.updated_at = utc_now_iso()
-            self._db.commit()
+        if session is None:
+            return False
+        session.context_data = json.dumps(context_data)
+        session.updated_at = utc_now_iso()
+        self._db.commit()
+        return True
 
-    def soft_delete_session(self, session_id: str) -> None:
+    def soft_delete_session(self, session_id: str) -> bool:
         """Soft-delete a session (set is_active = False).
 
         Args:
             session_id: Session ID.
+
+        Returns:
+            True if session found and deleted, False if not found.
         """
         session = self._db.get(ConversationSession, session_id)
-        if session:
-            session.is_active = False
-            session.updated_at = utc_now_iso()
-            self._db.commit()
+        if session is None:
+            return False
+        session.is_active = False
+        session.updated_at = utc_now_iso()
+        self._db.commit()
+        return True
+
+    def count_assistant_messages(self, session_id: str) -> int:
+        """Count assistant messages in a session.
+
+        Args:
+            session_id: Session ID.
+
+        Returns:
+            Number of assistant messages.
+        """
+        return (
+            self._db.query(ConversationMessage)
+            .filter_by(session_id=session_id, role="assistant")
+            .count()
+        )
+
+    def has_title(self, session_id: str) -> bool:
+        """Check if a session already has a title.
+
+        Args:
+            session_id: Session ID.
+
+        Returns:
+            True if session exists and has a non-empty title.
+        """
+        session = self._db.get(ConversationSession, session_id)
+        return session is not None and bool(session.title)
 
     def export_session_json(
         self, session_id: str
@@ -265,3 +324,83 @@ class ConversationPersistenceService:
             "session": result["session"],
             "messages": result["messages"],
         }
+
+
+# Default model for lightweight title generation
+TITLE_MODEL = os.environ.get("TITLE_MODEL", "claude-haiku-4-5-20251001")
+
+
+async def generate_session_title(session_id: str) -> None:
+    """Generate a session title via a lightweight Haiku call.
+
+    Fire-and-forget background task. Runs after the first assistant
+    response is saved. Reads messages and writes the title back to DB.
+
+    Args:
+        session_id: Conversation session ID.
+    """
+    from src.db.connection import get_db_context
+
+    try:
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            result = svc.get_session_with_messages(session_id, limit=2)
+
+        if result is None or len(result["messages"]) < 2:
+            return
+
+        if result["session"].get("title"):
+            return
+
+        user_msg = result["messages"][0]["content"][:200]
+        assistant_msg = result["messages"][1]["content"][:200]
+
+        from anthropic import AsyncAnthropic
+
+        client = AsyncAnthropic()
+        response = await client.messages.create(
+            model=TITLE_MODEL,
+            max_tokens=30,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Generate a concise 3-6 word title for this shipping conversation. "
+                    f"Return ONLY the title, no quotes or explanation.\n\n"
+                    f"User: {user_msg}\n"
+                    f"Assistant: {assistant_msg}"
+                ),
+            }],
+        )
+
+        if not response.content:
+            return
+        title = response.content[0].text.strip()[:255]
+        if title:
+            with get_db_context() as db:
+                svc = ConversationPersistenceService(db)
+                svc.update_session_title(session_id, title)
+            logger.info("Generated title for session %s: %s", session_id, title)
+
+    except Exception as e:
+        logger.warning("Title generation failed for session %s: %s", session_id, e)
+
+
+def maybe_trigger_title_generation(session_id: str) -> None:
+    """Check if this is the first assistant message and fire title generation.
+
+    Best-effort — failures are logged at debug level.
+
+    Args:
+        session_id: Conversation session ID.
+    """
+    from src.db.connection import get_db_context
+
+    try:
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            if svc.has_title(session_id):
+                return
+            if svc.count_assistant_messages(session_id) == 1:
+                asyncio.create_task(generate_session_title(session_id))
+    except Exception as e:
+        logger.debug("Title generation check failed for %s: %s", session_id, e)

@@ -12,6 +12,11 @@ Endpoints:
     GET    /conversations/{id}/stream   — SSE event stream
     GET    /conversations/{id}/history  — Get conversation history
     DELETE /conversations/{id}          — End session (stops agent)
+    POST   /conversations/{id}/upload-document — Upload paperless document
+    GET    /conversations/              — List persistent sessions (sidebar)
+    GET    /conversations/{id}/messages — Load session messages (resume)
+    PATCH  /conversations/{id}          — Update session title
+    GET    /conversations/{id}/export   — Download session as JSON
 """
 
 import asyncio
@@ -178,10 +183,15 @@ async def _ensure_agent(
         except Exception as e:
             logger.warning("Failed to fetch column samples: %s", e)
 
+    # Load prior conversation for resumed sessions
+    from src.services.conversation_handler import _load_prior_conversation
+    prior_conversation = _load_prior_conversation(session.session_id)
+
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=session.interactive_shipping,
         column_samples=column_samples,
+        prior_conversation=prior_conversation,
     )
     agent = OrchestrationAgent(
         system_prompt=system_prompt,
@@ -445,15 +455,7 @@ async def _process_agent_message(
                             continue
                         if text:
                             _session_manager.add_message(session_id, "assistant", text)
-                            # Persist assistant message to DB
-                            try:
-                                from src.db.connection import get_db_context
-                                with get_db_context() as db:
-                                    p_svc = ConversationPersistenceService(db)
-                                    p_svc.save_message(session_id, "assistant", text)
-                                _maybe_trigger_title_generation(session_id)
-                            except Exception as exc:
-                                logger.warning("Failed to persist assistant msg: %s", exc)
+                            _persist_assistant_message(session_id, text)
                     elif event_type == "error":
                         run_status = AgentDecisionRunStatus.failed
                     elif event_type == "preview_ready":
@@ -495,15 +497,7 @@ async def _process_agent_message(
                                 "assistant",
                                 final_text,
                             )
-                            # Persist assistant message to DB
-                            try:
-                                from src.db.connection import get_db_context
-                                with get_db_context() as db:
-                                    p_svc = ConversationPersistenceService(db)
-                                    p_svc.save_message(session_id, "assistant", final_text)
-                                _maybe_trigger_title_generation(session_id)
-                            except Exception as exc:
-                                logger.warning("Failed to persist assistant msg: %s", exc)
+                            _persist_assistant_message(session_id, final_text)
             finally:
                 session.agent.emitter_bridge.callback = None
 
@@ -579,77 +573,26 @@ async def _process_agent_message(
         reset_decision_run_id(run_token)
 
 
-async def _generate_session_title(session_id: str) -> None:
-    """Generate a session title via a lightweight Haiku call.
+def _persist_assistant_message(session_id: str, text: str) -> None:
+    """Persist an assistant message to the database and trigger title generation.
 
-    Fire-and-forget background task. Runs after the first assistant
-    response is saved. Updates the DB title field.
+    Best-effort — failures are logged at error level but do not block
+    the SSE event stream.
 
-    Uses get_db_context() for safe DB session lifecycle.
+    Args:
+        session_id: Conversation session ID.
+        text: Assistant message text.
     """
-    try:
-        from src.db.connection import get_db_context
+    from src.services.conversation_persistence_service import maybe_trigger_title_generation
 
-        # Read messages
-        with get_db_context() as db:
-            svc = ConversationPersistenceService(db)
-            result = svc.get_session_with_messages(session_id, limit=2)
-
-        if result is None or len(result["messages"]) < 2:
-            return
-
-        # Already has a title — skip
-        if result["session"].get("title"):
-            return
-
-        user_msg = result["messages"][0]["content"][:200]
-        assistant_msg = result["messages"][1]["content"][:200]
-
-        from anthropic import AsyncAnthropic
-
-        client = AsyncAnthropic()
-        response = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=30,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Generate a concise 3-6 word title for this shipping conversation. "
-                    f"Return ONLY the title, no quotes or explanation.\n\n"
-                    f"User: {user_msg}\n"
-                    f"Assistant: {assistant_msg}"
-                ),
-            }],
-        )
-
-        title = response.content[0].text.strip()[:255]
-        if title:
-            # Write title in a separate context
-            with get_db_context() as db:
-                svc = ConversationPersistenceService(db)
-                svc.update_session_title(session_id, title)
-            logger.info("Generated title for session %s: %s", session_id, title)
-
-    except Exception as e:
-        logger.warning("Title generation failed for session %s: %s", session_id, e)
-
-
-def _maybe_trigger_title_generation(session_id: str) -> None:
-    """Check if this is the first assistant message and fire title generation.
-
-    Best-effort — failures are silently logged.
-    """
     try:
         from src.db.connection import get_db_context
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
-            result = svc.get_session_with_messages(session_id, limit=3)
-        if result and not result["session"].get("title"):
-            assistant_count = sum(1 for m in result["messages"] if m["role"] == "assistant")
-            if assistant_count == 1:
-                asyncio.create_task(_generate_session_title(session_id))
-    except Exception:
-        pass  # Title generation is best-effort
+            svc.save_message(session_id, "assistant", text)
+        maybe_trigger_title_generation(session_id)
+    except Exception as exc:
+        logger.error("Failed to persist assistant msg for %s: %s", session_id, exc)
 
 
 def _schedule_agent_message(
@@ -777,7 +720,7 @@ async def create_conversation(
                 mode="interactive" if effective_payload.interactive_shipping else "batch",
             )
     except Exception as e:
-        logger.warning("Failed to persist session %s to DB: %s", session_id, e)
+        logger.error("Failed to persist session %s to DB: %s", session_id, e)
 
     logger.info(
         "Created conversation session: %s interactive_shipping=%s",
@@ -827,7 +770,7 @@ async def send_message(
             svc = ConversationPersistenceService(db)
             svc.save_message(session_id, "user", payload.content)
     except Exception as e:
-        logger.warning("Failed to persist user message to DB: %s", e)
+        logger.error("Failed to persist user message to DB: %s", e)
 
     run_id = DecisionAuditService.start_run(
         session_id=session_id,
@@ -1050,7 +993,7 @@ async def delete_conversation(session_id: str) -> Response:
             svc = ConversationPersistenceService(db)
             svc.soft_delete_session(session_id)
     except Exception as e:
-        logger.warning("Failed to soft-delete session %s from DB: %s", session_id, e)
+        logger.error("Failed to soft-delete session %s from DB: %s", session_id, e)
 
     # Stop prewarm and agent before removing session
     await _session_manager.cancel_session_prewarm_task(session_id)
@@ -1068,11 +1011,15 @@ async def delete_conversation(session_id: str) -> Response:
 @router.get("/", response_model=list[ChatSessionSummary])
 async def list_conversations(
     active_only: bool = True,
+    limit: int = 50,
+    offset: int = 0,
 ) -> list[ChatSessionSummary]:
     """List conversation sessions for the sidebar.
 
     Args:
         active_only: If True, exclude soft-deleted sessions.
+        limit: Max sessions to return (default 50).
+        offset: Number of sessions to skip.
 
     Returns:
         List of session summaries ordered by recency.
@@ -1081,7 +1028,7 @@ async def list_conversations(
     with get_db_context() as db:
         svc = ConversationPersistenceService(db)
         sessions = svc.list_sessions(active_only=active_only)
-    return [ChatSessionSummary(**s) for s in sessions]
+    return [ChatSessionSummary(**s) for s in sessions[offset:offset + limit]]
 
 
 @router.get("/{session_id}/messages", response_model=SessionDetailResponse)
@@ -1133,7 +1080,9 @@ async def update_conversation(
     from src.db.connection import get_db_context
     with get_db_context() as db:
         svc = ConversationPersistenceService(db)
-        svc.update_session_title(session_id, payload.title)
+        found = svc.update_session_title(session_id, payload.title)
+    if not found:
+        raise HTTPException(status_code=404, detail="Session not found")
     return {"id": session_id, "title": payload.title}
 
 
