@@ -709,7 +709,6 @@ Follow the UPSMCPClient pattern:
 - [x] Phase 10: International Shipping (Rules Engine, Commodities, Paperless)
 - [x] Phase 11: UPS Extended APIs (Pickup, Tracking, Locator, Landed Cost)
 - [x] Phase 12: Decision Audit Ledger
-- [ ] Phase 13: Multi-carrier Support (FedEx, USPS)
 
 ---
 
