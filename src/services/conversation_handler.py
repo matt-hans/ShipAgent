@@ -61,6 +61,36 @@ def _get_mru_contacts_for_prompt() -> list[dict]:
         return []
 
 
+def _load_prior_conversation(session_id: str) -> list[dict] | None:
+    """Load prior conversation messages from DB for system prompt injection.
+
+    Mirrors the _get_mru_contacts_for_prompt() pattern: uses get_db_context
+    for clean session management, returns data or None on failure.
+
+    Args:
+        session_id: The conversation session ID.
+
+    Returns:
+        List of {role, content} dicts, or None if no history exists.
+    """
+    from src.db.connection import get_db_context
+    from src.services.conversation_persistence_service import ConversationPersistenceService
+
+    try:
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            result = svc.get_session_with_messages(session_id, limit=30)
+            if result is None or not result["messages"]:
+                return None
+            return [
+                {"role": m["role"], "content": m["content"]}
+                for m in result["messages"]
+            ]
+    except Exception as e:
+        logger.warning("Failed to load prior conversation for %s: %s", session_id, e)
+        return None
+
+
 def compute_source_hash(source_info: Any) -> str:
     """Compute hash of current data source for change detection.
 
@@ -116,10 +146,14 @@ async def ensure_agent(
         except Exception as e:
             logger.warning("Error stopping old agent: %s", e)
 
+    # Load prior conversation for resumed sessions
+    prior_conversation = _load_prior_conversation(session.session_id)
+
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=interactive_shipping,
         contacts=contacts,
+        prior_conversation=prior_conversation,
     )
 
     agent = OrchestrationAgent(
