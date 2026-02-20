@@ -27,8 +27,16 @@ from src.cli.protocol import (
 
 logger = logging.getLogger(__name__)
 
-# Hosts considered safe for plain HTTP credential transport.
-_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
+def _is_local_host(hostname: str) -> bool:
+    """Return True if hostname resolves to a loopback address."""
+    import ipaddress
+
+    if hostname in ("localhost",):
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
 
 
 def _reject_insecure_credential_transport(base_url: str) -> None:
@@ -39,7 +47,7 @@ def _reject_insecure_credential_transport(base_url: str) -> None:
     if parsed.scheme == "https":
         return
     host = (parsed.hostname or "").lower()
-    if host in _LOCAL_HOSTS:
+    if _is_local_host(host):
         return
     raise ShipAgentClientError(
         f"Refusing to send platform credentials over plain HTTP to "
