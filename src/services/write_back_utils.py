@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import os
 import tempfile
 from pathlib import Path
@@ -210,15 +211,24 @@ def write_companion_csv(
         "Reference_ID": reference_id,
         "Tracking_Number": tracking_number,
         "Shipped_At": shipped_at,
-        "Cost_Cents": cost_cents or "",
+        "Cost_Cents": "" if cost_cents is None else cost_cents,
     }
 
-    write_header = not companion_path.exists()
+    # Use fcntl.flock to prevent concurrent batch rows from both writing
+    # headers (TOCTOU race). The lock serializes header detection + write.
     with open(companion_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        if write_header:
-            writer.writeheader()
-        writer.writerow(row_data)
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            # Check file position after acquiring lock — if at 0, we're
+            # the first writer and need to emit the header row.
+            f.seek(0, os.SEEK_END)
+            write_header = f.tell() == 0
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row_data)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     return str(companion_path)
 

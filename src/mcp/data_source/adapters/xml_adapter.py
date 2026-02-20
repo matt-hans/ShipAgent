@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 from src.mcp.data_source.adapters.base import BaseSourceAdapter
-from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN, ImportResult
+from src.mcp.data_source.models import ImportResult
 from src.mcp.data_source.utils import flatten_record, load_flat_records_to_duckdb
 
 # Guard against OOM — xmltodict.parse() buffers entire file in memory.
@@ -87,7 +87,17 @@ class XMLAdapter(BaseSourceAdapter):
         records = self._discover_records(raw, record_path)
         cleaned = [self._clean_xml_record(r) for r in records]
         flat_records = [flatten_record(r) for r in cleaned]
-        return load_flat_records_to_duckdb(conn, flat_records, source_type="xml")
+        result = load_flat_records_to_duckdb(conn, flat_records, source_type="xml")
+
+        # Warn when auto-discovery was used — it picks the largest list of dicts
+        # which may be line items rather than top-level orders.
+        if record_path is None and result.row_count > 0:
+            result.warnings.append(
+                "XML records were auto-discovered (largest repeating element). "
+                "If the wrong element was selected (e.g., line items instead of "
+                "orders), re-import with an explicit record_path parameter."
+            )
+        return result
 
     def _clean_xml_record(self, record: Any) -> dict:
         """Remove XML artifacts from dict keys (namespaces, @attributes, #text).
@@ -164,24 +174,3 @@ class XMLAdapter(BaseSourceAdapter):
                     best = result
         return best
 
-    def get_metadata(self, conn: "DuckDBPyConnection") -> dict:
-        """Return metadata about imported XML data.
-
-        Args:
-            conn: DuckDB connection with imported_data table.
-
-        Returns:
-            Dictionary with row_count, column_count, and source_type.
-            Returns error dict if no data imported.
-        """
-        try:
-            row_count = conn.execute("SELECT COUNT(*) FROM imported_data").fetchone()[0]
-            columns = conn.execute("DESCRIBE imported_data").fetchall()
-            user_columns = [c for c in columns if c[0] != SOURCE_ROW_NUM_COLUMN]
-            return {
-                "row_count": row_count,
-                "column_count": len(user_columns),
-                "source_type": "xml",
-            }
-        except Exception:
-            return {"error": "No data imported"}

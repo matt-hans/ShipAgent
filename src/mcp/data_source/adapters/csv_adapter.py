@@ -77,7 +77,6 @@ class DelimitedAdapter(BaseSourceAdapter):
         Raises:
             FileNotFoundError: If the file doesn't exist
         """
-        self.detected_delimiter = delimiter or ","
         # Validate file exists before attempting import
         path = Path(file_path)
         if not path.exists():
@@ -112,6 +111,21 @@ class DelimitedAdapter(BaseSourceAdapter):
                 {extra_clauses}
             )
         """)
+
+        # Capture the actual delimiter used by DuckDB. When the user
+        # provided one explicitly we trust it; otherwise query sniff_csv
+        # to discover what DuckDB auto-detected (could be tab, pipe, etc.).
+        if delimiter:
+            self.detected_delimiter = delimiter
+        else:
+            try:
+                sniff_row = conn.execute(
+                    f"SELECT Delimiter FROM sniff_csv('{safe_path}')"
+                ).fetchone()
+                self.detected_delimiter = sniff_row[0] if sniff_row else ","
+            except Exception:
+                # sniff_csv may not be available in all DuckDB versions
+                self.detected_delimiter = ","
 
         # Get column names to build the "all NULL" filter
         raw_columns = conn.execute("DESCRIBE _raw_import").fetchall()

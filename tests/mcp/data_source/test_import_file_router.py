@@ -8,7 +8,15 @@ from unittest.mock import AsyncMock, MagicMock
 import duckdb
 import pytest
 
+import src.mcp.data_source.tools.import_tools as _import_mod
 from src.mcp.data_source.tools.import_tools import import_file, sniff_file, import_fixed_width
+
+
+@pytest.fixture(autouse=True)
+def _allow_tmp(tmp_path, monkeypatch):
+    """Add pytest tmp_path to allowed roots so path validation passes."""
+    patched = list(_import_mod._ALLOWED_ROOTS) + [tmp_path.resolve()]
+    monkeypatch.setattr(_import_mod, "_ALLOWED_ROOTS", patched)
 
 
 @pytest.fixture()
@@ -119,9 +127,42 @@ class TestSniffFile:
         assert "line 5" in result
         assert "line 0" not in result
 
-    async def test_file_not_found(self, ctx):
+    async def test_file_not_found(self, ctx, tmp_path):
+        nonexistent = str(tmp_path / "nonexistent.txt")
         with pytest.raises(FileNotFoundError):
-            await sniff_file("/nonexistent.txt", ctx)
+            await sniff_file(nonexistent, ctx)
+
+
+class TestPathTraversalProtection:
+    """Verify that path validation blocks access to sensitive files."""
+
+    async def test_sniff_blocks_outside_allowed(self, ctx, monkeypatch):
+        """sniff_file must reject paths outside allowed roots."""
+        # Reset allowed roots to only the project root (no tmp)
+        monkeypatch.setattr(_import_mod, "_ALLOWED_ROOTS", [_import_mod._PROJECT_ROOT])
+        with pytest.raises(PermissionError, match="outside allowed"):
+            await sniff_file("/etc/passwd", ctx)
+
+    async def test_sniff_blocks_env_file(self, ctx, tmp_file):
+        """sniff_file must reject .env files even within allowed dirs."""
+        path = tmp_file("SECRET=abc", ".env")
+        with pytest.raises(PermissionError, match="sensitive"):
+            await sniff_file(path, ctx)
+
+    async def test_sniff_blocks_git_dir(self, ctx, tmp_path):
+        """sniff_file must reject paths inside .git directories."""
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        target = git_dir / "config"
+        target.write_text("[core]")
+        with pytest.raises(PermissionError, match="restricted"):
+            await sniff_file(str(target), ctx)
+
+    async def test_import_file_blocks_outside(self, ctx, monkeypatch):
+        """import_file must also validate paths."""
+        monkeypatch.setattr(_import_mod, "_ALLOWED_ROOTS", [_import_mod._PROJECT_ROOT])
+        with pytest.raises(PermissionError, match="outside allowed"):
+            await import_file("/etc/passwd", ctx)
 
 
 class TestImportFixedWidth:

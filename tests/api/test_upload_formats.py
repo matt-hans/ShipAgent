@@ -35,18 +35,8 @@ class TestUploadFormatAcceptance:
             gw_instance = AsyncMock()
             mock_gw.return_value = gw_instance
 
-            # Mock both legacy methods and the universal call_tool
-            gw_instance.import_csv = AsyncMock(return_value={
-                "row_count": 1, "columns": [], "warnings": [],
-                "source_type": "delimited", "deterministic_ready": True,
-                "row_key_strategy": "source_row_num", "row_key_columns": [],
-            })
-            gw_instance.import_excel = AsyncMock(return_value={
-                "row_count": 1, "columns": [], "warnings": [],
-                "source_type": "excel", "deterministic_ready": True,
-                "row_key_strategy": "source_row_num", "row_key_columns": [],
-            })
-            gw_instance._call_tool = AsyncMock(return_value={
+            # All uploads now route through the public import_file method
+            gw_instance.import_file = AsyncMock(return_value={
                 "row_count": 1, "columns": [], "warnings": [],
                 "source_type": "delimited", "deterministic_ready": True,
                 "row_key_strategy": "source_row_num", "row_key_columns": [],

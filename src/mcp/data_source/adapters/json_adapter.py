@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 from src.mcp.data_source.adapters.base import BaseSourceAdapter
-from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN, ImportResult
+from src.mcp.data_source.models import ImportResult
 from src.mcp.data_source.utils import flatten_record, load_flat_records_to_duckdb
 
 # Guard against OOM — Python json.load() buffers entire file in memory.
@@ -128,24 +128,3 @@ class JSONAdapter(BaseSourceAdapter):
 
         raise ValueError(f"Cannot discover records in JSON: unexpected type {type(data)}")
 
-    def get_metadata(self, conn: "DuckDBPyConnection") -> dict:
-        """Return metadata about imported JSON data.
-
-        Args:
-            conn: DuckDB connection with imported_data table.
-
-        Returns:
-            Dictionary with row_count, column_count, and source_type.
-            Returns error dict if no data imported.
-        """
-        try:
-            row_count = conn.execute("SELECT COUNT(*) FROM imported_data").fetchone()[0]
-            columns = conn.execute("DESCRIBE imported_data").fetchall()
-            user_columns = [c for c in columns if c[0] != SOURCE_ROW_NUM_COLUMN]
-            return {
-                "row_count": row_count,
-                "column_count": len(user_columns),
-                "source_type": "json",
-            }
-        except Exception:
-            return {"error": "No data imported"}
