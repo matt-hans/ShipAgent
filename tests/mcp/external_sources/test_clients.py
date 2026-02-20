@@ -73,3 +73,51 @@ async def test_concrete_client_methods():
     assert await client.update_tracking(
         TrackingUpdate(order_id="123", tracking_number="1Z999")
     ) is True
+
+
+class TestExternalOrderExpansion:
+    """Verify new optional fields on ExternalOrder."""
+
+    def _make_minimal_order(self, **kwargs):
+        """Build a minimal valid ExternalOrder with overrides."""
+        defaults = {
+            "platform": "shopify",
+            "order_id": "123",
+            "status": "open",
+            "created_at": "2026-01-01",
+            "customer_name": "Test",
+            "ship_to_name": "Test",
+            "ship_to_address1": "123 Main St",
+            "ship_to_city": "New York",
+            "ship_to_state": "NY",
+            "ship_to_postal_code": "10001",
+        }
+        defaults.update(kwargs)
+        return ExternalOrder(**defaults)
+
+    def test_new_fields_default_to_none(self):
+        """New optional fields default to None."""
+        order = self._make_minimal_order()
+        assert order.customer_tags is None
+        assert order.order_note is None
+        assert order.risk_level is None
+        assert order.shipping_rate_code is None
+        assert order.line_item_types is None
+        assert order.discount_codes is None
+        assert order.customer_order_count is None
+        assert order.customer_total_spent is None
+        assert order.custom_attributes == {}
+
+    def test_custom_attributes_populated(self):
+        """custom_attributes accepts arbitrary dict."""
+        order = self._make_minimal_order(
+            custom_attributes={"gift_message": "Happy Birthday", "priority": "high"},
+        )
+        assert order.custom_attributes["gift_message"] == "Happy Birthday"
+
+    def test_backward_compat_without_new_fields(self):
+        """ExternalOrder constructed without new fields still works."""
+        order = self._make_minimal_order(platform="woocommerce", order_id="456")
+        assert order.customer_tags is None
+        assert order.order_note is None
+        assert order.custom_attributes == {}

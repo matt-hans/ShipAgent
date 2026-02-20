@@ -101,6 +101,20 @@ def evaluate_auto_confirm(
 
     # Rule 4: Allowed services whitelist
     if rules.allowed_services:
+        # If any rows had unparseable order_data, their service codes are
+        # unknown.  Block auto-confirm rather than silently approving rows
+        # whose service might violate the whitelist.
+        parse_failures = preview.get("service_parse_failures", 0)
+        if parse_failures > 0:
+            violations.append(RuleViolation(
+                rule="allowed_services",
+                threshold=sorted(rules.allowed_services),
+                actual=f"{parse_failures} unparseable",
+                message=(
+                    f"{parse_failures} row(s) had unparseable order data; "
+                    f"cannot verify service codes against whitelist"
+                ),
+            ))
         service_codes = set(preview.get("service_codes", []))
         allowed = set(rules.allowed_services)
         disallowed = service_codes - allowed

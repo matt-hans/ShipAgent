@@ -12,7 +12,14 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from src.cli.protocol import JobDetail, JobSummary, RowDetail
+from src.cli.protocol import (
+    DataSourceStatus,
+    JobDetail,
+    JobSummary,
+    RowDetail,
+    SavedSourceSummary,
+    SourceSchemaColumn,
+)
 
 console = Console()
 
@@ -169,6 +176,88 @@ def format_rows_table(rows: list[RowDetail], as_json: bool = False) -> str:
             row.error_message[:40] if row.error_message else "—",
         )
 
+    with console.capture() as capture:
+        console.print(table)
+    return capture.get()
+
+
+def format_source_status(status: DataSourceStatus) -> str:
+    """Format data source status as a Rich panel.
+
+    Args:
+        status: Current data source connection status.
+
+    Returns:
+        Formatted string output.
+    """
+    if not status.connected:
+        panel = Panel(
+            "[dim]No data source connected[/dim]",
+            title="Data Source",
+            border_style="dim",
+        )
+        with console.capture() as capture:
+            console.print(panel)
+        return capture.get()
+
+    table = Table(show_header=False, box=None)
+    table.add_row("Type:", status.source_type or "unknown")
+    if status.file_path:
+        table.add_row("Path:", status.file_path)
+    if status.row_count is not None:
+        table.add_row("Rows:", str(status.row_count))
+    if status.column_count is not None:
+        table.add_row("Columns:", str(status.column_count))
+    panel = Panel(table, title="[bold]Data Source[/bold]", border_style="green")
+    with console.capture() as capture:
+        console.print(panel)
+    return capture.get()
+
+
+def format_saved_sources(sources: list[SavedSourceSummary]) -> str:
+    """Format saved data sources as a Rich table.
+
+    Args:
+        sources: List of saved source summaries.
+
+    Returns:
+        Formatted string output.
+    """
+    if not sources:
+        return "No saved sources found."
+
+    table = Table(title="Saved Data Sources")
+    table.add_column("ID", style="dim")
+    table.add_column("Name", style="bold")
+    table.add_column("Type")
+    table.add_column("Last Connected")
+    for s in sources:
+        table.add_row(
+            s.id[:8], s.name, s.source_type, s.last_connected or "never"
+        )
+    with console.capture() as capture:
+        console.print(table)
+    return capture.get()
+
+
+def format_schema(columns: list[SourceSchemaColumn]) -> str:
+    """Format data source schema as a Rich table.
+
+    Args:
+        columns: List of column metadata.
+
+    Returns:
+        Formatted string output.
+    """
+    if not columns:
+        return "No columns found."
+
+    table = Table(title="Source Schema")
+    table.add_column("Column", style="bold")
+    table.add_column("Type")
+    table.add_column("Nullable")
+    for col in columns:
+        table.add_row(col.name, col.type, "yes" if col.nullable else "no")
     with console.capture() as capture:
         console.print(table)
     return capture.get()

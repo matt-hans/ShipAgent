@@ -852,7 +852,10 @@ def _build_explanation(root: FilterGroup) -> str:
     parts = _explain_group(root)
     if not parts:
         return "No filter conditions."
-    return "Filter: " + "; ".join(parts) + "."
+    if len(parts) == 1:
+        return f"Filter: {parts[0]}."
+    joiner = f" {root.logic.upper()} "
+    return "Filter: " + joiner.join(parts) + "."
 
 
 def _explain_group(group: FilterGroup) -> list[str]:
@@ -871,7 +874,7 @@ def _explain_group(group: FilterGroup) -> list[str]:
         elif isinstance(child, FilterGroup):
             sub = _explain_group(child)
             if sub:
-                joiner = f" {group.logic.lower()} "
+                joiner = f" {child.logic.lower()} "
                 parts.append(f"({joiner.join(sub)})")
     return parts
 

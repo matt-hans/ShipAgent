@@ -9,8 +9,16 @@ See docs/plans/2026-02-16-filter-determinism-design.md Section 5.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from decimal import Decimal
 from typing import Union
+
+logger = logging.getLogger(__name__)
+
+# Compiled regex for JSON key sanitization (used on every custom_attributes
+# filter condition). Allows alphanumerics, underscores, hyphens, and dots.
+_JSON_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
 from src.orchestrator.models.filter_spec import (
     CompiledFilter,
@@ -77,7 +85,6 @@ def compile_filter_spec(
     param_counter = [0]  # mutable int via list
     params: list = []
     columns_used: set[str] = set()
-    explanation_parts: list[str] = []
 
     # Canonicalize and compile
     canonicalized_root = _canonicalize_group(spec.root)
@@ -88,7 +95,6 @@ def compile_filter_spec(
         param_counter,
         params,
         columns_used,
-        explanation_parts,
         depth=0,
     )
 
@@ -104,7 +110,7 @@ def compile_filter_spec(
         where_sql=where_sql,
         params=params,
         columns_used=sorted(columns_used),
-        explanation=_build_explanation(explanation_parts),
+        explanation=_build_explanation_from_ast(canonicalized_root),
         schema_signature=runtime_schema_signature,
     )
 
@@ -157,7 +163,6 @@ def _compile_group(
     param_counter: list[int],
     params: list,
     columns_used: set[str],
-    explanation_parts: list[str],
     depth: int,
 ) -> str:
     """Compile a FilterGroup into a SQL fragment.
@@ -169,7 +174,6 @@ def _compile_group(
         param_counter: Mutable parameter index counter.
         params: Accumulator for parameter values.
         columns_used: Accumulator for referenced columns.
-        explanation_parts: Accumulator for explanation fragments.
         depth: Current nesting depth for structural limit checks.
 
     Returns:
@@ -190,7 +194,7 @@ def _compile_group(
         if isinstance(child, FilterCondition):
             sql = _compile_condition(
                 child, schema_columns, column_types,
-                param_counter, params, columns_used, explanation_parts,
+                param_counter, params, columns_used,
             )
             fragments.append(sql)
         elif isinstance(child, FilterGroup):
@@ -201,7 +205,6 @@ def _compile_group(
                 param_counter,
                 params,
                 columns_used,
-                explanation_parts,
                 depth + 1,
             )
             # Wrap nested groups in parens for correct precedence
@@ -232,7 +235,6 @@ def _compile_condition(
     param_counter: list[int],
     params: list,
     columns_used: set[str],
-    explanation_parts: list[str],
 ) -> str:
     """Compile a single FilterCondition into a SQL fragment.
 
@@ -243,7 +245,6 @@ def _compile_condition(
         param_counter: Mutable parameter index counter.
         params: Accumulator for parameter values.
         columns_used: Accumulator for referenced columns.
-        explanation_parts: Accumulator for explanation fragments.
 
     Returns:
         SQL fragment string.
@@ -251,71 +252,107 @@ def _compile_condition(
     Raises:
         FilterCompilationError: On unknown column, empty IN list, type mismatch, etc.
     """
-    # Validate column
-    if cond.column not in schema_columns:
-        raise FilterCompilationError(
-            FilterErrorCode.UNKNOWN_COLUMN,
-            f"Column {cond.column!r} not found in schema. "
-            f"Available: {sorted(schema_columns)}.",
-        )
+    # Handle custom_attributes.* JSON path access
+    is_json_path = False
+    if cond.column.startswith("custom_attributes."):
+        json_key = cond.column.split(".", 1)[1]
+        # Sanitize JSON key — allow alphanumerics, underscores, hyphens, dots.
+        # Hyphens are common in Shopify note_attributes (e.g. "gift-message").
+        if not _JSON_KEY_PATTERN.match(json_key):
+            raise FilterCompilationError(
+                FilterErrorCode.UNKNOWN_COLUMN,
+                f"Invalid JSON path key: {json_key!r}. "
+                f"Only alphanumeric characters, underscores, hyphens, and dots are allowed.",
+            )
+        if "custom_attributes" not in schema_columns:
+            raise FilterCompilationError(
+                FilterErrorCode.UNKNOWN_COLUMN,
+                f"Column 'custom_attributes' not found in schema. "
+                f"Cannot use JSON path {cond.column!r}.",
+            )
+        col = f"""json_extract_string("custom_attributes", '$.{json_key}')"""
+        is_json_path = True
+        columns_used.add("custom_attributes")
+    else:
+        # Validate column
+        if cond.column not in schema_columns:
+            raise FilterCompilationError(
+                FilterErrorCode.UNKNOWN_COLUMN,
+                f"Column {cond.column!r} not found in schema. "
+                f"Available: {sorted(schema_columns)}.",
+            )
+        columns_used.add(cond.column)
+        col = f'"{cond.column}"'
 
-    # Type-check operator/column compatibility
-    _check_operator_type_compat(cond.column, cond.operator, column_types)
-
-    columns_used.add(cond.column)
-    col = f'"{cond.column}"'
+    # Type-check operator/column compatibility (skip for JSON path — always VARCHAR)
+    if not is_json_path:
+        _check_operator_type_compat(cond.column, cond.operator, column_types)
     op = cond.operator
     blank_normalized_col = f"TRIM(CAST(COALESCE({col}, '') AS VARCHAR))"
 
     # Dispatch by operator
     if op == FilterOperator.eq:
         idx = _next_param(param_counter, params, _extract_value(cond.operands[0]))
-        explanation_parts.append(f"{cond.column} equals {cond.operands[0].value}")
         return f"{col} = ${idx}"
 
     elif op == FilterOperator.neq:
         idx = _next_param(param_counter, params, _extract_value(cond.operands[0]))
-        explanation_parts.append(f"{cond.column} not equal to {cond.operands[0].value}")
         return f"{col} != ${idx}"
 
     elif op == FilterOperator.gt:
         idx = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[0], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
-        ordering_col = _ordering_column_sql(cond.column, column_types)
-        explanation_parts.append(f"{cond.column} greater than {cond.operands[0].value}")
+        ordering_col = _ordering_column_sql(
+            cond.column, column_types, col_expr=col if is_json_path else None,
+        )
         return f"{ordering_col} > ${idx}"
 
     elif op == FilterOperator.gte:
         idx = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[0], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
-        ordering_col = _ordering_column_sql(cond.column, column_types)
-        explanation_parts.append(f"{cond.column} >= {cond.operands[0].value}")
+        ordering_col = _ordering_column_sql(
+            cond.column, column_types, col_expr=col if is_json_path else None,
+        )
         return f"{ordering_col} >= ${idx}"
 
     elif op == FilterOperator.lt:
         idx = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[0], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
-        ordering_col = _ordering_column_sql(cond.column, column_types)
-        explanation_parts.append(f"{cond.column} less than {cond.operands[0].value}")
+        ordering_col = _ordering_column_sql(
+            cond.column, column_types, col_expr=col if is_json_path else None,
+        )
         return f"{ordering_col} < ${idx}"
 
     elif op == FilterOperator.lte:
         idx = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[0], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
-        ordering_col = _ordering_column_sql(cond.column, column_types)
-        explanation_parts.append(f"{cond.column} <= {cond.operands[0].value}")
+        ordering_col = _ordering_column_sql(
+            cond.column, column_types, col_expr=col if is_json_path else None,
+        )
         return f"{ordering_col} <= ${idx}"
 
     elif op == FilterOperator.in_:
@@ -334,12 +371,9 @@ def _compile_condition(
         # Sort operands for determinism
         sorted_operands = sorted(cond.operands, key=lambda o: str(o.value))
         placeholders = []
-        values = []
         for operand in sorted_operands:
             idx = _next_param(param_counter, params, _extract_value(operand))
             placeholders.append(f"${idx}")
-            values.append(str(operand.value))
-        explanation_parts.append(f"{cond.column} in [{', '.join(values)}]")
         return f"{col} IN ({', '.join(placeholders)})"
 
     elif op == FilterOperator.not_in:
@@ -357,67 +391,62 @@ def _compile_condition(
             )
         sorted_operands = sorted(cond.operands, key=lambda o: str(o.value))
         placeholders = []
-        values = []
         for operand in sorted_operands:
             idx = _next_param(param_counter, params, _extract_value(operand))
             placeholders.append(f"${idx}")
-            values.append(str(operand.value))
-        explanation_parts.append(f"{cond.column} not in [{', '.join(values)}]")
         return f"{col} NOT IN ({', '.join(placeholders)})"
 
     elif op == FilterOperator.contains_ci:
         raw_val = str(cond.operands[0].value)
         escaped = _escape_like_value(raw_val)
         idx = _next_param(param_counter, params, f"%{escaped}%")
-        explanation_parts.append(f"{cond.column} contains '{raw_val}' (case-insensitive)")
         return f"{col} ILIKE ${idx} ESCAPE '\\'"
 
     elif op == FilterOperator.starts_with_ci:
         raw_val = str(cond.operands[0].value)
         escaped = _escape_like_value(raw_val)
         idx = _next_param(param_counter, params, f"{escaped}%")
-        explanation_parts.append(f"{cond.column} starts with '{raw_val}' (case-insensitive)")
         return f"{col} ILIKE ${idx} ESCAPE '\\'"
 
     elif op == FilterOperator.ends_with_ci:
         raw_val = str(cond.operands[0].value)
         escaped = _escape_like_value(raw_val)
         idx = _next_param(param_counter, params, f"%{escaped}")
-        explanation_parts.append(f"{cond.column} ends with '{raw_val}' (case-insensitive)")
         return f"{col} ILIKE ${idx} ESCAPE '\\'"
 
     elif op == FilterOperator.is_null:
-        explanation_parts.append(f"{cond.column} is null")
         return f"{col} IS NULL"
 
     elif op == FilterOperator.is_not_null:
-        explanation_parts.append(f"{cond.column} is not null")
         return f"{col} IS NOT NULL"
 
     elif op == FilterOperator.is_blank:
         idx = _next_param(param_counter, params, "")
-        explanation_parts.append(f"{cond.column} is blank (null or empty)")
         return f"({blank_normalized_col} = ${idx})"
 
     elif op == FilterOperator.is_not_blank:
         idx = _next_param(param_counter, params, "")
-        explanation_parts.append(f"{cond.column} is not blank")
         return f"({blank_normalized_col} != ${idx})"
 
     elif op == FilterOperator.between:
         idx_lo = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[0], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[0], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
         idx_hi = _next_param(
             param_counter,
             params,
-            _extract_ordering_value(cond.operands[1], cond.column, column_types),
+            _extract_ordering_value(
+                cond.operands[1], cond.column, column_types,
+                is_json_path=is_json_path,
+            ),
         )
-        ordering_col = _ordering_column_sql(cond.column, column_types)
-        explanation_parts.append(
-            f"{cond.column} between {cond.operands[0].value} and {cond.operands[1].value}"
+        ordering_col = _ordering_column_sql(
+            cond.column, column_types, col_expr=col if is_json_path else None,
         )
         return f"{ordering_col} BETWEEN ${idx_lo} AND ${idx_hi}"
 
@@ -537,12 +566,27 @@ def _is_numeric_text_column(column: str, col_type: str) -> bool:
     return any(hint in lowered for hint in _NUMERIC_TEXT_HINTS)
 
 
-def _ordering_column_sql(column: str, column_types: dict[str, str]) -> str:
-    """Return SQL expression used for ordering comparisons on a column."""
-    col = f'"{column}"'
+def _ordering_column_sql(
+    column: str,
+    column_types: dict[str, str],
+    col_expr: str | None = None,
+) -> str:
+    """Return SQL expression used for ordering comparisons on a column.
+
+    Args:
+        column: Logical column name (may be a dotted JSON path like
+            ``custom_attributes.priority``).
+        column_types: Mapping of column name to DuckDB type string.
+        col_expr: Pre-computed SQL column expression.  When supplied (e.g.
+            for JSON-path columns), this is used instead of quoting
+            *column* directly.
+    """
+    col = col_expr if col_expr is not None else f'"{column}"'
     raw_type = column_types.get(column, "").upper()
     col_type = raw_type.split("(")[0].strip() if raw_type else ""
-    if _is_numeric_text_column(column, col_type):
+    # JSON-path columns are always VARCHAR — attempt numeric cast for ordering
+    is_json_path = col_expr is not None
+    if is_json_path or _is_numeric_text_column(column, col_type):
         # Accept numeric-like text such as "$123.45" or "1,234.56".
         return (
             f"TRY_CAST(REPLACE(REPLACE(TRIM(COALESCE({col}, '')), '$', ''), ',', '') "
@@ -555,12 +599,22 @@ def _extract_ordering_value(
     literal: TypedLiteral,
     column: str,
     column_types: dict[str, str],
+    *,
+    is_json_path: bool = False,
 ) -> object:
-    """Extract value for ordering operations with deterministic coercion."""
+    """Extract value for ordering operations with deterministic coercion.
+
+    JSON-path columns are always VARCHAR in DuckDB but ordering
+    expressions cast them to DOUBLE. Enforce numeric operand validation
+    at compile time so ``custom_attributes.priority > "high"`` fails
+    early instead of producing a DuckDB runtime conversion error.
+    """
     raw_type = column_types.get(column, "").upper()
     col_type = raw_type.split("(")[0].strip() if raw_type else ""
     value = _extract_value(literal)
 
+    if is_json_path:
+        return _coerce_numeric_literal(value, column)
     if not _is_numeric_text_column(column, col_type):
         return value
     return _coerce_numeric_literal(value, column)
@@ -640,17 +694,97 @@ def _escape_like_value(value: str) -> str:
     return result
 
 
-def _build_explanation(parts: list[str]) -> str:
-    """Build a human-readable explanation from accumulated parts.
+def _explain_condition_label(cond: FilterCondition) -> str:
+    """Generate a human-readable label for a single filter condition.
 
     Args:
-        parts: List of condition descriptions.
+        cond: The condition to describe.
 
     Returns:
-        Combined explanation string.
+        Human-readable description string.
     """
-    if not parts:
+    op = cond.operator
+    if op == FilterOperator.eq:
+        return f"{cond.column} equals {cond.operands[0].value}"
+    elif op == FilterOperator.neq:
+        return f"{cond.column} not equal to {cond.operands[0].value}"
+    elif op == FilterOperator.gt:
+        return f"{cond.column} greater than {cond.operands[0].value}"
+    elif op == FilterOperator.gte:
+        return f"{cond.column} >= {cond.operands[0].value}"
+    elif op == FilterOperator.lt:
+        return f"{cond.column} less than {cond.operands[0].value}"
+    elif op == FilterOperator.lte:
+        return f"{cond.column} <= {cond.operands[0].value}"
+    elif op == FilterOperator.in_:
+        sorted_ops = sorted(cond.operands, key=lambda o: str(o.value))
+        values = [str(o.value) for o in sorted_ops]
+        return f"{cond.column} in [{', '.join(values)}]"
+    elif op == FilterOperator.not_in:
+        sorted_ops = sorted(cond.operands, key=lambda o: str(o.value))
+        values = [str(o.value) for o in sorted_ops]
+        return f"{cond.column} not in [{', '.join(values)}]"
+    elif op == FilterOperator.contains_ci:
+        return f"{cond.column} contains '{cond.operands[0].value}' (case-insensitive)"
+    elif op == FilterOperator.starts_with_ci:
+        return f"{cond.column} starts with '{cond.operands[0].value}' (case-insensitive)"
+    elif op == FilterOperator.ends_with_ci:
+        return f"{cond.column} ends with '{cond.operands[0].value}' (case-insensitive)"
+    elif op == FilterOperator.is_null:
+        return f"{cond.column} is null"
+    elif op == FilterOperator.is_not_null:
+        return f"{cond.column} is not null"
+    elif op == FilterOperator.is_blank:
+        return f"{cond.column} is blank (null or empty)"
+    elif op == FilterOperator.is_not_blank:
+        return f"{cond.column} is not blank"
+    elif op == FilterOperator.between:
+        return f"{cond.column} between {cond.operands[0].value} and {cond.operands[1].value}"
+    return f"{cond.column} {op.value} ..."
+
+
+def _explain_ast(node: Union[FilterCondition, FilterGroup]) -> str:
+    """Recursively build explanation from the canonicalized AST.
+
+    Preserves AND/OR logic and nesting structure.
+
+    Args:
+        node: AST node (condition or group).
+
+    Returns:
+        Human-readable explanation string.
+    """
+    if isinstance(node, FilterCondition):
+        return _explain_condition_label(node)
+    elif isinstance(node, FilterGroup):
+        parts = [_explain_ast(child) for child in node.conditions
+                 if isinstance(child, (FilterCondition, FilterGroup))]
+        if not parts:
+            return ""
+        if len(parts) == 1:
+            return parts[0]
+        joiner = f" {node.logic.upper()} "
+        inner = joiner.join(parts)
+        return f"({inner})"
+    logger.warning(
+        "Unrecognized AST node type in explanation: %s", type(node).__name__
+    )
+    return ""
+
+
+def _build_explanation_from_ast(root: FilterGroup) -> str:
+    """Build the final explanation string from the canonicalized AST.
+
+    Args:
+        root: Root filter group of the canonicalized AST.
+
+    Returns:
+        Complete explanation string prefixed with 'Filter: '.
+    """
+    result = _explain_ast(root)
+    if not result:
         return "No filter conditions."
-    if len(parts) == 1:
-        return f"Filter: {parts[0]}."
-    return "Filter: " + "; ".join(parts) + "."
+    # Strip outer parens on the root group
+    if result.startswith("(") and result.endswith(")"):
+        result = result[1:-1]
+    return f"Filter: {result}."

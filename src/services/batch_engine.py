@@ -523,6 +523,21 @@ class BatchEngine:
                                 "; ".join(e.message for e in validation_errors)
                             )
 
+                    # Shared domestic pre-flight validation + auto-correction
+                    # Covers confirm-time service overrides (selected_service_code
+                    # from preview.py → batch_executor → BatchEngine.execute)
+                    from src.services.ups_payload_builder import apply_compatibility_corrections
+                    domestic_issues = apply_compatibility_corrections(order_data, eff_service)
+                    domestic_errors = [
+                        i for i in domestic_issues
+                        if i.severity == "error" and not i.auto_corrected
+                    ]
+                    if domestic_errors:
+                        raise ValueError(
+                            "Pre-flight validation failed: "
+                            + "; ".join(i.message for i in domestic_errors)
+                        )
+
                     simplified = build_shipment_request(
                         order_data=order_data,
                         shipper=shipper,

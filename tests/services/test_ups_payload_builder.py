@@ -1830,3 +1830,447 @@ class TestBuildShipper:
         }
         shipper = build_shipper(shop_info)
         assert shipper["postalCode"] == "90210-1234"
+
+
+class TestValidateDomesticPayload:
+    """Pre-flight domestic validation checks."""
+
+    def test_letter_with_ground_returns_error(self):
+        """UPS Letter is incompatible with Ground."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "01"}
+        issues = validate_domestic_payload(order_data, "03")
+        assert any(i.severity == "error" and "packaging" in i.message.lower() for i in issues)
+
+    def test_letter_with_next_day_air_passes(self):
+        """UPS Letter is compatible with Next Day Air."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "01"}
+        issues = validate_domestic_payload(order_data, "01")
+        assert not any(i.severity == "error" and "packaging" in i.message.lower() for i in issues)
+
+    def test_customer_supplied_with_ground_passes(self):
+        """Customer Supplied packaging is always valid."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "02"}
+        issues = validate_domestic_payload(order_data, "03")
+        assert not any(i.severity == "error" for i in issues)
+
+    def test_letter_overweight_returns_error(self):
+        """UPS Letter over 1.1 lbs is rejected."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "01", "weight": "2.0"}
+        issues = validate_domestic_payload(order_data, "01")
+        assert any(i.severity == "error" and "weight" in i.message.lower() for i in issues)
+
+    def test_saturday_delivery_with_ground_returns_warning(self):
+        """Saturday Delivery with Ground produces a warning."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"saturday_delivery": "true"}
+        issues = validate_domestic_payload(order_data, "03")
+        assert any(i.severity == "warning" and "saturday" in i.message.lower() for i in issues)
+
+    def test_saturday_delivery_with_next_day_passes(self):
+        """Saturday Delivery with Next Day Air is valid."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"saturday_delivery": "true"}
+        issues = validate_domestic_payload(order_data, "01")
+        assert not any("saturday" in i.message.lower() for i in issues)
+
+    def test_no_issues_for_clean_payload(self):
+        """Standard payload with no flags returns no issues."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "02", "weight": "5.0"}
+        issues = validate_domestic_payload(order_data, "03")
+        assert len(issues) == 0
+
+    def test_express_box_with_3day_select_returns_error(self):
+        """Express Box is incompatible with 3 Day Select."""
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "21"}
+        issues = validate_domestic_payload(order_data, "12")
+        assert any(i.severity == "error" for i in issues)
+
+    def test_25kg_box_with_ground_returns_error(self):
+        """International-only packaging (25KG Box, code 24) with Ground returns error.
+
+        The BOX_25KG (code "24") packaging is restricted to international services.
+        When paired with a domestic-only service like Ground ("03"), validation
+        should return an error indicating this packaging is only valid for
+        international services.
+        """
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "24"}  # BOX_25KG — international-only
+        issues = validate_domestic_payload(order_data, "03")  # Ground — domestic-only
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) >= 1
+        assert any("international" in i.message.lower() for i in errors)
+
+    def test_overweight_package_returns_error(self):
+        """Package exceeding per-service weight limit (150 lbs) returns error.
+
+        UPS Ground has a 150 lb weight limit. A 160 lb package should trigger
+        a validation error from the per-service weight check.
+        """
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "02", "weight": "160.0"}  # 160 lbs
+        issues = validate_domestic_payload(order_data, "03")  # Ground — 150 lb limit
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) >= 1
+        assert any("exceeds" in i.message.lower() and "150" in i.message for i in errors)
+
+
+class TestApplyCompatibilityCorrections:
+    """Shared validation + auto-correction function."""
+
+    def test_letter_with_ground_auto_corrected(self):
+        """Letter packaging auto-corrected to Customer Supplied for Ground."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"packaging_type": "01"}
+        issues = apply_compatibility_corrections(order_data, "03")
+        assert order_data["packaging_type"] == "02"  # Customer Supplied
+        assert "_packaging_auto_reset" in order_data
+        assert any(i.auto_corrected for i in issues)
+
+    def test_saturday_delivery_stripped_for_ground(self):
+        """Saturday Delivery auto-stripped for Ground."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"saturday_delivery": "true"}
+        issues = apply_compatibility_corrections(order_data, "03")
+        assert not order_data.get("saturday_delivery")
+        assert "_saturday_delivery_stripped" in order_data
+
+    def test_overweight_not_auto_corrected(self):
+        """Overweight errors are NOT auto-corrected."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+        order_data = {"packaging_type": "01", "weight": "5.0"}
+        issues = apply_compatibility_corrections(order_data, "01")
+        errors = [i for i in issues if i.severity == "error" and not i.auto_corrected]
+        assert any("weight" in i.message.lower() for i in errors)
+
+
+# ── Tests for P0+P1 new payload fields ──
+
+
+class TestNewPayloadFields:
+    """P0+P1 UPS payload field coverage."""
+
+    def test_shipment_date_in_simplified(self):
+        """ShipmentDate flows from order_data to simplified payload."""
+        order_data = {"shipment_date": "20260220", "ship_to_name": "Test",
+                      "ship_to_address1": "123 Main", "ship_to_city": "NYC",
+                      "ship_to_state": "NY", "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert result.get("shipmentDate") == "20260220"
+
+    def test_ship_from_in_simplified(self):
+        """ShipFrom populated from ship_from_* fields."""
+        order_data = {"ship_from_name": "Warehouse A",
+                      "ship_from_address1": "456 Elm St",
+                      "ship_from_city": "Chicago", "ship_from_state": "IL",
+                      "ship_from_postal_code": "60601",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert "shipFrom" in result
+        assert result["shipFrom"]["ship_from_name"] == "Warehouse A"
+
+    def test_boolean_indicators_in_simplified(self):
+        """Boolean service options parsed from truthy strings."""
+        order_data = {"hold_for_pickup": "true", "carbon_neutral": "yes",
+                      "lift_gate_delivery": "1",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert result.get("holdForPickup") is True
+        assert result.get("carbonNeutral") is True
+        assert result.get("liftGateDelivery") is True
+
+    def test_notification_email_in_simplified(self):
+        """Notification email flows to simplified payload."""
+        order_data = {"notification_email": "buyer@example.com",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert result.get("notificationEmail") == "buyer@example.com"
+
+    def test_cost_center_in_simplified(self):
+        """CostCenter flows to simplified payload."""
+        order_data = {"cost_center": "DEPT-42",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert result.get("costCenter") == "DEPT-42"
+
+    def test_terms_of_shipment_in_simplified(self):
+        """TermsOfShipment flows to simplified payload."""
+        order_data = {"terms_of_shipment": "DDP",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert result.get("termsOfShipment") == "DDP"
+
+    def test_clean_payload_has_no_empty_objects(self):
+        """Payload without new fields produces no empty structures."""
+        order_data = {"ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        result = build_shipment_request(order_data)
+        assert "shipFrom" not in result
+        assert "notificationEmail" not in result
+        assert "costCenter" not in result
+
+    def test_partial_ship_from_omitted_with_warning(self):
+        """Partial ShipFrom data (only name, missing required fields) is omitted with warning.
+
+        When order_data contains ship_from_name but lacks the other required
+        ShipFrom fields (address1, city, state, postal_code), the builder
+        should omit the shipFrom block from the simplified result AND inject
+        a _validation_warnings entry into order_data to surface the omission
+        in the preview card.
+        """
+        order_data = {
+            "ship_from_name": "Warehouse B",
+            # Missing: ship_from_address1, ship_from_city, ship_from_state,
+            #          ship_from_postal_code
+            "ship_to_name": "Test",
+            "ship_to_address1": "123 Main",
+            "ship_to_city": "NYC",
+            "ship_to_state": "NY",
+            "ship_to_postal_code": "10001",
+        }
+        result = build_shipment_request(order_data)
+
+        # ShipFrom should NOT be in the simplified result (incomplete data)
+        assert "shipFrom" not in result
+
+        # A validation warning should have been injected into order_data
+        warnings = order_data.get("_validation_warnings", [])
+        assert isinstance(warnings, list)
+        assert len(warnings) >= 1
+        # Warning should mention the missing required fields
+        warning_text = warnings[0].lower()
+        assert "partial shipfrom" in warning_text or "missing" in warning_text
+
+
+class TestNewFieldsInUpsApiPayload:
+    """P0+P1 fields in full UPS ShipmentRequest payload."""
+
+    def test_shipment_date_in_api_payload(self):
+        """ShipmentDate appears in Shipment block."""
+        simplified = _minimal_simplified(shipmentDate="20260220")
+        result = build_ups_api_payload(simplified, account_number="X")
+        shipment = result["ShipmentRequest"]["Shipment"]
+        assert shipment.get("ShipmentDate") == "20260220"
+
+    def test_ship_from_in_api_payload(self):
+        """ShipFrom block built from simplified shipFrom data."""
+        simplified = _minimal_simplified(
+            shipFrom={
+                "ship_from_name": "Warehouse A",
+                "ship_from_address1": "456 Elm St",
+                "ship_from_city": "Chicago",
+                "ship_from_state": "IL",
+                "ship_from_postal_code": "60601",
+                "ship_from_country": "US",
+            }
+        )
+        result = build_ups_api_payload(simplified, account_number="X")
+        ship_from = result["ShipmentRequest"]["Shipment"]["ShipFrom"]
+        assert ship_from["Name"] == "Warehouse A"
+        assert ship_from["Address"]["City"] == "Chicago"
+        assert ship_from["Address"]["StateProvinceCode"] == "IL"
+
+    def test_boolean_indicators_in_api_payload(self):
+        """Boolean service indicators emit UPS indicator keys."""
+        simplified = _minimal_simplified(
+            holdForPickup=True, carbonNeutral=True, liftGateDelivery=True
+        )
+        result = build_ups_api_payload(simplified, account_number="X")
+        opts = result["ShipmentRequest"]["Shipment"]["ShipmentServiceOptions"]
+        assert "HoldForPickupIndicator" in opts
+        assert "UPScarbonneutralIndicator" in opts
+        assert "LiftGateForDeliveryIndicator" in opts
+
+    def test_notification_email_in_api_payload(self):
+        """Notification email creates Notification block."""
+        simplified = _minimal_simplified(notificationEmail="buyer@example.com")
+        result = build_ups_api_payload(simplified, account_number="X")
+        opts = result["ShipmentRequest"]["Shipment"]["ShipmentServiceOptions"]
+        assert opts["Notification"]["EMail"]["EMailAddress"] == ["buyer@example.com"]
+
+    def test_cost_center_in_api_payload(self):
+        """CostCenter appears in Shipment block."""
+        simplified = _minimal_simplified(costCenter="DEPT-42")
+        result = build_ups_api_payload(simplified, account_number="X")
+        shipment = result["ShipmentRequest"]["Shipment"]
+        assert shipment.get("CostCenter") == "DEPT-42"
+
+    def test_package_indicators_in_api_payload(self):
+        """Package-level indicators (largePackage, additionalHandling)."""
+        simplified = _minimal_simplified(
+            largePackage=True, additionalHandling=True, shipperRelease=True
+        )
+        result = build_ups_api_payload(simplified, account_number="X")
+        pkg = result["ShipmentRequest"]["Shipment"]["Package"][0]
+        assert "LargePackageIndicator" in pkg
+        assert "AdditionalHandlingIndicator" in pkg
+        assert "ShipperReleaseIndicator" in pkg.get("PackageServiceOptions", {})
+
+    def test_no_empty_options_when_no_indicators(self):
+        """No empty ShipmentServiceOptions when no indicators set."""
+        simplified = _minimal_simplified()
+        result = build_ups_api_payload(simplified, account_number="X")
+        shipment = result["ShipmentRequest"]["Shipment"]
+        # ShipmentServiceOptions should not be present (no indicators set)
+        assert "ShipmentServiceOptions" not in shipment
+
+
+class TestNewFieldsRatePayloadParity:
+    """Rate payload includes surcharge-affecting indicators."""
+
+    def test_lift_gate_in_rate_payload(self):
+        """LiftGateDelivery affects surcharges — must be in rate payload."""
+        order_data = {"lift_gate_delivery": "true",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        simplified = build_shipment_request(order_data)
+        rate = build_ups_rate_payload(simplified, account_number="X")
+        options = rate["RateRequest"]["Shipment"].get("ShipmentServiceOptions", {})
+        assert "LiftGateForDeliveryIndicator" in options
+
+    def test_large_package_in_rate_payload(self):
+        """LargePackageIndicator affects surcharges — must be in rate payload."""
+        order_data = {"large_package": "true",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        simplified = build_shipment_request(order_data)
+        rate = build_ups_rate_payload(simplified, account_number="X")
+        packages = rate["RateRequest"]["Shipment"].get("Package", [])
+        assert any("LargePackageIndicator" in pkg for pkg in packages)
+
+    def test_carbon_neutral_in_rate_payload(self):
+        """CarbonNeutral affects surcharges — must be in rate payload."""
+        order_data = {"carbon_neutral": "true",
+                      "ship_to_name": "Test", "ship_to_address1": "123 Main",
+                      "ship_to_city": "NYC", "ship_to_state": "NY",
+                      "ship_to_postal_code": "10001"}
+        simplified = build_shipment_request(order_data)
+        rate = build_ups_rate_payload(simplified, account_number="X")
+        options = rate["RateRequest"]["Shipment"].get("ShipmentServiceOptions", {})
+        assert "UPScarbonneutralIndicator" in options
+
+    def test_rate_payload_includes_ship_from(self):
+        """Rate payload includes ShipFrom when ship_from_* fields are present."""
+        order_data = {
+            "ship_from_name": "Warehouse West",
+            "ship_from_address1": "100 Industrial Blvd",
+            "ship_from_city": "Phoenix",
+            "ship_from_state": "AZ",
+            "ship_from_postal_code": "85001",
+            "ship_from_country": "US",
+            "ship_to_name": "Test",
+            "ship_to_address1": "123 Main",
+            "ship_to_city": "NYC",
+            "ship_to_state": "NY",
+            "ship_to_postal_code": "10001",
+        }
+        simplified = build_shipment_request(order_data)
+        rate = build_ups_rate_payload(simplified, account_number="X")
+        ship_from = rate["RateRequest"]["Shipment"]["ShipFrom"]
+        assert ship_from["Name"] == "Warehouse West"
+        assert ship_from["Address"]["City"] == "Phoenix"
+        assert ship_from["Address"]["StateProvinceCode"] == "AZ"
+        assert ship_from["Address"]["PostalCode"] == "85001"
+
+
+# ── Tests for _get_weight_lbs private helper ──
+
+
+class TestGetWeightLbs:
+    """Test _get_weight_lbs grams-to-pounds conversion and edge cases."""
+
+    def test_weight_lbs_from_weight_field(self):
+        """Basic float parsing from 'weight' key."""
+        from src.services.ups_payload_builder import _get_weight_lbs
+
+        order_data = {"weight": "3.5"}
+        result = _get_weight_lbs(order_data)
+        assert result == 3.5
+
+    def test_weight_lbs_from_grams(self):
+        """Grams-to-pounds conversion from 'total_weight_grams' key.
+
+        68039g / 453.592 g/lb ~= 150 lbs.
+        """
+        from src.services.ups_payload_builder import _get_weight_lbs
+
+        order_data = {"total_weight_grams": 68039}
+        result = _get_weight_lbs(order_data)
+        assert result is not None
+        assert abs(result - 150.0) < 0.1
+
+    def test_weight_lbs_invalid_value_returns_none(self):
+        """Invalid string value returns None without crashing."""
+        from src.services.ups_payload_builder import _get_weight_lbs
+
+        order_data = {"weight": "not-a-number"}
+        result = _get_weight_lbs(order_data)
+        assert result is None
+
+    def test_weight_lbs_missing_returns_none(self):
+        """Missing weight fields returns None."""
+        from src.services.ups_payload_builder import _get_weight_lbs
+
+        order_data = {"ship_to_name": "Test"}
+        result = _get_weight_lbs(order_data)
+        assert result is None
+
+
+# ── Tests for _validation_warnings accumulation ──
+
+
+class TestValidationWarningsAccumulation:
+    """Test that apply_compatibility_corrections accumulates _validation_warnings."""
+
+    def test_validation_warnings_accumulated(self):
+        """Auto-corrections appear in order_data['_validation_warnings'] list."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+
+        # Use UPS Letter (01) with Ground (03) — triggers packaging auto-correction
+        order_data = {"packaging_type": "01"}
+        apply_compatibility_corrections(order_data, "03")
+        warnings = order_data.get("_validation_warnings", [])
+        assert isinstance(warnings, list)
+        assert len(warnings) >= 1
+        assert any("Packaging reset" in w for w in warnings)
+
+    def test_validation_warnings_include_saturday_strip(self):
+        """Saturday Delivery auto-strip appears in _validation_warnings."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+
+        order_data = {"saturday_delivery": "true"}
+        apply_compatibility_corrections(order_data, "03")
+        warnings = order_data.get("_validation_warnings", [])
+        assert isinstance(warnings, list)
+        assert any("Saturday Delivery" in w for w in warnings)
+
+    def test_validation_warnings_preserves_existing(self):
+        """Existing _validation_warnings entries are preserved, not overwritten."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+
+        order_data = {
+            "packaging_type": "01",
+            "_validation_warnings": ["Pre-existing warning"],
+        }
+        apply_compatibility_corrections(order_data, "03")
+        warnings = order_data.get("_validation_warnings", [])
+        assert "Pre-existing warning" in warnings
+        assert len(warnings) >= 2

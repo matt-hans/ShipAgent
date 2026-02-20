@@ -606,3 +606,421 @@ class TestFilterCompiler:
         )
         result = compile_filter_spec(spec, SCHEMA_COLS, {}, SCHEMA_SIG)
         assert '"state" > $1' in result.where_sql
+
+
+class TestExplanationOperators:
+    """Verify that compiled explanations preserve AND/OR logic."""
+
+    def test_single_condition_explanation(self):
+        """Single condition produces no operator in explanation."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterCondition(
+                        column="state",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="NY")],
+                    ),
+                ],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert result.explanation == "Filter: state equals NY."
+
+    def test_multi_condition_and_explanation(self):
+        """Multi-condition AND uses 'AND' in explanation, not semicolons."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterCondition(
+                        column="state",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="NY")],
+                    ),
+                    FilterCondition(
+                        column="weight",
+                        operator=FilterOperator.gt,
+                        operands=[TypedLiteral(type="number", value=10)],
+                    ),
+                ],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert "AND" in result.explanation
+        assert ";" not in result.explanation
+
+    def test_multi_condition_or_explanation(self):
+        """Multi-condition OR uses 'OR' in explanation."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="OR",
+                conditions=[
+                    FilterCondition(
+                        column="weight",
+                        operator=FilterOperator.gt,
+                        operands=[TypedLiteral(type="number", value=24)],
+                    ),
+                    FilterCondition(
+                        column="state",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="CA")],
+                    ),
+                ],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert "OR" in result.explanation
+        assert ";" not in result.explanation
+
+    def test_nested_mixed_explanation(self):
+        """Nested mixed AND/OR preserves grouping with parentheses."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterGroup(
+                        logic="OR",
+                        conditions=[
+                            FilterCondition(
+                                column="state",
+                                operator=FilterOperator.in_,
+                                operands=[
+                                    TypedLiteral(type="string", value="CA"),
+                                    TypedLiteral(type="string", value="TX"),
+                                ],
+                            ),
+                            FilterCondition(
+                                column="weight",
+                                operator=FilterOperator.gt,
+                                operands=[TypedLiteral(type="number", value=10)],
+                            ),
+                        ],
+                    ),
+                    FilterCondition(
+                        column="total_price",
+                        operator=FilterOperator.gt,
+                        operands=[TypedLiteral(type="number", value=200)],
+                    ),
+                ],
+            )
+        )
+        result = compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert "OR" in result.explanation
+        assert "AND" in result.explanation
+        assert "(" in result.explanation
+        assert ";" not in result.explanation
+
+
+class TestCustomAttributesFiltering:
+    """JSON path filtering for custom_attributes column."""
+
+    def test_custom_attributes_dot_path_compiles(self):
+        """custom_attributes.gift_message generates json_extract SQL."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterCondition(
+                        column="custom_attributes.gift_message",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="yes")],
+                    ),
+                ],
+            )
+        )
+        schema = SCHEMA_COLS | {"custom_attributes"}
+        col_types = {**COL_TYPES, "custom_attributes": "VARCHAR"}
+        result = compile_filter_spec(spec, schema, col_types, SCHEMA_SIG)
+        assert "json_extract_string" in result.where_sql
+        assert "gift_message" in result.where_sql
+
+    def test_custom_attributes_missing_base_column_raises(self):
+        """custom_attributes.key raises error when custom_attributes not in schema."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterCondition(
+                        column="custom_attributes.some_key",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="x")],
+                    ),
+                ],
+            )
+        )
+        # Schema does NOT include custom_attributes
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(spec, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG)
+        assert exc_info.value.code == FilterErrorCode.UNKNOWN_COLUMN
+
+    def test_custom_attributes_tracks_column_usage(self):
+        """custom_attributes.key adds 'custom_attributes' to columns_used."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    FilterCondition(
+                        column="custom_attributes.priority_flag",
+                        operator=FilterOperator.eq,
+                        operands=[TypedLiteral(type="string", value="true")],
+                    ),
+                ],
+            )
+        )
+        schema = SCHEMA_COLS | {"custom_attributes"}
+        col_types = {**COL_TYPES, "custom_attributes": "VARCHAR"}
+        result = compile_filter_spec(spec, schema, col_types, SCHEMA_SIG)
+        assert "custom_attributes" in result.columns_used
+
+
+class TestCustomAttributeJsonPath:
+    """Verify JSON path ordering operators and key sanitizer for custom_attributes."""
+
+    # Shared schema that includes custom_attributes
+    _SCHEMA = SCHEMA_COLS | {"custom_attributes"}
+    _COL_TYPES = {**COL_TYPES, "custom_attributes": "VARCHAR"}
+
+    # -------------------------------------------------------------------
+    # Fix 1 — Ordering operators use json_extract_string, not raw col ref
+    # -------------------------------------------------------------------
+
+    def test_gt_uses_json_extract_string(self):
+        """custom_attributes.priority gt 5 uses json_extract_string, not raw column."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.priority",
+                        FilterOperator.gt,
+                        [_lit(5, "number")],
+                    )
+                ],
+            )
+        )
+        result = compile_filter_spec(
+            spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+        )
+        assert "json_extract_string" in result.where_sql
+        # Must NOT contain the dotted column name as a quoted identifier
+        assert '"custom_attributes.priority"' not in result.where_sql
+
+    def test_between_uses_json_extract_string(self):
+        """custom_attributes.score between 1 and 10 uses json_extract_string."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.score",
+                        FilterOperator.between,
+                        [_lit(1, "number"), _lit(10, "number")],
+                    )
+                ],
+            )
+        )
+        result = compile_filter_spec(
+            spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+        )
+        assert "json_extract_string" in result.where_sql
+        assert "BETWEEN" in result.where_sql
+        assert '"custom_attributes.score"' not in result.where_sql
+
+    def test_eq_still_works_for_json_path(self):
+        """custom_attributes.priority eq 'high' compiles correctly (equality path)."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.priority",
+                        FilterOperator.eq,
+                        [_lit("high")],
+                    )
+                ],
+            )
+        )
+        result = compile_filter_spec(
+            spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+        )
+        assert "json_extract_string" in result.where_sql
+        assert result.params == ["high"]
+
+    # -------------------------------------------------------------------
+    # Fix 5 — JSON key sanitizer allows hyphens and dots
+    # -------------------------------------------------------------------
+
+    def test_hyphenated_key_compiles(self):
+        """custom_attributes.gift-message compiles successfully."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.gift-message",
+                        FilterOperator.eq,
+                        [_lit("Happy birthday")],
+                    )
+                ],
+            )
+        )
+        result = compile_filter_spec(
+            spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+        )
+        assert "json_extract_string" in result.where_sql
+        assert "gift-message" in result.where_sql
+
+    def test_dotted_nested_key_compiles(self):
+        """custom_attributes.some.nested.key compiles successfully."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.some.nested.key",
+                        FilterOperator.eq,
+                        [_lit("val")],
+                    )
+                ],
+            )
+        )
+        result = compile_filter_spec(
+            spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+        )
+        assert "json_extract_string" in result.where_sql
+        assert "some.nested.key" in result.where_sql
+
+    def test_semicolon_in_key_raises(self):
+        """custom_attributes.bad;key raises FilterCompilationError (SQL injection)."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.bad;key",
+                        FilterOperator.eq,
+                        [_lit("x")],
+                    )
+                ],
+            )
+        )
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(
+                spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+            )
+        assert exc_info.value.code == FilterErrorCode.UNKNOWN_COLUMN
+
+    def test_single_quote_in_key_raises(self):
+        """custom_attributes.bad'key raises FilterCompilationError (SQL injection)."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.bad'key",
+                        FilterOperator.eq,
+                        [_lit("x")],
+                    )
+                ],
+            )
+        )
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(
+                spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+            )
+        assert exc_info.value.code == FilterErrorCode.UNKNOWN_COLUMN
+
+    def test_non_numeric_ordering_on_json_path_raises(self):
+        """custom_attributes.priority > 'high' raises TYPE_MISMATCH at compile time."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.priority",
+                        FilterOperator.gt,
+                        [_lit("high")],
+                    )
+                ],
+            )
+        )
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(
+                spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+            )
+        assert exc_info.value.code == FilterErrorCode.TYPE_MISMATCH
+
+    def test_non_numeric_between_on_json_path_raises(self):
+        """custom_attributes.score BETWEEN 'low' AND 'high' raises TYPE_MISMATCH."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.score",
+                        FilterOperator.between,
+                        [_lit("low"), _lit("high")],
+                    )
+                ],
+            )
+        )
+        with pytest.raises(FilterCompilationError) as exc_info:
+            compile_filter_spec(
+                spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+            )
+        assert exc_info.value.code == FilterErrorCode.TYPE_MISMATCH
+
+    def test_numeric_string_ordering_on_json_path_accepted(self):
+        """custom_attributes.priority > '5' compiles (numeric string is valid)."""
+        from src.orchestrator.filter_compiler import compile_filter_spec
+
+        spec = _make_spec(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    _cond(
+                        "custom_attributes.priority",
+                        FilterOperator.gt,
+                        [_lit("5")],
+                    )
+                ],
+            )
+        )
+        result = compile_filter_spec(
+            spec, self._SCHEMA, self._COL_TYPES, SCHEMA_SIG,
+        )
+        assert result.params == [5.0]

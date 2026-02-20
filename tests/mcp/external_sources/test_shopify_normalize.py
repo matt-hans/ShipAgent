@@ -169,3 +169,180 @@ class TestNormalizeOrderNewFields:
         assert order.ship_to_postal_code == "94102"
         assert order.ship_to_country == "US"
         assert order.total_price == "59.98"
+
+
+class TestShopifyNewFieldsExpanded:
+    """Verify Shopify client populates new ExternalOrder fields (Task 9)."""
+
+    def _make_raw_order(self, **overrides) -> dict:
+        """Build minimal raw Shopify order with extended fields."""
+        base = {
+            "id": 99999,
+            "order_number": 2001,
+            "created_at": "2026-02-01T10:00:00-05:00",
+            "financial_status": "paid",
+            "fulfillment_status": None,
+            "total_price": "49.99",
+            "tags": "",
+            "customer": {
+                "first_name": "Jane",
+                "last_name": "Doe",
+                "email": "jane@example.com",
+                "orders_count": 5,
+                "total_spent": "249.95",
+            },
+            "shipping_address": {
+                "first_name": "Jane",
+                "last_name": "Doe",
+                "address1": "123 Main St",
+                "city": "New York",
+                "province_code": "NY",
+                "zip": "10001",
+                "country_code": "US",
+            },
+            "line_items": [
+                {"id": 1, "title": "Widget", "quantity": 1, "price": "49.99",
+                 "sku": "WDG-001", "grams": 500},
+            ],
+            "shipping_lines": [],
+            "note": None,
+            "note_attributes": [],
+            "discount_codes": [],
+            "risk": [],
+        }
+        base.update(overrides)
+        return base
+
+    def test_customer_tags_populated(self):
+        """customer_tags extracted from customer.tags."""
+        raw = self._make_raw_order(
+            customer={"first_name": "Jane", "last_name": "Doe", "tags": "VIP, wholesale"},
+        )
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.customer_tags == "VIP, wholesale"
+
+    def test_customer_tags_none_when_absent(self):
+        """customer_tags is None when customer has no tags."""
+        raw = self._make_raw_order()
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.customer_tags is None
+
+    def test_customer_order_count_populated(self):
+        """customer_order_count extracted from customer.orders_count."""
+        raw = self._make_raw_order()
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.customer_order_count == 5
+
+    def test_customer_total_spent_populated(self):
+        """customer_total_spent extracted from customer.total_spent."""
+        raw = self._make_raw_order()
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.customer_total_spent == "249.95"
+
+    def test_order_note_populated(self):
+        """order_note extracted from note field."""
+        raw = self._make_raw_order(note="Please ship priority")
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.order_note == "Please ship priority"
+
+    def test_order_note_none_when_empty(self):
+        """order_note is None when note is empty."""
+        raw = self._make_raw_order(note="")
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.order_note is None
+
+    def test_shipping_rate_code_from_shipping_lines(self):
+        """shipping_rate_code from shipping_lines[0].code."""
+        raw = self._make_raw_order(
+            shipping_lines=[{"code": "STANDARD", "title": "Standard Shipping"}],
+        )
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.shipping_rate_code == "STANDARD"
+
+    def test_shipping_rate_code_none_when_no_lines(self):
+        """shipping_rate_code is None when no shipping lines."""
+        raw = self._make_raw_order(shipping_lines=[])
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.shipping_rate_code is None
+
+    def test_custom_attributes_from_note_attributes(self):
+        """custom_attributes populated from note_attributes."""
+        raw = self._make_raw_order(
+            note_attributes=[
+                {"name": "gift_message", "value": "Happy Birthday"},
+                {"name": "priority_flag", "value": "true"},
+            ],
+        )
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.custom_attributes["gift_message"] == "Happy Birthday"
+        assert order.custom_attributes["priority_flag"] == "true"
+
+    def test_discount_codes_populated(self):
+        """discount_codes from discount_codes array."""
+        raw = self._make_raw_order(
+            discount_codes=[{"code": "SAVE10"}, {"code": "FREESHIP"}],
+        )
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert "SAVE10" in order.discount_codes
+        assert "FREESHIP" in order.discount_codes
+
+    def test_discount_codes_none_when_empty(self):
+        """discount_codes is None when no codes."""
+        raw = self._make_raw_order(discount_codes=[])
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.discount_codes is None
+
+    def test_line_item_types_populated(self):
+        """line_item_types from distinct product_type values."""
+        raw = self._make_raw_order(
+            line_items=[
+                {"id": 1, "title": "A", "quantity": 1, "price": "10",
+                 "grams": 100, "product_type": "Apparel"},
+                {"id": 2, "title": "B", "quantity": 1, "price": "20",
+                 "grams": 200, "product_type": "Electronics"},
+                {"id": 3, "title": "C", "quantity": 1, "price": "5",
+                 "grams": 50, "product_type": "Apparel"},
+            ],
+        )
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.line_item_types == "Apparel, Electronics"
+
+    def test_risk_level_high(self):
+        """risk_level HIGH when recommendation contains cancel."""
+        raw = self._make_raw_order(risk=[{"recommendation": "cancel"}])
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.risk_level == "HIGH"
+
+    def test_risk_level_medium(self):
+        """risk_level MEDIUM when recommendation is investigate."""
+        raw = self._make_raw_order(risk=[{"recommendation": "investigate"}])
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.risk_level == "MEDIUM"
+
+    def test_risk_level_low(self):
+        """risk_level LOW for accept recommendation."""
+        raw = self._make_raw_order(risk=[{"recommendation": "accept"}])
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.risk_level == "LOW"
+
+    def test_risk_level_none_when_no_assessments(self):
+        """risk_level is None when no risk assessments."""
+        raw = self._make_raw_order(risk=[])
+        client = ShopifyClient()
+        order = client._normalize_order(raw)
+        assert order.risk_level is None
