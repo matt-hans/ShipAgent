@@ -608,11 +608,12 @@ export interface DataSourceImportRequest {
 
 /** Response from a data source import operation. */
 export interface DataSourceImportResponse {
-  status: 'connected' | 'error';
+  status: 'connected' | 'error' | 'pending_agent_setup';
   source_type: string;
   row_count: number;
   columns: { name: string; type: string; nullable: boolean }[];
   error?: string;
+  file_path?: string;
 }
 
 /** Status of the currently connected data source. */

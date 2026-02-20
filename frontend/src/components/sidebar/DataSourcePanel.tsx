@@ -41,6 +41,7 @@ export function DataSourceSection() {
     cachedLocalConfig, setCachedLocalConfig,
     interactiveShipping,
     writeBackEnabled, setWriteBackEnabled,
+    setPendingChatMessage,
   } = useAppState();
   const { state: externalState, connect: connectExternal } = useExternalSources();
   const [isConnecting, setIsConnecting] = React.useState(false);
@@ -185,6 +186,15 @@ export function DataSourceSection() {
 
       if (result.status === 'error') {
         setImportError(result.error || 'Import failed');
+        return;
+      }
+
+      // Fixed-width files need agent-driven column setup — route to chat
+      if (result.status === 'pending_agent_setup' && result.file_path) {
+        setPendingChatMessage(
+          `I uploaded ${file.name} as a fixed-width file (${result.file_path}). ` +
+          `Please help me define the column layout.`
+        );
         return;
       }
 
