@@ -1,7 +1,8 @@
 """SQLAlchemy ORM models for ShipAgent state database.
 
 This module defines the core data models for job tracking, per-row status,
-and audit logging. Uses SQLAlchemy 2.0 style with Mapped and mapped_column.
+audit logging, and conversation persistence. Uses SQLAlchemy 2.0 style
+with Mapped and mapped_column.
 """
 
 from datetime import datetime, timezone
@@ -700,7 +701,6 @@ class MessageType(str, Enum):
     text = "text"
     system_artifact = "system_artifact"
     error = "error"
-    tool_call = "tool_call"
 
 
 class ConversationSession(Base):
@@ -736,7 +736,9 @@ class ConversationSession(Base):
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso
     )
-    updated_at: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    updated_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
 
     messages: Mapped[list["ConversationMessage"]] = relationship(
         "ConversationMessage",
@@ -768,6 +770,7 @@ class ConversationMessage(Base):
 
     __tablename__ = "conversation_messages"
     __table_args__ = (
+        UniqueConstraint("session_id", "sequence", name="uq_convmsg_session_seq"),
         Index("ix_convmsg_session_seq", "session_id", "sequence"),
         Index("ix_convmsg_session_type", "session_id", "message_type"),
     )
@@ -776,7 +779,9 @@ class ConversationMessage(Base):
         String(36), primary_key=True, default=generate_uuid
     )
     session_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("conversation_sessions.id"), nullable=False
+        String(36),
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"),
+        nullable=False,
     )
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     message_type: Mapped[str] = mapped_column(

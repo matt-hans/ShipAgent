@@ -14,7 +14,7 @@ def test_chat_session_summary_fields():
         title="Test",
         mode="batch",
         created_at="2026-02-20T00:00:00Z",
-        updated_at=None,
+        updated_at="2026-02-20T00:00:00Z",
         message_count=5,
     )
     assert s.id == "abc"
@@ -39,7 +39,7 @@ def test_session_detail_response():
         session=ChatSessionSummary(
             id="s1", title=None, mode="interactive",
             created_at="2026-02-20T00:00:00Z",
-            updated_at=None, message_count=0,
+            updated_at="2026-02-20T00:00:00Z", message_count=0,
         ),
         messages=[],
     )
@@ -49,3 +49,9 @@ def test_session_detail_response():
 def test_update_title_request():
     req = UpdateTitleRequest(title="New Title")
     assert req.title == "New Title"
+
+
+def test_update_title_rejects_empty():
+    import pytest as _pytest
+    with _pytest.raises(Exception):
+        UpdateTitleRequest(title="")
