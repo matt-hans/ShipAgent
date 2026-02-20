@@ -140,13 +140,15 @@ async def import_data_source(
 async def upload_data_source(
     file: UploadFile = File(...),
 ) -> DataSourceImportResponse:
-    """Upload a CSV or Excel file and import it as the active data source.
+    """Upload a file and import it as the active data source.
 
-    Saves the file to the uploads/ directory, then delegates to the
-    existing import logic. Replaces any previously connected source.
+    Supports CSV, TSV, SSV, TXT, DAT, XLSX, XLS, JSON, XML, EDI, X12,
+    and FWF formats. Saves the file to the uploads/ directory, then
+    delegates to the appropriate adapter. Replaces any previously
+    connected source.
 
     Args:
-        file: The uploaded CSV or Excel file.
+        file: The uploaded data file.
 
     Returns:
         Import result with schema, row count, and status.
@@ -154,16 +156,25 @@ async def upload_data_source(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
-    # Determine file type from extension
+    # Extension → source type mapping (mirrors EXTENSION_MAP in import_tools.py)
+    _UPLOAD_EXTENSIONS = {
+        ".csv": "csv", ".tsv": "delimited", ".ssv": "delimited",
+        ".txt": "delimited", ".dat": "delimited",
+        ".xlsx": "excel", ".xls": "excel",
+        ".json": "json", ".xml": "xml",
+        ".edi": "edi", ".x12": "edi", ".edifact": "edi",
+        ".fwf": "fixed_width",
+    }
+
     ext = os.path.splitext(file.filename)[1].lower()
-    if ext == ".csv":
-        source_type = "csv"
-    elif ext in (".xlsx", ".xls"):
-        source_type = "excel"
-    else:
+    source_type = _UPLOAD_EXTENSIONS.get(ext)
+    if source_type is None:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {ext}. Use .csv or .xlsx",
+            detail=(
+                f"Unsupported file type: {ext}. "
+                f"Supported: {', '.join(sorted(_UPLOAD_EXTENSIONS.keys()))}"
+            ),
         )
 
     # Save uploaded file to disk
@@ -184,8 +195,14 @@ async def upload_data_source(
     try:
         if source_type == "csv":
             result = await gw.import_csv(file_path=file_path)
-        else:
+        elif source_type == "excel":
             result = await gw.import_excel(file_path=file_path)
+        else:
+            # Use the universal import_file tool for all other formats
+            result = await gw._call_tool("import_file", {
+                "file_path": file_path,
+                "format_hint": source_type,
+            })
 
         columns = [
             DataSourceColumnInfo(
