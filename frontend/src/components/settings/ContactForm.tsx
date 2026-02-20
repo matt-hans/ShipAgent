@@ -53,6 +53,7 @@ export function ContactForm({
   // Form state
   const [displayName, setDisplayName] = React.useState(contact?.display_name || '');
   const [handle, setHandle] = React.useState(contact?.handle || '');
+  const [handleManuallyEdited, setHandleManuallyEdited] = React.useState(!!contact?.handle);
   const [company, setCompany] = React.useState(contact?.company || '');
   const [attentionName, setAttentionName] = React.useState(contact?.attention_name || '');
   const [phone, setPhone] = React.useState(contact?.phone || '');
@@ -84,9 +85,15 @@ export function ContactForm({
 
   const handleDisplayNameChange = (value: string) => {
     setDisplayName(value);
-    if (!isEditing && !handle) {
+    // Only auto-generate handle if creating new contact and user hasn't manually edited it
+    if (!isEditing && !handleManuallyEdited) {
       setHandle(autoSlugHandle(value));
     }
+  };
+
+  const handleHandleChange = (value: string) => {
+    setHandle(value.toLowerCase().replace(/[^a-z0-9-]/g, ''));
+    setHandleManuallyEdited(true);
   };
 
   const addTag = () => {
@@ -139,7 +146,7 @@ export function ContactForm({
           <Input
             id="handle"
             value={handle}
-            onChange={(e) => setHandle(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}
+            onChange={(e) => handleHandleChange(e.target.value)}
             placeholder="auto-generated if empty"
             className="font-mono"
           />

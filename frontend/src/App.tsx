@@ -9,10 +9,18 @@ import { CommandCenter } from '@/components/CommandCenter';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import { SettingsFlyout } from '@/components/settings/SettingsFlyout';
+import { AddressBookModal } from '@/components/settings/AddressBookModal';
 import { useAppState, AppStateProvider } from '@/hooks/useAppState';
 
 function AppContent() {
-  const { activeJob, setActiveJob, sidebarCollapsed, setSidebarCollapsed } = useAppState();
+  const {
+    activeJob,
+    setActiveJob,
+    sidebarCollapsed,
+    setSidebarCollapsed,
+    addressBookModalOpen,
+    setAddressBookModalOpen,
+  } = useAppState();
 
   return (
     <div className="h-screen flex flex-col bg-background overflow-hidden">
@@ -35,6 +43,12 @@ function AppContent() {
         {/* Settings flyout - Overlays on desktop, pushes on mobile */}
         <SettingsFlyout />
       </div>
+
+      {/* Address Book modal - App-level to survive flyout unmount */}
+      <AddressBookModal
+        open={addressBookModalOpen}
+        onOpenChange={setAddressBookModalOpen}
+      />
     </div>
   );
 }

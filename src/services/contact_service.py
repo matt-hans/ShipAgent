@@ -151,8 +151,21 @@ class ContactService:
             The created Contact record.
 
         Raises:
-            ValueError: If handle format is invalid or already exists.
+            ValueError: If handle format is invalid, already exists, or required
+                        address fields are missing.
         """
+        # Validate required address fields
+        required_fields = {
+            "display_name": display_name,
+            "address_line_1": address_line_1,
+            "city": city,
+            "state_province": state_province,
+            "postal_code": postal_code,
+        }
+        missing = [name for name, value in required_fields.items() if not value or not str(value).strip()]
+        if missing:
+            raise ValueError(f"Missing required fields: {', '.join(missing)}")
+
         if handle is None:
             handle = slugify_display_name(display_name)
 
@@ -264,6 +277,32 @@ class ContactService:
             .offset(offset)
             .all()
         )
+
+    def count_contacts(
+        self,
+        search: str | None = None,
+        tag: str | None = None,
+    ) -> int:
+        """Count contacts matching filters (for pagination total).
+
+        Args:
+            search: Filter by handle, display_name, or city (partial match).
+            tag: Filter by tag value.
+
+        Returns:
+            Total count of matching contacts.
+        """
+        query = self.db.query(Contact)
+        if search:
+            term = f"%{search.lower()}%"
+            query = query.filter(
+                (func.lower(Contact.handle).like(term))
+                | (func.lower(Contact.display_name).like(term))
+                | (func.lower(Contact.city).like(term))
+            )
+        if tag:
+            query = query.filter(Contact.tags.like(f'%"{tag}"%'))
+        return query.count()
 
     def update_contact(self, contact_id: str, **kwargs) -> Contact:
         """Partially update a contact by ID.

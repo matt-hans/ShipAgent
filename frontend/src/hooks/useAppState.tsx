@@ -169,6 +169,10 @@ interface AppState {
   // Settings flyout visibility
   settingsFlyoutOpen: boolean;
   setSettingsFlyoutOpen: (open: boolean) => void;
+
+  // Address Book modal visibility (app-level to avoid flyout unmount issue)
+  addressBookModalOpen: boolean;
+  setAddressBookModalOpen: (open: boolean) => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -222,6 +226,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   // Settings flyout state
   const [settingsFlyoutOpen, setSettingsFlyoutOpen] = React.useState(false);
+
+  // Address Book modal state (app-level to survive flyout unmount)
+  const [addressBookModalOpen, setAddressBookModalOpen] = React.useState(false);
 
   // Refresh contacts from API
   const refreshContacts = React.useCallback(async () => {
@@ -307,6 +314,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     refreshCommands,
     settingsFlyoutOpen,
     setSettingsFlyoutOpen,
+    addressBookModalOpen,
+    setAddressBookModalOpen,
   };
 
   return (
