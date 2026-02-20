@@ -23,6 +23,7 @@ from src.api.schemas import (
     DataSourceImportResponse,
     DataSourceStatusResponse,
 )
+from src.mcp.data_source.tools.import_tools import EXTENSION_MAP
 from src.services.gateway_provider import get_data_gateway
 
 logger = logging.getLogger(__name__)
@@ -156,24 +157,14 @@ async def upload_data_source(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
-    # Extension → source type mapping (mirrors EXTENSION_MAP in import_tools.py)
-    _UPLOAD_EXTENSIONS = {
-        ".csv": "csv", ".tsv": "delimited", ".ssv": "delimited",
-        ".txt": "delimited", ".dat": "delimited",
-        ".xlsx": "excel", ".xls": "excel",
-        ".json": "json", ".xml": "xml",
-        ".edi": "edi", ".x12": "edi", ".edifact": "edi",
-        ".fwf": "fixed_width",
-    }
-
     ext = os.path.splitext(file.filename)[1].lower()
-    source_type = _UPLOAD_EXTENSIONS.get(ext)
+    source_type = EXTENSION_MAP.get(ext)
     if source_type is None:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Unsupported file type: {ext}. "
-                f"Supported: {', '.join(sorted(_UPLOAD_EXTENSIONS.keys()))}"
+                f"Supported: {', '.join(sorted(EXTENSION_MAP.keys()))}"
             ),
         )
 
@@ -193,16 +184,11 @@ async def upload_data_source(
     gw = await get_data_gateway()
 
     try:
-        if source_type == "csv":
-            result = await gw.import_csv(file_path=file_path)
-        elif source_type == "excel":
-            result = await gw.import_excel(file_path=file_path)
-        else:
-            # Use the universal import_file tool for all other formats
-            result = await gw._call_tool("import_file", {
-                "file_path": file_path,
-                "format_hint": source_type,
-            })
+        # Route all uploads through the universal import_file gateway method
+        result = await gw.import_file(
+            file_path=file_path,
+            format_hint=source_type,
+        )
 
         columns = [
             DataSourceColumnInfo(

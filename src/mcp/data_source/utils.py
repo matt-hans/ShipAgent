@@ -137,13 +137,17 @@ def parse_date_with_warnings(value: str | None) -> dict[str, Any]:
         }
 
 
+_MAX_TYPE_SAMPLES = 100
+
+
 def _infer_duckdb_types(
     records: list[dict[str, Any]], keys: list[str]
 ) -> dict[str, str]:
     """Infer DuckDB column types from Python values.
 
-    Samples the first non-None value per key across all records
-    and maps Python types to DuckDB column types.
+    Samples up to _MAX_TYPE_SAMPLES non-None values per key. If multiple
+    Python types are observed, falls back to VARCHAR to prevent insertion
+    failures (e.g., first record has int but later records have str).
 
     Args:
         records: List of flat dictionaries.
@@ -160,12 +164,22 @@ def _infer_duckdb_types(
     }
     result: dict[str, str] = {}
     for key in keys:
+        observed_types: set[type] = set()
+        sampled = 0
         for record in records:
+            if sampled >= _MAX_TYPE_SAMPLES:
+                break
             value = record.get(key)
             if value is not None:
-                result[key] = _py_to_duckdb.get(type(value), "VARCHAR")
-                break
+                observed_types.add(type(value))
+                sampled += 1
+
+        if not observed_types:
+            result[key] = "VARCHAR"
+        elif len(observed_types) == 1:
+            result[key] = _py_to_duckdb.get(observed_types.pop(), "VARCHAR")
         else:
+            # Mixed types detected — fall back to VARCHAR
             result[key] = "VARCHAR"
     return result
 
@@ -183,6 +197,12 @@ def flatten_record(
     as JSON strings to preserve array data without row explosion.
     Recursion stops at max_depth to prevent stack overflow on deeply
     nested structures — remaining dicts are serialized as JSON strings.
+
+    Note: Lists of primitives (e.g., ``["tag1", "tag2"]``) are stored
+    as JSON string columns (e.g., ``'["tag1", "tag2"]'``). Filtering
+    on array contents in SQL requires JSON functions such as
+    ``json_extract`` or ``json_array_contains`` rather than plain
+    equality or LIKE.
 
     Args:
         record: Nested dictionary to flatten.
@@ -224,6 +244,11 @@ def load_flat_records_to_duckdb(
     Preserves Python types (int, float, str) so DuckDB can infer column
     types instead of defaulting everything to VARCHAR.
     Adds _source_row_num (1-based). Returns ImportResult with schema.
+
+    Note: Columns originating from list values in the source data are
+    stored as VARCHAR containing JSON strings. Use DuckDB's JSON
+    functions (``json_extract``, ``json_array_length``, etc.) to query
+    these columns.
 
     Args:
         conn: DuckDB connection.

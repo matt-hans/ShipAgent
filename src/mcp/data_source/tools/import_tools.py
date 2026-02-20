@@ -12,6 +12,7 @@ Per CONTEXT.md:
 Security:
 - Connection strings are NEVER logged - they contain credentials
 - Database connections are not stored after import
+- File paths are validated against allowed directories to prevent path traversal
 """
 
 from fastmcp import Context
@@ -23,6 +24,76 @@ from pathlib import Path
 from src.mcp.data_source.adapters.csv_adapter import CSVAdapter
 from src.mcp.data_source.adapters.db_adapter import DatabaseAdapter
 from src.mcp.data_source.adapters.excel_adapter import ExcelAdapter
+
+# --- Path security -----------------------------------------------------------
+
+# Project root: four levels up from this file (tools/ → data_source/ → mcp/ → src/ → root)
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]
+
+# Allowed directories for file operations.
+# Extend via SHIPAGENT_ALLOWED_PATHS env var (colon-separated paths).
+_ALLOWED_ROOTS: list[Path] = [
+    _PROJECT_ROOT / "uploads",
+    _PROJECT_ROOT,
+]
+_extra = os.environ.get("SHIPAGENT_ALLOWED_PATHS", "").strip()
+if _extra:
+    _ALLOWED_ROOTS.extend(Path(p).resolve() for p in _extra.split(":") if p.strip())
+
+# Sensitive file patterns that must never be read via sniff_file.
+_BLOCKED_NAMES = frozenset({
+    ".env", ".env.local", ".env.production", ".env.staging",
+    "credentials.json", "secrets.json", "id_rsa", "id_ed25519",
+})
+
+_BLOCKED_DIRS = frozenset({".git", ".ssh", "__pycache__"})
+
+
+def _validate_file_path(file_path: str) -> Path:
+    """Validate a file path is safe for MCP tool access.
+
+    Resolves symlinks and ensures the path falls within allowed
+    project directories.  Blocks access to sensitive files.
+
+    Allowed roots default to the project root and uploads dir. Extend
+    via the ``SHIPAGENT_ALLOWED_PATHS`` environment variable
+    (colon-separated absolute paths).
+
+    Args:
+        file_path: Absolute or relative path to validate.
+
+    Returns:
+        Resolved Path object.
+
+    Raises:
+        PermissionError: If path falls outside allowed directories or
+            targets a sensitive file.
+    """
+    resolved = Path(file_path).resolve()
+
+    # Must fall within at least one allowed root
+    if not any(
+        resolved == root or resolved.is_relative_to(root)
+        for root in _ALLOWED_ROOTS
+    ):
+        raise PermissionError(
+            f"Access denied: path '{file_path}' is outside allowed directories. "
+            f"Files must be within the project directory or uploads folder."
+        )
+
+    # Block sensitive filenames
+    if resolved.name in _BLOCKED_NAMES:
+        raise PermissionError(
+            f"Access denied: '{resolved.name}' is a sensitive file."
+        )
+
+    # Block sensitive directory components anywhere in the path
+    if _BLOCKED_DIRS.intersection(resolved.parts):
+        raise PermissionError(
+            f"Access denied: path is within a restricted directory."
+        )
+
+    return resolved
 
 
 async def import_csv(
@@ -335,6 +406,7 @@ async def import_file(
     from src.mcp.data_source.adapters.json_adapter import JSONAdapter
     from src.mcp.data_source.adapters.xml_adapter import XMLAdapter
 
+    _validate_file_path(file_path)
     db = ctx.request_context.lifespan_context["db"]
 
     ext = os.path.splitext(file_path)[1].lower()
@@ -435,11 +507,11 @@ async def sniff_file(
     Raises:
         FileNotFoundError: If file does not exist.
     """
-    path = Path(file_path)
+    path = _validate_file_path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    with open(file_path, encoding="utf-8", errors="replace") as f:
+    with open(path, encoding="utf-8", errors="replace") as f:
         selected = list(islice(f, offset, offset + num_lines))
 
     await ctx.info(
@@ -475,6 +547,7 @@ async def import_fixed_width(
     """
     from src.mcp.data_source.adapters.fixed_width_adapter import FixedWidthAdapter
 
+    _validate_file_path(file_path)
     db = ctx.request_context.lifespan_context["db"]
 
     adapter = FixedWidthAdapter()
