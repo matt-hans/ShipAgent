@@ -8,6 +8,10 @@ import pytest
 
 from src.services.conversation_handler import compute_source_hash, ensure_agent, process_message
 
+# Precompute the expected hash for empty contacts list
+_EMPTY_CONTACTS_HASH = hashlib.sha256(str([]).encode()).hexdigest()[:8]
+_NONE_HASH = f"none|interactive=False|contacts={_EMPTY_CONTACTS_HASH}"
+
 
 def _make_test_session_hash(source_hash: str = "none", interactive: bool = False) -> str:
     """Compute the combined hash that ensure_agent() will produce.

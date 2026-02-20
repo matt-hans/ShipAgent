@@ -333,8 +333,13 @@ def load_flat_records_to_duckdb(
 
     conn.executemany(insert_sql, batch)
 
-    # Promote staging to final table with DuckDB type inference
-    # DuckDB's TRY_CAST in a CTAS lets it infer BIGINT, DOUBLE, etc.
+    # Promote staging to final table with DuckDB type inference.
+    # DuckDB's CTAS from VARCHAR columns infers types (BIGINT, DOUBLE, DATE,
+    # TIMESTAMP) based on actual data values. This is generally reliable but
+    # can be conservative for edge-case date formats (e.g., 2023/12/31 may
+    # remain VARCHAR). For V1 this is acceptable — the agent can use SQL
+    # TRY_CAST or strptime during the mapping phase for ambiguous columns.
+    # V2 TODO: Consider explicit TRY_CAST per column for stricter inference.
     select_cols = ", ".join(f'"{key}"' for key in all_keys)
     conn.execute(f"""
         CREATE OR REPLACE TABLE imported_data AS
@@ -809,6 +814,68 @@ class TestJSONAdapterNested:
                 adapter.import_data(conn, file_path=str(path))
         finally:
             mod.MAX_FILE_SIZE_BYTES = original
+
+
+class TestJSONAdapterNDJSON:
+    """Test NDJSON (newline-delimited JSON) Tier 0 fast path."""
+
+    def test_ndjson_auto_detected(self, conn, tmp_path):
+        """NDJSON files bypass json.load() and use DuckDB read_json_auto."""
+        path = tmp_path / "data.json"
+        lines = [
+            json.dumps({"name": "John", "city": "Dallas"}),
+            json.dumps({"name": "Jane", "city": "Austin"}),
+            json.dumps({"name": "Bob", "city": "Houston"}),
+        ]
+        path.write_text("\n".join(lines))
+        adapter = JSONAdapter()
+        result = adapter.import_data(conn, file_path=str(path))
+        assert result.row_count == 3
+        assert result.source_type == "json"
+        col_names = [c.name for c in result.columns]
+        assert "name" in col_names
+        assert "city" in col_names
+
+    def test_ndjson_no_size_limit(self, conn, tmp_path):
+        """NDJSON bypasses the 50MB guard — no ValueError on large files."""
+        path = tmp_path / "big.json"
+        lines = [json.dumps({"id": str(i), "val": "x" * 100}) for i in range(100)]
+        path.write_text("\n".join(lines))
+        import src.mcp.data_source.adapters.json_adapter as mod
+        original = mod.MAX_FILE_SIZE_BYTES
+        mod.MAX_FILE_SIZE_BYTES = 10  # artificially small
+        try:
+            adapter = JSONAdapter()
+            result = adapter.import_data(conn, file_path=str(path))
+            # Should succeed — NDJSON path doesn't check MAX_FILE_SIZE_BYTES
+            assert result.row_count == 100
+        finally:
+            mod.MAX_FILE_SIZE_BYTES = original
+
+    def test_ndjson_with_record_path_falls_back(self, conn, tmp_path):
+        """When record_path is explicitly provided, skip NDJSON detection."""
+        path = tmp_path / "data.json"
+        data = {"orders": [{"id": "1"}, {"id": "2"}]}
+        path.write_text(json.dumps(data))
+        adapter = JSONAdapter()
+        result = adapter.import_data(conn, file_path=str(path), record_path="orders")
+        assert result.row_count == 2
+
+    def test_is_ndjson_detection(self, tmp_path):
+        """_is_ndjson correctly identifies NDJSON format."""
+        from src.mcp.data_source.adapters.json_adapter import _is_ndjson
+
+        ndjson = tmp_path / "ndjson.json"
+        ndjson.write_text('{"a": 1}\n{"a": 2}\n{"a": 3}\n')
+        assert _is_ndjson(str(ndjson)) is True
+
+        standard = tmp_path / "standard.json"
+        standard.write_text('[{"a": 1}, {"a": 2}]')
+        assert _is_ndjson(str(standard)) is False
+
+        single = tmp_path / "single.json"
+        single.write_text('{"a": 1}')
+        assert _is_ndjson(str(single)) is False
 ```
 
 **Step 2: Run tests to verify they fail**
@@ -823,12 +890,19 @@ Create `src/mcp/data_source/adapters/json_adapter.py`:
 ```python
 """JSON adapter for importing JSON files into DuckDB.
 
-Supports two tiers:
-- Tier 1: Flat JSON arrays loaded via DuckDB read_json_auto (fast).
+Supports three tiers:
+- Tier 0: NDJSON (newline-delimited JSON) loaded via DuckDB read_json_auto
+  with format='newline_delimited'. Bypasses Python json.load() entirely,
+  enabling multi-GB files without the 50MB guard.
+- Tier 1: Standard JSON arrays loaded via Python json.load() + DuckDB load.
 - Tier 2: Nested JSON flattened via Python, then loaded into DuckDB.
+
+V2 TODO: For standard (non-NDJSON) files, investigate DuckDB's read_json_auto
+directly, which could bypass the 50MB Python limit for large array files too.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -839,10 +913,44 @@ from src.mcp.data_source.adapters.base import BaseSourceAdapter
 from src.mcp.data_source.models import ImportResult
 from src.mcp.data_source.utils import flatten_record, load_flat_records_to_duckdb
 
+logger = logging.getLogger(__name__)
+
 # Guard against OOM — Python json.load() buffers entire file in memory.
 # 50MB is generous for shipping manifests; truly large files should use
-# streaming or database import instead.
+# NDJSON format (auto-detected) or database import instead.
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+
+# Number of bytes to peek at to detect NDJSON format.
+_NDJSON_PEEK_BYTES = 4096
+
+
+def _is_ndjson(file_path: str) -> bool:
+    """Detect if a file is newline-delimited JSON (NDJSON).
+
+    Reads the first _NDJSON_PEEK_BYTES bytes and checks if each non-empty
+    line is a valid JSON object. NDJSON files have one JSON object per line,
+    no wrapping array brackets.
+
+    Args:
+        file_path: Path to the JSON file.
+
+    Returns:
+        True if the file appears to be NDJSON format.
+    """
+    try:
+        with open(file_path, "rb") as f:
+            head = f.read(_NDJSON_PEEK_BYTES).decode("utf-8", errors="replace")
+        lines = [line.strip() for line in head.split("\n") if line.strip()]
+        if len(lines) < 2:
+            return False
+        # Each line should parse as a JSON object independently
+        for line in lines[:5]:
+            parsed = json.loads(line)
+            if not isinstance(parsed, dict):
+                return False
+        return True
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
 
 
 class JSONAdapter(BaseSourceAdapter):
@@ -861,6 +969,11 @@ class JSONAdapter(BaseSourceAdapter):
     ) -> ImportResult:
         """Import JSON file into DuckDB.
 
+        Dispatches to three tiers based on file format:
+        - NDJSON auto-detected → DuckDB read_json_auto (no Python RAM limit)
+        - Standard JSON ≤ 50MB → Python json.load() + flattening if needed
+        - Standard JSON > 50MB → rejected with helpful error
+
         Args:
             conn: DuckDB connection.
             file_path: Path to the JSON file.
@@ -873,17 +986,23 @@ class JSONAdapter(BaseSourceAdapter):
 
         Raises:
             FileNotFoundError: If file does not exist.
-            ValueError: If file exceeds MAX_FILE_SIZE_BYTES.
+            ValueError: If file exceeds MAX_FILE_SIZE_BYTES (non-NDJSON).
         """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"JSON file not found: {file_path}")
 
+        # Tier 0: NDJSON fast path — bypass Python json.load() entirely
+        if record_path is None and _is_ndjson(file_path):
+            return self._import_ndjson(conn, file_path)
+
         file_size = path.stat().st_size
         if file_size > MAX_FILE_SIZE_BYTES:
             raise ValueError(
                 f"JSON file exceeds {MAX_FILE_SIZE_BYTES // (1024 * 1024)}MB limit "
-                f"({file_size // (1024 * 1024)}MB). Use database import for large files."
+                f"({file_size // (1024 * 1024)}MB). "
+                f"Convert to NDJSON (one object per line) for large file support, "
+                f"or use database import."
             )
 
         with open(file_path, encoding="utf-8") as f:
@@ -900,6 +1019,48 @@ class JSONAdapter(BaseSourceAdapter):
             records = [flatten_record(r) for r in records]
 
         return load_flat_records_to_duckdb(conn, records, source_type="json")
+
+    def _import_ndjson(
+        self, conn: "DuckDBPyConnection", file_path: str,
+    ) -> ImportResult:
+        """Import NDJSON file using DuckDB's native read_json_auto.
+
+        DuckDB streams the file without loading it entirely into Python
+        memory, so this path has no size limit.
+
+        Args:
+            conn: DuckDB connection.
+            file_path: Path to the NDJSON file.
+
+        Returns:
+            ImportResult with schema and row count.
+        """
+        from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
+
+        logger.info("NDJSON detected — using DuckDB read_json_auto for %s", file_path)
+
+        # DuckDB handles the heavy lifting — no Python RAM bottleneck
+        conn.execute(f"""
+            CREATE OR REPLACE TABLE imported_data AS
+            SELECT ROW_NUMBER() OVER () AS {SOURCE_ROW_NUM_COLUMN}, *
+            FROM read_json_auto('{file_path}', format='newline_delimited')
+        """)
+
+        schema_rows = conn.execute("DESCRIBE imported_data").fetchall()
+        columns = [
+            SchemaColumn(name=col[0], type=col[1], nullable=True, warnings=[])
+            for col in schema_rows
+            if col[0] != SOURCE_ROW_NUM_COLUMN
+        ]
+
+        row_count = conn.execute("SELECT COUNT(*) FROM imported_data").fetchone()[0]
+
+        return ImportResult(
+            row_count=row_count,
+            columns=columns,
+            warnings=[],
+            source_type="json",
+        )
 
     def _discover_records(
         self, data: Any, record_path: str | None = None
@@ -956,7 +1117,7 @@ Expected: All tests PASS.
 
 ```bash
 git add src/mcp/data_source/adapters/json_adapter.py tests/mcp/data_source/test_json_adapter.py
-git commit -m "feat: add JSONAdapter for flat and nested JSON imports"
+git commit -m "feat: add JSONAdapter with NDJSON fast path and flat/nested imports"
 ```
 
 ---
@@ -1684,6 +1845,9 @@ async def sniff_file(
     if not path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
+    # errors='replace' handles non-UTF8 bytes (common in old mainframe EDI/FWF
+    # files using ISO-8859-1 or CP437). Replaces undecodable bytes with U+FFFD
+    # rather than crashing, so the agent can still inspect the structure.
     with open(file_path, encoding="utf-8", errors="replace") as f:
         # Skip to offset, then take num_lines — never reads entire file
         selected = list(islice(f, offset, offset + num_lines))
@@ -2440,7 +2604,7 @@ git commit -m "style: lint and format universal ingestion code"
 | 2 | Shared flattening utilities | ~14 | `feat: add flatten_record and load_flat_records_to_duckdb utilities` |
 | 3 | DelimitedAdapter refactor | ~10 | `refactor: rename CSVAdapter to DelimitedAdapter with backward compat` |
 | 4 | ExcelAdapter .xls support | ~3 | `feat: add .xls legacy Excel support via python-calamine` |
-| 5 | JSONAdapter (+ 50MB guard) | ~9 | `feat: add JSONAdapter for flat and nested JSON imports` |
+| 5 | JSONAdapter (NDJSON Tier 0 + 50MB guard) | ~14 | `feat: add JSONAdapter with NDJSON fast path and flat/nested imports` |
 | 6 | XMLAdapter (+ 50MB guard) | ~6 | `feat: add XMLAdapter for XML file imports with auto record discovery` |
 | 7 | FixedWidthAdapter | ~6 | `feat: add FixedWidthAdapter with pure Python string slicing` |
 | 8 | MCP tools (router + sniff + fwf) | ~10 | `feat: add import_file router, sniff_file, and import_fixed_width tools` |
@@ -2451,4 +2615,14 @@ git commit -m "style: lint and format universal ingestion code"
 | 13 | Integration tests | ~6 | `test: add integration tests for universal data ingestion pipeline` |
 | 14 | Final verification & cleanup | 0 | `style: lint and format universal ingestion code` |
 
-**Total: ~14 commits, ~81 new tests, 5 new files, 8 modified files**
+**Total: ~14 commits, ~86 new tests, 5 new files, 8 modified files**
+
+---
+
+## Revision Notes (Post-Review)
+
+1. **NDJSON Tier 0 Fast Path (Task 5 — HIGH VALUE):** Added auto-detection of newline-delimited JSON (NDJSON) format via `_is_ndjson()`. When detected, the adapter uses DuckDB's `read_json_auto(path, format='newline_delimited')` which streams the file without Python `json.load()` — no RAM bottleneck, no 50MB limit. This is the most common format for log exports and large API dumps. The 50MB guard only applies to standard JSON arrays that must go through `json.load()`. Added 5 new tests covering NDJSON detection, bypass of size limit, and fallback when `record_path` is explicitly provided.
+
+2. **CTAS Type Inference Note (Task 2):** Added inline comment on the VARCHAR→CTAS type inference approach. DuckDB's inference is generally reliable but can be conservative for edge-case date formats (e.g., `2023/12/31`). For V1 this is acceptable — the agent can use `TRY_CAST` or `strptime()` during the mapping phase. Marked explicit per-column `TRY_CAST` as a V2 improvement.
+
+3. **sniff_file Encoding Safety (Task 8):** Confirmed the existing implementation already uses `errors='replace'` which handles non-UTF8 bytes from old mainframe EDI/FWF files (ISO-8859-1, CP437). Added explanatory comment documenting why this is necessary for logistics files.
