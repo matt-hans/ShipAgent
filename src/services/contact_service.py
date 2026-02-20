@@ -14,9 +14,14 @@ import logging
 import re
 
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from src.db.models import Contact, utc_now_iso
+from src.errors.domain import (
+    DuplicateHandleError,
+    NotFoundError,
+    ValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -151,8 +156,8 @@ class ContactService:
             The created Contact record.
 
         Raises:
-            ValueError: If handle format is invalid, already exists, or required
-                        address fields are missing.
+            ValidationError: If required address fields are missing or invalid format.
+            DuplicateHandleError: If handle already exists.
         """
         # Validate required address fields
         required_fields = {
@@ -164,21 +169,21 @@ class ContactService:
         }
         missing = [name for name, value in required_fields.items() if not value or not str(value).strip()]
         if missing:
-            raise ValueError(f"Missing required fields: {', '.join(missing)}")
+            raise ValidationError(f"Missing required fields: {', '.join(missing)}")
 
         if handle is None:
             handle = slugify_display_name(display_name)
 
         handle = handle.lower().strip()
         if not HANDLE_PATTERN.match(handle):
-            raise ValueError(
+            raise ValidationError(
                 f"Invalid handle format: '{handle}'. "
                 "Must be lowercase alphanumeric with hyphens."
             )
 
         existing = self.get_by_handle(handle)
         if existing:
-            raise ValueError(f"Contact with handle '@{handle}' already exists.")
+            raise DuplicateHandleError(handle)
 
         contact = Contact(
             handle=handle,
@@ -247,7 +252,7 @@ class ContactService:
         self,
         search: str | None = None,
         tag: str | None = None,
-    ):
+    ) -> Query:
         """Build base query with optional search/tag filters.
 
         Shared by list_contacts and count_contacts to avoid drift.
@@ -324,12 +329,13 @@ class ContactService:
             The updated Contact record.
 
         Raises:
-            ValueError: If contact not found, handle validation fails, or
-                        required fields are set to empty strings.
+            NotFoundError: If contact not found.
+            ValidationError: If required fields are empty or handle format invalid.
+            DuplicateHandleError: If new handle already in use.
         """
         contact = self.db.query(Contact).filter(Contact.id == contact_id).first()
         if not contact:
-            raise ValueError(f"Contact {contact_id} not found.")
+            raise NotFoundError("Contact", contact_id)
 
         # Validate required fields - reject empty strings
         required_fields = {
@@ -341,16 +347,16 @@ class ContactService:
         }
         for field, value in required_fields.items():
             if value is not None and not str(value).strip():
-                raise ValueError(f"{field} cannot be empty.")
+                raise ValidationError(f"{field} cannot be empty.")
 
         if "handle" in kwargs and kwargs["handle"] is not None:
             new_handle = kwargs["handle"].lower().strip()
             if not HANDLE_PATTERN.match(new_handle):
-                raise ValueError(f"Invalid handle format: '{new_handle}'.")
+                raise ValidationError(f"Invalid handle format: '{new_handle}'.")
             if new_handle != contact.handle:
                 existing = self.get_by_handle(new_handle)
                 if existing:
-                    raise ValueError(f"Handle '@{new_handle}' already in use.")
+                    raise DuplicateHandleError(new_handle)
             kwargs["handle"] = new_handle
 
         if "tags" in kwargs and isinstance(kwargs["tags"], list):
