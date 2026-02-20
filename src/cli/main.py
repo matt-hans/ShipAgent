@@ -11,6 +11,7 @@ Usage:
 """
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -20,8 +21,17 @@ from rich.console import Console
 
 from src.cli.config import load_config
 from src.cli.factory import get_client
-from src.cli.output import format_job_detail, format_job_table, format_rows_table
+from src.cli.output import (
+    format_job_detail,
+    format_job_table,
+    format_rows_table,
+    format_saved_sources,
+    format_schema,
+    format_source_status,
+)
 from src.cli.protocol import ShipAgentClientError, SubmitResult
+
+_log = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="shipagent",
@@ -31,10 +41,12 @@ app = typer.Typer(
 daemon_app = typer.Typer(help="Manage the ShipAgent daemon")
 job_app = typer.Typer(help="Manage shipping jobs")
 config_app = typer.Typer(help="Configuration management")
+data_source_app = typer.Typer(help="Manage data sources")
 
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(job_app, name="job")
 app.add_typer(config_app, name="config")
+app.add_typer(data_source_app, name="data-source")
 
 console = Console()
 
@@ -125,8 +137,14 @@ def config_validate(
         console.print("[green]Config is valid.[/green]")
         console.print(f"  Watch folders: {len(cfg.watch_folders)}")
         console.print(f"  Auto-confirm: {'enabled' if cfg.auto_confirm.enabled else 'disabled'}")
-    except Exception as e:
+    except FileNotFoundError as e:
+        console.print(f"[red]Config file not found:[/red] {e}")
+        raise typer.Exit(1)
+    except (ValueError, TypeError) as e:
         console.print(f"[red]Config validation failed:[/red] {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Config loading error ({type(e).__name__}):[/red] {e}")
         raise typer.Exit(1)
 
 
@@ -364,6 +382,7 @@ def submit(
 
                     # Extract real service codes from row order_data.
                     service_codes: list[str] = []
+                    _parse_failures = 0
                     for r in rows:
                         if r.order_data:
                             try:
@@ -371,7 +390,13 @@ def submit(
                                 if sc:
                                     service_codes.append(sc)
                             except (_json.JSONDecodeError, AttributeError):
-                                pass
+                                _parse_failures += 1
+                    if _parse_failures > 0:
+                        _log.warning(
+                            "Auto-confirm: %d/%d rows had unparseable order_data; "
+                            "service_code checks may be incomplete",
+                            _parse_failures, len(rows),
+                        )
 
                     # Address validation state is not re-persisted on rows
                     # after preview (the agent validates at preview time only).
@@ -383,6 +408,7 @@ def submit(
                         "total_cost_cents": total_cost_from_rows,
                         "max_row_cost_cents": max_row_cost,
                         "service_codes": service_codes,
+                        "service_parse_failures": _parse_failures,
                         "all_addresses_valid": False,
                         "has_address_warnings": True,
                     }
@@ -482,6 +508,149 @@ def daemon_status_cmd():
         console.print("[red]Daemon not running[/red]")
 
 
+# --- Data source commands ---
+
+
+@data_source_app.command("status")
+def data_source_status():
+    """Show current data source connection status."""
+    cfg = load_config(config_path=_config_path)
+    client = get_client(standalone=_standalone, config=cfg)
+
+    async def _run():
+        try:
+            async with client:
+                status = await client.get_source_status()
+                console.print(format_source_status(status))
+        except ShipAgentClientError as e:
+            console.print(f"[red]Error:[/red] {e.message}")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
+@data_source_app.command("connect")
+def data_source_connect(
+    file: Optional[str] = typer.Argument(None, help="Path to CSV or Excel file"),
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection string"),
+    query: Optional[str] = typer.Option(None, "--query", help="SQL query (required with --db)"),
+    platform: Optional[str] = typer.Option(None, "--platform", help="Platform name (shopify)"),
+):
+    """Connect a data source (file, database, or platform)."""
+    cfg = load_config(config_path=_config_path)
+    client = get_client(standalone=_standalone, config=cfg)
+
+    async def _run():
+        try:
+            async with client:
+                if platform:
+                    if platform.lower() != "shopify":
+                        console.print(
+                            f"[red]Only 'shopify' supports env-based auto-connect. "
+                            f"Use the agent conversation for {platform}.[/red]"
+                        )
+                        raise typer.Exit(1)
+                    status = await client.connect_platform(platform)
+                elif db:
+                    if not query:
+                        console.print(
+                            "[red]--query is required with --db. "
+                            "Example: --db 'postgresql://...' --query 'SELECT * FROM orders'[/red]"
+                        )
+                        raise typer.Exit(1)
+                    status = await client.connect_db(db, query)
+                elif file:
+                    status = await client.connect_source(file)
+                else:
+                    console.print(
+                        "[red]Specify a file path, --db + --query, or --platform shopify[/red]"
+                    )
+                    raise typer.Exit(1)
+                console.print(format_source_status(status))
+        except ShipAgentClientError as e:
+            console.print(f"[red]Error:[/red] {e.message}")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
+@data_source_app.command("disconnect")
+def data_source_disconnect():
+    """Disconnect the current data source."""
+    cfg = load_config(config_path=_config_path)
+    client = get_client(standalone=_standalone, config=cfg)
+
+    async def _run():
+        try:
+            async with client:
+                await client.disconnect_source()
+                console.print("[green]Data source disconnected.[/green]")
+        except ShipAgentClientError as e:
+            console.print(f"[red]Error:[/red] {e.message}")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
+@data_source_app.command("list-saved")
+def data_source_list_saved():
+    """List saved data source profiles."""
+    cfg = load_config(config_path=_config_path)
+    client = get_client(standalone=_standalone, config=cfg)
+
+    async def _run():
+        try:
+            async with client:
+                sources = await client.list_saved_sources()
+                console.print(format_saved_sources(sources))
+        except ShipAgentClientError as e:
+            console.print(f"[red]Error:[/red] {e.message}")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
+@data_source_app.command("reconnect")
+def data_source_reconnect(
+    identifier: str = typer.Argument(help="Saved source name or ID"),
+    by_id: bool = typer.Option(False, "--id", help="Treat identifier as UUID"),
+):
+    """Reconnect a previously saved data source."""
+    cfg = load_config(config_path=_config_path)
+    client = get_client(standalone=_standalone, config=cfg)
+
+    async def _run():
+        try:
+            async with client:
+                status = await client.reconnect_saved_source(
+                    identifier, by_name=not by_id
+                )
+                console.print(format_source_status(status))
+        except ShipAgentClientError as e:
+            console.print(f"[red]Error:[/red] {e.message}")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
+@data_source_app.command("schema")
+def data_source_schema():
+    """Show schema of the currently connected data source."""
+    cfg = load_config(config_path=_config_path)
+    client = get_client(standalone=_standalone, config=cfg)
+
+    async def _run():
+        try:
+            async with client:
+                columns = await client.get_source_schema()
+                console.print(format_schema(columns))
+        except ShipAgentClientError as e:
+            console.print(f"[red]Error:[/red] {e.message}")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
 # --- Interact command ---
 
 
@@ -490,10 +659,94 @@ def interact(
     session: Optional[str] = typer.Option(
         None, "--session", help="Resume existing session ID"
     ),
+    file: Optional[str] = typer.Option(
+        None, "--file", help="Load file as data source before REPL"
+    ),
+    source: Optional[str] = typer.Option(
+        None, "--source", help="Reconnect saved source before REPL"
+    ),
+    platform: Optional[str] = typer.Option(
+        None, "--platform", help="Connect platform before REPL (shopify)"
+    ),
 ):
-    """Start a conversational shipping REPL."""
+    """Start a conversational shipping REPL.
+
+    Optional pre-loading: --file, --source, or --platform connect a data
+    source before entering the REPL so it's immediately available to the agent.
+    """
     from src.cli.repl import run_repl
 
     cfg = load_config(config_path=_config_path)
     client = get_client(standalone=_standalone, config=cfg)
-    asyncio.run(run_repl(client, session_id=session))
+
+    async def _run():
+        async with client:
+            try:
+                if file:
+                    await client.connect_source(file)
+                    console.print(f"[green]Loaded: {file}[/green]")
+                elif source:
+                    await client.reconnect_saved_source(source)
+                    console.print(f"[green]Reconnected: {source}[/green]")
+                elif platform:
+                    await client.connect_platform(platform)
+                    console.print(f"[green]Connected: {platform}[/green]")
+            except ShipAgentClientError as e:
+                console.print(f"[red]Failed to pre-load data source:[/red] {e.message}")
+                raise typer.Exit(1)
+            # Enter REPL — pass already-open client
+            await _run_repl_in_context(client, session_id=session)
+
+    asyncio.run(_run())
+
+
+async def _run_repl_in_context(
+    client, session_id: str | None = None
+) -> None:
+    """Run the REPL loop using an already-open client context.
+
+    This is used when pre-loading a data source before entering the REPL,
+    since the client is already opened by the interact command.
+    """
+    from rich.panel import Panel as _Panel
+
+    from src.cli.protocol import AgentEvent
+
+    if session_id is None:
+        session_id = await client.create_session(interactive=False)
+        console.print(f"[dim]Session: {session_id}[/dim]")
+
+    console.print()
+    console.print("[bold]ShipAgent[/bold] v3.0 — Interactive Mode")
+    console.print("Type your shipping commands. Ctrl+D to exit.")
+    console.print()
+
+    try:
+        while True:
+            try:
+                user_input = console.input("[bold green]> [/bold green]")
+            except EOFError:
+                break
+            if not user_input.strip():
+                continue
+            message_buffer = []
+            try:
+                async for event in client.send_message(session_id, user_input):
+                    if event.event_type == "agent_message_delta" and event.content:
+                        message_buffer.append(event.content)
+                    elif event.event_type == "done":
+                        break
+            except ShipAgentClientError as e:
+                console.print(f"[red]Error:[/red] {e.message}")
+                continue
+            if message_buffer:
+                console.print("".join(message_buffer))
+            console.print()
+    finally:
+        try:
+            await client.delete_session(session_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to clean up session %s: %s", session_id, e
+            )

@@ -4,6 +4,8 @@ Implements the PlatformClient interface for Shopify Admin API (2024-01 version).
 Handles authentication, order fetching, and tracking updates via fulfillments.
 """
 
+from typing import Any
+
 import httpx
 
 from src.mcp.external_sources.clients.base import PlatformClient
@@ -405,15 +407,61 @@ class ShopifyClient(PlatformClient):
             for item in raw_line_items
         ) or None
 
-        # Extract shipping method from first shipping line
+        # Extract shipping method and rate code from first shipping line
         shipping_lines = shopify_order.get("shipping_lines", [])
         shipping_method = shipping_lines[0].get("title") if shipping_lines else None
+        shipping_rate_code = shipping_lines[0].get("code") if shipping_lines else None
 
         # Compute item count
         item_count = sum(
             item.get("quantity", 1)
             for item in raw_line_items
         ) or None
+
+        # Customer enrichment
+        customer_tags = customer.get("tags") or None
+        customer_order_count = customer.get("orders_count")
+        customer_total_spent = customer.get("total_spent")
+
+        # Order enrichment
+        order_note = shopify_order.get("note") or None
+
+        # Risk level (highest severity from risk assessments)
+        risk_assessments = shopify_order.get("risk", []) or []
+        risk_level: str | None = None
+        if risk_assessments:
+            for assessment in risk_assessments:
+                rec = (assessment.get("recommendation") or "").upper()
+                if "CANCEL" in rec:
+                    risk_level = "HIGH"
+                    break
+                if "INVESTIGATE" in rec:
+                    risk_level = "MEDIUM"
+            if risk_level is None and risk_assessments:
+                risk_level = "LOW"
+
+        # Product types (distinct, sorted)
+        product_types = {
+            li.get("product_type", "")
+            for li in raw_line_items
+            if li.get("product_type")
+        }
+        line_item_types = ", ".join(sorted(product_types)) if product_types else None
+
+        # Discount codes
+        discount_codes_list = [
+            d.get("code", "")
+            for d in shopify_order.get("discount_codes", [])
+            if d.get("code")
+        ]
+        discount_codes = ", ".join(discount_codes_list) if discount_codes_list else None
+
+        # Custom attributes from note_attributes
+        custom_attrs: dict[str, Any] = {}
+        for attr in shopify_order.get("note_attributes", []):
+            name = attr.get("name", "")
+            if name:
+                custom_attrs[name] = attr.get("value", "")
 
         return ExternalOrder(
             platform="shopify",
@@ -439,6 +487,15 @@ class ShopifyClient(PlatformClient):
             total_weight_grams=total_weight_grams,
             shipping_method=shipping_method,
             item_count=item_count,
+            customer_tags=customer_tags,
+            customer_order_count=customer_order_count,
+            customer_total_spent=customer_total_spent,
+            order_note=order_note,
+            risk_level=risk_level,
+            shipping_rate_code=shipping_rate_code,
+            line_item_types=line_item_types,
+            discount_codes=discount_codes,
+            custom_attributes=custom_attrs,
             items=line_items,
             raw_data=shopify_order,
         )

@@ -13,12 +13,15 @@ from uuid import uuid4
 from src.cli.config import ShipAgentConfig
 from src.cli.protocol import (
     AgentEvent,
+    DataSourceStatus,
     HealthStatus,
     JobDetail,
     JobSummary,
     ProgressEvent,
     RowDetail,
+    SavedSourceSummary,
     ShipAgentClientError,
+    SourceSchemaColumn,
     SubmitResult,
 )
 
@@ -392,6 +395,217 @@ class InProcessRunner:
             active_jobs=0,
             watchdog_active=False,
         )
+
+    async def get_source_status(self) -> DataSourceStatus:
+        """Get current data source connection status via DataSourceMCPClient.
+
+        Raises:
+            ShipAgentClientError: If the gateway cannot be reached or queried.
+        """
+        from src.services.gateway_provider import get_data_gateway
+
+        try:
+            gw = await get_data_gateway()
+        except Exception as e:
+            logger.error("Failed to initialize data gateway: %s", e)
+            raise ShipAgentClientError(
+                f"Cannot reach data source gateway: {e}"
+            )
+
+        try:
+            info = await gw.get_source_info()
+        except Exception as e:
+            logger.error("Failed to query source info from gateway: %s", e)
+            raise ShipAgentClientError(
+                f"Data source query failed: {e}"
+            )
+
+        if info is None:
+            return DataSourceStatus(connected=False)
+
+        columns_raw = info.get("columns", [])
+        col_names = [
+            c["name"] if isinstance(c, dict) else str(c)
+            for c in columns_raw
+        ]
+        return DataSourceStatus(
+            connected=True,
+            source_type=info.get("source_type"),
+            file_path=info.get("path"),
+            row_count=info.get("row_count"),
+            column_count=len(col_names),
+            columns=col_names,
+        )
+
+    async def connect_source(self, file_path: str) -> DataSourceStatus:
+        """Import a local file as the active data source."""
+        from src.services.gateway_provider import get_data_gateway
+
+        try:
+            gw = await get_data_gateway()
+        except Exception as e:
+            logger.error("Failed to initialize data gateway: %s", e)
+            raise ShipAgentClientError(f"Cannot reach data source gateway: {e}")
+
+        ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else "csv"
+        try:
+            if ext in ("xlsx", "xls"):
+                await gw.import_excel(file_path)
+            else:
+                await gw.import_csv(file_path)
+        except Exception as e:
+            logger.error("Failed to import file %s: %s", file_path, e)
+            raise ShipAgentClientError(f"Failed to import file: {e}")
+        return await self.get_source_status()
+
+    async def connect_db(
+        self, connection_string: str, query: str
+    ) -> DataSourceStatus:
+        """Import from a database using connection string and query."""
+        from src.services.gateway_provider import get_data_gateway
+
+        try:
+            gw = await get_data_gateway()
+        except Exception as e:
+            logger.error("Failed to initialize data gateway: %s", e)
+            raise ShipAgentClientError(f"Cannot reach data source gateway: {e}")
+
+        try:
+            await gw.import_database(connection_string=connection_string, query=query)
+        except Exception as e:
+            logger.error("Failed to import from database: %s", e)
+            raise ShipAgentClientError(f"Failed to import from database: {e}")
+        return await self.get_source_status()
+
+    async def disconnect_source(self) -> None:
+        """Disconnect the current data source."""
+        from src.services.gateway_provider import get_data_gateway
+
+        gw = await get_data_gateway()
+        await gw.disconnect()
+
+    async def list_saved_sources(self) -> list[SavedSourceSummary]:
+        """List saved data source profiles from database."""
+        from src.db.connection import get_db_context
+        from src.services.saved_data_source_service import SavedDataSourceService
+
+        with get_db_context() as db:
+            sources = SavedDataSourceService.list_sources(db)
+            return [
+                SavedSourceSummary(
+                    id=s.id,
+                    name=s.name or "",
+                    source_type=s.source_type or "",
+                    file_path=s.file_path,
+                    last_connected=s.last_used_at,
+                    row_count=s.row_count,
+                )
+                for s in sources
+            ]
+
+    async def reconnect_saved_source(
+        self, identifier: str, by_name: bool = True
+    ) -> DataSourceStatus:
+        """Reconnect a saved source by name or ID.
+
+        Looks up the source, then reimports via gateway.
+        """
+        from src.db.connection import get_db_context
+        from src.services.gateway_provider import get_data_gateway
+        from src.services.saved_data_source_service import SavedDataSourceService
+
+        with get_db_context() as db:
+            if by_name:
+                sources = SavedDataSourceService.list_sources(db)
+                source = next(
+                    (s for s in sources if s.name == identifier), None
+                )
+            else:
+                source = SavedDataSourceService.get_source(db, identifier)
+
+            if not source:
+                raise ShipAgentClientError(
+                    f"Saved source not found: {identifier}"
+                )
+
+            gw = await get_data_gateway()
+            if source.source_type == "csv" and source.file_path:
+                await gw.import_csv(file_path=source.file_path)
+            elif source.source_type == "excel" and source.file_path:
+                await gw.import_excel(
+                    file_path=source.file_path, sheet=source.sheet_name
+                )
+            else:
+                raise ShipAgentClientError(
+                    f"Cannot auto-reconnect {source.source_type} source. "
+                    "Database sources require a connection_string."
+                )
+
+            SavedDataSourceService.touch(db, source.id)
+            db.commit()
+
+        return await self.get_source_status()
+
+    async def get_source_schema(self) -> list[SourceSchemaColumn]:
+        """Get schema of current data source from gateway."""
+        from src.services.gateway_provider import get_data_gateway
+
+        gw = await get_data_gateway()
+        info = await gw.get_source_info()
+        if info is None:
+            raise ShipAgentClientError("No data source connected")
+        columns_raw = info.get("columns", [])
+        return [
+            SourceSchemaColumn(
+                name=c["name"] if isinstance(c, dict) else str(c),
+                type=c.get("type", "VARCHAR") if isinstance(c, dict) else "VARCHAR",
+                nullable=c.get("nullable", True) if isinstance(c, dict) else True,
+            )
+            for c in columns_raw
+        ]
+
+    async def connect_platform(self, platform: str) -> DataSourceStatus:
+        """Connect an env-configured external platform (Shopify only).
+
+        Reads credentials from environment variables and validates
+        them via the ExternalSourcesMCPClient, mirroring the HTTP path
+        through GET /api/v1/platforms/shopify/env-status.
+
+        Args:
+            platform: Platform name (only "shopify" supported).
+
+        Raises:
+            ShipAgentClientError: If platform unsupported or credentials missing/invalid.
+        """
+        import os
+
+        if platform.lower() != "shopify":
+            raise ShipAgentClientError(
+                f"Only 'shopify' supports env-based auto-connect. "
+                f"Use the agent conversation for {platform}."
+            )
+
+        access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+        store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+        if not access_token or not store_domain:
+            raise ShipAgentClientError(
+                "SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN environment "
+                "variables must be set for Shopify auto-connect."
+            )
+
+        from src.services.gateway_provider import get_external_sources_client
+
+        client = await get_external_sources_client()
+        result = await client.connect_platform(
+            platform="shopify",
+            credentials={"access_token": access_token},
+            store_url=store_domain,
+        )
+        if isinstance(result, dict) and not result.get("valid", True):
+            raise ShipAgentClientError(
+                result.get("error", "Shopify credential validation failed")
+            )
+        return await self.get_source_status()
 
     async def cleanup(self) -> None:
         """Shut down gateways."""

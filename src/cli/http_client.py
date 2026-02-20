@@ -13,16 +13,46 @@ from typing import AsyncIterator
 
 from src.cli.protocol import (
     AgentEvent,
+    DataSourceStatus,
     HealthStatus,
     JobDetail,
     JobSummary,
     ProgressEvent,
     RowDetail,
+    SavedSourceSummary,
     ShipAgentClientError,
+    SourceSchemaColumn,
     SubmitResult,
 )
 
 logger = logging.getLogger(__name__)
+
+def _is_local_host(hostname: str) -> bool:
+    """Return True if hostname resolves to a loopback address."""
+    import ipaddress
+
+    if hostname in ("localhost",):
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def _reject_insecure_credential_transport(base_url: str) -> None:
+    """Raise if base_url sends credentials over plain HTTP to a remote host."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base_url)
+    if parsed.scheme == "https":
+        return
+    host = (parsed.hostname or "").lower()
+    if _is_local_host(host):
+        return
+    raise ShipAgentClientError(
+        f"Refusing to send platform credentials over plain HTTP to "
+        f"non-local host {host!r}. Use HTTPS or connect to localhost."
+    )
 
 
 class HttpClient:
@@ -138,8 +168,11 @@ class HttpClient:
         try:
             existing_jobs = await self.list_jobs()
             existing_ids = {j.id for j in existing_jobs}
-        except Exception:
-            pass  # Non-fatal — worst case we fall back to session_id
+        except Exception as exc:
+            logger.warning(
+                "Failed to snapshot existing jobs before submit; "
+                "job ID resolution may fall back to session ID: %s", exc,
+            )
 
         # Step 3: Create a conversation session
         session_id = await self.create_session(interactive=False)
@@ -158,8 +191,11 @@ class HttpClient:
         # Step 6: Delete the conversation session — job is now the handle
         try:
             await self.delete_session(session_id)
-        except Exception:
-            pass  # Non-fatal: session will expire eventually
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete session %s after submit (will be orphaned): %s",
+                session_id, exc,
+            )
 
         # Step 7: Resolve job_id — event-sourced ID is preferred; fall back
         # to list diff only when the preview_ready event was not observed
@@ -174,8 +210,11 @@ class HttpClient:
                     if job.id not in existing_ids:
                         job_id = job.id
                         break
-            except Exception:
-                pass  # Non-fatal fallback to session_id
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve new job ID via list diff for session %s; "
+                    "returning session_id as fallback: %s", session_id, exc,
+                )
 
         return SubmitResult(
             job_id=job_id,
@@ -227,8 +266,13 @@ class HttpClient:
                                     captured_job_id = job_id
                             elif event == "done":
                                 return captured_job_id
+        except (ImportError, OSError) as exc:
+            logger.warning("Session stream drain failed for %s (transport): %s", session_id, exc)
         except Exception as exc:
-            logger.warning("Session stream drain failed for %s: %s", session_id, exc)
+            logger.error(
+                "Unexpected error draining session stream for %s: %s",
+                session_id, exc, exc_info=True,
+            )
         return captured_job_id
 
     async def list_jobs(self, status: str | None = None) -> list[JobSummary]:
@@ -311,7 +355,10 @@ class HttpClient:
         """
         import httpx
 
-        async with httpx.AsyncClient(base_url=self._base_url, timeout=None) as stream_client:
+        headers = {}
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+        async with httpx.AsyncClient(base_url=self._base_url, timeout=None, headers=headers) as stream_client:
             async with stream_client.stream(
                 "GET", f"/api/v1/jobs/{job_id}/progress/stream"
             ) as resp:
@@ -363,7 +410,10 @@ class HttpClient:
         self._raise_for_status(resp)
 
         # Stream the response
-        async with httpx.AsyncClient(base_url=self._base_url, timeout=None) as stream_client:
+        headers = {}
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+        async with httpx.AsyncClient(base_url=self._base_url, timeout=None, headers=headers) as stream_client:
             async with stream_client.stream(
                 "GET", f"/api/v1/conversations/{session_id}/stream"
             ) as stream_resp:
@@ -405,8 +455,11 @@ class HttpClient:
                     watchdog_active=data.get("watchdog_active", False),
                     watch_folders=data.get("watch_folders", []),
                 )
-        except Exception:
-            pass
+            logger.debug("Health check returned HTTP %s", resp.status_code)
+        except (ImportError, OSError) as exc:
+            logger.debug("Health check connection failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Health check failed unexpectedly: %s", exc, exc_info=True)
         return HealthStatus(
             healthy=False,
             version="unknown",
@@ -428,6 +481,144 @@ class HttpClient:
             if isinstance(events, list):
                 return events
         return []
+
+    async def get_source_status(self) -> DataSourceStatus:
+        """Get current data source connection status via GET /api/v1/data-sources/status."""
+        resp = await self._client.get("/api/v1/data-sources/status")
+        if resp.status_code == 200:
+            data = resp.json()
+            columns_raw = data.get("columns", [])
+            col_names = [
+                c["name"] if isinstance(c, dict) else str(c)
+                for c in columns_raw
+            ]
+            return DataSourceStatus(
+                connected=data.get("connected", False),
+                source_type=data.get("source_type"),
+                file_path=data.get("file_path"),
+                row_count=data.get("row_count"),
+                column_count=len(col_names),
+                columns=col_names,
+            )
+        if resp.status_code == 404:
+            return DataSourceStatus(connected=False)
+        raise ShipAgentClientError(
+            f"Failed to get source status: {resp.text}", resp.status_code
+        )
+
+    async def connect_source(self, file_path: str) -> DataSourceStatus:
+        """Import a local file via POST /api/v1/data-sources/upload."""
+        from pathlib import Path
+
+        path = Path(file_path)
+        if not path.exists():
+            raise ShipAgentClientError(f"File not found: {file_path}")
+        with open(path, "rb") as f:
+            files = {"file": (path.name, f, "application/octet-stream")}
+            resp = await self._client.post(
+                "/api/v1/data-sources/upload", files=files
+            )
+        if resp.status_code in (200, 201):
+            return await self.get_source_status()
+        raise ShipAgentClientError(
+            f"Failed to connect source: {resp.text}", resp.status_code
+        )
+
+    async def connect_db(
+        self, connection_string: str, query: str
+    ) -> DataSourceStatus:
+        """Import from database via POST /api/v1/data-sources/import."""
+        payload = {
+            "type": "database",
+            "connection_string": connection_string,
+            "query": query,
+        }
+        resp = await self._client.post(
+            "/api/v1/data-sources/import", json=payload
+        )
+        if resp.status_code in (200, 201):
+            return await self.get_source_status()
+        raise ShipAgentClientError(
+            f"Failed to connect DB: {resp.text}", resp.status_code
+        )
+
+    async def disconnect_source(self) -> None:
+        """Disconnect via POST /api/v1/data-sources/disconnect."""
+        resp = await self._client.post("/api/v1/data-sources/disconnect")
+        if resp.status_code not in (200, 204):
+            raise ShipAgentClientError(
+                f"Failed to disconnect: {resp.text}", resp.status_code
+            )
+
+    async def list_saved_sources(self) -> list[SavedSourceSummary]:
+        """List saved sources via GET /api/v1/saved-sources."""
+        resp = await self._client.get("/api/v1/saved-sources")
+        self._raise_for_status(resp)
+        data = resp.json()
+        sources = data.get("sources", data) if isinstance(data, dict) else data
+        return [SavedSourceSummary.from_api(s) for s in sources]
+
+    async def reconnect_saved_source(
+        self, identifier: str, by_name: bool = True
+    ) -> DataSourceStatus:
+        """Reconnect saved source via POST /api/v1/saved-sources/reconnect."""
+        payload = {"name": identifier} if by_name else {"id": identifier}
+        resp = await self._client.post(
+            "/api/v1/saved-sources/reconnect", json=payload
+        )
+        if resp.status_code in (200, 201):
+            return await self.get_source_status()
+        raise ShipAgentClientError(
+            f"Failed to reconnect: {resp.text}", resp.status_code
+        )
+
+    async def get_source_schema(self) -> list[SourceSchemaColumn]:
+        """Get schema via GET /api/v1/data-sources/schema."""
+        resp = await self._client.get("/api/v1/data-sources/schema")
+        if resp.status_code == 404:
+            raise ShipAgentClientError("No data source connected")
+        self._raise_for_status(resp)
+        data = resp.json()
+        columns_raw = data.get("columns", [])
+        return [SourceSchemaColumn.from_api(c) for c in columns_raw]
+
+    async def connect_platform(self, platform: str) -> DataSourceStatus:
+        """Connect env-configured platform via POST /api/v1/platforms/{platform}/connect.
+
+        Reads credentials from local environment variables and sends them
+        to the daemon's connect endpoint, mirroring InProcessRunner behavior.
+        Only Shopify supports env-based auto-connect.
+        """
+        import os
+
+        if platform.lower() != "shopify":
+            raise ShipAgentClientError(
+                f"Only 'shopify' supports env-based auto-connect. "
+                f"Use the agent conversation for {platform}."
+            )
+        access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
+        store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+        if not access_token or not store_domain:
+            raise ShipAgentClientError(
+                "SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN environment "
+                "variables must be set for Shopify auto-connect."
+            )
+        # Block credential transmission over plain HTTP to non-local hosts.
+        _reject_insecure_credential_transport(self._base_url)
+        resp = await self._client.post(
+            "/api/v1/platforms/shopify/connect",
+            json={
+                "credentials": {"access_token": access_token},
+                "store_url": store_domain,
+            },
+        )
+        self._raise_for_status(resp)
+        data = resp.json()
+        if not data.get("success"):
+            raise ShipAgentClientError(
+                data.get("error", "Shopify connection failed")
+            )
+        return await self.get_source_status()
 
     async def cleanup(self) -> None:
         """No-op for HTTP client (stateless)."""

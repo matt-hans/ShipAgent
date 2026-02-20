@@ -16,8 +16,12 @@ Example:
     result = await ups_client.create_shipment(request)
 """
 
+import logging
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 from src.services.ups_constants import (
     DEFAULT_CURRENCY_CODE,
@@ -29,8 +33,16 @@ from src.services.ups_constants import (
     DEFAULT_PACKAGE_WEIGHT_LBS,
     DEFAULT_PACKAGING_CODE,
     DEFAULT_REASON_FOR_EXPORT,
+    DEFAULT_WEIGHT_LIMIT_LBS,
+    EXPRESS_CLASS_SERVICES,
+    EXPRESS_ONLY_PACKAGING,
     GRAMS_PER_LB,
+    INTERNATIONAL_ONLY_PACKAGING,
+    LETTER_MAX_WEIGHT_LBS,
     PACKAGING_ALIASES,
+    PackagingCode,
+    SATURDAY_DELIVERY_SERVICES,
+    SERVICE_WEIGHT_LIMITS_LBS,
     UPS_ADDRESS_MAX_LEN,
     UPS_DIMENSION_UNIT,
     UPS_PHONE_MAX_DIGITS,
@@ -533,6 +545,89 @@ def build_shipment_request(
     if _is_truthy(order_data.get("saturday_delivery")):
         result["saturdayDelivery"] = True
 
+    # --- Shipment-level and service option fields ---
+
+    # Shipment date
+    if order_data.get("shipment_date"):
+        result["shipmentDate"] = order_data["shipment_date"]
+
+    # ShipFrom (dynamic, for multi-warehouse)
+    # PRECEDENCE: ShipFrom from row-level data overrides system Shipper for
+    # the physical origin address. Shipper block always uses system/env config.
+    # If no ship_from_* fields present, ShipFrom is omitted entirely —
+    # UPS defaults to using Shipper address as ship-from.
+    ship_from_keys = [
+        "ship_from_name", "ship_from_address1", "ship_from_address2",
+        "ship_from_city", "ship_from_state", "ship_from_postal_code",
+        "ship_from_country", "ship_from_phone",
+    ]
+    # Minimum fields required by UPS API for a valid ShipFrom address block.
+    # Phone and address2 are optional; omitting any of these causes UPS rejection.
+    _SHIP_FROM_REQUIRED = {"ship_from_name", "ship_from_address1", "ship_from_city",
+                           "ship_from_state", "ship_from_postal_code"}
+    ship_from_data = {k: order_data[k] for k in ship_from_keys if order_data.get(k)}
+    if ship_from_data:
+        missing = _SHIP_FROM_REQUIRED - set(ship_from_data.keys())
+        if missing:
+            logger.warning(
+                "Partial ShipFrom data (have %s, missing %s) — "
+                "ShipFrom block omitted to prevent UPS rejection",
+                sorted(ship_from_data.keys()),
+                sorted(missing),
+            )
+            # Surface as user-visible warning so preview card shows the omission
+            existing_warnings = order_data.get("_validation_warnings", [])
+            if isinstance(existing_warnings, str):
+                existing_warnings = [existing_warnings] if existing_warnings else []
+            existing_warnings.append(
+                f"Partial ShipFrom data (missing {', '.join(sorted(missing))}); "
+                f"using Shipper address as ship-from origin"
+            )
+            order_data["_validation_warnings"] = existing_warnings
+        else:
+            result["shipFrom"] = ship_from_data
+
+    # Boolean service option indicators
+    _BOOLEAN_FLAGS = [
+        ("hold_for_pickup", "holdForPickup"),
+        ("lift_gate_pickup", "liftGatePickup"),
+        ("lift_gate_delivery", "liftGateDelivery"),
+        ("direct_delivery_only", "directDeliveryOnly"),
+        ("deliver_to_addressee_only", "deliverToAddresseeOnly"),
+        ("carbon_neutral", "carbonNeutral"),
+        ("dropoff_at_facility", "dropoffAtFacility"),
+        ("shipper_release", "shipperRelease"),
+        ("large_package", "largePackage"),
+        ("additional_handling", "additionalHandling"),
+    ]
+    for order_key, simplified_key in _BOOLEAN_FLAGS:
+        if _is_truthy(order_data.get(order_key)):
+            result[simplified_key] = True
+
+    # Cost center
+    if order_data.get("cost_center"):
+        result["costCenter"] = order_data["cost_center"]
+
+    # Notification email
+    if order_data.get("notification_email"):
+        result["notificationEmail"] = order_data["notification_email"]
+
+    # Inside delivery
+    if order_data.get("inside_delivery"):
+        result["insideDelivery"] = order_data["inside_delivery"]
+
+    # International forms enrichment
+    if order_data.get("terms_of_shipment"):
+        result["termsOfShipment"] = order_data["terms_of_shipment"]
+    if order_data.get("purchase_order_number"):
+        result["purchaseOrderNumber"] = order_data["purchase_order_number"]
+    if order_data.get("invoice_comments"):
+        result["invoiceComments"] = order_data["invoice_comments"]
+    if order_data.get("freight_charges"):
+        result["freightCharges"] = order_data["freight_charges"]
+    if order_data.get("insurance_charges"):
+        result["insuranceCharges"] = order_data["insurance_charges"]
+
     # --- International enrichment ---
     from src.services.international_rules import get_requirements
 
@@ -672,6 +767,207 @@ def _is_truthy(value: Any) -> bool:
     return s in ("true", "yes", "1", "y", "x")
 
 
+# ---------------------------------------------------------------------------
+# Pre-flight validation — service-packaging-weight compatibility
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ValidationIssue:
+    """A pre-flight validation issue detected before UPS API call.
+
+    Auto-corrected issues have severity changed to "warning" and
+    auto_corrected set to True by apply_compatibility_corrections().
+    """
+
+    field: str
+    message: str
+    severity: Literal["error", "warning"]
+    auto_corrected: bool = False
+
+
+def _get_weight_lbs(order_data: dict[str, Any]) -> float | None:
+    """Extract weight in lbs from order_data, handling grams conversion.
+
+    Args:
+        order_data: Order data dict.
+
+    Returns:
+        Weight in lbs, or None if not available.
+    """
+    weight = order_data.get("weight") or order_data.get("total_weight")
+    if weight:
+        try:
+            return float(weight)
+        except (ValueError, TypeError):
+            logger.warning(
+                "Could not parse weight value %r as float; "
+                "weight-based validation will be skipped for this row",
+                weight,
+            )
+            return None
+    weight_grams = order_data.get("total_weight_grams")
+    if weight_grams:
+        try:
+            return float(weight_grams) / GRAMS_PER_LB
+        except (ValueError, TypeError):
+            logger.warning(
+                "Could not parse weight_grams value %r as float; "
+                "weight-based validation will be skipped for this row",
+                weight_grams,
+            )
+            return None
+    return None
+
+
+def validate_domestic_payload(
+    order_data: dict[str, Any],
+    service_code: str,
+) -> list[ValidationIssue]:
+    """Pre-flight validation for service-packaging-weight compatibility.
+
+    Despite the name, these checks apply to both domestic and international
+    shipments — they validate service-packaging-weight interdependencies
+    regardless of destination. The separate lane-based requirements in
+    international_rules.py handle customs, forms, and service compatibility
+    per shipping lane (e.g., US-CA, US-MX).
+
+    Called via apply_compatibility_corrections() from both preview-time
+    (core.py) and execution-time (batch_engine.py).
+
+    Args:
+        order_data: Order data dict.
+        service_code: Effective UPS service code.
+
+    Returns:
+        List of ValidationIssue objects. Empty list means payload is valid.
+    """
+    issues: list[ValidationIssue] = []
+    pkg_code = resolve_packaging_code(order_data.get("packaging_type"))
+
+    # 1. Packaging-service compatibility
+    if pkg_code in EXPRESS_ONLY_PACKAGING and service_code not in EXPRESS_CLASS_SERVICES:
+        pkg_name = order_data.get("packaging_type", pkg_code)
+        issues.append(ValidationIssue(
+            field="packaging_type",
+            message=(
+                f"Packaging '{pkg_name}' (code {pkg_code}) is only valid with "
+                f"express-class services. Current service: {service_code}. "
+                f"Use Customer Supplied (02) or change service."
+            ),
+            severity="error",
+        ))
+
+    # 2. International-only packaging with domestic service
+    from src.services.ups_service_codes import DOMESTIC_ONLY_SERVICES
+    if pkg_code in INTERNATIONAL_ONLY_PACKAGING and service_code in DOMESTIC_ONLY_SERVICES:
+        issues.append(ValidationIssue(
+            field="packaging_type",
+            message=(
+                f"Packaging code {pkg_code} is only valid with international services."
+            ),
+            severity="error",
+        ))
+
+    # 3. Letter weight limit
+    if pkg_code == PackagingCode.LETTER.value:
+        weight = _get_weight_lbs(order_data)
+        if weight and weight > LETTER_MAX_WEIGHT_LBS:
+            issues.append(ValidationIssue(
+                field="weight",
+                message=(
+                    f"UPS Letter max weight is {LETTER_MAX_WEIGHT_LBS} lbs. "
+                    f"Current weight: {weight:.1f} lbs."
+                ),
+                severity="error",
+            ))
+
+    # 4. Saturday Delivery compatibility
+    if _is_truthy(order_data.get("saturday_delivery")):
+        if service_code not in SATURDAY_DELIVERY_SERVICES:
+            issues.append(ValidationIssue(
+                field="saturday_delivery",
+                message=(
+                    f"Saturday Delivery is not supported by service {service_code}. "
+                    f"Flag will be stripped."
+                ),
+                severity="warning",
+                auto_corrected=True,
+            ))
+
+    # 5. Per-service weight limit
+    weight = _get_weight_lbs(order_data)
+    if weight:
+        limit = SERVICE_WEIGHT_LIMITS_LBS.get(service_code, DEFAULT_WEIGHT_LIMIT_LBS)
+        if weight > limit:
+            issues.append(ValidationIssue(
+                field="weight",
+                message=(
+                    f"Package weight {weight:.1f} lbs exceeds service "
+                    f"{service_code} limit of {limit:.0f} lbs."
+                ),
+                severity="error",
+            ))
+
+    return issues
+
+
+def apply_compatibility_corrections(
+    order_data: dict[str, Any],
+    service_code: str,
+) -> list[ValidationIssue]:
+    """Validate and auto-correct compatibility issues in-place.
+
+    This is the SINGLE shared validation path called from both:
+    - core.py._build_job_row_data_with_metadata() (preview-time)
+    - batch_engine._process_row() (execution-time, including confirm-time overrides)
+
+    Auto-correctable issues are fixed in order_data in-place.
+    Non-correctable errors are returned for the caller to handle.
+
+    Args:
+        order_data: Order data dict (mutated in-place for auto-corrections).
+        service_code: Effective UPS service code.
+
+    Returns:
+        List of ValidationIssue objects. Auto-corrected issues have severity
+        changed to "warning" and auto_corrected set to True.
+    """
+    issues = validate_domestic_payload(order_data, service_code)
+    warnings: list[str] = []
+
+    for issue in issues:
+        if issue.field == "packaging_type" and issue.severity == "error":
+            # Auto-correct express-only packaging to Customer Supplied
+            pkg_code = resolve_packaging_code(order_data.get("packaging_type"))
+            if pkg_code in EXPRESS_ONLY_PACKAGING and service_code not in EXPRESS_CLASS_SERVICES:
+                original = order_data.get("packaging_type", pkg_code)
+                order_data["packaging_type"] = DEFAULT_PACKAGING_CODE.value
+                order_data["_packaging_auto_reset"] = (
+                    f"Packaging reset from '{original}' to Customer Supplied: "
+                    f"incompatible with service {service_code}"
+                )
+                issue.auto_corrected = True
+                issue.severity = "warning"
+                warnings.append(order_data["_packaging_auto_reset"])
+
+        if issue.field == "saturday_delivery" and issue.auto_corrected:
+            # Clear Saturday Delivery flag
+            order_data["saturday_delivery"] = ""
+            order_data["_saturday_delivery_stripped"] = (
+                f"Saturday Delivery removed: not supported by service {service_code}"
+            )
+            warnings.append(order_data["_saturday_delivery_stripped"])
+
+    # Surface auto-corrections as row warnings for preview display
+    existing_warnings = order_data.get("_validation_warnings", [])
+    if isinstance(existing_warnings, str):
+        existing_warnings = [existing_warnings] if existing_warnings else []
+    order_data["_validation_warnings"] = existing_warnings + warnings
+
+    return issues
+
+
 def build_ups_api_payload(
     simplified: dict[str, Any],
     account_number: str,
@@ -681,8 +977,9 @@ def build_ups_api_payload(
 
     Args:
         simplified: Simplified payload from build_shipment_request().
-            Keys: shipper, shipTo, packages, serviceCode, description,
-            reference, reference2, saturdayDelivery, signatureRequired.
+            See build_shipment_request() for the full set of possible keys,
+            including shipFrom, shipmentDate, service option indicators
+            (holdForPickup, carbonNeutral, etc.), and international forms fields.
         account_number: UPS account number for billing.
         idempotency_key: Optional idempotency key for TransactionReference.
             When provided, included as CustomerContext for exactly-once
@@ -780,7 +1077,7 @@ def build_ups_api_payload(
     shipment: dict[str, Any] = {
         "Shipper": ups_shipper,
         "ShipTo": ups_ship_to,
-        "ShipFrom": ups_shipper,  # ShipFrom = Shipper for standard shipments
+        "ShipFrom": ups_shipper,  # Default to Shipper; overridden below if simplified.shipFrom is present
         "Service": {"Code": service_code},
         "Package": ups_packages,
         "PaymentInformation": {
@@ -819,6 +1116,39 @@ def build_ups_api_payload(
     if simplified.get("residential"):
         ups_ship_to["Address"]["ResidentialAddressIndicator"] = ""
 
+    # --- Shipment-level and service option fields ---
+
+    # ShipmentDate
+    if simplified.get("shipmentDate"):
+        shipment["ShipmentDate"] = simplified["shipmentDate"]
+
+    # ShipFrom (dynamic, for multi-warehouse)
+    if simplified.get("shipFrom"):
+        sf = simplified["shipFrom"]
+        ship_from_block: dict[str, Any] = {
+            "Name": truncate_address(sf.get("ship_from_name", ""), UPS_ADDRESS_MAX_LEN),
+            "Address": {
+                "AddressLine": [
+                    truncate_address(sf.get("ship_from_address1", "")),
+                    *([] if not sf.get("ship_from_address2") else [
+                        truncate_address(sf["ship_from_address2"])
+                    ]),
+                ],
+                "City": sf.get("ship_from_city", ""),
+                "StateProvinceCode": sf.get("ship_from_state", ""),
+                "PostalCode": sf.get("ship_from_postal_code", ""),
+                "CountryCode": sf.get("ship_from_country", "US"),
+            },
+        }
+        ship_from_phone = normalize_phone(sf.get("ship_from_phone"))
+        if ship_from_phone:
+            ship_from_block["Phone"] = {"Number": ship_from_phone}
+        shipment["ShipFrom"] = ship_from_block
+
+    # CostCenter
+    if simplified.get("costCenter"):
+        shipment["CostCenter"] = simplified["costCenter"]
+
     # Shipment-level options
     options: dict[str, Any] = shipment.get("ShipmentServiceOptions", {})
     if simplified.get("saturdayDelivery"):
@@ -827,6 +1157,46 @@ def build_ups_api_payload(
     dc = simplified.get("deliveryConfirmation")
     if dc:
         options["DeliveryConfirmation"] = {"DCISType": str(dc)}
+
+    # ShipmentServiceOptions — boolean indicators
+    _UPS_INDICATOR_MAP = [
+        ("holdForPickup", "HoldForPickupIndicator"),
+        ("liftGatePickup", "LiftGateForPickUpIndicator"),
+        ("liftGateDelivery", "LiftGateForDeliveryIndicator"),
+        ("directDeliveryOnly", "DirectDeliveryOnlyIndicator"),
+        ("deliverToAddresseeOnly", "DeliverToAddresseeOnlyIndicator"),
+        ("carbonNeutral", "UPScarbonneutralIndicator"),
+        ("dropoffAtFacility", "DropoffAtUPSFacilityIndicator"),
+    ]
+    for simplified_key, ups_key in _UPS_INDICATOR_MAP:
+        if simplified.get(simplified_key):
+            options[ups_key] = ""
+
+    # Notification email
+    if simplified.get("notificationEmail"):
+        options["Notification"] = {
+            "NotificationCode": "6",
+            "EMail": {"EMailAddress": [simplified["notificationEmail"]]},
+        }
+
+    # InsideDelivery
+    if simplified.get("insideDelivery"):
+        options["InsideDelivery"] = {"Code": str(simplified["insideDelivery"])}
+
+    # Skip ShipmentServiceOptions entirely if no options were added.
+    # The options dict is written to shipment["ShipmentServiceOptions"] at end of function.
+
+    # Package-level indicators
+    for pkg in ups_packages:
+        pkg_opts = pkg.setdefault("PackageServiceOptions", {})
+        if simplified.get("shipperRelease"):
+            pkg_opts["ShipperReleaseIndicator"] = ""
+        if simplified.get("largePackage"):
+            pkg["LargePackageIndicator"] = ""
+        if simplified.get("additionalHandling"):
+            pkg["AdditionalHandlingIndicator"] = ""
+        if not pkg_opts:
+            pkg.pop("PackageServiceOptions", None)
 
     # --- International enrichment (reads from simplified, set by build_shipment_request) ---
 
@@ -845,11 +1215,22 @@ def build_ups_api_payload(
     if shipper_data.get("phone"):
         ups_shipper["Phone"] = {"Number": shipper_data["phone"]}
 
-    # ShipTo contact (attentionName/phone already handled above in base build)
+    # ShipTo contact already set in base build via ups_ship_to (no enrichment needed)
 
     # InternationalForms
     intl_forms = simplified.get("internationalForms")
     if intl_forms:
+        # Enrich with P1 international forms fields
+        if simplified.get("termsOfShipment"):
+            intl_forms["TermsOfShipment"] = simplified["termsOfShipment"]
+        if simplified.get("purchaseOrderNumber"):
+            intl_forms["PurchaseOrderNumber"] = simplified["purchaseOrderNumber"]
+        if simplified.get("invoiceComments"):
+            intl_forms["Comments"] = simplified["invoiceComments"]
+        if simplified.get("freightCharges"):
+            intl_forms["FreightCharges"] = {"MonetaryValue": simplified["freightCharges"]}
+        if simplified.get("insuranceCharges"):
+            intl_forms["InsuranceCharges"] = {"MonetaryValue": simplified["insuranceCharges"]}
         options["InternationalForms"] = intl_forms
 
     if options:
@@ -992,6 +1373,29 @@ def build_ups_rate_payload(
         },
     }
 
+    # ShipFrom override for multi-warehouse rate accuracy (same logic as create payload)
+    if simplified.get("shipFrom"):
+        sf = simplified["shipFrom"]
+        rate_ship_from: dict[str, Any] = {
+            "Name": truncate_address(sf.get("ship_from_name", ""), UPS_ADDRESS_MAX_LEN),
+            "Address": {
+                "AddressLine": [
+                    truncate_address(sf.get("ship_from_address1", "")),
+                    *([] if not sf.get("ship_from_address2") else [
+                        truncate_address(sf["ship_from_address2"])
+                    ]),
+                ],
+                "City": sf.get("ship_from_city", ""),
+                "StateProvinceCode": sf.get("ship_from_state", ""),
+                "PostalCode": sf.get("ship_from_postal_code", ""),
+                "CountryCode": sf.get("ship_from_country", "US"),
+            },
+        }
+        rate_ship_from_phone = normalize_phone(sf.get("ship_from_phone"))
+        if rate_ship_from_phone:
+            rate_ship_from["Phone"] = {"Number": rate_ship_from_phone}
+        shipment["ShipFrom"] = rate_ship_from
+
     if include_service and service_code:
         shipment["Service"] = {"Code": service_code}
 
@@ -1007,6 +1411,33 @@ def build_ups_rate_payload(
         shipment.setdefault("ShipmentServiceOptions", {})[
             "SaturdayDeliveryIndicator"
         ] = ""
+
+    # --- Surcharge-affecting indicators for rate accuracy ---
+    rate_svc_options = shipment.setdefault("ShipmentServiceOptions", {})
+
+    _RATE_INDICATOR_MAP = [
+        ("holdForPickup", "HoldForPickupIndicator"),
+        ("liftGatePickup", "LiftGateForPickUpIndicator"),
+        ("liftGateDelivery", "LiftGateForDeliveryIndicator"),
+        ("carbonNeutral", "UPScarbonneutralIndicator"),
+    ]
+    for simplified_key, ups_key in _RATE_INDICATOR_MAP:
+        if simplified.get(simplified_key):
+            rate_svc_options[ups_key] = ""
+
+    if simplified.get("insideDelivery"):
+        rate_svc_options["InsideDelivery"] = {"Code": str(simplified["insideDelivery"])}
+
+    # Package-level surcharge indicators for rating
+    for pkg in ups_packages:
+        if simplified.get("largePackage"):
+            pkg["LargePackageIndicator"] = ""
+        if simplified.get("additionalHandling"):
+            pkg["AdditionalHandlingIndicator"] = ""
+
+    # Remove empty ShipmentServiceOptions
+    if not rate_svc_options:
+        shipment.pop("ShipmentServiceOptions", None)
 
     # --- International enrichment for rate accuracy ---
 

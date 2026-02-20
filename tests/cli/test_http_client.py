@@ -7,7 +7,7 @@ import httpx
 from unittest.mock import AsyncMock, patch
 
 from src.cli.http_client import HttpClient
-from src.cli.protocol import JobSummary, JobDetail
+from src.cli.protocol import JobSummary, JobDetail, ShipAgentClientError
 
 
 class FakeTransport(httpx.AsyncBaseTransport):
@@ -29,9 +29,9 @@ class FakeTransport(httpx.AsyncBaseTransport):
 
 def _make_client(responses: dict) -> HttpClient:
     """Create HttpClient with mocked transport."""
-    client = HttpClient(base_url="http://test:8000")
+    client = HttpClient(base_url="http://127.0.0.1:8000")
     transport = FakeTransport(responses)
-    client._client = httpx.AsyncClient(transport=transport, base_url="http://test:8000")
+    client._client = httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8000")
     return client
 
 
@@ -227,3 +227,130 @@ class TestJobAudit:
         events = await client.get_job_audit_events("job-1")
         assert len(events) == 1
         assert events[0]["id"] == "evt-1"
+
+
+class CapturingFakeTransport(httpx.AsyncBaseTransport):
+    """Mock transport that captures requests and returns canned responses."""
+
+    def __init__(self, responses: dict[str, tuple[int, dict]]):
+        """Initialize with response map.
+
+        Args:
+            responses: Maps URL path substrings to (status_code, body) tuples.
+        """
+        self._responses = responses
+        self.requests: list[httpx.Request] = []
+
+    async def handle_async_request(self, request):
+        """Record the request and return a matching canned response."""
+        self.requests = getattr(self, "requests", [])
+        self.requests.append(request)
+        path = request.url.path
+        for pattern, (status, body) in self._responses.items():
+            if pattern in path:
+                return httpx.Response(
+                    status, json=body,
+                    request=request,
+                )
+        return httpx.Response(404, json={"error": "not found"}, request=request)
+
+
+def _make_capturing_client(
+    responses: dict,
+) -> tuple[HttpClient, CapturingFakeTransport]:
+    """Create HttpClient with capturing mock transport.
+
+    Returns:
+        Tuple of (HttpClient, CapturingFakeTransport) so tests can inspect requests.
+    """
+    client = HttpClient(base_url="http://127.0.0.1:8000")
+    transport = CapturingFakeTransport(responses)
+    client._client = httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1:8000")
+    return client, transport
+
+
+class TestConnectPlatform:
+    """Tests for HttpClient.connect_platform."""
+
+    @pytest.mark.asyncio
+    async def test_connect_platform_shopify_posts_to_connect_endpoint(self, monkeypatch):
+        """Shopify connect sends POST to /platforms/shopify/connect with credentials payload."""
+        monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test_token_123")
+        monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "my-store.myshopify.com")
+
+        client, transport = _make_capturing_client({
+            "/api/v1/platforms/shopify/connect": (200, {"success": True}),
+            "/api/v1/data-sources/status": (200, {
+                "connected": True, "source_type": "shopify",
+                "file_path": None, "row_count": 42, "columns": [],
+            }),
+        })
+
+        await client.connect_platform("shopify")
+
+        # Find the POST request to the connect endpoint
+        connect_requests = [
+            r for r in transport.requests
+            if "/platforms/shopify/connect" in r.url.path and r.method == "POST"
+        ]
+        assert len(connect_requests) == 1, (
+            f"Expected exactly one POST to connect endpoint, got {len(connect_requests)}"
+        )
+        body = json.loads(connect_requests[0].content)
+        assert body == {
+            "credentials": {"access_token": "shpat_test_token_123"},
+            "store_url": "my-store.myshopify.com",
+        }
+
+    @pytest.mark.asyncio
+    async def test_connect_platform_missing_env_vars_raises(self, monkeypatch):
+        """Raises ShipAgentClientError when Shopify env vars are missing."""
+        monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("SHOPIFY_STORE_DOMAIN", raising=False)
+
+        client = _make_client({})
+        with pytest.raises(ShipAgentClientError, match="SHOPIFY_ACCESS_TOKEN"):
+            await client.connect_platform("shopify")
+
+    @pytest.mark.asyncio
+    async def test_connect_platform_non_shopify_raises(self):
+        """Raises ShipAgentClientError for unsupported platform names."""
+        client = _make_client({})
+        with pytest.raises(ShipAgentClientError, match="Only 'shopify'"):
+            await client.connect_platform("fedex")
+
+        with pytest.raises(ShipAgentClientError, match="Only 'shopify'"):
+            await client.connect_platform("woocommerce")
+
+
+class TestInsecureCredentialTransport:
+    """Tests for _reject_insecure_credential_transport."""
+
+    def test_https_allowed(self):
+        """HTTPS base URL passes without error."""
+        from src.cli.http_client import _reject_insecure_credential_transport
+        _reject_insecure_credential_transport("https://daemon.example.com:8443")
+
+    def test_localhost_http_allowed(self):
+        """Plain HTTP to localhost variants is safe."""
+        from src.cli.http_client import _reject_insecure_credential_transport
+        _reject_insecure_credential_transport("http://127.0.0.1:8000")
+        _reject_insecure_credential_transport("http://localhost:8000")
+        # IPv6 loopback — urlparse strips brackets, so hostname is "::1"
+        _reject_insecure_credential_transport("http://[::1]:8000")
+
+    def test_remote_http_blocked(self):
+        """Plain HTTP to non-local host raises ShipAgentClientError."""
+        from src.cli.http_client import _reject_insecure_credential_transport
+        with pytest.raises(ShipAgentClientError, match="Refusing to send"):
+            _reject_insecure_credential_transport("http://daemon.example.com:8000")
+
+    @pytest.mark.asyncio
+    async def test_connect_platform_blocks_remote_http(self, monkeypatch):
+        """connect_platform rejects credentials over remote plain HTTP."""
+        monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test")
+        monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "test.myshopify.com")
+        client = HttpClient(base_url="http://remote-daemon.example.com:8000")
+        async with client:
+            with pytest.raises(ShipAgentClientError, match="Refusing to send"):
+                await client.connect_platform("shopify")

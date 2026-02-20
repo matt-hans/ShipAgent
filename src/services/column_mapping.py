@@ -72,6 +72,37 @@ _FIELD_TO_ORDER_DATA: dict[str, str] = {
     "invoiceLineTotal.monetaryValue": "invoice_monetary_value",
     "internationalForms.invoiceNumber": "invoice_number",
     "shipmentDescription": "shipment_description",
+    # Shipment level
+    "shipmentDate": "shipment_date",
+    "shipFrom.name": "ship_from_name",
+    "shipFrom.addressLine1": "ship_from_address1",
+    "shipFrom.addressLine2": "ship_from_address2",
+    "shipFrom.city": "ship_from_city",
+    "shipFrom.state": "ship_from_state",
+    "shipFrom.postalCode": "ship_from_postal_code",
+    "shipFrom.country": "ship_from_country",
+    "shipFrom.phone": "ship_from_phone",
+    # Service options
+    "costCenter": "cost_center",
+    "holdForPickup": "hold_for_pickup",
+    "shipperRelease": "shipper_release",
+    "liftGatePickup": "lift_gate_pickup",
+    "liftGateDelivery": "lift_gate_delivery",
+    "insideDelivery": "inside_delivery",
+    "directDeliveryOnly": "direct_delivery_only",
+    "deliverToAddresseeOnly": "deliver_to_addressee_only",
+    "carbonNeutral": "carbon_neutral",
+    "dropoffAtFacility": "dropoff_at_facility",
+    "notification.email": "notification_email",
+    # Package level
+    "largePackage": "large_package",
+    "additionalHandling": "additional_handling",
+    # International forms
+    "termsOfShipment": "terms_of_shipment",
+    "purchaseOrderNumber": "purchase_order_number",
+    "invoiceComments": "invoice_comments",
+    "freightCharges": "freight_charges",
+    "insuranceCharges": "insurance_charges",
 }
 
 
@@ -194,6 +225,30 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["residential"], [], "shipTo.residential"),
     # Saturday delivery
     (["saturday"], [], "saturdayDelivery"),
+    # P0 — Shipment date (exclude created/updated/order date variants)
+    (["ship", "date"], ["created", "updated", "order"], "shipmentDate"),
+    # P0 — Ship-from (multi-warehouse)
+    (["ship", "from", "name"], [], "shipFrom.name"),
+    (["ship", "from", "addr"], [], "shipFrom.addressLine1"),
+    (["ship", "from", "city"], [], "shipFrom.city"),
+    (["ship", "from", "state"], [], "shipFrom.state"),
+    (["ship", "from", "zip"], [], "shipFrom.postalCode"),
+    (["ship", "from", "postal"], [], "shipFrom.postalCode"),
+    (["ship", "from", "country"], [], "shipFrom.country"),
+    (["ship", "from", "phone"], [], "shipFrom.phone"),
+    # Service options
+    (["cost", "center"], [], "costCenter"),
+    (["hold", "pickup"], [], "holdForPickup"),
+    (["lift", "gate", "pickup"], [], "liftGatePickup"),
+    (["lift", "gate", "deliver"], [], "liftGateDelivery"),
+    (["carbon", "neutral"], [], "carbonNeutral"),
+    (["notification", "email"], ["customer"], "notification.email"),
+    # International forms
+    (["terms", "shipment"], [], "termsOfShipment"),
+    (["purchase", "order", "number"], ["phone"], "purchaseOrderNumber"),
+    # P1 — Package indicators
+    (["large", "package"], [], "largePackage"),
+    (["additional", "handling"], [], "additionalHandling"),
 ]
 
 

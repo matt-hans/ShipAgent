@@ -13,10 +13,10 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,30 @@ class UPSConfig(BaseModel):
     client_secret: str = ""
 
 
+class DefaultDataSourceConfig(BaseModel):
+    """Default data source loaded on daemon/CLI startup.
+
+    At most one of path, saved_source, or platform should be set.
+    """
+
+    path: str | None = None
+    saved_source: str | None = None
+    platform: Literal["shopify"] | None = None
+
+    @model_validator(mode="after")
+    def at_most_one_source(self) -> "DefaultDataSourceConfig":
+        """Ensure at most one source field is populated."""
+        set_fields = sum(
+            1 for v in (self.path, self.saved_source, self.platform)
+            if v is not None
+        )
+        if set_fields > 1:
+            raise ValueError(
+                "Only one of path, saved_source, or platform may be set"
+            )
+        return self
+
+
 class ShipAgentConfig(BaseModel):
     """Top-level configuration for the ShipAgent headless automation suite."""
 
@@ -131,6 +155,7 @@ class ShipAgentConfig(BaseModel):
     watch_folders: list[WatchFolderConfig] = []
     shipper: ShipperConfig | None = None
     ups: UPSConfig | None = None
+    default_data_source: DefaultDataSourceConfig | None = None
 
 
 def _find_config_file() -> Path | None:

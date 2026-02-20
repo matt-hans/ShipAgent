@@ -281,3 +281,72 @@ class TestLabelConstants:
         """Test default label size is 6x4."""
         assert DEFAULT_LABEL_HEIGHT == "6"
         assert DEFAULT_LABEL_WIDTH == "4"
+
+
+class TestCompatibilityMatrices:
+    """Verify compatibility matrices match UPS spec."""
+
+    def test_express_only_packaging_contains_letter(self):
+        """UPS Letter is express-only."""
+        from src.services.ups_constants import EXPRESS_ONLY_PACKAGING
+        assert PackagingCode.LETTER.value in EXPRESS_ONLY_PACKAGING
+
+    def test_express_only_packaging_contains_pak(self):
+        """UPS PAK is express-only."""
+        from src.services.ups_constants import EXPRESS_ONLY_PACKAGING
+        assert PackagingCode.PAK.value in EXPRESS_ONLY_PACKAGING
+
+    def test_express_only_packaging_contains_tube(self):
+        """UPS Tube is express-only."""
+        from src.services.ups_constants import EXPRESS_ONLY_PACKAGING
+        assert PackagingCode.TUBE.value in EXPRESS_ONLY_PACKAGING
+
+    def test_express_only_packaging_contains_all_express_box_variants(self):
+        """All Express Box variants are express-only."""
+        from src.services.ups_constants import EXPRESS_ONLY_PACKAGING
+        assert PackagingCode.EXPRESS_BOX.value in EXPRESS_ONLY_PACKAGING
+        assert PackagingCode.SMALL_EXPRESS_BOX.value in EXPRESS_ONLY_PACKAGING
+        assert PackagingCode.MEDIUM_EXPRESS_BOX.value in EXPRESS_ONLY_PACKAGING
+        assert PackagingCode.LARGE_EXPRESS_BOX.value in EXPRESS_ONLY_PACKAGING
+
+    def test_customer_supplied_not_in_express_only(self):
+        """Customer Supplied is universal — not express-only."""
+        from src.services.ups_constants import EXPRESS_ONLY_PACKAGING
+        assert PackagingCode.CUSTOMER_SUPPLIED.value not in EXPRESS_ONLY_PACKAGING
+
+    def test_ground_not_in_express_class_services(self):
+        """Ground (03) is not an express service."""
+        from src.services.ups_constants import EXPRESS_CLASS_SERVICES
+        assert "03" not in EXPRESS_CLASS_SERVICES
+
+    def test_next_day_air_in_express_class(self):
+        """Next Day Air (01) is express class."""
+        from src.services.ups_constants import EXPRESS_CLASS_SERVICES
+        assert "01" in EXPRESS_CLASS_SERVICES
+
+    def test_worldwide_express_in_express_class(self):
+        """Worldwide Express (07) is express class."""
+        from src.services.ups_constants import EXPRESS_CLASS_SERVICES
+        assert "07" in EXPRESS_CLASS_SERVICES
+
+    def test_saturday_delivery_services_subset_of_express(self):
+        """Saturday Delivery services are a subset of express services."""
+        from src.services.ups_constants import EXPRESS_CLASS_SERVICES, SATURDAY_DELIVERY_SERVICES
+        assert SATURDAY_DELIVERY_SERVICES.issubset(EXPRESS_CLASS_SERVICES)
+
+    def test_international_only_packaging(self):
+        """25kg and 10kg boxes are international-only."""
+        from src.services.ups_constants import INTERNATIONAL_ONLY_PACKAGING
+        assert PackagingCode.BOX_25KG.value in INTERNATIONAL_ONLY_PACKAGING
+        assert PackagingCode.BOX_10KG.value in INTERNATIONAL_ONLY_PACKAGING
+
+    def test_letter_weight_limit_reasonable(self):
+        """Letter weight limit is between 1.0 and 1.5 lbs."""
+        from src.services.ups_constants import LETTER_MAX_WEIGHT_LBS
+        assert 1.0 < LETTER_MAX_WEIGHT_LBS < 1.5
+
+    def test_all_services_have_weight_limits(self):
+        """Common services have defined weight limits."""
+        from src.services.ups_constants import SERVICE_WEIGHT_LIMITS_LBS
+        for svc in ["01", "02", "03", "12", "13", "14", "59"]:
+            assert svc in SERVICE_WEIGHT_LIMITS_LBS
