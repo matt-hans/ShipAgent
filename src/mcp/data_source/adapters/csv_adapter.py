@@ -1,4 +1,4 @@
-"""CSV adapter for importing CSV files via DuckDB.
+"""Delimited file adapter for importing CSV, TSV, SSV, and other delimited files via DuckDB.
 
 Uses DuckDB's read_csv with auto-detection for schema discovery.
 Handles mixed types by defaulting to VARCHAR, and detects date format ambiguity.
@@ -21,8 +21,8 @@ from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN, ImportResult, Sche
 from src.mcp.data_source.utils import parse_date_with_warnings
 
 
-class CSVAdapter(BaseSourceAdapter):
-    """Adapter for importing CSV files via DuckDB.
+class DelimitedAdapter(BaseSourceAdapter):
+    """Adapter for importing delimited files (CSV, TSV, SSV, pipe, etc.) via DuckDB.
 
     Uses DuckDB's read_csv function with auto-detection for:
     - Column types (integer, float, varchar, date, etc.)
@@ -33,44 +33,51 @@ class CSVAdapter(BaseSourceAdapter):
     Mixed-type columns default to VARCHAR per ignore_errors=true.
 
     Example:
-        >>> adapter = CSVAdapter()
+        >>> adapter = DelimitedAdapter()
         >>> result = adapter.import_data(conn, file_path="/path/to/orders.csv")
         >>> print(result.row_count, result.columns)
     """
+
+    def __init__(self):
+        """Initialize adapter with detected_delimiter tracking."""
+        self.detected_delimiter: str | None = None
 
     @property
     def source_type(self) -> str:
         """Return the adapter's source type identifier.
 
         Returns:
-            'csv' - identifies this as a CSV file adapter
+            'delimited' - identifies this as a delimited file adapter
         """
-        return "csv"
+        return "delimited"
 
     def import_data(
         self,
         conn: "DuckDBPyConnection",
         file_path: str,
-        delimiter: str = ",",
+        delimiter: str | None = None,
+        quotechar: str | None = None,
         header: bool = True,
     ) -> ImportResult:
-        """Import CSV file into DuckDB.
+        """Import delimited file into DuckDB.
 
-        Creates or replaces the 'imported_data' table with CSV contents.
+        Creates or replaces the 'imported_data' table with file contents.
         Uses full file scan for type inference to handle mixed types correctly.
 
         Args:
             conn: DuckDB connection (in-memory)
-            file_path: Absolute path to the CSV file
-            delimiter: Column delimiter (default comma)
+            file_path: Absolute path to the delimited file
+            delimiter: Column delimiter (None for auto-detect, default)
+            quotechar: Quote character (default None — DuckDB auto-detects)
             header: Whether first row contains headers (default True)
 
         Returns:
             ImportResult with discovered schema, row count, and warnings
 
         Raises:
-            FileNotFoundError: If the CSV file doesn't exist
+            FileNotFoundError: If the file doesn't exist
         """
+        self.detected_delimiter = delimiter or ","
         # Validate file exists before attempting import
         path = Path(file_path)
         if not path.exists():
@@ -83,7 +90,15 @@ class CSVAdapter(BaseSourceAdapter):
         # - null_padding=true: Handle rows with fewer columns gracefully
         # Escape single quotes for SQL injection prevention
         safe_path = file_path.replace("'", "''")
-        safe_delim = delimiter.replace("'", "''")
+
+        # Build optional read_csv clauses
+        extra_clauses = ""
+        if delimiter:
+            safe_delim = delimiter.replace("'", "''")
+            extra_clauses += f", delim = '{safe_delim}'"
+        if quotechar:
+            safe_quote = quotechar.replace("'", "''")
+            extra_clauses += f", quote = '{safe_quote}'"
 
         conn.execute(f"""
             CREATE OR REPLACE TABLE _raw_import AS
@@ -93,8 +108,8 @@ class CSVAdapter(BaseSourceAdapter):
                 sample_size = -1,
                 ignore_errors = true,
                 null_padding = true,
-                delim = '{safe_delim}',
                 header = {str(header).lower()}
+                {extra_clauses}
             )
         """)
 
@@ -161,15 +176,22 @@ class CSVAdapter(BaseSourceAdapter):
         # Get row count (DuckDB already skips truly empty rows with null_padding)
         row_count = conn.execute("SELECT COUNT(*) FROM imported_data").fetchone()[0]
 
+        # Single-column ambiguity warning for possible fixed-width files
+        if len(columns) == 1 and row_count > 0:
+            warnings.append(
+                "Only 1 column detected — file may be fixed-width or use an "
+                "unrecognized delimiter. Use sniff_file to inspect."
+            )
+
         return ImportResult(
             row_count=row_count,
             columns=columns,
             warnings=warnings,
-            source_type="csv",
+            source_type="delimited",
         )
 
     def get_metadata(self, conn: "DuckDBPyConnection") -> dict:
-        """Get metadata about the imported CSV.
+        """Get metadata about the imported delimited file.
 
         Returns information about the currently loaded data for job tracking.
 
@@ -190,7 +212,11 @@ class CSVAdapter(BaseSourceAdapter):
             return {
                 "row_count": row_count,
                 "column_count": len(user_columns),
-                "source_type": "csv",
+                "source_type": "delimited",
             }
         except Exception:
             return {"error": "No data imported"}
+
+
+# Backward compatibility alias
+CSVAdapter = DelimitedAdapter
