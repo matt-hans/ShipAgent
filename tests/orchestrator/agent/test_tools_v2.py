@@ -757,7 +757,7 @@ def test_tool_definitions_have_unique_names():
 
 
 def test_tool_definitions_filtered_for_interactive_mode():
-    """Interactive mode exposes status tools + interactive preview + v2 tools."""
+    """Interactive mode exposes status tools + interactive preview + v2 tools + contacts."""
     defs = get_all_tool_definitions(interactive_shipping=True)
     names = {d["name"] for d in defs}
     expected = {
@@ -767,6 +767,7 @@ def test_tool_definitions_filtered_for_interactive_mode():
         "request_document_upload", "upload_paperless_document",
         "push_document_to_shipment", "delete_paperless_document",
         "get_landed_cost", "track_package",
+        "resolve_contact", "save_contact", "list_contacts", "delete_contact",
     }
     assert names == expected
 

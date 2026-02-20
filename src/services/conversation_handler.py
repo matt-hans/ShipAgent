@@ -24,6 +24,43 @@ from src.services.gateway_provider import get_data_gateway
 logger = logging.getLogger(__name__)
 
 
+def _get_mru_contacts_for_prompt() -> list[dict]:
+    """Fetch MRU contacts for system prompt injection.
+
+    Uses get_db_context for clean session management.
+    Returns up to MAX_PROMPT_CONTACTS contacts sorted by last_used_at DESC.
+
+    Returns:
+        List of contact dicts with handle, city, state_province,
+        use_as_ship_to, use_as_shipper keys.
+    """
+    from src.db.connection import get_db_context
+    from src.services.contact_service import ContactService
+    from src.orchestrator.agent.system_prompt import MAX_PROMPT_CONTACTS
+
+    try:
+        ctx = get_db_context()
+        db = ctx.__enter__()
+        try:
+            svc = ContactService(db)
+            contacts = svc.get_mru_contacts(limit=MAX_PROMPT_CONTACTS)
+            return [
+                {
+                    "handle": c.handle,
+                    "city": c.city,
+                    "state_province": c.state_province,
+                    "use_as_ship_to": c.use_as_ship_to,
+                    "use_as_shipper": c.use_as_shipper,
+                }
+                for c in contacts
+            ]
+        finally:
+            ctx.__exit__(None, None, None)
+    except Exception as e:
+        logger.warning("Failed to fetch MRU contacts for prompt: %s", e)
+        return []
+
+
 def compute_source_hash(source_info: Any) -> str:
     """Compute hash of current data source for change detection.
 
@@ -61,7 +98,12 @@ async def ensure_agent(
     from src.orchestrator.agent.system_prompt import build_system_prompt
 
     source_hash = compute_source_hash(source_info)
-    combined_hash = f"{source_hash}|interactive={interactive_shipping}"
+
+    # Fetch MRU contacts for prompt injection (C1 fix)
+    contacts = _get_mru_contacts_for_prompt()
+    contacts_hash = hashlib.sha256(str(contacts).encode()).hexdigest()[:8]
+
+    combined_hash = f"{source_hash}|interactive={interactive_shipping}|contacts={contacts_hash}"
 
     # Reuse existing agent if config hasn't changed
     if session.agent is not None and session.agent_source_hash == combined_hash:
@@ -77,6 +119,7 @@ async def ensure_agent(
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=interactive_shipping,
+        contacts=contacts,
     )
 
     agent = OrchestrationAgent(

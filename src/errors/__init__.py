@@ -4,6 +4,7 @@ This package provides:
 - Error code registry with E-XXXX format codes
 - UPS error translation to friendly messages
 - Error formatting and grouping utilities
+- Typed domain exceptions for API error mapping
 
 Error categories:
 - E-1xxx: User data errors
@@ -31,6 +32,14 @@ from src.errors.formatter import (
     format_error_summary,
     group_errors,
 )
+from src.errors.domain import (
+    DomainError,
+    NotFoundError,
+    ConflictError,
+    ValidationError,
+    DuplicateHandleError,
+    DuplicateCommandNameError,
+)
 
 __all__ = [
     # Registry
@@ -48,4 +57,11 @@ __all__ = [
     "format_error",
     "group_errors",
     "format_error_summary",
+    # Domain exceptions
+    "DomainError",
+    "NotFoundError",
+    "ConflictError",
+    "ValidationError",
+    "DuplicateHandleError",
+    "DuplicateCommandNameError",
 ]
