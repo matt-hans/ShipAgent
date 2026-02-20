@@ -251,13 +251,14 @@ def _compile_condition(
     is_json_path = False
     if cond.column.startswith("custom_attributes."):
         json_key = cond.column.split(".", 1)[1]
-        # Sanitize JSON key — only alphanumerics and underscores allowed
+        # Sanitize JSON key — allow alphanumerics, underscores, hyphens, dots.
+        # Hyphens are common in Shopify note_attributes (e.g. "gift-message").
         import re as _re
-        if not _re.match(r"^[a-zA-Z0-9_]+$", json_key):
+        if not _re.match(r"^[a-zA-Z0-9_.\-]+$", json_key):
             raise FilterCompilationError(
                 FilterErrorCode.UNKNOWN_COLUMN,
                 f"Invalid JSON path key: {json_key!r}. "
-                f"Only alphanumeric characters and underscores are allowed.",
+                f"Only alphanumeric characters, underscores, hyphens, and dots are allowed.",
             )
         if "custom_attributes" not in schema_columns:
             raise FilterCompilationError(
@@ -300,7 +301,9 @@ def _compile_condition(
             params,
             _extract_ordering_value(cond.operands[0], cond.column, column_types),
         )
-        ordering_col = _ordering_column_sql(cond.column, column_types)
+        ordering_col = _ordering_column_sql(
+            cond.column, column_types, col_expr=col if is_json_path else None,
+        )
         return f"{ordering_col} > ${idx}"
 
     elif op == FilterOperator.gte:
@@ -309,7 +312,9 @@ def _compile_condition(
             params,
             _extract_ordering_value(cond.operands[0], cond.column, column_types),
         )
-        ordering_col = _ordering_column_sql(cond.column, column_types)
+        ordering_col = _ordering_column_sql(
+            cond.column, column_types, col_expr=col if is_json_path else None,
+        )
         return f"{ordering_col} >= ${idx}"
 
     elif op == FilterOperator.lt:
@@ -318,7 +323,9 @@ def _compile_condition(
             params,
             _extract_ordering_value(cond.operands[0], cond.column, column_types),
         )
-        ordering_col = _ordering_column_sql(cond.column, column_types)
+        ordering_col = _ordering_column_sql(
+            cond.column, column_types, col_expr=col if is_json_path else None,
+        )
         return f"{ordering_col} < ${idx}"
 
     elif op == FilterOperator.lte:
@@ -327,7 +334,9 @@ def _compile_condition(
             params,
             _extract_ordering_value(cond.operands[0], cond.column, column_types),
         )
-        ordering_col = _ordering_column_sql(cond.column, column_types)
+        ordering_col = _ordering_column_sql(
+            cond.column, column_types, col_expr=col if is_json_path else None,
+        )
         return f"{ordering_col} <= ${idx}"
 
     elif op == FilterOperator.in_:
@@ -414,7 +423,9 @@ def _compile_condition(
             params,
             _extract_ordering_value(cond.operands[1], cond.column, column_types),
         )
-        ordering_col = _ordering_column_sql(cond.column, column_types)
+        ordering_col = _ordering_column_sql(
+            cond.column, column_types, col_expr=col if is_json_path else None,
+        )
         return f"{ordering_col} BETWEEN ${idx_lo} AND ${idx_hi}"
 
     else:
@@ -533,12 +544,27 @@ def _is_numeric_text_column(column: str, col_type: str) -> bool:
     return any(hint in lowered for hint in _NUMERIC_TEXT_HINTS)
 
 
-def _ordering_column_sql(column: str, column_types: dict[str, str]) -> str:
-    """Return SQL expression used for ordering comparisons on a column."""
-    col = f'"{column}"'
+def _ordering_column_sql(
+    column: str,
+    column_types: dict[str, str],
+    col_expr: str | None = None,
+) -> str:
+    """Return SQL expression used for ordering comparisons on a column.
+
+    Args:
+        column: Logical column name (may be a dotted JSON path like
+            ``custom_attributes.priority``).
+        column_types: Mapping of column name to DuckDB type string.
+        col_expr: Pre-computed SQL column expression.  When supplied (e.g.
+            for JSON-path columns), this is used instead of quoting
+            *column* directly.
+    """
+    col = col_expr if col_expr is not None else f'"{column}"'
     raw_type = column_types.get(column, "").upper()
     col_type = raw_type.split("(")[0].strip() if raw_type else ""
-    if _is_numeric_text_column(column, col_type):
+    # JSON-path columns are always VARCHAR — attempt numeric cast for ordering
+    is_json_path = col_expr is not None
+    if is_json_path or _is_numeric_text_column(column, col_type):
         # Accept numeric-like text such as "$123.45" or "1,234.56".
         return (
             f"TRY_CAST(REPLACE(REPLACE(TRIM(COALESCE({col}, '')), '$', ''), ',', '') "

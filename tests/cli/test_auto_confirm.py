@@ -127,3 +127,62 @@ class TestEvaluateAutoConfirm:
         rule_names = {v.rule for v in result.violations}
         assert "max_rows" in rule_names
         assert "max_cost_cents" in rule_names
+
+
+class TestServiceParseFailures:
+    """Tests for auto-confirm blocking when service code parsing fails."""
+
+    def test_parse_failures_block_when_allowed_services_set(self):
+        """Blocks auto-confirm when service_parse_failures > 0 and allowed_services is set.
+
+        Unparseable order data means we cannot verify that the row's service
+        code complies with the whitelist, so auto-confirm must be denied.
+        """
+        rules = AutoConfirmRules(
+            enabled=True,
+            allowed_services=["03"],
+            max_cost_cents=100000,
+            max_rows=500,
+        )
+        preview = _make_preview(service_codes=["03"])
+        preview["service_parse_failures"] = 3
+        result = evaluate_auto_confirm(rules, preview)
+        assert result.approved is False
+        parse_violations = [
+            v for v in result.violations
+            if v.rule == "allowed_services" and "unparseable" in str(v.actual)
+        ]
+        assert len(parse_violations) == 1
+        assert "3 row(s)" in parse_violations[0].message
+
+    def test_parse_failures_ignored_when_no_whitelist(self):
+        """Parse failures do not block when no allowed_services whitelist is configured.
+
+        Without a service whitelist, there is nothing to enforce — the parse
+        failure check is only relevant when allowed_services is non-empty.
+        """
+        rules = AutoConfirmRules(
+            enabled=True,
+            allowed_services=[],
+            max_cost_cents=100000,
+            max_rows=500,
+        )
+        preview = _make_preview(service_codes=["03"])
+        preview["service_parse_failures"] = 3
+        result = evaluate_auto_confirm(rules, preview)
+        assert result.approved is True
+        assert len(result.violations) == 0
+
+    def test_zero_parse_failures_with_valid_services_approved(self):
+        """Normal case: zero parse failures and valid service codes pass cleanly."""
+        rules = AutoConfirmRules(
+            enabled=True,
+            allowed_services=["03", "02"],
+            max_cost_cents=100000,
+            max_rows=500,
+        )
+        preview = _make_preview(service_codes=["03"])
+        preview["service_parse_failures"] = 0
+        result = evaluate_auto_confirm(rules, preview)
+        assert result.approved is True
+        assert len(result.violations) == 0

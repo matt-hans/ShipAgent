@@ -664,10 +664,14 @@ class TestHttpClientConnectPlatform:
             await client.connect_platform("woocommerce")
 
     @pytest.mark.asyncio
-    async def test_shopify_success(self):
-        """Successful Shopify env-status returns DataSourceStatus."""
+    async def test_shopify_success(self, monkeypatch):
+        """Successful Shopify connect returns DataSourceStatus."""
+        monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test")
+        monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "test.myshopify.com")
         client = _make_client({
-            "/api/v1/platforms/shopify/env-status": (200, {"status": "ok"}),
+            "/api/v1/platforms/shopify/connect": (
+                200, {"success": True, "platform": "shopify", "status": "connected"},
+            ),
             "/api/v1/data-sources/status": (200, {
                 "connected": True,
                 "source_type": "shopify",
@@ -680,15 +684,13 @@ class TestHttpClientConnectPlatform:
         assert status.source_type == "shopify"
 
     @pytest.mark.asyncio
-    async def test_shopify_not_configured(self):
-        """Shopify env-status returning non-200 raises ShipAgentClientError."""
-        client = _make_client({
-            "/api/v1/platforms/shopify/env-status": (
-                400,
-                {"error": "SHOPIFY_ACCESS_TOKEN not set"},
-            ),
-        })
-        with pytest.raises(ShipAgentClientError, match="Shopify not configured"):
+    async def test_shopify_missing_env_vars(self):
+        """Missing env vars raises ShipAgentClientError."""
+        client = _make_client({})
+        with pytest.raises(
+            ShipAgentClientError,
+            match="SHOPIFY_ACCESS_TOKEN",
+        ):
             await client.connect_platform("shopify")
 
 
