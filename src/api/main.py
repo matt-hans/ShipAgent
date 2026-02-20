@@ -36,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from src.api.middleware.auth import maybe_require_api_key
 from src.api.routes import (
     agent_audit,
+    contacts,
     conversations,
     data_sources,
     jobs,
@@ -560,6 +561,7 @@ app.include_router(platforms.router, prefix="/api/v1")
 app.include_router(saved_data_sources.router, prefix="/api/v1")
 app.include_router(conversations.router, prefix="/api/v1")
 app.include_router(agent_audit.router, prefix="/api/v1")
+app.include_router(contacts.router, prefix="/api/v1")
 
 
 @app.get("/health")
