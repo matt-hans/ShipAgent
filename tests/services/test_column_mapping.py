@@ -484,3 +484,26 @@ class TestNewFieldMappings:
         """A column named 'ship_from_name' auto-maps to shipFrom.name."""
         mapping = auto_map_columns(["ship_from_name", "name", "address", "city", "state", "zip"])
         assert mapping.get("shipFrom.name") == "ship_from_name"
+
+
+class TestAutoMapRulesDriftPrevention:
+    """Prevent drift between _AUTO_MAP_RULES targets and _FIELD_TO_ORDER_DATA."""
+
+    def test_auto_map_targets_exist_in_field_mapping(self):
+        """Every target path in _AUTO_MAP_RULES has a corresponding entry in _FIELD_TO_ORDER_DATA.
+
+        If this test fails, a new auto-map rule was added whose target path
+        does not have a matching key in _FIELD_TO_ORDER_DATA, meaning apply_mapping()
+        would silently discard the mapped value.
+        """
+        from src.services.column_mapping import _AUTO_MAP_RULES
+
+        # Collect unique target paths from all auto-map rules
+        auto_map_targets = {path for _, _, path in _AUTO_MAP_RULES}
+
+        missing = auto_map_targets - set(_FIELD_TO_ORDER_DATA.keys())
+        assert missing == set(), (
+            f"Auto-map rules reference target paths not in _FIELD_TO_ORDER_DATA: "
+            f"{sorted(missing)}. Add entries for these paths to _FIELD_TO_ORDER_DATA "
+            f"so apply_mapping() can resolve them."
+        )

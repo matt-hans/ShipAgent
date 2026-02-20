@@ -252,7 +252,23 @@ def _build_job_row_data_with_metadata(
     packaging_type_override: str | None = None,
     schema_fingerprint: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """Build job row payloads and return mapping_hash metadata."""
+    """Build job row payloads and return mapping_hash metadata.
+
+    When a service_code_override is provided, applies compatibility validation
+    via apply_compatibility_corrections() — the same shared path used by
+    batch_engine during execution. Auto-correctable issues (e.g., express
+    packaging with ground service) are fixed in-place; hard errors are surfaced
+    as _validation_warnings for display in the preview card.
+
+    Args:
+        rows: Source rows from data source.
+        service_code_override: Optional service code applied to all rows.
+        packaging_type_override: Optional packaging code applied to all rows.
+        schema_fingerprint: Source schema fingerprint for mapping cache.
+
+    Returns:
+        Tuple of (row_data_list, mapping_hash).
+    """
     normalized_rows, mapping_hash = _normalize_rows_for_shipping_with_metadata(
         rows,
         schema_fingerprint=schema_fingerprint,
@@ -266,8 +282,20 @@ def _build_job_row_data_with_metadata(
         for row in normalized_rows:
             if isinstance(row, dict):
                 row["service_code"] = service_code_override
-                # Shared validation + auto-correction (same function used by batch_engine)
-                apply_compatibility_corrections(row, service_code_override)
+                # Shared validation + auto-correction (same function used by batch_engine).
+                # Check returned issues for hard errors so preview surfaces them.
+                issues = apply_compatibility_corrections(row, service_code_override)
+                hard_errors = [
+                    i for i in issues
+                    if i.severity == "error" and not i.auto_corrected
+                ]
+                if hard_errors:
+                    existing = row.get("_validation_warnings", [])
+                    if isinstance(existing, str):
+                        existing = [existing] if existing else []
+                    row["_validation_warnings"] = existing + [
+                        f"[VALIDATION] {i.message}" for i in hard_errors
+                    ]
 
     row_data = []
     for idx, row in enumerate(normalized_rows, start=1):
@@ -310,7 +338,20 @@ def _normalize_rows_for_shipping_with_metadata(
     rows: list[dict[str, Any]],
     schema_fingerprint: str | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """Normalize rows and return deterministic mapping_hash when available."""
+    """Normalize source rows to canonical order_data keys and return mapping metadata.
+
+    Applies heuristic auto-mapping from source columns to UPS field paths,
+    logs the mapping selection trace to the decision audit system, and
+    falls back to service name translation for service_code fields.
+
+    Args:
+        rows: Source rows with arbitrary column names.
+        schema_fingerprint: Optional fingerprint for mapping cache lookup.
+
+    Returns:
+        Tuple of (normalized_rows, mapping_hash). mapping_hash is None when
+        no schema_fingerprint is provided.
+    """
     if not rows:
         return rows, None
 

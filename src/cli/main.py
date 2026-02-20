@@ -11,6 +11,7 @@ Usage:
 """
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -29,6 +30,8 @@ from src.cli.output import (
     format_source_status,
 )
 from src.cli.protocol import ShipAgentClientError, SubmitResult
+
+_log = logging.getLogger(__name__)
 
 app = typer.Typer(
     name="shipagent",
@@ -134,8 +137,14 @@ def config_validate(
         console.print("[green]Config is valid.[/green]")
         console.print(f"  Watch folders: {len(cfg.watch_folders)}")
         console.print(f"  Auto-confirm: {'enabled' if cfg.auto_confirm.enabled else 'disabled'}")
-    except Exception as e:
+    except FileNotFoundError as e:
+        console.print(f"[red]Config file not found:[/red] {e}")
+        raise typer.Exit(1)
+    except (ValueError, TypeError) as e:
         console.print(f"[red]Config validation failed:[/red] {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Config loading error ({type(e).__name__}):[/red] {e}")
         raise typer.Exit(1)
 
 
@@ -373,6 +382,7 @@ def submit(
 
                     # Extract real service codes from row order_data.
                     service_codes: list[str] = []
+                    _parse_failures = 0
                     for r in rows:
                         if r.order_data:
                             try:
@@ -380,7 +390,13 @@ def submit(
                                 if sc:
                                     service_codes.append(sc)
                             except (_json.JSONDecodeError, AttributeError):
-                                pass
+                                _parse_failures += 1
+                    if _parse_failures > 0:
+                        _log.warning(
+                            "Auto-confirm: %d/%d rows had unparseable order_data; "
+                            "service_code checks may be incomplete",
+                            _parse_failures, len(rows),
+                        )
 
                     # Address validation state is not re-persisted on rows
                     # after preview (the agent validates at preview time only).
@@ -501,9 +517,13 @@ def data_source_status():
     client = get_client(standalone=_standalone, config=cfg)
 
     async def _run():
-        async with client:
-            status = await client.get_source_status()
-            console.print(format_source_status(status))
+        try:
+            async with client:
+                status = await client.get_source_status()
+                console.print(format_source_status(status))
+        except ShipAgentClientError as e:
+            console.print(f"[red]Error:[/red] {e.message}")
+            raise typer.Exit(1)
 
     asyncio.run(_run())
 
@@ -660,15 +680,19 @@ def interact(
 
     async def _run():
         async with client:
-            if file:
-                await client.connect_source(file)
-                console.print(f"[green]Loaded: {file}[/green]")
-            elif source:
-                await client.reconnect_saved_source(source)
-                console.print(f"[green]Reconnected: {source}[/green]")
-            elif platform:
-                await client.connect_platform(platform)
-                console.print(f"[green]Connected: {platform}[/green]")
+            try:
+                if file:
+                    await client.connect_source(file)
+                    console.print(f"[green]Loaded: {file}[/green]")
+                elif source:
+                    await client.reconnect_saved_source(source)
+                    console.print(f"[green]Reconnected: {source}[/green]")
+                elif platform:
+                    await client.connect_platform(platform)
+                    console.print(f"[green]Connected: {platform}[/green]")
+            except ShipAgentClientError as e:
+                console.print(f"[red]Failed to pre-load data source:[/red] {e.message}")
+                raise typer.Exit(1)
             # Enter REPL — pass already-open client
             await _run_repl_in_context(client, session_id=session)
 
@@ -720,5 +744,8 @@ async def _run_repl_in_context(
     finally:
         try:
             await client.delete_session(session_id)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to clean up session %s: %s", session_id, e
+            )

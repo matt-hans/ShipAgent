@@ -975,3 +975,152 @@ class TestDomesticValidation:
         issues = apply_compatibility_corrections(order_data, "01")
         errors = [i for i in issues if i.severity == "error" and not i.auto_corrected]
         assert any("weight" in i.message.lower() for i in errors)
+
+
+class TestBatchEngineValidationIntegration:
+    """Integration tests for apply_compatibility_corrections within _process_row.
+
+    These tests verify that the batch engine correctly calls
+    apply_compatibility_corrections during row processing and handles
+    both auto-correctable issues (e.g., Letter+Ground → Customer Supplied)
+    and non-correctable errors (e.g., overweight Letter → row failure).
+    """
+
+    @pytest.fixture
+    def _mock_ups_service(self):
+        """Create mock UPS client that returns a successful shipment."""
+        svc = MagicMock()
+        svc.create_shipment = AsyncMock(
+            return_value={
+                "success": True,
+                "trackingNumbers": ["1Z999AA10123456784"],
+                "labelData": ["base64data=="],
+                "shipmentIdentificationNumber": "1Z999AA10123456784",
+                "totalCharges": {"monetaryValue": "10.00", "currencyCode": "USD"},
+            }
+        )
+        svc.get_rate = AsyncMock(
+            return_value={
+                "success": True,
+                "totalCharges": {
+                    "monetaryValue": "10.00",
+                    "amount": "10.00",
+                    "currencyCode": "USD",
+                },
+            }
+        )
+        return svc
+
+    @pytest.fixture
+    def _mock_db_session(self):
+        """Create mock database session."""
+        return MagicMock()
+
+    @pytest.fixture
+    def _shipper(self):
+        """Standard domestic shipper for integration tests."""
+        return {
+            "name": "Test Store",
+            "addressLine1": "456 Oak Ave",
+            "city": "San Francisco",
+            "stateProvinceCode": "CA",
+            "postalCode": "94102",
+            "countryCode": "US",
+        }
+
+    def _make_row(self, order_data: dict, row_number: int = 1) -> MagicMock:
+        """Build a mock JobRow from order_data dict.
+
+        Args:
+            order_data: Order data to serialize as JSON.
+            row_number: Row number for the mock row.
+
+        Returns:
+            MagicMock mimicking a JobRow.
+        """
+        row = MagicMock(
+            id=f"row-{row_number}",
+            row_number=row_number,
+            status="pending",
+            order_data=json.dumps(order_data),
+            cost_cents=0,
+        )
+        return row
+
+    async def test_letter_ground_auto_corrected_during_execute(
+        self, _mock_ups_service, _mock_db_session, _shipper
+    ):
+        """Letter+Ground is auto-corrected to Customer Supplied during batch execute.
+
+        The batch engine's _process_row calls apply_compatibility_corrections
+        which auto-corrects express-only packaging (Letter, code 01) to
+        Customer Supplied (code 02) when paired with Ground service (03).
+        The row should succeed because the incompatibility is auto-correctable.
+        """
+        engine = BatchEngine(
+            ups_service=_mock_ups_service,
+            db_session=_mock_db_session,
+            account_number="TEST123",
+        )
+
+        row = self._make_row({
+            "ship_to_name": "Alice",
+            "ship_to_address1": "100 Broadway",
+            "ship_to_city": "New York",
+            "ship_to_state": "NY",
+            "ship_to_postal_code": "10001",
+            "weight": 0.5,
+            "packaging_type": "01",  # UPS Letter — incompatible with Ground
+        })
+
+        result = await engine.execute(
+            job_id="job-validation-1",
+            rows=[row],
+            shipper=_shipper,
+            service_code="03",  # Ground
+        )
+
+        # Row should succeed because Letter was auto-corrected to Customer Supplied
+        assert result["successful"] == 1
+        assert result["failed"] == 0
+        # UPS create_shipment should have been called (correction allowed the row to proceed)
+        _mock_ups_service.create_shipment.assert_called_once()
+
+    async def test_overweight_letter_fails_during_execute(
+        self, _mock_ups_service, _mock_db_session, _shipper
+    ):
+        """Overweight Letter is rejected as a hard error during batch execute.
+
+        A UPS Letter weighing 5.0 lbs (max is 1.1 lbs) cannot be auto-corrected.
+        The batch engine should mark this row as failed without calling UPS at all.
+        """
+        engine = BatchEngine(
+            ups_service=_mock_ups_service,
+            db_session=_mock_db_session,
+            account_number="TEST123",
+        )
+
+        row = self._make_row({
+            "ship_to_name": "Bob",
+            "ship_to_address1": "200 Main St",
+            "ship_to_city": "Chicago",
+            "ship_to_state": "IL",
+            "ship_to_postal_code": "60601",
+            "weight": 5.0,
+            "packaging_type": "01",  # UPS Letter — max 1.1 lbs
+        })
+
+        result = await engine.execute(
+            job_id="job-validation-2",
+            rows=[row],
+            shipper=_shipper,
+            service_code="01",  # Next Day Air (compatible with Letter, but weight exceeds)
+        )
+
+        # Row should fail due to overweight Letter (non-correctable error)
+        assert result["successful"] == 0
+        assert result["failed"] == 1
+        # UPS create_shipment should NOT have been called
+        _mock_ups_service.create_shipment.assert_not_called()
+        # Row status should be marked as failed
+        assert row.status == "failed"

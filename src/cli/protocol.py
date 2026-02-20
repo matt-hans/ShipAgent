@@ -227,6 +227,18 @@ class SourceSchemaColumn:
     nullable: bool = True
     sample_values: list[str] = field(default_factory=list)
 
+    @classmethod
+    def from_api(cls, data: dict) -> "SourceSchemaColumn":
+        """Construct from API JSON, tolerating extra fields."""
+        if isinstance(data, str):
+            return cls(name=data, type="VARCHAR")
+        return cls(
+            name=data["name"],
+            type=data.get("type", "VARCHAR"),
+            nullable=data.get("nullable", True),
+            sample_values=data.get("sample_values", []),
+        )
+
 
 class ShipAgentClientError(Exception):
     """Transport-neutral error raised by ShipAgentClient implementations.

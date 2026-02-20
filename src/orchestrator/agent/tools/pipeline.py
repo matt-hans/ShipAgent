@@ -722,7 +722,7 @@ async def ship_command_pipeline_tool(
     unknown = _validate_allowed_args(
         "ship_command_pipeline",
         args,
-        {"filter_spec", "all_rows", "command", "job_name", "service_code", "limit"},
+        {"filter_spec", "all_rows", "command", "job_name", "service_code", "packaging_type", "limit"},
     )
     if unknown is not None:
         return unknown

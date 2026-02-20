@@ -120,35 +120,45 @@ EXPRESS_ONLY_PACKAGING: frozenset[str] = frozenset({
 })
 
 # Services compatible with express-only packaging
+# Uses ServiceCode enum values to prevent drift from service code definitions.
+from src.services.ups_service_codes import ServiceCode as _ServiceCode
+
 EXPRESS_CLASS_SERVICES: frozenset[str] = frozenset({
-    "01",  # Next Day Air
-    "02",  # 2nd Day Air
-    "13",  # Next Day Air Saver
-    "14",  # Next Day Air Early
-    "59",  # 2nd Day Air A.M.
-    "07",  # Worldwide Express
-    "54",  # Worldwide Express Plus
-    "65",  # Worldwide Saver
+    _ServiceCode.NEXT_DAY_AIR.value,          # "01"
+    _ServiceCode.SECOND_DAY_AIR.value,        # "02"
+    _ServiceCode.NEXT_DAY_AIR_SAVER.value,    # "13"
+    _ServiceCode.NEXT_DAY_AIR_EARLY.value,    # "14"
+    _ServiceCode.SECOND_DAY_AIR_AM.value,     # "59"
+    _ServiceCode.WORLDWIDE_EXPRESS.value,      # "07"
+    _ServiceCode.WORLDWIDE_EXPRESS_PLUS.value, # "54"
+    _ServiceCode.WORLDWIDE_SAVER.value,        # "65"
 })
 
 # Services supporting Saturday Delivery
 SATURDAY_DELIVERY_SERVICES: frozenset[str] = frozenset({
-    "01",  # Next Day Air
-    "02",  # 2nd Day Air
-    "13",  # Next Day Air Saver
-    "14",  # Next Day Air Early
-    "59",  # 2nd Day Air A.M.
+    _ServiceCode.NEXT_DAY_AIR.value,       # "01"
+    _ServiceCode.SECOND_DAY_AIR.value,     # "02"
+    _ServiceCode.NEXT_DAY_AIR_SAVER.value, # "13"
+    _ServiceCode.NEXT_DAY_AIR_EARLY.value, # "14"
+    _ServiceCode.SECOND_DAY_AIR_AM.value,  # "59"
 })
 
-# Per-service weight limits (lbs)
+# Per-service weight limits (lbs) — keyed by ServiceCode enum values for consistency
 SERVICE_WEIGHT_LIMITS_LBS: dict[str, float] = {
-    "01": 150.0, "02": 150.0, "03": 150.0, "07": 150.0,
-    "12": 150.0, "13": 150.0, "14": 150.0, "54": 150.0,
-    "59": 150.0, "65": 150.0,
+    _ServiceCode.NEXT_DAY_AIR.value: 150.0,       # "01"
+    _ServiceCode.SECOND_DAY_AIR.value: 150.0,     # "02"
+    _ServiceCode.GROUND.value: 150.0,             # "03"
+    _ServiceCode.WORLDWIDE_EXPRESS.value: 150.0,   # "07"
+    _ServiceCode.THREE_DAY_SELECT.value: 150.0,   # "12"
+    _ServiceCode.NEXT_DAY_AIR_SAVER.value: 150.0, # "13"
+    _ServiceCode.NEXT_DAY_AIR_EARLY.value: 150.0, # "14"
+    _ServiceCode.WORLDWIDE_EXPRESS_PLUS.value: 150.0, # "54"
+    _ServiceCode.SECOND_DAY_AIR_AM.value: 150.0,  # "59"
+    _ServiceCode.WORLDWIDE_SAVER.value: 150.0,    # "65"
 }
 DEFAULT_WEIGHT_LIMIT_LBS: float = 150.0
 
-# UPS Letter weight limit (~0.5 kg)
+# UPS Letter weight limit (1.1 lbs = ~0.50 kg)
 LETTER_MAX_WEIGHT_LBS: float = 1.1
 
 # International-only packaging

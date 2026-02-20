@@ -1,7 +1,7 @@
 """Models for External Sources Gateway MCP."""
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -94,7 +94,7 @@ class ExternalOrder(BaseModel):
 
     # Order enrichment (enables note-based routing, risk filtering)
     order_note: str | None = Field(None, description="Order note from customer/merchant")
-    risk_level: str | None = Field(None, description="Platform risk assessment (LOW/MEDIUM/HIGH)")
+    risk_level: Literal["LOW", "MEDIUM", "HIGH"] | None = Field(None, description="Platform risk assessment")
 
     # Shipping enrichment (enables rate-code-based routing)
     shipping_rate_code: str | None = Field(None, description="Checkout-selected shipping rate code")
