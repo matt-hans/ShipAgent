@@ -40,6 +40,10 @@ export interface UseConversationReturn {
   reset: () => Promise<void>;
   /** Clear events without resetting the session. */
   clearEvents: () => void;
+  /** Switch to an existing persisted session without deleting the current one. */
+  loadSession: (sessionId: string, mode: 'batch' | 'interactive') => Promise<void>;
+  /** Start a fresh chat — close current session without deleting it. */
+  startNewChat: () => Promise<void>;
 }
 
 let eventCounter = 0;
@@ -281,6 +285,45 @@ export function useConversation(): UseConversationReturn {
     setEvents([]);
   }, []);
 
+  /** Switch to an existing persisted session without deleting the current one. */
+  const loadSession = useCallback(async (
+    sid: string,
+    mode: 'batch' | 'interactive',
+  ) => {
+    // Close current SSE and clear events (preserve old session in DB)
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    sessionGenerationRef.current += 1;
+    setEvents([]);
+
+    // Set the new session
+    sessionIdRef.current = sid;
+    sessionModeRef.current = mode === 'interactive';
+    setSessionId(sid);
+    setIsProcessing(false);
+
+    // Connect SSE for live events on this session
+    connectSSE(sid);
+  }, [connectSSE]);
+
+  /** Start a fresh chat — close current session without deleting it. */
+  const startNewChat = useCallback(async () => {
+    // Close current SSE without deleting session (it's auto-saved)
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    sessionGenerationRef.current += 1;
+    setEvents([]);
+    sessionIdRef.current = null;
+    sessionModeRef.current = null;
+    creatingSessionPromiseRef.current = null;
+    setSessionId(null);
+    setIsProcessing(false);
+  }, []);
+
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -299,5 +342,7 @@ export function useConversation(): UseConversationReturn {
     sendMessage,
     reset,
     clearEvents,
+    loadSession,
+    startNewChat,
   };
 }
