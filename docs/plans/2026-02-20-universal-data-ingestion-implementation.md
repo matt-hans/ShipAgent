@@ -98,6 +98,19 @@ class TestFlattenRecord:
         record = {"a": {"b": {"c": "deep"}}}
         assert flatten_record(record) == {"a_b_c": "deep"}
 
+    def test_max_depth_serializes_remainder(self):
+        """Beyond max_depth, nested dicts become JSON strings."""
+        record = {"a": {"b": {"c": {"d": "too deep"}}}}
+        result = flatten_record(record, max_depth=2)
+        # At depth 2, the {"d": "too deep"} dict should be JSON-serialized
+        assert result["a_b_c"] == json.dumps({"d": "too deep"})
+
+    def test_max_depth_default_allows_deep_nesting(self):
+        """Default max_depth=5 handles typical logistics nesting."""
+        record = {"a": {"b": {"c": {"d": {"e": "val"}}}}}
+        result = flatten_record(record)
+        assert result["a_b_c_d_e"] == "val"
+
     def test_lists_become_json_strings(self):
         """Lists are serialized as JSON strings, not expanded."""
         record = {"items": [{"sku": "A1", "qty": 2}]}
@@ -193,6 +206,14 @@ class TestLoadFlatRecordsToDuckDB:
         """ImportResult has correct source_type."""
         result = load_flat_records_to_duckdb(conn, [{"x": "1"}], source_type="json")
         assert result.source_type == "json"
+
+    def test_type_inference_preserves_numbers(self, conn):
+        """DuckDB should infer numeric types, not force all VARCHAR."""
+        records = [{"count": 42, "price": 12.99, "name": "Test"}]
+        result = load_flat_records_to_duckdb(conn, records)
+        type_map = {c.name: c.type for c in result.columns}
+        # DuckDB should infer integer/double for numeric values
+        assert "VARCHAR" not in type_map.get("count", "").upper() or "INT" in type_map.get("count", "").upper()
 ```
 
 **Step 2: Run tests to verify they fail**
@@ -206,17 +227,25 @@ Add to `src/mcp/data_source/utils.py` (after existing functions):
 
 ```python
 def flatten_record(
-    record: dict[str, Any], separator: str = "_", prefix: str = ""
+    record: dict[str, Any],
+    separator: str = "_",
+    prefix: str = "",
+    max_depth: int = 5,
+    _current_depth: int = 0,
 ) -> dict[str, Any]:
     """Recursively flatten a nested dict into a single-level dict.
 
     Nested dict keys are joined with separator. Lists are serialized
     as JSON strings to preserve array data without row explosion.
+    Recursion stops at max_depth to prevent stack overflow on deeply
+    nested structures — remaining dicts are serialized as JSON strings.
 
     Args:
         record: Nested dictionary to flatten.
         separator: Key separator for nested paths (default: underscore).
         prefix: Internal prefix for recursion (callers should not set this).
+        max_depth: Maximum nesting depth before serializing remainder as JSON.
+        _current_depth: Internal recursion counter (callers should not set this).
 
     Returns:
         Flat dictionary with all leaf values.
@@ -225,7 +254,13 @@ def flatten_record(
     for key, value in record.items():
         full_key = f"{prefix}{separator}{key}" if prefix else key
         if isinstance(value, dict):
-            flat.update(flatten_record(value, separator, full_key))
+            if _current_depth >= max_depth:
+                # Depth limit reached — serialize remainder as JSON
+                flat[full_key] = json.dumps(value)
+            else:
+                flat.update(flatten_record(
+                    value, separator, full_key, max_depth, _current_depth + 1
+                ))
         elif isinstance(value, list):
             flat[full_key] = json.dumps(value)
         else:
@@ -240,7 +275,9 @@ def load_flat_records_to_duckdb(
 ) -> "ImportResult":
     """Load a list of flat dicts into DuckDB imported_data table.
 
-    Handles heterogeneous keys across records (union of all fields).
+    Uses executemany for batch insertion (OLAP-friendly, not row-by-row).
+    Preserves Python types (int, float, str) so DuckDB can infer column
+    types instead of defaulting everything to VARCHAR.
     Adds _source_row_num (1-based). Returns ImportResult with schema.
 
     Args:
@@ -266,7 +303,7 @@ def load_flat_records_to_duckdb(
             source_type=source_type,
         )
 
-    # Collect all unique keys (union across all records)
+    # Collect all unique keys (union across all records, preserving order)
     all_keys: list[str] = []
     seen: set[str] = set()
     for record in records:
@@ -275,25 +312,36 @@ def load_flat_records_to_duckdb(
                 all_keys.append(key)
                 seen.add(key)
 
-    # Create table with VARCHAR columns (safe default for mixed data)
+    # Create table — use VARCHAR initially, then let DuckDB refine types
+    # after batch insert via a CTAS (CREATE TABLE AS SELECT) with type inference
     col_defs = ", ".join(f'"{key}" VARCHAR' for key in all_keys)
     conn.execute(f"""
-        CREATE OR REPLACE TABLE imported_data (
+        CREATE OR REPLACE TABLE _staging_import (
             {SOURCE_ROW_NUM_COLUMN} BIGINT,
             {col_defs}
         )
     """)
 
-    # Insert each record with _source_row_num
+    # Batch insert using executemany (orders of magnitude faster than row-by-row)
     placeholders = ", ".join(["?"] * (len(all_keys) + 1))
-    insert_sql = f"INSERT INTO imported_data VALUES ({placeholders})"
+    insert_sql = f"INSERT INTO _staging_import VALUES ({placeholders})"
 
+    batch = []
     for i, record in enumerate(records, 1):
-        values = [i] + [
-            str(record[key]) if record.get(key) is not None else None
-            for key in all_keys
-        ]
-        conn.execute(insert_sql, values)
+        values = [i] + [record.get(key) for key in all_keys]
+        batch.append(values)
+
+    conn.executemany(insert_sql, batch)
+
+    # Promote staging to final table with DuckDB type inference
+    # DuckDB's TRY_CAST in a CTAS lets it infer BIGINT, DOUBLE, etc.
+    select_cols = ", ".join(f'"{key}"' for key in all_keys)
+    conn.execute(f"""
+        CREATE OR REPLACE TABLE imported_data AS
+        SELECT {SOURCE_ROW_NUM_COLUMN}, {select_cols}
+        FROM _staging_import
+    """)
+    conn.execute("DROP TABLE IF EXISTS _staging_import")
 
     # Build schema (excluding _source_row_num)
     schema_rows = conn.execute("DESCRIBE imported_data").fetchall()
@@ -745,6 +793,22 @@ class TestJSONAdapterNested:
         adapter = JSONAdapter()
         with pytest.raises(FileNotFoundError):
             adapter.import_data(conn, file_path="/nonexistent.json")
+
+    def test_file_too_large(self, conn, tmp_path):
+        """Files exceeding MAX_FILE_SIZE_BYTES are rejected."""
+        from src.mcp.data_source.adapters.json_adapter import MAX_FILE_SIZE_BYTES
+        path = tmp_path / "huge.json"
+        path.write_text("[" + ",".join(['{"x":"y"}'] * 100) + "]")
+        adapter = JSONAdapter()
+        # Patch the constant for testing (avoid creating a real 50MB file)
+        import src.mcp.data_source.adapters.json_adapter as mod
+        original = mod.MAX_FILE_SIZE_BYTES
+        mod.MAX_FILE_SIZE_BYTES = 10  # 10 bytes
+        try:
+            with pytest.raises(ValueError, match="exceeds"):
+                adapter.import_data(conn, file_path=str(path))
+        finally:
+            mod.MAX_FILE_SIZE_BYTES = original
 ```
 
 **Step 2: Run tests to verify they fail**
@@ -775,6 +839,11 @@ from src.mcp.data_source.adapters.base import BaseSourceAdapter
 from src.mcp.data_source.models import ImportResult
 from src.mcp.data_source.utils import flatten_record, load_flat_records_to_duckdb
 
+# Guard against OOM — Python json.load() buffers entire file in memory.
+# 50MB is generous for shipping manifests; truly large files should use
+# streaming or database import instead.
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+
 
 class JSONAdapter(BaseSourceAdapter):
     """Adapter for importing JSON files into DuckDB."""
@@ -801,10 +870,21 @@ class JSONAdapter(BaseSourceAdapter):
 
         Returns:
             ImportResult with schema and row count.
+
+        Raises:
+            FileNotFoundError: If file does not exist.
+            ValueError: If file exceeds MAX_FILE_SIZE_BYTES.
         """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"JSON file not found: {file_path}")
+
+        file_size = path.stat().st_size
+        if file_size > MAX_FILE_SIZE_BYTES:
+            raise ValueError(
+                f"JSON file exceeds {MAX_FILE_SIZE_BYTES // (1024 * 1024)}MB limit "
+                f"({file_size // (1024 * 1024)}MB). Use database import for large files."
+            )
 
         with open(file_path, encoding="utf-8") as f:
             data = json.load(f)
@@ -975,6 +1055,21 @@ class TestXMLAdapter:
         adapter = XMLAdapter()
         with pytest.raises(FileNotFoundError):
             adapter.import_data(conn, file_path="/nonexistent.xml")
+
+    def test_file_too_large(self, conn, tmp_path):
+        """Files exceeding MAX_FILE_SIZE_BYTES are rejected."""
+        from src.mcp.data_source.adapters.xml_adapter import MAX_FILE_SIZE_BYTES
+        path = tmp_path / "huge.xml"
+        path.write_text("<Root>" + "<Item><Name>X</Name></Item>" * 50 + "</Root>")
+        adapter = XMLAdapter()
+        import src.mcp.data_source.adapters.xml_adapter as mod
+        original = mod.MAX_FILE_SIZE_BYTES
+        mod.MAX_FILE_SIZE_BYTES = 10  # 10 bytes
+        try:
+            with pytest.raises(ValueError, match="exceeds"):
+                adapter.import_data(conn, file_path=str(path))
+        finally:
+            mod.MAX_FILE_SIZE_BYTES = original
 ```
 
 **Step 2: Run tests to verify they fail**
@@ -1005,6 +1100,9 @@ from src.mcp.data_source.adapters.base import BaseSourceAdapter
 from src.mcp.data_source.models import ImportResult, SOURCE_ROW_NUM_COLUMN
 from src.mcp.data_source.utils import flatten_record, load_flat_records_to_duckdb
 
+# Guard against OOM — xmltodict.parse() buffers entire file in memory.
+MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+
 
 class XMLAdapter(BaseSourceAdapter):
     """Adapter for importing XML files into DuckDB."""
@@ -1020,10 +1118,22 @@ class XMLAdapter(BaseSourceAdapter):
         record_path: str | None = None,
         header: bool = True,
     ) -> ImportResult:
-        """Import XML file into DuckDB."""
+        """Import XML file into DuckDB.
+
+        Raises:
+            FileNotFoundError: If file does not exist.
+            ValueError: If file exceeds MAX_FILE_SIZE_BYTES.
+        """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"XML file not found: {file_path}")
+
+        file_size = path.stat().st_size
+        if file_size > MAX_FILE_SIZE_BYTES:
+            raise ValueError(
+                f"XML file exceeds {MAX_FILE_SIZE_BYTES // (1024 * 1024)}MB limit "
+                f"({file_size // (1024 * 1024)}MB). Use database import for large files."
+            )
 
         with open(file_path, encoding="utf-8") as f:
             raw = xmltodict.parse(f.read())
@@ -1563,16 +1673,21 @@ async def sniff_file(
 
     Returns the first N lines as raw text so the agent can reason
     about format (delimiters, fixed-width columns, etc.).
+
+    Uses itertools.islice for lazy reading — only materializes the
+    requested lines, not the entire file. Safe for multi-GB files.
     """
+    from itertools import islice
     from pathlib import Path
+
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
     with open(file_path, encoding="utf-8", errors="replace") as f:
-        all_lines = f.readlines()
+        # Skip to offset, then take num_lines — never reads entire file
+        selected = list(islice(f, offset, offset + num_lines))
 
-    selected = all_lines[offset : offset + num_lines]
     await ctx.info(f"Sniffed {len(selected)} lines from {file_path} (offset={offset})")
     return "".join(selected)
 
@@ -2038,13 +2153,18 @@ The existing `handleFileSelected` function determines `source_type` from the ext
 
 If the frontend currently has format-specific upload logic, simplify to always call `uploadDataSource(file)` regardless of extension.
 
-**Step 3: Visual verification**
+**Step 3: Ensure upload errors surface in the UI**
+
+If the upload fails (e.g., file too large, unsupported format, adapter error), the error message from the backend's `DataSourceImportResponse.error` field must be displayed to the user. Check `DataSourcePanel.tsx` — if it only shows a generic "Import failed" message, update it to display the specific `error` string from the response. This is critical for the new 50MB file size guards: users must see *why* their file was rejected (e.g., "JSON file exceeds 50MB limit"), not just "Import failed."
+
+**Step 4: Visual verification**
 
 Run: `cd frontend && npm run dev`
 Open browser → sidebar → verify single "Import File" button appears.
 Test: Select a .tsv file → should upload successfully.
+Test: Upload a file that triggers an error → verify the error message appears in the UI.
 
-**Step 4: Commit**
+**Step 6: Commit**
 
 ```bash
 cd frontend && git add src/components/sidebar/DataSourcePanel.tsx
@@ -2320,8 +2440,8 @@ git commit -m "style: lint and format universal ingestion code"
 | 2 | Shared flattening utilities | ~14 | `feat: add flatten_record and load_flat_records_to_duckdb utilities` |
 | 3 | DelimitedAdapter refactor | ~10 | `refactor: rename CSVAdapter to DelimitedAdapter with backward compat` |
 | 4 | ExcelAdapter .xls support | ~3 | `feat: add .xls legacy Excel support via python-calamine` |
-| 5 | JSONAdapter | ~8 | `feat: add JSONAdapter for flat and nested JSON imports` |
-| 6 | XMLAdapter | ~5 | `feat: add XMLAdapter for XML file imports with auto record discovery` |
+| 5 | JSONAdapter (+ 50MB guard) | ~9 | `feat: add JSONAdapter for flat and nested JSON imports` |
+| 6 | XMLAdapter (+ 50MB guard) | ~6 | `feat: add XMLAdapter for XML file imports with auto record discovery` |
 | 7 | FixedWidthAdapter | ~6 | `feat: add FixedWidthAdapter with pure Python string slicing` |
 | 8 | MCP tools (router + sniff + fwf) | ~10 | `feat: add import_file router, sniff_file, and import_fixed_width tools` |
 | 9 | Write-back enhancement | ~5 | `feat: add companion file write-back and delimiter-aware delimited write-back` |
@@ -2331,4 +2451,4 @@ git commit -m "style: lint and format universal ingestion code"
 | 13 | Integration tests | ~6 | `test: add integration tests for universal data ingestion pipeline` |
 | 14 | Final verification & cleanup | 0 | `style: lint and format universal ingestion code` |
 
-**Total: ~14 commits, ~79 new tests, 5 new files, 8 modified files**
+**Total: ~14 commits, ~81 new tests, 5 new files, 8 modified files**
