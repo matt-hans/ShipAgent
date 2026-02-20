@@ -119,7 +119,7 @@ def apply_delimited_updates_atomic(
     if not row_updates:
         return 0
 
-    with open(file_path, "r", newline="", encoding="utf-8") as f:
+    with open(file_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f, delimiter=delimiter)
         if not reader.fieldnames:
             raise ValueError(f"File has no header row: {file_path}")
