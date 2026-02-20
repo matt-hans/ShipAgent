@@ -332,10 +332,12 @@ class TestInsecureCredentialTransport:
         _reject_insecure_credential_transport("https://daemon.example.com:8443")
 
     def test_localhost_http_allowed(self):
-        """Plain HTTP to localhost is safe."""
+        """Plain HTTP to localhost variants is safe."""
         from src.cli.http_client import _reject_insecure_credential_transport
         _reject_insecure_credential_transport("http://127.0.0.1:8000")
         _reject_insecure_credential_transport("http://localhost:8000")
+        # IPv6 loopback — urlparse strips brackets, so hostname is "::1"
+        _reject_insecure_credential_transport("http://[::1]:8000")
 
     def test_remote_http_blocked(self):
         """Plain HTTP to non-local host raises ShipAgentClientError."""
