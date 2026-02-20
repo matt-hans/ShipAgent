@@ -1,7 +1,7 @@
 """Excel adapter for Data Source MCP.
 
-Provides Excel file import capabilities using openpyxl for sheet discovery
-and data reading, with DuckDB for SQL querying.
+Provides Excel file import capabilities using openpyxl for .xlsx sheet discovery
+and data reading, with python-calamine for legacy .xls files and DuckDB for SQL querying.
 
 Per CONTEXT.md:
 - One source at a time (importing replaces previous)
@@ -18,6 +18,13 @@ from openpyxl.utils import get_column_letter
 from .base import BaseSourceAdapter
 from ..models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
 from ..utils import parse_date_with_warnings
+
+try:
+    from python_calamine import CalamineWorkbook
+
+    _calamine_available = True
+except ImportError:
+    _calamine_available = False
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
@@ -44,23 +51,38 @@ class ExcelAdapter(BaseSourceAdapter):
         """
         return "excel"
 
+    def _is_legacy_xls(self, file_path: str) -> bool:
+        """Check if file is legacy .xls format.
+
+        Args:
+            file_path: Path to the Excel file.
+
+        Returns:
+            True if the file extension is .xls (case-insensitive).
+        """
+        return Path(file_path).suffix.lower() == ".xls"
+
     def list_sheets(self, file_path: str) -> list[str]:
         """List all sheet names in an Excel file.
 
-        Uses openpyxl in read_only mode for efficiency.
+        Uses openpyxl for .xlsx, python-calamine for legacy .xls.
 
         Args:
-            file_path: Path to Excel file (.xlsx)
+            file_path: Path to Excel file (.xlsx or .xls)
 
         Returns:
             List of sheet names in workbook order
 
         Raises:
             FileNotFoundError: If file does not exist
+            ImportError: If .xls file and python-calamine not installed
         """
         path = Path(file_path)
         if not path.exists():
             raise FileNotFoundError(f"Excel file not found: {file_path}")
+
+        if self._is_legacy_xls(file_path):
+            return self._list_sheets_calamine(file_path)
 
         # Use read_only mode for efficiency - only loads sheet metadata
         wb = load_workbook(file_path, read_only=True, data_only=True)
@@ -68,6 +90,26 @@ class ExcelAdapter(BaseSourceAdapter):
         wb.close()
 
         return sheet_names
+
+    def _list_sheets_calamine(self, file_path: str) -> list[str]:
+        """List sheets using python-calamine for legacy .xls files.
+
+        Args:
+            file_path: Path to .xls file.
+
+        Returns:
+            List of sheet names.
+
+        Raises:
+            ImportError: If python-calamine is not installed.
+        """
+        if not _calamine_available:
+            raise ImportError(
+                "python-calamine required for .xls files: "
+                "pip install python-calamine"
+            )
+        wb = CalamineWorkbook.from_path(file_path)
+        return wb.sheet_names
 
     def import_data(
         self,
@@ -78,12 +120,13 @@ class ExcelAdapter(BaseSourceAdapter):
     ) -> ImportResult:
         """Import Excel sheet into DuckDB.
 
-        Reads data using openpyxl and inserts into DuckDB for SQL access.
+        Reads data using openpyxl (.xlsx) or python-calamine (.xls)
+        and inserts into DuckDB for SQL access.
         Empty rows are silently skipped per CONTEXT.md.
 
         Args:
             conn: DuckDB connection
-            file_path: Path to Excel file (.xlsx)
+            file_path: Path to Excel file (.xlsx or .xls)
             sheet: Sheet name to import (default: first sheet)
             header: Whether first row contains headers (default: True)
 
@@ -93,6 +136,7 @@ class ExcelAdapter(BaseSourceAdapter):
         Raises:
             FileNotFoundError: If file does not exist
             ValueError: If file has no sheets
+            ImportError: If .xls file and python-calamine not installed
         """
         path = Path(file_path)
         if not path.exists():
@@ -105,13 +149,11 @@ class ExcelAdapter(BaseSourceAdapter):
                 raise ValueError("Excel file contains no sheets")
             sheet = sheets[0]
 
-        # Load workbook with data_only=True to get calculated values
-        wb = load_workbook(file_path, read_only=True, data_only=True)
-        ws = wb[sheet]
-
-        # Read all data from worksheet
-        rows_data = list(ws.values)
-        wb.close()
+        # Route .xls to calamine, .xlsx to openpyxl
+        if self._is_legacy_xls(file_path):
+            rows_data = self._read_xls_calamine(file_path, sheet)
+        else:
+            rows_data = self._read_xlsx_openpyxl(file_path, sheet)
 
         if not rows_data:
             # Empty sheet - create empty table
@@ -212,6 +254,49 @@ class ExcelAdapter(BaseSourceAdapter):
             warnings=all_warnings,
             source_type="excel",
         )
+
+    def _read_xlsx_openpyxl(
+        self, file_path: str, sheet: str
+    ) -> list[tuple]:
+        """Read rows from .xlsx using openpyxl.
+
+        Args:
+            file_path: Path to .xlsx file.
+            sheet: Sheet name to read.
+
+        Returns:
+            List of row tuples (including header row).
+        """
+        wb = load_workbook(file_path, read_only=True, data_only=True)
+        ws = wb[sheet]
+        rows_data = list(ws.values)
+        wb.close()
+        return rows_data
+
+    def _read_xls_calamine(
+        self, file_path: str, sheet: str
+    ) -> list[tuple]:
+        """Read rows from legacy .xls using python-calamine.
+
+        Args:
+            file_path: Path to .xls file.
+            sheet: Sheet name to read.
+
+        Returns:
+            List of row tuples (including header row).
+
+        Raises:
+            ImportError: If python-calamine is not installed.
+        """
+        if not _calamine_available:
+            raise ImportError(
+                "python-calamine required for .xls files: "
+                "pip install python-calamine"
+            )
+        wb = CalamineWorkbook.from_path(file_path)
+        data = wb.get_sheet_by_name(sheet).to_python()
+        # calamine returns list[list[Any]], convert to list[tuple] for compat
+        return [tuple(row) for row in data]
 
     def get_metadata(self, conn: "DuckDBPyConnection") -> dict:
         """Get metadata about imported Excel data.
