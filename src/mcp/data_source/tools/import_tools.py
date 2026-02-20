@@ -16,6 +16,10 @@ Security:
 
 from fastmcp import Context
 
+import os
+from itertools import islice
+from pathlib import Path
+
 from src.mcp.data_source.adapters.csv_adapter import CSVAdapter
 from src.mcp.data_source.adapters.db_adapter import DatabaseAdapter
 from src.mcp.data_source.adapters.excel_adapter import ExcelAdapter
@@ -275,4 +279,221 @@ async def import_database(
         f"Imported {result.row_count} rows with {len(result.columns)} columns"
     )
 
+    return result.model_dump()
+
+
+# --- Format extension map for import_file router ---
+EXTENSION_MAP: dict[str, str] = {
+    ".csv": "delimited",
+    ".tsv": "delimited",
+    ".ssv": "delimited",
+    ".dat": "delimited",
+    ".txt": "delimited",
+    ".json": "json",
+    ".xml": "xml",
+    ".xlsx": "excel",
+    ".xls": "excel",
+    ".edi": "edi",
+    ".x12": "edi",
+    ".edifact": "edi",
+    ".fwf": "fixed_width",
+}
+
+
+async def import_file(
+    file_path: str,
+    ctx: Context,
+    format_hint: str | None = None,
+    delimiter: str | None = None,
+    quotechar: str | None = None,
+    sheet: str | None = None,
+    record_path: str | None = None,
+    header: bool = True,
+) -> dict:
+    """Import any supported file format into DuckDB.
+
+    Routes to the appropriate adapter based on file extension.
+    Use format_hint to override auto-detection.
+
+    Args:
+        file_path: Absolute path to the file to import.
+        format_hint: Override extension-based detection ('delimited', 'json', 'xml', 'excel').
+        delimiter: Column delimiter for delimited files (auto-detected if None).
+        quotechar: Quote character for delimited files (auto-detected if None).
+        sheet: Sheet name for Excel files (default: first sheet).
+        record_path: Slash-separated path to records for JSON/XML files.
+        header: Whether first row contains headers (default: True).
+
+    Returns:
+        Dictionary with row_count, columns, warnings, and source_type.
+
+    Raises:
+        ValueError: If file type is unsupported or format requires special handling.
+        FileNotFoundError: If file does not exist.
+    """
+    from src.mcp.data_source.adapters.csv_adapter import DelimitedAdapter
+    from src.mcp.data_source.adapters.json_adapter import JSONAdapter
+    from src.mcp.data_source.adapters.xml_adapter import XMLAdapter
+
+    db = ctx.request_context.lifespan_context["db"]
+
+    ext = os.path.splitext(file_path)[1].lower()
+    source_type = format_hint or EXTENSION_MAP.get(ext)
+
+    if source_type is None:
+        raise ValueError(
+            f"Unsupported file type: {ext}. "
+            f"Supported: {', '.join(sorted(EXTENSION_MAP.keys()))}"
+        )
+
+    await ctx.info(f"Importing {file_path} as {source_type}")
+
+    detected_delim: str | None = None
+
+    if source_type == "delimited":
+        adapter_delim = DelimitedAdapter()
+        delim_kwargs: dict = {"file_path": file_path, "header": header}
+        if delimiter:
+            delim_kwargs["delimiter"] = delimiter
+        if quotechar:
+            delim_kwargs["quotechar"] = quotechar
+        result = adapter_delim.import_data(conn=db, **delim_kwargs)
+        detected_delim = adapter_delim.detected_delimiter
+
+    elif source_type == "excel":
+        adapter_excel = ExcelAdapter()
+        result = adapter_excel.import_data(
+            conn=db, file_path=file_path, sheet=sheet, header=header
+        )
+
+    elif source_type == "json":
+        adapter_json = JSONAdapter()
+        result = adapter_json.import_data(
+            conn=db, file_path=file_path, record_path=record_path
+        )
+
+    elif source_type == "xml":
+        adapter_xml = XMLAdapter()
+        result = adapter_xml.import_data(
+            conn=db, file_path=file_path, record_path=record_path
+        )
+
+    elif source_type == "fixed_width":
+        raise ValueError(
+            "Fixed-width files require explicit column specs. "
+            "Use sniff_file to inspect the file, then call import_fixed_width."
+        )
+
+    elif source_type == "edi":
+        try:
+            from src.mcp.data_source.tools.edi_tools import import_edi
+
+            return await import_edi(file_path, ctx)
+        except ImportError:
+            raise ValueError("EDI support requires pydifact: pip install pydifact")
+
+    else:
+        raise ValueError(f"Unknown source type: {source_type}")
+
+    ctx.request_context.lifespan_context["current_source"] = {
+        "type": source_type,
+        "path": file_path,
+        "sheet": sheet,
+        "row_count": result.row_count,
+        "deterministic_ready": True,
+        "row_key_strategy": "source_row_num",
+        "row_key_columns": ["_source_row_num"],
+        "detected_delimiter": detected_delim,
+    }
+
+    await ctx.info(
+        f"Imported {result.row_count} rows with {len(result.columns)} columns"
+    )
+    return result.model_dump()
+
+
+async def sniff_file(
+    file_path: str,
+    ctx: Context,
+    num_lines: int = 10,
+    offset: int = 0,
+) -> str:
+    """Read raw text lines from a file for agent inspection.
+
+    Returns the first N lines as raw text so the agent can reason
+    about format (delimiters, fixed-width columns, etc.).
+    Uses itertools.islice for lazy reading — safe for large files.
+
+    Args:
+        file_path: Absolute path to the file.
+        num_lines: Number of lines to return (default: 10).
+        offset: Number of lines to skip before reading (default: 0).
+
+    Returns:
+        Raw text of the selected lines.
+
+    Raises:
+        FileNotFoundError: If file does not exist.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+
+    with open(file_path, encoding="utf-8", errors="replace") as f:
+        selected = list(islice(f, offset, offset + num_lines))
+
+    await ctx.info(
+        f"Sniffed {len(selected)} lines from {file_path} (offset={offset})"
+    )
+    return "".join(selected)
+
+
+async def import_fixed_width(
+    file_path: str,
+    ctx: Context,
+    col_specs: list[tuple[int, int]],
+    names: list[str] | None = None,
+    header: bool = False,
+) -> dict:
+    """Import a fixed-width format file using explicit column positions.
+
+    The agent determines col_specs by inspecting the file via sniff_file,
+    then calls this tool with the discovered positions.
+
+    Args:
+        file_path: Absolute path to the fixed-width file.
+        col_specs: List of (start, end) byte positions for each column.
+        names: Column names (auto-generated if not provided).
+        header: If True, first line is treated as header.
+
+    Returns:
+        Dictionary with row_count, columns, warnings, and source_type.
+
+    Raises:
+        FileNotFoundError: If file does not exist.
+        ValueError: If col_specs is empty.
+    """
+    from src.mcp.data_source.adapters.fixed_width_adapter import FixedWidthAdapter
+
+    db = ctx.request_context.lifespan_context["db"]
+
+    adapter = FixedWidthAdapter()
+    result = adapter.import_data(
+        conn=db,
+        file_path=file_path,
+        col_specs=col_specs,
+        names=names,
+        header=header,
+    )
+
+    ctx.request_context.lifespan_context["current_source"] = {
+        "type": "fixed_width",
+        "path": file_path,
+        "row_count": result.row_count,
+        "deterministic_ready": True,
+        "row_key_strategy": "source_row_num",
+        "row_key_columns": ["_source_row_num"],
+    }
+
+    await ctx.info(f"Imported {result.row_count} fixed-width rows")
     return result.model_dump()
