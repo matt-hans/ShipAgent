@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
-from src.mcp.data_source.models import ImportResult
+from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN, ImportResult
 
 
 class BaseSourceAdapter(ABC):
@@ -27,7 +27,9 @@ class BaseSourceAdapter(ABC):
     Concrete implementations must provide:
     - source_type: Identifier for this adapter type
     - import_data: Import data into DuckDB and return schema info
-    - get_metadata: Return source-specific metadata
+
+    get_metadata() has a default implementation that queries the
+    imported_data table. Override in subclasses that need custom metadata.
 
     Example implementation:
         class CSVAdapter(BaseSourceAdapter):
@@ -38,9 +40,6 @@ class BaseSourceAdapter(ABC):
             def import_data(self, conn, **kwargs) -> ImportResult:
                 # CSV-specific import logic
                 pass
-
-            def get_metadata(self, conn) -> dict:
-                return {"file_path": self._file_path}
     """
 
     @property
@@ -82,21 +81,30 @@ class BaseSourceAdapter(ABC):
         """
         ...
 
-    @abstractmethod
     def get_metadata(self, conn: "DuckDBPyConnection") -> dict:
-        """Return source-specific metadata.
+        """Return metadata about the imported data.
 
-        Used to track what source is currently loaded for job creation.
-        The metadata should contain enough information to identify the
-        source but NOT sensitive data (like credentials).
+        Default implementation queries the imported_data table for row count
+        and column count. Subclasses may override for custom metadata
+        (e.g., credentials-safe database connection info).
 
         Args:
-            conn: Active DuckDB connection
+            conn: Active DuckDB connection with imported_data table.
 
         Returns:
-            Dictionary with source-specific metadata:
-                - CSV: {"file_path": str, "import_time": str}
-                - Excel: {"file_path": str, "sheet_name": str}
-                - Database: {"source": "postgres", "table": str, "row_count": int}
+            Dictionary with row_count, column_count, and source_type.
+            Returns error dict if no data imported.
         """
-        ...
+        try:
+            row_count = conn.execute(
+                "SELECT COUNT(*) FROM imported_data"
+            ).fetchone()[0]
+            columns = conn.execute("DESCRIBE imported_data").fetchall()
+            user_columns = [c for c in columns if c[0] != SOURCE_ROW_NUM_COLUMN]
+            return {
+                "row_count": row_count,
+                "column_count": len(user_columns),
+                "source_type": self.source_type,
+            }
+        except Exception:
+            return {"error": "No data imported"}
