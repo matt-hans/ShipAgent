@@ -1,11 +1,25 @@
 """Tests for the shared conversation handler service."""
 
 import asyncio
+import hashlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.services.conversation_handler import compute_source_hash, ensure_agent, process_message
+
+
+def _make_test_session_hash(source_hash: str = "none", interactive: bool = False) -> str:
+    """Compute the combined hash that ensure_agent() will produce.
+
+    Mirrors the 3-component hash in conversation_handler.ensure_agent():
+        f"{source_hash}|interactive={interactive}|contacts={contacts_hash}"
+    """
+    contacts_hash = hashlib.sha256(str([]).encode()).hexdigest()[:8]
+    return f"{source_hash}|interactive={interactive}|contacts={contacts_hash}"
+
+
+_CONTACTS_PATCH = "src.services.conversation_handler._get_mru_contacts_for_prompt"
 
 
 class TestComputeSourceHash:
@@ -59,10 +73,11 @@ class TestEnsureAgent:
     async def test_reuses_agent_when_hash_unchanged(self):
         """Reuses existing agent when source hash matches."""
         session = MagicMock()
-        session.agent = MagicMock()
-        session.agent_source_hash = "none|interactive=False"
+        session.agent = AsyncMock()
+        session.agent_source_hash = _make_test_session_hash()
 
-        result = await ensure_agent(session, source_info=None)
+        with patch(_CONTACTS_PATCH, return_value=[]):
+            result = await ensure_agent(session, source_info=None)
 
         assert result is False  # No new agent created
 
@@ -102,7 +117,8 @@ class TestProcessMessage:
         """Yields events from the agent stream."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "none|interactive=False"
+        session.session_id = "sess-test-001"
+        session.agent_source_hash = _make_test_session_hash()
         session.lock = asyncio.Lock()
 
         # Mock agent stream
@@ -113,10 +129,13 @@ class TestProcessMessage:
         session.agent.process_message_stream = fake_stream
         session.agent.emitter_bridge = MagicMock()
 
-        with patch(
-            "src.services.conversation_handler.get_data_gateway",
-            new_callable=AsyncMock,
-        ) as mock_gw:
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(_CONTACTS_PATCH, return_value=[]),
+        ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             events = []
             async for event in process_message(session, "Hello"):
@@ -131,7 +150,8 @@ class TestProcessMessage:
         """Stores assistant text in session history."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "none|interactive=False"
+        session.session_id = "sess-test-001"
+        session.agent_source_hash = _make_test_session_hash()
         session.lock = asyncio.Lock()
 
         async def fake_stream(content):
@@ -140,10 +160,13 @@ class TestProcessMessage:
         session.agent.process_message_stream = fake_stream
         session.agent.emitter_bridge = MagicMock()
 
-        with patch(
-            "src.services.conversation_handler.get_data_gateway",
-            new_callable=AsyncMock,
-        ) as mock_gw:
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(_CONTACTS_PATCH, return_value=[]),
+        ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             async for _ in process_message(session, "Hello"):
                 pass
@@ -155,7 +178,8 @@ class TestProcessMessage:
         """Does NOT store user message — caller owns that."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "none|interactive=False"
+        session.session_id = "sess-test-001"
+        session.agent_source_hash = _make_test_session_hash()
         session.lock = asyncio.Lock()
 
         async def fake_stream(content):
@@ -164,10 +188,13 @@ class TestProcessMessage:
         session.agent.process_message_stream = fake_stream
         session.agent.emitter_bridge = MagicMock()
 
-        with patch(
-            "src.services.conversation_handler.get_data_gateway",
-            new_callable=AsyncMock,
-        ) as mock_gw:
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(_CONTACTS_PATCH, return_value=[]),
+        ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             async for _ in process_message(session, "User says hello"):
                 pass
@@ -182,7 +209,8 @@ class TestProcessMessage:
         """Sets emitter bridge callback before processing and clears after."""
         session = MagicMock()
         session.agent = MagicMock()
-        session.agent_source_hash = "none|interactive=False"
+        session.session_id = "sess-test-001"
+        session.agent_source_hash = _make_test_session_hash()
         session.lock = asyncio.Lock()
         bridge = MagicMock()
         session.agent.emitter_bridge = bridge
@@ -197,10 +225,13 @@ class TestProcessMessage:
         session.agent.process_message_stream = fake_stream
 
         callback = MagicMock()
-        with patch(
-            "src.services.conversation_handler.get_data_gateway",
-            new_callable=AsyncMock,
-        ) as mock_gw:
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(_CONTACTS_PATCH, return_value=[]),
+        ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             async for _ in process_message(
                 session, "Test", emit_callback=callback
