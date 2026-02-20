@@ -1025,10 +1025,16 @@ async def list_conversations(
         List of session summaries ordered by recency.
     """
     from src.db.connection import get_db_context
-    with get_db_context() as db:
-        svc = ConversationPersistenceService(db)
-        sessions = svc.list_sessions(active_only=active_only)
-    return [ChatSessionSummary(**s) for s in sessions[offset:offset + limit]]
+    try:
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            sessions = svc.list_sessions(
+                active_only=active_only, limit=limit, offset=offset,
+            )
+        return [ChatSessionSummary(**s) for s in sessions]
+    except Exception as exc:
+        logger.error("Failed to list conversations: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to list conversations")
 
 
 @router.get("/{session_id}/messages", response_model=SessionDetailResponse)

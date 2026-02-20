@@ -111,15 +111,21 @@ class ConversationPersistenceService:
         return msg
 
     def list_sessions(
-        self, active_only: bool = True
+        self,
+        active_only: bool = True,
+        limit: int = 50,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """List conversation sessions with message counts.
 
         Uses explicit column selection to avoid loading heavy columns
-        (context_data) that the sidebar listing doesn't need.
+        (context_data) that the sidebar listing doesn't need. Pagination
+        is applied at the DB level via LIMIT/OFFSET.
 
         Args:
             active_only: If True, exclude soft-deleted sessions.
+            limit: Max sessions to return.
+            offset: Number of sessions to skip.
 
         Returns:
             List of session summary dicts (lightweight — no context_data).
@@ -141,7 +147,7 @@ class ConversationPersistenceService:
         query = query.order_by(
             ConversationSession.updated_at.desc().nullslast(),
             ConversationSession.created_at.desc(),
-        )
+        ).offset(offset).limit(limit)
 
         results = []
         for row in query.all():
@@ -356,8 +362,9 @@ async def generate_session_title(session_id: str) -> None:
         assistant_msg = result["messages"][1]["content"][:200]
 
         from anthropic import AsyncAnthropic
+        import httpx
 
-        client = AsyncAnthropic()
+        client = AsyncAnthropic(timeout=httpx.Timeout(10.0, connect=5.0))
         response = await client.messages.create(
             model=TITLE_MODEL,
             max_tokens=30,
