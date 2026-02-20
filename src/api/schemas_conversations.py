@@ -79,3 +79,42 @@ class UploadDocumentResponse(BaseModel):
     file_name: str
     file_format: str
     file_size_bytes: int
+
+
+# === Chat Session Persistence Schemas ===
+
+
+class ChatSessionSummary(BaseModel):
+    """Lightweight session summary for sidebar listing."""
+
+    id: str
+    title: str | None
+    mode: str
+    created_at: str
+    updated_at: str | None
+    message_count: int
+
+
+class PersistedMessageResponse(BaseModel):
+    """Persisted message for history display."""
+
+    id: str
+    role: str
+    message_type: str
+    content: str
+    metadata: dict | None
+    sequence: int
+    created_at: str
+
+
+class SessionDetailResponse(BaseModel):
+    """Full session with messages for resume."""
+
+    session: ChatSessionSummary
+    messages: list[PersistedMessageResponse]
+
+
+class UpdateTitleRequest(BaseModel):
+    """Request to rename a session."""
+
+    title: str
