@@ -699,17 +699,6 @@ export async function listCommands(params: {
 }
 
 /**
- * Get a command by name.
- *
- * @param name - The command name (without / prefix).
- * @returns Command details.
- */
-export async function getCommandByName(name: string): Promise<CustomCommand> {
-  const response = await fetch(`${API_BASE}/commands/by-name/${name}`);
-  return parseResponse<CustomCommand>(response);
-}
-
-/**
  * Create a new custom command.
  *
  * @param data - Command creation payload.

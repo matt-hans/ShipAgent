@@ -7,6 +7,7 @@ resolution. All endpoints use /api/v1/contacts prefix.
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from src.api.schemas import (
@@ -19,6 +20,21 @@ from src.db.connection import get_db
 from src.services.contact_service import ContactService
 
 logger = logging.getLogger(__name__)
+
+
+def _map_value_error(e: ValueError) -> HTTPException:
+    """Map ValueError to appropriate HTTP status code.
+
+    - 'not found' → 404
+    - 'already exists' / 'already in use' → 409 (conflict)
+    - Other validation errors → 400
+    """
+    msg = str(e).lower()
+    if "not found" in msg:
+        return HTTPException(status_code=404, detail=str(e))
+    if "already exists" in msg or "already in use" in msg:
+        return HTTPException(status_code=409, detail=str(e))
+    return HTTPException(status_code=400, detail=str(e))
 
 router = APIRouter(prefix="/contacts", tags=["contacts"])
 
@@ -41,7 +57,7 @@ def list_contacts(
     Args:
         search: Filter by handle, name, or city.
         tag: Filter by tag value.
-        limit: Max results (default 100, M5 fix).
+        limit: Max results (default 100).
         offset: Pagination offset.
         service: ContactService (injected).
 
@@ -49,9 +65,10 @@ def list_contacts(
         List of contacts with total count.
     """
     contacts = service.list_contacts(search=search, tag=tag, limit=limit, offset=offset)
+    total = service.count_contacts(search=search, tag=tag)
     return ContactListResponse(
         contacts=[ContactResponse.model_validate(c) for c in contacts],
-        total=len(contacts),
+        total=total,
     )
 
 
@@ -95,14 +112,17 @@ def create_contact(
         Created contact details.
 
     Raises:
-        HTTPException: 400 if validation fails.
+        HTTPException: 400 if validation fails, 409 if handle exists.
     """
     try:
         contact = service.create_contact(**data.model_dump())
         db.commit()
         return ContactResponse.model_validate(contact)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise _map_value_error(e)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Contact with this handle already exists")
 
 
 @router.patch("/{contact_id}", response_model=ContactResponse)
@@ -124,7 +144,7 @@ def update_contact(
         Updated contact details.
 
     Raises:
-        HTTPException: 404 if not found, 400 if validation fails.
+        HTTPException: 404 if not found, 400 if validation fails, 409 if handle conflict.
     """
     try:
         updates = {k: v for k, v in data.model_dump().items() if v is not None}
@@ -132,7 +152,10 @@ def update_contact(
         db.commit()
         return ContactResponse.model_validate(contact)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise _map_value_error(e)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Handle already in use")
 
 
 @router.delete("/{contact_id}")
