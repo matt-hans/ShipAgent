@@ -14,7 +14,6 @@ bulk-resolves via ContactService.resolve_handles().
 from __future__ import annotations
 
 import logging
-import sys
 from typing import Any
 
 from src.orchestrator.agent.tools.core import (
@@ -95,7 +94,12 @@ async def resolve_contact_tool(
                     "order_data": order_data,
                 }
 
-                _emit_event("contact_resolved", result, bridge=bridge)
+                # Emit event (non-critical - don't fail on error)
+                try:
+                    _emit_event("contact_resolved", result, bridge=bridge)
+                except Exception:
+                    logger.warning("Failed to emit contact_resolved event")
+
                 return _ok(result)
 
             # No exact match - try prefix search for autocomplete
@@ -172,11 +176,15 @@ async def save_contact_tool(
                         svc.update_contact(existing.id, **update_fields)
                         db.commit()
 
-                    _emit_event("contact_saved", {
-                        "action": "updated",
-                        "handle": existing.handle,
-                        "display_name": existing.display_name,
-                    }, bridge=bridge)
+                    # Emit event (non-critical - don't fail on error)
+                    try:
+                        _emit_event("contact_saved", {
+                            "action": "updated",
+                            "handle": existing.handle,
+                            "display_name": existing.display_name,
+                        }, bridge=bridge)
+                    except Exception:
+                        logger.warning("Failed to emit contact_saved event")
 
                     return _ok({
                         "action": "updated",
@@ -207,11 +215,15 @@ async def save_contact_tool(
             )
             db.commit()
 
-            _emit_event("contact_saved", {
-                "action": "created",
-                "handle": contact.handle,
-                "display_name": contact.display_name,
-            }, bridge=bridge)
+            # Emit event (non-critical - don't fail on error)
+            try:
+                _emit_event("contact_saved", {
+                    "action": "created",
+                    "handle": contact.handle,
+                    "display_name": contact.display_name,
+                }, bridge=bridge)
+            except Exception:
+                logger.warning("Failed to emit contact_saved event")
 
             return _ok({
                 "action": "created",
@@ -310,10 +322,14 @@ async def delete_contact_tool(
             svc.delete_contact(contact.id)
             db.commit()
 
-            _emit_event("contact_deleted", {
-                "handle": handle,
-                "display_name": contact.display_name,
-            }, bridge=bridge)
+            # Emit event (non-critical - don't fail on error)
+            try:
+                _emit_event("contact_deleted", {
+                    "handle": handle,
+                    "display_name": contact.display_name,
+                }, bridge=bridge)
+            except Exception:
+                logger.warning("Failed to emit contact_deleted event")
 
             return _ok({
                 "deleted": True,
