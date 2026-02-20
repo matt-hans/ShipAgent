@@ -72,7 +72,7 @@ _FIELD_TO_ORDER_DATA: dict[str, str] = {
     "invoiceLineTotal.monetaryValue": "invoice_monetary_value",
     "internationalForms.invoiceNumber": "invoice_number",
     "shipmentDescription": "shipment_description",
-    # P0 — Shipment level
+    # Shipment level
     "shipmentDate": "shipment_date",
     "shipFrom.name": "ship_from_name",
     "shipFrom.addressLine1": "ship_from_address1",
@@ -82,7 +82,7 @@ _FIELD_TO_ORDER_DATA: dict[str, str] = {
     "shipFrom.postalCode": "ship_from_postal_code",
     "shipFrom.country": "ship_from_country",
     "shipFrom.phone": "ship_from_phone",
-    # P1 — Service options
+    # Service options
     "costCenter": "cost_center",
     "holdForPickup": "hold_for_pickup",
     "shipperRelease": "shipper_release",
@@ -94,10 +94,10 @@ _FIELD_TO_ORDER_DATA: dict[str, str] = {
     "carbonNeutral": "carbon_neutral",
     "dropoffAtFacility": "dropoff_at_facility",
     "notification.email": "notification_email",
-    # P1 — Package level
+    # Package level
     "largePackage": "large_package",
     "additionalHandling": "additional_handling",
-    # P1 — International forms
+    # International forms
     "termsOfShipment": "terms_of_shipment",
     "purchaseOrderNumber": "purchase_order_number",
     "invoiceComments": "invoice_comments",
@@ -236,14 +236,14 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["ship", "from", "postal"], [], "shipFrom.postalCode"),
     (["ship", "from", "country"], [], "shipFrom.country"),
     (["ship", "from", "phone"], [], "shipFrom.phone"),
-    # P1 — Service options
+    # Service options
     (["cost", "center"], [], "costCenter"),
     (["hold", "pickup"], [], "holdForPickup"),
     (["lift", "gate", "pickup"], [], "liftGatePickup"),
     (["lift", "gate", "deliver"], [], "liftGateDelivery"),
     (["carbon", "neutral"], [], "carbonNeutral"),
     (["notification", "email"], ["customer"], "notification.email"),
-    # P1 — International forms
+    # International forms
     (["terms", "shipment"], [], "termsOfShipment"),
     (["purchase", "order", "number"], ["phone"], "purchaseOrderNumber"),
     # P1 — Package indicators

@@ -1891,6 +1891,34 @@ class TestValidateDomesticPayload:
         issues = validate_domestic_payload(order_data, "12")
         assert any(i.severity == "error" for i in issues)
 
+    def test_25kg_box_with_ground_returns_error(self):
+        """International-only packaging (25KG Box, code 24) with Ground returns error.
+
+        The BOX_25KG (code "24") packaging is restricted to international services.
+        When paired with a domestic-only service like Ground ("03"), validation
+        should return an error indicating this packaging is only valid for
+        international services.
+        """
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "24"}  # BOX_25KG — international-only
+        issues = validate_domestic_payload(order_data, "03")  # Ground — domestic-only
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) >= 1
+        assert any("international" in i.message.lower() for i in errors)
+
+    def test_overweight_package_returns_error(self):
+        """Package exceeding per-service weight limit (150 lbs) returns error.
+
+        UPS Ground has a 150 lb weight limit. A 160 lb package should trigger
+        a validation error from the per-service weight check.
+        """
+        from src.services.ups_payload_builder import validate_domestic_payload
+        order_data = {"packaging_type": "02", "weight": "160.0"}  # 160 lbs
+        issues = validate_domestic_payload(order_data, "03")  # Ground — 150 lb limit
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) >= 1
+        assert any("exceeds" in i.message.lower() and "150" in i.message for i in errors)
+
 
 class TestApplyCompatibilityCorrections:
     """Shared validation + auto-correction function."""
@@ -1996,6 +2024,38 @@ class TestNewPayloadFields:
         assert "shipFrom" not in result
         assert "notificationEmail" not in result
         assert "costCenter" not in result
+
+    def test_partial_ship_from_omitted_with_warning(self):
+        """Partial ShipFrom data (only name, missing required fields) is omitted with warning.
+
+        When order_data contains ship_from_name but lacks the other required
+        ShipFrom fields (address1, city, state, postal_code), the builder
+        should omit the shipFrom block from the simplified result AND inject
+        a _validation_warnings entry into order_data to surface the omission
+        in the preview card.
+        """
+        order_data = {
+            "ship_from_name": "Warehouse B",
+            # Missing: ship_from_address1, ship_from_city, ship_from_state,
+            #          ship_from_postal_code
+            "ship_to_name": "Test",
+            "ship_to_address1": "123 Main",
+            "ship_to_city": "NYC",
+            "ship_to_state": "NY",
+            "ship_to_postal_code": "10001",
+        }
+        result = build_shipment_request(order_data)
+
+        # ShipFrom should NOT be in the simplified result (incomplete data)
+        assert "shipFrom" not in result
+
+        # A validation warning should have been injected into order_data
+        warnings = order_data.get("_validation_warnings", [])
+        assert isinstance(warnings, list)
+        assert len(warnings) >= 1
+        # Warning should mention the missing required fields
+        warning_text = warnings[0].lower()
+        assert "partial shipfrom" in warning_text or "missing" in warning_text
 
 
 class TestNewFieldsInUpsApiPayload:
@@ -2106,3 +2166,111 @@ class TestNewFieldsRatePayloadParity:
         rate = build_ups_rate_payload(simplified, account_number="X")
         options = rate["RateRequest"]["Shipment"].get("ShipmentServiceOptions", {})
         assert "UPScarbonneutralIndicator" in options
+
+    def test_rate_payload_includes_ship_from(self):
+        """Rate payload includes ShipFrom when ship_from_* fields are present."""
+        order_data = {
+            "ship_from_name": "Warehouse West",
+            "ship_from_address1": "100 Industrial Blvd",
+            "ship_from_city": "Phoenix",
+            "ship_from_state": "AZ",
+            "ship_from_postal_code": "85001",
+            "ship_from_country": "US",
+            "ship_to_name": "Test",
+            "ship_to_address1": "123 Main",
+            "ship_to_city": "NYC",
+            "ship_to_state": "NY",
+            "ship_to_postal_code": "10001",
+        }
+        simplified = build_shipment_request(order_data)
+        rate = build_ups_rate_payload(simplified, account_number="X")
+        ship_from = rate["RateRequest"]["Shipment"]["ShipFrom"]
+        assert ship_from["Name"] == "Warehouse West"
+        assert ship_from["Address"]["City"] == "Phoenix"
+        assert ship_from["Address"]["StateProvinceCode"] == "AZ"
+        assert ship_from["Address"]["PostalCode"] == "85001"
+
+
+# ── Tests for _get_weight_lbs private helper ──
+
+
+class TestGetWeightLbs:
+    """Test _get_weight_lbs grams-to-pounds conversion and edge cases."""
+
+    def test_weight_lbs_from_weight_field(self):
+        """Basic float parsing from 'weight' key."""
+        from src.services.ups_payload_builder import _get_weight_lbs
+
+        order_data = {"weight": "3.5"}
+        result = _get_weight_lbs(order_data)
+        assert result == 3.5
+
+    def test_weight_lbs_from_grams(self):
+        """Grams-to-pounds conversion from 'total_weight_grams' key.
+
+        68039g / 453.592 g/lb ~= 150 lbs.
+        """
+        from src.services.ups_payload_builder import _get_weight_lbs
+
+        order_data = {"total_weight_grams": 68039}
+        result = _get_weight_lbs(order_data)
+        assert result is not None
+        assert abs(result - 150.0) < 0.1
+
+    def test_weight_lbs_invalid_value_returns_none(self):
+        """Invalid string value returns None without crashing."""
+        from src.services.ups_payload_builder import _get_weight_lbs
+
+        order_data = {"weight": "not-a-number"}
+        result = _get_weight_lbs(order_data)
+        assert result is None
+
+    def test_weight_lbs_missing_returns_none(self):
+        """Missing weight fields returns None."""
+        from src.services.ups_payload_builder import _get_weight_lbs
+
+        order_data = {"ship_to_name": "Test"}
+        result = _get_weight_lbs(order_data)
+        assert result is None
+
+
+# ── Tests for _validation_warnings accumulation ──
+
+
+class TestValidationWarningsAccumulation:
+    """Test that apply_compatibility_corrections accumulates _validation_warnings."""
+
+    def test_validation_warnings_accumulated(self):
+        """Auto-corrections appear in order_data['_validation_warnings'] list."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+
+        # Use UPS Letter (01) with Ground (03) — triggers packaging auto-correction
+        order_data = {"packaging_type": "01"}
+        apply_compatibility_corrections(order_data, "03")
+        warnings = order_data.get("_validation_warnings", [])
+        assert isinstance(warnings, list)
+        assert len(warnings) >= 1
+        assert any("Packaging reset" in w for w in warnings)
+
+    def test_validation_warnings_include_saturday_strip(self):
+        """Saturday Delivery auto-strip appears in _validation_warnings."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+
+        order_data = {"saturday_delivery": "true"}
+        apply_compatibility_corrections(order_data, "03")
+        warnings = order_data.get("_validation_warnings", [])
+        assert isinstance(warnings, list)
+        assert any("Saturday Delivery" in w for w in warnings)
+
+    def test_validation_warnings_preserves_existing(self):
+        """Existing _validation_warnings entries are preserved, not overwritten."""
+        from src.services.ups_payload_builder import apply_compatibility_corrections
+
+        order_data = {
+            "packaging_type": "01",
+            "_validation_warnings": ["Pre-existing warning"],
+        }
+        apply_compatibility_corrections(order_data, "03")
+        warnings = order_data.get("_validation_warnings", [])
+        assert "Pre-existing warning" in warnings
+        assert len(warnings) >= 2

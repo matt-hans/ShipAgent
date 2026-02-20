@@ -9,8 +9,11 @@ See docs/plans/2026-02-16-filter-determinism-design.md Section 5.
 from __future__ import annotations
 
 import json
+import logging
 from decimal import Decimal
 from typing import Union
+
+logger = logging.getLogger(__name__)
 
 from src.orchestrator.models.filter_spec import (
     CompiledFilter,
@@ -248,6 +251,14 @@ def _compile_condition(
     is_json_path = False
     if cond.column.startswith("custom_attributes."):
         json_key = cond.column.split(".", 1)[1]
+        # Sanitize JSON key — only alphanumerics and underscores allowed
+        import re as _re
+        if not _re.match(r"^[a-zA-Z0-9_]+$", json_key):
+            raise FilterCompilationError(
+                FilterErrorCode.UNKNOWN_COLUMN,
+                f"Invalid JSON path key: {json_key!r}. "
+                f"Only alphanumeric characters and underscores are allowed.",
+            )
         if "custom_attributes" not in schema_columns:
             raise FilterCompilationError(
                 FilterErrorCode.UNKNOWN_COLUMN,
@@ -697,6 +708,9 @@ def _explain_ast(node: Union[FilterCondition, FilterGroup]) -> str:
         joiner = f" {node.logic.upper()} "
         inner = joiner.join(parts)
         return f"({inner})"
+    logger.warning(
+        "Unrecognized AST node type in explanation: %s", type(node).__name__
+    )
     return ""
 
 

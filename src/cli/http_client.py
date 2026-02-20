@@ -141,8 +141,11 @@ class HttpClient:
         try:
             existing_jobs = await self.list_jobs()
             existing_ids = {j.id for j in existing_jobs}
-        except Exception:
-            pass  # Non-fatal — worst case we fall back to session_id
+        except Exception as exc:
+            logger.warning(
+                "Failed to snapshot existing jobs before submit; "
+                "job ID resolution may fall back to session ID: %s", exc,
+            )
 
         # Step 3: Create a conversation session
         session_id = await self.create_session(interactive=False)
@@ -161,8 +164,11 @@ class HttpClient:
         # Step 6: Delete the conversation session — job is now the handle
         try:
             await self.delete_session(session_id)
-        except Exception:
-            pass  # Non-fatal: session will expire eventually
+        except Exception as exc:
+            logger.warning(
+                "Failed to delete session %s after submit (will be orphaned): %s",
+                session_id, exc,
+            )
 
         # Step 7: Resolve job_id — event-sourced ID is preferred; fall back
         # to list diff only when the preview_ready event was not observed
@@ -177,8 +183,11 @@ class HttpClient:
                     if job.id not in existing_ids:
                         job_id = job.id
                         break
-            except Exception:
-                pass  # Non-fatal fallback to session_id
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve new job ID via list diff for session %s; "
+                    "returning session_id as fallback: %s", session_id, exc,
+                )
 
         return SubmitResult(
             job_id=job_id,
@@ -230,8 +239,13 @@ class HttpClient:
                                     captured_job_id = job_id
                             elif event == "done":
                                 return captured_job_id
+        except (ImportError, OSError) as exc:
+            logger.warning("Session stream drain failed for %s (transport): %s", session_id, exc)
         except Exception as exc:
-            logger.warning("Session stream drain failed for %s: %s", session_id, exc)
+            logger.error(
+                "Unexpected error draining session stream for %s: %s",
+                session_id, exc, exc_info=True,
+            )
         return captured_job_id
 
     async def list_jobs(self, status: str | None = None) -> list[JobSummary]:
@@ -314,7 +328,10 @@ class HttpClient:
         """
         import httpx
 
-        async with httpx.AsyncClient(base_url=self._base_url, timeout=None) as stream_client:
+        headers = {}
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+        async with httpx.AsyncClient(base_url=self._base_url, timeout=None, headers=headers) as stream_client:
             async with stream_client.stream(
                 "GET", f"/api/v1/jobs/{job_id}/progress/stream"
             ) as resp:
@@ -366,7 +383,10 @@ class HttpClient:
         self._raise_for_status(resp)
 
         # Stream the response
-        async with httpx.AsyncClient(base_url=self._base_url, timeout=None) as stream_client:
+        headers = {}
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+        async with httpx.AsyncClient(base_url=self._base_url, timeout=None, headers=headers) as stream_client:
             async with stream_client.stream(
                 "GET", f"/api/v1/conversations/{session_id}/stream"
             ) as stream_resp:
@@ -408,8 +428,11 @@ class HttpClient:
                     watchdog_active=data.get("watchdog_active", False),
                     watch_folders=data.get("watch_folders", []),
                 )
-        except Exception:
-            pass
+            logger.debug("Health check returned HTTP %s", resp.status_code)
+        except (ImportError, OSError) as exc:
+            logger.debug("Health check connection failed: %s", exc)
+        except Exception as exc:
+            logger.warning("Health check failed unexpectedly: %s", exc, exc_info=True)
         return HealthStatus(
             healthy=False,
             version="unknown",
@@ -530,14 +553,7 @@ class HttpClient:
         self._raise_for_status(resp)
         data = resp.json()
         columns_raw = data.get("columns", [])
-        return [
-            SourceSchemaColumn(
-                name=c["name"],
-                type=c.get("type", "VARCHAR"),
-                nullable=c.get("nullable", True),
-            )
-            for c in columns_raw
-        ]
+        return [SourceSchemaColumn.from_api(c) for c in columns_raw]
 
     async def connect_platform(self, platform: str) -> DataSourceStatus:
         """Connect env-configured platform via GET /api/v1/platforms/shopify/env-status.
