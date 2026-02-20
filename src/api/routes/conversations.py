@@ -12,6 +12,11 @@ Endpoints:
     GET    /conversations/{id}/stream   — SSE event stream
     GET    /conversations/{id}/history  — Get conversation history
     DELETE /conversations/{id}          — End session (stops agent)
+    POST   /conversations/{id}/upload-document — Upload paperless document
+    GET    /conversations/              — List persistent sessions (sidebar)
+    GET    /conversations/{id}/messages — Load session messages (resume)
+    PATCH  /conversations/{id}          — Update session title
+    GET    /conversations/{id}/export   — Download session as JSON
 """
 
 import asyncio
@@ -29,14 +34,19 @@ from sse_starlette.sse import EventSourceResponse
 
 from src.api.schemas_conversations import (
     DOCUMENT_TYPE_LABELS,
+    ChatSessionSummary,
     ConversationHistoryMessage,
     ConversationHistoryResponse,
     CreateConversationRequest,
     CreateConversationResponse,
+    PersistedMessageResponse,
     SendMessageRequest,
     SendMessageResponse,
+    SessionDetailResponse,
+    UpdateTitleRequest,
     UploadDocumentResponse,
 )
+from src.services.conversation_persistence_service import ConversationPersistenceService
 from src.orchestrator.agent.intent_detection import (
     is_batch_shipping_request,
     is_confirmation_response,
@@ -173,10 +183,15 @@ async def _ensure_agent(
         except Exception as e:
             logger.warning("Failed to fetch column samples: %s", e)
 
+    # Load prior conversation for resumed sessions
+    from src.services.conversation_handler import _load_prior_conversation
+    prior_conversation = _load_prior_conversation(session.session_id)
+
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=session.interactive_shipping,
         column_samples=column_samples,
+        prior_conversation=prior_conversation,
     )
     agent = OrchestrationAgent(
         system_prompt=system_prompt,
@@ -440,6 +455,7 @@ async def _process_agent_message(
                             continue
                         if text:
                             _session_manager.add_message(session_id, "assistant", text)
+                            _persist_assistant_message(session_id, text)
                     elif event_type == "error":
                         run_status = AgentDecisionRunStatus.failed
                     elif event_type == "preview_ready":
@@ -481,6 +497,7 @@ async def _process_agent_message(
                                 "assistant",
                                 final_text,
                             )
+                            _persist_assistant_message(session_id, final_text)
             finally:
                 session.agent.emitter_bridge.callback = None
 
@@ -554,6 +571,28 @@ async def _process_agent_message(
     finally:
         reset_decision_job_id(job_token)
         reset_decision_run_id(run_token)
+
+
+def _persist_assistant_message(session_id: str, text: str) -> None:
+    """Persist an assistant message to the database and trigger title generation.
+
+    Best-effort — failures are logged at error level but do not block
+    the SSE event stream.
+
+    Args:
+        session_id: Conversation session ID.
+        text: Assistant message text.
+    """
+    from src.services.conversation_persistence_service import maybe_trigger_title_generation
+
+    try:
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            svc.save_message(session_id, "assistant", text)
+        maybe_trigger_title_generation(session_id)
+    except Exception as exc:
+        logger.error("Failed to persist assistant msg for %s: %s", session_id, exc)
 
 
 def _schedule_agent_message(
@@ -671,6 +710,18 @@ async def create_conversation(
     except Exception as e:
         logger.warning("Failed to schedule agent prewarm for %s: %s", session_id, e)
 
+    # Persist session to database
+    try:
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            svc.create_session(
+                session_id=session_id,
+                mode="interactive" if effective_payload.interactive_shipping else "batch",
+            )
+    except Exception as e:
+        logger.error("Failed to persist session %s to DB: %s", session_id, e)
+
     logger.info(
         "Created conversation session: %s interactive_shipping=%s",
         session_id,
@@ -711,6 +762,15 @@ async def send_message(
 
     # Store user message in history
     _session_manager.add_message(session_id, "user", payload.content)
+
+    # Persist user message to database
+    try:
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            svc.save_message(session_id, "user", payload.content)
+    except Exception as e:
+        logger.error("Failed to persist user message to DB: %s", e)
 
     run_id = DecisionAuditService.start_run(
         session_id=session_id,
@@ -926,6 +986,15 @@ async def delete_conversation(session_id: str) -> Response:
     if session is not None:
         session.terminating = True
 
+    # Soft-delete from database (keep for history)
+    try:
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            svc.soft_delete_session(session_id)
+    except Exception as e:
+        logger.error("Failed to soft-delete session %s from DB: %s", session_id, e)
+
     # Stop prewarm and agent before removing session
     await _session_manager.cancel_session_prewarm_task(session_id)
     await _session_manager.cancel_session_message_tasks(session_id)
@@ -934,6 +1003,125 @@ async def delete_conversation(session_id: str) -> Response:
     _event_queues.pop(session_id, None)
     logger.info("Deleted conversation session: %s", session_id)
     return Response(status_code=204)
+
+
+# === Chat Session Persistence Endpoints ===
+
+
+@router.get("/", response_model=list[ChatSessionSummary])
+async def list_conversations(
+    active_only: bool = True,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[ChatSessionSummary]:
+    """List conversation sessions for the sidebar.
+
+    Args:
+        active_only: If True, exclude soft-deleted sessions.
+        limit: Max sessions to return (default 50).
+        offset: Number of sessions to skip.
+
+    Returns:
+        List of session summaries ordered by recency.
+    """
+    from src.db.connection import get_db_context
+    try:
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            sessions = svc.list_sessions(
+                active_only=active_only, limit=limit, offset=offset,
+            )
+        return [ChatSessionSummary(**s) for s in sessions]
+    except Exception as exc:
+        logger.error("Failed to list conversations: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to list conversations")
+
+
+@router.get("/{session_id}/messages", response_model=SessionDetailResponse)
+async def get_session_messages(
+    session_id: str,
+    limit: int | None = None,
+    offset: int = 0,
+) -> SessionDetailResponse:
+    """Load a session's message history for resume/display.
+
+    Args:
+        session_id: Conversation session ID.
+        limit: Max messages to return.
+        offset: Skip first N messages.
+
+    Returns:
+        Session metadata and ordered messages.
+
+    Raises:
+        HTTPException: 404 if session not found.
+    """
+    from src.db.connection import get_db_context
+    with get_db_context() as db:
+        svc = ConversationPersistenceService(db)
+        result = svc.get_session_with_messages(session_id, limit=limit, offset=offset)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    return SessionDetailResponse(
+        session=ChatSessionSummary(**result["session"], message_count=len(result["messages"])),
+        messages=[PersistedMessageResponse(**m) for m in result["messages"]],
+    )
+
+
+@router.patch("/{session_id}")
+async def update_conversation(
+    session_id: str,
+    payload: UpdateTitleRequest,
+) -> dict:
+    """Update a conversation session's title.
+
+    Args:
+        session_id: Conversation session ID.
+        payload: Title update request.
+
+    Returns:
+        Updated session ID and title.
+    """
+    from src.db.connection import get_db_context
+    with get_db_context() as db:
+        svc = ConversationPersistenceService(db)
+        found = svc.update_session_title(session_id, payload.title)
+    if not found:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"id": session_id, "title": payload.title}
+
+
+@router.get("/{session_id}/export")
+async def export_conversation(session_id: str) -> Response:
+    """Export a conversation session as JSON download.
+
+    Args:
+        session_id: Conversation session ID.
+
+    Returns:
+        JSON file download.
+
+    Raises:
+        HTTPException: 404 if session not found.
+    """
+    import json as json_mod
+    from src.db.connection import get_db_context
+
+    with get_db_context() as db:
+        svc = ConversationPersistenceService(db)
+        export = svc.export_session_json(session_id)
+    if export is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    title_slug = (export["session"].get("title") or "conversation").replace(" ", "-").lower()[:30]
+    filename = f"{title_slug}-{session_id[:8]}.json"
+
+    return Response(
+        content=json_mod.dumps(export, indent=2),
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 async def shutdown_conversation_runtime() -> None:

@@ -22,6 +22,7 @@ import type {
   ContactSavedResult,
   Contact,
   CustomCommand,
+  ChatSessionSummary,
 } from '@/types/api';
 import * as api from '@/lib/api';
 
@@ -176,6 +177,13 @@ interface AppState {
   pendingChatMessage: string | null;
   setPendingChatMessage: (msg: string | null) => void;
 
+  // Chat session history for sidebar
+  chatSessions: ChatSessionSummary[];
+  setChatSessions: (sessions: ChatSessionSummary[]) => void;
+  chatSessionsVersion: number;
+  refreshChatSessions: () => void;
+  activeSessionTitle: string | null;
+  setActiveSessionTitle: (title: string | null) => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -232,6 +240,15 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   // Pending chat message (sidebar → chat bridge)
   const [pendingChatMessage, setPendingChatMessage] = React.useState<string | null>(null);
+
+  // Chat session history state
+  const [chatSessions, setChatSessions] = React.useState<ChatSessionSummary[]>([]);
+  const [chatSessionsVersion, setChatSessionsVersion] = React.useState(0);
+  const [activeSessionTitle, setActiveSessionTitle] = React.useState<string | null>(null);
+
+  const refreshChatSessions = React.useCallback(() => {
+    setChatSessionsVersion((v) => v + 1);
+  }, []);
 
   // Refresh contacts from API
   const refreshContacts = React.useCallback(async () => {
@@ -319,6 +336,12 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setSettingsFlyoutOpen,
     pendingChatMessage,
     setPendingChatMessage,
+    chatSessions,
+    setChatSessions,
+    chatSessionsVersion,
+    refreshChatSessions,
+    activeSessionTitle,
+    setActiveSessionTitle,
   };
 
   return (

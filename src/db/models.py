@@ -1,7 +1,8 @@
 """SQLAlchemy ORM models for ShipAgent state database.
 
 This module defines the core data models for job tracking, per-row status,
-and audit logging. Uses SQLAlchemy 2.0 style with Mapped and mapped_column.
+audit logging, and conversation persistence. Uses SQLAlchemy 2.0 style
+with Mapped and mapped_column.
 """
 
 from datetime import datetime, timezone
@@ -688,3 +689,117 @@ class CustomCommand(Base):
 
     def __repr__(self) -> str:
         return f"<CustomCommand(name={self.name!r})>"
+
+
+class MessageType(str, Enum):
+    """Type classification for conversation messages.
+
+    Used by the visual timeline to determine dot color without
+    parsing metadata JSON.
+    """
+
+    text = "text"
+    system_artifact = "system_artifact"
+    error = "error"
+
+
+class ConversationSession(Base):
+    """Persistent conversation session.
+
+    Stores session metadata including mode, title, and context data
+    (active data source, source hash) for context-aware resume.
+
+    Attributes:
+        id: UUID primary key (same as runtime session_id).
+        title: Agent-generated title (nullable until first response).
+        mode: Shipping mode — 'batch' or 'interactive'.
+        context_data: JSON blob with data source reference and agent_source_hash.
+        is_active: Soft delete flag (False = archived).
+        created_at: ISO8601 creation timestamp.
+        updated_at: ISO8601 last-update timestamp.
+    """
+
+    __tablename__ = "conversation_sessions"
+    __table_args__ = (
+        Index("ix_convsess_active_updated", "is_active", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="batch"
+    )
+    context_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
+    created_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+    updated_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+
+    messages: Mapped[list["ConversationMessage"]] = relationship(
+        "ConversationMessage",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="ConversationMessage.sequence",
+    )
+
+    def __repr__(self) -> str:
+        return f"<ConversationSession(id={self.id!r}, title={self.title!r})>"
+
+
+class ConversationMessage(Base):
+    """Persistent conversation message.
+
+    Stores rendered messages (user text, agent text, artifacts, errors)
+    for history display and agent context re-injection on resume.
+
+    Attributes:
+        id: UUID primary key.
+        session_id: FK to ConversationSession.
+        role: Message role — 'user', 'assistant', or 'system'.
+        message_type: Classification for timeline rendering.
+        content: Message text content.
+        metadata_json: Optional JSON with artifact data (action, preview, etc.).
+        sequence: Ordering within session (monotonically increasing).
+        created_at: ISO8601 creation timestamp.
+    """
+
+    __tablename__ = "conversation_messages"
+    __table_args__ = (
+        UniqueConstraint("session_id", "sequence", name="uq_convmsg_session_seq"),
+        Index("ix_convmsg_session_seq", "session_id", "sequence"),
+        Index("ix_convmsg_session_type", "session_id", "message_type"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    session_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    message_type: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=MessageType.text.value
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+
+    session: Mapped["ConversationSession"] = relationship(
+        "ConversationSession", back_populates="messages"
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<ConversationMessage(id={self.id!r}, role={self.role!r}, "
+            f"seq={self.sequence})>"
+        )

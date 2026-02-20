@@ -1005,3 +1005,32 @@ export interface CommandListResponse {
   commands: CustomCommand[];
   total: number;
 }
+
+// === Chat Session Persistence ===
+
+/** Lightweight session summary for sidebar listing. */
+export interface ChatSessionSummary {
+  id: string;
+  title: string | null;
+  mode: 'batch' | 'interactive';
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+/** Persisted message for history display. */
+export interface PersistedMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'system';
+  message_type: 'text' | 'system_artifact' | 'error';
+  content: string;
+  metadata: Record<string, unknown> | null;
+  sequence: number;
+  created_at: string;
+}
+
+/** Full session with messages for resume. */
+export interface SessionDetail {
+  session: ChatSessionSummary;
+  messages: PersistedMessage[];
+}
