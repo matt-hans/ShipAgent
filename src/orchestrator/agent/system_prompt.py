@@ -26,6 +26,31 @@ _INTERNATIONAL_SERVICES = frozenset({"07", "08", "11", "54", "65"})
 _MAX_SCHEMA_SAMPLES = 5
 MAX_PROMPT_CONTACTS = 20
 
+FILE_IMPORT_INSTRUCTIONS = """
+## File Import Decision Tree
+
+The Data Source MCP now supports all common file formats:
+- **Delimited:** .csv, .tsv, .ssv, .txt, .dat (auto-detected delimiter)
+- **Spreadsheets:** .xlsx, .xls (including legacy Excel)
+- **Structured:** .json (flat or nested), .xml (auto record discovery)
+- **EDI:** .edi, .x12, .edifact (X12 850/856/810, EDIFACT ORDERS)
+- **Fixed-width:** .fwf, .dat, .txt (requires agent-specified column positions)
+
+### Workflow:
+1. **Default:** Call `import_file(path)` — auto-detects format from extension.
+2. **Check:** Did the import succeed with expected columns?
+   - Yes → Proceed to mapping/shipping.
+   - No (1 column found) → Call `sniff_file(path)` to inspect raw content.
+3. **Reason:** Analyze the sniffed text.
+   - Delimited with unusual separator → `import_file(path, delimiter="X")`
+   - Fixed-width alignment → `import_fixed_width(path, col_specs=[...], names=[...])`
+   - Binary/unreadable → Report error to user.
+
+### Write-back behavior:
+- CSV/TSV/SSV/Excel: Tracking numbers written back to original file.
+- JSON/XML/EDI: Companion results CSV generated ({filename}_results.csv).
+"""
+
 
 def _build_contacts_section(contacts: list[dict]) -> str:
     """Build the saved contacts catalogue for the system prompt.
@@ -385,8 +410,9 @@ def build_system_prompt(
             data_section = (
                 "No data source connected. The user can still use tracking, pickup, "
                 "location finder, landed cost, and paperless document tools without a "
-                "data source. For batch shipping commands, ask the user to connect a "
-                "CSV, Excel, or database source first."
+                "data source. For batch shipping commands, ask the user to import a "
+                "file or connect a database source first.\n"
+                + FILE_IMPORT_INSTRUCTIONS
             )
 
     filter_rules_section = ""

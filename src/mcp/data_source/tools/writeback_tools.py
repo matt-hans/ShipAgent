@@ -18,7 +18,9 @@ from fastmcp import Context
 from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN
 from src.services.write_back_utils import (
     apply_csv_updates_atomic,
+    apply_delimited_updates_atomic,
     apply_excel_updates_atomic,
+    write_companion_csv,
 )
 
 
@@ -76,6 +78,28 @@ async def write_back(
         await _write_back_csv(
             current_source["path"], row_number, tracking_number, shipped_at, ctx
         )
+    elif source_type == "delimited":
+        detected_delim = current_source.get("detected_delimiter", ",")
+        apply_delimited_updates_atomic(
+            file_path=current_source["path"],
+            row_updates={
+                row_number: {
+                    "tracking_number": tracking_number,
+                    "shipped_at": shipped_at,
+                },
+            },
+            delimiter=detected_delim,
+        )
+        await ctx.info(f"Delimited write-back complete for row {row_number}")
+    elif source_type in ("json", "xml", "edi", "fixed_width"):
+        companion = write_companion_csv(
+            source_path=current_source["path"],
+            row_number=row_number,
+            reference_id=str(row_number),
+            tracking_number=tracking_number,
+            shipped_at=shipped_at,
+        )
+        await ctx.info(f"Wrote tracking to companion file: {companion}")
     elif source_type == "excel":
         await _write_back_excel(
             current_source["path"],

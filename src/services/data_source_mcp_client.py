@@ -240,6 +240,54 @@ class DataSourceMCPClient:
             invalidate_mapping_cache()
         return result
 
+    async def import_file(
+        self,
+        file_path: str,
+        format_hint: str | None = None,
+        delimiter: str | None = None,
+        quotechar: str | None = None,
+        sheet: str | None = None,
+        record_path: str | None = None,
+        header: bool = True,
+    ) -> dict[str, Any]:
+        """Import any supported file format as active data source.
+
+        Routes to the appropriate adapter via the import_file MCP tool.
+        Auto-saves source metadata for future reconnection on success.
+
+        Args:
+            file_path: Path to the file.
+            format_hint: Override extension-based detection.
+            delimiter: Delimiter for delimited files.
+            quotechar: Quote character for delimited files.
+            sheet: Sheet name for Excel files.
+            record_path: Path to records for JSON/XML files.
+            header: Whether first row contains headers.
+        """
+        args: dict[str, Any] = {"file_path": file_path, "header": header}
+        if format_hint:
+            args["format_hint"] = format_hint
+        if delimiter:
+            args["delimiter"] = delimiter
+        if quotechar:
+            args["quotechar"] = quotechar
+        if sheet:
+            args["sheet"] = sheet
+        if record_path:
+            args["record_path"] = record_path
+        result = await self._call_tool("import_file", args)
+        new_fp = result.get("signature") or result.get("schema_fingerprint") or ""
+        if mapping_cache_should_invalidate(new_fp):
+            invalidate_mapping_cache()
+        self._auto_save_file(
+            file_path,
+            result.get("source_type", format_hint or ""),
+            sheet,
+            result.get("row_count", 0),
+            len(result.get("columns", [])),
+        )
+        return result
+
     # -- Query operations --------------------------------------------------
 
     async def get_source_info(self) -> dict[str, Any] | None:
@@ -558,6 +606,41 @@ class DataSourceMCPClient:
                 )
         except Exception as e:
             logger.warning("Auto-save Excel source failed (non-critical): %s", e)
+
+    @staticmethod
+    def _auto_save_file(
+        file_path: str,
+        source_type: str,
+        sheet: str | None,
+        row_count: int,
+        column_count: int,
+    ) -> None:
+        """Persist source metadata for import_file imports.
+
+        Delegates to the appropriate type-specific auto-save based on
+        the resolved source_type. Ensures uploads via the universal
+        import_file path still appear in Saved Sources.
+
+        Args:
+            file_path: Absolute path to the imported file.
+            source_type: Resolved source type (delimited, excel, json, xml, etc.).
+            sheet: Sheet name for Excel files (None otherwise).
+            row_count: Number of rows imported.
+            column_count: Number of columns discovered.
+        """
+        if source_type in ("delimited", "csv"):
+            DataSourceMCPClient._auto_save_csv(file_path, row_count, column_count)
+        elif source_type == "excel":
+            DataSourceMCPClient._auto_save_excel(
+                file_path, sheet, row_count, column_count
+            )
+        else:
+            # JSON, XML, EDI, etc. — no auto-save path yet; log for visibility
+            logger.debug(
+                "No auto-save handler for source_type=%s (file=%s)",
+                source_type,
+                file_path,
+            )
 
     @staticmethod
     def _auto_save_database(
