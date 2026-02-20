@@ -611,7 +611,10 @@ class ConversationPersistenceService:
         Returns:
             The created ConversationMessage.
         """
-        # Compute next sequence number
+        # Compute next sequence number.
+        # Note: For SQLite with single-writer semantics, SELECT+INSERT
+        # is safe within a single transaction. If migrating to Postgres with
+        # concurrent writes, consider using a DB sequence or SELECT FOR UPDATE.
         max_seq = (
             self._db.query(ConversationMessage.sequence)
             .filter_by(session_id=session_id)
@@ -644,33 +647,42 @@ class ConversationPersistenceService:
     ) -> list[dict[str, Any]]:
         """List conversation sessions with message counts.
 
+        Uses explicit column selection to avoid loading heavy columns
+        (context_data) that the sidebar listing doesn't need.
+
         Args:
             active_only: If True, exclude soft-deleted sessions.
 
         Returns:
-            List of session summary dicts.
+            List of session summary dicts (lightweight — no context_data).
         """
         from sqlalchemy import func
 
+        # Select only the columns the sidebar needs — excludes context_data (Text)
         query = self._db.query(
-            ConversationSession,
+            ConversationSession.id,
+            ConversationSession.title,
+            ConversationSession.mode,
+            ConversationSession.created_at,
+            ConversationSession.updated_at,
             func.count(ConversationMessage.id).label("message_count"),
         ).outerjoin(ConversationMessage).group_by(ConversationSession.id)
 
         if active_only:
             query = query.filter(ConversationSession.is_active == True)  # noqa: E712
 
-        query = query.order_by(ConversationSession.created_at.desc())
+        query = query.order_by(ConversationSession.updated_at.desc().nullslast(),
+                               ConversationSession.created_at.desc())
 
         results = []
-        for session, count in query.all():
+        for row in query.all():
             results.append({
-                "id": session.id,
-                "title": session.title,
-                "mode": session.mode,
-                "created_at": session.created_at,
-                "updated_at": session.updated_at,
-                "message_count": count,
+                "id": row[0],
+                "title": row[1],
+                "mode": row[2],
+                "created_at": row[3],
+                "updated_at": row[4],
+                "message_count": row[5],
             })
         return results
 
@@ -1062,13 +1074,18 @@ from src.api.schemas_conversations import (
 )
 ```
 
-2. Add a module-level helper to get the persistence service (after `_event_queues` on line 69):
+2. **No module-level singleton helper.** Every call site uses `get_db_context()` to avoid DB session leaks. The pattern is:
 ```python
-def _get_persistence_service() -> ConversationPersistenceService:
-    """Get a ConversationPersistenceService with a fresh DB session."""
-    from src.db.connection import SessionLocal
-    return ConversationPersistenceService(SessionLocal())
+from src.db.connection import get_db_context
+from src.services.conversation_persistence_service import ConversationPersistenceService
+
+# Every call site uses this pattern — session is always closed:
+with get_db_context() as db:
+    svc = ConversationPersistenceService(db)
+    svc.some_method(...)
 ```
+
+> **Why:** A bare `SessionLocal()` without `close()` leaks connections. `get_db_context()` is the codebase's established pattern (`src/db/connection.py:166-182`) — it commits on success, rolls back on error, and always closes. See `_get_mru_contacts_for_prompt()` in `conversation_handler.py:27-61` for the existing precedent.
 
 3. Add new endpoints before the `shutdown_conversation_runtime` function (before line 939):
 
@@ -1085,8 +1102,10 @@ async def list_conversations(
     Returns:
         List of session summaries ordered by recency.
     """
-    svc = _get_persistence_service()
-    sessions = svc.list_sessions(active_only=active_only)
+    from src.db.connection import get_db_context
+    with get_db_context() as db:
+        svc = ConversationPersistenceService(db)
+        sessions = svc.list_sessions(active_only=active_only)
     return [ChatSessionSummary(**s) for s in sessions]
 
 
@@ -1109,8 +1128,10 @@ async def get_session_messages(
     Raises:
         HTTPException: 404 if session not found.
     """
-    svc = _get_persistence_service()
-    result = svc.get_session_with_messages(session_id, limit=limit, offset=offset)
+    from src.db.connection import get_db_context
+    with get_db_context() as db:
+        svc = ConversationPersistenceService(db)
+        result = svc.get_session_with_messages(session_id, limit=limit, offset=offset)
     if result is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -1134,8 +1155,10 @@ async def update_conversation(
     Returns:
         Updated session ID and title.
     """
-    svc = _get_persistence_service()
-    svc.update_session_title(session_id, payload.title)
+    from src.db.connection import get_db_context
+    with get_db_context() as db:
+        svc = ConversationPersistenceService(db)
+        svc.update_session_title(session_id, payload.title)
     return {"id": session_id, "title": payload.title}
 
 
@@ -1153,9 +1176,11 @@ async def export_conversation(session_id: str) -> Response:
         HTTPException: 404 if session not found.
     """
     import json as json_mod
+    from src.db.connection import get_db_context
 
-    svc = _get_persistence_service()
-    export = svc.export_session_json(session_id)
+    with get_db_context() as db:
+        svc = ConversationPersistenceService(db)
+        export = svc.export_session_json(session_id)
     if export is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
@@ -1175,11 +1200,13 @@ Add after line 656 (`session.interactive_shipping = effective_payload.interactiv
 ```python
     # Persist session to database
     try:
-        persistence = _get_persistence_service()
-        persistence.create_session(
-            session_id=session_id,
-            mode="interactive" if effective_payload.interactive_shipping else "batch",
-        )
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            svc.create_session(
+                session_id=session_id,
+                mode="interactive" if effective_payload.interactive_shipping else "batch",
+            )
     except Exception as e:
         logger.warning("Failed to persist session %s to DB: %s", session_id, e)
 ```
@@ -1190,8 +1217,10 @@ Add after line 713 (`_session_manager.add_message(session_id, "user", payload.co
 ```python
     # Persist user message to database
     try:
-        persistence = _get_persistence_service()
-        persistence.save_message(session_id, "user", payload.content)
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            svc.save_message(session_id, "user", payload.content)
     except Exception as e:
         logger.warning("Failed to persist user message to DB: %s", e)
 ```
@@ -1202,10 +1231,12 @@ Add after line 483 (the block that adds agent message to in-memory history when 
 ```python
                         # Persist assistant message to DB
                         try:
-                            persistence = _get_persistence_service()
-                            persistence.save_message(
-                                session_id, "assistant", final_text,
-                            )
+                            from src.db.connection import get_db_context
+                            with get_db_context() as db:
+                                svc = ConversationPersistenceService(db)
+                                svc.save_message(
+                                    session_id, "assistant", final_text,
+                                )
                         except Exception as exc:
                             logger.warning("Failed to persist assistant msg: %s", exc)
 ```
@@ -1214,10 +1245,12 @@ Also add persistence for non-transient agent messages (after line 442):
 ```python
                             # Persist assistant message to DB
                             try:
-                                persistence = _get_persistence_service()
-                                persistence.save_message(
-                                    session_id, "assistant", text,
-                                )
+                                from src.db.connection import get_db_context
+                                with get_db_context() as db:
+                                    svc = ConversationPersistenceService(db)
+                                    svc.save_message(
+                                        session_id, "assistant", text,
+                                    )
                             except Exception as exc:
                                 logger.warning("Failed to persist assistant msg: %s", exc)
 ```
@@ -1227,14 +1260,16 @@ And persist artifact events — add after line 461 (`await queue.put(event)`), i
                     # Persist artifact events to DB
                     if isinstance(event_type, str) and event_type in artifact_events:
                         try:
-                            persistence = _get_persistence_service()
-                            persistence.save_message(
-                                session_id,
-                                "system",
-                                event_type,
-                                message_type="system_artifact",
-                                metadata=event.get("data"),
-                            )
+                            from src.db.connection import get_db_context
+                            with get_db_context() as db:
+                                svc = ConversationPersistenceService(db)
+                                svc.save_message(
+                                    session_id,
+                                    "system",
+                                    event_type,
+                                    message_type="system_artifact",
+                                    metadata=event.get("data"),
+                                )
                         except Exception as exc:
                             logger.warning("Failed to persist artifact event: %s", exc)
 ```
@@ -1245,8 +1280,10 @@ Add before line 933 (`_session_manager.remove_session(session_id)`):
 ```python
     # Soft-delete from database (keep for history)
     try:
-        persistence = _get_persistence_service()
-        persistence.soft_delete_session(session_id)
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            svc.soft_delete_session(session_id)
     except Exception as e:
         logger.warning("Failed to soft-delete session %s from DB: %s", session_id, e)
 ```
@@ -1303,9 +1340,22 @@ def test_prior_conversation_truncation():
         for i in range(50)
     ]
     prompt = build_system_prompt(prior_conversation=history)
-    # Should truncate to last ~30 messages
+    # Should truncate to most recent messages (capped by count + token budget)
     assert "Message 49" in prompt
     assert "Message 0" not in prompt
+    assert "earlier messages omitted" in prompt
+
+
+def test_prior_conversation_token_budget():
+    """Long messages should be limited by token budget, not just count."""
+    history = [
+        {"role": "user", "content": "x" * 2000}  # ~500 tokens each
+        for _ in range(30)
+    ]
+    prompt = build_system_prompt(prior_conversation=history)
+    assert "Prior Conversation" in prompt
+    # Token budget (~4000 tokens) should cap inclusion before all 30 fit
+    assert "earlier messages omitted" in prompt
 
 
 def test_prior_conversation_empty_list():
@@ -1336,6 +1386,19 @@ Add a new helper function before `build_system_prompt` (around line 255):
 
 ```python
 MAX_RESUME_MESSAGES = 30
+MAX_RESUME_TOKENS = 4000  # ~16K chars at ~4 chars/token
+
+
+def _estimate_token_count(text: str) -> int:
+    """Rough token estimate at ~4 characters per token.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        Estimated token count.
+    """
+    return len(text) // 4
 
 
 def _build_prior_conversation_section(
@@ -1343,7 +1406,10 @@ def _build_prior_conversation_section(
 ) -> str:
     """Build a prior conversation section for session resume.
 
-    Truncates to the last MAX_RESUME_MESSAGES to control prompt size.
+    Applies two limits to control prompt size:
+    1. MAX_RESUME_MESSAGES — hard cap on message count.
+    2. MAX_RESUME_TOKENS — estimated token budget. Messages are
+       included newest-first until the budget is exhausted.
 
     Args:
         messages: List of {role, content} dicts from persisted history.
@@ -1354,28 +1420,46 @@ def _build_prior_conversation_section(
     if not messages:
         return ""
 
-    truncated = messages[-MAX_RESUME_MESSAGES:]
+    # Start from the most recent messages and work backwards
+    candidates = messages[-MAX_RESUME_MESSAGES:]
+    included: list[dict] = []
+    token_budget = MAX_RESUME_TOKENS
+
+    for msg in reversed(candidates):
+        content = msg.get("content", "")
+        # Truncate very long individual messages
+        if len(content) > 500:
+            content = content[:497] + "..."
+        cost = _estimate_token_count(content) + 10  # overhead for role label
+        if token_budget - cost < 0 and included:
+            break  # budget exhausted
+        token_budget -= cost
+        included.append({"role": msg.get("role", "unknown"), "content": content})
+
+    included.reverse()  # Restore chronological order
+
+    if not included:
+        return ""
+
     lines = [
         "## Prior Conversation (Resumed Session)",
         "",
         "You are resuming a prior conversation. Here is the recent history:",
         "",
     ]
-    for msg in truncated:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        # Truncate very long messages in history
-        if len(content) > 500:
-            content = content[:497] + "..."
-        lines.append(f"[{role}]: {content}")
 
-    if len(messages) > MAX_RESUME_MESSAGES:
-        omitted = len(messages) - MAX_RESUME_MESSAGES
-        lines.insert(4, f"({omitted} earlier messages omitted)")
-        lines.insert(5, "")
+    omitted = len(messages) - len(included)
+    if omitted > 0:
+        lines.append(f"({omitted} earlier messages omitted)")
+        lines.append("")
+
+    for msg in included:
+        lines.append(f"[{msg['role']}]: {msg['content']}")
 
     return "\n".join(lines)
 ```
+
+> **Why token estimation:** A hard `MAX_RESUME_MESSAGES = 30` doesn't account for message size variance. A batch preview response can be thousands of characters, while a user prompt might be 10. The token budget (~4K tokens) prevents context window overflow without penalising short-message conversations.
 
 At the end of `build_system_prompt()`, before the final return (line 580+), add:
 
@@ -1404,6 +1488,232 @@ Expected: All PASS
 ```bash
 git add src/orchestrator/agent/system_prompt.py tests/orchestrator/agent/test_system_prompt_resume.py
 git commit -m "feat: add prior conversation injection to system prompt for session resume"
+```
+
+---
+
+## Task 5b: Wire ensure_agent to Load Prior Conversation from DB
+
+> **This is the critical integration point.** Task 5 adds the `prior_conversation` parameter to `build_system_prompt()`. This task wires the canonical `ensure_agent()` in `conversation_handler.py` to actually load history from the DB and pass it through. Without this, resumed sessions will not have context.
+
+**Files:**
+- Modify: `src/services/conversation_handler.py:79-136` (canonical `ensure_agent`)
+- Test: `tests/services/test_conversation_handler_resume.py`
+
+**Step 1: Write failing test**
+
+Create `tests/services/test_conversation_handler_resume.py`:
+
+```python
+"""Tests for ensure_agent prior conversation loading."""
+
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from src.db.models import Base, ConversationSession, ConversationMessage, generate_uuid
+from src.services.conversation_persistence_service import ConversationPersistenceService
+
+
+@pytest.fixture
+def db_session():
+    """In-memory SQLite for testing."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    SessionLocal = sessionmaker(bind=engine)
+    session = SessionLocal()
+    yield session
+    session.close()
+
+
+def _seed_session_with_messages(db_session, session_id: str, count: int = 5):
+    """Seed a session with messages for testing."""
+    svc = ConversationPersistenceService(db_session)
+    svc.create_session(session_id=session_id, mode="batch")
+    for i in range(count):
+        role = "user" if i % 2 == 0 else "assistant"
+        svc.save_message(session_id, role, f"Message {i}")
+
+
+class TestEnsureAgentPriorConversation:
+    """Verify ensure_agent loads prior conversation from DB."""
+
+    @pytest.mark.asyncio
+    async def test_new_session_no_prior_conversation(self):
+        """A brand-new session with no DB history should pass None."""
+        mock_session = MagicMock()
+        mock_session.agent = None
+        mock_session.agent_source_hash = None
+        mock_session.session_id = "new-session-no-db"
+
+        with patch("src.services.conversation_handler.OrchestrationAgent") as MockAgent, \
+             patch("src.services.conversation_handler.build_system_prompt") as mock_prompt, \
+             patch("src.services.conversation_handler._get_mru_contacts_for_prompt", return_value=[]), \
+             patch("src.services.conversation_handler._load_prior_conversation", return_value=None):
+            mock_agent_instance = AsyncMock()
+            MockAgent.return_value = mock_agent_instance
+            mock_prompt.return_value = "test prompt"
+
+            from src.services.conversation_handler import ensure_agent
+            await ensure_agent(mock_session, source_info=None)
+
+            mock_prompt.assert_called_once()
+            call_kwargs = mock_prompt.call_args[1]
+            assert call_kwargs.get("prior_conversation") is None
+
+    @pytest.mark.asyncio
+    async def test_resumed_session_loads_prior_conversation(self, db_session):
+        """A session with DB history should pass messages as prior_conversation."""
+        _seed_session_with_messages(db_session, "resume-session", count=4)
+
+        mock_session = MagicMock()
+        mock_session.agent = None
+        mock_session.agent_source_hash = None
+        mock_session.session_id = "resume-session"
+
+        with patch("src.services.conversation_handler.OrchestrationAgent") as MockAgent, \
+             patch("src.services.conversation_handler.build_system_prompt") as mock_prompt, \
+             patch("src.services.conversation_handler._get_mru_contacts_for_prompt", return_value=[]), \
+             patch("src.services.conversation_handler.get_db_context") as mock_ctx:
+            # Wire up the DB context mock to return the test db_session
+            mock_ctx_manager = MagicMock()
+            mock_ctx_manager.__enter__ = MagicMock(return_value=db_session)
+            mock_ctx_manager.__exit__ = MagicMock(return_value=False)
+            mock_ctx.return_value = mock_ctx_manager
+
+            mock_agent_instance = AsyncMock()
+            MockAgent.return_value = mock_agent_instance
+            mock_prompt.return_value = "test prompt"
+
+            from src.services.conversation_handler import ensure_agent
+            await ensure_agent(mock_session, source_info=None)
+
+            mock_prompt.assert_called_once()
+            call_kwargs = mock_prompt.call_args[1]
+            prior = call_kwargs.get("prior_conversation")
+            assert prior is not None
+            assert len(prior) == 4
+            assert prior[0]["content"] == "Message 0"
+```
+
+**Step 2: Run tests to verify they fail**
+
+Run: `pytest tests/services/test_conversation_handler_resume.py -v`
+Expected: FAIL with `AttributeError` or `TypeError` — `_load_prior_conversation` doesn't exist yet.
+
+**Step 3: Implement the wiring in `src/services/conversation_handler.py`**
+
+Add a new helper function after `_get_mru_contacts_for_prompt()` (after line 61):
+
+```python
+def _load_prior_conversation(session_id: str) -> list[dict] | None:
+    """Load prior conversation messages from DB for system prompt injection.
+
+    Mirrors the _get_mru_contacts_for_prompt() pattern: uses get_db_context
+    for clean session management, returns data or None on failure.
+
+    Args:
+        session_id: The conversation session ID.
+
+    Returns:
+        List of {role, content} dicts, or None if no history exists.
+    """
+    from src.db.connection import get_db_context
+    from src.services.conversation_persistence_service import ConversationPersistenceService
+
+    try:
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            result = svc.get_session_with_messages(session_id, limit=30)
+            if result is None or not result["messages"]:
+                return None
+            return [
+                {"role": m["role"], "content": m["content"]}
+                for m in result["messages"]
+            ]
+    except Exception as e:
+        logger.warning("Failed to load prior conversation for %s: %s", session_id, e)
+        return None
+```
+
+Then modify the `ensure_agent` function (line 119) to pass `prior_conversation`:
+
+```python
+    # Load prior conversation for resumed sessions
+    prior_conversation = _load_prior_conversation(session.session_id)
+
+    system_prompt = build_system_prompt(
+        source_info=source_info,
+        interactive_shipping=interactive_shipping,
+        contacts=contacts,
+        prior_conversation=prior_conversation,
+    )
+```
+
+The full modified `ensure_agent` function body (lines 96-136) becomes:
+
+```python
+    from src.orchestrator.agent.client import OrchestrationAgent
+    from src.orchestrator.agent.system_prompt import build_system_prompt
+
+    source_hash = compute_source_hash(source_info)
+
+    # Fetch MRU contacts for prompt injection (C1 fix)
+    contacts = _get_mru_contacts_for_prompt()
+    contacts_hash = hashlib.sha256(str(contacts).encode()).hexdigest()[:8]
+
+    combined_hash = f"{source_hash}|interactive={interactive_shipping}|contacts={contacts_hash}"
+
+    # Reuse existing agent if config hasn't changed
+    if session.agent is not None and session.agent_source_hash == combined_hash:
+        return False
+
+    # Stop existing agent if config changed mid-conversation
+    if session.agent is not None:
+        try:
+            await session.agent.stop()
+        except Exception as e:
+            logger.warning("Error stopping old agent: %s", e)
+
+    # Load prior conversation for resumed sessions
+    prior_conversation = _load_prior_conversation(session.session_id)
+
+    system_prompt = build_system_prompt(
+        source_info=source_info,
+        interactive_shipping=interactive_shipping,
+        contacts=contacts,
+        prior_conversation=prior_conversation,
+    )
+
+    agent = OrchestrationAgent(
+        system_prompt=system_prompt,
+        interactive_shipping=interactive_shipping,
+        session_id=session.session_id,
+    )
+    await agent.start()
+
+    session.agent = agent
+    session.agent_source_hash = combined_hash
+    session.interactive_shipping = interactive_shipping
+
+    return True
+```
+
+> **Key insight:** The `_load_prior_conversation()` helper mirrors the existing `_get_mru_contacts_for_prompt()` pattern at line 27-61 — both use `get_db_context()`, return data or empty/None on failure, and are called inside `ensure_agent` before `build_system_prompt()`.
+
+**Step 4: Run tests to verify they pass**
+
+Run: `pytest tests/services/test_conversation_handler_resume.py -v`
+Expected: All PASS
+
+**Step 5: Commit**
+
+```bash
+git add src/services/conversation_handler.py tests/services/test_conversation_handler_resume.py
+git commit -m "feat: wire ensure_agent to load prior conversation from DB for session resume"
 ```
 
 ---
@@ -2336,10 +2646,17 @@ async def _generate_session_title(session_id: str) -> None:
 
     Fire-and-forget background task. Runs after the first assistant
     response is saved. Updates the DB title field.
+
+    Uses get_db_context() for safe DB session lifecycle.
     """
     try:
-        svc = _get_persistence_service()
-        result = svc.get_session_with_messages(session_id, limit=2)
+        from src.db.connection import get_db_context
+
+        # Read messages
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            result = svc.get_session_with_messages(session_id, limit=2)
+
         if result is None or len(result["messages"]) < 2:
             return
 
@@ -2369,7 +2686,10 @@ async def _generate_session_title(session_id: str) -> None:
 
         title = response.content[0].text.strip()[:255]
         if title:
-            svc.update_session_title(session_id, title)
+            # Write title in a separate context
+            with get_db_context() as db:
+                svc = ConversationPersistenceService(db)
+                svc.update_session_title(session_id, title)
             logger.info("Generated title for session %s: %s", session_id, title)
 
     except Exception as e:
@@ -2383,8 +2703,10 @@ In `_process_agent_message`, after persisting the first assistant message, check
 ```python
     # Check if this is the first assistant message — generate title
     try:
-        persistence = _get_persistence_service()
-        result = persistence.get_session_with_messages(session_id, limit=3)
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            result = svc.get_session_with_messages(session_id, limit=3)
         if result and not result["session"].get("title"):
             assistant_count = sum(1 for m in result["messages"] if m["role"] == "assistant")
             if assistant_count == 1:
@@ -2442,6 +2764,7 @@ git commit -m "fix: resolve test/type issues from chat persistence integration"
 | 3 | `feat: add Pydantic schemas for chat session persistence` | schemas, test |
 | 4 | `feat: add conversation persistence API endpoints` | routes, test |
 | 5 | `feat: add prior conversation injection to system prompt` | system_prompt, test |
+| 5b | `feat: wire ensure_agent to load prior conversation from DB` | conversation_handler, test |
 | 6 | `feat: add chat session persistence types and API client` | types, api.ts |
 | 7 | `feat: add chat session state and hooks` | useAppState, useConversation |
 | 8 | `feat: add ChatSessionsPanel to sidebar` | panel, sidebar |
@@ -2450,3 +2773,19 @@ git commit -m "fix: resolve test/type issues from chat persistence integration"
 | 11 | `feat: wire sidebar session loading to CommandCenter` | CommandCenter, App |
 | 12 | `feat: add background Haiku title generation` | routes, test |
 | 13 | `fix: resolve integration issues` | any fixes |
+
+---
+
+## Revision Notes (Post-Review)
+
+The following changes were applied to this plan after architectural review:
+
+1. **DB Connection Leak Fix (All Tasks):** Replaced all `_get_persistence_service()` singleton pattern with `get_db_context()` context manager. Every DB access now uses `with get_db_context() as db:` ensuring sessions are committed/rolled-back/closed. Pattern mirrors `_get_mru_contacts_for_prompt()` in `conversation_handler.py:27-61`.
+
+2. **Critical Wiring (Task 5b — NEW):** Added `_load_prior_conversation()` helper and wired it into the canonical `ensure_agent()` in `conversation_handler.py:79-136`. Without this, the `prior_conversation` parameter added in Task 5 would never receive data. This is the bridge between DB persistence (Tasks 1-4) and agent resume (Task 5).
+
+3. **Token Budget (Task 5):** Added `MAX_RESUME_TOKENS = 4000` and `_estimate_token_count()` to `_build_prior_conversation_section()`. Messages are now included newest-first within a token budget, preventing context window overflow from large messages while still allowing many short messages through.
+
+4. **Sidebar Query Optimization (Task 2):** `list_sessions()` now uses explicit column selection (`id, title, mode, created_at, updated_at, COUNT(*)`) instead of loading full `ConversationSession` ORM objects. This excludes the `context_data` TEXT column from sidebar listings. Also changed sort to `updated_at DESC` (with `nullslast()`) so recently-active sessions surface first.
+
+5. **Concurrency Note (Task 2):** Added inline comment on sequence calculation noting SQLite single-writer safety and Postgres migration path (`SELECT FOR UPDATE` or DB sequences).
