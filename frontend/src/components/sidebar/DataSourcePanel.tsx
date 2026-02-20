@@ -173,8 +173,10 @@ export function DataSourceSection() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const ext = file.name.split('.').pop()?.toLowerCase();
-    const fileType: 'csv' | 'excel' = ext === 'csv' ? 'csv' : 'excel';
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    const EXCEL_EXTS = new Set(['xlsx', 'xls']);
+    // Map to a broad category for local state — backend handles format routing
+    const fileType: 'csv' | 'excel' = EXCEL_EXTS.has(ext) ? 'excel' : 'csv';
 
     setIsConnecting(true);
     setImportError(null);
@@ -197,7 +199,7 @@ export function DataSourceSection() {
         excel_path: fileType === 'excel' ? file.name : undefined,
       };
       setDataSource(source);
-      setBackendSourceType(fileType);
+      setBackendSourceType(result.source_type || fileType);
       setCachedLocalConfig({ type: fileType, file_path: file.name });
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Import failed');
@@ -584,18 +586,11 @@ export function DataSourceSection() {
 
           <div className="flex gap-2">
             <button
-              onClick={() => { setShowDbForm(false); openFilePicker('.csv'); }}
+              onClick={() => { setShowDbForm(false); openFilePicker('.csv,.tsv,.txt,.ssv,.dat,.xlsx,.xls,.json,.xml,.edi,.x12,.fwf'); }}
               disabled={isConnecting}
               className="flex-1 py-2 px-3 rounded-lg border border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300 transition-colors text-xs font-medium disabled:opacity-50"
             >
-              CSV
-            </button>
-            <button
-              onClick={() => { setShowDbForm(false); openFilePicker('.xlsx,.xls'); }}
-              disabled={isConnecting}
-              className="flex-1 py-2 px-3 rounded-lg border border-slate-700 bg-slate-800/50 hover:bg-slate-800 hover:border-slate-600 text-slate-300 transition-colors text-xs font-medium disabled:opacity-50"
-            >
-              Excel
+              Import File
             </button>
             <button
               onClick={() => setShowDbForm(!showDbForm)}
@@ -610,6 +605,7 @@ export function DataSourceSection() {
               Database
             </button>
           </div>
+          <p className="text-[10px] text-slate-500 mt-0.5">CSV, TSV, Excel, JSON, XML, EDI, and more</p>
 
           <button
             onClick={() => setShowRecentSources(true)}

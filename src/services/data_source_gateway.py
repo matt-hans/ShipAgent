@@ -119,6 +119,23 @@ class DataSourceGateway(Protocol):
         """
         ...
 
+    async def import_file(
+        self,
+        file_path: str,
+        format_hint: str | None = None,
+        delimiter: str | None = None,
+        quotechar: str | None = None,
+        sheet: str | None = None,
+        record_path: str | None = None,
+        header: bool = True,
+    ) -> dict[str, Any]:
+        """Import any supported file format as active data source.
+
+        Routes to the appropriate adapter based on file extension.
+        Use format_hint to override auto-detection.
+        """
+        ...
+
     async def disconnect(self) -> None:
         """Disconnect/clear active data source."""
         ...

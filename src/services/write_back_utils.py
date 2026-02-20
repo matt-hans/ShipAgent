@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import fcntl
 import os
 import tempfile
 from pathlib import Path
@@ -94,6 +95,142 @@ def apply_csv_updates_atomic(
         raise
 
     return len(row_updates)
+
+
+def apply_delimited_updates_atomic(
+    file_path: str,
+    row_updates: dict[int, dict[str, Any]],
+    delimiter: str = ",",
+) -> int:
+    """Apply row updates to a delimited file preserving the original delimiter.
+
+    Same logic as apply_csv_updates_atomic but with configurable delimiter.
+
+    Args:
+        file_path: Absolute/relative delimited file path.
+        row_updates: Mapping of 1-based row number -> column/value updates.
+        delimiter: Column delimiter (default: comma).
+
+    Returns:
+        Number of updated rows.
+
+    Raises:
+        ValueError: If the file has no header, no data rows, or row number is out of range.
+    """
+    if not row_updates:
+        return 0
+
+    with open(file_path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f, delimiter=delimiter)
+        if not reader.fieldnames:
+            raise ValueError(f"File has no header row: {file_path}")
+        fieldnames = list(reader.fieldnames)
+        rows = list(reader)
+
+    if not rows:
+        raise ValueError(f"File has no data rows: {file_path}")
+
+    # Collect any new columns needed
+    needed_columns: set[str] = set()
+    for updates in row_updates.values():
+        needed_columns.update(updates.keys())
+    ordered_fieldnames = fieldnames + [
+        col for col in sorted(needed_columns) if col not in fieldnames
+    ]
+
+    updated_count = 0
+    for row_number, updates in row_updates.items():
+        if row_number < 1 or row_number > len(rows):
+            raise ValueError(
+                f"Row {row_number} out of range (1-{len(rows)})"
+            )
+        row = rows[row_number - 1]
+        for column, value in updates.items():
+            row[column] = "" if value is None else str(value)
+        updated_count += 1
+
+    # Atomic write via temp file + rename
+    dir_path = str(Path(file_path).resolve().parent)
+    temp_fd: int | None = None
+    temp_path: str | None = None
+    try:
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".tmp", dir=dir_path)
+        with os.fdopen(temp_fd, "w", newline="", encoding="utf-8") as f:
+            temp_fd = None
+            writer = csv.DictWriter(
+                f, fieldnames=ordered_fieldnames, delimiter=delimiter
+            )
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(temp_path, file_path)
+        temp_path = None
+    except Exception:
+        _cleanup_temp_artifacts(temp_fd, temp_path)
+        raise
+
+    return updated_count
+
+
+def write_companion_csv(
+    source_path: str,
+    row_number: int,
+    reference_id: str,
+    tracking_number: str,
+    shipped_at: str,
+    cost_cents: int | None = None,
+) -> str:
+    """Write a row to the companion results CSV for non-flat source formats.
+
+    Creates {source_stem}_results.csv on first call; appends on subsequent calls.
+    Used for JSON, XML, EDI, and other hierarchical formats where modifying
+    the original file would be structurally destructive.
+
+    Args:
+        source_path: Path to the original source file (for deriving companion path).
+        row_number: 1-based row number from imported_data.
+        reference_id: Order reference ID (for human identification).
+        tracking_number: UPS tracking number.
+        shipped_at: ISO8601 timestamp.
+        cost_cents: Shipping cost in cents (optional).
+
+    Returns:
+        Path to the companion CSV file.
+    """
+    source = Path(source_path)
+    companion_path = source.parent / f"{source.stem}_results.csv"
+
+    fieldnames = [
+        "Original_Row_Number",
+        "Reference_ID",
+        "Tracking_Number",
+        "Shipped_At",
+        "Cost_Cents",
+    ]
+    row_data = {
+        "Original_Row_Number": row_number,
+        "Reference_ID": reference_id,
+        "Tracking_Number": tracking_number,
+        "Shipped_At": shipped_at,
+        "Cost_Cents": "" if cost_cents is None else cost_cents,
+    }
+
+    # Use fcntl.flock to prevent concurrent batch rows from both writing
+    # headers (TOCTOU race). The lock serializes header detection + write.
+    with open(companion_path, "a", newline="", encoding="utf-8") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            # Check file position after acquiring lock — if at 0, we're
+            # the first writer and need to emit the header row.
+            f.seek(0, os.SEEK_END)
+            write_header = f.tell() == 0
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row_data)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    return str(companion_path)
 
 
 def apply_excel_updates_atomic(

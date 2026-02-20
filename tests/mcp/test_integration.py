@@ -165,7 +165,7 @@ class TestAllToolsRegistered:
             return len(tools)
 
         count = asyncio.run(get_tool_count())
-        expected_count = 20 if _edi_available else 19
+        expected_count = 23 if _edi_available else 22
         assert count == expected_count, f"Expected {expected_count} tools, got {count}"
 
     def test_tool_names(self):
@@ -321,7 +321,7 @@ ORD-005,Charlie Wilson,654 Maple Lane,Denver,CO,80201,1.5,2024-01-17"""
         # Step 1: Import
         result = adapter.import_data(duckdb_conn, shipping_csv)
         assert result.row_count == 5
-        assert result.source_type == "csv"
+        assert result.source_type in ("csv", "delimited")
 
         # Verify schema discovered correctly
         column_names = [col.name for col in result.columns]

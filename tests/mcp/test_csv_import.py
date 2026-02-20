@@ -61,7 +61,7 @@ def test_csv_import_basic(sample_csv, duckdb_conn):
 
     assert isinstance(result, ImportResult)
     assert result.row_count == 4  # Empty row skipped
-    assert result.source_type == "csv"
+    assert result.source_type == "delimited"
     assert len(result.columns) == 5
 
     # Check column names
@@ -113,7 +113,7 @@ def test_csv_mixed_types(duckdb_conn):
 def test_csv_adapter_source_type():
     """Test that CSVAdapter returns correct source_type."""
     adapter = CSVAdapter()
-    assert adapter.source_type == "csv"
+    assert adapter.source_type == "delimited"
 
 
 def test_csv_get_metadata(sample_csv, duckdb_conn):
@@ -130,7 +130,7 @@ def test_csv_get_metadata(sample_csv, duckdb_conn):
 
     assert metadata["row_count"] == 4
     assert metadata["column_count"] == 5
-    assert metadata["source_type"] == "csv"
+    assert metadata["source_type"] == "delimited"
 
 
 def test_csv_custom_delimiter(duckdb_conn):
