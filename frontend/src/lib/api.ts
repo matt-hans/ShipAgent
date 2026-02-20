@@ -443,6 +443,88 @@ export function getConversationStreamUrl(sessionId: string): string {
   return `${API_BASE}/conversations/${sessionId}/stream`;
 }
 
+// === Chat Session Persistence API ===
+
+import type { ChatSessionSummary, SessionDetail } from '@/types/api';
+
+/**
+ * List conversation sessions for the sidebar.
+ *
+ * @param activeOnly - If true, exclude soft-deleted sessions.
+ * @returns List of session summaries ordered by recency.
+ */
+export async function listConversations(
+  activeOnly = true,
+): Promise<ChatSessionSummary[]> {
+  const response = await fetch(
+    `${API_BASE}/conversations/?active_only=${activeOnly}`,
+  );
+  return parseResponse<ChatSessionSummary[]>(response);
+}
+
+/**
+ * Load a session's message history for resume/display.
+ *
+ * @param sessionId - Conversation session ID.
+ * @param limit - Max messages to return.
+ * @param offset - Skip first N messages.
+ * @returns Session metadata and ordered messages.
+ */
+export async function getConversationMessages(
+  sessionId: string,
+  limit?: number,
+  offset = 0,
+): Promise<SessionDetail> {
+  const params = new URLSearchParams({ offset: String(offset) });
+  if (limit !== undefined) params.set('limit', String(limit));
+  const response = await fetch(
+    `${API_BASE}/conversations/${sessionId}/messages?${params}`,
+  );
+  return parseResponse<SessionDetail>(response);
+}
+
+/**
+ * Update a conversation session's title.
+ *
+ * @param sessionId - Conversation session ID.
+ * @param title - New title string.
+ */
+export async function updateConversationTitle(
+  sessionId: string,
+  title: string,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/conversations/${sessionId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title }),
+  });
+  if (!response.ok) await parseResponse(response);
+}
+
+/**
+ * Export a conversation session as JSON file download.
+ *
+ * @param sessionId - Conversation session ID.
+ */
+export async function exportConversation(sessionId: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/conversations/${sessionId}/export`,
+  );
+  if (!response.ok) {
+    throw new ApiError(response.status, null, `Export failed: HTTP ${response.status}`);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="(.+?)"/);
+  const filename = match?.[1] || 'conversation-export.json';
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 /**
  * End a conversation session and free resources.
  *
