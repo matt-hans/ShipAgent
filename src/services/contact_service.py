@@ -243,6 +243,34 @@ class ContactService:
             .all()
         )
 
+    def _build_filter_query(
+        self,
+        search: str | None = None,
+        tag: str | None = None,
+    ):
+        """Build base query with optional search/tag filters.
+
+        Shared by list_contacts and count_contacts to avoid drift.
+
+        Args:
+            search: Filter by handle, display_name, or city (partial match).
+            tag: Filter by tag value.
+
+        Returns:
+            Filtered SQLAlchemy query object.
+        """
+        query = self.db.query(Contact)
+        if search:
+            term = f"%{search.lower()}%"
+            query = query.filter(
+                (func.lower(Contact.handle).like(term))
+                | (func.lower(Contact.display_name).like(term))
+                | (func.lower(Contact.city).like(term))
+            )
+        if tag:
+            query = query.filter(Contact.tags.like(f'%"{tag}"%'))
+        return query
+
     def list_contacts(
         self,
         search: str | None = None,
@@ -261,16 +289,7 @@ class ContactService:
         Returns:
             List of matching contacts.
         """
-        query = self.db.query(Contact)
-        if search:
-            term = f"%{search.lower()}%"
-            query = query.filter(
-                (func.lower(Contact.handle).like(term))
-                | (func.lower(Contact.display_name).like(term))
-                | (func.lower(Contact.city).like(term))
-            )
-        if tag:
-            query = query.filter(Contact.tags.like(f'%"{tag}"%'))
+        query = self._build_filter_query(search=search, tag=tag)
         return (
             query.order_by(Contact.display_name)
             .limit(limit)
@@ -292,17 +311,7 @@ class ContactService:
         Returns:
             Total count of matching contacts.
         """
-        query = self.db.query(Contact)
-        if search:
-            term = f"%{search.lower()}%"
-            query = query.filter(
-                (func.lower(Contact.handle).like(term))
-                | (func.lower(Contact.display_name).like(term))
-                | (func.lower(Contact.city).like(term))
-            )
-        if tag:
-            query = query.filter(Contact.tags.like(f'%"{tag}"%'))
-        return query.count()
+        return self._build_filter_query(search=search, tag=tag).count()
 
     def update_contact(self, contact_id: str, **kwargs) -> Contact:
         """Partially update a contact by ID.
@@ -315,11 +324,24 @@ class ContactService:
             The updated Contact record.
 
         Raises:
-            ValueError: If contact not found or handle validation fails.
+            ValueError: If contact not found, handle validation fails, or
+                        required fields are set to empty strings.
         """
         contact = self.db.query(Contact).filter(Contact.id == contact_id).first()
         if not contact:
             raise ValueError(f"Contact {contact_id} not found.")
+
+        # Validate required fields - reject empty strings
+        required_fields = {
+            "display_name": kwargs.get("display_name"),
+            "address_line_1": kwargs.get("address_line_1"),
+            "city": kwargs.get("city"),
+            "state_province": kwargs.get("state_province"),
+            "postal_code": kwargs.get("postal_code"),
+        }
+        for field, value in required_fields.items():
+            if value is not None and not str(value).strip():
+                raise ValueError(f"{field} cannot be empty.")
 
         if "handle" in kwargs and kwargs["handle"] is not None:
             new_handle = kwargs["handle"].lower().strip()
