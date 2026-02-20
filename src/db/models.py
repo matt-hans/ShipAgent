@@ -577,3 +577,114 @@ class SavedDataSource(Base):
 
     def __repr__(self) -> str:
         return f"<SavedDataSource(id={self.id!r}, name={self.name!r}, type={self.source_type!r})>"
+
+
+class Contact(Base):
+    """Persistent address book contact for @handle resolution.
+
+    Stores recipient/shipper/third-party address profiles that can be
+    referenced via @handle in chat messages and custom commands.
+
+    Attributes:
+        handle: Unique lowercase slug for @mention resolution.
+        display_name: Human-readable name shown in UI.
+        attention_name: UPS AttentionName override (optional).
+        use_as_ship_to: Whether this contact can populate ShipTo.
+        use_as_shipper: Whether this contact can populate Shipper.
+        use_as_third_party: Whether this contact can populate ThirdParty.
+        last_used_at: Timestamp for MRU ranking in system prompt injection.
+    """
+
+    __tablename__ = "contacts"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    handle: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    attention_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    company: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    phone: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    address_line_1: Mapped[str] = mapped_column(String(255), nullable=False)
+    address_line_2: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    city: Mapped[str] = mapped_column(String(100), nullable=False)
+    state_province: Mapped[str] = mapped_column(String(50), nullable=False)
+    postal_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    country_code: Mapped[str] = mapped_column(
+        String(2), nullable=False, server_default="US"
+    )
+    use_as_ship_to: Mapped[bool] = mapped_column(
+        nullable=False, server_default="1"
+    )
+    use_as_shipper: Mapped[bool] = mapped_column(
+        nullable=False, server_default="0"
+    )
+    use_as_third_party: Mapped[bool] = mapped_column(
+        nullable=False, server_default="0"
+    )
+    tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_used_at: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    created_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+    updated_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+
+    # M4 note: CheckConstraint uses GLOB which is SQLite-specific.
+    # Service-layer regex (HANDLE_PATTERN) is the primary enforcement.
+    # If migrating to PostgreSQL, replace GLOB with a CHECK using ~ regex.
+    __table_args__ = (
+        Index("idx_contacts_handle", "handle"),
+        Index("idx_contacts_last_used_at", "last_used_at"),
+    )
+
+    @property
+    def tag_list(self) -> list[str]:
+        """Parse tags JSON string into a Python list."""
+        if not self.tags:
+            return []
+        import json
+        return json.loads(self.tags)
+
+    @tag_list.setter
+    def tag_list(self, value: list[str]) -> None:
+        """Serialize a Python list into JSON for the tags column."""
+        import json
+        self.tags = json.dumps(value) if value else None
+
+    def __repr__(self) -> str:
+        return f"<Contact(handle={self.handle!r}, name={self.display_name!r})>"
+
+
+class CustomCommand(Base):
+    """User-defined slash command that expands to a shipping instruction.
+
+    Commands are resolved on the frontend before submission. The agent
+    receives the expanded body text, not the slash command itself.
+
+    Attributes:
+        name: Command slug stored without '/' prefix (e.g. 'daily-restock').
+        description: Optional human note about the command's purpose.
+        body: Full instruction text that replaces the /command on expansion.
+    """
+
+    __tablename__ = "custom_commands"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+    updated_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+
+    def __repr__(self) -> str:
+        return f"<CustomCommand(name={self.name!r})>"
