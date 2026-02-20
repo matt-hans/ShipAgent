@@ -62,6 +62,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     setInteractiveShipping,
     writeBackEnabled,
     setIsToggleLocked,
+    customCommands,
   } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
@@ -71,6 +72,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const conv = useConversation();
 
   const [inputValue, setInputValue] = React.useState('');
+  const [isCommandExpanded, setIsCommandExpanded] = React.useState(false);
   const [preview, setPreview] = React.useState<BatchPreview | null>(null);
   const [currentJobId, setCurrentJobId] = React.useState<string | null>(null);
   const [isConfirming, setIsConfirming] = React.useState(false);
@@ -342,6 +344,7 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
 
     lastCommandRef.current = command;
     setInputValue('');
+    setIsCommandExpanded(false); // Reset expansion flag on submit
 
     // Add user message
     addMessage({ role: 'user', content: command });
@@ -443,6 +446,29 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+
+      // Two-phase Enter for command expansion (N1 fix)
+      // 1. If input starts with `/` AND is not already expanded AND matches a command → expand
+      // 2. Otherwise → submit normally
+      const trimmedInput = inputValue.trim();
+      if (
+        trimmedInput.startsWith('/') &&
+        !isCommandExpanded &&
+        !trimmedInput.includes(' ') // Single token = potential command
+      ) {
+        const commandName = trimmedInput.slice(1).toLowerCase();
+        const matchedCommand = customCommands.find(
+          (cmd) => cmd.name.toLowerCase() === commandName
+        );
+
+        if (matchedCommand) {
+          // Expand command: replace input with body
+          setInputValue(matchedCommand.body);
+          setIsCommandExpanded(true);
+          return;
+        }
+      }
+
       handleSubmit();
     }
   };
@@ -703,7 +729,14 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
                 ref={inputRef}
                 type="text"
                 value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
+                onChange={(e) => {
+                  const newValue = e.target.value;
+                  setInputValue(newValue);
+                  // Reset expansion flag when user clears input or backspaces to empty
+                  if (!newValue.trim()) {
+                    setIsCommandExpanded(false);
+                  }
+                }}
                 onKeyDown={handleKeyDown}
                 placeholder={
                   interactiveShipping
