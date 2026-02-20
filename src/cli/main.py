@@ -42,11 +42,15 @@ daemon_app = typer.Typer(help="Manage the ShipAgent daemon")
 job_app = typer.Typer(help="Manage shipping jobs")
 config_app = typer.Typer(help="Configuration management")
 data_source_app = typer.Typer(help="Manage data sources")
+contacts_app = typer.Typer(help="Manage address book contacts")
+commands_app = typer.Typer(help="Manage custom /commands")
 
 app.add_typer(daemon_app, name="daemon")
 app.add_typer(job_app, name="job")
 app.add_typer(config_app, name="config")
 app.add_typer(data_source_app, name="data-source")
+app.add_typer(contacts_app, name="contacts")
+app.add_typer(commands_app, name="commands")
 
 console = Console()
 
@@ -750,3 +754,285 @@ async def _run_repl_in_context(
             logging.getLogger(__name__).warning(
                 "Failed to clean up session %s: %s", session_id, e
             )
+
+
+# --- Contacts CLI ---
+
+
+@contacts_app.command("list")
+def contacts_list():
+    """List all saved contacts."""
+    from src.db.connection import get_db_context
+    from src.services.contact_service import ContactService
+
+    with get_db_context() as db:
+        svc = ContactService(db)
+        contacts = svc.list_contacts()
+        if not contacts:
+            console.print("[dim]No contacts saved.[/dim]")
+            return
+        from rich.table import Table
+        table = Table(title="Address Book")
+        table.add_column("Handle", style="cyan")
+        table.add_column("Name")
+        table.add_column("City")
+        table.add_column("State")
+        table.add_column("Country")
+        for c in contacts:
+            table.add_row(f"@{c.handle}", c.display_name, c.city, c.state_province, c.country_code)
+        console.print(table)
+
+
+@contacts_app.command("add")
+def contacts_add(
+    handle: Optional[str] = typer.Option(None, "--handle", "-h", help="@mention handle"),
+    name: str = typer.Option(..., "--name", "-n", help="Display name"),
+    address: str = typer.Option(..., "--address", "-a", help="Street address"),
+    city: str = typer.Option(..., "--city", "-c", help="City"),
+    state: str = typer.Option(..., "--state", "-s", help="State/province"),
+    zip_code: str = typer.Option(..., "--zip", "-z", help="Postal/ZIP code"),
+    country: str = typer.Option("US", "--country", help="Country code"),
+    phone: Optional[str] = typer.Option(None, "--phone", "-p", help="Phone number"),
+    company: Optional[str] = typer.Option(None, "--company", help="Company name"),
+):
+    """Add a new contact to the address book."""
+    from src.db.connection import get_db_context
+    from src.services.contact_service import ContactService
+
+    with get_db_context() as db:
+        svc = ContactService(db)
+        try:
+            contact = svc.create_contact(
+                handle=handle, display_name=name, address_line_1=address,
+                city=city, state_province=state, postal_code=zip_code,
+                country_code=country, phone=phone, company=company,
+            )
+            db.commit()
+            console.print(f"[green]Created contact @{contact.handle}[/green]")
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(code=1)
+
+
+@contacts_app.command("show")
+def contacts_show(handle: str = typer.Argument(..., help="Contact handle (with or without @)")):
+    """Show details for a contact."""
+    from src.db.connection import get_db_context
+    from src.services.contact_service import ContactService
+
+    with get_db_context() as db:
+        svc = ContactService(db)
+        contact = svc.get_by_handle(handle)
+        if not contact:
+            console.print(f"[red]Contact @{handle.lstrip('@')} not found[/red]")
+            raise typer.Exit(code=1)
+        from rich.panel import Panel
+        lines = [
+            f"Handle:   @{contact.handle}",
+            f"Name:     {contact.display_name}",
+            f"Company:  {contact.company or '—'}",
+            f"Address:  {contact.address_line_1}",
+            f"          {contact.address_line_2 or ''}".rstrip(),
+            f"City:     {contact.city}, {contact.state_province} {contact.postal_code}",
+            f"Country:  {contact.country_code}",
+            f"Phone:    {contact.phone or '—'}",
+            f"Email:    {contact.email or '—'}",
+            f"Use as:   {'ShipTo' if contact.use_as_ship_to else ''} {'Shipper' if contact.use_as_shipper else ''} {'ThirdParty' if contact.use_as_third_party else ''}".strip(),
+            f"Tags:     {', '.join(contact.tag_list) if contact.tag_list else '—'}",
+        ]
+        console.print(Panel("\n".join(lines), title=f"@{contact.handle}"))
+
+
+@contacts_app.command("delete")
+def contacts_delete(
+    handle: str = typer.Argument(..., help="Contact handle"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete a contact from the address book."""
+    from rich.prompt import Confirm
+
+    from src.db.connection import get_db_context
+    from src.services.contact_service import ContactService
+
+    clean = handle.lstrip("@")
+    if not yes:
+        if not Confirm.ask(f"Delete contact @{clean}?"):
+            console.print("[dim]Cancelled[/dim]")
+            return
+
+    with get_db_context() as db:
+        svc = ContactService(db)
+        contact = svc.get_by_handle(clean)
+        if not contact:
+            console.print(f"[red]Contact @{clean} not found[/red]")
+            raise typer.Exit(code=1)
+        svc.delete_contact(contact.id)
+        db.commit()
+        console.print(f"[green]Deleted contact @{clean}[/green]")
+
+
+@contacts_app.command("export")
+def contacts_export(
+    output: str = typer.Option("contacts.json", "--output", "-o", help="Output file path"),
+):
+    """Export all contacts to JSON."""
+    import json as _json
+
+    from src.db.connection import get_db_context
+    from src.services.contact_service import ContactService
+
+    with get_db_context() as db:
+        svc = ContactService(db)
+        contacts = svc.list_contacts()
+        data = []
+        for c in contacts:
+            data.append({
+                "handle": c.handle,
+                "display_name": c.display_name,
+                "attention_name": c.attention_name,
+                "company": c.company,
+                "phone": c.phone,
+                "email": c.email,
+                "address_line_1": c.address_line_1,
+                "address_line_2": c.address_line_2,
+                "city": c.city,
+                "state_province": c.state_province,
+                "postal_code": c.postal_code,
+                "country_code": c.country_code,
+                "use_as_ship_to": c.use_as_ship_to,
+                "use_as_shipper": c.use_as_shipper,
+                "use_as_third_party": c.use_as_third_party,
+                "tags": c.tag_list,
+                "notes": c.notes,
+            })
+        Path(output).write_text(_json.dumps(data, indent=2))
+        console.print(f"[green]Exported {len(data)} contacts to {output}[/green]")
+
+
+@contacts_app.command("import")
+def contacts_import(file_path: str = typer.Argument(..., help="JSON file to import")):
+    """Import contacts from JSON."""
+    import json as _json
+
+    from src.db.connection import get_db_context
+    from src.services.contact_service import ContactService
+
+    data = _json.loads(Path(file_path).read_text())
+    if not isinstance(data, list):
+        console.print("[red]Expected a JSON array of contact objects[/red]")
+        raise typer.Exit(code=1)
+
+    with get_db_context() as db:
+        svc = ContactService(db)
+        created = 0
+        updated = 0
+        for item in data:
+            try:
+                # Idempotent import: upsert on handle (DB perf optimization).
+                # If handle exists, update fields instead of failing.
+                handle = item.get("handle", "").lstrip("@").lower().strip()
+                existing = svc.get_by_handle(handle) if handle else None
+                if existing:
+                    update_fields = {k: v for k, v in item.items() if k != "handle" and v is not None}
+                    svc.update_contact(existing.id, **update_fields)
+                    updated += 1
+                else:
+                    svc.create_contact(**item)
+                    created += 1
+            except ValueError as e:
+                console.print(f"[yellow]Skipped: {e}[/yellow]")
+        db.commit()
+        console.print(f"[green]Imported {created} new, {updated} updated / {len(data)} total[/green]")
+
+
+# --- Commands CLI ---
+
+
+@commands_app.command("list")
+def commands_list():
+    """List all custom commands."""
+    from src.db.connection import get_db_context
+    from src.services.custom_command_service import CustomCommandService
+
+    with get_db_context() as db:
+        svc = CustomCommandService(db)
+        commands = svc.list_commands()
+        if not commands:
+            console.print("[dim]No custom commands defined.[/dim]")
+            return
+        from rich.table import Table
+        table = Table(title="Custom Commands")
+        table.add_column("Command", style="cyan")
+        table.add_column("Description")
+        table.add_column("Body", max_width=60)
+        for c in commands:
+            table.add_row(f"/{c.name}", c.description or "—", c.body[:60])
+        console.print(table)
+
+
+@commands_app.command("add")
+def commands_add(
+    name: str = typer.Option(..., "--name", "-n", help="Command name without /"),
+    body: str = typer.Option(..., "--body", "-b", help="Instruction text"),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Description"),
+):
+    """Add a new custom command."""
+    from src.db.connection import get_db_context
+    from src.services.custom_command_service import CustomCommandService
+
+    with get_db_context() as db:
+        svc = CustomCommandService(db)
+        try:
+            cmd = svc.create_command(name=name, body=body, description=description)
+            db.commit()
+            console.print(f"[green]Created command /{cmd.name}[/green]")
+        except ValueError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise typer.Exit(code=1)
+
+
+@commands_app.command("show")
+def commands_show(name: str = typer.Argument(..., help="Command name (with or without /)")):
+    """Show a command's body."""
+    from src.db.connection import get_db_context
+    from src.services.custom_command_service import CustomCommandService
+
+    with get_db_context() as db:
+        svc = CustomCommandService(db)
+        cmd = svc.get_by_name(name)
+        if not cmd:
+            console.print(f"[red]Command /{name.lstrip('/')} not found[/red]")
+            raise typer.Exit(code=1)
+        from rich.panel import Panel
+        console.print(Panel(
+            f"[bold]/{cmd.name}[/bold]\n{cmd.description or ''}\n\n{cmd.body}",
+            title=f"/{cmd.name}",
+        ))
+
+
+@commands_app.command("delete")
+def commands_delete(
+    name: str = typer.Argument(..., help="Command name"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """Delete a custom command."""
+    from rich.prompt import Confirm
+
+    from src.db.connection import get_db_context
+    from src.services.custom_command_service import CustomCommandService
+
+    clean = name.lstrip("/")
+    if not yes:
+        if not Confirm.ask(f"Delete command /{clean}?"):
+            console.print("[dim]Cancelled[/dim]")
+            return
+
+    with get_db_context() as db:
+        svc = CustomCommandService(db)
+        cmd = svc.get_by_name(clean)
+        if not cmd:
+            console.print(f"[red]Command /{clean} not found[/red]")
+            raise typer.Exit(code=1)
+        svc.delete_command(cmd.id)
+        db.commit()
+        console.print(f"[green]Deleted command /{clean}[/green]")

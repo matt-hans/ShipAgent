@@ -356,3 +356,137 @@ class BulkDeleteRequest(BaseModel):
     """Request schema for bulk-deleting saved data sources."""
 
     source_ids: list[str] = Field(..., min_length=1, description="UUIDs to delete")
+
+
+# Contact schemas
+
+
+class ContactCreate(BaseModel):
+    """Request schema for creating a contact."""
+
+    handle: str | None = Field(None, max_length=100, description="@mention slug (auto-generated if omitted)")
+    display_name: str = Field(..., min_length=1, max_length=200)
+    attention_name: str | None = Field(None, max_length=200)
+    company: str | None = Field(None, max_length=200)
+    phone: str | None = Field(None, max_length=30)
+    email: str | None = Field(None, max_length=255)
+    address_line_1: str = Field(..., min_length=1, max_length=255)
+    address_line_2: str | None = Field(None, max_length=255)
+    city: str = Field(..., min_length=1, max_length=100)
+    state_province: str = Field(..., min_length=1, max_length=50)
+    postal_code: str = Field(..., min_length=1, max_length=20)
+    country_code: str = Field("US", max_length=2)
+    use_as_ship_to: bool = True
+    use_as_shipper: bool = False
+    use_as_third_party: bool = False
+    tags: list[str] | None = None
+    notes: str | None = None
+
+
+class ContactUpdate(BaseModel):
+    """Request schema for partially updating a contact."""
+
+    handle: str | None = None
+    display_name: str | None = None
+    attention_name: str | None = None
+    company: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    address_line_1: str | None = None
+    address_line_2: str | None = None
+    city: str | None = None
+    state_province: str | None = None
+    postal_code: str | None = None
+    country_code: str | None = None
+    use_as_ship_to: bool | None = None
+    use_as_shipper: bool | None = None
+    use_as_third_party: bool | None = None
+    tags: list[str] | None = None
+    notes: str | None = None
+
+
+class ContactResponse(BaseModel):
+    """Response schema for a contact."""
+
+    id: str
+    handle: str
+    display_name: str
+    attention_name: str | None = None
+    company: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    address_line_1: str
+    address_line_2: str | None = None
+    city: str
+    state_province: str
+    postal_code: str
+    country_code: str
+    use_as_ship_to: bool
+    use_as_shipper: bool
+    use_as_third_party: bool
+    tags: list[str] | None = None
+    notes: str | None = None
+    last_used_at: str | None = None
+    created_at: str
+    updated_at: str
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _parse_tags(cls, v: str | list | None) -> list[str] | None:
+        """Parse tags from JSON string if stored as text in SQLite."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        return v
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContactListResponse(BaseModel):
+    """Response schema for listing contacts."""
+
+    contacts: list[ContactResponse]
+    total: int
+
+
+# Custom command schemas
+
+
+class CommandCreate(BaseModel):
+    """Request schema for creating a custom command."""
+
+    name: str = Field(..., min_length=1, max_length=100, description="Command slug without /")
+    body: str = Field(..., min_length=1, description="Instruction text")
+    description: str | None = None
+
+
+class CommandUpdate(BaseModel):
+    """Request schema for partially updating a command."""
+
+    name: str | None = None
+    body: str | None = None
+    description: str | None = None
+
+
+class CommandResponse(BaseModel):
+    """Response schema for a custom command."""
+
+    id: str
+    name: str
+    description: str | None = None
+    body: str
+    created_at: str
+    updated_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CommandListResponse(BaseModel):
+    """Response schema for listing commands."""
+
+    commands: list[CommandResponse]
+    total: int
