@@ -290,11 +290,14 @@ class DataSourceColumnInfo(BaseModel):
 class DataSourceImportResponse(BaseModel):
     """Response schema for a successful data source import."""
 
-    status: str = Field(..., description="'connected' or 'error'")
+    status: str = Field(
+        ..., description="'connected', 'error', or 'pending_agent_setup'"
+    )
     source_type: str
     row_count: int
     columns: list[DataSourceColumnInfo]
     error: str | None = None
+    file_path: str | None = None
 
 
 class DataSourceStatusResponse(BaseModel):

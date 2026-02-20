@@ -172,6 +172,10 @@ interface AppState {
   settingsFlyoutOpen: boolean;
   setSettingsFlyoutOpen: (open: boolean) => void;
 
+  // Pending chat message — set by sidebar to auto-inject into the chat agent
+  pendingChatMessage: string | null;
+  setPendingChatMessage: (msg: string | null) => void;
+
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -225,6 +229,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   // Settings flyout state
   const [settingsFlyoutOpen, setSettingsFlyoutOpen] = React.useState(false);
+
+  // Pending chat message (sidebar → chat bridge)
+  const [pendingChatMessage, setPendingChatMessage] = React.useState<string | null>(null);
 
   // Refresh contacts from API
   const refreshContacts = React.useCallback(async () => {
@@ -310,6 +317,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     refreshCommands,
     settingsFlyoutOpen,
     setSettingsFlyoutOpen,
+    pendingChatMessage,
+    setPendingChatMessage,
   };
 
   return (

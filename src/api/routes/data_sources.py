@@ -167,16 +167,6 @@ async def upload_data_source(
                 f"Supported: {', '.join(sorted(EXTENSION_MAP.keys()))}"
             ),
         )
-    if source_type == "fixed_width":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Fixed-width files require column specs that must be configured "
-                "through the chat agent. Use the chat to import this file — "
-                "the agent will guide you through column setup."
-            ),
-        )
-
     # Save uploaded file to disk
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     dest = UPLOAD_DIR / file.filename
@@ -190,6 +180,18 @@ async def upload_data_source(
         await file.close()
 
     file_path = str(dest)
+
+    # Fixed-width files need agent-driven column setup — return the saved
+    # path so the frontend can route the user into the chat agent.
+    if source_type == "fixed_width":
+        return DataSourceImportResponse(
+            status="pending_agent_setup",
+            source_type="fixed_width",
+            row_count=0,
+            columns=[],
+            file_path=file_path,
+        )
+
     gw = await get_data_gateway()
 
     try:

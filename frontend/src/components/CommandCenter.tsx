@@ -181,6 +181,15 @@ export function CommandCenter({ activeJob }: CommandCenterProps) {
     setConversationSessionId(conv.sessionId);
   }, [conv.sessionId, setConversationSessionId]);
 
+  // Auto-send pending chat messages injected by other components (e.g. sidebar FWF upload)
+  const { pendingChatMessage, setPendingChatMessage } = useAppState();
+  React.useEffect(() => {
+    if (!pendingChatMessage || isProcessing) return;
+    addMessage({ role: 'user', content: pendingChatMessage });
+    conv.sendMessage(pendingChatMessage, interactiveShipping);
+    setPendingChatMessage(null);
+  }, [pendingChatMessage, isProcessing, addMessage, conv, interactiveShipping, setPendingChatMessage]);
+
   // Render agent events as conversation messages
   const lastProcessedEventRef = React.useRef(0);
   const suppressNextMessageRef = React.useRef(false);
