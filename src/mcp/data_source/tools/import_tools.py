@@ -451,9 +451,36 @@ async def import_file(
         )
 
     elif source_type == "fixed_width":
-        raise ValueError(
-            "Fixed-width files require explicit column specs. "
-            "Use sniff_file to inspect the file, then call import_fixed_width."
+        from src.mcp.data_source.adapters.fixed_width_adapter import (
+            FixedWidthAdapter,
+            auto_detect_col_specs,
+        )
+
+        fwf_path = _validate_file_path(file_path)
+        if not fwf_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        with open(fwf_path, encoding="utf-8") as _fwf:
+            _lines = _fwf.readlines()
+
+        detected = auto_detect_col_specs(_lines)
+        if detected is None:
+            raise ValueError(
+                "Fixed-width files require explicit column specs. "
+                "Use sniff_file to inspect the file, then call import_fixed_width."
+            )
+
+        _col_specs, _names = detected
+        await ctx.info(
+            f"Auto-detected {len(_col_specs)} columns in fixed-width file"
+        )
+        fwf_adapter = FixedWidthAdapter()
+        result = fwf_adapter.import_data(
+            conn=db,
+            file_path=file_path,
+            col_specs=_col_specs,
+            names=_names,
+            header=True,
         )
 
     elif source_type == "edi":

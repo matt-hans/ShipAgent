@@ -11,6 +11,7 @@ Per CONTEXT.md:
 - Best-effort parsing with string fallback
 """
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,98 @@ if TYPE_CHECKING:
 from src.mcp.data_source.adapters.base import BaseSourceAdapter
 from src.mcp.data_source.models import ImportResult
 from src.mcp.data_source.utils import load_flat_records_to_duckdb
+
+# Pattern that a valid FWF column name must match.
+# Accepts identifiers like ORDER_NUM, RECIPIENT_NAME, WT_LBS, ST, ZIP.
+# Rejects record-tag tokens like V2.1, HDR20260220SHIPAGENT (via the period
+# check in V2.1 — the overall validation rejects any name that does not match).
+_COL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def auto_detect_col_specs(
+    lines: list[str],
+) -> tuple[list[tuple[int, int]], list[str]] | None:
+    """Auto-detect column boundaries from a fixed-width file's header line.
+
+    Uses the start positions of whitespace-separated words in the first line
+    (the header) as column start positions.  Each column spans from its word
+    start to the next word start (or end of the longest line).
+
+    This approach correctly handles FWF files where column separators are a
+    single space (e.g. ``ORDER_NUM RECIPIENT_NAME``) and data values contain
+    embedded spaces (e.g. ``"John Doe"`` in a 20-character name column).
+
+    Returns ``None`` when auto-detection cannot determine valid column
+    boundaries.  Callers should fall back to the two-step
+    ``sniff_file`` → ``import_fixed_width`` workflow in that case.
+
+    Args:
+        lines: Raw lines from the file (header as first element, data
+            lines following).  Newlines are stripped internally.
+
+    Returns:
+        A tuple ``(col_specs, names)`` where *col_specs* is a list of
+        ``(start, end)`` character-position pairs and *names* is the list
+        of column names extracted from the header.  Returns ``None`` when
+        detection fails.
+
+    Raises:
+        Nothing — all failure paths return ``None``.
+
+    Example:
+        >>> lines = [
+        ...     "NAME                CITY           ST\\n",
+        ...     "John Doe            Dallas         TX\\n",
+        ...     "Jane Smith          Austin         TX\\n",
+        ... ]
+        >>> result = auto_detect_col_specs(lines)
+        >>> result is not None
+        True
+        >>> specs, names = result
+        >>> names
+        ['NAME', 'CITY', 'ST']
+        >>> specs[0]
+        (0, 20)
+    """
+    if len(lines) < 2:
+        return None
+
+    header = lines[0].rstrip("\n\r")
+    data_lines = [ln.rstrip("\n\r") for ln in lines[1:6] if ln.strip()]
+
+    if not data_lines:
+        return None
+
+    max_len = max(len(header), *(len(dl) for dl in data_lines))
+    if max_len == 0:
+        return None
+
+    # Find the start position of each whitespace-separated word in the header.
+    # These word-start positions become column start positions.
+    word_matches = list(re.finditer(r"\S+", header))
+    if len(word_matches) < 2:
+        return None
+
+    col_starts = [m.start() for m in word_matches]
+
+    # Build col_specs: each column spans from its word start to the next
+    # word start, or to the end of the longest line for the last column.
+    col_specs: list[tuple[int, int]] = []
+    for i, start in enumerate(col_starts):
+        end = col_starts[i + 1] if i + 1 < len(col_starts) else max_len
+        col_specs.append((start, end))
+
+    # Extract column names from the header using the derived specs.
+    names = [header[s:e].strip() for s, e in col_specs]
+
+    # Validate: every name must be non-empty and look like a column identifier
+    # (letters, digits, underscores — no periods, version strings, etc.).
+    # This rejects legacy mainframe record-header lines like
+    # "HDR20260220SHIPAGENT BATCH EXPORT V2.1".
+    if any(not n or not _COL_NAME_RE.match(n) for n in names):
+        return None
+
+    return col_specs, names
 
 
 class FixedWidthAdapter(BaseSourceAdapter):

@@ -181,21 +181,13 @@ async def upload_data_source(
 
     file_path = str(dest)
 
-    # Fixed-width files need agent-driven column setup — return the saved
-    # path so the frontend can route the user into the chat agent.
-    if source_type == "fixed_width":
-        return DataSourceImportResponse(
-            status="pending_agent_setup",
-            source_type="fixed_width",
-            row_count=0,
-            columns=[],
-            file_path=file_path,
-        )
-
     gw = await get_data_gateway()
 
     try:
-        # Route all uploads through the universal import_file gateway method
+        # Route all uploads through the universal import_file gateway method.
+        # Fixed-width files use auto-detection of column boundaries; if
+        # auto-detection fails, import_file raises ValueError and we fall
+        # back to pending_agent_setup so the user can provide specs via chat.
         result = await gw.import_file(
             file_path=file_path,
             format_hint=source_type,
@@ -216,7 +208,30 @@ async def upload_data_source(
             row_count=result.get("row_count", 0),
             columns=columns,
         )
-    except (FileNotFoundError, ValueError) as e:
+    except ValueError as e:
+        # Fixed-width files may fail auto-detection (e.g., legacy mainframe
+        # formats without a space-delimited header).  Return pending_agent_setup
+        # so the frontend routes the user to the chat agent for manual spec entry.
+        if source_type == "fixed_width":
+            logger.info(
+                "Fixed-width auto-detection failed, routing to agent setup: %s", e
+            )
+            return DataSourceImportResponse(
+                status="pending_agent_setup",
+                source_type="fixed_width",
+                row_count=0,
+                columns=[],
+                file_path=file_path,
+            )
+        logger.warning("Upload import error: %s", e)
+        return DataSourceImportResponse(
+            status="error",
+            source_type=source_type,
+            row_count=0,
+            columns=[],
+            error=str(e),
+        )
+    except FileNotFoundError as e:
         logger.warning("Upload import error: %s", e)
         return DataSourceImportResponse(
             status="error",
