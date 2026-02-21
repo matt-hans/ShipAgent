@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 from src.mcp.data_source.adapters.base import BaseSourceAdapter
-from src.mcp.data_source.models import ImportResult, SchemaColumn
+from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
 from src.mcp.data_source.edi.x12_parser import X12Parser
 from src.mcp.data_source.edi.edifact_parser import EDIFACTParser
 from src.mcp.data_source.edi.models import NormalizedOrder
@@ -117,9 +117,11 @@ class EDIAdapter(BaseSourceAdapter):
     ) -> None:
         """Load normalized orders into DuckDB table."""
         # Create table with normalized schema
-        conn.execute("""
+        # _source_row_num BIGINT matches the standard used by all other adapters
+        # (SOURCE_ROW_NUM_COLUMN from models.py) for deterministic row tracking.
+        conn.execute(f"""
             CREATE OR REPLACE TABLE imported_data (
-                row_number INTEGER,
+                {SOURCE_ROW_NUM_COLUMN} BIGINT,
                 po_number VARCHAR,
                 reference_number VARCHAR,
                 recipient_name VARCHAR,
@@ -182,12 +184,19 @@ class EDIAdapter(BaseSourceAdapter):
     def _get_schema_columns(
         self, conn: "DuckDBPyConnection"
     ) -> list[SchemaColumn]:
-        """Get schema columns from DuckDB table."""
+        """Get schema columns from DuckDB table.
+
+        Excludes the internal _source_row_num tracking column from the
+        user-facing schema, matching the behaviour of all other adapters.
+        """
         schema_rows = conn.execute("DESCRIBE imported_data").fetchall()
         columns = []
 
         for row in schema_rows:
             col_name = row[0]
+            # Skip internal row-tracking column — not exposed to users
+            if col_name == SOURCE_ROW_NUM_COLUMN:
+                continue
             col_type = row[1]
             nullable = row[2] if len(row) > 2 else "YES"
 

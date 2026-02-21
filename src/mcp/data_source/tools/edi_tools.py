@@ -46,11 +46,16 @@ async def import_edi(file_path: str, ctx: Context) -> dict:
     adapter = EDIAdapter()
     result = adapter.import_data(conn=db, file_path=file_path)
 
-    # Update current source tracking for session state
+    # Update current source tracking for session state.
+    # Matches the pattern used by import_csv, import_excel, and import_fixed_width
+    # so the agent can use deterministic row addressing on EDI sources.
     ctx.request_context.lifespan_context["current_source"] = {
         "type": "edi",
         "path": file_path,
         "row_count": result.row_count,
+        "deterministic_ready": True,
+        "row_key_strategy": "source_row_num",
+        "row_key_columns": ["_source_row_num"],
     }
 
     await ctx.info(

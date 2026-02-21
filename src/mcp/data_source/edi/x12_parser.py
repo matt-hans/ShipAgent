@@ -269,6 +269,8 @@ class X12Parser:
             elif seg_id == "N3" and in_ship_to:
                 if elements:
                     current_order["address_line1"] = elements[0]
+                if len(elements) > 1:
+                    current_order["address_line2"] = elements[1]
 
             elif seg_id == "N4" and in_ship_to:
                 if elements:
@@ -295,6 +297,7 @@ class X12Parser:
                         reference_number=current_order.get("reference_number"),
                         recipient_name=current_order.get("recipient_name", "Unknown"),
                         address_line1=current_order.get("address_line1", ""),
+                        address_line2=current_order.get("address_line2"),
                         city=current_order.get("city", ""),
                         state=current_order.get("state", ""),
                         postal_code=current_order.get("postal_code", ""),
@@ -342,6 +345,8 @@ class X12Parser:
             elif seg_id == "N3" and in_ship_to:
                 if elements:
                     current_order["address_line1"] = elements[0]
+                if len(elements) > 1:
+                    current_order["address_line2"] = elements[1]
 
             elif seg_id == "N4" and in_ship_to:
                 if elements:
@@ -372,6 +377,7 @@ class X12Parser:
                         reference_number=current_order.get("reference_number"),
                         recipient_name=current_order.get("recipient_name", "Unknown"),
                         address_line1=current_order.get("address_line1", ""),
+                        address_line2=current_order.get("address_line2"),
                         city=current_order.get("city", ""),
                         state=current_order.get("state", ""),
                         postal_code=current_order.get("postal_code", ""),

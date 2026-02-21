@@ -84,3 +84,51 @@ async def test_import_edi_invalid_format(mock_context):
 
     with pytest.raises(ValueError, match="Unsupported EDI format"):
         await import_edi(invalid_path, mock_context)
+
+
+# --- Regression tests for Bug 3: missing context metadata in import_edi ---
+
+@pytest.mark.asyncio
+async def test_import_edi_sets_complete_context_metadata(sample_x12_file, mock_context):
+    """Regression: import_edi must set deterministic_ready, row_key_strategy, row_key_columns.
+
+    Previously import_edi only set {type, path, row_count} in current_source.
+    All other adapters (CSV, Excel, fixed_width) set the full deterministic
+    metadata so the agent knows it can use _source_row_num for row addressing.
+    """
+    await import_edi(sample_x12_file, mock_context)
+
+    current_source = mock_context.request_context.lifespan_context["current_source"]
+
+    assert current_source["type"] == "edi"
+    assert current_source["path"] == sample_x12_file
+    assert current_source["row_count"] == 1
+
+    # These fields were missing before the fix
+    assert "deterministic_ready" in current_source, (
+        "current_source must contain 'deterministic_ready'"
+    )
+    assert current_source["deterministic_ready"] is True
+
+    assert "row_key_strategy" in current_source, (
+        "current_source must contain 'row_key_strategy'"
+    )
+    assert current_source["row_key_strategy"] == "source_row_num"
+
+    assert "row_key_columns" in current_source, (
+        "current_source must contain 'row_key_columns'"
+    )
+    assert current_source["row_key_columns"] == ["_source_row_num"]
+
+
+@pytest.mark.asyncio
+async def test_import_edi_schema_excludes_source_row_num(sample_x12_file, mock_context):
+    """Regression: import_edi result columns must not expose _source_row_num."""
+    result = await import_edi(sample_x12_file, mock_context)
+
+    col_names = [c["name"] for c in result["columns"]]
+    assert "_source_row_num" not in col_names, (
+        "_source_row_num is internal and must not appear in the schema returned by import_edi"
+    )
+    # Business columns must still be present
+    assert "po_number" in col_names
