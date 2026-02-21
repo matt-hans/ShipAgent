@@ -1,18 +1,11 @@
 """Tests for CLI configuration loading and validation."""
 
-import os
-import tempfile
-from pathlib import Path
 
-import pytest
 import yaml
 
 from src.cli.config import (
     AutoConfirmRules,
     DaemonConfig,
-    ShipAgentConfig,
-    ShipperConfig,
-    UPSConfig,
     WatchFolderConfig,
     load_config,
     resolve_env_vars,

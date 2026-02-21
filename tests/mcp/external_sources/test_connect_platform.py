@@ -4,8 +4,9 @@ Verifies real client instantiation, authentication, and lifespan
 context management.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from src.mcp.external_sources.tools import (
     connect_platform,

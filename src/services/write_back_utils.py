@@ -48,7 +48,7 @@ def apply_csv_updates_atomic(
     if not row_updates:
         return 0
 
-    with open(file_path, "r", newline="", encoding="utf-8") as f:
+    with open(file_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         fieldnames = list(reader.fieldnames or [])
         rows = list(reader)

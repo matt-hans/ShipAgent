@@ -69,7 +69,7 @@ class TestCSVWorkflow:
             "SELECT * FROM imported_data LIMIT 1"
         ).fetchone()
         columns = [desc[0] for desc in duckdb_conn.description]
-        row_dict = dict(zip(columns, row1))
+        row_dict = dict(zip(columns, row1, strict=False))
 
         checksum1 = compute_row_checksum(row_dict)
 
@@ -78,7 +78,7 @@ class TestCSVWorkflow:
         row1_again = duckdb_conn.execute(
             "SELECT * FROM imported_data LIMIT 1"
         ).fetchone()
-        row_dict_again = dict(zip(columns, row1_again))
+        row_dict_again = dict(zip(columns, row1_again, strict=False))
 
         checksum2 = compute_row_checksum(row_dict_again)
 
@@ -350,7 +350,7 @@ ORD-005,Charlie Wilson,654 Maple Lane,Denver,CO,80201,1.5,2024-01-17"""
 
         checksums = []
         for row in all_rows:
-            row_dict = dict(zip(columns, row))
+            row_dict = dict(zip(columns, row, strict=False))
             checksum = compute_row_checksum(row_dict)
             checksums.append(checksum)
 
@@ -361,7 +361,7 @@ ORD-005,Charlie Wilson,654 Maple Lane,Denver,CO,80201,1.5,2024-01-17"""
         first_row = duckdb_conn.execute(
             "SELECT * FROM imported_data WHERE order_id = 'ORD-001'"
         ).fetchone()
-        first_row_dict = dict(zip(columns, first_row))
+        first_row_dict = dict(zip(columns, first_row, strict=False))
         checksum_again = compute_row_checksum(first_row_dict)
         assert checksums[0] == checksum_again
 

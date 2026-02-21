@@ -10,7 +10,6 @@ lookups + frozenset).
 
 from enum import Enum
 
-
 # ---------------------------------------------------------------------------
 # Carrier identity
 # ---------------------------------------------------------------------------
@@ -121,7 +120,7 @@ EXPRESS_ONLY_PACKAGING: frozenset[str] = frozenset({
 
 # Services compatible with express-only packaging
 # Uses ServiceCode enum values to prevent drift from service code definitions.
-from src.services.ups_service_codes import ServiceCode as _ServiceCode
+from src.services.ups_service_codes import ServiceCode as _ServiceCode  # noqa: E402
 
 EXPRESS_CLASS_SERVICES: frozenset[str] = frozenset({
     _ServiceCode.NEXT_DAY_AIR.value,          # "01"

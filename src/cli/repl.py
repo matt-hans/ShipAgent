@@ -4,13 +4,10 @@ Provides a terminal-based chat interface with Rich rendering
 for previews, progress, and completions.
 """
 
-import asyncio
-import signal
 
 from rich.console import Console
-from rich.panel import Panel
 
-from src.cli.protocol import AgentEvent, ShipAgentClient
+from src.cli.protocol import ShipAgentClient
 
 console = Console()
 

@@ -4,11 +4,12 @@ Verifies that methods delegate correctly to the underlying MCPClient
 and that response normalization works as expected.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from src.services.data_source_mcp_client import DataSourceMCPClient, _get_python_command
+import pytest
+
 import src.services.mapping_cache as mapping_cache
+from src.services.data_source_mcp_client import DataSourceMCPClient, _get_python_command
 
 
 @pytest.fixture

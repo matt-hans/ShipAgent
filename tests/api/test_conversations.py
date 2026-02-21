@@ -283,7 +283,7 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
                 yield {}
 
     session_id = "race-test-session"
-    session = conversations._session_manager.get_or_create_session(session_id)
+    conversations._session_manager.get_or_create_session(session_id)
 
     creation_count = 0
 
@@ -340,7 +340,7 @@ async def test_process_message_uses_gateway_for_source_info():
                 yield {}
 
     session_id = "gateway-usage-test"
-    session = conversations._session_manager.get_or_create_session(session_id)
+    conversations._session_manager.get_or_create_session(session_id)
 
     mock_source_info = MagicMock()
     mock_source_info.source_type = "csv"

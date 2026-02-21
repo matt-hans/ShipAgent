@@ -4,10 +4,10 @@ Tests the /api/v1/jobs/{job_id}/preview and /api/v1/jobs/{job_id}/confirm
 endpoints for batch preview and execution confirmation.
 """
 
-import pytest
+from unittest.mock import AsyncMock, MagicMock
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from unittest.mock import AsyncMock, MagicMock
 
 from src.db.models import Job, JobRow, JobStatus, RowStatus
 

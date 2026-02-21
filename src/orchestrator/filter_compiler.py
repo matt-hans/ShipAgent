@@ -12,7 +12,6 @@ import json
 import logging
 import re
 from decimal import Decimal
-from typing import Union
 
 logger = logging.getLogger(__name__)
 
@@ -20,17 +19,17 @@ logger = logging.getLogger(__name__)
 # filter condition). Allows alphanumerics, underscores, hyphens, and dots.
 _JSON_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
-from src.orchestrator.models.filter_spec import (
+from src.orchestrator.models.filter_spec import (  # noqa: E402
+    STRUCTURAL_LIMITS,
     CompiledFilter,
     FilterCompilationError,
     FilterCondition,
     FilterErrorCode,
     FilterGroup,
     FilterOperator,
-    ResolvedFilterSpec,
     ResolutionStatus,
+    ResolvedFilterSpec,
     SemanticReference,
-    STRUCTURAL_LIMITS,
     TypedLiteral,
 )
 
@@ -121,7 +120,7 @@ def compile_filter_spec(
 
 
 def _serialize_node(
-    node: Union[FilterCondition, SemanticReference, FilterGroup],
+    node: FilterCondition | SemanticReference | FilterGroup,
 ) -> str:
     """Serialize a node to a stable string for sorting."""
     if isinstance(node, FilterCondition):
@@ -463,7 +462,7 @@ def _compile_condition(
 
 
 def _count_conditions(
-    node: Union[FilterGroup, FilterCondition, SemanticReference],
+    node: FilterGroup | FilterCondition | SemanticReference,
 ) -> int:
     """Count total leaf conditions in the AST.
 
@@ -743,7 +742,7 @@ def _explain_condition_label(cond: FilterCondition) -> str:
     return f"{cond.column} {op.value} ..."
 
 
-def _explain_ast(node: Union[FilterCondition, FilterGroup]) -> str:
+def _explain_ast(node: FilterCondition | FilterGroup) -> str:
     """Recursively build explanation from the canonicalized AST.
 
     Preserves AND/OR logic and nesting structure.

@@ -14,7 +14,6 @@ from src.services.international_rules import (
     validate_international_readiness,
 )
 
-
 # ---------------------------------------------------------------------------
 # Validation-only tests (no UPS credentials needed)
 # ---------------------------------------------------------------------------

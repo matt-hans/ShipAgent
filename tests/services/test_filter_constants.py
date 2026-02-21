@@ -1,6 +1,5 @@
 """Tests for filter canonical constants."""
 
-import pytest
 
 
 class TestRegions:

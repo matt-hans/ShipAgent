@@ -9,10 +9,10 @@ Covers:
 """
 
 import importlib
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.cli.config import DefaultDataSourceConfig
 from src.cli.http_client import HttpClient
@@ -24,7 +24,6 @@ from src.cli.protocol import (
     SourceSchemaColumn,
 )
 from src.cli.runner import InProcessRunner
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

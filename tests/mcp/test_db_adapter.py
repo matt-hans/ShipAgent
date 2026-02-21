@@ -11,10 +11,13 @@ These tests focus on:
 - Error handling for unsupported databases
 """
 
-import pytest
 import duckdb
+import pytest
 
-from src.mcp.data_source.adapters.db_adapter import DatabaseAdapter, LARGE_TABLE_THRESHOLD
+from src.mcp.data_source.adapters.db_adapter import (
+    LARGE_TABLE_THRESHOLD,
+    DatabaseAdapter,
+)
 
 
 @pytest.fixture

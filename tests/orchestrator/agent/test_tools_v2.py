@@ -31,7 +31,6 @@ from src.orchestrator.agent.tools.pipeline import (
     ship_command_pipeline_tool,
 )
 
-
 # ---------------------------------------------------------------------------
 # get_source_info_tool
 # ---------------------------------------------------------------------------
@@ -1987,7 +1986,7 @@ def test_python_command_fallback():
 def test_python_command_prefers_venv():
     """_get_python_command returns venv python when it exists."""
     with patch("os.path.exists", return_value=True):
-        from src.services.ups_mcp_client import _get_python_command, _VENV_PYTHON
+        from src.services.ups_mcp_client import _VENV_PYTHON, _get_python_command
 
         result = _get_python_command()
         assert result == _VENV_PYTHON

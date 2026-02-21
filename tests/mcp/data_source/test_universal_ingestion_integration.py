@@ -10,9 +10,9 @@ import duckdb
 import pytest
 
 from src.mcp.data_source.adapters.csv_adapter import DelimitedAdapter
+from src.mcp.data_source.adapters.fixed_width_adapter import FixedWidthAdapter
 from src.mcp.data_source.adapters.json_adapter import JSONAdapter
 from src.mcp.data_source.adapters.xml_adapter import XMLAdapter
-from src.mcp.data_source.adapters.fixed_width_adapter import FixedWidthAdapter
 from src.services.column_mapping import auto_map_columns
 
 

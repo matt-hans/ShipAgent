@@ -1936,7 +1936,7 @@ class TestApplyCompatibilityCorrections:
         """Saturday Delivery auto-stripped for Ground."""
         from src.services.ups_payload_builder import apply_compatibility_corrections
         order_data = {"saturday_delivery": "true"}
-        issues = apply_compatibility_corrections(order_data, "03")
+        apply_compatibility_corrections(order_data, "03")
         assert not order_data.get("saturday_delivery")
         assert "_saturday_delivery_stripped" in order_data
 

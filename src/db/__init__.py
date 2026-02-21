@@ -1,14 +1,5 @@
 """Database module for ShipAgent state management and persistence."""
 
-from src.db.models import (
-    AuditLog,
-    EventType,
-    Job,
-    JobRow,
-    JobStatus,
-    LogLevel,
-    RowStatus,
-)
 from src.db.connection import (
     AsyncSessionLocal,
     SessionLocal,
@@ -18,6 +9,15 @@ from src.db.connection import (
     get_async_db,
     get_db,
     init_db,
+)
+from src.db.models import (
+    AuditLog,
+    EventType,
+    Job,
+    JobRow,
+    JobStatus,
+    LogLevel,
+    RowStatus,
 )
 
 __all__ = [

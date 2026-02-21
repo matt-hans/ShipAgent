@@ -2,9 +2,6 @@
 
 import asyncio
 import json
-import os
-import tempfile
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -65,7 +62,7 @@ class TestHotFolderService:
         inbox = tmp_path / "inbox"
         inbox.mkdir()
         config = WatchFolderConfig(path=str(inbox), command="Ship all")
-        service = HotFolderService(configs=[config])
+        HotFolderService(configs=[config])
         assert (inbox / ".processing").is_dir()
         assert (inbox / "processed").is_dir()
         assert (inbox / "failed").is_dir()

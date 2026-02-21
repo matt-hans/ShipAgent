@@ -4,7 +4,6 @@ Tests the /api/v1/jobs/{job_id}/progress endpoints for
 SSE streaming and fallback progress retrieval.
 """
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 

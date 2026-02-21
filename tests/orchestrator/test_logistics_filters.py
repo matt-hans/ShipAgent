@@ -3,7 +3,6 @@
 This module tests all 9 logistics filters for shipping data transformations.
 """
 
-import math
 from datetime import date, datetime
 
 import pytest

@@ -53,7 +53,7 @@ async def get_row(row_number: int, ctx: Context) -> dict:
     if result is None:
         raise ValueError(f"Row {row_number} not found. Data may have fewer rows.")
 
-    row_dict = dict(zip(columns, result))
+    row_dict = dict(zip(columns, result, strict=False))
     checksum = compute_row_checksum(row_dict)
 
     return RowData(
@@ -135,7 +135,7 @@ async def get_rows_by_filter(
     rows = []
     for row in results:
         row_num = row[0]
-        row_data = dict(zip(columns, row[1:]))
+        row_data = dict(zip(columns, row[1:], strict=False))
         checksum = compute_row_checksum(row_data)
         rows.append(RowData(
             row_number=row_num,
@@ -188,6 +188,6 @@ async def query_data(
 
     return {
         "columns": columns,
-        "rows": [dict(zip(columns, row)) for row in results],
+        "rows": [dict(zip(columns, row, strict=False)) for row in results],
         "row_count": len(results),
     }

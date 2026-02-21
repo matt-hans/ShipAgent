@@ -4,8 +4,8 @@ Parses EDIFACT documents and normalizes to common order schema.
 Uses pydifact library for segment parsing.
 """
 
-from pydifact.segments import Segment
 from pydifact.parser import Parser
+from pydifact.segments import Segment
 
 from src.mcp.data_source.edi.models import (
     EDIDocument,
@@ -82,7 +82,7 @@ class EDIFACTParser:
         except Exception as e:
             if "Invalid EDIFACT" in str(e) or "Unsupported" in str(e):
                 raise
-            raise ValueError(f"Invalid EDIFACT: {e}")
+            raise ValueError(f"Invalid EDIFACT: {e}") from e
 
     def parse(self, content: str) -> list[NormalizedOrder]:
         """Parse EDIFACT content into normalized orders.
@@ -103,7 +103,7 @@ class EDIFACTParser:
         try:
             segments = list(Parser().parse(content))
         except Exception as e:
-            raise ValueError(f"Invalid EDIFACT: {e}")
+            raise ValueError(f"Invalid EDIFACT: {e}") from e
 
         if tx_type == EDITransactionType.EDIFACT_ORDERS:
             return self._parse_orders(segments)

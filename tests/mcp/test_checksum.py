@@ -1,6 +1,5 @@
 """Test checksum functionality."""
 
-import pytest
 
 from src.mcp.data_source.utils import compute_row_checksum
 

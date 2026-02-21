@@ -5,7 +5,7 @@ enforcing valid state transitions and supporting crash recovery through
 per-row status tracking.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -58,7 +58,7 @@ VALID_TRANSITIONS: dict[JobStatus, list[JobStatus]] = {
 
 def _utc_now_iso() -> str:
     """Generate current UTC timestamp in ISO8601 format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class JobService:

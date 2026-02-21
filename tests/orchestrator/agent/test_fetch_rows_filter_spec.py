@@ -9,8 +9,8 @@ from src.orchestrator.models.filter_spec import (
     FilterCondition,
     FilterGroup,
     FilterOperator,
-    ResolvedFilterSpec,
     ResolutionStatus,
+    ResolvedFilterSpec,
     TypedLiteral,
 )
 

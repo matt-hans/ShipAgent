@@ -18,8 +18,9 @@ Filters provided:
 
 import math
 import re
+from collections.abc import Callable
 from datetime import date, datetime
-from typing import Any, Callable
+from typing import Any
 
 from dateutil import parser as date_parser
 from jinja2.sandbox import SandboxedEnvironment

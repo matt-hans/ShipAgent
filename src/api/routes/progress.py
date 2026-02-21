@@ -6,7 +6,7 @@ progress updates to web clients.
 
 import asyncio
 import json
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -63,7 +63,7 @@ async def _event_generator(
                         "data": event["data"],
                     }),
                 }
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Send ping to keep connection alive
                 yield {
                     "data": json.dumps({"event": "ping"}),

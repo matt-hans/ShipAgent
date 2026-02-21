@@ -77,7 +77,9 @@ class TestFilterCondition:
 
     def test_basic_eq_condition(self):
         from src.orchestrator.models.filter_spec import (
-            FilterCondition, FilterOperator, TypedLiteral,
+            FilterCondition,
+            FilterOperator,
+            TypedLiteral,
         )
 
         cond = FilterCondition(
@@ -91,7 +93,9 @@ class TestFilterCondition:
 
     def test_in_condition_multiple_operands(self):
         from src.orchestrator.models.filter_spec import (
-            FilterCondition, FilterOperator, TypedLiteral,
+            FilterCondition,
+            FilterOperator,
+            TypedLiteral,
         )
 
         cond = FilterCondition(
@@ -106,7 +110,8 @@ class TestFilterCondition:
 
     def test_is_null_zero_operands(self):
         from src.orchestrator.models.filter_spec import (
-            FilterCondition, FilterOperator,
+            FilterCondition,
+            FilterOperator,
         )
 
         cond = FilterCondition(
@@ -136,7 +141,10 @@ class TestFilterGroup:
 
     def test_and_group_with_conditions(self):
         from src.orchestrator.models.filter_spec import (
-            FilterCondition, FilterGroup, FilterOperator, TypedLiteral,
+            FilterCondition,
+            FilterGroup,
+            FilterOperator,
+            TypedLiteral,
         )
 
         group = FilterGroup(
@@ -154,7 +162,10 @@ class TestFilterGroup:
 
     def test_nested_group(self):
         from src.orchestrator.models.filter_spec import (
-            FilterCondition, FilterGroup, FilterOperator, TypedLiteral,
+            FilterCondition,
+            FilterGroup,
+            FilterOperator,
+            TypedLiteral,
         )
 
         inner = FilterGroup(
@@ -181,7 +192,10 @@ class TestFilterIntent:
 
     def test_full_intent(self):
         from src.orchestrator.models.filter_spec import (
-            FilterCondition, FilterGroup, FilterIntent, FilterOperator,
+            FilterCondition,
+            FilterGroup,
+            FilterIntent,
+            FilterOperator,
             TypedLiteral,
         )
 
@@ -207,8 +221,12 @@ class TestResolvedFilterSpec:
 
     def test_resolved_spec(self):
         from src.orchestrator.models.filter_spec import (
-            FilterCondition, FilterGroup, FilterOperator,
-            ResolvedFilterSpec, ResolutionStatus, TypedLiteral,
+            FilterCondition,
+            FilterGroup,
+            FilterOperator,
+            ResolutionStatus,
+            ResolvedFilterSpec,
+            TypedLiteral,
         )
 
         spec = ResolvedFilterSpec(
@@ -252,7 +270,8 @@ class TestFilterCompilationError:
 
     def test_error_carries_code(self):
         from src.orchestrator.models.filter_spec import (
-            FilterCompilationError, FilterErrorCode,
+            FilterCompilationError,
+            FilterErrorCode,
         )
 
         err = FilterCompilationError(

@@ -16,7 +16,7 @@ import hmac
 import json
 import os
 import time
-from typing import Any, Union
+from typing import Any
 
 from src.orchestrator.binding_hash import build_binding_fingerprint
 from src.orchestrator.filter_compiler import COMPILER_VERSION
@@ -28,8 +28,8 @@ from src.orchestrator.models.filter_spec import (
     FilterIntent,
     FilterOperator,
     PendingConfirmation,
-    ResolvedFilterSpec,
     ResolutionStatus,
+    ResolvedFilterSpec,
     SemanticReference,
     TypedLiteral,
     UnresolvedTerm,
@@ -46,7 +46,6 @@ from src.services.filter_constants import (
     resolve_business_predicate,
 )
 from src.services.mapping_cache import MAPPING_VERSION
-
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -256,7 +255,7 @@ def _resolve_group(
     Returns:
         A new FilterGroup with resolved children.
     """
-    resolved_children: list[Union[FilterCondition, FilterGroup]] = []
+    resolved_children: list[FilterCondition | FilterGroup] = []
 
     for child in group.conditions:
         if isinstance(child, FilterCondition):
@@ -812,7 +811,7 @@ def _canonicalize_group(group: FilterGroup) -> FilterGroup:
 
 
 def _serialize_node(
-    node: Union[FilterCondition, SemanticReference, FilterGroup],
+    node: FilterCondition | SemanticReference | FilterGroup,
 ) -> str:
     """Serialize a node to a stable string for sorting.
 

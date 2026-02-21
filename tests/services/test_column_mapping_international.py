@@ -2,8 +2,8 @@
 
 from src.services.column_mapping import (
     _FIELD_TO_ORDER_DATA,
-    validate_mapping,
     SERVICE_NAME_TO_CODE,
+    validate_mapping,
 )
 
 

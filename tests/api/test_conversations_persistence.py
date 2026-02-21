@@ -4,7 +4,6 @@ Tests the persistence service layer directly (not HTTP routes) to verify
 the conversation CRUD operations that the new API endpoints depend on.
 """
 
-import json
 
 import pytest
 from sqlalchemy import create_engine

@@ -12,8 +12,8 @@ Requires: SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN environment variables
 
 import pytest
 
-from tests.helpers import MCPTestClient, ShopifyTestStore
 from tests.conftest import requires_shopify_credentials
+from tests.helpers import MCPTestClient, ShopifyTestStore
 
 
 @pytest.fixture
@@ -56,7 +56,7 @@ class TestShopifyOrderRetrieval:
                 "limit": 10,
             })
             assert "orders" in result or "data" in result
-        except RuntimeError as e:
+        except RuntimeError:
             # Tool might have different name - log for debugging
             tools = await connected_shopify_mcp.list_tools()
             pytest.skip(f"get_orders tool not found. Available: {[t['name'] for t in tools]}")

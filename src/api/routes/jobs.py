@@ -190,7 +190,7 @@ def update_job_status(
         raise HTTPException(
             status_code=400,
             detail=f"Invalid state transition: {old_status} -> {update.status.value}",
-        )
+        ) from None
 
 
 @router.delete("/{job_id}", status_code=204)

@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -191,7 +191,7 @@ def _persist_to_disk(
         "mapping": mapping,
         "mapping_hash": mapping_hash,
         "selection_trace": selection_trace,
-        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "verified_at": datetime.now(UTC).isoformat(),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")

@@ -14,8 +14,6 @@ Example:
 import re
 from typing import Any
 
-from src.services.ups_service_codes import SERVICE_NAME_TO_CODE, translate_service_name
-
 NORMALIZER_VERSION = "column_mapping_v2"
 
 
@@ -33,7 +31,6 @@ REQUIRED_FIELDS = [
 # Mapping from simplified path → order_data key used by build_shipment_request
 _FIELD_TO_ORDER_DATA: dict[str, str] = {
     "shipTo.name": "ship_to_name",
-    "shipTo.attentionName": "ship_to_company",
     "shipTo.addressLine1": "ship_to_address1",
     "shipTo.addressLine2": "ship_to_address2",
     "shipTo.addressLine3": "ship_to_address3",
@@ -389,4 +386,6 @@ def auto_map_columns_with_trace(
 
 
 # Re-exported from src.services.ups_service_codes for backward compatibility:
-# SERVICE_NAME_TO_CODE, translate_service_name
+from src.services.ups_service_codes import (  # noqa: E402
+    SERVICE_NAME_TO_CODE as SERVICE_NAME_TO_CODE,
+)

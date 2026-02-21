@@ -5,7 +5,7 @@ audit logging, and conversation persistence. Uses SQLAlchemy 2.0 style
 with Mapped and mapped_column.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Optional
 from uuid import uuid4
@@ -33,7 +33,7 @@ def generate_uuid() -> str:
 
 def utc_now_iso() -> str:
     """Generate current UTC timestamp in ISO8601 format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # Enums matching the database schema constraints
@@ -163,7 +163,7 @@ class Job(Base):
         String(36), primary_key=True, default=generate_uuid
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     original_command: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=JobStatus.pending.value
@@ -177,14 +177,14 @@ class Job(Base):
     failed_rows: Mapped[int] = mapped_column(default=0, nullable=False)
 
     # Cost tracking (in cents to avoid float issues)
-    total_cost_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
+    total_cost_cents: Mapped[int | None] = mapped_column(nullable=True)
 
     # International shipping aggregates
-    total_duties_taxes_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
+    total_duties_taxes_cents: Mapped[int | None] = mapped_column(nullable=True)
     international_row_count: Mapped[int] = mapped_column(default=0, nullable=False)
 
     # Interactive shipment metadata
-    shipper_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    shipper_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_interactive: Mapped[bool] = mapped_column(nullable=False, default=False)
 
     # Write-back preference (tracking numbers written back to source after execution)
@@ -196,15 +196,15 @@ class Job(Base):
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso
     )
-    started_at: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    completed_at: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    started_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    completed_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
     updated_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso, onupdate=utc_now_iso
     )
 
     # Error info (if failed)
-    error_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
     rows: Mapped[list["JobRow"]] = relationship(
@@ -265,26 +265,26 @@ class JobRow(Base):
     )
 
     # Order data (JSON blob with shipment details for preview)
-    order_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    order_data: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Result data
-    tracking_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
-    label_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    cost_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
+    tracking_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    label_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    cost_cents: Mapped[int | None] = mapped_column(nullable=True)
 
     # International shipping data
-    destination_country: Mapped[Optional[str]] = mapped_column(String(2), nullable=True)
-    duties_taxes_cents: Mapped[Optional[int]] = mapped_column(nullable=True)
-    charge_breakdown: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    destination_country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    duties_taxes_cents: Mapped[int | None] = mapped_column(nullable=True)
+    charge_breakdown: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Execution determinism — idempotency and recovery
-    idempotency_key: Mapped[Optional[str]] = mapped_column(
+    idempotency_key: Mapped[str | None] = mapped_column(
         String(200), nullable=True, index=True
     )
-    ups_shipment_id: Mapped[Optional[str]] = mapped_column(
+    ups_shipment_id: Mapped[str | None] = mapped_column(
         String(50), nullable=True
     )
-    ups_tracking_number: Mapped[Optional[str]] = mapped_column(
+    ups_tracking_number: Mapped[str | None] = mapped_column(
         String(50), nullable=True
     )
     recovery_attempt_count: Mapped[int] = mapped_column(
@@ -292,14 +292,14 @@ class JobRow(Base):
     )
 
     # Error info (if failed)
-    error_code: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
-    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Timestamps
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso
     )
-    processed_at: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    processed_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     # Relationships
     job: Mapped["Job"] = relationship("Job", back_populates="rows")
@@ -350,10 +350,10 @@ class AuditLog(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
 
     # Structured data (JSON blob for request/response payloads)
-    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Row context (optional, for row-specific events)
-    row_number: Mapped[Optional[int]] = mapped_column(nullable=True)
+    row_number: Mapped[int | None] = mapped_column(nullable=True)
 
     # Relationships
     job: Mapped["Job"] = relationship("Job", back_populates="audit_logs")
@@ -376,22 +376,22 @@ class AgentDecisionRun(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=generate_uuid
     )
-    session_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    job_id: Mapped[Optional[str]] = mapped_column(
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    job_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
     )
     user_message_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     user_message_redacted: Mapped[str] = mapped_column(Text, nullable=False)
-    source_signature: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_signature: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=AgentDecisionRunStatus.running.value
     )
-    model: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
     interactive_shipping: Mapped[bool] = mapped_column(nullable=False, default=False)
     started_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso
     )
-    completed_at: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    completed_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
     job: Mapped[Optional["Job"]] = relationship("Job", back_populates="decision_runs")
     events: Mapped[list["AgentDecisionEvent"]] = relationship(
@@ -434,11 +434,11 @@ class AgentDecisionEvent(Base):
     phase: Mapped[str] = mapped_column(String(32), nullable=False)
     event_name: Mapped[str] = mapped_column(String(120), nullable=False)
     actor: Mapped[str] = mapped_column(String(20), nullable=False)
-    tool_name: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    tool_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
     payload_redacted: Mapped[str] = mapped_column(Text, nullable=False)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    latency_ms: Mapped[Optional[int]] = mapped_column(nullable=True)
-    prev_event_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(nullable=True)
+    prev_event_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     event_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
     run: Mapped["AgentDecisionRun"] = relationship(
@@ -549,14 +549,14 @@ class SavedDataSource(Base):
     source_type: Mapped[str] = mapped_column(String(20), nullable=False)
 
     # File-based sources
-    file_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
-    sheet_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    file_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    sheet_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     # Database sources (display info only — NO credentials)
-    db_host: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    db_port: Mapped[Optional[int]] = mapped_column(nullable=True)
-    db_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    db_query: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    db_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    db_port: Mapped[int | None] = mapped_column(nullable=True)
+    db_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    db_query: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Metadata
     row_count: Mapped[int] = mapped_column(default=0, nullable=False)
@@ -603,14 +603,14 @@ class Contact(Base):
     )
     handle: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    attention_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
-    company: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
-    phone: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
-    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    attention_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    company: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     address_line_1: Mapped[str] = mapped_column(String(255), nullable=False)
-    address_line_2: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    address_line_2: Mapped[str | None] = mapped_column(String(255), nullable=True)
     city: Mapped[str] = mapped_column(String(100), nullable=False)
-    state_province: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    state_province: Mapped[str | None] = mapped_column(String(50), nullable=True)
     postal_code: Mapped[str] = mapped_column(String(20), nullable=False)
     country_code: Mapped[str] = mapped_column(
         String(2), nullable=False, server_default="US"
@@ -624,9 +624,9 @@ class Contact(Base):
     use_as_third_party: Mapped[bool] = mapped_column(
         nullable=False, server_default="0"
     )
-    tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    last_used_at: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    tags: Mapped[str | None] = mapped_column(Text, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_used_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso
     )
@@ -678,7 +678,7 @@ class CustomCommand(Base):
         String(36), primary_key=True, default=generate_uuid
     )
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
-    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso
@@ -727,11 +727,11 @@ class ConversationSession(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=generate_uuid
     )
-    title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     mode: Mapped[str] = mapped_column(
         String(20), nullable=False, default="batch"
     )
-    context_data: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    context_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso
@@ -788,7 +788,7 @@ class ConversationMessage(Base):
         String(30), nullable=False, default=MessageType.text.value
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso

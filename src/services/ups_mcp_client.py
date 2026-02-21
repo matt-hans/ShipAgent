@@ -10,15 +10,14 @@ Example:
         shipment = await ups.create_shipment(request_body=payload)
 """
 
+import asyncio
 import json
 import logging
 import os
 import sys
-import asyncio
 from typing import Any, Literal
 
 from mcp import StdioServerParameters
-
 from src.errors.ups_translation import translate_ups_error
 from src.services.errors import UPSServiceError
 from src.services.mcp_client import (
@@ -448,7 +447,7 @@ class UPSMCPClient:
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
-        return {"success": True, "status": "cancelled"}
+        return self._normalize_cancel_pickup_response(raw)
 
     async def rate_pickup(
         self,
@@ -1285,6 +1284,52 @@ class UPSMCPClient:
             "success": True,
             "charges": charges,
             "grandTotal": grand_total,
+        }
+
+    def _normalize_cancel_pickup_response(self, raw: dict) -> dict[str, Any]:
+        """Extract cancellation status from raw UPS pickup cancel response.
+
+        Inspects the raw MCP response for embedded error indicators instead
+        of returning a hardcoded success dict. Falls back to success when
+        the response structure is unrecognised (backwards compatible).
+
+        Args:
+            raw: Raw UPS PickupCancelResponse dict.
+
+        Returns:
+            Normalised response dict with success, status, and raw_status.
+        """
+        cancel_resp = (
+            raw.get("PickupCancelResponse", {})
+            or raw.get("response", {})
+            or {}
+        )
+        status_obj = cancel_resp.get("ResponseStatus", {}) if isinstance(cancel_resp, dict) else {}
+
+        # Check for embedded error indicators
+        if isinstance(cancel_resp, dict):
+            error_code = cancel_resp.get("ErrorCode") or cancel_resp.get("errorCode")
+            error_desc = cancel_resp.get("ErrorDescription") or cancel_resp.get("errorDescription")
+            if error_code or error_desc:
+                return {
+                    "success": False,
+                    "status": "error",
+                    "error_code": str(error_code or ""),
+                    "error_description": str(error_desc or ""),
+                    "raw_status": cancel_resp,
+                }
+
+        # Extract status code/description when available
+        status_code = status_obj.get("Code", "") if isinstance(status_obj, dict) else ""
+        status_desc = status_obj.get("Description", "") if isinstance(status_obj, dict) else ""
+
+        return {
+            "success": True,
+            "status": "cancelled",
+            "raw_status": {
+                "code": str(status_code),
+                "description": str(status_desc),
+            },
         }
 
     def _normalize_pickup_status_response(self, raw: dict) -> dict[str, Any]:

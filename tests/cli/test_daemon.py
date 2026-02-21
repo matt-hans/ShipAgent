@@ -1,13 +1,13 @@
 """Tests for daemon PID management."""
 
 import os
-import signal
+from unittest.mock import patch
 
 from src.cli.daemon import (
-    read_pid_file,
-    write_pid_file,
     is_pid_alive,
+    read_pid_file,
     remove_pid_file,
+    write_pid_file,
 )
 
 
@@ -33,8 +33,15 @@ class TestPidFile:
         assert read_pid_file(pid_file) is None
 
     def test_is_pid_alive_current_process(self):
-        """Current process PID is alive."""
-        assert is_pid_alive(os.getpid()) is True
+        """Current process PID is alive when it matches daemon markers."""
+        mock_result = type("Result", (), {"stdout": "python -m shipagent daemon start"})()
+        with patch("subprocess.run", return_value=mock_result):
+            assert is_pid_alive(os.getpid()) is True
+
+    def test_is_pid_alive_non_daemon_process(self):
+        """Non-daemon process PID returns False (correct behavior)."""
+        # Current pytest process doesn't match daemon markers
+        assert is_pid_alive(os.getpid()) is False
 
     def test_is_pid_alive_nonexistent(self):
         """Non-existent PID is not alive."""

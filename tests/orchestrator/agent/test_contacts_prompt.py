@@ -1,6 +1,5 @@
 """Tests for contact injection into agent system prompt."""
 
-import pytest
 
 from src.orchestrator.agent.system_prompt import (
     MAX_PROMPT_CONTACTS,

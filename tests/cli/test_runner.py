@@ -1,10 +1,9 @@
 """Tests for InProcessRunner — in-process agent stack."""
 
-import os
+
+from uuid import uuid4
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
 
 from src.cli.runner import InProcessRunner
 
@@ -16,6 +15,7 @@ def _use_tmp_db(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
     # Force re-creation of engine with new URL
     import importlib
+
     import src.db.connection as conn_mod
     importlib.reload(conn_mod)
 

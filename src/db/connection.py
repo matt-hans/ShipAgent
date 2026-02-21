@@ -220,6 +220,7 @@ def _ensure_columns_exist(conn: Any) -> None:
             malformed SQL, etc.).
     """
     import logging
+
     from sqlalchemy.exc import OperationalError
 
     log = logging.getLogger(__name__)

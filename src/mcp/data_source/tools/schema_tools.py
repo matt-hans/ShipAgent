@@ -33,7 +33,7 @@ async def get_schema(ctx: Context) -> dict:
     try:
         schema_rows = db.execute("DESCRIBE imported_data").fetchall()
     except Exception as e:
-        raise ValueError(f"No data available: {e}")
+        raise ValueError(f"No data available: {e}") from e
 
     columns = [
         SchemaColumn(

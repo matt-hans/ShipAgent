@@ -11,9 +11,10 @@ transport (SSE for HTTP, Rich for CLI, logging for watchdog).
 import json
 import logging
 import os
-from typing import Any, Callable, Coroutine
+from collections.abc import Callable, Coroutine
+from typing import Any
 
-from src.db.models import Job, JobRow, JobStatus, RowStatus
+from src.db.models import Job, JobRow, RowStatus
 from src.services.batch_engine import BatchEngine
 from src.services.decision_audit_service import DecisionAuditService
 from src.services.ups_mcp_client import UPSMCPClient

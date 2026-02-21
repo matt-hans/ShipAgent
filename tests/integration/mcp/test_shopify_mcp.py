@@ -10,10 +10,11 @@ Requires: SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN environment variables
 """
 
 import os
+
 import pytest
 
-from tests.helpers import MCPTestClient
 from tests.conftest import requires_shopify_credentials
+from tests.helpers import MCPTestClient
 
 
 @pytest.fixture

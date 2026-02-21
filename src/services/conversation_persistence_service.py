@@ -9,13 +9,13 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-from src.db.models import (
+from src.db.models import (  # noqa: E402
     ConversationMessage,
     ConversationSession,
     MessageType,
@@ -361,8 +361,8 @@ async def generate_session_title(session_id: str) -> None:
         user_msg = result["messages"][0]["content"][:200]
         assistant_msg = result["messages"][1]["content"][:200]
 
-        from anthropic import AsyncAnthropic
         import httpx
+        from anthropic import AsyncAnthropic
 
         client = AsyncAnthropic(timeout=httpx.Timeout(10.0, connect=5.0))
         response = await client.messages.create(

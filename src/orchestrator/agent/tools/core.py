@@ -21,13 +21,16 @@ from src.services.column_mapping import (
     auto_map_columns,
     validate_mapping,
 )
-from src.services.gateway_provider import get_data_gateway, get_external_sources_client  # noqa: F401
+from src.services.decision_audit_service import DecisionAuditService
+from src.services.gateway_provider import (  # noqa: F401
+    get_data_gateway,
+    get_external_sources_client,
+)
 from src.services.job_service import JobService
 from src.services.mapping_cache import (
     compute_mapping_hash,
     get_or_compute_mapping_with_diagnostics,
 )
-from src.services.decision_audit_service import DecisionAuditService
 from src.services.ups_service_codes import (
     SERVICE_ALIASES,
     SERVICE_CODE_NAMES,

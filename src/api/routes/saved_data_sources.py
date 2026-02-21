@@ -147,12 +147,12 @@ async def reconnect_saved_source(
 
     except FileNotFoundError as e:
         logger.warning("Reconnect file not found: %s", e)
-        raise HTTPException(status_code=404, detail=f"File not found: {e}")
+        raise HTTPException(status_code=404, detail=f"File not found: {e}") from None
     except HTTPException:
         raise
     except Exception as e:
         logger.exception("Reconnect failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Reconnect failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Reconnect failed: {e}") from None
 
 
 @router.delete("/{source_id}")

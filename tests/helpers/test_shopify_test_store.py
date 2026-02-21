@@ -1,6 +1,7 @@
 """Tests for ShopifyTestStore helper."""
 
 import pytest
+
 from tests.helpers.shopify_test_store import ShopifyTestStore
 
 

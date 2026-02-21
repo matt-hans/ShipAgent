@@ -10,31 +10,11 @@ import logging
 import os
 import re
 import time
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
 from src.db.connection import get_db_context
-from src.orchestrator.filter_schema_inference import (
-    resolve_fulfillment_status_column,
-    resolve_total_column,
-)
-from src.orchestrator.binding_hash import build_binding_fingerprint
-from src.orchestrator.filter_compiler import COMPILER_VERSION
-from src.services.job_service import JobService
-from src.services.decision_audit_context import get_decision_run_id, set_decision_job_id
-from src.services.decision_audit_service import DecisionAuditService
-from src.services.column_mapping import NORMALIZER_VERSION
-from src.services.filter_constants import (
-    BUSINESS_PREDICATES,
-    REGIONS,
-    REGION_ALIASES,
-    STATE_ABBREVIATIONS,
-    normalize_term,
-)
-from src.services.mapping_cache import MAPPING_VERSION
-from src.services.ups_service_codes import translate_service_name
-
 from src.orchestrator.agent.tools.core import (
     EventEmitterBridge,
     _build_job_row_data_with_metadata,
@@ -48,7 +28,26 @@ from src.orchestrator.agent.tools.core import (
     _persist_job_source_signature,
     get_data_gateway,
 )
+from src.orchestrator.binding_hash import build_binding_fingerprint
+from src.orchestrator.filter_compiler import COMPILER_VERSION
+from src.orchestrator.filter_schema_inference import (
+    resolve_fulfillment_status_column,
+    resolve_total_column,
+)
+from src.services.column_mapping import NORMALIZER_VERSION
+from src.services.decision_audit_context import get_decision_run_id, set_decision_job_id
+from src.services.decision_audit_service import DecisionAuditService
 from src.services.errors import UPSServiceError
+from src.services.filter_constants import (
+    BUSINESS_PREDICATES,
+    REGION_ALIASES,
+    REGIONS,
+    STATE_ABBREVIATIONS,
+    normalize_term,
+)
+from src.services.job_service import JobService
+from src.services.mapping_cache import MAPPING_VERSION
+from src.services.ups_service_codes import translate_service_name
 
 logger = logging.getLogger(__name__)
 
@@ -668,7 +667,7 @@ def _canonical_param(v: Any) -> Any:
         JSON-safe canonical representation.
     """
     if isinstance(v, datetime):
-        return v.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return v.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     if isinstance(v, date):
         return v.isoformat()
     if isinstance(v, Decimal):

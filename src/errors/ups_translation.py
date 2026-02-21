@@ -7,7 +7,6 @@ actionable remediation steps.
 
 from src.errors.registry import get_error
 
-
 # Map of UPS error codes to ShipAgent error codes
 # Source: UPS API error documentation
 UPS_ERROR_MAP: dict[str, str] = {

@@ -7,7 +7,6 @@ triggering.
 import io
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from src.api.main import app

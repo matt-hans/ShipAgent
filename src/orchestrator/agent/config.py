@@ -27,9 +27,9 @@ import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import TypedDict
+from typing import TypedDict  # noqa: E402
 
-from src.services.ups_specs import ensure_ups_specs_dir
+from src.services.ups_specs import ensure_ups_specs_dir  # noqa: E402
 
 # Project root is parent of src/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -39,10 +39,14 @@ VENV_PYTHON = str(PROJECT_ROOT / ".venv" / "bin" / "python3")
 def _get_python_command() -> str:
     """Return the preferred Python interpreter for MCP subprocesses.
 
+    Honors MCP_PYTHON_PATH when explicitly configured.
     Prioritizes the project virtual environment to ensure all MCP
     subprocesses use the same dependency set as the backend.
     Falls back to the current interpreter when .venv Python is missing.
     """
+    override = os.environ.get("MCP_PYTHON_PATH", "").strip()
+    if override:
+        return override
     if os.path.exists(VENV_PYTHON):
         return VENV_PYTHON
     return sys.executable

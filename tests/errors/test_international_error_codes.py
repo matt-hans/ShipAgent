@@ -1,6 +1,6 @@
 """Tests for international shipping error codes."""
 
-from src.errors.registry import get_error, ErrorCategory
+from src.errors.registry import ErrorCategory, get_error
 
 
 class TestInternationalErrorCodes:

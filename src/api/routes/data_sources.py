@@ -175,7 +175,7 @@ async def upload_data_source(
             shutil.copyfileobj(file.file, f)
     except OSError as e:
         logger.exception("Failed to save uploaded file: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}") from None
     finally:
         await file.close()
 

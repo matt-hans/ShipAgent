@@ -1,7 +1,6 @@
 """Tests for JSON data source adapter."""
 
 import json
-from pathlib import Path
 
 import duckdb
 import pytest
@@ -104,7 +103,6 @@ class TestJSONAdapterNested:
 
     def test_file_too_large(self, conn, tmp_path):
         """Files exceeding MAX_FILE_SIZE_BYTES are rejected."""
-        from src.mcp.data_source.adapters.json_adapter import MAX_FILE_SIZE_BYTES
         path = tmp_path / "huge.json"
         path.write_text("[" + ",".join(['{"x":"y"}'] * 100) + "]")
         adapter = JSONAdapter()

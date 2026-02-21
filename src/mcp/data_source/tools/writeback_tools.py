@@ -10,8 +10,7 @@ Per CONTEXT.md Decision 4:
 - shipped_at uses ISO8601 format
 """
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from fastmcp import Context
 
@@ -28,7 +27,7 @@ async def write_back(
     row_number: int,
     tracking_number: str,
     ctx: Context,
-    shipped_at: Optional[str] = None,
+    shipped_at: str | None = None,
 ) -> dict:
     """Write tracking number back to the original data source.
 
@@ -65,7 +64,7 @@ async def write_back(
 
     # Default shipped_at to current UTC time
     if shipped_at is None:
-        shipped_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        shipped_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     source_type = current_source.get("type")
 
@@ -150,7 +149,7 @@ async def _write_back_excel(
     tracking_number: str,
     shipped_at: str,
     ctx: Context,
-    sheet_name: Optional[str] = None,
+    sheet_name: str | None = None,
 ) -> None:
     """Write tracking and timestamp columns to an Excel source atomically."""
     apply_excel_updates_atomic(
@@ -222,7 +221,7 @@ async def _write_back_database(
         raise ValueError(f"Database write-back failed: {e}") from e
 
 
-def _extract_table_name(query: str) -> Optional[str]:
+def _extract_table_name(query: str) -> str | None:
     """Extract table name from a simple SELECT query.
 
     Handles patterns like:

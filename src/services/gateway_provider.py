@@ -134,6 +134,31 @@ async def get_ups_gateway() -> Any:
     return _ups_gateway
 
 
+async def check_gateway_health() -> dict[str, dict[str, str]]:
+    """Probe connected MCP gateways for liveness. Non-blocking, best-effort.
+
+    Returns:
+        Dict mapping gateway name to status dict.
+    """
+    results: dict[str, dict[str, str]] = {}
+    for name, client in [
+        ("data_source", _data_gateway),
+        ("external_sources", _ext_sources_client),
+        ("ups", _ups_gateway),
+    ]:
+        if client is None:
+            results[name] = {"status": "not_initialized"}
+        elif not getattr(client, "is_connected", False):
+            results[name] = {"status": "disconnected"}
+        else:
+            try:
+                healthy = await client.check_health()
+                results[name] = {"status": "ok" if healthy else "unhealthy"}
+            except Exception:
+                results[name] = {"status": "unhealthy"}
+    return results
+
+
 async def shutdown_gateways() -> None:
     """Shutdown hook — disconnect all gateway clients. Call from FastAPI lifespan."""
     global _data_gateway, _ext_sources_client, _ups_gateway

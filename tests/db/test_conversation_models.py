@@ -10,7 +10,6 @@ from src.db.models import (
     ConversationSession,
     MessageType,
     generate_uuid,
-    utc_now_iso,
 )
 
 

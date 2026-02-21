@@ -6,13 +6,14 @@ Verifies that get_job_summary() exposes:
 - pending_count: excludes needs_review and in_flight rows
 """
 
+from datetime import UTC
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.db.models import Base, Job, JobRow, JobStatus, RowStatus
+from src.db.models import Base, Job, JobRow, JobStatus
 from src.services.job_service import JobService
 
 
@@ -40,9 +41,9 @@ def _create_job_with_rows(
     Returns:
         Tuple of (job_id, list of row_ids).
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     job_id = str(uuid4())
 
     # Count completed and failed for processed_rows

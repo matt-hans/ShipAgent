@@ -5,9 +5,9 @@ creates DuckDB table from flat dicts, and clear_source drops state.
 """
 
 import hashlib
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
 
 @pytest.fixture

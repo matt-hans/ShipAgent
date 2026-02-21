@@ -2,14 +2,19 @@
 
 import asyncio
 import hashlib
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.services.conversation_handler import compute_source_hash, ensure_agent, process_message
+from src.services.conversation_handler import (
+    compute_source_hash,
+    ensure_agent,
+    process_message,
+)
 
-# Precompute the expected hash for empty contacts list
-_EMPTY_CONTACTS_HASH = hashlib.sha256(str([]).encode()).hexdigest()[:8]
+# Precompute the expected hash for empty contacts list (matches JSON serialization)
+_EMPTY_CONTACTS_HASH = hashlib.sha256(json.dumps([], sort_keys=True, default=str).encode()).hexdigest()[:8]
 _NONE_HASH = f"none|interactive=False|contacts={_EMPTY_CONTACTS_HASH}"
 
 
@@ -19,7 +24,7 @@ def _make_test_session_hash(source_hash: str = "none", interactive: bool = False
     Mirrors the 3-component hash in conversation_handler.ensure_agent():
         f"{source_hash}|interactive={interactive}|contacts={contacts_hash}"
     """
-    contacts_hash = hashlib.sha256(str([]).encode()).hexdigest()[:8]
+    contacts_hash = hashlib.sha256(json.dumps([], sort_keys=True, default=str).encode()).hexdigest()[:8]
     return f"{source_hash}|interactive={interactive}|contacts={contacts_hash}"
 
 
@@ -111,6 +116,73 @@ class TestEnsureAgent:
         old_agent.stop.assert_called_once()
         new_agent.start.assert_called_once()
         assert session.agent is new_agent
+
+
+    @pytest.mark.asyncio
+    async def test_fetches_column_samples_in_batch_mode(self):
+        """Fetches column samples when source_info present and batch mode."""
+        session = MagicMock()
+        session.agent = None
+        session.agent_source_hash = None
+        session.session_id = "sess-1"
+
+        mock_source = MagicMock()
+        mock_source.__dict__ = {"source_type": "csv", "path": "/tmp/test.csv"}
+        mock_agent = AsyncMock()
+        mock_gw = AsyncMock()
+        mock_gw.get_column_samples = AsyncMock(return_value={"city": ["NYC", "LA"]})
+
+        with (
+            patch(
+                "src.orchestrator.agent.client.OrchestrationAgent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "src.orchestrator.agent.system_prompt.build_system_prompt",
+                return_value="test prompt",
+            ) as mock_build,
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+                return_value=mock_gw,
+            ),
+        ):
+            result = await ensure_agent(session, source_info=mock_source, interactive_shipping=False)
+
+        assert result is True
+        mock_gw.get_column_samples.assert_called_once_with(max_samples=5)
+        # Verify column_samples was passed to build_system_prompt
+        _, kwargs = mock_build.call_args
+        assert kwargs["column_samples"] == {"city": ["NYC", "LA"]}
+
+    @pytest.mark.asyncio
+    async def test_skips_column_samples_in_interactive_mode(self):
+        """Skips column samples fetch in interactive mode."""
+        session = MagicMock()
+        session.agent = None
+        session.agent_source_hash = None
+        session.session_id = "sess-1"
+
+        mock_source = MagicMock()
+        mock_source.__dict__ = {"source_type": "csv", "path": "/tmp/test.csv"}
+        mock_agent = AsyncMock()
+
+        with (
+            patch(
+                "src.orchestrator.agent.client.OrchestrationAgent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "src.orchestrator.agent.system_prompt.build_system_prompt",
+                return_value="test prompt",
+            ) as mock_build,
+        ):
+            result = await ensure_agent(session, source_info=mock_source, interactive_shipping=True)
+
+        assert result is True
+        # Verify column_samples is None in interactive mode
+        _, kwargs = mock_build.call_args
+        assert kwargs["column_samples"] is None
 
 
 class TestProcessMessage:

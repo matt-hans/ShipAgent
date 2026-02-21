@@ -1,6 +1,5 @@
 """Tests for the client factory."""
 
-import pytest
 
 from src.cli.factory import get_client
 

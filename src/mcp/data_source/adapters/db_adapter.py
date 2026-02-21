@@ -22,9 +22,8 @@ from urllib.parse import urlparse
 
 from duckdb import DuckDBPyConnection
 
-from .base import BaseSourceAdapter
 from ..models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
-
+from .base import BaseSourceAdapter
 
 # Threshold for requiring WHERE clause (per CONTEXT.md)
 LARGE_TABLE_THRESHOLD = 10000
@@ -142,7 +141,7 @@ class DatabaseAdapter(BaseSourceAdapter):
         except Exception:
             return []
 
-        grouped: "OrderedDict[tuple[str, str], list[str]]" = OrderedDict()
+        grouped: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
         for ctype, cname, col_name, _ordinal in rows:
             key = (str(ctype), str(cname))
             grouped.setdefault(key, []).append(str(col_name))

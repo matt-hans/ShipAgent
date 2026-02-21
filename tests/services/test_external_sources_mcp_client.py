@@ -4,8 +4,9 @@ Verifies the process-global MCP client correctly delegates to
 the underlying MCPClient for each platform operation.
 """
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from src.services.external_sources_mcp_client import ExternalSourcesMCPClient
 

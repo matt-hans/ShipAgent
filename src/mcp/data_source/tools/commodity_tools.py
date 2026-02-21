@@ -10,7 +10,6 @@ from typing import Any
 
 from fastmcp import Context
 
-
 COMMODITIES_TABLE = "imported_commodities"
 
 # Required columns for commodity data
@@ -106,7 +105,7 @@ def get_commodities_bulk_sync(
 
     result: dict[int | str, list[dict]] = defaultdict(list)
     for row in rows:
-        row_dict = dict(zip(columns, row))
+        row_dict = dict(zip(columns, row, strict=False))
         oid = row_dict.pop("order_id")
         result[oid].append(row_dict)
 

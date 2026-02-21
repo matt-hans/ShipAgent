@@ -16,11 +16,13 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from mcp.types import TextContent
+
+from mcp import ClientSession, StdioServerParameters
 from src.services.decision_audit_service import DecisionAuditService
 
 logger = logging.getLogger(__name__)

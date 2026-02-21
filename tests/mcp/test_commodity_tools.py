@@ -154,4 +154,4 @@ class TestGatewaySeam:
 
         client = DataSourceMCPClient.__new__(DataSourceMCPClient)
         assert hasattr(client, "get_commodities_bulk")
-        assert callable(getattr(client, "get_commodities_bulk"))
+        assert callable(client.get_commodities_bulk)

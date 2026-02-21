@@ -5,8 +5,9 @@ implement. The CLI commands call protocol methods without knowing which
 backend is active.
 """
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Protocol
+from typing import Protocol
 
 
 @dataclass

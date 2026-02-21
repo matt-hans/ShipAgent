@@ -1,15 +1,17 @@
 """Tests for import_file router, sniff_file, and import_fixed_width MCP tools."""
 
 import json
-import textwrap
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import duckdb
 import pytest
 
 import src.mcp.data_source.tools.import_tools as _import_mod
-from src.mcp.data_source.tools.import_tools import import_file, sniff_file, import_fixed_width
+from src.mcp.data_source.tools.import_tools import (
+    import_file,
+    import_fixed_width,
+    sniff_file,
+)
 
 
 @pytest.fixture(autouse=True)

@@ -18,12 +18,38 @@ function getDotColor(message: ConversationMessage): string {
   return 'bg-cyan-400'; // assistant
 }
 
+/**
+ * Collapse system text messages that immediately precede an artifact into
+ * the artifact's dot. This prevents duplicate dots for a single visual block
+ * (e.g. "Batch confirmed..." text + CompletionArtifact card).
+ */
+function deduplicateForTimeline(msgs: ConversationMessage[]): ConversationMessage[] {
+  const result: ConversationMessage[] = [];
+  for (let i = 0; i < msgs.length; i++) {
+    const curr = msgs[i];
+    const next = msgs[i + 1];
+    // Skip non-artifact system messages that are immediately followed by an artifact
+    if (
+      curr.role === 'system' &&
+      !curr.metadata?.action &&
+      next?.role === 'system' &&
+      next.metadata?.action &&
+      next.metadata.action !== 'error'
+    ) {
+      continue;
+    }
+    result.push(curr);
+  }
+  return result;
+}
+
 interface ChatTimelineProps {
   messages: ConversationMessage[];
   scrollContainerRef: React.RefObject<HTMLDivElement | null>;
 }
 
 export function ChatTimeline({ messages, scrollContainerRef }: ChatTimelineProps) {
+  const timelineDots = React.useMemo(() => deduplicateForTimeline(messages), [messages]);
   const [visibleIds, setVisibleIds] = React.useState<Set<string>>(new Set());
 
   // Observe which messages are in the viewport
@@ -69,7 +95,7 @@ export function ChatTimeline({ messages, scrollContainerRef }: ChatTimelineProps
 
       {/* Dots */}
       <div className="relative flex flex-col justify-between h-full w-full items-center">
-        {messages.map((msg) => {
+        {timelineDots.map((msg) => {
           const isVisible = visibleIds.has(msg.id);
           return (
             <button

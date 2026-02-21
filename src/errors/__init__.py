@@ -14,17 +14,13 @@ Error categories:
 - E-5xxx: Authentication errors
 """
 
-from src.errors.registry import (
-    ErrorCategory,
-    ErrorCode,
-    ERROR_REGISTRY,
-    get_error,
-    get_errors_by_category,
-)
-from src.errors.ups_translation import (
-    UPS_ERROR_MAP,
-    extract_ups_error,
-    translate_ups_error,
+from src.errors.domain import (
+    ConflictError,
+    DomainError,
+    DuplicateCommandNameError,
+    DuplicateHandleError,
+    NotFoundError,
+    ValidationError,
 )
 from src.errors.formatter import (
     ShipAgentError,
@@ -32,13 +28,17 @@ from src.errors.formatter import (
     format_error_summary,
     group_errors,
 )
-from src.errors.domain import (
-    DomainError,
-    NotFoundError,
-    ConflictError,
-    ValidationError,
-    DuplicateHandleError,
-    DuplicateCommandNameError,
+from src.errors.registry import (
+    ERROR_REGISTRY,
+    ErrorCategory,
+    ErrorCode,
+    get_error,
+    get_errors_by_category,
+)
+from src.errors.ups_translation import (
+    UPS_ERROR_MAP,
+    extract_ups_error,
+    translate_ups_error,
 )
 
 __all__ = [

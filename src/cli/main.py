@@ -12,9 +12,7 @@ Usage:
 
 import asyncio
 import logging
-import sys
 from pathlib import Path
-from typing import Any, Optional
 
 import typer
 from rich.console import Console
@@ -64,7 +62,7 @@ def main(
     standalone: bool = typer.Option(
         False, "--standalone", help="Run in-process without daemon"
     ),
-    config: Optional[str] = typer.Option(
+    config: str | None = typer.Option(
         None, "--config", help="Path to shipagent.yaml config file"
     ),
 ):
@@ -129,7 +127,7 @@ def config_show():
 
 @config_app.command("validate")
 def config_validate(
-    config: Optional[str] = typer.Option(None, "--config", help="Config file path"),
+    config: str | None = typer.Option(None, "--config", help="Config file path"),
 ):
     """Validate a config file without starting the daemon."""
     path = config or _config_path
@@ -143,13 +141,13 @@ def config_validate(
         console.print(f"  Auto-confirm: {'enabled' if cfg.auto_confirm.enabled else 'disabled'}")
     except FileNotFoundError as e:
         console.print(f"[red]Config file not found:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     except (ValueError, TypeError) as e:
         console.print(f"[red]Config validation failed:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     except Exception as e:
         console.print(f"[red]Config loading error ({type(e).__name__}):[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 # --- Job commands ---
@@ -157,7 +155,7 @@ def config_validate(
 
 @job_app.command("list")
 def job_list(
-    status: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status"),
+    status: str | None = typer.Option(None, "--status", "-s", help="Filter by status"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """List all shipping jobs."""
@@ -240,7 +238,7 @@ def job_cancel(
                 console.print(f"[yellow]Job {job_id} cancelled.[/yellow]")
         except ShipAgentClientError as e:
             console.print(f"[red]Error:[/red] {e.message}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
     asyncio.run(_run())
 
@@ -289,7 +287,7 @@ def job_logs(
                     console.print(output)
         except ShipAgentClientError as e:
             console.print(f"[red]Error:[/red] {e.message}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
     asyncio.run(_run())
 
@@ -332,10 +330,10 @@ def job_audit(
 @app.command()
 def submit(
     file: Path = typer.Argument(help="Path to CSV or Excel file"),
-    command: Optional[str] = typer.Option(
+    command: str | None = typer.Option(
         None, "--command", "-c", help='Agent command (default: "Ship all orders")'
     ),
-    service: Optional[str] = typer.Option(
+    service: str | None = typer.Option(
         None, "--service", "-s", help="Service shorthand (e.g., 'UPS Ground')"
     ),
     auto_confirm: bool = typer.Option(
@@ -441,7 +439,8 @@ def submit(
                     )
 
             if json_output:
-                import dataclasses, json
+                import dataclasses
+                import json
                 console.print(json.dumps(dataclasses.asdict(result), indent=2))
             else:
                 console.print(f"[green]Job submitted:[/green] {result.job_id}")
@@ -457,8 +456,8 @@ def submit(
 
 @daemon_app.command("start")
 def daemon_start_cmd(
-    host: Optional[str] = typer.Option(None, "--host", help="Bind address"),
-    port: Optional[int] = typer.Option(None, "--port", help="Bind port"),
+    host: str | None = typer.Option(None, "--host", help="Bind address"),
+    port: int | None = typer.Option(None, "--port", help="Bind port"),
 ):
     """Start the ShipAgent daemon (FastAPI + Watchdog)."""
     import os
@@ -528,17 +527,17 @@ def data_source_status():
                 console.print(format_source_status(status))
         except ShipAgentClientError as e:
             console.print(f"[red]Error:[/red] {e.message}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
     asyncio.run(_run())
 
 
 @data_source_app.command("connect")
 def data_source_connect(
-    file: Optional[str] = typer.Argument(None, help="Path to CSV or Excel file"),
-    db: Optional[str] = typer.Option(None, "--db", help="Database connection string"),
-    query: Optional[str] = typer.Option(None, "--query", help="SQL query (required with --db)"),
-    platform: Optional[str] = typer.Option(None, "--platform", help="Platform name (shopify)"),
+    file: str | None = typer.Argument(None, help="Path to CSV or Excel file"),
+    db: str | None = typer.Option(None, "--db", help="Database connection string"),
+    query: str | None = typer.Option(None, "--query", help="SQL query (required with --db)"),
+    platform: str | None = typer.Option(None, "--platform", help="Platform name (shopify)"),
 ):
     """Connect a data source (file, database, or platform)."""
     cfg = load_config(config_path=_config_path)
@@ -573,7 +572,7 @@ def data_source_connect(
                 console.print(format_source_status(status))
         except ShipAgentClientError as e:
             console.print(f"[red]Error:[/red] {e.message}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
     asyncio.run(_run())
 
@@ -591,7 +590,7 @@ def data_source_disconnect():
                 console.print("[green]Data source disconnected.[/green]")
         except ShipAgentClientError as e:
             console.print(f"[red]Error:[/red] {e.message}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
     asyncio.run(_run())
 
@@ -609,7 +608,7 @@ def data_source_list_saved():
                 console.print(format_saved_sources(sources))
         except ShipAgentClientError as e:
             console.print(f"[red]Error:[/red] {e.message}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
     asyncio.run(_run())
 
@@ -632,7 +631,7 @@ def data_source_reconnect(
                 console.print(format_source_status(status))
         except ShipAgentClientError as e:
             console.print(f"[red]Error:[/red] {e.message}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
     asyncio.run(_run())
 
@@ -650,7 +649,7 @@ def data_source_schema():
                 console.print(format_schema(columns))
         except ShipAgentClientError as e:
             console.print(f"[red]Error:[/red] {e.message}")
-            raise typer.Exit(1)
+            raise typer.Exit(1) from e
 
     asyncio.run(_run())
 
@@ -660,16 +659,16 @@ def data_source_schema():
 
 @app.command()
 def interact(
-    session: Optional[str] = typer.Option(
+    session: str | None = typer.Option(
         None, "--session", help="Resume existing session ID"
     ),
-    file: Optional[str] = typer.Option(
+    file: str | None = typer.Option(
         None, "--file", help="Load file as data source before REPL"
     ),
-    source: Optional[str] = typer.Option(
+    source: str | None = typer.Option(
         None, "--source", help="Reconnect saved source before REPL"
     ),
-    platform: Optional[str] = typer.Option(
+    platform: str | None = typer.Option(
         None, "--platform", help="Connect platform before REPL (shopify)"
     ),
 ):
@@ -678,7 +677,6 @@ def interact(
     Optional pre-loading: --file, --source, or --platform connect a data
     source before entering the REPL so it's immediately available to the agent.
     """
-    from src.cli.repl import run_repl
 
     cfg = load_config(config_path=_config_path)
     client = get_client(standalone=_standalone, config=cfg)
@@ -697,7 +695,7 @@ def interact(
                     console.print(f"[green]Connected: {platform}[/green]")
             except ShipAgentClientError as e:
                 console.print(f"[red]Failed to pre-load data source:[/red] {e.message}")
-                raise typer.Exit(1)
+                raise typer.Exit(1) from e
             # Enter REPL — pass already-open client
             await _run_repl_in_context(client, session_id=session)
 
@@ -712,9 +710,7 @@ async def _run_repl_in_context(
     This is used when pre-loading a data source before entering the REPL,
     since the client is already opened by the interact command.
     """
-    from rich.panel import Panel as _Panel
 
-    from src.cli.protocol import AgentEvent
 
     if session_id is None:
         session_id = await client.create_session(interactive=False)
@@ -785,15 +781,15 @@ def contacts_list():
 
 @contacts_app.command("add")
 def contacts_add(
-    handle: Optional[str] = typer.Option(None, "--handle", "-h", help="@mention handle"),
+    handle: str | None = typer.Option(None, "--handle", "-h", help="@mention handle"),
     name: str = typer.Option(..., "--name", "-n", help="Display name"),
     address: str = typer.Option(..., "--address", "-a", help="Street address"),
     city: str = typer.Option(..., "--city", "-c", help="City"),
     state: str = typer.Option(..., "--state", "-s", help="State/province"),
     zip_code: str = typer.Option(..., "--zip", "-z", help="Postal/ZIP code"),
     country: str = typer.Option("US", "--country", help="Country code"),
-    phone: Optional[str] = typer.Option(None, "--phone", "-p", help="Phone number"),
-    company: Optional[str] = typer.Option(None, "--company", help="Company name"),
+    phone: str | None = typer.Option(None, "--phone", "-p", help="Phone number"),
+    company: str | None = typer.Option(None, "--company", help="Company name"),
 ):
     """Add a new contact to the address book."""
     from src.db.connection import get_db_context
@@ -811,7 +807,7 @@ def contacts_add(
             console.print(f"[green]Created contact @{contact.handle}[/green]")
         except ValueError as e:
             console.print(f"[red]Error: {e}[/red]")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from e
 
 
 @contacts_app.command("show")
@@ -974,7 +970,7 @@ def commands_list():
 def commands_add(
     name: str = typer.Option(..., "--name", "-n", help="Command name without /"),
     body: str = typer.Option(..., "--body", "-b", help="Instruction text"),
-    description: Optional[str] = typer.Option(None, "--description", "-d", help="Description"),
+    description: str | None = typer.Option(None, "--description", "-d", help="Description"),
 ):
     """Add a new custom command."""
     from src.db.connection import get_db_context
@@ -988,7 +984,7 @@ def commands_add(
             console.print(f"[green]Created command /{cmd.name}[/green]")
         except ValueError as e:
             console.print(f"[red]Error: {e}[/red]")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from e
 
 
 @commands_app.command("show")

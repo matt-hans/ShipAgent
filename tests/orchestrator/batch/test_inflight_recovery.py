@@ -6,13 +6,12 @@ Covers the three-tier recovery system in BatchEngine.recover_in_flight_rows():
   Tier 3: UPS lookup fails → increment counter → escalate after MAX_RECOVERY_ATTEMPTS
 """
 
-import os
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.services.batch_engine import BatchEngine, MAX_RECOVERY_ATTEMPTS
+from src.services.batch_engine import MAX_RECOVERY_ATTEMPTS, BatchEngine
 
 
 def _make_inflight_row(

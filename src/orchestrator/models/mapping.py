@@ -4,7 +4,7 @@ These Pydantic models define the structure for field mappings and mapping
 templates that transform source data columns to UPS API payload format.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -40,11 +40,11 @@ class FieldMapping(BaseModel):
         ...,
         description="JSONPath in UPS payload (e.g., ShipTo.Name)",
     )
-    transformation: Optional[str] = Field(
+    transformation: str | None = Field(
         default=None,
         description="Jinja2 filter expression (e.g., truncate_address(35))",
     )
-    default_value: Optional[Any] = Field(
+    default_value: Any | None = Field(
         default=None,
         description="Default value if source is null/empty",
     )
@@ -94,7 +94,7 @@ class MappingTemplate(BaseModel):
         default_factory=list,
         description="Required UPS fields not mapped",
     )
-    jinja_template: Optional[str] = Field(
+    jinja_template: str | None = Field(
         default=None,
         description="Compiled Jinja2 template string",
     )
@@ -137,7 +137,7 @@ class UPSTargetField(BaseModel):
         default=False,
         description="Whether field is required for valid payload",
     )
-    max_length: Optional[int] = Field(
+    max_length: int | None = Field(
         default=None,
         description="Maximum string length (if applicable)",
     )
@@ -162,8 +162,8 @@ class MappingGenerationError(Exception):
     def __init__(
         self,
         message: str,
-        source_column: Optional[str] = None,
-        target_path: Optional[str] = None,
+        source_column: str | None = None,
+        target_path: str | None = None,
     ) -> None:
         """Initialize MappingGenerationError.
 

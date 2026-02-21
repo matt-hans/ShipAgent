@@ -16,14 +16,17 @@ class ToolDefinition(TypedDict):
     input_schema: dict[str, Any]
     handler: Callable[..., Awaitable[Any]]
 
-from src.orchestrator.agent.tools.contacts import (
+from src.orchestrator.agent.tools.contacts import (  # noqa: E402
     delete_contact_tool,
     list_contacts_tool,
     resolve_contact_tool,
     save_contact_tool,
 )
-from src.orchestrator.agent.tools.core import EventEmitterBridge, _bind_bridge
-from src.orchestrator.agent.tools.data import (
+from src.orchestrator.agent.tools.core import (  # noqa: E402
+    EventEmitterBridge,
+    _bind_bridge,
+)
+from src.orchestrator.agent.tools.data import (  # noqa: E402
     confirm_filter_interpretation_tool,
     connect_shopify_tool,
     fetch_rows_tool,
@@ -32,16 +35,16 @@ from src.orchestrator.agent.tools.data import (
     get_source_info_tool,
     resolve_filter_intent_tool,
 )
-from src.orchestrator.agent.tools.documents import (
+from src.orchestrator.agent.tools.documents import (  # noqa: E402
     delete_paperless_document_tool,
     push_document_to_shipment_tool,
     request_document_upload_tool,
     upload_paperless_document_tool,
 )
-from src.orchestrator.agent.tools.interactive import (
+from src.orchestrator.agent.tools.interactive import (  # noqa: E402
     preview_interactive_shipment_tool,
 )
-from src.orchestrator.agent.tools.pickup import (
+from src.orchestrator.agent.tools.pickup import (  # noqa: E402
     cancel_pickup_tool,
     find_locations_tool,
     get_pickup_status_tool,
@@ -49,13 +52,13 @@ from src.orchestrator.agent.tools.pickup import (
     rate_pickup_tool,
     schedule_pickup_tool,
 )
-from src.orchestrator.agent.tools.pipeline import (
+from src.orchestrator.agent.tools.pipeline import (  # noqa: E402
     batch_execute_tool,
     get_job_status_tool,
     get_landed_cost_tool,
     ship_command_pipeline_tool,
 )
-from src.orchestrator.agent.tools.tracking import track_package_tool
+from src.orchestrator.agent.tools.tracking import track_package_tool  # noqa: E402
 
 
 def get_all_tool_definitions(
@@ -763,7 +766,7 @@ def get_all_tool_definitions(
     # In interactive mode, expose status tools + interactive preview + v2 tools.
     # v2 tools work independently of data sources and are useful in both modes.
     interactive_allowed = {
-        "get_job_status", "get_platform_status", "preview_interactive_shipment",
+        "get_job_status", "get_platform_status",
         # v2 tools — work independently of data source
         "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
         "find_locations", "get_service_center_facilities",

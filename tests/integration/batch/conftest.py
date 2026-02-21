@@ -3,17 +3,16 @@
 import csv
 import os
 import tempfile
-from pathlib import Path
-from typing import Generator
+from collections.abc import Generator
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.db.models import Base, Job, JobRow, JobStatus, RowStatus
-from src.services.job_service import JobService
+from src.db.models import Base, Job
 from src.services.audit_service import AuditService
+from src.services.job_service import JobService
 
 
 @pytest.fixture

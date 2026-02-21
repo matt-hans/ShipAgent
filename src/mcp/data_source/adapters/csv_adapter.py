@@ -155,7 +155,7 @@ class DelimitedAdapter(BaseSourceAdapter):
         columns = []
         warnings: list[str] = []
 
-        for col_name, col_type, nullable, key, default, extra in schema_rows:
+        for col_name, col_type, nullable, _key, _default, _extra in schema_rows:
             # Hide internal identity column from user-facing schema
             if col_name == SOURCE_ROW_NUM_COLUMN:
                 continue

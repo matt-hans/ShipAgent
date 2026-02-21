@@ -17,9 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.services.batch_engine import BatchEngine, MAX_RECOVERY_ATTEMPTS
+from src.services.batch_engine import MAX_RECOVERY_ATTEMPTS, BatchEngine
 from src.services.errors import UPSServiceError
-from src.services.mcp_client import MCPConnectionError
 from src.services.write_back_worker import (
     WriteBackTask,
     enqueue_write_back,
@@ -210,7 +209,7 @@ class TestCrashSafeExecution:
             idempotency_key="job-e2e-001:1:abc123",
         )
 
-        result = await engine.recover_in_flight_rows(
+        await engine.recover_in_flight_rows(
             job_id="job-e2e-001", rows=[row],
         )
 
@@ -299,7 +298,6 @@ class TestWriteBackDurability:
         db = MagicMock()
         tasks: list[WriteBackTask] = []
 
-        original_add = db.add
 
         def capture_add(task):
             tasks.append(task)

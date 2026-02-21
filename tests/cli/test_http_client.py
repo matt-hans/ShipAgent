@@ -1,13 +1,13 @@
 """Tests for HttpClient — mocked HTTP responses."""
 
 import json
-
-import pytest
-import httpx
 from unittest.mock import AsyncMock, patch
 
+import httpx
+import pytest
+
 from src.cli.http_client import HttpClient
-from src.cli.protocol import JobSummary, JobDetail, ShipAgentClientError
+from src.cli.protocol import JobSummary, ShipAgentClientError
 
 
 class FakeTransport(httpx.AsyncBaseTransport):

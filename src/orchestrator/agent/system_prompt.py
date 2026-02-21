@@ -10,7 +10,7 @@ Example:
 """
 
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 
 from src.orchestrator.filter_schema_inference import (
     resolve_fulfillment_status_column,
@@ -79,8 +79,8 @@ def _build_contacts_section(contacts: list[dict]) -> str:
 
     for c in contacts[:MAX_PROMPT_CONTACTS]:
         handle = c.get("handle", "unknown")
-        city = c.get("city", "")
-        state = c.get("state_province", "")
+        city = c.get("city", "").replace("\n", " ").replace("\r", "")[:50]
+        state = c.get("state_province", "").replace("\n", " ").replace("\r", "")[:20]
 
         # Build roles list
         roles = []
@@ -380,7 +380,7 @@ def build_system_prompt(
     Returns:
         Complete system prompt string.
     """
-    current_date = datetime.now().strftime("%Y-%m-%d")
+    current_date = datetime.now(UTC).strftime("%Y-%m-%d")
     service_table = _build_service_table()
 
     # Data source section — interactive mode suppresses schema details.
@@ -686,7 +686,7 @@ administrator.
 
     return f"""You are ShipAgent, an AI shipping assistant that helps users create, rate, and manage UPS shipments from their data sources.
 
-Current date: {current_date}
+Current date (UTC): {current_date}
 
 ## UPS Service Codes
 

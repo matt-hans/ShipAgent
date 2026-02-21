@@ -17,29 +17,33 @@ import json
 import logging
 import os
 import traceback
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
-from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, UPS_CARRIER_NAME
-from src.services.write_back_worker import (
-    enqueue_write_back,
-    mark_rows_completed,
-    mark_tasks_completed,
+from src.services.errors import UPSServiceError
+from src.services.gateway_provider import get_data_gateway, get_external_sources_client
+from src.services.idempotency import generate_idempotency_key
+from src.services.international_rules import (
+    get_requirements,
+    validate_international_readiness,
 )
+from src.services.label_storage import LabelStorage, build_label_storage
+from src.services.mcp_client import MCPConnectionError
+from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, UPS_CARRIER_NAME
 from src.services.ups_payload_builder import (
     build_shipment_request,
     build_ups_api_payload,
     build_ups_rate_payload,
 )
 from src.services.ups_service_codes import ServiceCode, upgrade_to_international
-from src.services.errors import UPSServiceError
-from src.services.gateway_provider import get_data_gateway, get_external_sources_client
-from src.services.idempotency import generate_idempotency_key
-from src.services.international_rules import get_requirements, validate_international_readiness
-from src.services.label_storage import LabelStorage, build_label_storage
-from src.services.mcp_client import MCPConnectionError
+from src.services.write_back_worker import (
+    enqueue_write_back,
+    mark_rows_completed,
+    mark_tasks_completed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -526,7 +530,9 @@ class BatchEngine:
                     # Shared domestic pre-flight validation + auto-correction
                     # Covers confirm-time service overrides (selected_service_code
                     # from preview.py → batch_executor → BatchEngine.execute)
-                    from src.services.ups_payload_builder import apply_compatibility_corrections
+                    from src.services.ups_payload_builder import (
+                        apply_compatibility_corrections,
+                    )
                     domestic_issues = apply_compatibility_corrections(order_data, eff_service)
                     domestic_errors = [
                         i for i in domestic_issues
@@ -996,7 +1002,7 @@ class BatchEngine:
         try:
             return json.loads(row.order_data)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid order_data JSON on row {row.row_number}: {e}")
+            raise ValueError(f"Invalid order_data JSON on row {row.row_number}: {e}") from e
 
     async def _get_commodities_bulk(
         self, order_ids: list[int | str],

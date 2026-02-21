@@ -11,13 +11,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mcp import StdioServerParameters
-
-from src.services.mcp_client import MCPClient
 from src.services.mapping_cache import (
     invalidate as invalidate_mapping_cache,
+)
+from src.services.mapping_cache import (
     should_invalidate as mapping_cache_should_invalidate,
 )
-
+from src.services.mcp_client import MCPClient
 
 # -- Gateway-local DTOs --------------------------------------------------------
 

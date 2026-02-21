@@ -24,7 +24,11 @@ from src.db.connection import get_db
 from src.db.models import Job, JobRow
 from src.services.decision_audit_service import DecisionAuditService
 from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
-from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode, resolve_service_code
+from src.services.ups_service_codes import (
+    SERVICE_CODE_NAMES,
+    ServiceCode,
+    resolve_service_code,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -4,11 +4,7 @@ Covers Tier A/B/C resolution, HMAC tokens, business predicates,
 column matching, status precedence, and canonicalization.
 """
 
-import hmac
 import json
-import os
-import time
-from hashlib import sha256
 
 import pytest
 
@@ -19,12 +15,10 @@ from src.orchestrator.models.filter_spec import (
     FilterGroup,
     FilterIntent,
     FilterOperator,
-    ResolvedFilterSpec,
     ResolutionStatus,
     SemanticReference,
     TypedLiteral,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

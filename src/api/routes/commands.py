@@ -77,12 +77,12 @@ def create_command(
         db.commit()
         return CommandResponse.model_validate(cmd)
     except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None
     except DuplicateCommandNameError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from None
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Command with this name already exists")
+        raise HTTPException(status_code=409, detail="Command with this name already exists") from None
 
 
 @router.patch("/{command_id}", response_model=CommandResponse)
@@ -112,14 +112,14 @@ def update_command(
         db.commit()
         return CommandResponse.model_validate(cmd)
     except NotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from None
     except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None
     except DuplicateCommandNameError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from None
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Command name already in use")
+        raise HTTPException(status_code=409, detail="Command name already in use") from None
 
 
 @router.delete("/{command_id}")

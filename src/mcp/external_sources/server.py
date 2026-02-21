@@ -37,7 +37,7 @@ mcp = FastMCP(name="ExternalSources", lifespan=lifespan)
 
 
 # Import and register tools
-from src.mcp.external_sources.tools import (
+from src.mcp.external_sources.tools import (  # noqa: E402
     connect_platform,
     disconnect_platform,
     get_order,
