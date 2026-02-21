@@ -499,6 +499,7 @@ export function PreviewCard({
   isRefining,
   isProcessing,
   warningPreference,
+  readOnly,
 }: {
   preview: BatchPreview;
   onConfirm: (opts?: ConfirmOptions) => void;
@@ -508,6 +509,7 @@ export function PreviewCard({
   isRefining: boolean;
   isProcessing: boolean;
   warningPreference: WarningPreference;
+  readOnly?: boolean;
 }) {
   const [expandedRows, setExpandedRows] = React.useState<Set<number>>(new Set());
   const [showRefinement, setShowRefinement] = React.useState(false);
@@ -628,6 +630,7 @@ export function PreviewCard({
       )}
 
       {/* Refinement section */}
+      {!readOnly && (
       <div className="space-y-2">
         {!showRefinement ? (
           <button
@@ -671,8 +674,11 @@ export function PreviewCard({
           </div>
         )}
       </div>
+      )}
 
       {/* Actions — warning gate or standard buttons */}
+      {!readOnly && (
+      <>
       {showWarningGate ? (
         <div className="space-y-3 pt-2">
           <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/30">
@@ -751,6 +757,8 @@ export function PreviewCard({
           </button>
         </div>
       )}
+      </>
+      )}
     </div>
   );
 }
@@ -766,6 +774,7 @@ export function InteractivePreviewCard({
   isConfirming,
   isRefining,
   isProcessing,
+  readOnly,
 }: {
   preview: BatchPreview;
   onConfirm: (opts?: ConfirmOptions) => void;
@@ -776,6 +785,7 @@ export function InteractivePreviewCard({
   isConfirming: boolean;
   isRefining: boolean;
   isProcessing: boolean;
+  readOnly?: boolean;
 }) {
   const [showPayload, setShowPayload] = React.useState(false);
   const [refinementInput, setRefinementInput] = React.useState('');
@@ -978,6 +988,7 @@ export function InteractivePreviewCard({
       )}
 
       {/* Refinement input */}
+      {!readOnly && (
       <div className="mb-2">
         <div className="flex gap-1.5">
           <input
@@ -1004,6 +1015,7 @@ export function InteractivePreviewCard({
           </button>
         </div>
       </div>
+      )}
 
       {/* Expandable Full Payload */}
       {preview.resolved_payload && (
@@ -1024,6 +1036,7 @@ export function InteractivePreviewCard({
       )}
 
       {/* Actions */}
+      {!readOnly && (
       <div className="flex gap-3">
         <button
           onClick={onCancel}
@@ -1050,6 +1063,7 @@ export function InteractivePreviewCard({
           )}
         </button>
       </div>
+      )}
 
       {/* Invoice Details Modal */}
       {showInvoice && invoiceData && (

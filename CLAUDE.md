@@ -338,7 +338,7 @@ Centralized agent decision ledger. Writes to `agent_decision_runs` + `agent_deci
 
 ### ConversationPersistenceService (`src/services/conversation_persistence_service.py`)
 
-DB-backed CRUD for `ConversationSession` and `ConversationMessage` tables. Provides: `create_session`, `save_message` (auto-incrementing sequence), `list_sessions` (DB-level LIMIT/OFFSET), `get_session_with_messages`, `update_session_title`, `update_session_context`, `soft_delete_session`, `export_session_json`. Background title generation via `generate_session_title()` (fire-and-forget `asyncio.create_task`; calls Haiku via `TITLE_MODEL` env var). Note: This is an **approved exception** to Agent Design Invariant #3 — the title-generation LLM call is a lightweight background task that does not participate in the agent reasoning loop.
+DB-backed CRUD for `ConversationSession` and `ConversationMessage` tables. Provides: `create_session`, `save_message` (auto-incrementing sequence), `list_sessions` (DB-level LIMIT/OFFSET), `get_session_with_messages`, `update_session_title`, `update_session_context`, `soft_delete_session`, `export_session_json`, `set_title_from_first_message`. Session titles set synchronously from first user message (truncated to 50 chars).
 
 ## Frontend Architecture
 
@@ -346,7 +346,7 @@ The UI is an agent-driven chat interface. `useConversation` hook manages session
 
 **Chat flow**: User types command → SSE events stream (deltas, tool calls) → PreviewCard renders with Confirm/Cancel/Refine → ProgressDisplay streams per-row execution → CompletionArtifact card with label access → input re-enables for next command.
 
-**Chat persistence**: Sessions are DB-backed. `ChatSessionsPanel` in the sidebar lists sessions grouped by date (Today/Yesterday/Previous 7 Days). Selecting a session loads its history and restores context (mode, data source). Sessions get auto-generated titles via background Haiku call after the first assistant response. `chatSessionsVersion` counter triggers sidebar re-fetch.
+**Chat persistence**: Sessions are DB-backed. `ChatSessionsPanel` in the sidebar lists sessions grouped by date (Today/Yesterday/Previous 7 Days). Selecting a session loads its history and restores context (mode, data source). Session titles set synchronously from first user message (truncated to 50 chars). `chatSessionsVersion` counter triggers sidebar re-fetch. Preview cards (`preview_ready`) are persisted as `system_artifact` messages and render read-only when loading historical sessions.
 
 **Visual timeline**: `ChatTimeline` component renders a thin vertical minimap on the right edge with color-coded dots (grey=user, cyan=assistant, amber=artifact). Uses `IntersectionObserver` for viewport sync. Clicking a dot scrolls to that message.
 
