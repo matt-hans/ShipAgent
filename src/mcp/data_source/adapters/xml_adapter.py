@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from src.mcp.data_source.adapters.base import BaseSourceAdapter
 from src.mcp.data_source.models import ImportResult
-from src.mcp.data_source.utils import flatten_record, load_flat_records_to_duckdb
+from src.mcp.data_source.utils import coerce_records, flatten_record, load_flat_records_to_duckdb
 
 # Guard against OOM — xmltodict.parse() buffers entire file in memory.
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
@@ -87,6 +87,9 @@ class XMLAdapter(BaseSourceAdapter):
         records = self._discover_records(raw, record_path)
         cleaned = [self._clean_xml_record(r) for r in records]
         flat_records = [flatten_record(r) for r in cleaned]
+        # Coerce string values to natural Python types (int/float) so
+        # DuckDB assigns BIGINT/DOUBLE instead of VARCHAR for numeric columns.
+        flat_records = coerce_records(flat_records)
         result = load_flat_records_to_duckdb(conn, flat_records, source_type="xml")
 
         # Warn when auto-discovery was used — it picks the largest list of dicts

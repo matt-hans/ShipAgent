@@ -9,7 +9,7 @@ import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { cn, formatTimeAgo } from '@/lib/utils';
 import { listConversations, deleteConversation, getConversationMessages, exportConversation } from '@/lib/api';
-import type { ChatSessionSummary, PersistedMessage } from '@/types/api';
+import type { ChatSessionSummary, PersistedMessage, SessionContext } from '@/types/api';
 import type { ConversationMessage } from '@/hooks/useAppState';
 import { TrashIcon, PlusIcon, DownloadIcon } from '@/components/ui/icons';
 
@@ -22,7 +22,7 @@ function ModeBadge({ mode }: { mode: string }) {
         ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
         : 'bg-primary/10 text-primary border border-primary/20'
     )}>
-      {mode === 'interactive' ? 'Interactive' : 'Batch'}
+      {mode === 'interactive' ? 'Single Shipment' : 'Batch'}
     </span>
   );
 }
@@ -58,6 +58,7 @@ interface ChatSessionsPanelProps {
     sessionId: string,
     mode: 'batch' | 'interactive',
     messages: ConversationMessage[],
+    contextData?: SessionContext | null,
   ) => void;
   onNewChat: () => void;
   activeSessionId?: string | null;
@@ -130,7 +131,7 @@ export function ChatSessionsPanel({
         timestamp: new Date(m.created_at),
         metadata: m.metadata ? m.metadata as ConversationMessage['metadata'] : undefined,
       }));
-      onLoadSession(session.id, session.mode as 'batch' | 'interactive', messages);
+      onLoadSession(session.id, session.mode as 'batch' | 'interactive', messages, detail.session.context_data || null);
     } catch (err) {
       console.error('Failed to load session:', err);
       setError('Failed to load session');

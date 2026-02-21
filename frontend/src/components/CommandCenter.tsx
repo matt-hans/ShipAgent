@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
-import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows, saveArtifactMessage } from '@/lib/api';
+import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows, saveArtifactMessage, reconnectSavedSource, getDataSourceStatus, getShopifyEnvStatus } from '@/lib/api';
 import { useConversation } from '@/hooks/useConversation';
 import type {
   Job,
@@ -15,10 +15,12 @@ import type {
   PaperlessUploadPrompt,
   TrackingResult,
   ContactSavedResult,
+  SessionContext,
+  DataSourceContext,
 } from '@/types/api';
 import { LabelPreview } from '@/components/LabelPreview';
 import { JobDetailPanel } from '@/components/JobDetailPanel';
-import { SendIcon, StopIcon, EditIcon, HistoryIcon, GearIcon } from '@/components/ui/icons';
+import { SendIcon, StopIcon, EditIcon, HistoryIcon, GearIcon, PlusIcon } from '@/components/ui/icons';
 import { PreviewCard, InteractivePreviewCard, type ConfirmOptions } from '@/components/command-center/PreviewCard';
 import { ProgressDisplay } from '@/components/command-center/ProgressDisplay';
 import { CompletionArtifact } from '@/components/command-center/CompletionArtifact';
@@ -50,7 +52,7 @@ interface CommandCenterProps {
 
 /** Imperative methods exposed to parent via ref. */
 export interface CommandCenterHandle {
-  loadSession: (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[]) => Promise<void>;
+  loadSession: (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[], contextData?: SessionContext | null) => Promise<void>;
   newChat: () => Promise<void>;
 }
 
@@ -65,6 +67,8 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
     setActiveJob,
     refreshJobList,
     activeSourceType,
+    dataSource,
+    setDataSource,
     warningPreference,
     setConversationSessionId,
     interactiveShipping,
@@ -475,11 +479,43 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
     }
   };
 
+  /** Reconnect the data source that was active when the session was last used. */
+  const restoreDataSource = React.useCallback(async (dsContext: DataSourceContext) => {
+    if (!dsContext.type) return;
+
+    // Skip if the same local source is already active
+    if (dsContext.type === 'local' && activeSourceType === 'local' && dsContext.file_path) {
+      const currentPath = dataSource?.csv_path || dataSource?.excel_path || '';
+      if (currentPath && currentPath === dsContext.file_path) return;
+    }
+
+    if (dsContext.type === 'local' && dsContext.saved_source_id) {
+      try {
+        await reconnectSavedSource(dsContext.saved_source_id);
+        const status = await getDataSourceStatus();
+        if (status.connected) {
+          setDataSource(status as any);
+        }
+      } catch {
+        addMessage({
+          role: 'system',
+          content: `Data source "${dsContext.label || 'unknown'}" could not be reconnected.`,
+          metadata: { action: 'error' },
+        });
+      }
+    } else if (dsContext.type === 'shopify') {
+      try {
+        await getShopifyEnvStatus();
+      } catch { /* non-blocking */ }
+    }
+  }, [activeSourceType, dataSource, setDataSource, addMessage]);
+
   /** Load a persisted session from the sidebar. */
   const handleLoadSession = React.useCallback(async (
     sessionId: string,
     mode: 'batch' | 'interactive',
     messages: ConversationMessage[],
+    contextData?: SessionContext | null,
   ) => {
     // Set mode BEFORE rendering to prevent flicker
     setInteractiveShipping(mode === 'interactive');
@@ -489,16 +525,56 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
     setPreview(null);
     setCurrentJobId(null);
     setExecutingJobId(null);
+    setSelectedInteractiveServiceCode(null);
 
-    // Populate conversation from loaded messages
-    for (const msg of messages) {
-      addMessage(msg);
+    // Restore data source context from persisted session
+    if (contextData?.data_source) {
+      await restoreDataSource(contextData.data_source);
+    }
+
+    // Check if the last preview_ready artifact has a job still pending.
+    // If so, restore it as the live (actionable) preview card instead of
+    // rendering it read-only with no buttons.
+    let restoredPreviewIdx = -1;
+    let lastPreviewIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].metadata?.action === 'preview_ready' && messages[i].metadata?.batchPreview) {
+        lastPreviewIdx = i;
+        break;
+      }
+    }
+    if (lastPreviewIdx >= 0) {
+      const previewData = messages[lastPreviewIdx].metadata!.batchPreview as BatchPreview;
+      try {
+        const job = await getJob(previewData.job_id);
+        if (job.status === 'pending') {
+          restoredPreviewIdx = lastPreviewIdx;
+          // Normalize rows the same way the live path does
+          previewData.preview_rows = [...(previewData.preview_rows || [])]
+            .map((row) => _normalizePreviewRow(row))
+            .sort((a, b) => a.row_number - b.row_number);
+          setPreview(previewData);
+          setCurrentJobId(previewData.job_id);
+          if (previewData.interactive) {
+            setSelectedInteractiveServiceCode(previewData.service_code || null);
+          }
+        }
+      } catch {
+        // Job not found or already processed — keep as read-only
+      }
+    }
+
+    // Populate conversation from loaded messages, skipping the artifact
+    // we restored as a live card (it renders via the preview state instead).
+    for (let i = 0; i < messages.length; i++) {
+      if (i === restoredPreviewIdx) continue;
+      addMessage(messages[i]);
     }
 
     // Connect to the session
     await conv.loadSession(sessionId, mode);
     setConversationSessionId(sessionId);
-  }, [conv, setInteractiveShipping, clearConversation, addMessage, setConversationSessionId]);
+  }, [conv, setInteractiveShipping, clearConversation, addMessage, setConversationSessionId, _normalizePreviewRow, restoreDataSource]);
 
   /** Start a fresh chat without deleting the current session. */
   const handleNewChat = React.useCallback(async () => {
@@ -806,6 +882,14 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
 
         {/* Right edge: icon buttons + visual timeline */}
         <div className="flex flex-col items-center pt-3 pr-1 gap-2">
+          <button
+            onClick={handleNewChat}
+            disabled={isProcessing}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
+            title="New chat"
+          >
+            <PlusIcon className="w-4 h-4" />
+          </button>
           <button
             onClick={() => setSettingsFlyoutOpen(true)}
             className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors"

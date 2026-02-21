@@ -13,6 +13,7 @@ import { SettingsFlyout } from '@/components/settings/SettingsFlyout';
 import { ChatHistoryFlyout } from '@/components/ChatHistoryFlyout';
 import { useAppState, AppStateProvider } from '@/hooks/useAppState';
 import type { ConversationMessage } from '@/hooks/useAppState';
+import type { SessionContext } from '@/types/api';
 
 function AppContent() {
   const {
@@ -26,8 +27,8 @@ function AppContent() {
   const commandCenterRef = React.useRef<CommandCenterHandle>(null);
 
   const handleLoadSession = React.useCallback(
-    (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[]) => {
-      commandCenterRef.current?.loadSession(sessionId, mode, messages);
+    (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[], contextData?: SessionContext | null) => {
+      commandCenterRef.current?.loadSession(sessionId, mode, messages, contextData);
     },
     [],
   );
@@ -47,6 +48,7 @@ function AppContent() {
           onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
           onSelectJob={setActiveJob}
           activeJobId={activeJob?.id}
+          onNewChat={handleNewChat}
         />
 
         {/* Main content - Conversational command interface */}

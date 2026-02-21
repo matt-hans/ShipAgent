@@ -5,7 +5,7 @@
 import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
 import type { Job } from '@/types/api';
-import { ChevronIcon, HardDriveIcon, HistoryIcon } from '@/components/ui/icons';
+import { ChevronIcon, HardDriveIcon, HistoryIcon, PlusIcon } from '@/components/ui/icons';
 import { ShopifyIcon, DataSourceIcon } from '@/components/ui/brand-icons';
 import { DataSourceSection } from '@/components/sidebar/DataSourcePanel';
 import { JobHistorySection } from '@/components/sidebar/JobHistoryPanel';
@@ -14,9 +14,10 @@ interface SidebarProps {
   onToggle: () => void;
   onSelectJob: (job: Job | null) => void;
   activeJobId?: string;
+  onNewChat?: () => void;
 }
 
-export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId, onNewChat }: SidebarProps) {
   const { activeSourceType, activeSourceInfo } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
@@ -36,6 +37,15 @@ export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId }: Sideb
       {/* Collapsed state - icon buttons */}
       {collapsed && (
         <div className="flex-1 flex flex-col items-center pt-3 gap-2">
+          {onNewChat && (
+            <button
+              onClick={onNewChat}
+              className="w-10 h-10 flex items-center justify-center rounded-lg text-primary hover:bg-primary/10 transition-colors"
+              title="New chat"
+            >
+              <PlusIcon className="w-5 h-5" />
+            </button>
+          )}
           <button
             onClick={onToggle}
             className={cn(

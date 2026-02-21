@@ -99,6 +99,48 @@ def _get_event_queue(session_id: str) -> asyncio.Queue:
     return _event_queues[session_id]
 
 
+def _resolve_session(session_id: str) -> "AgentSession":  # noqa: F821
+    """Get or lazily register an agent session.
+
+    If the session exists in the in-memory manager, return it directly.
+    Otherwise, check the database — if it exists there (e.g. resumed from
+    sidebar or after a backend restart), register it in memory with the
+    correct mode. Raises HTTPException 404 if the session doesn't exist
+    in either the in-memory manager or the database.
+
+    Args:
+        session_id: Conversation session ID.
+
+    Returns:
+        The AgentSession for this conversation.
+
+    Raises:
+        HTTPException: 404 if session not found anywhere.
+        HTTPException: 409 if session is being terminated.
+    """
+    session = _session_manager.get_session(session_id)
+
+    if session is None:
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            db_data = svc.get_session_with_messages(session_id, limit=0)
+        if db_data is None or not db_data["session"].get("is_active", True):
+            raise HTTPException(status_code=404, detail="Session not found")
+        session = _session_manager.get_or_create_session(session_id)
+        session.interactive_shipping = db_data["session"].get("mode") == "interactive"
+        logger.info(
+            "Lazily registered session %s from DB (mode=%s)",
+            session_id,
+            "interactive" if session.interactive_shipping else "batch",
+        )
+
+    if session.terminating:
+        raise HTTPException(status_code=409, detail="Session is being terminated")
+
+    return session
+
+
 def _compute_source_hash(source_info: "DataSourceInfo | None") -> str:  # noqa: F821
     """Compute a simple hash of data source metadata for change detection.
 
@@ -391,6 +433,7 @@ async def _process_agent_message(
             )
 
             source_type = source_info.source_type if source_info is not None else "none"
+            _persist_session_context(session_id, source_info)
             logger.info(
                 "agent_timing marker=source_resolved session_id=%s source_type=%s elapsed=%.3f",
                 session_id,
@@ -595,6 +638,63 @@ async def _process_agent_message(
     finally:
         reset_decision_job_id(job_token)
         reset_decision_run_id(run_token)
+
+
+def _persist_session_context(session_id: str, source_info: "DataSourceInfo | None") -> None:
+    """Persist the current data source context to the session record.
+
+    Best-effort — failures are logged but never block the SSE stream.
+
+    Args:
+        session_id: Conversation session ID.
+        source_info: Current data source info, or None.
+    """
+    try:
+        if source_info is None:
+            return
+
+        from src.db.connection import get_db_context
+        from src.services.saved_data_source_service import SavedDataSourceService
+
+        # Resolve saved_source_id by matching file_path
+        saved_source_id: str | None = None
+        file_path = getattr(source_info, "file_path", None) or ""
+        source_type = getattr(source_info, "source_type", None) or ""
+        row_count = getattr(source_info, "row_count", 0) or 0
+
+        # Determine source category (local vs shopify)
+        ds_type: str | None = None
+        if source_type in ("csv", "excel", "database"):
+            ds_type = "local"
+        elif source_type == "shopify":
+            ds_type = "shopify"
+
+        with get_db_context() as db:
+            if ds_type == "local" and file_path:
+                sources = SavedDataSourceService.list_sources(db, source_type=source_type)
+                for src in sources:
+                    if src.file_path and src.file_path == file_path:
+                        saved_source_id = src.id
+                        break
+
+            # Build label from file path
+            label = file_path.rsplit("/", 1)[-1] if file_path else source_type
+
+            context_data = {
+                "data_source": {
+                    "type": ds_type,
+                    "source_type": source_type,
+                    "saved_source_id": saved_source_id,
+                    "file_path": file_path or None,
+                    "label": label,
+                    "row_count": row_count,
+                },
+            }
+
+            svc = ConversationPersistenceService(db)
+            svc.update_session_context(session_id, context_data)
+    except Exception as exc:
+        logger.error("Failed to persist session context for %s: %s", session_id, exc)
 
 
 def _persist_assistant_message(session_id: str, text: str) -> None:
@@ -824,12 +924,7 @@ async def send_message(
     Raises:
         HTTPException: 404 if session not found.
     """
-    if session_id not in _session_manager.list_sessions():
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    session = _session_manager.get_session(session_id)
-    if session is not None and session.terminating:
-        raise HTTPException(status_code=409, detail="Session is being terminated")
+    session = _resolve_session(session_id)
 
     # Store user message in history
     _session_manager.add_message(session_id, "user", payload.content)
@@ -848,7 +943,7 @@ async def send_message(
         session_id=session_id,
         user_message=payload.content,
         model=os.environ.get("AGENT_MODEL") or os.environ.get("ANTHROPIC_MODEL"),
-        interactive_shipping=bool(session.interactive_shipping) if session is not None else False,
+        interactive_shipping=session.interactive_shipping,
     )
     DecisionAuditService.log_event(
         run_id=run_id,
@@ -858,7 +953,7 @@ async def send_message(
         payload={
             "session_id": session_id,
             "content_length": len(payload.content),
-            "interactive_shipping": bool(session.interactive_shipping) if session is not None else False,
+            "interactive_shipping": session.interactive_shipping,
         },
     )
 
@@ -903,13 +998,7 @@ async def upload_document(
     """
     from src.services import attachment_store
 
-    # Validate session exists
-    if session_id not in _session_manager.list_sessions():
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    session = _session_manager.get_session(session_id)
-    if session is not None and session.terminating:
-        raise HTTPException(status_code=409, detail="Session is being terminated")
+    session = _resolve_session(session_id)
 
     # Validate file extension
     file_name = file.filename or "document"
@@ -999,8 +1088,7 @@ async def stream_events(request: Request, session_id: str) -> EventSourceRespons
     Raises:
         HTTPException: 404 if session not found.
     """
-    if session_id not in _session_manager.list_sessions():
-        raise HTTPException(status_code=404, detail="Session not found")
+    _resolve_session(session_id)
 
     queue = _get_event_queue(session_id)
 
@@ -1023,8 +1111,7 @@ async def get_history(session_id: str) -> ConversationHistoryResponse:
     Raises:
         HTTPException: 404 if session not found.
     """
-    if session_id not in _session_manager.list_sessions():
-        raise HTTPException(status_code=404, detail="Session not found")
+    _resolve_session(session_id)
 
     raw_history = _session_manager.get_history(session_id)
     messages = [
