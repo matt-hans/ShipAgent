@@ -19,13 +19,16 @@ Endpoints:
     GET    /conversations/{id}/export   — Download session as JSON
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
 import logging
 import os
 import time
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -47,14 +50,14 @@ from src.api.schemas_conversations import (
     UpdateTitleRequest,
     UploadDocumentResponse,
 )
-from src.services.conversation_persistence_service import ConversationPersistenceService
+from src.db.models import AgentDecisionRunStatus
 from src.orchestrator.agent.intent_detection import (
     is_batch_shipping_request,
     is_confirmation_response,
     is_shipping_request,
 )
-from src.db.models import AgentDecisionRunStatus
 from src.services.agent_session_manager import AgentSessionManager
+from src.services.conversation_persistence_service import ConversationPersistenceService
 from src.services.decision_audit_context import (
     get_decision_job_id,
     reset_decision_job_id,
@@ -68,6 +71,10 @@ from src.services.paperless_constants import (
     UPS_PAPERLESS_UI_ACCEPTED_FORMATS,
     normalize_paperless_extension,
 )
+
+if TYPE_CHECKING:
+    from src.services.agent_session_manager import AgentSession
+    from src.services.data_source_mcp_client import DataSourceInfo
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +101,7 @@ def _get_event_queue(session_id: str) -> asyncio.Queue:
     return _event_queues[session_id]
 
 
-def _compute_source_hash(source_info: "DataSourceInfo | None") -> str:
+def _compute_source_hash(source_info: DataSourceInfo | None) -> str:
     """Compute a simple hash of data source metadata for change detection.
 
     Args:
@@ -115,7 +122,7 @@ def _compute_source_hash(source_info: "DataSourceInfo | None") -> str:
     return "|".join(parts)
 
 
-def _build_source_signature(source_info: "DataSourceInfo | None") -> dict[str, Any] | None:
+def _build_source_signature(source_info: DataSourceInfo | None) -> dict[str, Any] | None:
     """Build a stable source signature payload from typed source info."""
     if source_info is None:
         return None
@@ -131,8 +138,8 @@ def _build_source_signature(source_info: "DataSourceInfo | None") -> dict[str, A
 
 
 async def _ensure_agent(
-    session: "AgentSession",
-    source_info: "DataSourceInfo | None",
+    session: AgentSession,
+    source_info: DataSourceInfo | None,
 ) -> bool:
     """Ensure the session has a running agent, creating or rebuilding as needed.
 
@@ -602,7 +609,9 @@ def _persist_assistant_message(session_id: str, text: str) -> None:
         session_id: Conversation session ID.
         text: Assistant message text.
     """
-    from src.services.conversation_persistence_service import maybe_trigger_title_generation
+    from src.services.conversation_persistence_service import (
+        maybe_trigger_title_generation,
+    )
 
     try:
         from src.db.connection import get_db_context
@@ -725,7 +734,7 @@ async def _event_generator(
                         }
                     ),
                 }
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 # Send ping to keep connection alive
                 yield {
                     "data": json.dumps({"event": "ping"}),
@@ -1101,7 +1110,7 @@ async def list_conversations(
         return [ChatSessionSummary(**s) for s in sessions]
     except Exception as exc:
         logger.error("Failed to list conversations: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to list conversations")
+        raise HTTPException(status_code=500, detail="Failed to list conversations") from None
 
 
 @router.get("/{session_id}/messages", response_model=SessionDetailResponse)
@@ -1173,6 +1182,7 @@ async def export_conversation(session_id: str) -> Response:
         HTTPException: 404 if session not found.
     """
     import json as json_mod
+
     from src.db.connection import get_db_context
 
     with get_db_context() as db:
@@ -1224,7 +1234,7 @@ async def save_artifact(
             )
     except Exception as exc:
         logger.error("Failed to save artifact for %s: %s", session_id, exc)
-        raise HTTPException(status_code=500, detail="Failed to save artifact")
+        raise HTTPException(status_code=500, detail="Failed to save artifact") from None
     return {"session_id": session_id, "status": "saved"}
 
 

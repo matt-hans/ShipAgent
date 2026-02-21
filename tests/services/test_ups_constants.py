@@ -201,7 +201,10 @@ class TestUpgradeToInternational:
 
     def test_all_domestic_codes_have_mapping(self):
         """Every domestic-only code has an international equivalent."""
-        from src.services.ups_service_codes import DOMESTIC_TO_INTERNATIONAL, DOMESTIC_ONLY_SERVICES
+        from src.services.ups_service_codes import (
+            DOMESTIC_ONLY_SERVICES,
+            DOMESTIC_TO_INTERNATIONAL,
+        )
         for code in DOMESTIC_ONLY_SERVICES:
             assert code in DOMESTIC_TO_INTERNATIONAL, f"No international mapping for {code}"
 
@@ -331,7 +334,10 @@ class TestCompatibilityMatrices:
 
     def test_saturday_delivery_services_subset_of_express(self):
         """Saturday Delivery services are a subset of express services."""
-        from src.services.ups_constants import EXPRESS_CLASS_SERVICES, SATURDAY_DELIVERY_SERVICES
+        from src.services.ups_constants import (
+            EXPRESS_CLASS_SERVICES,
+            SATURDAY_DELIVERY_SERVICES,
+        )
         assert SATURDAY_DELIVERY_SERVICES.issubset(EXPRESS_CLASS_SERVICES)
 
     def test_international_only_packaging(self):

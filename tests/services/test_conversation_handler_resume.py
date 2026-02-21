@@ -7,12 +7,11 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from src.db.models import Base
-from src.services.conversation_persistence_service import ConversationPersistenceService
-
 # Pre-load submodules so patch() can resolve dotted paths for lazy imports
 import src.orchestrator.agent.client  # noqa: F401
 import src.orchestrator.agent.system_prompt  # noqa: F401
+from src.db.models import Base
+from src.services.conversation_persistence_service import ConversationPersistenceService
 
 
 @pytest.fixture

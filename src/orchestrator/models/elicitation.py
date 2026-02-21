@@ -10,7 +10,7 @@ Per Agent SDK docs:
 """
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -94,7 +94,7 @@ class ElicitationResponse(BaseModel):
         default_factory=list,
         description="Selected option IDs",
     )
-    free_text: Optional[str] = Field(
+    free_text: str | None = Field(
         default=None,
         description="Custom free-text response if any",
     )

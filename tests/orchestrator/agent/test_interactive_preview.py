@@ -13,7 +13,6 @@ import pytest
 
 from src.db.models import JobStatus
 
-
 # ---------------------------------------------------------------------------
 # Helpers under test
 # ---------------------------------------------------------------------------
@@ -180,7 +179,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_fails_without_account_number(self):
         """Early error when UPS_ACCOUNT_NUMBER is empty/missing."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         env = {
             "UPS_ACCOUNT_NUMBER": "",
@@ -198,7 +199,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_none_required_fields_treated_as_missing(self):
         """None values in required fields are treated as empty, not 'None'."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         args = self._base_args()
         args["ship_to_name"] = None
@@ -209,7 +212,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_missing_service_is_rejected(self):
         """Service is required and must be explicitly provided."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         result = await preview_interactive_shipment_tool(self._base_args(service=""))
         assert result["isError"] is True
@@ -218,7 +223,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_missing_weight_is_rejected(self):
         """Weight is required and must be explicitly provided."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         result = await preview_interactive_shipment_tool(self._base_args(weight=None))
         assert result["isError"] is True
@@ -227,7 +234,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_international_gb_missing_state_is_blocked_before_preview(self):
         """GB shipments require recipient state/province before preview creation."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         env = {
             "UPS_ACCOUNT_NUMBER": "TEST123",
@@ -269,7 +278,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_international_service_requires_explicit_country(self):
         """Worldwide/international services must provide destination country."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         env = {
             "UPS_ACCOUNT_NUMBER": "TEST123",
@@ -294,7 +305,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_uk_alias_normalizes_to_gb_for_state_validation(self):
         """Country alias 'UK' is normalized to GB before recipient-state checks."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         env = {
             "UPS_ACCOUNT_NUMBER": "TEST123",
@@ -336,7 +349,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_gb_state_cannot_match_postal_code(self):
         """Preview rejects GB addresses where state is copied from postal code."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         env = {
             "UPS_ACCOUNT_NUMBER": "TEST123",
@@ -381,7 +396,9 @@ class TestPreviewInteractiveShipment:
     async def test_includes_available_services_from_shop_discovery(self):
         """Interactive preview includes UPS Shop-discovered service options."""
         from src.orchestrator.agent.tools.core import EventEmitterBridge
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "svc-discovery-test",
@@ -461,7 +478,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_explicit_unavailable_service_returns_error_with_options(self):
         """Explicit service is rejected when UPS Shop says it is unavailable."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_ups = AsyncMock()
         mock_ups.get_rate.return_value = {
@@ -503,7 +522,9 @@ class TestPreviewInteractiveShipment:
     async def test_none_optional_fields_not_polluted(self):
         """None in optional fields becomes empty string, not 'None'."""
         from src.orchestrator.agent.tools.core import EventEmitterBridge
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "none-opt-test",
@@ -569,7 +590,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_fails_on_invalid_weight_string(self):
         """Non-numeric weight returns structured error, not uncaught exception."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         result = await preview_interactive_shipment_tool(
             self._base_args(weight="abc")
@@ -580,7 +603,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_fails_on_negative_weight(self):
         """Negative weight returns structured error."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         result = await preview_interactive_shipment_tool(
             self._base_args(weight=-2.5)
@@ -591,7 +616,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_non_string_packaging_type_does_not_crash(self):
         """Non-string packaging_type (int, dict) is coerced, not crash."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "pkg-int-test",
@@ -649,7 +676,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_explicit_service_is_passed_to_preview_engine(self):
         """Explicit service preference resolves to service_code for preview()."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "svc-test",
@@ -707,7 +736,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_international_fields_added_to_order_data(self):
         """Interactive args include commodity/invoice/export fields on stored row data."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "intl-fields-test",
@@ -801,7 +832,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_international_attention_defaults_to_recipient_name(self):
         """When attention is omitted, interactive flow defaults it to ship_to_name."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "intl-attn-default-test",
@@ -895,7 +928,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_gb_state_name_normalizes_before_preview_payload(self):
         """GB free-form state names normalize to short code before preview."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "intl-gb-state-norm-test",
@@ -989,7 +1024,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_creates_job_with_interactive_flag(self):
         """Job created with is_interactive=True and shipper_json set."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "test-job-id",
@@ -1055,7 +1092,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_uses_env_shipper_defaults(self):
         """Shipper comes from env vars when no ship_from override."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "test-job-id",
@@ -1115,7 +1154,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_merges_ship_from_override(self):
         """ship_from override normalizes keys and merges onto env defaults."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "test-job-id",
@@ -1189,7 +1230,9 @@ class TestPreviewInteractiveShipment:
     async def test_emits_interactive_flag(self):
         """SSE event includes interactive=True in result."""
         from src.orchestrator.agent.tools.core import EventEmitterBridge
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "test-job-id",
@@ -1252,7 +1295,9 @@ class TestPreviewInteractiveShipment:
     async def test_includes_resolved_payload(self):
         """Result includes resolved_payload for expandable view."""
         from src.orchestrator.agent.tools.core import EventEmitterBridge
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "test-job-id",
@@ -1317,7 +1362,9 @@ class TestPreviewInteractiveShipment:
         This prevents double-resolution that corrupts alphanumeric codes
         like '2a' (small express box) → '02' (customer supplied).
         """
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         mock_preview_result = {
             "job_id": "pkg-test",
@@ -1380,7 +1427,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_cleans_up_orphan_job_on_row_failure(self):
         """When create_rows fails, orphan job is deleted."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         created_job = MagicMock()
         created_job.id = "orphan-job"
@@ -1416,7 +1465,9 @@ class TestPreviewInteractiveShipment:
     @pytest.mark.asyncio
     async def test_marks_job_failed_on_rate_error(self):
         """When BatchEngine.preview() raises, job transitions to failed."""
-        from src.orchestrator.agent.tools.interactive import preview_interactive_shipment_tool
+        from src.orchestrator.agent.tools.interactive import (
+            preview_interactive_shipment_tool,
+        )
 
         created_job = MagicMock()
         created_job.id = "rate-fail-job"
@@ -1484,7 +1535,7 @@ class TestExecutionUsesPersistedShipper:
     @pytest.mark.asyncio
     async def test_execute_uses_persisted_shipper(self):
         """When job.shipper_json is set, execution uses it instead of env."""
-        from src.db.models import Job, JobRow
+        from src.db.models import Job
 
         persisted = {
             "name": "Persisted Shipper",
@@ -1539,7 +1590,7 @@ class TestExecutionUsesPersistedShipper:
     @pytest.mark.asyncio
     async def test_falls_back_on_malformed_shipper_json(self):
         """Invalid JSON in shipper_json falls back to build_shipper()."""
-        from src.db.models import Job, JobRow
+        from src.db.models import Job
 
         env_shipper = {"name": "Env Shipper", "addressLine1": "100 Main St"}
 

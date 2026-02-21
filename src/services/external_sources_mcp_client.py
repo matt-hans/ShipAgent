@@ -14,7 +14,6 @@ import sys
 from typing import Any
 
 from mcp import StdioServerParameters
-
 from src.services.mcp_client import MCPClient
 
 logger = logging.getLogger(__name__)

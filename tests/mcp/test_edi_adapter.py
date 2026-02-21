@@ -1,13 +1,12 @@
 """Test EDI adapter for Data Source MCP."""
 
-from pathlib import Path
 import tempfile
 
 import duckdb
 import pytest
 
 from src.mcp.data_source.adapters.edi_adapter import EDIAdapter
-from src.mcp.data_source.models import ImportResult, SOURCE_ROW_NUM_COLUMN
+from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN, ImportResult
 
 
 @pytest.fixture

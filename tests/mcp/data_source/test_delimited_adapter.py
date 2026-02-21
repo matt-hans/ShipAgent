@@ -1,7 +1,6 @@
 """Tests for DelimitedAdapter (CSV, TSV, SSV, pipe-delimited)."""
 
 import textwrap
-from pathlib import Path
 
 import duckdb
 import pytest

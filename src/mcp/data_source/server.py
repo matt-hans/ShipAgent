@@ -62,11 +62,15 @@ mcp = FastMCP("DataSource", lifespan=lifespan)
 
 
 # Import and register tools
-from src.mcp.data_source.tools.checksum_tools import (
+from src.mcp.data_source.tools.checksum_tools import (  # noqa: E402
     compute_checksums,
     verify_checksum,
 )
-from src.mcp.data_source.tools.import_tools import (
+from src.mcp.data_source.tools.commodity_tools import (  # noqa: E402
+    get_commodities_bulk,
+    import_commodities,
+)
+from src.mcp.data_source.tools.import_tools import (  # noqa: E402
     import_csv,
     import_database,
     import_excel,
@@ -76,26 +80,22 @@ from src.mcp.data_source.tools.import_tools import (
     list_tables,
     sniff_file,
 )
-from src.mcp.data_source.tools.query_tools import (
+from src.mcp.data_source.tools.query_tools import (  # noqa: E402
     get_row,
     get_rows_by_filter,
     query_data,
 )
-from src.mcp.data_source.tools.schema_tools import (
+from src.mcp.data_source.tools.sample_tools import get_column_samples  # noqa: E402
+from src.mcp.data_source.tools.schema_tools import (  # noqa: E402
     get_schema,
     override_column_type,
 )
-from src.mcp.data_source.tools.source_info_tools import (
+from src.mcp.data_source.tools.source_info_tools import (  # noqa: E402
     clear_source,
     get_source_info,
     import_records,
 )
-from src.mcp.data_source.tools.writeback_tools import write_back
-from src.mcp.data_source.tools.commodity_tools import (
-    import_commodities,
-    get_commodities_bulk,
-)
-from src.mcp.data_source.tools.sample_tools import get_column_samples
+from src.mcp.data_source.tools.writeback_tools import write_back  # noqa: E402
 
 # EDI tools require pydifact — import lazily so missing dependency
 # does not break CSV/Excel/Database operations.

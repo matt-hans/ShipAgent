@@ -15,11 +15,11 @@ Security:
 - File paths are validated against allowed directories to prevent path traversal
 """
 
-from fastmcp import Context
-
 import os
 from itertools import islice
 from pathlib import Path
+
+from fastmcp import Context
 
 from src.mcp.data_source.adapters.csv_adapter import CSVAdapter
 from src.mcp.data_source.adapters.db_adapter import DatabaseAdapter
@@ -90,7 +90,7 @@ def _validate_file_path(file_path: str) -> Path:
     # Block sensitive directory components anywhere in the path
     if _BLOCKED_DIRS.intersection(resolved.parts):
         raise PermissionError(
-            f"Access denied: path is within a restricted directory."
+            "Access denied: path is within a restricted directory."
         )
 
     return resolved
@@ -488,8 +488,8 @@ async def import_file(
             from src.mcp.data_source.tools.edi_tools import import_edi
 
             return await import_edi(file_path, ctx)
-        except ImportError:
-            raise ValueError("EDI support requires pydifact: pip install pydifact")
+        except ImportError as err:
+            raise ValueError("EDI support requires pydifact: pip install pydifact") from err
 
     else:
         raise ValueError(f"Unknown source type: {source_type}")

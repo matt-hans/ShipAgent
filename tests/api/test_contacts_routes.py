@@ -1,18 +1,16 @@
 """Tests for contacts REST API routes."""
 
-import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session
 
 from src.api.schemas import (
-    ContactCreate,
-    ContactUpdate,
-    ContactResponse,
-    ContactListResponse,
     CommandCreate,
-    CommandUpdate,
-    CommandResponse,
     CommandListResponse,
+    CommandResponse,
+    CommandUpdate,
+    ContactCreate,
+    ContactListResponse,
+    ContactResponse,
+    ContactUpdate,
 )
 
 

@@ -9,7 +9,7 @@ for scripts, tests, and non-CLI consumers.
 import json
 import logging
 import os
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from src.cli.protocol import (
     AgentEvent,

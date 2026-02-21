@@ -6,11 +6,10 @@ shipping labels and merged PDF downloads.
 
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from src.db.models import Job, JobRow, JobStatus, RowStatus
+from src.db.models import Job, JobRow, RowStatus
 from tests.api.conftest import create_valid_pdf
 
 

@@ -8,7 +8,6 @@ from src.cli.protocol import (
     ProgressEvent,
     RowDetail,
     ShipAgentClient,
-    ShipAgentClientError,
     SubmitResult,
 )
 

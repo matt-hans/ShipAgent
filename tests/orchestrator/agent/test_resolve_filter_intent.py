@@ -1,20 +1,11 @@
 """Tests for the resolve_filter_intent tool handler."""
 
 import json
-import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from src.orchestrator.agent.tools.core import EventEmitterBridge
-from src.orchestrator.models.filter_spec import (
-    FilterCondition,
-    FilterGroup,
-    FilterOperator,
-    ResolutionStatus,
-    SemanticReference,
-    TypedLiteral,
-)
 
 
 @pytest.fixture(autouse=True)

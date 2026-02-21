@@ -95,7 +95,7 @@ class TestLabelStaging:
         assert staging_dir.exists()
 
         # Mock DB: job has no in_flight or needs_review rows
-        mock_db = MagicMock()
+        MagicMock()
         mock_row = MagicMock()
         mock_row.status = "completed"
         mock_js = MagicMock()

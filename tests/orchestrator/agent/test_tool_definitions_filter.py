@@ -1,6 +1,5 @@
 """Tests for tool definitions registry updates for filter_spec."""
 
-import pytest
 
 from src.orchestrator.agent.tools import get_all_tool_definitions
 

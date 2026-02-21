@@ -126,7 +126,7 @@ class JSONAdapter(BaseSourceAdapter):
 
         if isinstance(data, dict):
             # Find first key whose value is a list of dicts
-            for key, value in data.items():
+            for _key, value in data.items():
                 if isinstance(value, list) and value and isinstance(value[0], dict):
                     return value
             # No list found — treat entire dict as single record

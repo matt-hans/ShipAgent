@@ -110,12 +110,12 @@ def create_contact(
         db.commit()
         return ContactResponse.model_validate(contact)
     except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None
     except DuplicateHandleError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from None
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Contact with this handle already exists")
+        raise HTTPException(status_code=409, detail="Contact with this handle already exists") from None
 
 
 @router.patch("/{contact_id}", response_model=ContactResponse)
@@ -145,14 +145,14 @@ def update_contact(
         db.commit()
         return ContactResponse.model_validate(contact)
     except NotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from None
     except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from None
     except (DuplicateHandleError, ConflictError) as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from None
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail="Handle already in use")
+        raise HTTPException(status_code=409, detail="Handle already in use") from None
 
 
 @router.delete("/{contact_id}")

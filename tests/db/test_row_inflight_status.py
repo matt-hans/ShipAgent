@@ -1,6 +1,5 @@
 """Tests for in_flight row status and idempotency columns."""
 
-import pytest
 from sqlalchemy import inspect
 
 from src.db.models import JobRow, RowStatus

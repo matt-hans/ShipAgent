@@ -6,12 +6,11 @@ Tests cover:
 - Exception handling in observers
 """
 
-from typing import Optional
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.orchestrator.batch.events import BatchEventEmitter, BatchEventObserver
+from src.orchestrator.batch.events import BatchEventEmitter
 
 
 class MockObserver:

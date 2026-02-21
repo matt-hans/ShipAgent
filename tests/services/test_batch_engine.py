@@ -2,8 +2,9 @@
 
 import asyncio
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from src.services.batch_engine import BatchEngine
 
@@ -963,7 +964,7 @@ class TestDomesticValidation:
         """Shared validation detects Letter+Ground incompatibility."""
         from src.services.ups_payload_builder import apply_compatibility_corrections
         order_data = {"packaging_type": "01"}
-        issues = apply_compatibility_corrections(order_data, "03")
+        apply_compatibility_corrections(order_data, "03")
         # Should auto-correct packaging
         assert order_data["packaging_type"] == "02"
         assert "_packaging_auto_reset" in order_data

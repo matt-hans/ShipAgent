@@ -4,7 +4,6 @@ Provides test client, database session, and sample data fixtures
 for testing FastAPI endpoints.
 """
 
-import tempfile
 import os
 from collections.abc import Generator
 from pathlib import Path

@@ -5,7 +5,6 @@ crash recovery information.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -91,10 +90,10 @@ class BatchResult:
     total_cost_cents: int
     """Total cost of successful shipments in cents."""
 
-    error_code: Optional[str] = None
+    error_code: str | None = None
     """Error code if batch failed (fail-fast)."""
 
-    error_message: Optional[str] = None
+    error_message: str | None = None
     """Error message if batch failed."""
 
 
@@ -124,16 +123,16 @@ class InterruptedJobInfo:
     remaining_rows: int
     """Number of rows left to process (total_rows - completed_rows)."""
 
-    last_row_number: Optional[int] = None
+    last_row_number: int | None = None
     """Row number of the last successfully processed row."""
 
-    last_tracking_number: Optional[str] = None
+    last_tracking_number: str | None = None
     """Tracking number of the last successful shipment."""
 
-    error_code: Optional[str] = None
+    error_code: str | None = None
     """Error code if crash was due to an error."""
 
-    error_message: Optional[str] = None
+    error_message: str | None = None
     """Error message if crash was due to an error."""
 
     in_flight_count: int = 0

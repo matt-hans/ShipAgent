@@ -1,9 +1,9 @@
 """Tests for international service code support."""
 
 from src.orchestrator.models.intent import (
-    ServiceCode,
-    SERVICE_ALIASES,
     CODE_TO_SERVICE,
+    SERVICE_ALIASES,
+    ServiceCode,
 )
 
 

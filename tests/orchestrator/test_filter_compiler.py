@@ -12,11 +12,10 @@ from src.orchestrator.models.filter_spec import (
     FilterErrorCode,
     FilterGroup,
     FilterOperator,
-    ResolvedFilterSpec,
     ResolutionStatus,
+    ResolvedFilterSpec,
     TypedLiteral,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

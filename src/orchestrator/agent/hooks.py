@@ -24,11 +24,11 @@ import base64
 import hashlib
 import hmac as hmac_mod
 import json
+import logging
 import os
 import sys
-import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 try:
@@ -36,6 +36,7 @@ try:
 except ModuleNotFoundError as exc:
     if exc.name != "claude_agent_sdk":
         raise
+    _sdk_hook_error = exc
 
     class HookMatcher:  # type: ignore[no-redef]
         """Fallback stub when claude_agent_sdk is unavailable."""
@@ -45,7 +46,7 @@ except ModuleNotFoundError as exc:
                 "No module named 'claude_agent_sdk'. "
                 "Start backend with ./scripts/start-backend.sh (project .venv), "
                 "or install deps via .venv/bin/python -m pip install -e '.[dev]'."
-            ) from exc
+            ) from _sdk_hook_error
 
 
 __all__ = [
@@ -281,7 +282,7 @@ async def log_post_tool(
     success_status = "FAILURE" if is_error else "SUCCESS"
 
     # Log to stderr (never stdout - that's MCP protocol)
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
     _log_to_stderr(
         f"[AUDIT] {timestamp} | Tool: {tool_name} | ID: {tool_use_id} | "
         f"Status: {success_status}"
@@ -626,6 +627,20 @@ _FILTER_SCOPED_TOOLS = frozenset({
 # Banned keys that indicate raw SQL injection attempts
 _BANNED_SQL_KEYS = frozenset({"where_clause", "sql", "query", "raw_sql"})
 
+# Cached FILTER_TOKEN_SECRET to avoid repeated os.environ lookups
+_FILTER_TOKEN_SECRET: str | None = None
+
+
+def _get_filter_token_secret() -> str:
+    """Return the cached FILTER_TOKEN_SECRET value.
+
+    Reads from os.environ on first call, then returns cached value.
+    """
+    global _FILTER_TOKEN_SECRET
+    if _FILTER_TOKEN_SECRET is None:
+        _FILTER_TOKEN_SECRET = os.environ.get("FILTER_TOKEN_SECRET", "")
+    return _FILTER_TOKEN_SECRET
+
 
 def _find_banned_keys_recursive(obj: Any, banned: frozenset[str]) -> set[str]:
     """Recursively search dicts/lists for banned key names.
@@ -811,7 +826,7 @@ async def validate_filter_spec_on_pipeline(
         )
         return _deny_with_reason(message)
 
-    secret = os.environ.get("FILTER_TOKEN_SECRET", "")
+    secret = _get_filter_token_secret()
     if not secret:
         return _deny_token(
             "secret_missing",
@@ -977,7 +992,7 @@ def create_shipping_hook(
     ) -> dict[str, Any]:
         """Validate create_shipment with mode-aware enforcement."""
         tool_name = input_data.get("tool_name", "")
-        tool_input = input_data.get("tool_input", {})
+        input_data.get("tool_input", {})
 
         _log_to_stderr(
             f"[VALIDATION] Pre-hook checking: {tool_name} | ID: {tool_use_id} | "

@@ -11,13 +11,18 @@ Per RESEARCH.md:
 - Use dateutil.parser for date parsing with ambiguity detection
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import re
 from datetime import datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dateutil.parser import ParserError, parse
+
+if TYPE_CHECKING:
+    from src.mcp.data_source.models import ImportResult
 
 # Excel serial date detection pattern (5-digit numbers)
 EXCEL_SERIAL_PATTERN = re.compile(r"^\d{5}$")
@@ -237,7 +242,7 @@ def load_flat_records_to_duckdb(
     conn: Any,
     records: list[dict[str, Any]],
     source_type: str = "unknown",
-) -> "ImportResult":
+) -> ImportResult:
     """Load a list of flat dicts into DuckDB imported_data table.
 
     Uses executemany for batch insertion (OLAP-friendly, not row-by-row).

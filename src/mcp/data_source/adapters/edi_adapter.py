@@ -16,10 +16,10 @@ if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
 from src.mcp.data_source.adapters.base import BaseSourceAdapter
-from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
-from src.mcp.data_source.edi.x12_parser import X12Parser
 from src.mcp.data_source.edi.edifact_parser import EDIFACTParser
 from src.mcp.data_source.edi.models import NormalizedOrder
+from src.mcp.data_source.edi.x12_parser import X12Parser
+from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
 
 
 class EDIAdapter(BaseSourceAdapter):

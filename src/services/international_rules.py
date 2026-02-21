@@ -20,7 +20,6 @@ from src.services.ups_constants import (
     PackagingCode,
 )
 
-
 RULE_VERSION = "2.0.0"
 
 # UPS international service codes

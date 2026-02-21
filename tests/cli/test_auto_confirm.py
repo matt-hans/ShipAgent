@@ -1,6 +1,6 @@
 """Tests for the auto-confirm rule evaluation engine."""
 
-from src.cli.auto_confirm import AutoConfirmResult, RuleViolation, evaluate_auto_confirm
+from src.cli.auto_confirm import evaluate_auto_confirm
 from src.cli.config import AutoConfirmRules
 
 

@@ -7,7 +7,6 @@ This is the release gate for the FilterSpec compiler architecture.
 
 import hashlib
 import json
-import os
 from typing import Any
 
 import pytest
@@ -19,11 +18,9 @@ from src.orchestrator.models.filter_spec import (
     FilterGroup,
     FilterIntent,
     FilterOperator,
-    ResolvedFilterSpec,
     ResolutionStatus,
     TypedLiteral,
 )
-
 
 # ---------------------------------------------------------------------------
 # Shared fixtures

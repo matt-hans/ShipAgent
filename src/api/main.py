@@ -14,7 +14,7 @@ import time as _time
 import uuid
 import warnings
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
@@ -29,12 +29,12 @@ logging.basicConfig(
 )
 # Ensure our application loggers are captured
 logging.getLogger("src").setLevel(logging.INFO)
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-from src.api.middleware.auth import maybe_require_api_key
-from src.api.routes import (
+from src.api.middleware.auth import maybe_require_api_key  # noqa: E402
+from src.api.routes import (  # noqa: E402
     agent_audit,
     commands,
     contacts,
@@ -48,11 +48,11 @@ from src.api.routes import (
     progress,
     saved_data_sources,
 )
-from src.db.connection import init_db
-from src.db.models import JobStatus
-from src.errors import ShipAgentError
-from src.services.batch_engine import BatchEngine
-from src.services.ups_mcp_client import UPSMCPClient
+from src.db.connection import init_db  # noqa: E402
+from src.db.models import JobStatus  # noqa: E402
+from src.errors import ShipAgentError  # noqa: E402
+from src.services.batch_engine import BatchEngine  # noqa: E402
+from src.services.ups_mcp_client import UPSMCPClient  # noqa: E402
 
 # Frontend build directory
 FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
@@ -278,8 +278,8 @@ def _parse_iso_timestamp(value: str | None) -> datetime | None:
     except (ValueError, TypeError):
         return None
     if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _reap_orphan_pending_jobs(job_service: object) -> int:
@@ -295,7 +295,7 @@ def _reap_orphan_pending_jobs(job_service: object) -> int:
     if max_age_hours <= 0:
         return 0
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    cutoff = datetime.now(UTC) - timedelta(hours=max_age_hours)
     try:
         pending_jobs = js.list_jobs(status=JobStatus.pending, limit=500)
     except Exception as e:
@@ -612,7 +612,7 @@ def health_check() -> dict:
 
 
 @app.get("/readyz")
-def readiness_check():
+async def readiness_check():
     """Dependency-aware readiness check for local/container deployments."""
     from sqlalchemy import text
 
@@ -659,6 +659,17 @@ def readiness_check():
         status = "degraded"
     else:
         checks["ups_credentials"] = {"status": "configured"}
+
+    # MCP gateway health (best-effort, non-blocking)
+    try:
+        from src.services.gateway_provider import check_gateway_health
+
+        mcp_health = await check_gateway_health()
+        checks["mcp_gateways"] = mcp_health
+        if any(v["status"] == "unhealthy" for v in mcp_health.values()):
+            status = "degraded"
+    except Exception:
+        checks["mcp_gateways"] = {"status": "check_failed"}
 
     return {
         "status": status,

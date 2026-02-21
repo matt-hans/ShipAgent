@@ -1,6 +1,5 @@
 """Tests for custom commands REST API routes."""
 
-import pytest
 from fastapi.testclient import TestClient
 
 

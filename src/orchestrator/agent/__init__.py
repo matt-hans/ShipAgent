@@ -49,10 +49,9 @@ Exports:
 from src.orchestrator.agent.config import (
     PROJECT_ROOT,
     MCPServerConfig,
-    get_data_mcp_config,
     create_mcp_servers_config,
+    get_data_mcp_config,
 )
-
 from src.orchestrator.agent.hooks import (
     create_hook_matchers,
     detect_error_response,
@@ -71,6 +70,7 @@ try:
 except ModuleNotFoundError as exc:
     if exc.name not in {None, "claude_agent_sdk"} and "claude_agent_sdk" not in str(exc):
         raise
+    _sdk_import_error = exc
 
     class OrchestrationAgent:  # type: ignore[no-redef]
         """Fallback stub when claude_agent_sdk is unavailable."""
@@ -80,14 +80,14 @@ except ModuleNotFoundError as exc:
                 "No module named 'claude_agent_sdk'. "
                 "Start backend with ./scripts/start-backend.sh (project .venv), "
                 "or install deps via .venv/bin/python -m pip install -e '.[dev]'."
-            ) from exc
+            ) from _sdk_import_error
 
     async def create_agent(*args, **kwargs):  # type: ignore[no-redef]
         raise ModuleNotFoundError(
             "No module named 'claude_agent_sdk'. "
             "Start backend with ./scripts/start-backend.sh (project .venv), "
             "or install deps via .venv/bin/python -m pip install -e '.[dev]'."
-        ) from exc
+        ) from _sdk_import_error
 
 __all__ = [
     # Main entry points

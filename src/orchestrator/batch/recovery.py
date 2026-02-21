@@ -8,11 +8,10 @@ Per CONTEXT.md Decision 3:
 """
 
 from enum import Enum
-from typing import Optional
 
 from src.db.models import JobStatus, RowStatus
-from src.services.job_service import JobService
 from src.orchestrator.batch.models import InterruptedJobInfo
+from src.services.job_service import JobService
 
 
 class RecoveryChoice(str, Enum):
@@ -24,7 +23,7 @@ class RecoveryChoice(str, Enum):
     REVIEW = "review"
 
 
-def check_interrupted_jobs(job_service: JobService) -> Optional[InterruptedJobInfo]:
+def check_interrupted_jobs(job_service: JobService) -> InterruptedJobInfo | None:
     """Check for jobs interrupted mid-execution.
 
     Finds jobs in 'running' state, which indicates they were interrupted

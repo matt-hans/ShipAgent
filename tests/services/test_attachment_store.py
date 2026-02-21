@@ -1,6 +1,6 @@
 """Tests for session-keyed attachment store."""
 
-from src.services.attachment_store import clear, consume, stage, _store
+from src.services.attachment_store import _store, clear, consume, stage
 
 
 class TestAttachmentStore:

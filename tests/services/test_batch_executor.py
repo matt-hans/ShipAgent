@@ -1,9 +1,10 @@
 """Tests for shared batch execution service."""
 
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.services.batch_executor import execute_batch, get_shipper_for_job
+import pytest
+
+from src.services.batch_executor import get_shipper_for_job
 
 
 class TestGetShipperForJob:

@@ -7,7 +7,7 @@ batch_executor and conversation_handler — no duplication.
 """
 
 import logging
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 from uuid import uuid4
 
 from src.cli.config import ShipAgentConfig
@@ -410,7 +410,7 @@ class InProcessRunner:
             logger.error("Failed to initialize data gateway: %s", e)
             raise ShipAgentClientError(
                 f"Cannot reach data source gateway: {e}"
-            )
+            ) from e
 
         try:
             info = await gw.get_source_info()
@@ -418,7 +418,7 @@ class InProcessRunner:
             logger.error("Failed to query source info from gateway: %s", e)
             raise ShipAgentClientError(
                 f"Data source query failed: {e}"
-            )
+            ) from e
 
         if info is None:
             return DataSourceStatus(connected=False)
@@ -445,7 +445,7 @@ class InProcessRunner:
             gw = await get_data_gateway()
         except Exception as e:
             logger.error("Failed to initialize data gateway: %s", e)
-            raise ShipAgentClientError(f"Cannot reach data source gateway: {e}")
+            raise ShipAgentClientError(f"Cannot reach data source gateway: {e}") from e
 
         ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else "csv"
         try:
@@ -455,7 +455,7 @@ class InProcessRunner:
                 await gw.import_csv(file_path)
         except Exception as e:
             logger.error("Failed to import file %s: %s", file_path, e)
-            raise ShipAgentClientError(f"Failed to import file: {e}")
+            raise ShipAgentClientError(f"Failed to import file: {e}") from e
         return await self.get_source_status()
 
     async def connect_db(
@@ -468,13 +468,13 @@ class InProcessRunner:
             gw = await get_data_gateway()
         except Exception as e:
             logger.error("Failed to initialize data gateway: %s", e)
-            raise ShipAgentClientError(f"Cannot reach data source gateway: {e}")
+            raise ShipAgentClientError(f"Cannot reach data source gateway: {e}") from e
 
         try:
             await gw.import_database(connection_string=connection_string, query=query)
         except Exception as e:
             logger.error("Failed to import from database: %s", e)
-            raise ShipAgentClientError(f"Failed to import from database: {e}")
+            raise ShipAgentClientError(f"Failed to import from database: {e}") from e
         return await self.get_source_status()
 
     async def disconnect_source(self) -> None:

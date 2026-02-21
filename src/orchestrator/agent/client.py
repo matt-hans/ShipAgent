@@ -29,14 +29,13 @@ import logging
 import os
 import time
 from collections.abc import AsyncGenerator
-from typing import Any, Optional
+from typing import Any
 
 try:
     from claude_agent_sdk import (
         AssistantMessage,
         ClaudeAgentOptions,
         ClaudeSDKClient,
-        HookMatcher,
         ResultMessage,
         SdkMcpTool,
         TextBlock,
@@ -158,7 +157,7 @@ class OrchestrationAgent:
         self.emitter_bridge = EventEmitterBridge()
         self.emitter_bridge.session_id = session_id
         self._options = self._create_options(max_turns, permission_mode)
-        self._client: Optional[ClaudeSDKClient] = None
+        self._client: ClaudeSDKClient | None = None
         self._started = False
         self._start_time: float | None = None
         self._last_turn_count = 0
@@ -462,7 +461,7 @@ class OrchestrationAgent:
 
         except Exception as e:
             self._last_turn_count = 0
-            logger.error("process_message_stream error: %s", e)
+            logger.error("process_message_stream error", exc_info=True)
             DecisionAuditService.log_event_from_context(
                 phase="error",
                 event_name="agent.stream.exception",
@@ -504,7 +503,7 @@ class OrchestrationAgent:
         if self._client:
             try:
                 await asyncio.wait_for(self._client.disconnect(), timeout=timeout)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning(
                     "[OrchestrationAgent] Shutdown timed out after %ss",
                     timeout,
@@ -532,8 +531,8 @@ class OrchestrationAgent:
 
     async def __aexit__(
         self,
-        exc_type: Optional[type],
-        exc_val: Optional[BaseException],
+        exc_type: type | None,
+        exc_val: BaseException | None,
         exc_tb: Any,
     ) -> None:
         """Async context manager exit - stop the agent."""

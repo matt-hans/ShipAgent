@@ -28,7 +28,6 @@ from src.services.batch_engine import BatchEngine
 from src.services.data_source_mcp_client import DataSourceMCPClient
 from src.services.job_service import JobService
 
-
 # ---------------------------------------------------------------------------
 # Markers applied to every test in this module
 # ---------------------------------------------------------------------------
@@ -119,7 +118,7 @@ def _read_excel(path: str) -> list[dict[str, Any]]:
     if len(data) < 2:
         return []
     headers = [str(h) for h in data[0]]
-    return [dict(zip(headers, row)) for row in data[1:]]
+    return [dict(zip(headers, row, strict=False)) for row in data[1:]]
 
 
 def _sample_rows(n: int = 5, states: list[str] | None = None) -> list[dict]:

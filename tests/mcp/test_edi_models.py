@@ -1,12 +1,10 @@
 """Test EDI data models."""
 
-import pytest
 
 from src.mcp.data_source.edi.models import (
     EDIFormat,
-    EDITransactionType,
-    EDIDocument,
     EDILineItem,
+    EDITransactionType,
     NormalizedOrder,
 )
 

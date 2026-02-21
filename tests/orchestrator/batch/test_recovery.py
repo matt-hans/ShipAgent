@@ -7,7 +7,6 @@ Tests cover:
 - Duplicate shipment warnings
 """
 
-from unittest.mock import MagicMock
 
 import pytest
 

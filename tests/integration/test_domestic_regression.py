@@ -150,7 +150,7 @@ class TestDomesticRegression:
         Uses the same algorithm as batch_engine._dollars_to_cents() to
         verify correctness without importing MCP-dependent modules.
         """
-        from decimal import Decimal, ROUND_HALF_UP
+        from decimal import ROUND_HALF_UP, Decimal
 
         def _dollars_to_cents(amount: str) -> int:
             return int(

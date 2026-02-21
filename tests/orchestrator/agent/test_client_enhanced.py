@@ -67,6 +67,7 @@ class TestModelConfiguration:
         monkeypatch.setenv("AGENT_MODEL", "claude-haiku-4-5-20251001")
         monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
         from importlib import reload
+
         import src.orchestrator.agent.client as client_mod
 
         reload(client_mod)
@@ -78,6 +79,7 @@ class TestModelConfiguration:
         monkeypatch.delenv("AGENT_MODEL", raising=False)
         monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-4-5-20250929")
         from importlib import reload
+
         import src.orchestrator.agent.client as client_mod
 
         reload(client_mod)

@@ -2,8 +2,8 @@
 
 from src.api.schemas_conversations import (
     ChatSessionSummary,
-    SessionDetailResponse,
     PersistedMessageResponse,
+    SessionDetailResponse,
     UpdateTitleRequest,
 )
 
@@ -53,5 +53,6 @@ def test_update_title_request():
 
 def test_update_title_rejects_empty():
     import pytest as _pytest
-    with _pytest.raises(Exception):
+    from pydantic import ValidationError
+    with _pytest.raises(ValidationError):
         UpdateTitleRequest(title="")

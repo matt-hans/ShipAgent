@@ -1,6 +1,5 @@
 """Tests for MCPTestClient helper."""
 
-import pytest
 from tests.helpers.mcp_client import MCPTestClient
 
 

@@ -9,13 +9,13 @@ Verifies that on startup:
 6. UPS client is disconnected after recovery completes
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.db.models import JobStatus
 from src.api.main import run_startup_recovery
+from src.db.models import JobStatus
 
 
 class TestStartupRecovery:
@@ -242,7 +242,7 @@ class TestStartupRecovery:
         stale_job = MagicMock()
         stale_job.id = "job-stale"
         stale_job.created_at = (
-            datetime.now(timezone.utc) - timedelta(hours=24)
+            datetime.now(UTC) - timedelta(hours=24)
         ).isoformat()
 
         mock_db = MagicMock()
@@ -267,7 +267,7 @@ class TestStartupRecovery:
         """Recent pending jobs should not be reaped."""
         fresh_job = MagicMock()
         fresh_job.id = "job-fresh"
-        fresh_job.created_at = datetime.now(timezone.utc).isoformat()
+        fresh_job.created_at = datetime.now(UTC).isoformat()
 
         mock_db = MagicMock()
         mock_js = MagicMock()

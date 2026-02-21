@@ -11,8 +11,6 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.db.connection import get_db_context
-from src.services.job_service import JobService
-
 from src.orchestrator.agent.tools.core import (
     SERVICE_CODE_NAMES,
     EventEmitterBridge,
@@ -22,8 +20,8 @@ from src.orchestrator.agent.tools.core import (
     _enrich_preview_rows_from_map,
     _err,
     _get_ups_client,
-    _ok,
 )
+from src.services.job_service import JobService
 
 logger = logging.getLogger(__name__)
 
@@ -196,9 +194,9 @@ async def preview_interactive_shipment_tool(
     )
     from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY, UPS_ADDRESS_MAX_LEN
     from src.services.ups_payload_builder import (
-        build_ups_rate_payload,
         build_shipment_request,
         build_shipper,
+        build_ups_rate_payload,
         resolve_packaging_code,
     )
     from src.services.ups_service_codes import (

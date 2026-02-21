@@ -21,13 +21,12 @@ Usage:
 
 import json
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from src.db.models import AuditLog, EventType, LogLevel
-
 
 # Re-export enums for convenience
 __all__ = [
@@ -133,7 +132,7 @@ def redact_sensitive(
 
 def _utc_now_iso() -> str:
     """Generate current UTC timestamp in ISO8601 format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class AuditService:
@@ -503,7 +502,7 @@ class AuditService:
         clean_name = clean_name.strip("_")  # Remove leading/trailing underscores
 
         # Generate timestamp for filename
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
 
         filename = f"{clean_name}_logs_{timestamp}.txt"
         content = self.export_logs_text(job_id)

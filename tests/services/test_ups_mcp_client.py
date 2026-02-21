@@ -2,14 +2,13 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from src.services.errors import UPSServiceError
 from src.services.mcp_client import MCPConnectionError, MCPToolError
 from src.services.ups_mcp_client import UPSMCPClient, _ups_is_retryable
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -958,6 +957,38 @@ class TestCancelPickup:
         result = await ups_client.cancel_pickup(cancel_by="prn", prn="2929602E9CP")
         assert result["success"] is True
         assert result["status"] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_cancel_pickup_normalizes_response(self, ups_client, mock_mcp_client):
+        """cancel_pickup extracts status from raw UPS response."""
+        mock_mcp_client.call_tool.return_value = {
+            "PickupCancelResponse": {
+                "ResponseStatus": {
+                    "Code": "1",
+                    "Description": "Success",
+                },
+            },
+        }
+        result = await ups_client.cancel_pickup(cancel_by="prn", prn="2929602E9CP")
+        assert result["success"] is True
+        assert result["status"] == "cancelled"
+        assert result["raw_status"]["code"] == "1"
+        assert result["raw_status"]["description"] == "Success"
+
+    @pytest.mark.asyncio
+    async def test_cancel_pickup_embedded_error(self, ups_client, mock_mcp_client):
+        """cancel_pickup detects embedded error in 200-OK response."""
+        mock_mcp_client.call_tool.return_value = {
+            "PickupCancelResponse": {
+                "ErrorCode": "250001",
+                "ErrorDescription": "Pickup has already been cancelled",
+            },
+        }
+        result = await ups_client.cancel_pickup(cancel_by="prn", prn="2929602E9CP")
+        assert result["success"] is False
+        assert result["status"] == "error"
+        assert result["error_code"] == "250001"
+        assert "already been cancelled" in result["error_description"]
 
 
 class TestRatePickup:

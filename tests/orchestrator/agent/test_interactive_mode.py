@@ -5,11 +5,12 @@ working together. Does NOT test prompt text — that's covered by unit tests.
 """
 
 import json
+
 import pytest
 
 from src.orchestrator.agent.hooks import create_shipping_hook
-from src.services.ups_mcp_client import UPSMCPClient
 from src.services.mcp_client import MCPToolError
+from src.services.ups_mcp_client import UPSMCPClient
 
 
 class TestInteractiveModeEndToEnd:

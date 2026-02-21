@@ -8,7 +8,6 @@ import base64
 import hashlib
 import hmac as hmac_mod
 import json
-import os
 import time
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -19,10 +18,8 @@ from src.orchestrator.agent.tools.core import EventEmitterBridge
 from src.orchestrator.models.filter_spec import (
     FilterGroup,
     FilterIntent,
-    FilterOperator,
     ResolutionStatus,
     SemanticReference,
-    TypedLiteral,
 )
 
 # ---------------------------------------------------------------------------

@@ -11,10 +11,9 @@ See docs/plans/2026-02-16-filter-determinism-design.md for full architecture.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -125,7 +124,7 @@ class FilterGroup(BaseModel):
     logic: Literal["AND", "OR"] = Field(
         ..., description="Logical operator joining conditions."
     )
-    conditions: list[Union[FilterCondition, SemanticReference, "FilterGroup"]] = Field(
+    conditions: list[FilterCondition | SemanticReference | FilterGroup] = Field(
         ..., description="Child conditions, semantic references, or nested groups."
     )
 

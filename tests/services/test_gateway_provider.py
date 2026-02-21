@@ -4,8 +4,9 @@ Verifies singleton behavior — repeated calls return the same instance
 for both DataSourceMCPClient and ExternalSourcesMCPClient.
 """
 
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 
 @pytest.mark.asyncio
@@ -85,3 +86,50 @@ async def test_shutdown_gateways_invalidates_mapping_cache():
     with patch.object(provider, "invalidate_mapping_cache") as mock_invalidate:
         await provider.shutdown_gateways()
         mock_invalidate.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_check_gateway_health_all_states():
+    """check_gateway_health reports correct states for each gateway."""
+    import src.services.gateway_provider as provider
+
+    # Save originals
+    orig_data = provider._data_gateway
+    orig_ext = provider._ext_sources_client
+    orig_ups = provider._ups_gateway
+
+    try:
+        # not_initialized: ups is None
+        provider._ups_gateway = None
+
+        # disconnected: data_source has is_connected=False
+        mock_disconnected = AsyncMock()
+        mock_disconnected.is_connected = False
+        provider._data_gateway = mock_disconnected
+
+        # healthy: ext_sources is connected, check_health returns True
+        mock_healthy = AsyncMock()
+        mock_healthy.is_connected = True
+        mock_healthy.check_health = AsyncMock(return_value=True)
+        provider._ext_sources_client = mock_healthy
+
+        result = await provider.check_gateway_health()
+
+        assert result["ups"]["status"] == "not_initialized"
+        assert result["data_source"]["status"] == "disconnected"
+        assert result["external_sources"]["status"] == "ok"
+
+        # unhealthy: check_health raises
+        mock_unhealthy = AsyncMock()
+        mock_unhealthy.is_connected = True
+        mock_unhealthy.check_health = AsyncMock(side_effect=RuntimeError("dead"))
+        provider._ext_sources_client = mock_unhealthy
+
+        result2 = await provider.check_gateway_health()
+        assert result2["external_sources"]["status"] == "unhealthy"
+
+    finally:
+        # Restore originals
+        provider._data_gateway = orig_data
+        provider._ext_sources_client = orig_ext
+        provider._ups_gateway = orig_ups

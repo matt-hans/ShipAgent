@@ -61,7 +61,7 @@ async def compute_checksums(
 
     checksums = []
     for i, row in enumerate(results):
-        row_dict = dict(zip(columns, row))
+        row_dict = dict(zip(columns, row, strict=False))
         checksum = compute_row_checksum(row_dict)
         checksums.append(ChecksumResult(
             row_number=start_row + i,
@@ -116,7 +116,7 @@ async def verify_checksum(
     if result is None:
         raise ValueError(f"Row {row_number} not found")
 
-    row_dict = dict(zip(columns, result))
+    row_dict = dict(zip(columns, result, strict=False))
     actual_checksum = compute_row_checksum(row_dict)
 
     matches = actual_checksum == expected_checksum

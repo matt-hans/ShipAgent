@@ -4,7 +4,6 @@ Spawns MCP servers as child processes and communicates via stdio,
 enabling real integration tests without mocking MCP communication.
 """
 
-import asyncio
 import json
 import subprocess
 from dataclasses import dataclass, field

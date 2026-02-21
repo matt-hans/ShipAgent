@@ -1,10 +1,9 @@
 """Test that the upload endpoint accepts all supported file formats."""
 
-import pytest
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
-
 
 SUPPORTED_EXTENSIONS = [
     ".csv", ".tsv", ".ssv", ".txt", ".dat",

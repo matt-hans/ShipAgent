@@ -4,7 +4,7 @@ Provides unified interface for connecting to and fetching
 data from external platforms (Shopify, WooCommerce, SAP, Oracle).
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastmcp import Context
 
@@ -191,7 +191,7 @@ async def connect_platform(
     clients[platform] = client
     lifespan_ctx["clients"] = clients
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     connection = PlatformConnection(
         platform=platform,
         store_url=store_url,

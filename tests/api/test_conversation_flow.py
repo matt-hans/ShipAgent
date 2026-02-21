@@ -5,9 +5,7 @@ history → cleanup. Uses the FastAPI TestClient against the real app
 with mocked agent internals.
 """
 
-from unittest.mock import AsyncMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from src.api.main import app

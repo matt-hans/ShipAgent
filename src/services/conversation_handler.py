@@ -5,10 +5,13 @@ so both HTTP routes and InProcessRunner call the same code path.
 """
 
 import hashlib
+import json
 import logging
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
 
 from src.db.models import AgentDecisionRunStatus
+from src.services.agent_session_manager import AgentSession
 from src.services.decision_audit_context import (
     get_decision_job_id,
     get_decision_run_id,
@@ -18,7 +21,6 @@ from src.services.decision_audit_context import (
     set_decision_run_id,
 )
 from src.services.decision_audit_service import DecisionAuditService
-from src.services.agent_session_manager import AgentSession, AgentSessionManager
 from src.services.gateway_provider import get_data_gateway
 
 logger = logging.getLogger(__name__)
@@ -38,13 +40,11 @@ def _get_mru_contacts_for_prompt() -> list[dict]:
         use_as_ship_to, use_as_shipper keys.
     """
     from src.db.connection import get_db_context
-    from src.services.contact_service import ContactService
     from src.orchestrator.agent.system_prompt import MAX_PROMPT_CONTACTS
+    from src.services.contact_service import ContactService
 
     try:
-        ctx = get_db_context()
-        db = ctx.__enter__()
-        try:
+        with get_db_context() as db:
             svc = ContactService(db)
             contacts = svc.get_mru_contacts(limit=MAX_PROMPT_CONTACTS)
             return [
@@ -57,8 +57,6 @@ def _get_mru_contacts_for_prompt() -> list[dict]:
                 }
                 for c in contacts
             ]
-        finally:
-            ctx.__exit__(None, None, None)
     except Exception as e:
         logger.warning("Failed to fetch MRU contacts for prompt: %s", e)
         return []
@@ -77,7 +75,9 @@ def _load_prior_conversation(session_id: str) -> list[dict] | None:
         List of {role, content} dicts, or None if no history exists.
     """
     from src.db.connection import get_db_context
-    from src.services.conversation_persistence_service import ConversationPersistenceService
+    from src.services.conversation_persistence_service import (
+        ConversationPersistenceService,
+    )
 
     try:
         with get_db_context() as db:
@@ -105,7 +105,10 @@ def compute_source_hash(source_info: Any) -> str:
     """
     if source_info is None:
         return "none"
-    raw = str(source_info)
+    try:
+        raw = json.dumps(source_info.__dict__, sort_keys=True, default=str)
+    except (TypeError, AttributeError):
+        raw = str(source_info)
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
@@ -134,7 +137,7 @@ async def ensure_agent(
 
     # Fetch MRU contacts for prompt injection (C1 fix)
     contacts = _get_mru_contacts_for_prompt()
-    contacts_hash = hashlib.sha256(str(contacts).encode()).hexdigest()[:8]
+    contacts_hash = hashlib.sha256(json.dumps(contacts, sort_keys=True, default=str).encode()).hexdigest()[:8]
 
     combined_hash = f"{source_hash}|interactive={interactive_shipping}|contacts={contacts_hash}"
 
@@ -149,12 +152,22 @@ async def ensure_agent(
         except Exception as e:
             logger.warning("Error stopping old agent: %s", e)
 
+    # Fetch column samples for filter grounding (batch mode only)
+    column_samples = None
+    if source_info is not None and not interactive_shipping:
+        try:
+            gw = await get_data_gateway()
+            column_samples = await gw.get_column_samples(max_samples=5)
+        except Exception as e:
+            logger.debug("Could not fetch column samples: %s", e)
+
     # Load prior conversation for resumed sessions
     prior_conversation = _load_prior_conversation(session.session_id)
 
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=interactive_shipping,
+        column_samples=column_samples,
         contacts=contacts,
         prior_conversation=prior_conversation,
     )

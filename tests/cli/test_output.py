@@ -2,8 +2,8 @@
 
 import json
 
-from src.cli.output import format_job_table, format_job_detail, format_cost
-from src.cli.protocol import JobSummary, JobDetail
+from src.cli.output import format_cost, format_job_detail, format_job_table
+from src.cli.protocol import JobDetail, JobSummary
 
 
 class TestFormatCost:

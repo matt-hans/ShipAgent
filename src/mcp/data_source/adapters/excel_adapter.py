@@ -10,14 +10,13 @@ Per CONTEXT.md:
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
 
-from .base import BaseSourceAdapter
 from ..models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
 from ..utils import parse_date_with_warnings
+from .base import BaseSourceAdapter
 
 try:
     from python_calamine import CalamineWorkbook
@@ -115,7 +114,7 @@ class ExcelAdapter(BaseSourceAdapter):
         self,
         conn: "DuckDBPyConnection",
         file_path: str,
-        sheet: Optional[str] = None,
+        sheet: str | None = None,
         header: bool = True,
     ) -> ImportResult:
         """Import Excel sheet into DuckDB.
@@ -190,7 +189,7 @@ class ExcelAdapter(BaseSourceAdapter):
 
         # Create table with inferred schema + identity tracking column
         col_defs = f"{SOURCE_ROW_NUM_COLUMN} BIGINT, " + ", ".join([
-            f'"{name}" {dtype}' for name, dtype in zip(headers, column_types)
+            f'"{name}" {dtype}' for name, dtype in zip(headers, column_types, strict=False)
         ])
         conn.execute(f"CREATE OR REPLACE TABLE imported_data ({col_defs})")
 
@@ -211,7 +210,7 @@ class ExcelAdapter(BaseSourceAdapter):
         columns = []
         all_warnings = []
 
-        for name, dtype in zip(headers, column_types):
+        for name, dtype in zip(headers, column_types, strict=False):
             col_warnings = []
 
             # Check for date columns and parse with warnings

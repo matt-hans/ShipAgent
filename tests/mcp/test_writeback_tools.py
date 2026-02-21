@@ -13,9 +13,9 @@ Tests verify:
 import csv
 import os
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import duckdb
 import pytest
@@ -155,7 +155,7 @@ class TestWriteBackCSV:
         assert result["tracking_number"] == "1Z999AA10123456784"
 
         # Verify columns were added
-        with open(sample_csv, "r") as f:
+        with open(sample_csv) as f:
             reader = csv.DictReader(f)
             fieldnames = reader.fieldnames
             assert "tracking_number" in fieldnames
@@ -187,7 +187,7 @@ class TestWriteBackCSV:
         assert result["success"] is True
 
         # Verify row 2 was updated
-        with open(sample_csv_with_tracking, "r") as f:
+        with open(sample_csv_with_tracking) as f:
             rows = list(csv.DictReader(f))
             assert rows[1]["tracking_number"] == "1Z999AA10123456785"
             assert rows[1]["shipped_at"] == "2026-01-25T14:00:00Z"
@@ -211,7 +211,7 @@ class TestWriteBackCSV:
         )
 
         # Verify original data preserved
-        with open(sample_csv, "r") as f:
+        with open(sample_csv) as f:
             rows = list(csv.DictReader(f))
             assert rows[0]["order_id"] == "1001"
             assert rows[0]["customer_name"] == "John Doe"
@@ -230,16 +230,16 @@ class TestWriteBackCSV:
         }
 
         # Truncate to seconds since shipped_at format doesn't include microseconds
-        before = datetime.now(timezone.utc).replace(microsecond=0)
+        before = datetime.now(UTC).replace(microsecond=0)
         await write_back(
             row_number=1,
             tracking_number="1Z999AA10123456784",
             ctx=mock_ctx,
         )
         # Add 1 second buffer for timing margin
-        after = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=1)
+        after = datetime.now(UTC).replace(microsecond=0) + timedelta(seconds=1)
 
-        with open(sample_csv, "r") as f:
+        with open(sample_csv) as f:
             rows = list(csv.DictReader(f))
             shipped_at = datetime.fromisoformat(
                 rows[0]["shipped_at"].replace("Z", "+00:00")
@@ -256,7 +256,7 @@ class TestWriteBackCSV:
         }
 
         # Read original content
-        with open(sample_csv, "r") as f:
+        with open(sample_csv) as f:
             original_content = f.read()
 
         # Try to update non-existent row
@@ -268,7 +268,7 @@ class TestWriteBackCSV:
             )
 
         # File should be unchanged
-        with open(sample_csv, "r") as f:
+        with open(sample_csv) as f:
             assert f.read() == original_content
 
         # No temp files should remain

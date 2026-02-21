@@ -7,8 +7,8 @@ to simulate crash scenarios in integration tests.
 import asyncio
 import os
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 
 @dataclass

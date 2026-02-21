@@ -9,13 +9,13 @@ Tests verify:
 import pytest
 
 from src.orchestrator.agent.hooks import (
+    create_hook_matchers,
+    detect_error_response,
+    log_post_tool,
+    validate_data_query,
     validate_pre_tool,
     validate_shipping_input,
     validate_void_shipment,
-    validate_data_query,
-    log_post_tool,
-    detect_error_response,
-    create_hook_matchers,
 )
 
 
@@ -837,7 +837,8 @@ class TestLogToStderr:
 
     def test_log_to_stderr_broken_pipe_routes_validation_to_warning(self):
         """Validation messages route to logger.warning when stderr is broken."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from src.orchestrator.agent.hooks import _log_to_stderr
 
         with patch("src.orchestrator.agent.hooks.sys") as mock_sys:
@@ -852,7 +853,8 @@ class TestLogToStderr:
 
     def test_log_to_stderr_broken_pipe_routes_audit_to_debug(self):
         """Non-validation messages route to logger.debug when stderr is broken."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
+
         from src.orchestrator.agent.hooks import _log_to_stderr
 
         with patch("builtins.print", side_effect=BrokenPipeError):
@@ -991,3 +993,27 @@ class TestInteractiveShippingHookEnforcement:
             None,
         )
         assert "deny" in str(result)
+
+
+class TestFilterTokenSecretCache:
+    """Tests for _get_filter_token_secret() caching."""
+
+    def test_filter_token_secret_cached(self):
+        """_get_filter_token_secret reads env once and caches."""
+        from unittest.mock import patch
+
+        from src.orchestrator.agent import hooks
+
+        # Reset cache
+        hooks._FILTER_TOKEN_SECRET = None
+
+        with patch.dict("os.environ", {"FILTER_TOKEN_SECRET": "test-secret-value"}):
+            first = hooks._get_filter_token_secret()
+            assert first == "test-secret-value"
+
+        # Second call should return cached value even though env was restored
+        second = hooks._get_filter_token_secret()
+        assert second == "test-secret-value"
+
+        # Cleanup: reset cache for other tests
+        hooks._FILTER_TOKEN_SECRET = None

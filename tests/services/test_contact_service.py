@@ -2,6 +2,7 @@
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import Base, Contact, CustomCommand
@@ -66,7 +67,7 @@ def test_contact_handle_unique(db: Session):
     db.add(c1)
     db.flush()
     db.add(c2)
-    with pytest.raises(Exception):  # IntegrityError
+    with pytest.raises(IntegrityError):
         db.flush()
 
 
@@ -257,9 +258,9 @@ def test_get_mru_contacts(db: Session):
     """get_mru_contacts returns contacts sorted by last_used_at DESC."""
     from src.services.contact_service import ContactService
     svc = ContactService(db)
-    c1 = svc.create_contact(handle="old", display_name="Old", address_line_1="1",
+    svc.create_contact(handle="old", display_name="Old", address_line_1="1",
                             city="SF", state_province="CA", postal_code="94105")
-    c2 = svc.create_contact(handle="new", display_name="New", address_line_1="2",
+    svc.create_contact(handle="new", display_name="New", address_line_1="2",
                             city="SF", state_province="CA", postal_code="94105")
     db.commit()
     svc.touch_last_used("old")

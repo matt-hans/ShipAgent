@@ -23,7 +23,7 @@ from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
-from src.services.ups_constants import (
+from src.services.ups_constants import (  # noqa: E402
     DEFAULT_CURRENCY_CODE,
     DEFAULT_FORM_TYPE,
     DEFAULT_LABEL_FORMAT,
@@ -40,7 +40,6 @@ from src.services.ups_constants import (
     INTERNATIONAL_ONLY_PACKAGING,
     LETTER_MAX_WEIGHT_LBS,
     PACKAGING_ALIASES,
-    PackagingCode,
     SATURDAY_DELIVERY_SERVICES,
     SERVICE_WEIGHT_LIMITS_LBS,
     UPS_ADDRESS_MAX_LEN,
@@ -49,8 +48,9 @@ from src.services.ups_constants import (
     UPS_PHONE_MIN_DIGITS,
     UPS_REFERENCE_MAX_LEN,
     UPS_WEIGHT_UNIT,
+    PackagingCode,
 )
-from src.services.ups_service_codes import (
+from src.services.ups_service_codes import (  # noqa: E402
     SUPPORTED_INTERNATIONAL_SERVICES,
     ServiceCode,
     resolve_service_code,

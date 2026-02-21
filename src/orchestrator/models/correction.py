@@ -7,7 +7,7 @@ attempts up to 3 corrections before escalating to the user with options.
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -55,7 +55,7 @@ class CorrectionAttempt(BaseModel):
         default_factory=list,
         description="Validation errors that triggered correction (ValidationError objects)",
     )
-    corrected_template: Optional[str] = Field(
+    corrected_template: str | None = Field(
         default=None,
         description="Template after LLM correction",
     )
@@ -87,7 +87,7 @@ class CorrectionResult(BaseModel):
         failure_reason: Explanation if max attempts reached without success.
     """
 
-    final_template: Optional[str] = Field(
+    final_template: str | None = Field(
         default=None,
         description="Working template if successful",
     )
@@ -103,7 +103,7 @@ class CorrectionResult(BaseModel):
         default=0,
         description="Total number of correction attempts",
     )
-    failure_reason: Optional[str] = Field(
+    failure_reason: str | None = Field(
         default=None,
         description="Explanation if correction failed",
     )
@@ -124,8 +124,8 @@ class MaxCorrectionsExceeded(Exception):
     def __init__(
         self,
         result: CorrectionResult,
-        options: Optional[list[CorrectionOptions]] = None,
-        message: Optional[str] = None,
+        options: list[CorrectionOptions] | None = None,
+        message: str | None = None,
     ) -> None:
         """Initialize MaxCorrectionsExceeded.
 

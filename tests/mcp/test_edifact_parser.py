@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from src.mcp.data_source.edi.models import EDIFormat, EDITransactionType
 from src.mcp.data_source.edi.edifact_parser import EDIFACTParser
+from src.mcp.data_source.edi.models import EDIFormat, EDITransactionType
 
 
 @pytest.fixture

@@ -5,9 +5,9 @@ not just mock attribute checks.
 """
 
 import os
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, patch
 
 
 class TestPlatformRoutesUseGateway:
@@ -29,6 +29,7 @@ class TestPlatformRoutesUseGateway:
     async def test_connect_route_calls_gateway(self, mock_get):
         """POST /platforms/{platform}/connect hits gateway, not local client."""
         from fastapi.testclient import TestClient
+
         from src.api.main import app
 
         mock_client = AsyncMock()
@@ -55,6 +56,7 @@ class TestPlatformRoutesUseGateway:
     async def test_disconnect_route_calls_gateway(self, mock_get):
         """POST /platforms/{platform}/disconnect hits gateway, not local client."""
         from fastapi.testclient import TestClient
+
         from src.api.main import app
 
         mock_client = AsyncMock()
@@ -75,6 +77,7 @@ class TestPlatformRoutesUseGateway:
     async def test_list_connections_calls_gateway(self, mock_get):
         """GET /platforms/connections hits gateway."""
         from fastapi.testclient import TestClient
+
         from src.api.main import app
 
         mock_client = AsyncMock()
@@ -94,6 +97,7 @@ class TestPlatformRoutesUseGateway:
     async def test_list_orders_calls_gateway(self, mock_get):
         """GET /platforms/{platform}/orders hits gateway."""
         from fastapi.testclient import TestClient
+
         from src.api.main import app
 
         mock_client = AsyncMock()
@@ -131,6 +135,7 @@ class TestShopifyEnvStatusUsesGateway:
     async def test_env_status_uses_validate_credentials(self, mock_get):
         """GET /platforms/shopify/env-status should call validate_credentials (read-only)."""
         from fastapi.testclient import TestClient
+
         from src.api.main import app
 
         mock_client = AsyncMock()
@@ -162,6 +167,7 @@ class TestShopifyEnvStatusUsesGateway:
     async def test_env_status_handles_validation_failure(self, mock_get):
         """env-status should return valid=False when credentials are invalid."""
         from fastapi.testclient import TestClient
+
         from src.api.main import app
 
         mock_client = AsyncMock()
@@ -190,6 +196,7 @@ class TestShopifyEnvStatusUsesGateway:
     async def test_env_status_no_shop_metadata(self, mock_get):
         """env-status should handle missing shop metadata gracefully."""
         from fastapi.testclient import TestClient
+
         from src.api.main import app
 
         mock_client = AsyncMock()
@@ -216,6 +223,7 @@ class TestShopifyEnvStatusUsesGateway:
     def test_env_status_without_credentials(self):
         """env-status should return configured=False when env vars are missing."""
         from fastapi.testclient import TestClient
+
         from src.api.main import app
 
         with patch.dict(os.environ, {}, clear=True):

@@ -84,7 +84,6 @@ class TestXMLAdapter:
 
     def test_file_too_large(self, conn, tmp_path):
         """Files exceeding MAX_FILE_SIZE_BYTES are rejected."""
-        from src.mcp.data_source.adapters.xml_adapter import MAX_FILE_SIZE_BYTES
         path = tmp_path / "huge.xml"
         path.write_text("<Root>" + "<Item><Name>X</Name></Item>" * 50 + "</Root>")
         adapter = XMLAdapter()

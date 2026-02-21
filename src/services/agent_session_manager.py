@@ -15,7 +15,7 @@ Example:
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class AgentSession:
         """
         self.session_id = session_id
         self.history: list[dict] = []
-        self.created_at = datetime.now(timezone.utc)
+        self.created_at = datetime.now(UTC)
         self.agent: Any = None  # OrchestrationAgent, set by conversations route
         self.agent_source_hash: str | None = None
         self.interactive_shipping: bool = False
@@ -69,7 +69,7 @@ class AgentSession:
         self.history.append({
             "role": role,
             "content": content,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         })
 
 
