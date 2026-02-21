@@ -19,8 +19,6 @@ Endpoints:
     GET    /conversations/{id}/export   — Download session as JSON
 """
 
-from __future__ import annotations
-
 import asyncio
 import base64
 import json
@@ -101,7 +99,7 @@ def _get_event_queue(session_id: str) -> asyncio.Queue:
     return _event_queues[session_id]
 
 
-def _compute_source_hash(source_info: DataSourceInfo | None) -> str:
+def _compute_source_hash(source_info: "DataSourceInfo | None") -> str:  # noqa: F821
     """Compute a simple hash of data source metadata for change detection.
 
     Args:
@@ -122,7 +120,7 @@ def _compute_source_hash(source_info: DataSourceInfo | None) -> str:
     return "|".join(parts)
 
 
-def _build_source_signature(source_info: DataSourceInfo | None) -> dict[str, Any] | None:
+def _build_source_signature(source_info: "DataSourceInfo | None") -> dict[str, Any] | None:  # noqa: F821
     """Build a stable source signature payload from typed source info."""
     if source_info is None:
         return None
@@ -138,8 +136,8 @@ def _build_source_signature(source_info: DataSourceInfo | None) -> dict[str, Any
 
 
 async def _ensure_agent(
-    session: AgentSession,
-    source_info: DataSourceInfo | None,
+    session: "AgentSession",  # noqa: F821
+    source_info: "DataSourceInfo | None",  # noqa: F821
 ) -> bool:
     """Ensure the session has a running agent, creating or rebuilding as needed.
 
@@ -600,7 +598,7 @@ async def _process_agent_message(
 
 
 def _persist_assistant_message(session_id: str, text: str) -> None:
-    """Persist an assistant message to the database and trigger title generation.
+    """Persist an assistant message to the database.
 
     Best-effort — failures are logged at error level but do not block
     the SSE event stream.
@@ -609,22 +607,18 @@ def _persist_assistant_message(session_id: str, text: str) -> None:
         session_id: Conversation session ID.
         text: Assistant message text.
     """
-    from src.services.conversation_persistence_service import (
-        maybe_trigger_title_generation,
-    )
-
     try:
         from src.db.connection import get_db_context
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             svc.save_message(session_id, "assistant", text)
-        maybe_trigger_title_generation(session_id)
     except Exception as exc:
         logger.error("Failed to persist assistant msg for %s: %s", session_id, exc)
 
 
 # Artifact event types that should be persisted to the database.
 _PERSISTABLE_ARTIFACTS: set[str] = {
+    "preview_ready",
     "pickup_result",
     "location_result",
     "landed_cost_result",
@@ -635,6 +629,7 @@ _PERSISTABLE_ARTIFACTS: set[str] = {
 
 # Mapping from event_type → metadata key used by the frontend ConversationMessage.
 _ARTIFACT_METADATA_KEY: dict[str, str] = {
+    "preview_ready": "batchPreview",
     "pickup_result": "pickup",
     "location_result": "location",
     "landed_cost_result": "landedCost",
@@ -839,12 +834,13 @@ async def send_message(
     # Store user message in history
     _session_manager.add_message(session_id, "user", payload.content)
 
-    # Persist user message to database
+    # Persist user message to database and set title from first message
     try:
         from src.db.connection import get_db_context
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             svc.save_message(session_id, "user", payload.content)
+            svc.set_title_from_first_message(session_id, payload.content)
     except Exception as e:
         logger.error("Failed to persist user message to DB: %s", e)
 

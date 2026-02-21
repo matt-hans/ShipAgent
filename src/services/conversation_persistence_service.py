@@ -5,10 +5,8 @@ history reads and writes go through this service. The frontend never
 writes messages — the backend owns all persistence.
 """
 
-import asyncio
 import json
 import logging
-import os
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -310,6 +308,36 @@ class ConversationPersistenceService:
         session = self._db.get(ConversationSession, session_id)
         return session is not None and bool(session.title)
 
+    def set_title_from_first_message(self, session_id: str, message: str) -> bool:
+        """Set the session title from the first user message.
+
+        Truncates to 50 characters with ellipsis if longer. Skips if
+        the session already has a title or doesn't exist.
+
+        Args:
+            session_id: Session ID.
+            message: The user's first message text.
+
+        Returns:
+            True if title was set, False if skipped or not found.
+        """
+        session = self._db.get(ConversationSession, session_id)
+        if session is None or bool(session.title):
+            return False
+
+        text = (message or "").strip()
+        if not text:
+            title = "New conversation"
+        elif len(text) > 50:
+            title = text[:50] + "..."
+        else:
+            title = text
+
+        session.title = title
+        session.updated_at = utc_now_iso()
+        self._db.commit()
+        return True
+
     def export_session_json(
         self, session_id: str
     ) -> dict[str, Any] | None:
@@ -330,84 +358,3 @@ class ConversationPersistenceService:
             "session": result["session"],
             "messages": result["messages"],
         }
-
-
-# Default model for lightweight title generation
-TITLE_MODEL = os.environ.get("TITLE_MODEL", "claude-haiku-4-5-20251001")
-
-
-async def generate_session_title(session_id: str) -> None:
-    """Generate a session title via a lightweight Haiku call.
-
-    Fire-and-forget background task. Runs after the first assistant
-    response is saved. Reads messages and writes the title back to DB.
-
-    Args:
-        session_id: Conversation session ID.
-    """
-    from src.db.connection import get_db_context
-
-    try:
-        with get_db_context() as db:
-            svc = ConversationPersistenceService(db)
-            result = svc.get_session_with_messages(session_id, limit=2)
-
-        if result is None or len(result["messages"]) < 2:
-            return
-
-        if result["session"].get("title"):
-            return
-
-        user_msg = result["messages"][0]["content"][:200]
-        assistant_msg = result["messages"][1]["content"][:200]
-
-        import httpx
-        from anthropic import AsyncAnthropic
-
-        client = AsyncAnthropic(timeout=httpx.Timeout(10.0, connect=5.0))
-        response = await client.messages.create(
-            model=TITLE_MODEL,
-            max_tokens=30,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"Generate a concise 3-6 word title for this shipping conversation. "
-                    f"Return ONLY the title, no quotes or explanation.\n\n"
-                    f"User: {user_msg}\n"
-                    f"Assistant: {assistant_msg}"
-                ),
-            }],
-        )
-
-        if not response.content:
-            return
-        title = response.content[0].text.strip()[:255]
-        if title:
-            with get_db_context() as db:
-                svc = ConversationPersistenceService(db)
-                svc.update_session_title(session_id, title)
-            logger.info("Generated title for session %s: %s", session_id, title)
-
-    except Exception as e:
-        logger.warning("Title generation failed for session %s: %s", session_id, e)
-
-
-def maybe_trigger_title_generation(session_id: str) -> None:
-    """Check if this is the first assistant message and fire title generation.
-
-    Best-effort — failures are logged at debug level.
-
-    Args:
-        session_id: Conversation session ID.
-    """
-    from src.db.connection import get_db_context
-
-    try:
-        with get_db_context() as db:
-            svc = ConversationPersistenceService(db)
-            if svc.has_title(session_id):
-                return
-            if svc.count_assistant_messages(session_id) == 1:
-                asyncio.create_task(generate_session_title(session_id))
-    except Exception as e:
-        logger.debug("Title generation check failed for %s: %s", session_id, e)

@@ -349,13 +349,13 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
   ]);
 
   // Clear transient agent events after each completed run to bound memory.
-  // Also trigger a delayed refresh to pick up backend-generated titles (~2.5s).
+  // Title is now set synchronously on user message save, so refresh immediately.
   React.useEffect(() => {
     if (wasProcessingRef.current && !conv.isProcessing) {
       suppressNextMessageRef.current = false;
       lastProcessedEventRef.current = 0;
       conv.clearEvents();
-      setTimeout(() => refreshChatSessions(), 2500);
+      refreshChatSessions();
     }
     wasProcessingRef.current = conv.isProcessing;
   }, [conv.isProcessing, conv.clearEvents, refreshChatSessions]);
@@ -559,6 +559,33 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
                       setInputValue(text);
                     }}
                   />
+                </div>
+              ) : message.metadata?.action === 'preview_ready' && message.metadata.batchPreview ? (
+                <div className="pl-11">
+                  {message.metadata.batchPreview.interactive ? (
+                    <InteractivePreviewCard
+                      preview={message.metadata.batchPreview}
+                      onConfirm={() => {}}
+                      onCancel={() => {}}
+                      onRefine={() => {}}
+                      isConfirming={false}
+                      isRefining={false}
+                      isProcessing={false}
+                      readOnly
+                    />
+                  ) : (
+                    <PreviewCard
+                      preview={message.metadata.batchPreview}
+                      onConfirm={() => {}}
+                      onCancel={() => {}}
+                      isConfirming={false}
+                      onRefine={() => {}}
+                      isRefining={false}
+                      isProcessing={false}
+                      warningPreference="ask"
+                      readOnly
+                    />
+                  )}
                 </div>
               ) : message.metadata?.action === 'pickup_preview' && message.metadata.pickupPreview ? (
                 <div className="pl-11">

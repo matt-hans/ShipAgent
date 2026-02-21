@@ -12,6 +12,7 @@ import * as React from 'react';
 import type {
   Job,
   DataSourceInfo,
+  BatchPreview,
   PickupPreview,
   PickupResult,
   LocationResult,
@@ -55,6 +56,7 @@ interface ConversationMessage {
     jobId?: string;
     action?:
       | 'preview' | 'execute' | 'complete' | 'error' | 'elicit'
+      | 'preview_ready'
       | 'pickup_preview' | 'pickup_result' | 'location_result' | 'landed_cost_result'
       | 'paperless_upload_prompt' | 'paperless_result'
       | 'tracking_result' | 'contact_saved';
@@ -91,6 +93,8 @@ interface ConversationMessage {
         errorMessage: string;
       }>;
     };
+    // Batch preview payload (persisted for history replay)
+    batchPreview?: BatchPreview;
     // UPS MCP v2 domain card payloads
     pickup?: PickupResult;
     pickupPreview?: PickupPreview;
