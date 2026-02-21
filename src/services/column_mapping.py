@@ -184,6 +184,12 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["tel"], ["hotel"], "shipTo.phone"),
     # Location
     (["city"], [], "shipTo.city"),
+    # Short FWF abbreviations for state — must come BEFORE the generic "state"
+    # rule because _match_quality does a substring-in-canonical check, which
+    # means "state" (6 chars) can never match the canonical header "st" (2
+    # chars).  These exact-match rules handle columns named ST, PROV, etc.
+    (["st"], ["status", "street", "store", "start", "step", "stock", "style", "standard"], "shipTo.stateProvinceCode"),
+    (["prov"], [], "shipTo.stateProvinceCode"),
     (["state"], ["status"], "shipTo.stateProvinceCode"),
     (["province"], [], "shipTo.stateProvinceCode"),
     (["zip"], [], "shipTo.postalCode"),
@@ -191,6 +197,10 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["country"], [], "shipTo.countryCode"),
     # Package dimensions — exclude "grams" to avoid mapping total_weight_grams
     # directly (the value is in grams, not lbs; conversion happens downstream).
+    # Short FWF abbreviations for weight — WT_LBS and WT must be matched before
+    # the generic "weight" rule, for the same substring-length reason as ST above.
+    (["wt_lbs"], [], "packages[0].weight"),
+    (["wt"], ["owt", "awt", "twt", "newt", "swt"], "packages[0].weight"),
     (["weight"], ["grams"], "packages[0].weight"),
     (["length"], [], "packages[0].length"),
     (["width"], [], "packages[0].width"),

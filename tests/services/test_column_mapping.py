@@ -507,3 +507,116 @@ class TestAutoMapRulesDriftPrevention:
             f"{sorted(missing)}. Add entries for these paths to _FIELD_TO_ORDER_DATA "
             f"so apply_mapping() can resolve them."
         )
+
+
+class TestFWFShortFormAliases:
+    """Short-form FWF column abbreviations must map to canonical UPS field paths.
+
+    Legacy fixed-width files commonly use abbreviated column headers that are
+    too short to be caught by the generic substring-matching rules (e.g. 'ST'
+    cannot be matched by a pattern looking for 'state' because 'state' is
+    longer than 'st' and therefore cannot be a substring of it).
+    """
+
+    # Columns from shipments_domestic.fwf
+    FWF_DOMESTIC_COLUMNS = [
+        "ORDER_NUM", "RECIPIENT_NAME", "COMPANY", "PHONE",
+        "ADDRESS_LINE_1", "ADDRESS_LINE_2", "CITY",
+        "ST", "ZIP", "WT_LBS", "LEN", "WID", "HGT",
+        "SERVICE", "PKG_TYPE", "DESCRIPTION", "VALUE",
+    ]
+
+    def test_st_maps_to_state_province(self):
+        """Column 'ST' must auto-map to shipTo.stateProvinceCode."""
+        mapping = auto_map_columns(self.FWF_DOMESTIC_COLUMNS)
+        assert mapping.get("shipTo.stateProvinceCode") == "ST", (
+            f"Expected 'ST' -> shipTo.stateProvinceCode, got: "
+            f"{mapping.get('shipTo.stateProvinceCode')!r}"
+        )
+
+    def test_wt_lbs_maps_to_weight(self):
+        """Column 'WT_LBS' must auto-map to packages[0].weight."""
+        mapping = auto_map_columns(self.FWF_DOMESTIC_COLUMNS)
+        assert mapping.get("packages[0].weight") == "WT_LBS", (
+            f"Expected 'WT_LBS' -> packages[0].weight, got: "
+            f"{mapping.get('packages[0].weight')!r}"
+        )
+
+    def test_zip_maps_to_postal_code(self):
+        """Column 'ZIP' must auto-map to shipTo.postalCode (already worked)."""
+        mapping = auto_map_columns(self.FWF_DOMESTIC_COLUMNS)
+        assert mapping.get("shipTo.postalCode") == "ZIP"
+
+    def test_full_fwf_domestic_mapping_has_required_fields(self):
+        """Required fields (except countryCode) must be resolvable from shipments_domestic.fwf.
+
+        The FWF domestic file has no COUNTRY column — all shipments are
+        domestic US so the agent injects 'US' as the default country after
+        column mapping.  All other required fields must auto-map successfully.
+        """
+        from src.services.column_mapping import REQUIRED_FIELDS
+
+        mapping = auto_map_columns(self.FWF_DOMESTIC_COLUMNS)
+        # countryCode is absent from the FWF file intentionally (all US);
+        # the agent default-fills it during row normalisation.
+        expected_missing = {"shipTo.countryCode"}
+        for field in REQUIRED_FIELDS:
+            if field in expected_missing:
+                continue
+            assert field in mapping, (
+                f"Required field '{field}' not mapped from FWF columns. "
+                f"Got mapping: {mapping}"
+            )
+
+    def test_st_standalone_maps_to_state(self):
+        """Plain 'ST' column in isolation maps to state."""
+        mapping = auto_map_columns(["NAME", "ADDR", "CITY", "ST", "ZIP", "WT"])
+        assert mapping.get("shipTo.stateProvinceCode") == "ST"
+
+    def test_wt_standalone_maps_to_weight(self):
+        """Plain 'WT' column (no _LBS suffix) maps to weight."""
+        mapping = auto_map_columns(["NAME", "ADDR", "CITY", "ST", "ZIP", "WT"])
+        assert mapping.get("packages[0].weight") == "WT"
+
+    def test_status_column_not_mapped_to_state(self):
+        """'STATUS' column must not be captured by the ST alias rule."""
+        mapping = auto_map_columns(["NAME", "ADDR", "CITY", "STATUS", "ZIP", "WEIGHT"])
+        # STATUS should not map to stateProvinceCode
+        assert mapping.get("shipTo.stateProvinceCode") != "STATUS", (
+            "'STATUS' column must not map to shipTo.stateProvinceCode"
+        )
+
+    def test_street_column_not_mapped_to_state(self):
+        """'STREET' column must not be captured by the ST alias rule."""
+        mapping = auto_map_columns(["NAME", "STREET", "CITY", "STATE", "ZIP", "WT"])
+        assert mapping.get("shipTo.stateProvinceCode") != "STREET"
+
+    def test_fwf_row_apply_mapping_produces_ship_to_state(self):
+        """Applying FWF mapping to a row correctly populates ship_to_state."""
+        mapping = auto_map_columns(self.FWF_DOMESTIC_COLUMNS)
+        row = {
+            "ORDER_NUM": "ORD-2001",
+            "RECIPIENT_NAME": "Sarah Mitchell",
+            "COMPANY": "",
+            "PHONE": "512-555-0147",
+            "ADDRESS_LINE_1": "4820 Riverside Dr",
+            "ADDRESS_LINE_2": "",
+            "CITY": "Austin",
+            "ST": "TX",
+            "ZIP": "78746",
+            "WT_LBS": "2.3",
+            "LEN": "12",
+            "WID": "8",
+            "HGT": "6",
+            "SERVICE": "Ground",
+            "PKG_TYPE": "Customer Supplied",
+            "DESCRIPTION": "Organic skincare set",
+            "VALUE": "45.99",
+        }
+        order_data = apply_mapping(mapping, row)
+        assert order_data.get("ship_to_state") == "TX", (
+            f"Expected ship_to_state='TX', got: {order_data.get('ship_to_state')!r}"
+        )
+        assert order_data.get("ship_to_city") == "Austin"
+        assert order_data.get("ship_to_postal_code") == "78746"
+        assert order_data.get("weight") == "2.3"

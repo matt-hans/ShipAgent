@@ -117,12 +117,50 @@ class TestImportFileRouter:
         assert "CITY" in col_names
         assert "ST" in col_names
 
-    async def test_fixed_width_via_router_raises_when_no_header(self, ctx, tmp_file):
-        """import_file for .fwf without detectable header raises ValueError."""
+    async def test_fixed_width_no_header_returns_preview(self, ctx, tmp_file):
+        """import_file for .fwf without a detectable header returns a structured
+        preview dict instead of raising, so the agent can call import_fixed_width.
+        """
         # Single-line file: auto_detect_col_specs requires at least 2 lines
         path = tmp_file("data without header\n", "report.fwf")
-        with pytest.raises(ValueError, match="sniff_file"):
-            await import_file(path, ctx)
+        result = await import_file(path, ctx)
+        assert result["status"] == "needs_column_specs"
+        assert result["file_path"] == path
+        assert "preview_lines" in result
+        assert isinstance(result["preview_lines"], list)
+        assert "message" in result
+
+    async def test_fixed_width_legacy_mainframe_returns_preview(self, ctx, tmp_file):
+        """Legacy mainframe HDR/DTL/TRL files return a structured preview response.
+
+        The HDR line 'HDR20260220SHIPAGENT BATCH EXPORT V2.1' contains 'V2.1'
+        (period in column name), so auto-detection correctly returns None.
+        The tool must return preview data rather than raising so the agent can
+        inspect the file layout and call import_fixed_width with explicit specs.
+        """
+        mainframe_content = (
+            "HDR20260220SHIPAGENT BATCH EXPORT V2.1\n"
+            "DTL0001ORD90001MITCHELL        SARAH           4820 RIVERSIDE DR\n"
+            "DTL0002ORD90002THORNTON        JAMES           350 FIFTH AVE\n"
+            "TRL00200000002RECORDS EXPORTED SUCCESSFULLY\n"
+        )
+        path = tmp_file(mainframe_content, "legacy.fwf")
+        result = await import_file(path, ctx)
+
+        assert result["status"] == "needs_column_specs", (
+            f"Expected status='needs_column_specs', got: {result}"
+        )
+        assert result["file_path"] == path
+        assert result["line_count"] == 4
+        assert len(result["preview_lines"]) == 4
+        # Preview must contain the actual file content for agent inspection
+        assert "HDR20260220SHIPAGENT" in result["preview_lines"][0]
+        assert "DTL0001" in result["preview_lines"][1]
+        assert "TRL" in result["preview_lines"][3]
+        # Message must guide the agent toward import_fixed_width
+        assert "import_fixed_width" in result["message"]
+        # current_source must NOT be updated (import did not complete)
+        assert ctx.request_context.lifespan_context["current_source"] is None
 
     async def test_fixed_width_current_source_updated(self, ctx, tmp_file):
         """import_file for .fwf updates current_source after auto-detection."""

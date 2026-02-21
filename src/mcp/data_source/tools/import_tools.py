@@ -465,10 +465,28 @@ async def import_file(
 
         detected = auto_detect_col_specs(_lines)
         if detected is None:
-            raise ValueError(
-                "Fixed-width files require explicit column specs. "
-                "Use sniff_file to inspect the file, then call import_fixed_width."
+            # Auto-detection failed (e.g. legacy mainframe HDR/DTL/TRL format).
+            # Return a structured preview so the agent can inspect the layout
+            # and call import_fixed_width with explicit col_specs.
+            preview_lines = [ln.rstrip("\n\r") for ln in _lines[:10]]
+            await ctx.info(
+                f"Fixed-width auto-detection failed for {file_path}; "
+                "returning preview for agent-driven column spec resolution"
             )
+            return {
+                "status": "needs_column_specs",
+                "file_path": file_path,
+                "line_count": len(_lines),
+                "preview_lines": preview_lines,
+                "message": (
+                    "Could not auto-detect column boundaries — the file does not "
+                    "have a standard whitespace-separated header line (it may be a "
+                    "legacy mainframe format with record-type prefixes such as HDR/DTL/TRL). "
+                    "Inspect the preview_lines above, determine the fixed-width positions "
+                    "for each field, then call import_fixed_width with explicit col_specs "
+                    "and names."
+                ),
+            }
 
         _col_specs, _names = detected
         await ctx.info(
