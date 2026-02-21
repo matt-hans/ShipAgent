@@ -3,7 +3,10 @@
 import duckdb
 import pytest
 
-from src.mcp.data_source.adapters.fixed_width_adapter import FixedWidthAdapter
+from src.mcp.data_source.adapters.fixed_width_adapter import (
+    FixedWidthAdapter,
+    auto_detect_col_specs,
+)
 
 
 @pytest.fixture()
@@ -110,3 +113,162 @@ class TestFixedWidthAdapter:
         adapter = FixedWidthAdapter()
         meta = adapter.get_metadata(conn)
         assert "error" in meta
+
+
+class TestAutoDetectColSpecs:
+    """Tests for the auto_detect_col_specs utility function."""
+
+    def test_basic_three_column_header(self):
+        lines = [
+            "NAME                CITY           ST\n",
+            "John Doe            Dallas         TX\n",
+            "Jane Smith          Austin         TX\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        specs, names = result
+        assert len(specs) == 3
+        assert names == ["NAME", "CITY", "ST"]
+        # Verify specs are increasing and non-overlapping
+        for i in range(len(specs) - 1):
+            assert specs[i][1] <= specs[i + 1][0]
+
+    def test_returns_none_for_single_line(self):
+        """Cannot auto-detect with only a header and no data lines."""
+        result = auto_detect_col_specs(["ONLY ONE LINE\n"])
+        assert result is None
+
+    def test_returns_none_for_empty_list(self):
+        result = auto_detect_col_specs([])
+        assert result is None
+
+    def test_returns_none_when_one_column_in_header(self):
+        """A header with one word gives fewer than 2 columns."""
+        lines = [
+            "NOSPACES\n",
+            "12345678\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is None
+
+    def test_data_with_embedded_spaces(self):
+        """Column data containing spaces does not fragment column boundaries.
+
+        The header-word-position algorithm uses only the header line to
+        determine column starts, so embedded spaces in data values (like
+        'John Doe' in a NAME column) do not cause false splits.
+        """
+        lines = [
+            "NAME                CITY           ST\n",
+            "John Doe            Dallas         TX\n",
+            "Jane Smith          Austin         TX\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        _, names = result
+        # Must return exactly the 3 header-word names, not fragments
+        assert names == ["NAME", "CITY", "ST"]
+
+    def test_shipments_domestic_style(self):
+        """Simulate the shipments_domestic.fwf header structure."""
+        lines = [
+            "ORDER_NUM RECIPIENT_NAME          COMPANY   \n",
+            "ORD-2001  Sarah Mitchell                    \n",
+            "ORD-2002  James Thornton          TLG       \n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        specs, names = result
+        assert len(specs) >= 2
+        assert "ORDER_NUM" in names
+        assert "RECIPIENT_NAME" in names
+
+    def test_names_are_stripped(self):
+        """Column names must be stripped of surrounding whitespace."""
+        lines = [
+            "FIRST  SECOND\n",
+            "AAAAA  BBBBBB\n",
+            "CCCCC  DDDDDD\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        _, names = result
+        for name in names:
+            assert name == name.strip()
+            assert len(name) > 0
+
+    def test_no_empty_names(self):
+        """All detected column names must be non-empty strings."""
+        lines = [
+            "COL1  COL2  COL3\n",
+            "AAAA  BBBB  CCCC\n",
+            "DDDD  EEEE  FFFF\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        _, names = result
+        assert all(n for n in names)
+
+    def test_end_of_line_column(self):
+        """Last column extends to the end of the longest line."""
+        lines = [
+            "A   B\n",
+            "111 222\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        specs, names = result
+        assert len(specs) == 2
+        assert names[0] == "A"
+        assert names[1] == "B"
+
+    def test_rejects_legacy_mainframe_header(self):
+        """Header lines with record-tag tokens like 'V2.1' return None."""
+        lines = [
+            "HDR20260220SHIPAGENT BATCH EXPORT V2.1\n",
+            "DTL0001ORD90001MITCHELL        SARAH\n",
+            "DTL0002ORD90002THORNTON        JAMES\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is None
+
+    def test_rejects_non_identifier_column_names(self):
+        """Column names containing periods or other non-identifier chars return None."""
+        lines = [
+            "COL.1 COL.2\n",
+            "AAAAA BBBBB\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is None
+
+    def test_roundtrip_with_adapter(self, tmp_path):
+        """Auto-detected specs can be fed directly into FixedWidthAdapter."""
+        import duckdb as _duckdb
+
+        content = (
+            "ORDER CITY   ST\n"
+            "A001  Dallas TX\n"
+            "A002  Austin TX\n"
+        )
+        lines = content.splitlines(keepends=True)
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        specs, names = result
+
+        fwf_path = tmp_path / "test.fwf"
+        fwf_path.write_text(content)
+
+        conn = _duckdb.connect(":memory:")
+        adapter = FixedWidthAdapter()
+        import_result = adapter.import_data(
+            conn,
+            file_path=str(fwf_path),
+            col_specs=specs,
+            names=names,
+            header=True,
+        )
+        assert import_result.row_count == 2
+        col_names = [c.name for c in import_result.columns]
+        assert "ORDER" in col_names
+        assert "CITY" in col_names
+        conn.close()

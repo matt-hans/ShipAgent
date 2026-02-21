@@ -99,11 +99,41 @@ class TestImportFileRouter:
         assert source["type"] == "json"
         assert source["path"] == path
 
-    async def test_fixed_width_via_router_raises(self, ctx, tmp_file):
-        """import_file for .fwf should tell user to use sniff_file + import_fixed_width."""
-        path = tmp_file("data", "report.fwf")
+    async def test_fixed_width_auto_detect_success(self, ctx, tmp_file):
+        """import_file for .fwf auto-detects column boundaries from header."""
+        content = (
+            "NAME                CITY           ST\n"
+            "John Doe            Dallas         TX\n"
+            "Jane Smith          Austin         TX\n"
+        )
+        path = tmp_file(content, "report.fwf")
+        result = await import_file(path, ctx)
+        assert result["row_count"] == 2
+        assert result["source_type"] == "fixed_width"
+        col_names = [c["name"] for c in result["columns"]]
+        assert "NAME" in col_names
+        assert "CITY" in col_names
+        assert "ST" in col_names
+
+    async def test_fixed_width_via_router_raises_when_no_header(self, ctx, tmp_file):
+        """import_file for .fwf without detectable header raises ValueError."""
+        # Single-line file: auto_detect_col_specs requires at least 2 lines
+        path = tmp_file("data without header\n", "report.fwf")
         with pytest.raises(ValueError, match="sniff_file"):
             await import_file(path, ctx)
+
+    async def test_fixed_width_current_source_updated(self, ctx, tmp_file):
+        """import_file for .fwf updates current_source after auto-detection."""
+        content = (
+            "ORDER CITY  \n"
+            "A001  Dallas\n"
+            "A002  Austin\n"
+        )
+        path = tmp_file(content, "report.fwf")
+        await import_file(path, ctx)
+        source = ctx.request_context.lifespan_context["current_source"]
+        assert source["type"] == "fixed_width"
+        assert source["path"] == path
 
 
 class TestSniffFile:
