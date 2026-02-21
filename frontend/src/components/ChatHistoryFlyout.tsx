@@ -9,9 +9,10 @@ import { X } from 'lucide-react';
 import { useAppState } from '@/hooks/useAppState';
 import { ChatSessionsPanel } from '@/components/sidebar/ChatSessionsPanel';
 import type { ConversationMessage } from '@/hooks/useAppState';
+import type { SessionContext } from '@/types/api';
 
 interface ChatHistoryFlyoutProps {
-  onLoadSession: (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[]) => void;
+  onLoadSession: (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[], contextData?: SessionContext | null) => void;
   onNewChat: () => void;
   activeSessionId?: string | null;
 }
@@ -21,8 +22,8 @@ export function ChatHistoryFlyout({ onLoadSession, onNewChat, activeSessionId }:
 
   if (!chatHistoryFlyoutOpen) return null;
 
-  const handleLoadSession = (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[]) => {
-    onLoadSession(sessionId, mode, messages);
+  const handleLoadSession = (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[], contextData?: SessionContext | null) => {
+    onLoadSession(sessionId, mode, messages, contextData);
     setChatHistoryFlyoutOpen(false);
   };
 

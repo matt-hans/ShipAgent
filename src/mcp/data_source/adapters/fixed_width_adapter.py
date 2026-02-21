@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 from src.mcp.data_source.adapters.base import BaseSourceAdapter
 from src.mcp.data_source.models import ImportResult
-from src.mcp.data_source.utils import load_flat_records_to_duckdb
+from src.mcp.data_source.utils import coerce_records, load_flat_records_to_duckdb
 
 # Pattern that a valid FWF column name must match.
 # Accepts identifiers like ORDER_NUM, RECIPIENT_NAME, WT_LBS, ST, ZIP.
@@ -342,6 +342,10 @@ class FixedWidthAdapter(BaseSourceAdapter):
                 for i, (s, e) in enumerate(col_specs)
             }
             records.append(record)
+
+        # Coerce string values to natural Python types (int/float) so
+        # DuckDB assigns BIGINT/DOUBLE instead of VARCHAR for numeric columns.
+        records = coerce_records(records)
 
         return load_flat_records_to_duckdb(conn, records, source_type="fixed_width")
 

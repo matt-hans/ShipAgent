@@ -1008,11 +1008,27 @@ export interface CommandListResponse {
 
 // === Chat Session Persistence ===
 
+/** Data source context persisted with a session for restoration. */
+export interface DataSourceContext {
+  type: 'local' | 'shopify' | null;
+  source_type: string | null;
+  saved_source_id: string | null;
+  file_path: string | null;
+  label: string | null;
+  row_count: number | null;
+}
+
+/** Session context snapshot persisted to the database. */
+export interface SessionContext {
+  data_source: DataSourceContext | null;
+}
+
 /** Lightweight session summary for sidebar listing. */
 export interface ChatSessionSummary {
   id: string;
   title: string | null;
   mode: 'batch' | 'interactive';
+  context_data?: SessionContext | null;
   created_at: string;
   updated_at: string;
   message_count: number;

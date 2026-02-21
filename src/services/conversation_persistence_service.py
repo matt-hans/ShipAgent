@@ -134,6 +134,7 @@ class ConversationPersistenceService:
             ConversationSession.id,
             ConversationSession.title,
             ConversationSession.mode,
+            ConversationSession.context_data,
             ConversationSession.created_at,
             ConversationSession.updated_at,
             func.count(ConversationMessage.id).label("message_count"),
@@ -149,13 +150,20 @@ class ConversationPersistenceService:
 
         results = []
         for row in query.all():
+            context = None
+            if row[3]:
+                try:
+                    context = json.loads(row[3])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("Corrupted context_data for session %s", row[0])
             results.append({
                 "id": row[0],
                 "title": row[1],
                 "mode": row[2],
-                "created_at": row[3],
-                "updated_at": row[4],
-                "message_count": row[5],
+                "context_data": context,
+                "created_at": row[4],
+                "updated_at": row[5],
+                "message_count": row[6],
             })
         return results
 

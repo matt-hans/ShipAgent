@@ -145,6 +145,56 @@ def parse_date_with_warnings(value: str | None) -> dict[str, Any]:
 _MAX_TYPE_SAMPLES = 100
 
 
+def _coerce_string_value(value: Any) -> Any:
+    """Best-effort coercion of a string value to its natural Python type.
+
+    Tries int, then float. Returns the original value unchanged if it is
+    not a string or if conversion fails. Empty/whitespace-only strings
+    are converted to None.
+
+    Args:
+        value: Any Python value. Only ``str`` instances are coerced.
+
+    Returns:
+        int, float, None, or the original value.
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped:
+        return None
+    # Try int first (avoids "10" → 10.0)
+    try:
+        return int(stripped)
+    except ValueError:
+        pass
+    # Then float
+    try:
+        return float(stripped)
+    except ValueError:
+        pass
+    return value
+
+
+def coerce_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Coerce string values in a list of records to natural Python types.
+
+    Intended for text-based adapters (FWF, XML) where all parsed values
+    are strings. Numeric strings become int/float so that
+    ``_infer_duckdb_types`` assigns BIGINT/DOUBLE instead of VARCHAR.
+
+    Args:
+        records: List of flat dictionaries with string values.
+
+    Returns:
+        New list of dictionaries with coerced values.
+    """
+    return [
+        {k: _coerce_string_value(v) for k, v in record.items()}
+        for record in records
+    ]
+
+
 def _infer_duckdb_types(
     records: list[dict[str, Any]], keys: list[str]
 ) -> dict[str, str]:
@@ -183,6 +233,9 @@ def _infer_duckdb_types(
             result[key] = "VARCHAR"
         elif len(observed_types) == 1:
             result[key] = _py_to_duckdb.get(observed_types.pop(), "VARCHAR")
+        elif observed_types == {int, float}:
+            # int + float mix → DOUBLE (float is a superset of int)
+            result[key] = "DOUBLE"
         else:
             # Mixed types detected — fall back to VARCHAR
             result[key] = "VARCHAR"

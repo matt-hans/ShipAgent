@@ -92,6 +92,7 @@ class ChatSessionSummary(BaseModel):
     id: str
     title: str | None
     mode: Literal["batch", "interactive"]
+    context_data: dict | None = None
     created_at: str
     updated_at: str
     message_count: int
