@@ -699,6 +699,29 @@
   @apply p-3 border-t border-border bg-card;
 }
 
+/* Chat History Flyout Styles */
+.chat-history-backdrop {
+  @apply fixed inset-0 bg-black/50 z-40;
+  animation: fade-in 0.2s ease-out;
+}
+
+.chat-history-flyout {
+  @apply fixed top-0 right-0 h-full w-[360px] bg-card border-l border-border z-50;
+  @apply flex flex-col;
+  animation: slide-in-right 0.3s ease-out;
+}
+
+@media (min-width: 1024px) {
+  .chat-history-flyout {
+    @apply top-12;
+    @apply h-[calc(100vh-3rem)];
+  }
+}
+
+.chat-history-flyout-content {
+  @apply flex-1 overflow-y-auto;
+}
+
 @keyframes slide-in-right {
   from {
     opacity: 0;

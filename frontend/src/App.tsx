@@ -10,6 +10,7 @@ import { CommandCenter, type CommandCenterHandle } from '@/components/CommandCen
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import { SettingsFlyout } from '@/components/settings/SettingsFlyout';
+import { ChatHistoryFlyout } from '@/components/ChatHistoryFlyout';
 import { useAppState, AppStateProvider } from '@/hooks/useAppState';
 import type { ConversationMessage } from '@/hooks/useAppState';
 
@@ -46,9 +47,6 @@ function AppContent() {
           onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
           onSelectJob={setActiveJob}
           activeJobId={activeJob?.id}
-          onLoadSession={handleLoadSession}
-          onNewChat={handleNewChat}
-          activeSessionId={conversationSessionId}
         />
 
         {/* Main content - Conversational command interface */}
@@ -58,6 +56,13 @@ function AppContent() {
 
         {/* Settings flyout - Overlays on desktop, pushes on mobile */}
         <SettingsFlyout />
+
+        {/* Chat history flyout */}
+        <ChatHistoryFlyout
+          onLoadSession={handleLoadSession}
+          onNewChat={handleNewChat}
+          activeSessionId={conversationSessionId}
+        />
       </div>
     </div>
   );

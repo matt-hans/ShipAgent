@@ -9,20 +9,14 @@ import { ChevronIcon, HardDriveIcon, HistoryIcon } from '@/components/ui/icons';
 import { ShopifyIcon, DataSourceIcon } from '@/components/ui/brand-icons';
 import { DataSourceSection } from '@/components/sidebar/DataSourcePanel';
 import { JobHistorySection } from '@/components/sidebar/JobHistoryPanel';
-import { ChatSessionsPanel } from '@/components/sidebar/ChatSessionsPanel';
-import type { ConversationMessage } from '@/hooks/useAppState';
-
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
   onSelectJob: (job: Job | null) => void;
   activeJobId?: string;
-  onLoadSession?: (sessionId: string, mode: 'batch' | 'interactive', messages: ConversationMessage[]) => void;
-  onNewChat?: () => void;
-  activeSessionId?: string | null;
 }
 
-export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId, onLoadSession, onNewChat, activeSessionId }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId }: SidebarProps) {
   const { activeSourceType, activeSourceInfo } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
@@ -81,17 +75,6 @@ export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId, onLoadS
           <div className="border-b border-slate-800">
             <DataSourceSection />
           </div>
-
-          {/* Chat Sessions Section */}
-          {onLoadSession && onNewChat && (
-            <div className="border-b border-slate-800">
-              <ChatSessionsPanel
-                onLoadSession={onLoadSession}
-                onNewChat={onNewChat}
-                activeSessionId={activeSessionId}
-              />
-            </div>
-          )}
 
           {/* Job History Section */}
           <div>
