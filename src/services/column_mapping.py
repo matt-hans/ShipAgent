@@ -202,10 +202,26 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["wt_lbs"], [], "packages[0].weight"),
     (["wt"], ["owt", "awt", "twt", "newt", "swt"], "packages[0].weight"),
     (["weight"], ["grams"], "packages[0].weight"),
+    # Short FWF abbreviations for dimensions — LEN, WID, HGT appear in fixed-width
+    # shipping files as alternatives to LENGTH, WIDTH, HEIGHT.  These exact 3-char
+    # forms are added before the generic rules so they win when both forms exist in
+    # the same source.  must_not lists guard against substring false-positives (e.g.
+    # "len" appears inside "talent" and "silent" as a substring).
+    (["len"], ["length", "talent", "silent", "silence", "violent", "balance", "challenge"], "packages[0].length"),
+    (["wid"], ["width", "widths"], "packages[0].width"),
+    (["hgt"], [], "packages[0].height"),
     (["length"], [], "packages[0].length"),
     (["width"], [], "packages[0].width"),
     (["height"], [], "packages[0].height"),
+    # Short FWF abbreviations for packaging type — PKG_TYPE is the canonical
+    # column name used in fixed-width shipping files.
+    (["pkg_type"], [], "packages[0].packagingType"),
+    (["pkg"], ["package", "packaging"], "packages[0].packagingType"),
     (["packaging"], [], "packages[0].packagingType"),
+    # Value — standalone VALUE column maps to declared value.  Exclude compound
+    # forms (declared_value, insured_value, total_value) which are handled by
+    # the multi-token rules below so they don't incorrectly claim this slot.
+    (["value"], ["declared", "insured", "total", "order", "invoice", "monetary"], "packages[0].declaredValue"),
     # Value
     (["declared", "value"], [], "packages[0].declaredValue"),
     (["insured", "value"], [], "packages[0].declaredValue"),

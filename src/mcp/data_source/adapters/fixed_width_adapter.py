@@ -31,16 +31,34 @@ _COL_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 def auto_detect_col_specs(
     lines: list[str],
+    *,
+    _threshold: float = 0.90,
 ) -> tuple[list[tuple[int, int]], list[str]] | None:
     """Auto-detect column boundaries from a fixed-width file's header line.
 
-    Uses the start positions of whitespace-separated words in the first line
-    (the header) as column start positions.  Each column spans from its word
-    start to the next word start (or end of the longest line).
+    Uses a space-fraction gap detection algorithm: positions where at least
+    ``_threshold`` (default 90 %) of data rows have a space character are
+    classified as *gap* positions.  Consecutive gap positions form *gap runs*
+    that separate data columns.  After computing the raw data-based column
+    ranges the function:
 
-    This approach correctly handles FWF files where column separators are a
-    single space (e.g. ``ORDER_NUM RECIPIENT_NAME``) and data values contain
-    embedded spaces (e.g. ``"John Doe"`` in a 20-character name column).
+    1. Assigns each range to the header word with the most character overlap.
+    2. Merges adjacent ranges that share the same best header word (handles
+       multi-word column values such as ``"Next Day Air"``).
+    3. Removes ranges with no header-word match (transient gap artefacts).
+    4. Extends each range start left to the header word start when the header
+       word begins before the detected range (handles columns where the data
+       value is shorter than the column header, e.g. a 1-char ``Y``/``N``
+       boolean under a 6-char ``HAZMAT`` header).
+    5. Validates that every extracted name is a legal column identifier.
+
+    This approach correctly handles:
+    - Columns where data is narrower than the header (e.g. numeric weight
+      columns like ``WT_LBS`` whose header is 6 chars but data is 4 chars).
+    - Multi-word service codes (``"Next Day Air"``, ``"3 Day Select"``) that
+      contain internal spaces.
+    - Boolean columns (``Y``/``N``) whose 1-char data sits just before the
+      header word's first character.
 
     Returns ``None`` when auto-detection cannot determine valid column
     boundaries.  Callers should fall back to the two-step
@@ -49,6 +67,9 @@ def auto_detect_col_specs(
     Args:
         lines: Raw lines from the file (header as first element, data
             lines following).  Newlines are stripped internally.
+        _threshold: Space-fraction threshold for gap detection (private,
+            exposed for testing only).  Default 0.90 works well for files
+            with 10–20 data rows.
 
     Returns:
         A tuple ``(col_specs, names)`` where *col_specs* is a list of
@@ -78,7 +99,7 @@ def auto_detect_col_specs(
         return None
 
     header = lines[0].rstrip("\n\r")
-    data_lines = [ln.rstrip("\n\r") for ln in lines[1:6] if ln.strip()]
+    data_lines = [ln.rstrip("\n\r") for ln in lines[1:] if ln.strip()]
 
     if not data_lines:
         return None
@@ -87,28 +108,152 @@ def auto_detect_col_specs(
     if max_len == 0:
         return None
 
-    # Find the start position of each whitespace-separated word in the header.
-    # These word-start positions become column start positions.
-    word_matches = list(re.finditer(r"\S+", header))
-    if len(word_matches) < 2:
+    # Locate header words — used for naming and validation.
+    header_words = list(re.finditer(r"\S+", header))
+    if len(header_words) < 2:
         return None
 
-    col_starts = [m.start() for m in word_matches]
+    # Validate ALL header words upfront.  Any non-identifier token (e.g. "V2.1"
+    # in legacy mainframe headers like "HDR20260220SHIPAGENT BATCH EXPORT V2.1")
+    # invalidates the entire file for auto-detection.
+    if any(not _COL_NAME_RE.match(m.group()) for m in header_words):
+        return None
 
-    # Build col_specs: each column spans from its word start to the next
-    # word start, or to the end of the longest line for the last column.
-    col_specs: list[tuple[int, int]] = []
-    for i, start in enumerate(col_starts):
-        end = col_starts[i + 1] if i + 1 < len(col_starts) else max_len
-        col_specs.append((start, end))
+    n = len(data_lines)
 
-    # Extract column names from the header using the derived specs.
-    names = [header[s:e].strip() for s, e in col_specs]
+    # -----------------------------------------------------------------------
+    # Step 1: Compute space fraction at each character position across all
+    # data rows.  A position extending beyond a row's length counts as space.
+    # -----------------------------------------------------------------------
+    space_fracs: list[float] = []
+    for pos in range(max_len):
+        spaces = sum(
+            1 for dl in data_lines if pos >= len(dl) or dl[pos] == " "
+        )
+        space_fracs.append(spaces / n)
 
-    # Validate: every name must be non-empty and look like a column identifier
-    # (letters, digits, underscores — no periods, version strings, etc.).
-    # This rejects legacy mainframe record-header lines like
+    # -----------------------------------------------------------------------
+    # Step 2: Identify gap positions (>= threshold fraction have spaces) and
+    # group them into consecutive *gap runs*.
+    # -----------------------------------------------------------------------
+    gap_positions = [
+        pos for pos, frac in enumerate(space_fracs) if frac >= _threshold
+    ]
+
+    def _group_runs(positions: list[int]) -> list[tuple[int, int]]:
+        if not positions:
+            return []
+        runs: list[tuple[int, int]] = []
+        start = positions[0]
+        prev = positions[0]
+        for pos in positions[1:]:
+            if pos != prev + 1:
+                runs.append((start, prev + 1))
+                start = pos
+            prev = pos
+        runs.append((start, prev + 1))
+        return runs
+
+    gap_runs = _group_runs(gap_positions)
+
+    # Find the first position that is NOT a gap (= start of first data column).
+    first_data = next(
+        (pos for pos in range(max_len) if space_fracs[pos] < _threshold),
+        None,
+    )
+    if first_data is None:
+        return None  # Every position is a gap — nothing to detect
+
+    # -----------------------------------------------------------------------
+    # Step 3: Derive raw column ranges from gap runs.
+    # -----------------------------------------------------------------------
+    col_ranges: list[tuple[int, int]] = []
+    prev_end = first_data
+    for gap_s, gap_e in gap_runs:
+        if gap_s > prev_end:
+            col_ranges.append((prev_end, gap_s))
+        prev_end = gap_e
+    if prev_end < max_len:
+        col_ranges.append((prev_end, max_len))
+
+    if not col_ranges:
+        return None
+
+    # -----------------------------------------------------------------------
+    # Step 4: Assign each raw range to the header word with maximum overlap.
+    # -----------------------------------------------------------------------
+    def _best_header_word(
+        col_start: int, col_end: int
+    ) -> re.Match | None:  # type: ignore[type-arg]
+        best_overlap = 0
+        best_word = None
+        for m in header_words:
+            overlap = min(col_end, m.end()) - max(col_start, m.start())
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_word = m
+        return best_word
+
+    tagged = [
+        (s, e, _best_header_word(s, e)) for s, e in col_ranges
+    ]
+
+    # -----------------------------------------------------------------------
+    # Step 5: Merge adjacent ranges that share the same best header word
+    # (or where the next range has no header word — transient artefact).
+    # -----------------------------------------------------------------------
+    merged: list[tuple[int, int, re.Match | None]] = []  # type: ignore[type-arg]
+    i = 0
+    while i < len(tagged):
+        s, e, best = tagged[i]
+        while i + 1 < len(tagged):
+            _ns, ne, nbest = tagged[i + 1]
+            same_word = (
+                nbest is None
+                or (
+                    best is not None
+                    and nbest is not None
+                    and nbest.group() == best.group()
+                )
+            )
+            if same_word:
+                e = ne
+                if nbest is not None:
+                    best = nbest
+                i += 1
+            else:
+                break
+        merged.append((s, e, best))
+        i += 1
+
+    # Drop ranges with no header-word match.
+    merged = [(s, e, w) for s, e, w in merged if w is not None]
+
+    if not merged:
+        return None
+
+    # -----------------------------------------------------------------------
+    # Step 6: Extend range start left to the header word start when the
+    # header word begins before the detected data range (handles 1-char
+    # boolean columns like Y/N that sit just before the header word).
+    # -----------------------------------------------------------------------
+    final: list[tuple[int, int, re.Match]] = []  # type: ignore[type-arg]
+    prev_end_used = 0
+    for s, e, w in merged:
+        assert w is not None  # guaranteed by filter above
+        if w.start() < s and w.start() >= prev_end_used:
+            s = w.start()
+        final.append((s, e, w))
+        prev_end_used = e
+
+    col_specs = [(s, e) for s, e, _ in final]
+    names = [w.group() for _, _, w in final]
+
+    # -----------------------------------------------------------------------
+    # Step 7: Validate — every name must be a legal column identifier.
+    # Rejects legacy mainframe record-header lines like
     # "HDR20260220SHIPAGENT BATCH EXPORT V2.1".
+    # -----------------------------------------------------------------------
     if any(not n or not _COL_NAME_RE.match(n) for n in names):
         return None
 

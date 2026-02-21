@@ -272,3 +272,237 @@ class TestAutoDetectColSpecs:
         assert "ORDER" in col_names
         assert "CITY" in col_names
         conn.close()
+
+    # --- Tests for the space-fraction gap detection algorithm ---
+
+    def test_narrow_numeric_columns_no_bleeding(self):
+        """Narrow numeric columns narrower than their header word don't bleed.
+
+        Core regression test for the original bug: WT_LBS header is 6 chars
+        wide but '32.5' data is only 4 chars.  Old algorithm bled 2 chars
+        of LEN data into WT_LBS.  New algorithm detects the gap at positions
+        154-155 and ends WT_LBS there.
+        """
+        lines = [
+            "WT_LBS LEN WID HGT\n",
+            "  2.3  12   8   6\n",
+            "  0.8   0   0   0\n",
+            " 32.5  24  18  16\n",
+            "  4.2  16  12   8\n",
+            "  1.1  10   7   3\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        specs, names = result
+        assert names == ["WT_LBS", "LEN", "WID", "HGT"]
+        data_lines = [ln.rstrip("\n\r") for ln in lines[1:] if ln.strip()]
+        # Extract WT_LBS values: must be numeric strings, no trailing digits from LEN
+        wt_idx = names.index("WT_LBS")
+        wt_s, wt_e = specs[wt_idx]
+        wt_values = [dl[wt_s:wt_e].strip() for dl in data_lines]
+        assert all(v.replace(".", "").isdigit() for v in wt_values), (
+            f"WT_LBS values contain non-numeric chars: {wt_values}"
+        )
+        assert "32.5" in wt_values, "Expected 32.5 in WT_LBS column"
+
+    def test_multi_word_service_values_stay_together(self):
+        """Multi-word service codes like '3 Day Select' don't get split.
+
+        The internal space inside 'Next Day Air' (at the 5th char position)
+        must NOT be misidentified as a column separator.
+        """
+        lines = [
+            "WT_LBS SERVICE          PKG_TYPE\n",
+            "   2.3 Ground           Customer Supplied\n",
+            "   0.8 Next Day Air     UPS Letter\n",
+            "  32.5 Ground           Customer Supplied\n",
+            "   6.8 3 Day Select     Customer Supplied\n",
+            "   4.2 2nd Day Air      Customer Supplied\n",
+            "   1.1 Ground           Customer Supplied\n",
+            "   0.5 Ground           UPS Letter\n",
+            "   8.4 2nd Day Air      Customer Supplied\n",
+            "   3.6 Ground           Customer Supplied\n",
+            "  22.0 Next Day Air     Customer Supplied\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        specs, names = result
+        assert "SERVICE" in names
+        svc_idx = names.index("SERVICE")
+        svc_s, svc_e = specs[svc_idx]
+        data_lines = [ln.rstrip("\n\r") for ln in lines[1:] if ln.strip()]
+        svc_values = [dl[svc_s:svc_e].strip() for dl in data_lines]
+        assert "Next Day Air" in svc_values, (
+            f"Expected 'Next Day Air' in SERVICE column; got: {svc_values}"
+        )
+        assert "3 Day Select" in svc_values, (
+            f"Expected '3 Day Select' in SERVICE column; got: {svc_values}"
+        )
+
+    def test_domestic_fwf_file(self, tmp_path):
+        """Full-file test against shipments_domestic.fwf.
+
+        Verifies that all 17 columns are correctly detected and critical
+        shipping fields (WT_LBS, LEN, WID, HGT, SERVICE, PKG_TYPE) contain
+        the expected values without bleeding.
+        """
+        import duckdb as _duckdb
+        from pathlib import Path
+
+        fwf_path = Path("test_data/shipments_domestic.fwf")
+        if not fwf_path.exists():
+            import pytest
+            pytest.skip("test_data/shipments_domestic.fwf not found")
+
+        with open(fwf_path, encoding="utf-8") as f:
+            lines = f.readlines()
+
+        result = auto_detect_col_specs(lines)
+        assert result is not None, "auto_detect_col_specs returned None for domestic FWF"
+        specs, names = result
+        assert len(names) == 17, f"Expected 17 columns, got {len(names)}: {names}"
+
+        expected_names = [
+            "ORDER_NUM", "RECIPIENT_NAME", "COMPANY", "PHONE",
+            "ADDRESS_LINE_1", "ADDRESS_LINE_2", "CITY", "ST", "ZIP",
+            "WT_LBS", "LEN", "WID", "HGT", "SERVICE",
+            "PKG_TYPE", "DESCRIPTION", "VALUE",
+        ]
+        assert names == expected_names, f"Column names mismatch: {names}"
+
+        data_lines = [ln.rstrip("\n\r") for ln in lines[1:] if ln.strip()]
+
+        # WT_LBS: verify row 6 (ORD-2006, 32.5 lbs) extracts exactly '32.5'
+        wt_idx = names.index("WT_LBS")
+        wt_s, wt_e = specs[wt_idx]
+        row6_wt = data_lines[5][wt_s:wt_e].strip()
+        assert row6_wt == "32.5", (
+            f"WT_LBS for row 6 expected '32.5', got {row6_wt!r}"
+        )
+
+        # LEN: verify row 6 (24 inches) extracts exactly '24'
+        len_idx = names.index("LEN")
+        len_s, len_e = specs[len_idx]
+        row6_len = data_lines[5][len_s:len_e].strip()
+        assert row6_len == "24", (
+            f"LEN for row 6 expected '24', got {row6_len!r}"
+        )
+
+        # WID: verify row 6 (18 inches)
+        wid_idx = names.index("WID")
+        wid_s, wid_e = specs[wid_idx]
+        row6_wid = data_lines[5][wid_s:wid_e].strip()
+        assert row6_wid == "18", (
+            f"WID for row 6 expected '18', got {row6_wid!r}"
+        )
+
+        # HGT: verify row 6 (16 inches)
+        hgt_idx = names.index("HGT")
+        hgt_s, hgt_e = specs[hgt_idx]
+        row6_hgt = data_lines[5][hgt_s:hgt_e].strip()
+        assert row6_hgt == "16", (
+            f"HGT for row 6 expected '16', got {row6_hgt!r}"
+        )
+
+        # SERVICE: row 2 is 'Next Day Air', row 7 is '3 Day Select'
+        svc_idx = names.index("SERVICE")
+        svc_s, svc_e = specs[svc_idx]
+        row2_svc = data_lines[1][svc_s:svc_e].strip()
+        assert row2_svc == "Next Day Air", (
+            f"SERVICE row 2 expected 'Next Day Air', got {row2_svc!r}"
+        )
+        row7_svc = data_lines[6][svc_s:svc_e].strip()
+        assert row7_svc == "3 Day Select", (
+            f"SERVICE row 7 expected '3 Day Select', got {row7_svc!r}"
+        )
+
+        # PKG_TYPE: 'Customer Supplied' must not be truncated
+        pkg_idx = names.index("PKG_TYPE")
+        pkg_s, pkg_e = specs[pkg_idx]
+        row1_pkg = data_lines[0][pkg_s:pkg_e].strip()
+        assert row1_pkg == "Customer Supplied", (
+            f"PKG_TYPE row 1 expected 'Customer Supplied', got {row1_pkg!r}"
+        )
+
+        # Round-trip: import via adapter and verify row count
+        conn = _duckdb.connect(":memory:")
+        adapter = FixedWidthAdapter()
+        import_result = adapter.import_data(
+            conn, file_path=str(fwf_path),
+            col_specs=specs, names=names, header=True,
+        )
+        assert import_result.row_count == 20, (
+            f"Expected 20 rows, got {import_result.row_count}"
+        )
+        conn.close()
+
+    def test_boolean_column_before_header_word(self):
+        """1-char Y/N column whose data sits just before the header word.
+
+        In inventory-style files, HAZMAT data 'N'/'Y' appears 1 position
+        before the HAZMAT header word begins.  The algorithm extends the
+        range start left to the header word start.
+        """
+        lines = [
+            "SKU     HAZMAT FRAGILE\n",
+            "WH-001  N      Y\n",
+            "WH-002  Y      N\n",
+            "WH-003  N      N\n",
+            "WH-004  Y      Y\n",
+            "WH-005  N      N\n",
+            "WH-006  N      Y\n",
+            "WH-007  Y      N\n",
+            "WH-008  N      N\n",
+            "WH-009  N      Y\n",
+            "WH-010  Y      N\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        specs, names = result
+        assert "HAZMAT" in names
+        assert "FRAGILE" in names
+        data_lines = [ln.rstrip("\n\r") for ln in lines[1:] if ln.strip()]
+        haz_idx = names.index("HAZMAT")
+        haz_s, haz_e = specs[haz_idx]
+        haz_values = [dl[haz_s:haz_e].strip() for dl in data_lines]
+        assert set(haz_values) <= {"N", "Y"}, (
+            f"HAZMAT values should be N/Y only, got: {haz_values}"
+        )
+
+    def test_uses_all_data_lines_not_just_first_five(self):
+        """Space-fraction analysis uses ALL data lines, not just first 5.
+
+        Old algorithm only sampled lines[1:6].  New algorithm uses all data
+        lines so edge-case rows beyond row 5 influence column boundary detection.
+        """
+        # File with 12 data rows; row 11 is the only one with a longer value
+        # in the last column.
+        lines = [
+            "CODE VALUE\n",
+            "A001  1.1\n",
+            "A002  2.2\n",
+            "A003  3.3\n",
+            "A004  4.4\n",
+            "A005  5.5\n",
+            "A006  6.6\n",
+            "A007  7.7\n",
+            "A008  8.8\n",
+            "A009  9.9\n",
+            "A010 10.0\n",
+            "A011 11.1\n",
+            "A012 12.2\n",
+        ]
+        result = auto_detect_col_specs(lines)
+        assert result is not None
+        specs, names = result
+        assert "CODE" in names
+        assert "VALUE" in names
+        # All 12 rows must be importable with detected specs
+        data_lines = [ln.rstrip("\n\r") for ln in lines[1:] if ln.strip()]
+        assert len(data_lines) == 12
+        val_idx = names.index("VALUE")
+        val_s, val_e = specs[val_idx]
+        last_val = data_lines[-1][val_s:val_e].strip()
+        assert last_val == "12.2", (
+            f"Last VALUE row expected '12.2', got {last_val!r}"
+        )
