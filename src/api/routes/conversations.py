@@ -40,6 +40,7 @@ from src.api.schemas_conversations import (
     CreateConversationRequest,
     CreateConversationResponse,
     PersistedMessageResponse,
+    SaveArtifactRequest,
     SendMessageRequest,
     SendMessageResponse,
     SessionDetailResponse,
@@ -354,6 +355,9 @@ async def _process_agent_message(
                 first_event_at - started_at,
             )
 
+    # Track which artifact events have been persisted to avoid double-writes.
+    _persisted_events: set[str] = set()
+
     run_token = set_decision_run_id(run_id)
     job_token = set_decision_job_id(None)
 
@@ -419,6 +423,10 @@ async def _process_agent_message(
                 _track_preview_event(event_type, data, "tool_emit")
                 if hide_transient_chat and event_type in artifact_events:
                     artifact_emitted = True
+                # Persist artifact events to the database for history replay.
+                if event_type in _PERSISTABLE_ARTIFACTS and event_type not in _persisted_events:
+                    _persisted_events.add(event_type)
+                    _persist_artifact_message(session_id, event_type, data)
                 queue.put_nowait({"event": event_type, "data": data})
 
             session.agent.emitter_bridge.callback = _emit_to_queue
@@ -446,6 +454,17 @@ async def _process_agent_message(
                         )
                     if hide_transient_chat and event_type in artifact_events:
                         artifact_emitted = True
+
+                    # Persist artifact events from the agent stream.
+                    if (
+                        isinstance(event_type, str)
+                        and event_type in _PERSISTABLE_ARTIFACTS
+                        and event_type not in _persisted_events
+                    ):
+                        _persisted_events.add(event_type)
+                        _persist_artifact_message(
+                            session_id, event_type, event.get("data", {}),
+                        )
 
                     if event_type == "agent_message":
                         text = event.get("data", {}).get("text", "")
@@ -593,6 +612,54 @@ def _persist_assistant_message(session_id: str, text: str) -> None:
         maybe_trigger_title_generation(session_id)
     except Exception as exc:
         logger.error("Failed to persist assistant msg for %s: %s", session_id, exc)
+
+
+# Artifact event types that should be persisted to the database.
+_PERSISTABLE_ARTIFACTS: set[str] = {
+    "pickup_result",
+    "location_result",
+    "landed_cost_result",
+    "paperless_result",
+    "tracking_result",
+    "contact_saved",
+}
+
+# Mapping from event_type → metadata key used by the frontend ConversationMessage.
+_ARTIFACT_METADATA_KEY: dict[str, str] = {
+    "pickup_result": "pickup",
+    "location_result": "location",
+    "landed_cost_result": "landedCost",
+    "paperless_result": "paperless",
+    "tracking_result": "tracking",
+    "contact_saved": "contactSaved",
+}
+
+
+def _persist_artifact_message(session_id: str, event_type: str, data: dict) -> None:
+    """Persist a tool-emitted artifact event as a system_artifact message.
+
+    Best-effort — failures are logged but do not block the SSE stream.
+
+    Args:
+        session_id: Conversation session ID.
+        event_type: The SSE event type (e.g. 'tracking_result').
+        data: The event payload data.
+    """
+    meta_key = _ARTIFACT_METADATA_KEY.get(event_type, event_type)
+    metadata = {"action": event_type, meta_key: data}
+    try:
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            svc.save_message(
+                session_id,
+                role="assistant",
+                content="",
+                message_type="system_artifact",
+                metadata=metadata,
+            )
+    except Exception as exc:
+        logger.error("Failed to persist artifact %s for %s: %s", event_type, session_id, exc)
 
 
 def _schedule_agent_message(
@@ -1122,6 +1189,43 @@ async def export_conversation(session_id: str) -> Response:
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/{session_id}/artifacts", status_code=201)
+async def save_artifact(
+    session_id: str,
+    payload: SaveArtifactRequest,
+) -> dict:
+    """Persist a frontend-generated artifact (e.g. CompletionArtifact) to the session.
+
+    This allows artifacts that are assembled client-side to be saved
+    to the DB so they render when loading historical conversations.
+
+    Args:
+        session_id: Conversation session ID.
+        payload: Artifact content and metadata.
+
+    Returns:
+        Confirmation with the session ID.
+
+    Raises:
+        HTTPException: 500 on persistence failure.
+    """
+    try:
+        from src.db.connection import get_db_context
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            svc.save_message(
+                session_id,
+                role="assistant",
+                content=payload.content,
+                message_type="system_artifact",
+                metadata=payload.metadata,
+            )
+    except Exception as exc:
+        logger.error("Failed to save artifact for %s: %s", session_id, exc)
+        raise HTTPException(status_code=500, detail="Failed to save artifact")
+    return {"session_id": session_id, "status": "saved"}
 
 
 async def shutdown_conversation_runtime() -> None:

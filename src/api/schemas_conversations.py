@@ -120,3 +120,10 @@ class UpdateTitleRequest(BaseModel):
     """Request to rename a session."""
 
     title: str = Field(..., min_length=1, max_length=255)
+
+
+class SaveArtifactRequest(BaseModel):
+    """Request to persist an artifact message to a conversation session."""
+
+    content: str = Field(default="", description="Optional text content")
+    metadata: dict = Field(..., description="Artifact metadata (action, payload, etc.)")

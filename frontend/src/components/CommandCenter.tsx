@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
-import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows } from '@/lib/api';
+import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows, saveArtifactMessage } from '@/lib/api';
 import { useConversation } from '@/hooks/useConversation';
 import type {
   Job,
@@ -18,7 +18,7 @@ import type {
 } from '@/types/api';
 import { LabelPreview } from '@/components/LabelPreview';
 import { JobDetailPanel } from '@/components/JobDetailPanel';
-import { SendIcon, StopIcon, EditIcon } from '@/components/ui/icons';
+import { SendIcon, StopIcon, EditIcon, HistoryIcon, GearIcon } from '@/components/ui/icons';
 import { PreviewCard, InteractivePreviewCard, type ConfirmOptions } from '@/components/command-center/PreviewCard';
 import { ProgressDisplay } from '@/components/command-center/ProgressDisplay';
 import { CompletionArtifact } from '@/components/command-center/CompletionArtifact';
@@ -75,6 +75,7 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
     contacts,
     customCommands,
     setSettingsFlyoutOpen,
+    setChatHistoryFlyoutOpen,
     refreshChatSessions,
   } = useAppState();
 
@@ -348,14 +349,16 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
   ]);
 
   // Clear transient agent events after each completed run to bound memory.
+  // Also trigger a delayed refresh to pick up backend-generated titles (~2.5s).
   React.useEffect(() => {
     if (wasProcessingRef.current && !conv.isProcessing) {
       suppressNextMessageRef.current = false;
       lastProcessedEventRef.current = 0;
       conv.clearEvents();
+      setTimeout(() => refreshChatSessions(), 2500);
     }
     wasProcessingRef.current = conv.isProcessing;
-  }, [conv.isProcessing, conv.clearEvents]);
+  }, [conv.isProcessing, conv.clearEvents, refreshChatSessions]);
 
   // Sync processing state from conversation hook
   React.useEffect(() => {
@@ -686,25 +689,25 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
                 <ProgressDisplay
                   jobId={executingJobId}
                   onComplete={(data) => {
-                    addMessage({
-                      role: 'system',
-                      content: '',
-                      metadata: {
-                        jobId: executingJobId,
-                        action: 'complete' as const,
-                        completion: {
-                          command: lastCommandRef.current,
-                          jobName: lastJobNameRef.current || undefined,
-                          totalRows: data.total,
-                          successful: data.successful,
-                          failed: data.failed,
-                          totalCostCents: data.totalCostCents,
-                          dutiesTaxesCents: data.dutiesTaxesCents,
-                          internationalCount: data.internationalCount,
-                          rowFailures: data.rowFailures.length > 0 ? data.rowFailures : undefined,
-                        },
+                    const completionMeta = {
+                      jobId: executingJobId,
+                      action: 'complete' as const,
+                      completion: {
+                        command: lastCommandRef.current,
+                        jobName: lastJobNameRef.current || undefined,
+                        totalRows: data.total,
+                        successful: data.successful,
+                        failed: data.failed,
+                        totalCostCents: data.totalCostCents,
+                        dutiesTaxesCents: data.dutiesTaxesCents,
+                        internationalCount: data.internationalCount,
+                        rowFailures: data.rowFailures.length > 0 ? data.rowFailures : undefined,
                       },
-                    });
+                    };
+                    addMessage({ role: 'system', content: '', metadata: completionMeta });
+                    if (conv.sessionId) {
+                      saveArtifactMessage(conv.sessionId, '', completionMeta).catch(console.warn);
+                    }
                     setLabelPreviewJobId(executingJobId);
                     setShowLabelPreview(true);
                     setExecutingJobId(null);
@@ -714,25 +717,25 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
                     refreshJobList();
                   }}
                   onFailed={(data) => {
-                    addMessage({
-                      role: 'system',
-                      content: '',
-                      metadata: {
-                        jobId: executingJobId,
-                        action: 'complete' as const,
-                        completion: {
-                          command: lastCommandRef.current,
-                          jobName: lastJobNameRef.current || undefined,
-                          totalRows: data.total,
-                          successful: data.successful,
-                          failed: data.failed,
-                          totalCostCents: data.totalCostCents,
-                          dutiesTaxesCents: data.dutiesTaxesCents,
-                          internationalCount: data.internationalCount,
-                          rowFailures: data.rowFailures.length > 0 ? data.rowFailures : undefined,
-                        },
+                    const completionMeta = {
+                      jobId: executingJobId,
+                      action: 'complete' as const,
+                      completion: {
+                        command: lastCommandRef.current,
+                        jobName: lastJobNameRef.current || undefined,
+                        totalRows: data.total,
+                        successful: data.successful,
+                        failed: data.failed,
+                        totalCostCents: data.totalCostCents,
+                        dutiesTaxesCents: data.dutiesTaxesCents,
+                        internationalCount: data.internationalCount,
+                        rowFailures: data.rowFailures.length > 0 ? data.rowFailures : undefined,
                       },
-                    });
+                    };
+                    addMessage({ role: 'system', content: '', metadata: completionMeta });
+                    if (conv.sessionId) {
+                      saveArtifactMessage(conv.sessionId, '', completionMeta).catch(console.warn);
+                    }
                     if (data.successful > 0) {
                       setLabelPreviewJobId(executingJobId);
                       setShowLabelPreview(true);
@@ -774,13 +777,29 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
         )}
         </div>
 
-        {/* Visual Timeline */}
-        {conversation.length > 3 && (
-          <ChatTimeline
-            messages={conversation}
-            scrollContainerRef={scrollContainerRef}
-          />
-        )}
+        {/* Right edge: icon buttons + visual timeline */}
+        <div className="flex flex-col items-center pt-3 pr-1 gap-2">
+          <button
+            onClick={() => setSettingsFlyoutOpen(true)}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors"
+            title="Settings"
+          >
+            <GearIcon className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => setChatHistoryFlyoutOpen(true)}
+            className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors"
+            title="Chat history"
+          >
+            <HistoryIcon className="w-4 h-4" />
+          </button>
+          {conversation.length > 3 && (
+            <ChatTimeline
+              messages={conversation}
+              scrollContainerRef={scrollContainerRef}
+            />
+          )}
+        </div>
       </div>
 
       {/* Input area */}

@@ -11,7 +11,7 @@ import * as React from 'react';
 import { useAppState, type ConversationMessage } from '@/hooks/useAppState';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { Package } from 'lucide-react';
-import { PackageIcon, GearIcon, HardDriveIcon, CopyIcon, CheckIcon } from '@/components/ui/icons';
+import { PackageIcon, HardDriveIcon, CopyIcon, CheckIcon } from '@/components/ui/icons';
 import { ShopifyIcon } from '@/components/ui/brand-icons';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -110,24 +110,6 @@ export function TypingIndicator() {
   );
 }
 
-/** Button to open settings flyout from the banner. */
-export function SettingsButton() {
-  const { settingsFlyoutOpen, setSettingsFlyoutOpen } = useAppState();
-
-  return (
-    <button
-      onClick={() => setSettingsFlyoutOpen(!settingsFlyoutOpen)}
-      className={cn(
-        "p-1.5 rounded transition-colors",
-        settingsFlyoutOpen ? "bg-slate-700 text-white" : "hover:bg-slate-800 text-slate-400"
-      )}
-      title="Open settings"
-    >
-      <GearIcon className="w-4 h-4" />
-    </button>
-  );
-}
-
 /** Compact banner showing the currently active data source at the top of the chat area. */
 export function ActiveSourceBanner() {
   const { activeSourceInfo } = useAppState();
@@ -151,9 +133,6 @@ export function ActiveSourceBanner() {
           </span>
         </>
       )}
-      <div className="ml-auto">
-        <SettingsButton />
-      </div>
     </div>
   );
 }

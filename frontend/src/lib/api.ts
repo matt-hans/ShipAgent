@@ -526,6 +526,28 @@ export async function exportConversation(sessionId: string): Promise<void> {
 }
 
 /**
+ * Persist a frontend-generated artifact to a conversation session.
+ *
+ * @param sessionId - Conversation session ID.
+ * @param content - Optional text content.
+ * @param metadata - Artifact metadata (action, payload, etc.).
+ */
+export async function saveArtifactMessage(
+  sessionId: string,
+  content: string,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/conversations/${sessionId}/artifacts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, metadata }),
+  });
+  if (!response.ok) {
+    await parseResponse(response);
+  }
+}
+
+/**
  * End a conversation session and free resources.
  *
  * @param sessionId - Conversation session ID.

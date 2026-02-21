@@ -173,6 +173,10 @@ interface AppState {
   settingsFlyoutOpen: boolean;
   setSettingsFlyoutOpen: (open: boolean) => void;
 
+  // Chat history flyout visibility
+  chatHistoryFlyoutOpen: boolean;
+  setChatHistoryFlyoutOpen: (open: boolean) => void;
+
   // Pending chat message — set by sidebar to auto-inject into the chat agent
   pendingChatMessage: string | null;
   setPendingChatMessage: (msg: string | null) => void;
@@ -237,6 +241,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   // Settings flyout state
   const [settingsFlyoutOpen, setSettingsFlyoutOpen] = React.useState(false);
+
+  // Chat history flyout state
+  const [chatHistoryFlyoutOpen, setChatHistoryFlyoutOpen] = React.useState(false);
 
   // Pending chat message (sidebar → chat bridge)
   const [pendingChatMessage, setPendingChatMessage] = React.useState<string | null>(null);
@@ -334,6 +341,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     refreshCommands,
     settingsFlyoutOpen,
     setSettingsFlyoutOpen,
+    chatHistoryFlyoutOpen,
+    setChatHistoryFlyoutOpen,
     pendingChatMessage,
     setPendingChatMessage,
     chatSessions,

@@ -170,7 +170,7 @@ export function ChatSessionsPanel({
         </p>
       )}
 
-      <div className="space-y-3 max-h-[250px] overflow-y-auto scrollable">
+      <div className="space-y-3 flex-1 overflow-y-auto scrollable">
         {sessions.length === 0 ? (
           <p className="text-xs text-slate-500 text-center py-4">
             No conversations yet. Start typing to begin.
