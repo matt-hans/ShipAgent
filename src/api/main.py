@@ -660,12 +660,21 @@ async def lifespan(app: FastAPI):
     await shutdown_gateways()
 
 
+# Disable OpenAPI/Swagger docs in production when SHIPAGENT_DISABLE_DOCS is set
+# (CWE-200). Prevents full API schema exposure on unauthenticated endpoints.
+_disable_docs = os.environ.get("SHIPAGENT_DISABLE_DOCS", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
 # Create FastAPI app with async lifespan for startup recovery + shutdown cleanup
 app = FastAPI(
     title="ShipAgent API",
     description="Natural language interface for batch shipment processing",
     version="0.1.0",
     lifespan=lifespan,
+    docs_url=None if _disable_docs else "/docs",
+    redoc_url=None if _disable_docs else "/redoc",
+    openapi_url=None if _disable_docs else "/openapi.json",
 )
 
 # Optional API auth for /api/* when SHIPAGENT_API_KEY is configured.
@@ -689,8 +698,12 @@ if allowed_origins:
 # ---------------------------------------------------------------------------
 import collections as _collections
 
-# Per-IP sliding window: {ip: deque of request timestamps}
-_rate_limit_windows: dict[str, _collections.deque] = {}
+# Per-IP sliding window with bounded capacity (CWE-770).
+# Max 10,000 tracked IPs to prevent memory exhaustion from IP rotation attacks.
+_RATE_LIMIT_MAX_IPS = 10_000
+_rate_limit_windows: _collections.OrderedDict[str, _collections.deque] = (
+    _collections.OrderedDict()
+)
 _RATE_LIMIT_MAX_REQUESTS = 30  # max requests per window
 _RATE_LIMIT_WINDOW_SECONDS = 60  # sliding window duration
 
@@ -715,7 +728,13 @@ async def rate_limit_session_creation(request: Request, call_next):
         client_ip = request.client.host if request.client else "unknown"
         now = _time.time()
 
+        # Evict oldest IPs when capacity is reached (CWE-770 mitigation)
+        while len(_rate_limit_windows) >= _RATE_LIMIT_MAX_IPS:
+            _rate_limit_windows.popitem(last=False)
+
         window = _rate_limit_windows.setdefault(client_ip, _collections.deque())
+        # Move to end for LRU ordering
+        _rate_limit_windows.move_to_end(client_ip)
         # Evict expired entries
         cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
         while window and window[0] < cutoff:
@@ -948,13 +967,17 @@ async def readiness_check():
             db.execute(text("SELECT 1"))
         checks["database"] = {"status": "ok"}
     except Exception as exc:
+        logger.error("Readiness check: database error: %s", exc, exc_info=True)
         return JSONResponse(
             status_code=503,
             content={
                 "status": "not_ready",
                 "uptime_seconds": uptime,
                 "checks": {
-                    "database": {"status": "error", "message": str(exc)},
+                    "database": {
+                        "status": "error",
+                        "message": "Database connectivity check failed",
+                    },
                 },
             },
         )

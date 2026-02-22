@@ -110,6 +110,7 @@ def create_contact(
         db.commit()
         return ContactResponse.model_validate(contact)
     except ValidationError as e:
+        # Domain error — controlled message from ContactService, safe to expose
         raise HTTPException(status_code=400, detail=str(e)) from None
     except DuplicateHandleError as e:
         raise HTTPException(status_code=409, detail=str(e)) from None

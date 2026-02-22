@@ -1,5 +1,6 @@
 """Data query tools for Data Source MCP."""
 
+import logging
 import re
 from typing import Any
 
@@ -7,6 +8,8 @@ from fastmcp import Context
 
 from ..models import SOURCE_ROW_NUM_COLUMN, QueryResult, RowData
 from ..utils import compute_row_checksum
+
+logger = logging.getLogger(__name__)
 
 # Regex for valid SQL type identifiers used in CAST expressions.
 # Allows types like VARCHAR, DOUBLE, DECIMAL(10,2), TIMESTAMP WITH TIME ZONE.
@@ -37,6 +40,59 @@ def _safe_cast_expression(col: str, type_str: str) -> str:
             "Only standard SQL type identifiers are allowed."
         )
     return f'CAST("{col}" AS {normalized}) AS "{col}"'
+
+
+def _validate_where_expression(where_sql: str) -> None:
+    """Validate a WHERE clause is a legitimate SQL expression via AST parsing.
+
+    Parses `SELECT 1 WHERE <where_sql>` through sqlglot to verify the clause
+    is a syntactically valid WHERE expression and not a stacked query or
+    DDL/DML statement injected by the LLM (CWE-89, CWE-74).
+
+    Args:
+        where_sql: The WHERE clause (without the WHERE keyword).
+
+    Raises:
+        ValueError: If the clause fails AST validation.
+    """
+    try:
+        import sqlglot
+    except ImportError:
+        # sqlglot unavailable — fall through to existing defenses
+        # (read-only transaction, keyword blocklist)
+        logger.warning(
+            "sqlglot not available for WHERE clause validation; "
+            "relying on read-only transaction defense"
+        )
+        return
+
+    # Reject semicolons outright (stacked queries)
+    if ";" in where_sql:
+        raise ValueError(
+            "WHERE clause contains semicolons — stacked queries are not allowed"
+        )
+
+    # Wrap in a harmless SELECT to create a full statement for parsing
+    test_sql = f"SELECT 1 FROM t WHERE {where_sql}"
+    try:
+        parsed = sqlglot.parse(test_sql, error_level=sqlglot.ErrorLevel.RAISE)
+    except sqlglot.errors.ParseError as e:
+        raise ValueError(
+            f"WHERE clause failed SQL syntax validation: {e}"
+        ) from None
+
+    # Ensure exactly one statement was parsed (no stacked queries)
+    if len(parsed) != 1:
+        raise ValueError(
+            f"WHERE clause produced {len(parsed)} statements; expected 1"
+        )
+
+    # Verify the parsed AST is a SELECT (not DDL/DML that slipped through)
+    stmt = parsed[0]
+    if stmt is None or stmt.key != "select":
+        raise ValueError(
+            "WHERE clause produced a non-SELECT statement"
+        )
 
 
 def _strip_sql_comments(sql: str) -> str:
@@ -138,6 +194,11 @@ async def get_rows_by_filter(
 
     # ALWAYS parameterized — normalize None to empty list
     query_params = params if params is not None else []
+
+    # Validate WHERE clause structure via sqlglot AST parsing (CWE-89, CWE-74).
+    # This catches stacked queries, DDL/DML, and malformed clauses before
+    # they reach DuckDB. The read-only transaction is a defense-in-depth backup.
+    _validate_where_expression(where_sql)
 
     # Enforce limits
     limit = min(limit, 1000)

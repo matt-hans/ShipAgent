@@ -108,7 +108,9 @@ def list_jobs(
         query = query.filter(Job.status == JobStatus(status))
 
     if name:
-        query = query.filter(Job.name.ilike(f"%{name}%"))
+        # Escape LIKE metacharacters to prevent wildcard injection (CWE-943)
+        escaped = name.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(Job.name.ilike(f"%{escaped}%", escape="\\"))
 
     if created_after:
         query = query.filter(Job.created_at >= created_after.isoformat())
