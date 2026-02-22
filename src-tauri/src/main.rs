@@ -13,6 +13,9 @@
 use tauri::Manager;
 use tauri_plugin_shell::ShellExt;
 
+/// Maximum time (seconds) to wait for the backend to report its port.
+const SIDECAR_TIMEOUT_SECS: u64 = 30;
+
 #[tauri::command]
 async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
     // Resolve the absolute path to the executable inside the resource directory.
@@ -40,30 +43,50 @@ async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
         .spawn()
         .map_err(|e| format!("Failed to spawn backend: {e}"))?;
 
-    // Read stdout line-by-line until we see the port report.
+    // Read stdout line-by-line until we see the port report, with a timeout
+    // to prevent hanging forever if the backend crashes during startup.
     use tauri_plugin_shell::process::CommandEvent;
-    let mut port: Option<u16> = None;
+    use tokio::time::{timeout, Duration};
 
-    while let Some(event) = rx.recv().await {
-        match event {
-            CommandEvent::Stdout(line) => {
-                let text = String::from_utf8_lossy(&line);
-                if let Some(p) = text.strip_prefix("SHIPAGENT_PORT=") {
-                    port = p.trim().parse().ok();
-                    break;
+    let port_result = timeout(
+        Duration::from_secs(SIDECAR_TIMEOUT_SECS),
+        async {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    CommandEvent::Stdout(line) => {
+                        let text = String::from_utf8_lossy(&line);
+                        // Check for startup failure signal
+                        if text.starts_with("SHIPAGENT_ERROR=") {
+                            return Err(format!("Backend startup failed: {}", text.trim()));
+                        }
+                        if let Some(p) = text.strip_prefix("SHIPAGENT_PORT=") {
+                            if let Ok(port) = p.trim().parse::<u16>() {
+                                return Ok(port);
+                            }
+                        }
+                    }
+                    CommandEvent::Error(e) => {
+                        eprintln!("Backend stderr: {e}");
+                        // Don't return error on stderr — uvicorn logs go here
+                    }
+                    CommandEvent::Terminated(payload) => {
+                        return Err(format!("Backend exited early: {:?}", payload.code));
+                    }
+                    _ => {}
                 }
             }
-            CommandEvent::Error(e) => {
-                return Err(format!("Backend stderr: {e}"));
-            }
-            CommandEvent::Terminated(payload) => {
-                return Err(format!("Backend exited early: {:?}", payload.code));
-            }
-            _ => {}
+            Err("Backend stdout closed without reporting a port".to_string())
         }
-    }
+    ).await;
 
-    port.ok_or_else(|| "Backend did not report a port".to_string())
+    match port_result {
+        Ok(Ok(port)) => Ok(port),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(format!(
+            "Backend did not report a port within {}s. Check logs for startup errors.",
+            SIDECAR_TIMEOUT_SECS
+        )),
+    }
 }
 
 fn main() {

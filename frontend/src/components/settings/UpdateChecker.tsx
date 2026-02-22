@@ -16,6 +16,7 @@ interface UpdateInfo {
 export function UpdateChecker() {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
   // Cache the check result to avoid redundant network calls on install.
   const cachedResultRef = useRef<any>(null);
 
@@ -47,6 +48,7 @@ export function UpdateChecker() {
 
   async function handleInstall() {
     setInstalling(true);
+    setInstallError(null);
     try {
       // Use cached result if available, otherwise re-check.
       let result = cachedResultRef.current;
@@ -59,6 +61,7 @@ export function UpdateChecker() {
       }
     } catch (err) {
       console.error('Update install failed:', err);
+      setInstallError('Update failed. Please try again or download manually.');
       setInstalling(false);
     }
   }
@@ -70,6 +73,9 @@ export function UpdateChecker() {
         ShipAgent {update.version} is available
       </p>
       <p className="mt-1 text-xs text-gray-400 line-clamp-2">{update.body}</p>
+      {installError && (
+        <p className="mt-1 text-xs text-red-400">{installError}</p>
+      )}
       <div className="mt-3 flex gap-2">
         <button
           onClick={handleInstall}

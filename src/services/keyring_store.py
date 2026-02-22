@@ -59,15 +59,22 @@ class KeyringStore:
         os.environ[key] = value
 
     def delete(self, key: str) -> None:
-        """Remove a credential."""
+        """Remove a credential from keyring and os.environ.
+
+        Always cleans up os.environ regardless of keyring outcome
+        to prevent state desync between the two stores.
+        """
+        import os
         try:
             keyring.delete_password(self._service, key)
             logger.info("Deleted credential: %s", key)
         except keyring.errors.PasswordDeleteError:
             logger.debug("Credential %s not found for deletion", key)
-        # Also remove from process environment
-        import os
-        os.environ.pop(key, None)
+        except Exception:
+            logger.warning("Keyring delete failed for %s", key, exc_info=True)
+        finally:
+            # Always clean up env regardless of keyring outcome
+            os.environ.pop(key, None)
 
     def has(self, key: str) -> bool:
         """Check if a credential is set."""

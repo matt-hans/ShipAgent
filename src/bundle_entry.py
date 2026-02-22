@@ -12,8 +12,11 @@ appropriate subcommand. See src/orchestrator/agent/config.py for dispatch.
 """
 
 import argparse
+import logging
 import sys
+import traceback
 
+logger = logging.getLogger(__name__)
 
 VALID_COMMANDS = {'serve', 'mcp-data', 'mcp-ups', 'mcp-external', 'cli'}
 
@@ -55,6 +58,11 @@ def main() -> None:
             async def startup(self, sockets=None):
                 """Start the server and print the port for Tauri to read."""
                 await super().startup(sockets)
+                if not self.started:
+                    # startup() failed — print error protocol so Tauri
+                    # doesn't hang waiting for SHIPAGENT_PORT forever.
+                    print("SHIPAGENT_ERROR=startup_failed", flush=True)
+                    return
                 for server in self.servers:
                     for sock in server.sockets:
                         addr = sock.getsockname()
@@ -95,4 +103,14 @@ def main() -> None:
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        # Global catch-all: log the traceback to stderr so Tauri or
+        # the terminal can display it, then exit with non-zero code.
+        traceback.print_exc()
+        sys.exit(1)

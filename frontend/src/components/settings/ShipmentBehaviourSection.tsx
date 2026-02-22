@@ -34,6 +34,7 @@ export function ShipmentBehaviourSection({
   const [concurrency, setConcurrency] = React.useState(
     appSettings?.batch_concurrency ?? 5,
   );
+  const [saveError, setSaveError] = React.useState<string | null>(null);
 
   // Sync concurrency slider when appSettings changes
   React.useEffect(() => {
@@ -52,9 +53,11 @@ export function ShipmentBehaviourSection({
       debounceRef.current = setTimeout(async () => {
         try {
           await updateSettings({ batch_concurrency: value });
+          setSaveError(null);
           refreshAppSettings();
         } catch (err) {
           console.error('Failed to save concurrency:', err);
+          setSaveError('Failed to save concurrency setting.');
         }
       }, 400);
     },
@@ -107,9 +110,11 @@ export function ShipmentBehaviourSection({
     try {
       await updateSettings(shipperFields);
       setShipperDirty(false);
+      setSaveError(null);
       refreshAppSettings();
     } catch (err) {
       console.error('Failed to save shipper address:', err);
+      setSaveError('Failed to save shipper address.');
     }
   };
 
@@ -132,6 +137,11 @@ export function ShipmentBehaviourSection({
 
       {isOpen && (
         <div className="settings-section-content space-y-5">
+          {saveError && (
+            <div className="p-2 rounded-md bg-destructive/10 border border-destructive/20 text-destructive text-xs">
+              {saveError}
+            </div>
+          )}
           {/* Warning handling */}
           <div className="space-y-3">
             <div className="flex items-center gap-2">

@@ -498,12 +498,29 @@ async def lifespan(app: FastAPI):
                 os.environ["FILTER_TOKEN_SECRET"] = _existing_fts
                 logger.info("Loaded FILTER_TOKEN_SECRET from keychain")
         except Exception:
-            # Keyring unavailable — generate in-memory only
-            _generated_fts = _secrets.token_hex(32)
+            # Keyring unavailable — persist to a local file so the same
+            # secret survives restarts (prevents token continuity breakage).
+            from src.utils.paths import get_data_dir
+
+            _fts_path = get_data_dir() / ".filter_token_secret"
+            if _fts_path.exists():
+                _generated_fts = _fts_path.read_text().strip()
+                logger.info(
+                    "Loaded FILTER_TOKEN_SECRET from fallback file"
+                )
+            else:
+                _generated_fts = _secrets.token_hex(32)
+                try:
+                    _fts_path.write_text(_generated_fts)
+                    _fts_path.chmod(0o600)
+                except OSError:
+                    logger.warning(
+                        "Could not persist FILTER_TOKEN_SECRET fallback file"
+                    )
+                logger.warning(
+                    "Keyring unavailable; FILTER_TOKEN_SECRET persisted to file"
+                )
             os.environ["FILTER_TOKEN_SECRET"] = _generated_fts
-            logger.warning(
-                "Keyring unavailable; FILTER_TOKEN_SECRET generated in-memory only"
-            )
 
     # Fail fast if filter token secret is missing or too short
     from src.orchestrator.filter_config import validate_filter_config
