@@ -421,15 +421,15 @@ class TestConnectionServiceErrors:
 
 class TestConnectionServiceStubs:
 
-    def test_check_all_stub_returns_empty(self, service):
-        """check_all() stub returns empty dict."""
+    def test_check_all_returns_ok_for_valid(self, service):
+        """check_all() returns 'ok' for valid decryptable connection."""
         service.save_connection(
             provider="ups", auth_mode="client_credentials",
             credentials={"client_id": "id", "client_secret": "sec"},
             metadata={}, environment="test", display_name="UPS",
         )
         results = service.check_all()
-        assert results == {}
+        assert results == {"ups:test": "ok"}
 
     def test_key_version_always_one(self, service):
         """New connections have key_version == 1."""
