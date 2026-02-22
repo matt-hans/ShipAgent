@@ -52,15 +52,14 @@ def main() -> None:
         class PortReportingServer(uvicorn.Server):
             """Uvicorn server that reports the bound port to stdout."""
 
-            def startup(self, sockets=None):
+            async def startup(self, sockets=None):
                 """Start the server and print the port for Tauri to read."""
-                result = super().startup(sockets)
+                await super().startup(sockets)
                 for server in self.servers:
                     for sock in server.sockets:
                         addr = sock.getsockname()
                         # Print port protocol line for Tauri to parse
                         print(f"SHIPAGENT_PORT={addr[1]}", flush=True)
-                return result
 
         config = uvicorn.Config(
             "src.api.main:app",

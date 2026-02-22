@@ -841,7 +841,12 @@ class AppSettings(Base):
 
     __tablename__ = "app_settings"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    # Fixed ID enforces the singleton invariant — only one row can ever exist.
+    SINGLETON_ID = "app-settings-singleton"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=SINGLETON_ID
+    )
 
     # Agent config
     agent_model: Mapped[str | None] = mapped_column(String(100), nullable=True)

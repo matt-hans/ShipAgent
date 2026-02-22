@@ -13,6 +13,17 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 echo "=== ShipAgent Backend Bundler ==="
 echo "Project root: $PROJECT_ROOT"
 
+# 0. Validate updater pubkey is not placeholder
+TAURI_CONF="$PROJECT_ROOT/src-tauri/tauri.conf.json"
+if [ -f "$TAURI_CONF" ]; then
+    if grep -q "REPLACE_WITH_ED25519_PUBLIC_KEY" "$TAURI_CONF"; then
+        echo "ERROR: Updater pubkey is still placeholder in $TAURI_CONF"
+        echo "  Run: ./scripts/generate-updater-key.sh"
+        echo "  Then replace the pubkey value in tauri.conf.json"
+        exit 1
+    fi
+fi
+
 # 1. Build frontend first (bundled into the binary)
 echo "--- Building frontend ---"
 cd "$PROJECT_ROOT/frontend"
