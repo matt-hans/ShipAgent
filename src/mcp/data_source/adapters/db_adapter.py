@@ -13,6 +13,7 @@ Security:
 - Connection strings are NEVER logged
 - Database attached as read-only
 - Connection detached immediately after operation
+- Schema/table identifiers validated against SQL injection (CWE-89)
 """
 
 import re
@@ -27,6 +28,31 @@ from .base import BaseSourceAdapter
 
 # Threshold for requiring WHERE clause (per CONTEXT.md)
 LARGE_TABLE_THRESHOLD = 10000
+
+# Safe identifier pattern: letters, digits, underscores. Starts with letter or underscore.
+_SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _validate_identifier(name: str, label: str = "identifier") -> str:
+    """Validate a SQL identifier against injection (CWE-89).
+
+    Args:
+        name: The identifier string to validate.
+        label: Human-readable label for error messages.
+
+    Returns:
+        The validated identifier string.
+
+    Raises:
+        ValueError: If the identifier contains unsafe characters.
+    """
+    if not _SAFE_IDENTIFIER_RE.match(name):
+        raise ValueError(
+            f"Invalid {label}: {name!r}. "
+            "Identifiers must contain only letters, digits, and underscores, "
+            "and must start with a letter or underscore."
+        )
+    return name
 
 
 class DatabaseAdapter(BaseSourceAdapter):
@@ -197,6 +223,7 @@ class DatabaseAdapter(BaseSourceAdapter):
         Returns:
             List of dicts with table name and row count estimate
         """
+        _validate_identifier(schema, "schema")
         db_type = self._detect_db_type(connection_string)
 
         # Attach database temporarily as read-only
@@ -295,6 +322,7 @@ class DatabaseAdapter(BaseSourceAdapter):
         Raises:
             ValueError: If query targets large table without WHERE clause
         """
+        _validate_identifier(schema, "schema")
         db_type = self._detect_db_type(connection_string)
 
         # Attach database temporarily as read-only

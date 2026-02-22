@@ -34,7 +34,10 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-from src.api.middleware.auth import maybe_require_api_key  # noqa: E402
+from src.api.middleware.auth import (  # noqa: E402
+    maybe_require_api_key,
+    validate_api_key_strength,
+)
 from src.api.routes import (  # noqa: E402
     agent_audit,
     commands,
@@ -451,6 +454,7 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     _startup_time = _time.time()
     _ensure_agent_sdk_available()
+    validate_api_key_strength()  # Fail fast on weak API keys (F-6)
     warnings.filterwarnings(
         "default", category=DeprecationWarning, module="claude_agent_sdk"
     )
@@ -611,11 +615,27 @@ if allowed_origins:
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
-    """Add standard security headers to all responses."""
+    """Add standard security headers to all responses.
+
+    Includes CSP (CWE-693) and HSTS for defense-in-depth.
+    'unsafe-inline' for styles is required by Tailwind/shadcn.
+    data: for images covers PDF.js inline thumbnails.
+    """
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "connect-src 'self'"
+    )
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=31536000; includeSubDomains"
+    )
     return response
 
 

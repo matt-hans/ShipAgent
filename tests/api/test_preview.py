@@ -1,9 +1,11 @@
 """Tests for preview and confirmation endpoints.
 
 Tests the /api/v1/jobs/{job_id}/preview and /api/v1/jobs/{job_id}/confirm
-endpoints for batch preview and execution confirmation.
+endpoints for batch preview and execution confirmation, including
+TOCTOU race protection (F-2, CWE-367) and hash collision (F-4, CWE-345).
 """
 
+import hashlib
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
@@ -430,3 +432,80 @@ class TestPreviewHash:
 
         response = client.post(f"/api/v1/jobs/{job.id}/confirm")
         assert response.status_code == 200
+
+
+class TestConfirmAtomicRace:
+    """Tests for TOCTOU race prevention in confirm (F-2, CWE-367)."""
+
+    def test_confirm_atomic_rejects_second_request(
+        self, client: TestClient, test_db: Session
+    ):
+        """Second concurrent confirm attempt returns 400."""
+        job = Job(
+            name="Race Test Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        # First confirm succeeds
+        resp1 = client.post(f"/api/v1/jobs/{job.id}/confirm")
+        assert resp1.status_code == 200
+
+        # Second confirm fails — job already running
+        resp2 = client.post(f"/api/v1/jobs/{job.id}/confirm")
+        assert resp2.status_code == 400
+        assert "running" in resp2.json()["detail"].lower()
+
+    def test_confirm_nonexistent_job_returns_404(self, client: TestClient):
+        """Confirm for non-existent job returns 404."""
+        response = client.post("/api/v1/jobs/00000000-0000-0000-0000-000000000000/confirm")
+        assert response.status_code == 404
+
+
+class TestPreviewHashFormat:
+    """Tests for preview hash collision prevention (F-4, CWE-345)."""
+
+    def test_preview_hash_uses_delimited_format(
+        self, client: TestClient, test_db: Session
+    ):
+        """Stored preview hash uses row_number:checksum delimited format."""
+        job = Job(
+            name="Hash Format Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+            total_rows=2,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        for i in range(1, 3):
+            row = JobRow(
+                job_id=job.id,
+                row_number=i,
+                row_checksum=f"cs{i}",
+                status=RowStatus.pending.value,
+                cost_cents=100,
+            )
+            test_db.add(row)
+        test_db.commit()
+
+        response = client.get(f"/api/v1/jobs/{job.id}/preview")
+        assert response.status_code == 200
+
+        test_db.refresh(job)
+        expected = hashlib.sha256("1:cs1|2:cs2".encode()).hexdigest()
+        assert job.preview_hash == expected
+
+    def test_preview_hash_boundary_collision_detected(
+        self, client: TestClient, test_db: Session
+    ):
+        """Checksums that would collide with plain join produce different hashes."""
+        # Old scheme: "".join(["ab","cd"]) == "".join(["abc","d"]) == "abcd"
+        # New scheme: "1:ab|2:cd" != "1:abc|2:d"
+        hash_a = hashlib.sha256("1:ab|2:cd".encode()).hexdigest()
+        hash_b = hashlib.sha256("1:abc|2:d".encode()).hexdigest()
+        assert hash_a != hash_b

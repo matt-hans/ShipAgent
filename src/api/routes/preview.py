@@ -13,6 +13,7 @@ import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from src.api.schemas import (
@@ -30,6 +31,7 @@ from src.services.ups_service_codes import (
     ServiceCode,
     resolve_service_code,
 )
+from src.utils.redaction import sanitize_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -174,8 +176,12 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
         ) and row.destination_country not in (DEFAULT_ORIGIN_COUNTRY, "PR"):
             international_count += 1
 
-    # Compute preview integrity hash from all row checksums (TOCTOU protection)
-    checksum_concat = "".join(r.row_checksum for r in rows)
+    # Compute preview integrity hash from all row checksums (TOCTOU protection).
+    # Uses "|" delimiter with row_number prefix to prevent collision (CWE-345):
+    # e.g. ["ab","cd"] vs ["abc","d"] would collide with plain join.
+    checksum_concat = "|".join(
+        f"{r.row_number}:{r.row_checksum}" for r in rows
+    )
     preview_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
     job.preview_hash = preview_hash
     db.commit()
@@ -273,7 +279,9 @@ async def _execute_batch(
             )
     except Exception as e:
         logger.exception("Background batch execution failed for job %s: %s", job_id, e)
-        await observer.on_batch_failed(job_id, "E-4001", str(e), 0)
+        await observer.on_batch_failed(
+            job_id, "E-4001", sanitize_error_message(str(e)), 0
+        )
     finally:
         db.close()
 
@@ -303,7 +311,9 @@ async def _execute_batch_safe(
             if job and job.status == "running":
                 job.status = "failed"
                 job.error_code = "E-4001"
-                job.error_message = f"Background task error: {e}"
+                job.error_message = sanitize_error_message(
+                    f"Background task error: {e}"
+                )
                 db.commit()
         finally:
             db.close()
@@ -332,16 +342,27 @@ async def confirm_job(
     Raises:
         HTTPException: If job not found or not in pending status.
     """
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+    # Atomic compare-and-swap: transition pending → running in one statement.
+    # Prevents TOCTOU race where two concurrent confirms both pass (CWE-367).
+    result = db.execute(
+        update(Job)
+        .where(Job.id == job_id, Job.status == "pending")
+        .values(status="running", started_at=datetime.now(UTC).isoformat())
+    )
+    db.commit()
 
-    if job.status != "pending":
+    if result.rowcount == 0:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
         raise HTTPException(
             status_code=400,
             detail=f"Job cannot be confirmed. Current status: {job.status}. "
             "Only pending jobs can be confirmed.",
         )
+
+    # Re-fetch job after atomic transition for subsequent logic
+    job = db.query(Job).filter(Job.id == job_id).first()
 
     # TOCTOU check: verify rows haven't changed since preview
     if job.preview_hash:
@@ -351,9 +372,15 @@ async def confirm_job(
             .order_by(JobRow.row_number)
             .all()
         )
-        checksum_concat = "".join(r.row_checksum for r in current_rows)
+        checksum_concat = "|".join(
+            f"{r.row_number}:{r.row_checksum}" for r in current_rows
+        )
         current_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
         if current_hash != job.preview_hash:
+            # Roll back to pending so user can re-preview
+            job.status = "pending"
+            job.started_at = None
+            db.commit()
             raise HTTPException(
                 status_code=409,
                 detail="Job data has changed since preview. Please re-preview before confirming.",
@@ -384,9 +411,6 @@ async def confirm_job(
                 detail="Invalid selected_service_code.",
             )
 
-    # Update job status to running
-    job.status = "running"
-    job.started_at = datetime.now(UTC).isoformat()
     db.commit()
     run_id = DecisionAuditService.resolve_run_id_for_job(job_id)
     DecisionAuditService.log_event(

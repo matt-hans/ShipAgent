@@ -7,7 +7,7 @@ for testing FastAPI endpoints.
 import os
 from collections.abc import Generator
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch  # noqa: F811 — used in fixtures
 
 import pytest
 from fastapi.testclient import TestClient
@@ -208,6 +208,19 @@ def sample_label_file(temp_label_dir):
     # Create a minimal PDF-like content (not a real PDF but enough for testing)
     label_path.write_bytes(b"%PDF-1.4\nTest PDF content\n%%EOF")
     return label_path
+
+
+@pytest.fixture(autouse=True)
+def _patch_labels_base_dir(tmp_path):
+    """Patch _LABELS_BASE_DIR to tmp_path root so label tests using temp files pass.
+
+    Without this, _validate_label_path() rejects any label in tmp_path
+    because it's outside the real labels/ directory.
+    """
+    # Use the pytest root tmp dir so all tmp_path subdirs are valid
+    base = tmp_path.parent.resolve()
+    with patch("src.api.routes.labels._LABELS_BASE_DIR", base):
+        yield
 
 
 def create_valid_pdf(path: Path) -> Path:

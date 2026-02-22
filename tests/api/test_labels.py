@@ -1,10 +1,12 @@
 """Tests for label download endpoints.
 
 Tests the /api/v1/labels endpoints for downloading individual
-shipping labels and merged PDF downloads.
+shipping labels and merged PDF downloads, including path traversal
+protection (F-1, CWE-22).
 """
 
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -44,16 +46,18 @@ class TestGetLabel:
         assert "no label available" in response.json()["detail"].lower()
 
     def test_get_label_file_missing(
-        self, client: TestClient, test_db: Session, sample_job: Job
+        self, client: TestClient, test_db: Session, sample_job: Job, tmp_path: Path
     ):
         """Returns 404 when label path exists but file is missing."""
+        # Path must be within the labels base dir to pass traversal check
+        missing_file = tmp_path / "missing_label.pdf"
         row = JobRow(
             job_id=sample_job.id,
             row_number=1,
             row_checksum="test_checksum",
             status=RowStatus.completed.value,
             tracking_number="1Z999TEST456",
-            label_path="/nonexistent/path/label.pdf",
+            label_path=str(missing_file),
         )
         test_db.add(row)
         test_db.commit()
@@ -232,3 +236,118 @@ class TestDownloadLabelsMerged:
 
         assert response.status_code == 200
         assert response.content.startswith(b"%PDF")
+
+
+class TestPathTraversal:
+    """Tests for path traversal protection (F-1, CWE-22)."""
+
+    def test_path_traversal_returns_403(
+        self, client: TestClient, test_db: Session, sample_job: Job
+    ):
+        """Label path escaping labels dir returns 403."""
+        row = JobRow(
+            job_id=sample_job.id,
+            row_number=1,
+            row_checksum="checksum_trav",
+            status=RowStatus.completed.value,
+            tracking_number="1Z999TRAVERSAL",
+            label_path="../../etc/passwd",
+        )
+        test_db.add(row)
+        test_db.commit()
+
+        response = client.get("/api/v1/labels/1Z999TRAVERSAL")
+
+        assert response.status_code == 403
+        assert "outside" in response.json()["detail"].lower()
+
+    def test_path_traversal_in_merged_is_skipped(
+        self,
+        client: TestClient,
+        test_db: Session,
+        sample_job: Job,
+        tmp_path: Path,
+    ):
+        """Merged PDF skips rows with traversal paths, serves valid ones."""
+        valid_label = tmp_path / "valid.pdf"
+        create_valid_pdf(valid_label)
+
+        row_valid = JobRow(
+            job_id=sample_job.id,
+            row_number=1,
+            row_checksum="checksum_valid",
+            status=RowStatus.completed.value,
+            tracking_number="1Z999VALID",
+            label_path=str(valid_label),
+        )
+        row_traversal = JobRow(
+            job_id=sample_job.id,
+            row_number=2,
+            row_checksum="checksum_trav2",
+            status=RowStatus.completed.value,
+            tracking_number="1Z999TRAV2",
+            label_path="../../etc/shadow",
+        )
+        test_db.add_all([row_valid, row_traversal])
+        test_db.commit()
+
+        with patch(
+            "src.api.routes.labels._LABELS_BASE_DIR", tmp_path.resolve()
+        ):
+            response = client.get(
+                f"/api/v1/jobs/{sample_job.id}/labels/merged"
+            )
+
+        assert response.status_code == 200
+        assert response.content.startswith(b"%PDF")
+
+    def test_path_traversal_by_row_returns_403(
+        self, client: TestClient, test_db: Session, sample_job: Job
+    ):
+        """Row endpoint rejects path traversal with 403."""
+        row = JobRow(
+            job_id=sample_job.id,
+            row_number=1,
+            row_checksum="checksum_row_trav",
+            status=RowStatus.completed.value,
+            tracking_number="1Z999ROWTRAV",
+            label_path="../../../tmp/evil.pdf",
+        )
+        test_db.add(row)
+        test_db.commit()
+
+        response = client.get(
+            f"/api/v1/jobs/{sample_job.id}/labels/1"
+        )
+
+        assert response.status_code == 403
+
+    def test_valid_label_path_within_labels_dir(
+        self,
+        client: TestClient,
+        test_db: Session,
+        sample_job: Job,
+        tmp_path: Path,
+    ):
+        """Valid label path within labels dir returns 200."""
+        label_file = tmp_path / "valid_label.pdf"
+        label_file.write_bytes(b"%PDF-1.4\nTest\n%%EOF")
+
+        row = JobRow(
+            job_id=sample_job.id,
+            row_number=1,
+            row_checksum="checksum_ok",
+            status=RowStatus.completed.value,
+            tracking_number="1Z999VALID001",
+            label_path=str(label_file),
+        )
+        test_db.add(row)
+        test_db.commit()
+
+        with patch(
+            "src.api.routes.labels._LABELS_BASE_DIR", tmp_path.resolve()
+        ):
+            response = client.get("/api/v1/labels/1Z999VALID001")
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/pdf"

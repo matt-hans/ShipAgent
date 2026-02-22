@@ -69,6 +69,7 @@ from src.services.paperless_constants import (
     UPS_PAPERLESS_UI_ACCEPTED_FORMATS,
     normalize_paperless_extension,
 )
+from src.utils.redaction import sanitize_error_message
 
 if TYPE_CHECKING:
     from src.services.agent_session_manager import AgentSession
@@ -582,7 +583,7 @@ async def _process_agent_message(
             await queue.put(
                 {
                     "event": "error",
-                    "data": {"message": str(e)},
+                    "data": {"message": sanitize_error_message(str(e))},
                 }
             )
 
@@ -1077,6 +1078,12 @@ async def stream_events(request: Request, session_id: str) -> EventSourceRespons
 
     Connect to this endpoint after sending a message to receive
     real-time agent events (thinking, tool calls, messages, etc.).
+
+    Security note (F-5, CWE-284): This endpoint checks session existence
+    but not ownership. Session IDs are UUID v4 (122 bits of entropy),
+    making brute-force infeasible. The API key middleware provides
+    perimeter auth. For multi-user deployments, add session ownership
+    validation (e.g. match session.user_id against the authenticated user).
 
     Args:
         request: FastAPI request for disconnect detection.

@@ -9,6 +9,7 @@ These tests focus on:
 - Large table threshold validation
 - Adapter instantiation and source_type property
 - Error handling for unsupported databases
+- Identifier injection prevention (F-9, CWE-89)
 """
 
 import duckdb
@@ -17,6 +18,7 @@ import pytest
 from src.mcp.data_source.adapters.db_adapter import (
     LARGE_TABLE_THRESHOLD,
     DatabaseAdapter,
+    _validate_identifier,
 )
 
 
@@ -254,4 +256,37 @@ class TestDeterministicRowKeys:
                 connection_string="postgresql://u:p@localhost/db",
                 query="SELECT * FROM orders WHERE created_at > '2026-01-01'",
                 row_key_columns=["missing_key"],
+            )
+
+
+class TestIdentifierInjection:
+    """Tests for SQL identifier injection prevention (F-9, CWE-89)."""
+
+    def test_safe_identifier_accepted(self):
+        """Valid identifiers pass validation."""
+        assert _validate_identifier("public", "schema") == "public"
+        assert _validate_identifier("my_table_1", "table") == "my_table_1"
+        assert _validate_identifier("_private", "schema") == "_private"
+
+    def test_identifier_with_sql_injection_rejected(self):
+        """Identifiers containing SQL injection characters are rejected."""
+        with pytest.raises(ValueError, match="Invalid"):
+            _validate_identifier("public; DROP TABLE users--", "schema")
+
+        with pytest.raises(ValueError, match="Invalid"):
+            _validate_identifier("table.name", "table")
+
+        with pytest.raises(ValueError, match="Invalid"):
+            _validate_identifier("schema'OR'1'='1", "schema")
+
+        with pytest.raises(ValueError, match="Invalid"):
+            _validate_identifier("name space", "table")
+
+    def test_list_tables_rejects_malicious_schema(self, adapter, duckdb_conn):
+        """list_tables raises ValueError for schema with injection chars."""
+        with pytest.raises(ValueError, match="Invalid schema"):
+            adapter.list_tables(
+                conn=duckdb_conn,
+                connection_string="postgresql://u:p@host/db",
+                schema="public; DROP TABLE users--",
             )

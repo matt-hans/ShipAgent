@@ -1,7 +1,8 @@
-"""Tests for security headers and universal error sanitization (F-7, F-8).
+"""Tests for security headers and universal error sanitization (F-3, F-7, F-8).
 
-Verifies that security headers are present on all responses and that
-422 validation errors are sanitized uniformly across all routes.
+Verifies that security headers (CSP, HSTS, X-Content-Type-Options, etc.)
+are present on all responses and that 422 validation errors are sanitized
+uniformly across all routes.
 """
 
 from fastapi.testclient import TestClient
@@ -37,6 +38,26 @@ class TestSecurityHeaders:
         """Security headers present even on 404 responses."""
         response = client.get("/api/v1/jobs/nonexistent-id")
         assert response.headers.get("X-Content-Type-Options") == "nosniff"
+
+    def test_csp_header_present(self, client: TestClient):
+        """CSP header includes default-src, script-src, style-src, connect-src (F-3)."""
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        csp = response.headers.get("Content-Security-Policy", "")
+        assert "default-src 'self'" in csp
+        assert "script-src 'self'" in csp
+        assert "style-src 'self' 'unsafe-inline'" in csp
+        assert "connect-src 'self'" in csp
+
+    def test_hsts_header_present(self, client: TestClient):
+        """HSTS header includes max-age and includeSubDomains (F-3)."""
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        hsts = response.headers.get("Strict-Transport-Security", "")
+        assert "max-age=31536000" in hsts
+        assert "includeSubDomains" in hsts
 
 
 class TestUniversalErrorSanitization:

@@ -130,6 +130,12 @@ def get_ups_mcp_config(
 
     specs_dir = ensure_ups_specs_dir()
 
+    # Security note (F-10, CWE-214): UPS credentials are passed as env vars
+    # to the subprocess. This is an accepted risk — the MCP subprocess is a
+    # trusted internal child process, not a user-facing container.
+    # Mitigations: Docker --pid=private isolates /proc, single-user model
+    # means no cross-user process enumeration, and credentials are
+    # short-lived tokens resolved from the DB at session creation time.
     return MCPServerConfig(
         command=_get_python_command(),
         args=["-m", "ups_mcp"],

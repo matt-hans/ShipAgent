@@ -12,7 +12,6 @@ All endpoints use /api/v1/data-sources prefix.
 
 import logging
 import os
-import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -27,6 +26,9 @@ from src.mcp.data_source.tools.import_tools import EXTENSION_MAP
 from src.services.gateway_provider import get_data_gateway
 
 logger = logging.getLogger(__name__)
+
+# Maximum upload file size: 50 MB (CWE-400 protection).
+_MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024
 
 router = APIRouter(prefix="/data-sources", tags=["data-sources"])
 
@@ -184,10 +186,27 @@ async def upload_data_source(
             detail="Invalid filename",
         )
     try:
+        total_bytes = 0
+        chunk_size = 1024 * 1024  # 1 MB chunks
         with open(dest, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+            while True:
+                chunk = file.file.read(chunk_size)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > _MAX_UPLOAD_SIZE_BYTES:
+                    f.close()
+                    dest.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=413,
+                        detail="File exceeds 50 MB limit.",
+                    )
+                f.write(chunk)
+    except HTTPException:
+        raise
     except OSError as e:
         logger.exception("Failed to save uploaded file: %s", e)
+        dest.unlink(missing_ok=True)
         raise HTTPException(
             status_code=500, detail=f"Failed to save file: {e}"
         ) from None
