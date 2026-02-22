@@ -12,7 +12,10 @@ Per CONTEXT.md:
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import defusedxml
 import xmltodict
+
+defusedxml.defuse_stdlib()  # Disable DTD/entity processing globally (CWE-611)
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
