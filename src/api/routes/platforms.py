@@ -243,26 +243,29 @@ async def test_connection(platform: str) -> TestConnectionResponse:
 
 @router.get("/shopify/env-status", response_model=ShopifyEnvStatusResponse)
 async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
-    """Check Shopify credentials from environment variables.
+    """Check Shopify credentials via runtime_credentials adapter.
 
-    Reads SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN from environment
-    and validates them via the gateway's read-only validate_credentials
-    tool. Does NOT mutate shared connection state.
+    Resolves Shopify credentials (DB priority, env fallback) and validates
+    via the gateway's read-only validate_credentials tool. Does NOT mutate
+    shared connection state.
 
     Returns:
         Status indicating whether credentials are configured and valid.
     """
-    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-    store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+    from src.services.runtime_credentials import resolve_shopify_credentials
 
-    if not access_token or not store_domain:
+    shopify_creds = resolve_shopify_credentials()
+    if shopify_creds is None:
         return ShopifyEnvStatusResponse(
             configured=False,
             valid=False,
             store_url=None,
             store_name=None,
-            error="SHOPIFY_ACCESS_TOKEN and/or SHOPIFY_STORE_DOMAIN not set in environment",
+            error="No Shopify credentials configured. Connect Shopify in Settings.",
         )
+
+    access_token = shopify_creds.access_token
+    store_domain = shopify_creds.store_domain
 
     try:
         ext = await get_external_sources_client()
