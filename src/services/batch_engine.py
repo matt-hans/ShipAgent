@@ -91,6 +91,7 @@ class BatchEngine:
         account_number: str,
         labels_dir: str | None = None,
         label_storage: LabelStorage | None = None,
+        batch_concurrency: int | None = None,
     ) -> None:
         """Initialize batch engine.
 
@@ -99,6 +100,8 @@ class BatchEngine:
             db_session: SQLAlchemy session for state updates
             account_number: UPS account number
             labels_dir: Directory for label files (default: PROJECT_ROOT/labels)
+            batch_concurrency: Override concurrency limit. When None,
+                falls back to Settings DB → env var → default 5.
         """
         self._ups = ups_service
         self._db = db_session
@@ -107,6 +110,7 @@ class BatchEngine:
             "UPS_LABELS_OUTPUT_DIR", str(DEFAULT_LABELS_DIR)
         )
         self._label_storage = label_storage or build_label_storage(self._labels_dir)
+        self._batch_concurrency = batch_concurrency
 
     @staticmethod
     def _resolve_concurrency() -> int:
@@ -174,7 +178,7 @@ class BatchEngine:
         """
         started_at = datetime.now(UTC)
         # Use same concurrency setting as execute for consistent performance.
-        max_concurrent = self._resolve_concurrency()
+        max_concurrent = getattr(self, "_batch_concurrency", None) or self._resolve_concurrency()
         semaphore = asyncio.Semaphore(max_concurrent)
         rate_timeout_s = self._resolve_timeout_seconds(
             "BATCH_PREVIEW_RATE_TIMEOUT_SECONDS", 8.0,
@@ -437,7 +441,7 @@ class BatchEngine:
         Returns:
             Dict with successful, failed, total_cost_cents counts
         """
-        max_concurrent = self._resolve_concurrency()
+        max_concurrent = getattr(self, "_batch_concurrency", None) or self._resolve_concurrency()
         semaphore = asyncio.Semaphore(max_concurrent)
         # Serialize writes because this engine uses one shared SQLAlchemy Session
         # across concurrent tasks; it also protects SQLite from write contention.

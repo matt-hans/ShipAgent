@@ -317,7 +317,9 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         setCredentialStatus(creds);
       })
       .catch((error) => {
+        const msg = error?.message || 'Failed to fetch initial settings';
         console.error('Failed to fetch initial settings:', error);
+        setAppSettingsError(msg);
       })
       .finally(() => {
         setAppSettingsLoading(false);

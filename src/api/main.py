@@ -516,13 +516,14 @@ async def lifespan(app: FastAPI):
                     fd = os.open(str(_fts_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
                     with os.fdopen(fd, "w") as f:
                         f.write(_generated_fts)
+                    logger.warning(
+                        "Keyring unavailable; FILTER_TOKEN_SECRET persisted to file"
+                    )
                 except OSError:
                     logger.warning(
-                        "Could not persist FILTER_TOKEN_SECRET fallback file"
+                        "Could not persist FILTER_TOKEN_SECRET fallback file; "
+                        "secret is in-memory only and will not survive restart"
                     )
-                logger.warning(
-                    "Keyring unavailable; FILTER_TOKEN_SECRET persisted to file"
-                )
             os.environ["FILTER_TOKEN_SECRET"] = _generated_fts
 
     # Fail fast if filter token secret is missing or too short

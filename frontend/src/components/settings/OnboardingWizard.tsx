@@ -60,15 +60,20 @@ export function OnboardingWizard() {
     setSaving(true);
     setError(null);
     try {
+      // Save both credentials together so partial failure is visible
+      const promises: Promise<void>[] = [];
       if (upsClientId.trim()) {
-        await api.setCredential('UPS_CLIENT_ID', upsClientId.trim());
+        promises.push(api.setCredential('UPS_CLIENT_ID', upsClientId.trim()));
       }
       if (upsClientSecret.trim()) {
-        await api.setCredential('UPS_CLIENT_SECRET', upsClientSecret.trim());
+        promises.push(api.setCredential('UPS_CLIENT_SECRET', upsClientSecret.trim()));
+      }
+      if (promises.length > 0) {
+        await Promise.all(promises);
       }
       setStep(3);
     } catch (e: any) {
-      setError(e.message || 'Failed to save UPS credentials.');
+      setError(e.message || 'Failed to save UPS credentials. Please try again.');
     } finally {
       setSaving(false);
     }
