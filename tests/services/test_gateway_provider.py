@@ -133,3 +133,61 @@ async def test_check_gateway_health_all_states():
         provider._data_gateway = orig_data
         provider._ext_sources_client = orig_ext
         provider._ups_gateway = orig_ups
+
+
+class TestGatewayLockingFix:
+    """Tests for B-2: gateway provider always acquires lock (CWE-362)."""
+
+    def test_get_data_gateway_no_early_return_outside_lock(self):
+        """get_data_gateway source must not return outside the lock."""
+        import inspect
+        import textwrap
+
+        import src.services.gateway_provider as gp
+
+        source = inspect.getsource(gp.get_data_gateway)
+        lines = textwrap.dedent(source).strip().splitlines()
+        found_lock = False
+        for line in lines:
+            stripped = line.strip()
+            if "async with" in stripped and "_data_gateway_lock" in stripped:
+                found_lock = True
+            if stripped.startswith("return") and not found_lock:
+                if "def " not in stripped:
+                    pytest.fail("get_data_gateway has return before acquiring lock")
+
+    def test_get_external_sources_no_early_return(self):
+        """get_external_sources_client must not return outside the lock."""
+        import inspect
+        import textwrap
+
+        import src.services.gateway_provider as gp
+
+        source = inspect.getsource(gp.get_external_sources_client)
+        lines = textwrap.dedent(source).strip().splitlines()
+        found_lock = False
+        for line in lines:
+            stripped = line.strip()
+            if "async with" in stripped and "_ext_sources_lock" in stripped:
+                found_lock = True
+            if stripped.startswith("return") and not found_lock:
+                if "def " not in stripped:
+                    pytest.fail("get_external_sources_client has return before lock")
+
+    def test_get_ups_gateway_no_early_return(self):
+        """get_ups_gateway must not return outside the lock."""
+        import inspect
+        import textwrap
+
+        import src.services.gateway_provider as gp
+
+        source = inspect.getsource(gp.get_ups_gateway)
+        lines = textwrap.dedent(source).strip().splitlines()
+        found_lock = False
+        for line in lines:
+            stripped = line.strip()
+            if "async with" in stripped and "_ups_gateway_lock" in stripped:
+                found_lock = True
+            if stripped.startswith("return") and not found_lock:
+                if "def " not in stripped:
+                    pytest.fail("get_ups_gateway has return before acquiring lock")

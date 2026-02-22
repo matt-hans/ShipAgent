@@ -283,3 +283,65 @@ async def test_cancel_session_message_tasks_cancels_active_tasks():
 
     assert len(session.message_tasks) == 0
     assert task.cancelled()
+
+
+class TestSessionTTL:
+    """Tests for L-3: session idle timeout (CWE-613)."""
+
+    @pytest.mark.asyncio
+    async def test_session_has_last_active(self):
+        """AgentSession tracks last_active timestamp."""
+        session = AgentSession("test-1")
+        assert hasattr(session, "last_active")
+        assert session.last_active is not None
+
+    @pytest.mark.asyncio
+    async def test_add_message_updates_last_active(self):
+        """add_message refreshes last_active."""
+        session = AgentSession("test-1")
+        original = session.last_active
+        await asyncio.sleep(0.01)
+        session.add_message("user", "hello")
+        assert session.last_active > original
+
+    @pytest.mark.asyncio
+    async def test_reap_idle_sessions_removes_expired(self):
+        """reap_idle_sessions removes sessions past TTL."""
+        from datetime import UTC, datetime, timedelta
+
+        import src.services.agent_session_manager as sm
+
+        original_ttl = sm._SESSION_TTL_HOURS
+        try:
+            sm._SESSION_TTL_HOURS = 1  # 1 hour TTL
+
+            mgr = AgentSessionManager()
+            session = mgr.get_or_create_session("old-session")
+            # Backdate last_active to 2 hours ago
+            session.last_active = datetime.now(UTC) - timedelta(hours=2)
+
+            active_session = mgr.get_or_create_session("active-session")
+            active_session.last_active = datetime.now(UTC)
+
+            reaped = await mgr.reap_idle_sessions()
+            assert reaped == 1
+            assert mgr.get_session("old-session") is None
+            assert mgr.get_session("active-session") is not None
+        finally:
+            sm._SESSION_TTL_HOURS = original_ttl
+
+    @pytest.mark.asyncio
+    async def test_reap_disabled_when_ttl_zero(self):
+        """reap_idle_sessions does nothing when TTL is 0."""
+        import src.services.agent_session_manager as sm
+
+        original_ttl = sm._SESSION_TTL_HOURS
+        try:
+            sm._SESSION_TTL_HOURS = 0
+
+            mgr = AgentSessionManager()
+            mgr.get_or_create_session("any-session")
+            reaped = await mgr.reap_idle_sessions()
+            assert reaped == 0
+        finally:
+            sm._SESSION_TTL_HOURS = original_ttl

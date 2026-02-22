@@ -15,7 +15,8 @@ Example:
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+import os
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ class AgentSession:
         self.session_id = session_id
         self.history: list[dict] = []
         self.created_at = datetime.now(UTC)
+        self.last_active = datetime.now(UTC)
         self.agent: Any = None  # OrchestrationAgent, set by conversations route
         self.agent_source_hash: str | None = None
         self.interactive_shipping: bool = False
@@ -66,11 +68,17 @@ class AgentSession:
             role: Message role ('user' or 'assistant').
             content: Message content text.
         """
+        self.last_active = datetime.now(UTC)
         self.history.append({
             "role": role,
             "content": content,
             "timestamp": datetime.now(UTC).isoformat(),
         })
+
+
+# Idle session timeout (L-3, CWE-613). Default 4 hours. Override with
+# SHIPAGENT_SESSION_TTL_HOURS env var (0 disables reaping).
+_SESSION_TTL_HOURS = float(os.environ.get("SHIPAGENT_SESSION_TTL_HOURS", "4"))
 
 
 class AgentSessionManager:
@@ -224,3 +232,25 @@ class AgentSessionManager:
         if session is None:
             return []
         return list(session.history)
+
+    async def reap_idle_sessions(self) -> int:
+        """Remove sessions that have been idle longer than _SESSION_TTL_HOURS.
+
+        Stops agents and cleans up resources for expired sessions (L-3, CWE-613).
+        Disabled when _SESSION_TTL_HOURS is 0.
+
+        Returns:
+            Number of sessions reaped.
+        """
+        if _SESSION_TTL_HOURS <= 0:
+            return 0
+        cutoff = datetime.now(UTC) - timedelta(hours=_SESSION_TTL_HOURS)
+        expired = [
+            sid for sid, s in self._sessions.items()
+            if s.last_active < cutoff and not s.terminating
+        ]
+        for sid in expired:
+            logger.info("Reaping idle session %s (TTL=%.1fh)", sid, _SESSION_TTL_HOURS)
+            await self.stop_session_agent(sid)
+            self.remove_session(sid)
+        return len(expired)
