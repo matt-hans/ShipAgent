@@ -117,16 +117,24 @@ async def import_data_source(
             source_type=payload.type,
             row_count=0,
             columns=[],
-            error=str(e),
+            error="File not found. Check the file path and try again.",
         )
     except ValueError as e:
         logger.warning("Data source import validation error: %s", e)
+        # ValueError may contain file paths; sanitize for client
+        msg = str(e)
+        # Allow domain validation messages (row counts, WHERE clause hints)
+        # but redact anything that looks like a filesystem path
+        if "/" in msg and ("rows" in msg.lower() or "WHERE" in msg):
+            safe_msg = msg  # Domain-specific validation — safe to expose
+        else:
+            safe_msg = "Import validation failed. Check server logs for details."
         return DataSourceImportResponse(
             status="error",
             source_type=payload.type,
             row_count=0,
             columns=[],
-            error=str(e),
+            error=safe_msg,
         )
     except Exception as e:
         logger.exception("Data source import failed: %s", e)
@@ -264,7 +272,7 @@ async def upload_data_source(
             source_type=source_type,
             row_count=0,
             columns=[],
-            error=str(e),
+            error="Import validation failed. Check server logs for details.",
         )
     except FileNotFoundError as e:
         logger.warning("Upload import error: %s", e)
@@ -273,7 +281,7 @@ async def upload_data_source(
             source_type=source_type,
             row_count=0,
             columns=[],
-            error=str(e),
+            error="File not found. Check server logs for details.",
         )
     except Exception as e:
         logger.exception("Upload import failed: %s", e)

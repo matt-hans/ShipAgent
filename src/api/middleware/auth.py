@@ -33,6 +33,7 @@ _PUBLIC_PATH_PREFIXES = (
 # --- Rate limiting for auth failures (F-6, CWE-307) ---
 _AUTH_FAIL_MAX = 10  # Max failures per IP in the time window
 _AUTH_FAIL_WINDOW_SECONDS = 300  # 5-minute sliding window
+_AUTH_FAIL_MAX_IPS = 10_000  # Max tracked IPs to prevent memory exhaustion (CWE-770)
 _auth_failures: dict[str, list[float]] = {}
 _auth_lock = threading.Lock()  # Protects _auth_failures (B-1, CWE-362)
 
@@ -80,12 +81,18 @@ def _record_auth_failure(client_ip: str) -> None:
     """Record an auth failure for the given client IP.
 
     Thread-safe via _auth_lock (B-1, CWE-362).
+    Evicts oldest IPs when capacity is reached (CWE-770).
 
     Args:
         client_ip: Client IP address.
     """
     with _auth_lock:
         now = time.monotonic()
+        # Evict oldest entries when capacity is reached (CWE-770)
+        if len(_auth_failures) >= _AUTH_FAIL_MAX_IPS and client_ip not in _auth_failures:
+            # Remove the entry with the oldest most-recent timestamp
+            oldest_ip = min(_auth_failures, key=lambda ip: _auth_failures[ip][-1] if _auth_failures[ip] else 0)
+            del _auth_failures[oldest_ip]
         if client_ip not in _auth_failures:
             _auth_failures[client_ip] = []
         _auth_failures[client_ip].append(now)

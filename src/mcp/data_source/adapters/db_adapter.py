@@ -16,10 +16,13 @@ Security:
 - Schema/table identifiers validated against SQL injection (CWE-89)
 """
 
+import logging
 import re
 from collections import OrderedDict
 from typing import Literal
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 from duckdb import DuckDBPyConnection
 
@@ -294,11 +297,24 @@ class DatabaseAdapter(BaseSourceAdapter):
 
             result = []
             for (table_name,) in tables:
+                # Validate table_name from remote catalog against injection
+                # (CWE-89, second-order SQLi via malicious table names).
+                try:
+                    safe_table = _validate_identifier(
+                        str(table_name), "table_name"
+                    )
+                except ValueError:
+                    logger.warning(
+                        "Skipping table with unsafe name from remote catalog: %r",
+                        table_name,
+                    )
+                    continue
+
                 # Get approximate row count
                 try:
                     count = conn.execute(
                         f"""
-                        SELECT COUNT(*) FROM remote_db.{schema}.{table_name}
+                        SELECT COUNT(*) FROM remote_db.{schema}.{safe_table}
                     """
                     ).fetchone()[0]
                 except Exception:
@@ -308,13 +324,13 @@ class DatabaseAdapter(BaseSourceAdapter):
                     conn=conn,
                     db_type=db_type,
                     schema=schema,
-                    table_name=table_name,
+                    table_name=safe_table,
                 )
                 deterministic_candidates = [cols for _, cols in key_candidates]
 
                 result.append(
                     {
-                        "name": table_name,
+                        "name": safe_table,
                         "row_count": count,
                         "requires_filter": count is not None
                         and count > LARGE_TABLE_THRESHOLD,
@@ -380,8 +396,12 @@ class DatabaseAdapter(BaseSourceAdapter):
             table_schema = schema
             table_name = None
             if table_match:
-                table_name = table_match.group(3)
-                table_schema = table_match.group(2) or schema
+                raw_table_name = table_match.group(3)
+                raw_table_schema = table_match.group(2) or schema
+
+                # Validate identifiers from user query against injection (CWE-89).
+                table_name = str(_validate_identifier(raw_table_name, "table_name"))
+                table_schema = str(_validate_identifier(raw_table_schema, "schema"))
 
                 # Check if large table without filter
                 has_where = re.search(r"\bWHERE\b", query, re.IGNORECASE) is not None
