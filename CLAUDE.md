@@ -35,13 +35,11 @@ These rules are non-negotiable. Violating them creates architectural debt that u
 
 ## Project Status
 
-**Phases 1-6:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent SDK, Batch Execution)
-**Phase 7:** Web Interface (Chat UI + Interactive Shipping operational)
-**Key Features:** International (CA/MX), Headless CLI, API Key Auth, Decision Auditing, Chat Persistence, Universal Data Ingestion.
-**Chat Persistence:** DB-backed conversation sessions with sidebar history, visual timeline minimap, copy-to-clipboard, JSON export, auto-generated titles (Haiku).
-**Universal Data Ingestion:** JSON, XML, fixed-width, TSV/PSV adapters with auto-flattening, type inference, and DuckDB loading.
-**UPS MCP v2:** 18 UPS tools across 6 domains (Shipping, Rating, Tracking, Pickup, Locator, Paperless, Landed Cost).
-**Test Count:** ~2260 across 90+ files (as of 2026-02-20)
+**Phases 1-7:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent SDK, Batch Execution, Web Interface)
+**Phase 8:** Production Packaging — Tauri v2 desktop wrapper, PyInstaller bundling, secure credential management, settings DB, onboarding wizard, CI/CD with code signing, auto-updater.
+**Key Features:** International (CA/MX), Headless CLI, API Key Auth, Decision Auditing, Chat Persistence, Universal Data Ingestion, Address Book, Custom Commands, Settings UI.
+**Production Packaging:** Tauri v2 desktop app with PyInstaller sidecar (one-folder build), keyring-based credential storage (macOS Keychain), `AppSettings` DB singleton, first-run onboarding wizard, Ed25519-signed auto-updater via GitHub Releases, CI/CD with Apple code signing.
+**Test Count:** ~2660 across 170+ files (as of 2026-02-22)
 
 ## Architecture
 
@@ -84,6 +82,10 @@ User → Browser UI (React) → FastAPI REST API → Conversation SSE Route
 
 **Presentation:** FastAPI backend (REST+SSE), React+Vite+TypeScript frontend, Typer+Rich headless CLI. SQLite+SQLAlchemy for persistence.
 
+**Desktop Packaging:** Tauri v2 (Rust) hosts the React frontend in a native WebView. Python backend bundled via PyInstaller as a one-folder sidecar, spawned by Tauri at launch with OS-assigned port (`--port 0`). `src/bundle_entry.py` dispatches subcommands (`serve`, `mcp-data`, `mcp-ups`, `mcp-external`, `cli`). In bundled mode, MCP servers self-spawn this same binary with subcommand args (see `orchestrator/agent/config.py`).
+
+**Credential & Settings Layer:** `KeyringStore` wraps system keychain (macOS Keychain / Linux Secret Service) with env var fallback for CI. `SettingsService` manages the `AppSettings` DB singleton (agent model, batch concurrency, shipper defaults, UPS account config, onboarding flag). `OnboardingWizard` (React) guides first-run credential + config setup.
+
 ### Agent Tool Architecture
 
 The agent's tools are split into 9 modules by concern:
@@ -104,24 +106,11 @@ Tool registration: `get_all_tool_definitions()` in `tools/__init__.py` assembles
 
 ### Agent Hook System
 
-Pre/PostToolUse hooks enforce business rules without modifying the agent flow:
-
-| Hook | Trigger | Purpose |
-|------|---------|---------|
-| `create_shipping_hook()` | `mcp__ups__create_shipment` | Mode-aware enforcement — blocks direct shipment creation in BOTH modes (batch must use pipeline; interactive must use preview tool) |
-| `validate_void_shipment` | `mcp__ups__void_shipment` | Requires tracking number or shipment ID |
-| `schedule_pickup_hook()` | `mcp__ups__schedule_pickup` | Safety gate — pickup is a financial commitment, requires confirmation context |
-| `cancel_pickup_hook()` | `mcp__ups__cancel_pickup` | Safety gate — pickup cancellation is irreversible |
-| `validate_track_package` | `mcp__ups__track_package` | Forces orchestrator wrapper for tracking event emission |
-| `validate_pre_tool` | All tools (fallback) | Routes to specific validators by tool name |
-| `log_post_tool` | All tools (post) | Audit logging to stderr |
-| `detect_error_response` | All tools (post) | Error detection and warning |
+Pre/PostToolUse hooks in `hooks.py` enforce business rules: `create_shipping_hook()` blocks direct `create_shipment` in both modes (must use pipeline/preview tools), `schedule_pickup_hook()`/`cancel_pickup_hook()` gate financial commitments, `validate_track_package` forces orchestrator wrapper, `log_post_tool` audits all calls, `detect_error_response` flags failures.
 
 ### Agent Intelligence Architecture
 
-The agent's reasoning comes from its dynamically constructed system prompt (`system_prompt.py`), assembled per-message by `build_system_prompt()`. The prompt includes: identity, service code table (from canonical `ServiceCode` enum), live data source schema, mode-aware filter rules, workflow instructions, and safety rules. The entire prompt changes based on the `interactive_shipping` flag — batch mode includes SQL filter rules; interactive mode suppresses schema and uses conversational collection.
-
-**Self-Correction:** Jinja2 mapping failures trigger up to 3 correction attempts (`CorrectionResult` in `correction.py`). After exhaustion, user gets options: fix source data, manual template fix, skip rows, or abort.
+System prompt (`system_prompt.py`) assembled per-message by `build_system_prompt()`: identity, service codes (canonical `ServiceCode` enum), live data source schema, mode-aware filter rules, workflow instructions, safety rules. Changes based on `interactive_shipping` flag. Self-correction: up to 3 Jinja2 mapping retries (`CorrectionResult`).
 
 ### Data Flow
 
@@ -138,35 +127,15 @@ Mode switching resets the conversation session (deletes old session, creates new
 
 ### Agent Safety Model
 
-Three layers: **Structural** (tool registry filtering hides tools by mode; session isolation; gateway singletons), **Behavioral** (hooks: `create_shipping_hook()` denies direct `create_shipment` in both modes; `validate_void_shipment` requires tracking number; `detect_error_response` + `log_post_tool` for audit), **Procedural** (mandatory preview before execution; `confirmJob()` is the only execution path; ambiguous commands trigger clarification; E-XXXX error codes).
+Three layers: **Structural** (tool registry filtering by mode, session isolation, gateway singletons), **Behavioral** (hooks block unsafe operations, audit all calls), **Procedural** (mandatory preview before execution, `confirmJob()` is the only execution path, E-XXXX error codes).
 
 ### Canonical Data Models
 
-All integration constants, enums, and defaults are centralized in dedicated modules. This is a hard architectural rule — no magic numbers or scattered definitions anywhere in the codebase.
-
-| Module | Location | What It Owns |
-|--------|----------|-------------|
-| **UPS Constants** | `src/services/ups_constants.py` | Field limits, packaging codes (`PackagingCode` enum + 34 aliases), default weights/dimensions, label specs, unit conversions, international form defaults, supported shipping lanes |
-| **UPS Service Codes** | `src/services/ups_service_codes.py` | `ServiceCode` enum (12 values), `SERVICE_ALIASES` (40+ human-readable names), domestic/international service sets, resolver functions (`resolve_service_code()`, `translate_service_name()`) |
-| **International Rules** | `src/services/international_rules.py` | Lane-driven compliance engine — `RequirementSet` per lane (US-CA, US-MX), customs/commodity validation, service compatibility checks |
-| **Orchestrator Models** | `src/orchestrator/models/` | `ShippingIntent`, `FilterCriteria`, `FieldMapping`, `MappingTemplate`, `SQLFilterResult`, `CorrectionResult` — all Pydantic models for agent reasoning |
-| **External Order Schema** | `src/mcp/external_sources/models.py` | `ExternalOrder` (normalized across Shopify/WooCommerce/SAP/Oracle), `PlatformType`, `ConnectionStatus` |
-| **Data Source Schema** | `src/mcp/data_source/models.py` | `SchemaColumn`, `ImportResult`, `RowData` — discovered (not hardcoded) per-source metadata |
-
-**Pattern for new integrations:** Create `<carrier>_constants.py` + `<carrier>_service_codes.py` in `src/services/`. All consumers import from canonical modules. See Extension Points for details.
+All constants/enums centralized — no magic numbers. Key modules: `ups_constants.py` (field limits, packaging codes, defaults), `ups_service_codes.py` (ServiceCode enum, 40+ aliases), `international_rules.py` (lane-driven compliance), `orchestrator/models/` (Pydantic models for agent reasoning), `external_sources/models.py` (ExternalOrder), `data_source/models.py` (SchemaColumn, ImportResult). **Pattern:** Create `<carrier>_constants.py` + `<carrier>_service_codes.py` for new integrations.
 
 ### MCP Gateway Architecture
 
-Two distinct MCP paths — **Agent MCP** (interactive, SDK-managed) and **Programmatic MCP** (batch + data, gateway-managed via `gateway_provider.py` singletons):
-
-| MCP Server | Spawned By | Lifecycle | Path |
-|------------|------------|-----------|------|
-| **UPS MCP** (agent) | `OrchestrationAgent` (SDK) | Per agent session | Interactive — agent calls tools directly |
-| **UPS MCP** (batch) | `UPSMCPClient` context manager | Per batch job | Batch — `BatchEngine` uses programmatic client |
-| **Data Source MCP** | `DataSourceMCPClient` singleton | Process-global, lazy init | Agent tools call `get_data_gateway()` |
-| **External Sources MCP** | `ExternalSourcesMCPClient` singleton | Process-global, lazy init | Agent tools call `get_external_sources_client()` |
-
-All clients inherit from `MCPClient` (base) with retry + exponential backoff. Gateway singletons use `asyncio.Lock`, disconnected via `shutdown_gateways()`. UPS batch retries: 2 for reads (0.2s backoff), 0 for writes (prevent duplicates).
+Two MCP paths: **Agent MCP** (interactive, SDK-managed per session) and **Programmatic MCP** (batch + data, `gateway_provider.py` singletons). UPS MCP spawned per agent session (interactive) or per batch job (`UPSMCPClient` context manager). Data Source + External Sources MCPs are process-global singletons with `asyncio.Lock`. All clients inherit `MCPClient` with retry + exponential backoff. In bundled mode, MCP servers self-spawn the same binary with subcommand args (`mcp-data`, `mcp-ups`, `mcp-external`).
 
 ## Source Structure
 
@@ -182,24 +151,22 @@ src/
 │   │   ├── labels.py           # Label download (individual, merged PDF, ZIP)
 │   │   ├── logs.py             # Audit log endpoints (list, errors, export)
 │   │   ├── platforms.py        # Shopify, SAP, Oracle, WooCommerce
-│   │   └── saved_data_sources.py # Saved source CRUD + reconnect
+│   │   ├── saved_data_sources.py # Saved source CRUD + reconnect
+│   │   ├── settings.py         # Settings GET/PATCH, credential status, onboarding
+│   │   ├── contacts.py         # Address book CRUD + search
+│   │   └── commands.py         # Custom slash commands CRUD
 │   ├── main.py                 # App factory with lifespan events + SPA serving
 │   ├── schemas.py              # Pydantic request/response models
 │   └── schemas_conversations.py # Conversation endpoint schemas
 ├── cli/                        # Headless automation CLI (shipagent command)
-│   ├── main.py                 # Typer CLI entry point — daemon, job, submit, interact commands
-│   ├── config.py               # YAML config loader — DaemonConfig, AutoConfirmRules, WatchFolderConfig
-│   ├── protocol.py             # ShipAgentClient protocol + CLI data models (JobSummary, JobDetail, etc.)
-│   ├── factory.py              # Client factory — get_client(standalone=) → HttpClient or InProcessRunner
-│   ├── daemon.py               # Daemon PID management — start, stop, status
-│   ├── http_client.py          # HttpClient — REST+SSE client for daemon mode
-│   ├── runner.py               # InProcessRunner — direct DB + shared services for standalone mode
-│   ├── repl.py                 # Conversational REPL with Rich rendering
-│   ├── output.py               # Rich table/panel formatters for CLI output
-│   ├── auto_confirm.py         # Auto-confirm engine — rule evaluation for headless execution
-│   └── watchdog_service.py     # HotFolderService — filesystem watcher with debouncing + file lifecycle
+│   ├── main.py                 # Typer entry point — daemon, job, submit, interact
+│   ├── config.py, protocol.py, factory.py  # Config, protocol, client factory
+│   ├── daemon.py, http_client.py, runner.py  # Daemon mgmt, HTTP client, in-process runner
+│   ├── repl.py, output.py      # Conversational REPL, Rich formatters
+│   ├── auto_confirm.py         # Auto-confirm engine for headless execution
+│   └── watchdog_service.py     # Hot folder filesystem watcher
 ├── db/                         # Database layer
-│   ├── models.py               # SQLAlchemy models (Job, JobRow, AuditLog, SavedDataSource, ConversationSession, ConversationMessage)
+│   ├── models.py               # SQLAlchemy models (Job, JobRow, AuditLog, SavedDataSource, ConversationSession, ConversationMessage, AppSettings)
 │   └── connection.py           # Session management
 ├── errors/                     # Error handling
 │   ├── registry.py             # E-XXXX error code registry
@@ -228,7 +195,11 @@ src/
 │   ├── conversation_handler.py # Shared conversation handling (agent session + message streaming)
 │   ├── conversation_persistence_service.py # DB-backed session/message CRUD + auto title generation
 │   ├── saved_data_source_service.py # Saved source CRUD (list, upsert, delete, reconnect)
-│   └── write_back_utils.py     # Atomic CSV/Excel write-back utilities
+│   ├── write_back_utils.py     # Atomic CSV/Excel write-back utilities
+│   ├── keyring_store.py        # System keychain wrapper (macOS Keychain) with env fallback
+│   ├── settings_service.py     # AppSettings DB singleton CRUD + validation
+│   ├── contact_service.py      # Contact (address book) CRUD + search
+│   └── custom_command_service.py # Custom slash commands CRUD
 ├── mcp/
 │   ├── data_source/            # Data Source MCP server (DuckDB-backed SQL interface)
 │   │   ├── server.py           # FastMCP server with stdio transport
@@ -241,6 +212,10 @@ src/
 │       ├── server.py, tools.py # Platform MCP server + tools
 │       ├── models.py           # Canonical: ExternalOrder, PlatformType, ConnectionStatus
 │       └── clients/            # Shopify, WooCommerce, SAP, Oracle adapters
+├── utils/                      # Cross-cutting utilities
+│   ├── paths.py                # Production file path resolver (platformdirs, dev fallback)
+│   └── runtime.py              # Runtime detector: is_bundled(), get_resource_dir()
+├── bundle_entry.py             # PyInstaller entry point — subcommand dispatch (serve/mcp-*/cli)
 └── orchestrator/               # Orchestration layer (AGENT IS PRIMARY)
     ├── filters/                # Jinja2 logistics filter library
     │   └── logistics.py        # truncate_address, format_us_zip, convert_weight, etc.
@@ -286,35 +261,33 @@ frontend/src/
 │   ├── useAppState.tsx             # Global state context (conversation, jobs, data source, mode, chat sessions)
 │   ├── useConversation.ts          # Agent SSE lifecycle (session + events + mode switching)
 │   └── useJobProgress.ts, useSSE.ts, useExternalSources.ts
-├── lib/api.ts                      # REST client (all /api/v1 endpoints)
+├── lib/
+│   ├── api.ts                      # REST client (all /api/v1 endpoints)
+│   └── tauri-init.ts               # Sidecar bootstrap — discovers dynamic port, sets window.__SHIPAGENT_PORT__
 └── types/api.ts                    # TypeScript types mirroring Pydantic schemas
+
+src-tauri/                          # Tauri v2 desktop wrapper (Rust)
+├── src/main.rs                     # Sidecar lifecycle — spawn, port discovery, timeout handling
+├── tauri.conf.json                 # Bundle config, CSP, auto-updater (Ed25519), resources
+├── Cargo.toml                      # Rust deps (tauri v2, shell plugin, updater plugin)
+├── entitlements.plist              # macOS code-signing entitlements (Keychain access)
+└── capabilities/                   # Tauri permission grants (shell, dialog, updater)
+
+scripts/
+├── bundle_backend.sh               # PyInstaller build + smoke test + updater key validation
+├── bump-version.sh                  # Syncs version across pyproject.toml, tauri.conf.json, package.json
+└── generate-updater-key.sh          # Ed25519 key pair for Tauri auto-updater signing
 ```
 
 ## Key Services
 
 ### OrchestrationAgent (`src/orchestrator/agent/client.py`)
 
-**The system backbone.** The `OrchestrationAgent` is not a component of the system — it IS the system. The Claude Agent SDK manages the entire operational lifecycle: conversation state, tool dispatch, MCP server processes, validation hooks, streaming output, and error recovery. Every user interaction, every shipping operation, every data query flows through the SDK agent loop. Nothing orchestrates outside it.
-
-Key features:
-- `process_message_stream()` — yields SSE-compatible event dicts (agent_message_delta, tool_call, error)
-- `StreamEvent` support — real-time token-by-token streaming when SDK supports it
-- `interrupt()` — graceful cancellation of in-progress responses
-- MCP servers: `orchestrator` (in-process tools) + `ups` (stdio child process)
-- Default model: `AGENT_MODEL` env → `ANTHROPIC_MODEL` env → Claude Haiku 4.5
-- Hooks: `create_hook_matchers()` — PreToolUse/PostToolUse validation and audit (see [SDK #265 workaround](#known-issues))
+**The system backbone.** Claude Agent SDK manages conversation state, tool dispatch, MCP servers, hooks, streaming, and error recovery. `process_message_stream()` yields SSE events, `interrupt()` cancels in-progress responses. MCP servers: `orchestrator` (in-process) + `ups` (stdio). Default model: `AGENT_MODEL` → `ANTHROPIC_MODEL` → Claude Haiku 4.5.
 
 ### UPS MCP Server (local fork: `matt-hans/ups-mcp`)
 
-Stdio child process (`.venv/bin/python3 -m ups_mcp`), editable install from pinned commit. 18 tools across 6 domains:
-- **Shipping**: `rate_shipment`, `create_shipment`, `void_shipment`, `recover_label`
-- **Address/Transit**: `validate_address`, `track_package`, `get_time_in_transit`
-- **Landed Cost**: `get_landed_cost_quote`
-- **Paperless**: `upload_paperless_document`, `push_document_to_shipment`, `delete_paperless_document`
-- **Locator**: `find_locations`
-- **Pickup**: `rate_pickup`, `schedule_pickup`, `cancel_pickup`, `get_pickup_status`, `get_political_divisions`, `get_service_center_facilities`
-
-**Tool availability:** V2 tools (pickup, locator, paperless, landed cost, tracking) are registered in the orchestrator and available in both batch and interactive modes via MCP auto-discovery and the tool registry.
+Stdio child process, editable install from pinned commit. 18 tools across 6 domains: Shipping (rate, create, void, recover), Address/Transit (validate, track, time-in-transit), Landed Cost, Paperless (upload, push, delete), Locator, Pickup (rate, schedule, cancel, status, divisions, facilities). V2 tools available in both batch and interactive modes.
 
 ### BatchEngine (`src/services/batch_engine.py`)
 
@@ -334,23 +307,35 @@ Optional gate controlled by `SHIPAGENT_API_KEY` env var. When set, all `/api/*` 
 
 ### DecisionAuditService (`src/services/decision_audit_service.py`)
 
-Centralized agent decision ledger. Writes to `agent_decision_runs` + `agent_decision_events` SQLite tables; mirrors best-effort to JSONL. Context propagation via `src/services/decision_audit_context.py`. Config env vars: `AGENT_AUDIT_ENABLED`, `AGENT_AUDIT_JSONL_PATH`, `AGENT_AUDIT_RETENTION_DAYS`, `AGENT_AUDIT_MAX_PAYLOAD_BYTES`.
+Agent decision ledger → `agent_decision_runs` + `agent_decision_events` tables + JSONL mirror. Config: `AGENT_AUDIT_ENABLED`, `AGENT_AUDIT_JSONL_PATH`, `AGENT_AUDIT_RETENTION_DAYS`.
 
 ### ConversationPersistenceService (`src/services/conversation_persistence_service.py`)
 
-DB-backed CRUD for `ConversationSession` and `ConversationMessage` tables. Provides: `create_session`, `save_message` (auto-incrementing sequence), `list_sessions` (DB-level LIMIT/OFFSET), `get_session_with_messages`, `update_session_title`, `update_session_context`, `soft_delete_session`, `export_session_json`, `set_title_from_first_message`. Session titles set synchronously from first user message (truncated to 50 chars).
+DB-backed CRUD for `ConversationSession` and `ConversationMessage` tables. Session titles set synchronously from first user message (truncated to 50 chars).
+
+### KeyringStore (`src/services/keyring_store.py`)
+
+System keychain wrapper for secure credential storage. Uses `keyring` library (macOS Keychain, Linux Secret Service, Windows Credential Manager). All `set()` calls sync to `os.environ` for immediate runtime access. `get_all_status()` does a single keyring probe for fail-fast, then checks each credential. `load_all_to_env()` hydrates env vars from keychain on startup. Falls back to env-only mode when keychain is unavailable (CI, locked sessions). Managed credentials: `ANTHROPIC_API_KEY`, `UPS_CLIENT_ID`, `UPS_CLIENT_SECRET`, `SHIPAGENT_API_KEY`, `FILTER_TOKEN_SECRET`.
+
+### SettingsService (`src/services/settings_service.py`)
+
+CRUD for the `AppSettings` DB singleton (fixed `id="default"`). Fields: `agent_model`, `batch_concurrency` (1-20), `shipper_name/company/phone/address/city/state/zip/country_code`, `ups_account_number`, `onboarding_completed`. Uses `INSERT OR IGNORE` + `UPDATE` pattern for upsert. Validated at both API layer (Pydantic) and DB layer (CHECK constraints).
+
+### Bundle Entry Point (`src/bundle_entry.py`)
+
+Unified PyInstaller entry point dispatching to `serve` (FastAPI+uvicorn with dynamic port reporting), `mcp-data`, `mcp-ups`, `mcp-external` (MCP stdio servers), or `cli` (Typer). `PortReportingServer` subclass prints `SHIPAGENT_PORT=XXXXX` to stdout for Tauri to parse. Global exception handler catches crashes and prints to stderr.
 
 ## Frontend Architecture
 
-The UI is an agent-driven chat interface. `useConversation` hook manages session lifecycle and SSE event streaming. `useAppState` context holds conversation, jobs, data source, mode, and chat session state (`interactiveShipping` persisted to localStorage).
+Agent-driven chat interface. `useConversation` manages session lifecycle + SSE streaming. `useAppState` context holds all global state (persisted to localStorage where appropriate).
 
-**Chat flow**: User types command → SSE events stream (deltas, tool calls) → PreviewCard renders with Confirm/Cancel/Refine → ProgressDisplay streams per-row execution → CompletionArtifact card with label access → input re-enables for next command.
+**Chat flow**: User types → SSE events stream → PreviewCard (Confirm/Cancel/Refine) → ProgressDisplay → CompletionArtifact with labels.
 
-**Chat persistence**: Sessions are DB-backed. `ChatSessionsPanel` in the sidebar lists sessions grouped by date (Today/Yesterday/Previous 7 Days). Selecting a session loads its history and restores context (mode, data source). Session titles set synchronously from first user message (truncated to 50 chars). `chatSessionsVersion` counter triggers sidebar re-fetch. Preview cards (`preview_ready`) are persisted as `system_artifact` messages and render read-only when loading historical sessions.
+**Chat persistence**: DB-backed sessions. `ChatSessionsPanel` groups by date. `chatSessionsVersion` counter triggers re-fetch. Preview cards persisted as `system_artifact` messages, render read-only in history.
 
-**Visual timeline**: `ChatTimeline` component renders a thin vertical minimap on the right edge with color-coded dots (grey=user, cyan=assistant, amber=artifact). Uses `IntersectionObserver` for viewport sync. Clicking a dot scrolls to that message.
+**Onboarding**: `OnboardingWizard` renders as full-screen overlay on first launch (when `appSettings.onboarding_completed` is false). 3 steps: Anthropic API key → UPS credentials → shipper address. Saves to keyring + settings DB.
 
-**Key patterns**: `ConversationMessage.action` routes to renderers (`preview`, `execute`, `complete`, `error`). `jobListVersion` counter triggers sidebar refresh. `isToggleLocked` prevents mode toggle during processing. Copy-to-clipboard on hover for all message bubbles with visual feedback.
+**Settings UI**: `SettingsFlyout` with tabs: Connections (provider status), Address Book (contact CRUD), Commands (custom slash commands), Preferences (agent model, batch concurrency).
 
 ## API Endpoints
 
@@ -370,22 +355,30 @@ All endpoints use `/api/v1/` prefix. See route files in `src/api/routes/` for fu
 
 **Platforms** (platforms.py): `POST /platforms/{platform}/connect`, `GET /platforms/shopify/env-status` (auto-reconnect after restart), `GET /platforms/{platform}/orders`
 
+**Settings & Credentials** (settings.py): `GET /settings` (singleton), `PATCH /settings` (partial update), `GET /settings/credential-status` (keyring probe), `PUT /settings/credentials/{key}` (store in keychain), `POST /settings/onboarding/complete`
+
+**Contacts** (contacts.py): `GET /contacts`, `POST /contacts`, `PUT /contacts/{id}`, `DELETE /contacts/{id}`, `GET /contacts/search`
+
 **Agent Audit** (agent_audit.py): `GET /agent-audit/runs`, `GET /agent-audit/runs/{id}`, `GET /agent-audit/runs/{id}/events`, `GET /agent-audit/runs/{id}/timeline`, `GET /agent-audit/export`, `DELETE /agent-audit/runs` (prune by age)
 
 ## Technology Stack
 
 | Component | Technology |
 |-----------|------------|
+| Desktop App | Tauri v2 (Rust), tauri-plugin-shell, tauri-plugin-updater (Ed25519) |
 | Backend | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
+| Bundling | PyInstaller (one-folder), `bundle_entry.py` subcommand dispatch |
 | Agent Framework | Claude Agent SDK (`claude-agent-sdk>=0.1.22`), Anthropic API |
 | MCP Protocol | FastMCP v2 (servers), `mcp` (stdio clients) |
-| Data Processing | DuckDB (in-memory analytics), openpyxl (Excel) |
+| Credentials | `keyring` (macOS Keychain / Linux Secret Service), `platformdirs` |
+| Data Processing | DuckDB (in-memory analytics), openpyxl (Excel), `defusedxml` (XXE prevention) |
 | UPS Integration | `ups-mcp` local fork (pinned commit, editable install via pip) |
 | NL Processing | sqlglot (SQL generation/validation), Jinja2 (logistics filters) |
 | Real-time | SSE via `sse-starlette` |
 | PDF | `pypdf` (merging), `react-pdf` + `pdfjs-dist` (browser rendering) |
 | Headless CLI | Typer, Rich, httpx, watchdog, PyYAML |
 | Frontend | React, Vite, TypeScript, Tailwind CSS v4, shadcn/ui |
+| CI/CD | GitHub Actions, Apple code signing, `gh release` |
 
 ## Common Commands
 
@@ -457,6 +450,25 @@ npm install
 npm run dev          # Development server (port 5173)
 npm run build        # Production build
 npx tsc --noEmit     # Type check
+```
+
+### Build & Packaging
+
+```bash
+# Bundle Python backend (PyInstaller one-folder build)
+./scripts/bundle_backend.sh
+
+# Build Tauri desktop app (requires bundled backend)
+cd src-tauri && cargo tauri build
+
+# Dev mode (Tauri + hot-reload)
+cargo tauri dev
+
+# Sync versions across pyproject.toml, tauri.conf.json, package.json
+./scripts/bump-version.sh 1.2.3
+
+# Generate Ed25519 updater keypair
+./scripts/generate-updater-key.sh
 ```
 
 ### Agent Testing
@@ -537,9 +549,10 @@ All extensions MUST integrate through agent tools/MCP and follow canonical data 
 
 ## Roadmap (Agent Capabilities)
 
-- **P0 — International Shipping (CA/MX)**: COMPLETE — lane validation, commodity tools, customs forms, payload builder enrichment, batch + interactive.
+- **P0 — International Shipping (CA/MX)**: COMPLETE.
+- **P0 — Production Packaging**: COMPLETE — Tauri v2, PyInstaller, keyring, settings, onboarding, CI/CD, auto-updater.
+- **P0 — Address Book**: COMPLETE — `ContactService` + `contacts.py` tool module with @handle resolution.
 - **P1 — Multi-Carrier (FedEx, USPS)**: New MCP servers per carrier, `compare_carriers` tool. Not started.
-- **P1 — Address Book**: Persistent profiles, `resolve_address` tool. Not started.
 - **P2 — Google Sheets, Webhooks**: New adapters/tools. Not started.
 - **P3 — Smart Routing**: Optimal carrier+service recommendation. Requires multi-carrier. Not started.
 
