@@ -47,10 +47,6 @@ export function UPSConnectForm({ existingConnections, onSaved }: UPSConnectFormP
     setError(null);
 
     try {
-      const baseUrl = environment === 'test'
-        ? 'https://wwwcie.ups.com'
-        : 'https://onlinetools.ups.com';
-
       await saveProviderCredentials('ups', {
         auth_mode: 'client_credentials',
         credentials: {
@@ -58,7 +54,9 @@ export function UPSConnectForm({ existingConnections, onSaved }: UPSConnectFormP
           client_secret: clientSecret.trim(),
           ...(accountNumber.trim() ? { account_number: accountNumber.trim() } : {}),
         },
-        metadata: {},
+        metadata: {
+          ...(accountNumber.trim() ? { account_number: accountNumber.trim() } : {}),
+        },
         display_name: `UPS ${environment === 'test' ? 'Test (CIE)' : 'Production'}`,
         environment: environment,
       });

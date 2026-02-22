@@ -1,13 +1,15 @@
 """API routes for provider connection management.
 
 Handles CRUD operations for provider connections (UPS, Shopify).
-Credentials are accepted as raw dict payloads (no Pydantic model binding)
-to prevent FastAPI from echoing secret values in 422 validation responses.
+Uses Pydantic models for request validation. Credential values are
+never echoed in error responses — the custom 422 handler sanitizes them.
 """
 
 import logging
+from typing import Any
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from starlette.responses import JSONResponse
 
@@ -19,6 +21,19 @@ from src.utils.redaction import sanitize_error_message
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/connections", tags=["connections"])
+
+
+# --- Pydantic request models ---
+
+
+class SaveConnectionRequest(BaseModel):
+    """Request body for saving a provider connection."""
+
+    auth_mode: str = Field(..., min_length=1, description="Authentication mode")
+    credentials: dict[str, str] = Field(default_factory=dict, description="Credential key-value pairs")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Non-secret metadata")
+    display_name: str = Field("", description="Human-readable display name")
+    environment: str | None = Field(None, description="UPS environment (test/production)")
 
 
 def _get_service(db: Session = Depends(get_db)) -> ConnectionService:
@@ -50,21 +65,18 @@ def get_connection(
 @router.post("/{provider}/save")
 def save_connection(
     provider: str,
-    body: dict = Body(...),
+    body: SaveConnectionRequest,
     service: ConnectionService = Depends(_get_service),
 ):
-    """Save or overwrite a provider connection with encrypted credentials.
-
-    Accepts raw dict payload to prevent FastAPI from echoing secrets in 422 errors.
-    """
+    """Save or overwrite a provider connection with encrypted credentials."""
     try:
         result = service.save_connection(
             provider=provider,
-            auth_mode=body.get("auth_mode", ""),
-            credentials=body.get("credentials", {}),
-            metadata=body.get("metadata", {}),
-            display_name=body.get("display_name", ""),
-            environment=body.get("environment"),
+            auth_mode=body.auth_mode,
+            credentials=body.credentials,
+            metadata=body.metadata,
+            display_name=body.display_name,
+            environment=body.environment,
         )
         status_code = 201 if result["is_new"] else 200
         return JSONResponse(status_code=status_code, content=result)

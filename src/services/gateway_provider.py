@@ -110,7 +110,7 @@ def _build_ups_gateway() -> Any:
         client_id=creds.client_id,
         client_secret=creds.client_secret,
         environment=creds.environment,
-        account_number=os.environ.get("UPS_ACCOUNT_NUMBER", ""),
+        account_number=creds.account_number or os.environ.get("UPS_ACCOUNT_NUMBER", ""),
     )
 
 

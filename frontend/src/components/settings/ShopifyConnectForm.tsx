@@ -68,9 +68,10 @@ export function ShopifyConnectForm({ existingConnection, onSaved }: ShopifyConne
         auth_mode: 'legacy_token',
         credentials: {
           access_token: accessToken.trim(),
+        },
+        metadata: {
           store_domain: normalized,
         },
-        metadata: {},
         display_name: normalized,
       });
 

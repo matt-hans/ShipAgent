@@ -280,7 +280,10 @@ async def preview_interactive_shipment_tool(
     from src.services.runtime_credentials import resolve_ups_credentials
 
     ups_creds = resolve_ups_credentials()
-    account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "").strip()
+    account_number = (
+        (ups_creds.account_number if ups_creds else "")
+        or os.environ.get("UPS_ACCOUNT_NUMBER", "").strip()
+    )
     if not account_number:
         return _err(
             "UPS account number is not configured. "
