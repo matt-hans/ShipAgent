@@ -1,0 +1,21 @@
+{
+  "identifier": "default",
+  "description": "Default permissions",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-spawn",
+    "shell:allow-stdin-write",
+    "shell:allow-kill",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "backend",
+          "cmd": { "regex": "^.*/backend-dist/shipagent-core$" }
+        }
+      ]
+    },
+    "updater:default"
+  ]
+}

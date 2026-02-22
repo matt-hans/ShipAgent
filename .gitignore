@@ -95,3 +95,9 @@ node_modules/
 .shipagent_key
 # Test-created temp key artifacts
 .shipagent_key_*
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+# Exception: Tauri icons are intentionally tracked
+!src-tauri/icons/*.png
