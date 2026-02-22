@@ -17,10 +17,10 @@ import {
   reconnectSavedSource,
   getDataSourceStatus,
 } from '@/lib/api';
-import type { DataSourceInfo, PlatformType } from '@/types/api';
+import type { DataSourceInfo } from '@/types/api';
 import { RecentSourcesModal } from '@/components/RecentSourcesModal';
 import { toDataSourceColumns } from '@/components/sidebar/dataSourceMappers';
-import { HardDriveIcon, EyeIcon, EyeOffIcon, InfoIcon } from '@/components/ui/icons';
+import { HardDriveIcon, InfoIcon } from '@/components/ui/icons';
 import { ShopifyIcon } from '@/components/ui/brand-icons';
 import { Switch } from '@/components/ui/switch';
 
@@ -43,26 +43,29 @@ export function DataSourceSection() {
     writeBackEnabled, setWriteBackEnabled,
     setPendingChatMessage,
   } = useAppState();
-  const { state: externalState, connect: connectExternal } = useExternalSources();
+  const { state: externalState } = useExternalSources();
+  const {
+    providerConnections,
+    setSettingsFlyoutOpen,
+  } = useAppState();
   const [isConnecting, setIsConnecting] = React.useState(false);
-  const [showShopifyForm, setShowShopifyForm] = React.useState(false);
   const [showDbForm, setShowDbForm] = React.useState(false);
   const [dbConnectionString, setDbConnectionString] = React.useState('');
-
-  // Shopify-specific state (for manual entry fallback)
-  const [shopifyStoreUrl, setShopifyStoreUrl] = React.useState('');
-  const [shopifyAccessToken, setShopifyAccessToken] = React.useState('');
-  const [showToken, setShowToken] = React.useState(false);
-  const [shopifyError, setShopifyError] = React.useState<string | null>(null);
   const [backendSourceType, setBackendSourceType] = React.useState<string | null>(null);
 
-  // Auto-detected Shopify status from environment
+  // Shopify availability derived from provider connections (server-side runtime_usable)
+  const shopifyConnection = providerConnections.find(
+    (c) => c.provider === 'shopify' && c.runtime_usable
+  );
+  const shopifyAvailable = !!shopifyConnection;
+
+  // Also check env-based Shopify for backward compatibility during migration
   const shopifyEnvStatus = externalState.shopifyEnvStatus;
   const isCheckingShopifyEnv = externalState.isCheckingEnv;
-
-  // Check if Shopify is connected via environment
   const shopifyEnvConnected = shopifyEnvStatus?.valid === true;
-  const shopifyStoreName = shopifyEnvStatus?.store_name || shopifyEnvStatus?.store_url;
+  const shopifyStoreName = shopifyConnection?.display_name
+    || shopifyEnvStatus?.store_name
+    || shopifyEnvStatus?.store_url;
 
   // Recent sources modal
   const [showRecentSources, setShowRecentSources] = React.useState(false);
@@ -122,7 +125,7 @@ export function DataSourceSection() {
         detail: `${dataSource.row_count?.toLocaleString() ?? '?'} rows`,
         sourceKind: dataSource.type === 'database' ? 'database' : 'file',
       });
-    } else if (backendSourceType === 'shopify' || (!backendSourceType && shopifyEnvConnected)) {
+    } else if (backendSourceType === 'shopify' || (!backendSourceType && (shopifyAvailable || shopifyEnvConnected))) {
       setActiveSourceType('shopify');
       setActiveSourceInfo({
         type: 'shopify',
@@ -137,6 +140,7 @@ export function DataSourceSection() {
   }, [
     dataSource,
     backendSourceType,
+    shopifyAvailable,
     shopifyEnvConnected,
     shopifyStoreName,
     setActiveSourceType,
@@ -295,40 +299,6 @@ export function DataSourceSection() {
     }
   };
 
-  // Shopify connection (manual form) — delegates to useExternalSources hook
-  const handleShopifyConnect = async () => {
-    if (!shopifyStoreUrl.trim() || !shopifyAccessToken.trim()) return;
-
-    setIsConnecting(true);
-    setShopifyError(null);
-
-    try {
-      let storeUrl = shopifyStoreUrl.trim();
-      if (!storeUrl.includes('.myshopify.com')) {
-        storeUrl = `${storeUrl}.myshopify.com`;
-      }
-      storeUrl = storeUrl.replace(/^https?:\/\//, '');
-
-      const success = await connectExternal(
-        'shopify' as PlatformType,
-        { access_token: shopifyAccessToken.trim() },
-        storeUrl
-      );
-
-      if (success) {
-        setShopifyStoreUrl('');
-        setShopifyAccessToken('');
-        setShowShopifyForm(false);
-      } else {
-        setShopifyError('Failed to connect to Shopify');
-      }
-    } catch (err) {
-      setShopifyError(err instanceof Error ? err.message : 'Connection failed');
-    } finally {
-      setIsConnecting(false);
-    }
-  };
-
   const handleDisconnect = async () => {
     try {
       await disconnectDataSource();
@@ -351,7 +321,7 @@ export function DataSourceSection() {
       <span className="text-xs font-medium text-slate-300">Data Sources</span>
 
       {/* === SHOPIFY CARD === */}
-      {(shopifyEnvConnected || shopifyEnvStatus?.configured || showShopifyForm) && (
+      {(shopifyAvailable || shopifyEnvConnected) ? (
         <div className={cn(
           'rounded-lg border overflow-hidden transition-colors',
           isShopifyActive && interactiveShipping
@@ -368,43 +338,33 @@ export function DataSourceSection() {
             <div className="flex items-center gap-2">
               {isCheckingShopifyEnv ? (
                 <span className="text-[10px] font-mono text-slate-500">Checking...</span>
-              ) : shopifyEnvConnected && isShopifyActive && interactiveShipping ? (
+              ) : isShopifyActive && interactiveShipping ? (
                 <span className="badge badge-neutral text-[9px]">STANDBY</span>
-              ) : shopifyEnvConnected && isShopifyActive ? (
+              ) : isShopifyActive ? (
                 <span className="badge badge-success text-[9px]">ACTIVE</span>
-              ) : shopifyEnvConnected ? (
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
-                  <span className="text-[10px] font-mono text-slate-500">Available</span>
-                </span>
-              ) : shopifyEnvStatus?.configured ? (
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-error" />
-                  <span className="text-[10px] font-mono text-error">Invalid</span>
-                </span>
               ) : (
                 <span className="flex items-center gap-1.5">
                   <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
-                  <span className="text-[10px] font-mono text-slate-500">Not configured</span>
+                  <span className="text-[10px] font-mono text-slate-500">Available</span>
                 </span>
               )}
             </div>
           </div>
 
           {/* Active Shopify info */}
-          {shopifyEnvConnected && isShopifyActive && (
+          {isShopifyActive && (
             <div className={cn('p-2.5 border-t', interactiveShipping ? 'border-slate-700' : 'border-[#5BBF3D]/20')}>
               <p className="text-xs text-slate-300">
                 {shopifyStoreName}
               </p>
               <p className="text-[10px] font-mono text-slate-500 mt-0.5">
-                {interactiveShipping ? 'Available in batch mode' : 'Auto-detected from environment'}
+                {interactiveShipping ? 'Available in batch mode' : 'Connected'}
               </p>
             </div>
           )}
 
           {/* Shopify available but not active — show "Use Shopify" button */}
-          {shopifyEnvConnected && !isShopifyActive && (
+          {!isShopifyActive && (
             <div className="p-2.5 border-t border-slate-800">
               <p className="text-[10px] text-slate-500 mb-2">
                 {shopifyStoreName}
@@ -417,82 +377,28 @@ export function DataSourceSection() {
               </button>
             </div>
           )}
-
-          {/* Invalid credentials */}
-          {!isCheckingShopifyEnv && shopifyEnvStatus?.configured && !shopifyEnvStatus?.valid && (
-            <div className="p-2.5 border-t border-slate-800">
-              <p className="text-[10px] font-mono text-slate-400 mb-2">
-                {shopifyEnvStatus.error || 'Authentication failed'}
-              </p>
-              <p className="text-[10px] text-slate-500">
-                Check .env credentials
-              </p>
+        </div>
+      ) : (
+        /* Not configured — direct to Settings */
+        <div className="rounded-lg border border-slate-800 overflow-hidden">
+          <div className="flex items-center justify-between p-2.5 bg-slate-800/30">
+            <div className="flex items-center gap-2">
+              <ShopifyIcon className="w-5 h-5 text-[#5BBF3D]/50" />
+              <span className="text-xs font-medium text-slate-400">Shopify</span>
             </div>
-          )}
-
-          {/* Not configured - show setup hint or form */}
-          {!isCheckingShopifyEnv && !shopifyEnvStatus?.configured && (
-            <div className="p-2.5 border-t border-slate-800">
-              {!showShopifyForm ? (
-                <div className="space-y-2">
-                  <p className="text-[10px] text-slate-500">
-                    Add SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN to .env
-                  </p>
-                  <button
-                    onClick={() => setShowShopifyForm(true)}
-                    className="text-[10px] font-medium text-[#96BF48] hover:underline"
-                  >
-                    Or enter credentials manually →
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <input
-                    type="text"
-                    value={shopifyStoreUrl}
-                    onChange={(e) => setShopifyStoreUrl(e.target.value)}
-                    placeholder="mystore.myshopify.com"
-                    className="w-full px-2.5 py-1.5 text-xs font-mono rounded bg-void-900 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#96BF48]"
-                  />
-                  <div className="relative">
-                    <input
-                      type={showToken ? 'text' : 'password'}
-                      value={shopifyAccessToken}
-                      onChange={(e) => setShopifyAccessToken(e.target.value)}
-                      placeholder="shpat_xxxxxxxxxxxxx"
-                      className="w-full px-2.5 py-1.5 pr-8 text-xs font-mono rounded bg-void-900 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-[#96BF48]"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowToken(!showToken)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
-                    >
-                      {showToken ? <EyeOffIcon className="w-3.5 h-3.5" /> : <EyeIcon className="w-3.5 h-3.5" />}
-                    </button>
-                  </div>
-                  {shopifyError && (
-                    <p className="text-[10px] font-mono text-error">{shopifyError}</p>
-                  )}
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setShowShopifyForm(false)}
-                      className="flex-1 py-1.5 text-xs font-medium rounded border border-slate-700 text-slate-400 hover:text-slate-200"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleShopifyConnect}
-                      disabled={!shopifyStoreUrl.trim() || !shopifyAccessToken.trim() || isConnecting}
-                      className="flex-1 py-1.5 text-xs font-medium rounded text-white disabled:opacity-50"
-                      style={{ backgroundColor: '#96BF48' }}
-                    >
-                      {isConnecting ? 'Connecting...' : 'Connect'}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+              <span className="text-[10px] font-mono text-slate-500">Not configured</span>
+            </span>
+          </div>
+          <div className="p-2.5 border-t border-slate-800">
+            <button
+              onClick={() => setSettingsFlyoutOpen(true)}
+              className="text-[10px] font-medium text-[#96BF48] hover:underline"
+            >
+              Connect Shopify in Settings →
+            </button>
+          </div>
         </div>
       )}
 
