@@ -15,7 +15,21 @@ import type {
   SaveProviderRequest,
 } from '@/types/api';
 
-const API_BASE = '/api/v1';
+/**
+ * API base URL.
+ *
+ * In Tauri mode: window.__SHIPAGENT_PORT__ is injected by the sidecar
+ * port reporter. Tauri reads "SHIPAGENT_PORT=XXXXX" from sidecar stdout
+ * and injects it into the WebView — no TOCTOU race condition.
+ *
+ * In dev mode (Vite): relative URL is proxied to localhost:8000 by vite.config.ts.
+ * The Vite proxy ONLY intercepts /api/ paths — it does NOT interfere with
+ * Tauri IPC calls or other non-API routes.
+ */
+const TAURI_PORT = (window as any).__SHIPAGENT_PORT__;
+const API_BASE = TAURI_PORT
+  ? `http://127.0.0.1:${TAURI_PORT}/api/v1`
+  : '/api/v1';
 
 /**
  * Custom error class for API errors.
@@ -914,4 +928,46 @@ export async function disconnectProvider(connectionKey: string): Promise<Provide
     method: 'POST',
   });
   return parseResponse(response);
+}
+
+// === Settings API ===
+
+import type { AppSettings, CredentialStatus } from '@/types/api';
+
+/** Get application settings. */
+export async function getSettings(): Promise<AppSettings> {
+  const r = await fetch(`${API_BASE}/settings`);
+  return parseResponse<AppSettings>(r);
+}
+
+/** Update application settings (patch semantics). */
+export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+  const r = await fetch(`${API_BASE}/settings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  return parseResponse<AppSettings>(r);
+}
+
+/** Get credential status (never returns values). */
+export async function getCredentialStatus(): Promise<CredentialStatus> {
+  const r = await fetch(`${API_BASE}/settings/credentials/status`);
+  return parseResponse<CredentialStatus>(r);
+}
+
+/** Store a credential in the secure store (keychain). */
+export async function setCredential(key: string, value: string): Promise<void> {
+  const r = await fetch(`${API_BASE}/settings/credentials`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value }),
+  });
+  await parseResponse(r);
+}
+
+/** Mark onboarding as completed. */
+export async function completeOnboarding(): Promise<void> {
+  const r = await fetch(`${API_BASE}/settings/onboarding/complete`, { method: 'POST' });
+  await parseResponse(r);
 }

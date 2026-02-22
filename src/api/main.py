@@ -52,6 +52,7 @@ from src.api.routes import (  # noqa: E402
     preview,
     progress,
     saved_data_sources,
+    settings,
 )
 from src.db.connection import init_db  # noqa: E402
 from src.db.models import JobStatus  # noqa: E402
@@ -459,12 +460,35 @@ async def lifespan(app: FastAPI):
         "default", category=DeprecationWarning, module="claude_agent_sdk"
     )
 
+    # Create data/log/label directories (no-op in dev, creates platformdirs in bundled)
+    from src.utils.paths import ensure_dirs_exist
+
+    ensure_dirs_exist()
+
+    init_db()
+
+    # Auto-generate FILTER_TOKEN_SECRET if absent (env → keyring → generate)
+    import secrets as _secrets
+
+    if not os.environ.get("FILTER_TOKEN_SECRET"):
+        from src.services.keyring_store import KeyringStore
+
+        _kr_store = KeyringStore()
+        _existing_fts = _kr_store.get("FILTER_TOKEN_SECRET")
+        if not _existing_fts:
+            _generated_fts = _secrets.token_hex(32)
+            _kr_store.set("FILTER_TOKEN_SECRET", _generated_fts)
+            os.environ["FILTER_TOKEN_SECRET"] = _generated_fts
+            # CRITICAL: Never log the secret value — only log the event.
+            logger.info("Auto-generated FILTER_TOKEN_SECRET and stored in keychain")
+        else:
+            os.environ["FILTER_TOKEN_SECRET"] = _existing_fts
+            logger.info("Loaded FILTER_TOKEN_SECRET from keychain")
+
     # Fail fast if filter token secret is missing or too short
     from src.orchestrator.filter_config import validate_filter_config
 
     validate_filter_config()
-
-    init_db()
 
     # --- Provider credential check ---
     from src.services.credential_encryption import (
@@ -705,6 +729,7 @@ app.include_router(agent_audit.router, prefix="/api/v1")
 app.include_router(connections.router, prefix="/api/v1")
 app.include_router(contacts.router, prefix="/api/v1")
 app.include_router(commands.router, prefix="/api/v1")
+app.include_router(settings.router, prefix="/api/v1")
 
 
 @app.get("/health")

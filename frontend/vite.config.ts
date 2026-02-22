@@ -13,6 +13,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // IMPORTANT: Only proxy /api/ paths to the backend.
+      // Do NOT use a catch-all proxy — it would intercept Tauri IPC.
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
