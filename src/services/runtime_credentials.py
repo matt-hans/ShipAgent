@@ -28,9 +28,10 @@ _UPS_BASE_URLS = {
     "production": "https://onlinetools.ups.com",
 }
 
-# Per-process flags to avoid spamming fallback warnings.
+# Per-process flags to avoid spamming warnings.
 _ups_fallback_warned: bool = False
 _shopify_fallback_warned: bool = False
+_ups_dual_env_warned: bool = False
 
 
 def _try_db_ups(db: Session, key_dir: str | None, environment: str) -> UPSCredentials | None:
@@ -73,12 +74,15 @@ def _db_lookup_ups(
     alt_result = _try_db_ups(db, key_dir, second_env)
 
     if result is not None and alt_result is not None:
-        logger.warning(
-            "UPS credentials found for both '%s' and '%s' environments. "
-            "Auto-selected '%s' (derived from UPS_BASE_URL). "
-            "Pass environment= explicitly to override.",
-            first_env, second_env, first_env,
-        )
+        global _ups_dual_env_warned
+        if not _ups_dual_env_warned:
+            logger.warning(
+                "UPS credentials found for both '%s' and '%s' environments. "
+                "Auto-selected '%s' (derived from UPS_BASE_URL). "
+                "Pass environment= explicitly to override.",
+                first_env, second_env, first_env,
+            )
+            _ups_dual_env_warned = True
         return result
 
     if result is not None:

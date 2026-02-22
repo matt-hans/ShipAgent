@@ -160,6 +160,7 @@ async def execute_batch(
             "No UPS credentials configured. Open Settings to connect UPS."
         )
 
+    logger.info("Batch execution using UPS environment=%s", ups_creds.environment)
     account_number = ups_creds.account_number or os.environ.get("UPS_ACCOUNT_NUMBER", "")
 
     try:

@@ -749,6 +749,7 @@ async def readiness_check():
             }
             status = "degraded"
     except Exception:
+        logger.warning("Readiness check: UPS credential resolution failed", exc_info=True)
         checks["ups_credentials"] = {"status": "degraded", "message": "Credential check failed"}
         status = "degraded"
 

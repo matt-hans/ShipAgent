@@ -170,6 +170,8 @@ class OrchestrationAgent:
         from src.services.runtime_credentials import resolve_ups_credentials
 
         ups_creds = resolve_ups_credentials()
+        if ups_creds:
+            logger.info("Agent session using UPS environment=%s", ups_creds.environment)
 
         # Get MCP server configs (UPS key omitted if no credentials)
         mcp_configs = create_mcp_servers_config(ups_credentials=ups_creds)
