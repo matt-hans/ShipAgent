@@ -344,8 +344,50 @@ async def confirm_job(
     Raises:
         HTTPException: If job not found or not in pending status.
     """
-    # Atomic compare-and-swap: transition pending → running in one statement.
-    # Prevents TOCTOU race where two concurrent confirms both pass (CWE-367).
+    # --- Pre-CAS validation (Finding 2, CWE-367) ---
+    # Verify preview and data integrity BEFORE the atomic CAS transition.
+    # This eliminates the TOCTOU window where the job is "running" but
+    # data hasn't been verified yet, and avoids rollback races.
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    if job.status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job cannot be confirmed. Current status: {job.status}. "
+            "Only pending jobs can be confirmed.",
+        )
+
+    # SECURITY: Require preview to have been run before confirming (H-1, CWE-367).
+    # Agent Design Invariant #4: "No tool skips approval." A job with no
+    # preview_hash means the user never saw estimated costs.
+    if not job.preview_hash:
+        raise HTTPException(
+            status_code=400,
+            detail="Job must be previewed before confirmation. "
+            "Call batch_preview first to review costs.",
+        )
+
+    # TOCTOU check: verify rows haven't changed since preview
+    current_rows = (
+        db.query(JobRow)
+        .filter(JobRow.job_id == job_id)
+        .order_by(JobRow.row_number)
+        .all()
+    )
+    checksum_concat = "|".join(
+        f"{r.row_number}:{r.row_checksum}" for r in current_rows
+    )
+    current_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
+    if current_hash != job.preview_hash:
+        raise HTTPException(
+            status_code=409,
+            detail="Job data has changed since preview. Please re-preview before confirming.",
+        )
+
+    # --- Atomic CAS: transition pending → running (no rollback needed) ---
+    # All validations passed. The CAS prevents two concurrent confirms.
     result = db.execute(
         update(Job)
         .where(Job.id == job_id, Job.status == "pending")
@@ -354,53 +396,15 @@ async def confirm_job(
     db.commit()
 
     if result.rowcount == 0:
-        job = db.query(Job).filter(Job.id == job_id).first()
-        if not job:
-            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+        # Another concurrent request already transitioned this job
         raise HTTPException(
             status_code=400,
-            detail=f"Job cannot be confirmed. Current status: {job.status}. "
-            "Only pending jobs can be confirmed.",
+            detail="Job cannot be confirmed (concurrent modification). "
+            "Another request may have already confirmed this job.",
         )
 
     # Re-fetch job after atomic transition for subsequent logic
     job = db.query(Job).filter(Job.id == job_id).first()
-
-    # SECURITY: Require preview to have been run before confirming (H-1, CWE-367).
-    # Agent Design Invariant #4: "No tool skips approval." A job with no
-    # preview_hash means the user never saw estimated costs.
-    if not job.preview_hash:
-        # Roll back the CAS transition so the job returns to pending
-        job.status = "pending"
-        job.started_at = None
-        db.commit()
-        raise HTTPException(
-            status_code=400,
-            detail="Job must be previewed before confirmation. "
-            "Call batch_preview first to review costs.",
-        )
-
-    # TOCTOU check: verify rows haven't changed since preview
-    if job.preview_hash:
-        current_rows = (
-            db.query(JobRow)
-            .filter(JobRow.job_id == job_id)
-            .order_by(JobRow.row_number)
-            .all()
-        )
-        checksum_concat = "|".join(
-            f"{r.row_number}:{r.row_checksum}" for r in current_rows
-        )
-        current_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
-        if current_hash != job.preview_hash:
-            # Roll back to pending so user can re-preview
-            job.status = "pending"
-            job.started_at = None
-            db.commit()
-            raise HTTPException(
-                status_code=409,
-                detail="Job data has changed since preview. Please re-preview before confirming.",
-            )
 
     # Write-back preference: user toggle overrides, but interactive always off
     if req and req.write_back_enabled is not None:

@@ -630,6 +630,28 @@ _BANNED_SQL_KEYS = frozenset({"where_clause", "sql", "query", "raw_sql"})
 # Cached FILTER_TOKEN_SECRET to avoid repeated os.environ lookups
 _FILTER_TOKEN_SECRET: str | None = None
 
+# One-time-use token set to prevent replay attacks within TTL (CWE-294, Finding 8).
+# In-memory set is sufficient for single-process desktop app.
+_used_filter_tokens: set[str] = set()
+_used_tokens_expiry: dict[str, float] = {}  # token_hash → expiry timestamp
+
+# Periodic cleanup threshold to avoid unbounded growth
+_TOKEN_CLEANUP_INTERVAL = 300  # 5 minutes
+_last_token_cleanup: float = 0.0
+
+
+def _cleanup_expired_tokens() -> None:
+    """Remove expired entries from the used-token set."""
+    global _last_token_cleanup
+    now = time.time()
+    if now - _last_token_cleanup < _TOKEN_CLEANUP_INTERVAL:
+        return
+    _last_token_cleanup = now
+    expired = [h for h, exp in _used_tokens_expiry.items() if now > exp]
+    for h in expired:
+        _used_filter_tokens.discard(h)
+        del _used_tokens_expiry[h]
+
 
 def _get_filter_token_secret() -> str:
     """Return the cached FILTER_TOKEN_SECRET value.
@@ -872,6 +894,18 @@ async def validate_filter_spec_on_pipeline(
             "Resolution token HMAC signature is invalid (tampered).",
         )
 
+    # Replay prevention: reject tokens already consumed (CWE-294, Finding 8).
+    _cleanup_expired_tokens()
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    if token_hash in _used_filter_tokens:
+        _log_to_stderr(
+            f"[FILTER ENFORCEMENT] DENYING replayed token | ID: {tool_use_id}"
+        )
+        return _deny_token(
+            "token_replayed",
+            "Resolution token has already been used. Re-resolve the filter.",
+        )
+
     # Check schema_signature binding
     if decoded.get("schema_signature") != filter_spec.get("schema_signature"):
         return _deny_token(
@@ -958,6 +992,10 @@ async def validate_filter_spec_on_pipeline(
             "Tier-B filters require user confirmation before execution. "
             "Use confirm_filter_interpretation then re-resolve."
         )
+
+    # All validations passed — mark token as consumed to prevent replay.
+    _used_filter_tokens.add(token_hash)
+    _used_tokens_expiry[token_hash] = decoded.get("expires_at", time.time() + 600)
 
     return {}
 

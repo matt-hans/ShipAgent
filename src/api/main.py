@@ -682,9 +682,59 @@ if allowed_origins:
         allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     )
 
-# NOTE: Rate limiting is not implemented at the application level.
-# In production, rate limiting should be handled by the reverse proxy
-# (e.g. nginx, Caddy, or cloud load balancer) in front of this app.
+# ---------------------------------------------------------------------------
+# Lightweight application-level rate limiting (CWE-770, Finding 6).
+# Protects session-creation and data-import endpoints from resource
+# exhaustion in the Tauri desktop context where no reverse proxy exists.
+# ---------------------------------------------------------------------------
+import collections as _collections
+
+# Per-IP sliding window: {ip: deque of request timestamps}
+_rate_limit_windows: dict[str, _collections.deque] = {}
+_RATE_LIMIT_MAX_REQUESTS = 30  # max requests per window
+_RATE_LIMIT_WINDOW_SECONDS = 60  # sliding window duration
+
+# Exact paths subject to rate limiting (session/resource creation endpoints).
+# Uses exact match to avoid rate-limiting sub-paths like /conversations/{id}/messages.
+_RATE_LIMITED_PATHS = frozenset({
+    "/api/v1/conversations",
+    "/api/v1/conversations/",
+    "/api/v1/data-sources/import",
+    "/api/v1/data-sources/upload",
+})
+
+
+@app.middleware("http")
+async def rate_limit_session_creation(request: Request, call_next):
+    """Rate-limit session and resource creation endpoints.
+
+    Uses a per-IP sliding window counter. Only applies to POST requests
+    on session-creation and data-import paths.
+    """
+    if request.method == "POST" and request.url.path in _RATE_LIMITED_PATHS:
+        client_ip = request.client.host if request.client else "unknown"
+        now = _time.time()
+
+        window = _rate_limit_windows.setdefault(client_ip, _collections.deque())
+        # Evict expired entries
+        cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
+        while window and window[0] < cutoff:
+            window.popleft()
+
+        if len(window) >= _RATE_LIMIT_MAX_REQUESTS:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "detail": (
+                        f"Rate limit exceeded: max {_RATE_LIMIT_MAX_REQUESTS} "
+                        f"requests per {_RATE_LIMIT_WINDOW_SECONDS}s. "
+                        "Please wait before retrying."
+                    )
+                },
+            )
+        window.append(now)
+
+    return await call_next(request)
 
 
 # Maximum request body size for non-upload JSON endpoints (H-3, CWE-400).
@@ -712,16 +762,24 @@ async def enforce_request_body_size(request: Request, call_next):
         path = request.url.path
         if not _is_size_exempt(path):
             content_length = request.headers.get("content-length")
-            if content_length and int(content_length) > _MAX_REQUEST_BODY_BYTES:
-                return JSONResponse(
-                    status_code=413,
-                    content={
-                        "detail": (
-                            f"Request body exceeds "
-                            f"{_MAX_REQUEST_BODY_BYTES // (1024 * 1024)}MB limit."
-                        )
-                    },
-                )
+            if content_length:
+                try:
+                    length = int(content_length)
+                except (ValueError, TypeError):
+                    return JSONResponse(
+                        status_code=400,
+                        content={"detail": "Invalid Content-Length header"},
+                    )
+                if length < 0 or length > _MAX_REQUEST_BODY_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "detail": (
+                                f"Request body exceeds "
+                                f"{_MAX_REQUEST_BODY_BYTES // (1024 * 1024)}MB limit."
+                            )
+                        },
+                    )
     return await call_next(request)
 
 

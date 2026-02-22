@@ -186,7 +186,10 @@ async def reconnect_saved_source(
         raise
     except Exception as e:
         logger.exception("Reconnect failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Reconnect failed: {e}") from None
+        raise HTTPException(
+            status_code=500,
+            detail="Reconnect failed. Check server logs for details.",
+        ) from None
 
 
 @router.delete("/{source_id}")

@@ -135,7 +135,7 @@ async def import_data_source(
             source_type=payload.type,
             row_count=0,
             columns=[],
-            error=f"Import failed: {e}",
+            error="Import failed. Check server logs for details.",
         )
 
 
@@ -208,7 +208,8 @@ async def upload_data_source(
         logger.exception("Failed to save uploaded file: %s", e)
         dest.unlink(missing_ok=True)
         raise HTTPException(
-            status_code=500, detail=f"Failed to save file: {e}"
+            status_code=500,
+            detail="Failed to save file. Check server logs for details.",
         ) from None
     finally:
         await file.close()
@@ -281,7 +282,7 @@ async def upload_data_source(
             source_type=source_type,
             row_count=0,
             columns=[],
-            error=f"Import failed: {e}",
+            error="Import failed. Check server logs for details.",
         )
 
 
