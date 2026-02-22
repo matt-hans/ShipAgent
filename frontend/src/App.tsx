@@ -11,6 +11,7 @@ import { Sidebar } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import { SettingsFlyout } from '@/components/settings/SettingsFlyout';
 import { OnboardingWizard } from '@/components/settings/OnboardingWizard';
+import { UpdateChecker } from '@/components/settings/UpdateChecker';
 import { ChatHistoryFlyout } from '@/components/ChatHistoryFlyout';
 import { useAppState, AppStateProvider } from '@/hooks/useAppState';
 import type { ConversationMessage } from '@/hooks/useAppState';
@@ -74,6 +75,9 @@ function AppContent() {
           activeSessionId={conversationSessionId}
         />
       </div>
+
+      {/* Auto-updater (only renders inside Tauri) */}
+      <UpdateChecker />
     </div>
   );
 }
