@@ -11,6 +11,8 @@ import type {
   JobListResponse,
   JobProgress,
   ErrorResponse,
+  ProviderConnectionInfo,
+  SaveProviderRequest,
 } from '@/types/api';
 
 const API_BASE = '/api/v1';
@@ -848,4 +850,47 @@ export async function deleteCommand(commandId: string): Promise<void> {
   if (!response.ok) {
     await parseResponse(response);
   }
+}
+
+// === Provider Connections ===
+
+/** List all provider connections (no credentials exposed). */
+export async function listProviderConnections(): Promise<ProviderConnectionInfo[]> {
+  const response = await fetch(`${API_BASE}/connections/`);
+  return parseResponse(response);
+}
+
+/** Get a single connection by key. */
+export async function getProviderConnection(connectionKey: string): Promise<ProviderConnectionInfo> {
+  const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(connectionKey)}`);
+  return parseResponse(response);
+}
+
+/** Save or overwrite provider credentials. */
+export async function saveProviderCredentials(
+  provider: string,
+  payload: SaveProviderRequest,
+): Promise<{ connection_key: string; is_new: boolean }> {
+  const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(provider)}/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return parseResponse(response);
+}
+
+/** Delete a connection by key. */
+export async function deleteProviderConnection(connectionKey: string): Promise<{ deleted: boolean }> {
+  const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(connectionKey)}`, {
+    method: 'DELETE',
+  });
+  return parseResponse(response);
+}
+
+/** Disconnect a connection (preserves credentials). */
+export async function disconnectProvider(connectionKey: string): Promise<ProviderConnectionInfo> {
+  const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(connectionKey)}/disconnect`, {
+    method: 'POST',
+  });
+  return parseResponse(response);
 }
