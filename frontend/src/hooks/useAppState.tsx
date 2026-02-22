@@ -24,6 +24,7 @@ import type {
   Contact,
   CustomCommand,
   ChatSessionSummary,
+  ProviderConnectionInfo,
 } from '@/types/api';
 import * as api from '@/lib/api';
 
@@ -192,6 +193,12 @@ interface AppState {
   refreshChatSessions: () => void;
   activeSessionTitle: string | null;
   setActiveSessionTitle: (title: string | null) => void;
+
+  // Provider connections state
+  providerConnections: ProviderConnectionInfo[];
+  providerConnectionsLoading: boolean;
+  providerConnectionsVersion: number;
+  refreshProviderConnections: () => void;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -260,6 +267,36 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const refreshChatSessions = React.useCallback(() => {
     setChatSessionsVersion((v) => v + 1);
   }, []);
+
+  // Provider connections state
+  const [providerConnections, setProviderConnections] = React.useState<ProviderConnectionInfo[]>([]);
+  const [providerConnectionsLoading, setProviderConnectionsLoading] = React.useState(false);
+  const [providerConnectionsVersion, setProviderConnectionsVersion] = React.useState(0);
+
+  const refreshProviderConnections = React.useCallback(() => {
+    setProviderConnectionsVersion((v) => v + 1);
+  }, []);
+
+  // Fetch provider connections on mount and when version changes
+  React.useEffect(() => {
+    let cancelled = false;
+    setProviderConnectionsLoading(true);
+    api.listProviderConnections()
+      .then((connections) => {
+        if (!cancelled) {
+          setProviderConnections(connections);
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to fetch provider connections:', error);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setProviderConnectionsLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [providerConnectionsVersion]);
 
   // Refresh contacts from API
   const refreshContacts = React.useCallback(async () => {
@@ -355,6 +392,10 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     refreshChatSessions,
     activeSessionTitle,
     setActiveSessionTitle,
+    providerConnections,
+    providerConnectionsLoading,
+    providerConnectionsVersion,
+    refreshProviderConnections,
   };
 
   return (
