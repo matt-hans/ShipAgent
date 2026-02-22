@@ -394,10 +394,8 @@ def build_system_prompt(
     elif source_info is not None:
         data_section = _build_schema_section(source_info, column_samples=column_samples)
     else:
-        shopify_configured = bool(
-            os.environ.get("SHOPIFY_ACCESS_TOKEN")
-            and os.environ.get("SHOPIFY_STORE_DOMAIN")
-        )
+        from src.services.runtime_credentials import resolve_shopify_credentials
+        shopify_configured = resolve_shopify_credentials() is not None
         if shopify_configured:
             data_section = (
                 "No data source imported yet, but Shopify credentials are configured "
