@@ -506,12 +506,78 @@ class ConnectionService:
         return self._row_to_dict(row)
 
     def check_all(self) -> dict:
-        """Stub — full implementation in Task 6 (startup decryptability check).
+        """Check all non-disconnected connections for decryptability.
+
+        Attempts to decrypt each connection's credentials. On success, recovers
+        needs_reconnect rows to configured. On failure, marks rows as
+        needs_reconnect with DECRYPT_FAILED error code.
 
         Returns:
-            Empty dict (placeholder).
+            Dict of connection_key -> "ok" | "error".
         """
-        return {}
+        from src.services.credential_encryption import get_key_source_info
+
+        key_info = get_key_source_info()
+        logger.info("check_all: key source=%s", key_info["source"])
+
+        rows = (
+            self._db.query(ProviderConnection)
+            .filter(~ProviderConnection.status.in_({"disconnected"}))
+            .all()
+        )
+        if not rows:
+            return {}
+
+        results: dict[str, str] = {}
+        error_count = 0
+
+        for row in rows:
+            # Validate row has required fields
+            if not row.provider or not row.auth_mode or not row.connection_key or not row.encrypted_credentials:
+                results[row.connection_key or "unknown"] = "error"
+                row.status = "needs_reconnect"
+                row.last_error_code = "INVALID_ROW"
+                row.error_message = "Missing required fields (provider, auth_mode, or encrypted_credentials)"
+                row.updated_at = _utc_now_iso()
+                error_count += 1
+                continue
+
+            try:
+                aad = _build_aad(row)
+                decrypt_credentials(row.encrypted_credentials, self._key, aad=aad)
+                results[row.connection_key] = "ok"
+                # Recover needs_reconnect on successful decrypt
+                if row.status == "needs_reconnect":
+                    row.status = "configured"
+                    row.last_error_code = None
+                    row.error_message = None
+                    row.updated_at = _utc_now_iso()
+            except CredentialDecryptionError as e:
+                results[row.connection_key] = "error"
+                row.status = "needs_reconnect"
+                row.last_error_code = "DECRYPT_FAILED"
+                row.error_message = sanitize_error_message(str(e))
+                row.updated_at = _utc_now_iso()
+                error_count += 1
+                logger.warning(
+                    "Connection %s could not be decrypted: %s",
+                    row.connection_key, sanitize_error_message(str(e)),
+                )
+
+        try:
+            self._db.commit()
+        except IntegrityError:
+            self._db.rollback()
+
+        if error_count > 0:
+            logger.warning(
+                "%d provider connection(s) could not be decrypted. "
+                "This may indicate the encryption key has changed. "
+                "Re-enter credentials in Settings to fix.",
+                error_count,
+            )
+
+        return results
 
     # --- Typed Credential Resolvers ---
 
