@@ -10,6 +10,7 @@ import { CommandCenter, type CommandCenterHandle } from '@/components/CommandCen
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 import { SettingsFlyout } from '@/components/settings/SettingsFlyout';
+import { OnboardingWizard } from '@/components/settings/OnboardingWizard';
 import { ChatHistoryFlyout } from '@/components/ChatHistoryFlyout';
 import { useAppState, AppStateProvider } from '@/hooks/useAppState';
 import type { ConversationMessage } from '@/hooks/useAppState';
@@ -22,7 +23,14 @@ function AppContent() {
     sidebarCollapsed,
     setSidebarCollapsed,
     conversationSessionId,
+    appSettings,
+    appSettingsLoading,
   } = useAppState();
+
+  // Show onboarding wizard if settings loaded and onboarding not completed
+  if (!appSettingsLoading && appSettings && !appSettings.onboarding_completed) {
+    return <OnboardingWizard />;
+  }
 
   const commandCenterRef = React.useRef<CommandCenterHandle>(null);
 
