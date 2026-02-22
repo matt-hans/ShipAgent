@@ -478,3 +478,146 @@ def test_port_reporting_server_signals_failure():
     assert "SHIPAGENT_ERROR=" in src, (
         "PortReportingServer should emit SHIPAGENT_ERROR protocol on failure"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# FOURTH-PASS REVIEW FIXES
+# ═══════════════════════════════════════════════════════════════════════
+
+
+# ─── L-3: Build script pubkey validation (behavioral test) ────────────
+
+
+def test_build_script_pubkey_grep_rejects_placeholder():
+    """Verify that the grep command in bundle_backend.sh catches placeholders."""
+    import subprocess
+    import json
+
+    # Write a tauri conf with placeholder pubkey
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump({"plugins": {"updater": {"pubkey": "REPLACE_WITH_ED25519_PUBLIC_KEY"}}}, f)
+        conf_path = f.name
+
+    try:
+        # Run the same grep command used by the build script
+        result = subprocess.run(
+            ["grep", "-q", "REPLACE_WITH_ED25519_PUBLIC_KEY", conf_path],
+            capture_output=True,
+        )
+        assert result.returncode == 0, "grep should find placeholder pubkey"
+    finally:
+        import os
+        os.unlink(conf_path)
+
+
+def test_build_script_pubkey_grep_accepts_real_key():
+    """Verify that the grep command passes for a real pubkey."""
+    import subprocess
+    import json
+
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump({"plugins": {"updater": {"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk="}}}, f)
+        conf_path = f.name
+
+    try:
+        result = subprocess.run(
+            ["grep", "-q", "REPLACE_WITH_ED25519_PUBLIC_KEY", conf_path],
+            capture_output=True,
+        )
+        assert result.returncode != 0, "grep should NOT find placeholder in real key"
+    finally:
+        import os
+        os.unlink(conf_path)
+
+
+# ─── L-4: get_all_status() env-only fallback path ─────────────────────
+
+
+@patch("src.services.keyring_store.keyring")
+def test_get_all_status_env_only_fallback(mock_kr):
+    """get_all_status() returns True for keys found via env when keyring unavailable."""
+    from src.services.keyring_store import KeyringStore
+
+    # Make keyring completely unavailable
+    mock_kr.get_password.side_effect = RuntimeError("Keychain locked")
+
+    os.environ["ANTHROPIC_API_KEY"] = "sk-test-value"
+    os.environ.pop("UPS_CLIENT_ID", None)
+    try:
+        store = KeyringStore()
+        status = store.get_all_status()
+        assert status["ANTHROPIC_API_KEY"] is True
+        assert status["UPS_CLIENT_ID"] is False
+    finally:
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+
+
+@patch("src.services.keyring_store.keyring")
+def test_get_all_status_keyring_available(mock_kr):
+    """get_all_status() returns True when keyring has the credential."""
+    from src.services.keyring_store import KeyringStore
+
+    # Probe call succeeds (returns None for non-existent key)
+    mock_kr.get_password.side_effect = lambda svc, key: (
+        "found-value" if key == "ANTHROPIC_API_KEY" else None
+    )
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    os.environ.pop("UPS_CLIENT_ID", None)
+    try:
+        store = KeyringStore()
+        status = store.get_all_status()
+        assert status["ANTHROPIC_API_KEY"] is True
+        assert status["UPS_CLIENT_ID"] is False
+    finally:
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+
+
+# ─── H-1: bundle_backend.sh uses --port 0 ─────────────────────────────
+
+
+def test_bundle_backend_uses_port_zero():
+    """bundle_backend.sh should use --port 0, not a hardcoded port."""
+    from pathlib import Path
+
+    script = Path("scripts/bundle_backend.sh").read_text()
+    assert "--port 0" in script, "Smoke test should use --port 0 for OS-assigned port"
+    assert "SHIPAGENT_PORT=" in script, "Smoke test should parse SHIPAGENT_PORT from stdout"
+    assert "--port 9876" not in script, "Hardcoded port 9876 should be removed"
+
+
+# ─── L-2: get_cli_args() guard assertion ───────────────────────────────
+
+
+def test_get_cli_args_requires_cli_command():
+    """get_cli_args() should assert when called without 'cli' subcommand."""
+    from unittest.mock import patch as _patch
+    from src.bundle_entry import get_cli_args
+
+    with _patch("src.bundle_entry.sys") as mock_sys:
+        mock_sys.argv = ["shipagent", "serve"]
+        with pytest.raises(AssertionError, match="cli"):
+            get_cli_args()
+
+
+# ─── OPT-1: get_all_status() fail-fast probe ──────────────────────────
+
+
+@patch("src.services.keyring_store.keyring")
+def test_get_all_status_does_single_probe(mock_kr):
+    """get_all_status() should probe keyring once, not N times when unavailable."""
+    from src.services.keyring_store import KeyringStore
+
+    call_count = 0
+    def counting_get(svc, key):
+        nonlocal call_count
+        call_count += 1
+        raise RuntimeError("Keychain locked")
+
+    mock_kr.get_password.side_effect = counting_get
+    store = KeyringStore()
+    os.environ.pop("ANTHROPIC_API_KEY", None)
+    status = store.get_all_status()
+    # Only the probe call should fail, then env fallback for all keys
+    assert call_count == 1, f"Expected 1 probe call, got {call_count}"

@@ -50,21 +50,45 @@ echo "Bundle size: $SIZE"
 echo "Binary path: $BINARY"
 
 # 4. Smoke test — start server briefly and check /health
+# Uses --port 0 (OS-assigned) to avoid TOCTOU race on busy CI runners.
 echo "--- Smoke test ---"
-"$BINARY" serve --port 9876 &
+SMOKE_PORT=""
+"$BINARY" serve --port 0 > "$BINARY_DIR/.smoke_stdout" 2>&1 &
 PID=$!
-sleep 5
 
-if curl -sf http://127.0.0.1:9876/health > /dev/null 2>&1; then
+# Wait up to 15 seconds for the SHIPAGENT_PORT= protocol line
+for i in $(seq 1 30); do
+    if [ -f "$BINARY_DIR/.smoke_stdout" ]; then
+        SMOKE_PORT=$(grep -o 'SHIPAGENT_PORT=[0-9]*' "$BINARY_DIR/.smoke_stdout" | head -1 | cut -d= -f2)
+        if [ -n "$SMOKE_PORT" ]; then
+            break
+        fi
+    fi
+    sleep 0.5
+done
+
+if [ -z "$SMOKE_PORT" ]; then
+    echo "Health check: FAILED (could not determine port)"
+    cat "$BINARY_DIR/.smoke_stdout" 2>/dev/null || true
+    kill $PID 2>/dev/null || true
+    rm -f "$BINARY_DIR/.smoke_stdout"
+    exit 1
+fi
+
+echo "Sidecar bound to port $SMOKE_PORT"
+
+if curl -sf "http://127.0.0.1:${SMOKE_PORT}/health" > /dev/null 2>&1; then
     echo "Health check: PASSED"
 else
     echo "Health check: FAILED"
     kill $PID 2>/dev/null || true
+    rm -f "$BINARY_DIR/.smoke_stdout"
     exit 1
 fi
 
 kill $PID 2>/dev/null || true
 wait $PID 2>/dev/null || true
+rm -f "$BINARY_DIR/.smoke_stdout"
 
 echo "=== Build complete ==="
 echo "Output: $BINARY_DIR/ (one-folder build)"

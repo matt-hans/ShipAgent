@@ -9,6 +9,12 @@
 // NOT shell.sidecar(). Tauri's sidecar() is for externalBin (single files).
 // Our PyInstaller one-folder build produces a directory, so we bundle it
 // as a Tauri resource and resolve the executable path at runtime.
+//
+// CSP NOTE: tauri.conf.json uses `connect-src 'self' http://127.0.0.1:*`
+// because the backend binds to an OS-assigned port (--port 0). The wildcard
+// port is required since we don't know the port at build time. This is safe
+// for a desktop app: the frontend only runs locally, there is no remote code
+// execution vector, and all connections are to localhost.
 
 use std::sync::Mutex;
 use tauri::Manager;

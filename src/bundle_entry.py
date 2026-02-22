@@ -29,7 +29,13 @@ def get_command() -> str:
 
 
 def get_cli_args() -> list[str]:
-    """Return args after 'cli' subcommand for Typer dispatch."""
+    """Return args after 'cli' subcommand for Typer dispatch.
+
+    Only valid when get_command() returned 'cli'.
+    """
+    assert len(sys.argv) >= 2 and sys.argv[1] == 'cli', (
+        "get_cli_args() called without 'cli' subcommand"
+    )
     return sys.argv[2:]
 
 
