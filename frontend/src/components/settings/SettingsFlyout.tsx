@@ -10,13 +10,14 @@
 import * as React from 'react';
 import { X } from 'lucide-react';
 import { useAppState } from '@/hooks/useAppState';
+import { ConnectionsSection } from './ConnectionsSection';
 import { ShipmentBehaviourSection } from './ShipmentBehaviourSection';
 import { AddressBookSection } from './AddressBookSection';
 import { CustomCommandsSection } from './CustomCommandsSection';
 
 export function SettingsFlyout() {
   const { settingsFlyoutOpen, setSettingsFlyoutOpen } = useAppState();
-  const [openSection, setOpenSection] = React.useState<string | null>('shipment');
+  const [openSection, setOpenSection] = React.useState<string | null>('connections');
 
   if (!settingsFlyoutOpen) return null;
 
@@ -46,6 +47,12 @@ export function SettingsFlyout() {
         </div>
 
         <div className="settings-flyout-content">
+          {/* Connections Section */}
+          <ConnectionsSection
+            isOpen={openSection === 'connections'}
+            onToggle={() => toggleSection('connections')}
+          />
+
           {/* Shipment Behaviour Section */}
           <ShipmentBehaviourSection
             isOpen={openSection === 'shipment'}
