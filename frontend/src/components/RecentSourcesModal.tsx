@@ -30,11 +30,21 @@ interface RecentSourcesModalProps {
 
 function sourceIcon(type: string) {
   if (type === 'database') return <DatabaseIcon className="w-4 h-4 text-amber-400" />;
+  if (type === 'json') return <FileIcon className="w-4 h-4 text-yellow-400" />;
+  if (type === 'xml') return <FileIcon className="w-4 h-4 text-orange-400" />;
+  if (type === 'edi') return <FileIcon className="w-4 h-4 text-purple-400" />;
+  if (type === 'fixed_width') return <FileIcon className="w-4 h-4 text-teal-400" />;
+  if (type === 'excel') return <FileIcon className="w-4 h-4 text-green-400" />;
   return <FileIcon className="w-4 h-4 text-cyan-400" />;
 }
 
+const TYPE_LABELS: Record<string, string> = {
+  fixed_width: 'Fixed Width',
+  edi: 'EDI',
+};
+
 function typeLabel(type: string): string {
-  return type.charAt(0).toUpperCase() + type.slice(1);
+  return TYPE_LABELS[type] ?? type.charAt(0).toUpperCase() + type.slice(1);
 }
 
 // --- Component ---
@@ -104,7 +114,7 @@ export function RecentSourcesModal({ open, onClose, onReconnected }: RecentSourc
     try {
       const result = await reconnectSavedSource(source.id);
       const info: DataSourceInfo = {
-        type: source.source_type as 'csv' | 'excel',
+        type: source.source_type,
         status: 'connected',
         row_count: result.row_count,
         column_count: result.column_count,
@@ -112,6 +122,7 @@ export function RecentSourcesModal({ open, onClose, onReconnected }: RecentSourc
         csv_path: source.source_type === 'csv' ? source.file_path ?? undefined : undefined,
         excel_path: source.source_type === 'excel' ? source.file_path ?? undefined : undefined,
         excel_sheet: source.sheet_name ?? undefined,
+        file_path: source.file_path ?? undefined,
       };
       onReconnected(info);
       onClose();
@@ -206,8 +217,8 @@ export function RecentSourcesModal({ open, onClose, onReconnected }: RecentSourc
               className="w-full pl-8 pr-3 py-2 text-xs font-mono rounded-md bg-slate-800/50 border border-slate-700 text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-primary"
             />
           </div>
-          <div className="flex gap-1.5">
-            {['all', 'csv', 'excel', 'database'].map((t) => (
+          <div className="flex gap-1.5 flex-wrap">
+            {['all', 'csv', 'excel', 'json', 'xml', 'fixed_width', 'edi', 'database'].map((t) => (
               <button
                 key={t}
                 onClick={() => setTypeFilter(t)}
@@ -281,9 +292,13 @@ export function RecentSourcesModal({ open, onClose, onReconnected }: RecentSourc
                         'text-[9px] font-mono uppercase',
                         source.source_type === 'csv' ? 'text-cyan-500' :
                         source.source_type === 'excel' ? 'text-green-500' :
+                        source.source_type === 'json' ? 'text-yellow-500' :
+                        source.source_type === 'xml' ? 'text-orange-500' :
+                        source.source_type === 'edi' ? 'text-purple-500' :
+                        source.source_type === 'fixed_width' ? 'text-teal-500' :
                         'text-amber-500'
                       )}>
-                        {source.source_type}
+                        {typeLabel(source.source_type)}
                       </span>
                     </div>
                   </div>

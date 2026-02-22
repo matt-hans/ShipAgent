@@ -8,6 +8,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+// Indirection prevents Vite's static import analysis from failing when
+// @tauri-apps/plugin-updater is not installed (e.g. plain `npm run dev`).
+const UPDATER_MODULE = '@tauri-apps/plugin-updater';
+
 interface UpdateInfo {
   version: string;
   body: string;
@@ -25,7 +29,7 @@ export function UpdateChecker() {
 
     async function checkForUpdate() {
       try {
-        const { check } = await import('@tauri-apps/plugin-updater');
+        const { check } = await import(/* @vite-ignore */ UPDATER_MODULE);
         const result = await check();
         if (result?.available) {
           cachedResultRef.current = result;
@@ -53,7 +57,7 @@ export function UpdateChecker() {
       // Use cached result if available, otherwise re-check.
       let result = cachedResultRef.current;
       if (!result?.available) {
-        const { check } = await import('@tauri-apps/plugin-updater');
+        const { check } = await import(/* @vite-ignore */ UPDATER_MODULE);
         result = await check();
       }
       if (result?.available) {

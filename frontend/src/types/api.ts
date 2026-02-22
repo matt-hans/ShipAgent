@@ -30,7 +30,7 @@ export type RowStatus =
 // === Data Source Types ===
 
 /** Supported data source types. */
-export type DataSourceType = 'csv' | 'excel' | 'database';
+export type DataSourceType = 'csv' | 'excel' | 'json' | 'xml' | 'fixed_width' | 'edi' | 'database';
 
 /** Status of a data source import. */
 export type DataSourceStatus = 'connected' | 'disconnected' | 'error';
@@ -91,6 +91,8 @@ export interface DataSourceInfo {
   excel_path?: string;
   excel_sheet?: string;
   database_query?: string;
+  /** Generic file path for json/xml/edi/fixed_width sources. */
+  file_path?: string;
 }
 
 /** Sheet info for Excel files. */
@@ -631,7 +633,7 @@ export interface DataSourceStatusResponse {
 export interface SavedDataSource {
   id: string;
   name: string;
-  source_type: 'csv' | 'excel' | 'database';
+  source_type: DataSourceType;
   file_path: string | null;
   sheet_name: string | null;
   db_host: string | null;

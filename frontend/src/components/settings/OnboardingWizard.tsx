@@ -31,6 +31,7 @@ export function OnboardingWizard() {
 
   // Step 3: Shipper Address
   const [shipperName, setShipperName] = React.useState('');
+  const [shipperAttentionName, setShipperAttentionName] = React.useState('');
   const [shipperPhone, setShipperPhone] = React.useState('');
   const [shipperAddress1, setShipperAddress1] = React.useState('');
   const [shipperAddress2, setShipperAddress2] = React.useState('');
@@ -85,11 +86,12 @@ export function OnboardingWizard() {
     try {
       // Save shipper address if any field is filled (best-effort —
       // address save failure should not block onboarding completion).
-      const hasAddress = shipperName || shipperAddress1 || shipperCity;
+      const hasAddress = shipperName || shipperAttentionName || shipperAddress1 || shipperCity;
       if (hasAddress) {
         try {
           await api.updateSettings({
             shipper_name: shipperName || null,
+            shipper_attention_name: shipperAttentionName || null,
             shipper_phone: shipperPhone || null,
             shipper_address1: shipperAddress1 || null,
             shipper_address2: shipperAddress2 || null,
@@ -255,26 +257,36 @@ export function OnboardingWizard() {
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">Name</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">Company Name</label>
                   <input
                     type="text"
                     value={shipperName}
                     onChange={(e) => setShipperName(e.target.value)}
-                    placeholder="Company Name"
+                    placeholder="Acme Corp"
                     className="w-full px-3 py-2 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
                     autoFocus
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-foreground mb-1">Phone</label>
+                  <label className="block text-sm font-medium text-foreground mb-1">Contact Name</label>
                   <input
-                    type="tel"
-                    value={shipperPhone}
-                    onChange={(e) => setShipperPhone(e.target.value)}
-                    placeholder="555-123-4567"
+                    type="text"
+                    value={shipperAttentionName}
+                    onChange={(e) => setShipperAttentionName(e.target.value)}
+                    placeholder="Jane Smith"
                     className="w-full px-3 py-2 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
                   />
                 </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">Phone</label>
+                <input
+                  type="tel"
+                  value={shipperPhone}
+                  onChange={(e) => setShipperPhone(e.target.value)}
+                  placeholder="555-123-4567"
+                  className="w-full px-3 py-2 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+                />
               </div>
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1">Address Line 1</label>
