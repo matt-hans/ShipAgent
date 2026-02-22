@@ -84,8 +84,10 @@ class TestOrchestrationAgentUnit:
 class TestAgentOptions:
     """Tests for agent options configuration."""
 
-    def test_options_has_mcp_servers(self):
+    def test_options_has_mcp_servers(self, monkeypatch):
         """Options should configure MCP servers."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
         agent = OrchestrationAgent()
         options = agent._options
         assert options.mcp_servers is not None
@@ -122,14 +124,27 @@ class TestAgentOptions:
         mcp_servers = agent._options.mcp_servers
         assert "orchestrator" in mcp_servers
 
-    def test_has_ups_mcp(self):
+    def test_has_ups_mcp(self, monkeypatch):
         """Options should include UPS MCP for interactive UPS operations."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
         agent = OrchestrationAgent()
         mcp_servers = agent._options.mcp_servers
         assert "ups" in mcp_servers
 
-    def test_allowed_tools_includes_wildcards(self):
+    def test_ups_mcp_omitted_when_no_credentials(self, monkeypatch):
+        """UPS MCP should be absent when no credentials are available."""
+        monkeypatch.delenv("UPS_CLIENT_ID", raising=False)
+        monkeypatch.delenv("UPS_CLIENT_SECRET", raising=False)
+        agent = OrchestrationAgent()
+        mcp_servers = agent._options.mcp_servers
+        assert "ups" not in mcp_servers
+        assert "orchestrator" in mcp_servers
+
+    def test_allowed_tools_includes_wildcards(self, monkeypatch):
         """Allowed tools should include MCP wildcards."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
         agent = OrchestrationAgent()
         allowed = agent._options.allowed_tools
         # Should have wildcards for orchestrator and ups (data via gateway, not MCP)
@@ -141,8 +156,10 @@ class TestAgentOptions:
         has_data = any("data" in t for t in allowed)
         assert not has_data
 
-    def test_interactive_mode_allowed_tools_omit_data_namespace(self):
+    def test_interactive_mode_allowed_tools_omit_data_namespace(self, monkeypatch):
         """Interactive mode should remove mcp__data__* from allowed tools."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
         agent = OrchestrationAgent(interactive_shipping=True)
         allowed = agent._options.allowed_tools
         assert "mcp__data__*" not in allowed

@@ -710,28 +710,30 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
                 "column_count": len(source_info.get("columns", [])),
             }
             if source_info.get("source_type") == "shopify":
-                store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN", "")
-                store_name = store_domain.replace(".myshopify.com", "")
+                from src.services.runtime_credentials import resolve_shopify_credentials
+                shopify_creds = resolve_shopify_credentials()
+                sd = shopify_creds.store_domain if shopify_creds else ""
+                store_name = sd.replace(".myshopify.com", "")
                 platforms["shopify"] = {
                     "connected": True,
                     "shop_name": store_name,
-                    "store_domain": store_domain,
+                    "store_domain": sd,
                 }
             else:
-                access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-                store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+                from src.services.runtime_credentials import resolve_shopify_credentials
+                shopify_creds = resolve_shopify_credentials()
                 platforms["shopify"] = {
                     "connected": False,
-                    "configured": bool(access_token and store_domain),
+                    "configured": shopify_creds is not None,
                     "note": "Shopify credentials found but another source is active",
                 }
         else:
             platforms["data_source"] = {"connected": False}
-            access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-            store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+            from src.services.runtime_credentials import resolve_shopify_credentials
+            shopify_creds = resolve_shopify_credentials()
             platforms["shopify"] = {
                 "connected": False,
-                "configured": bool(access_token and store_domain),
+                "configured": shopify_creds is not None,
             }
     except Exception:
         platforms["data_source"] = {"connected": False}
@@ -775,25 +777,28 @@ async def connect_shopify_tool(
 ) -> dict[str, Any]:
     """Connect to Shopify and import orders as active data source.
 
-    Reads SHOPIFY_ACCESS_TOKEN and SHOPIFY_STORE_DOMAIN from env.
-    Calls ExternalSourcesMCPClient to connect + fetch, then
-    DataSourceGateway to import records.
+    Resolves Shopify credentials via runtime_credentials adapter
+    (DB priority, env fallback). Calls ExternalSourcesMCPClient to
+    connect + fetch, then DataSourceGateway to import records.
 
     Args:
-        args: Empty dict (credentials read from env).
+        args: Empty dict (credentials resolved via adapter).
         bridge: Optional event emitter bridge.
 
     Returns:
         MCP tool response dict.
     """
-    access_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-    store_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
+    from src.services.runtime_credentials import resolve_shopify_credentials
 
-    if not access_token or not store_domain:
+    shopify_creds = resolve_shopify_credentials()
+    if shopify_creds is None:
         return _err(
-            "Shopify credentials not configured. Set SHOPIFY_ACCESS_TOKEN "
+            "Shopify credentials not configured. "
+            "Connect Shopify in Settings or set SHOPIFY_ACCESS_TOKEN "
             "and SHOPIFY_STORE_DOMAIN environment variables."
         )
+    access_token = shopify_creds.access_token
+    store_domain = shopify_creds.store_domain
 
     ext = await get_external_sources_client()
 

@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 
 # Configure logging to stdout for uvicorn to capture
 logging.basicConfig(
@@ -37,6 +38,7 @@ from src.api.middleware.auth import maybe_require_api_key  # noqa: E402
 from src.api.routes import (  # noqa: E402
     agent_audit,
     commands,
+    connections,
     contacts,
     conversations,
     data_sources,
@@ -442,6 +444,53 @@ async def lifespan(app: FastAPI):
 
     init_db()
 
+    # --- Provider credential check ---
+    from src.services.credential_encryption import (
+        CredentialDecryptionError,
+        get_key_source_info,
+    )
+
+    try:
+        key_info = get_key_source_info()
+        logger.info(
+            "Credential key source: %s (%s)",
+            key_info["source"], key_info.get("path", "n/a"),
+        )
+        if key_info["source"] == "platformdirs":
+            strict = os.environ.get(
+                "SHIPAGENT_REQUIRE_PERSISTENT_CREDENTIAL_KEY", ""
+            ).lower() == "true"
+            if strict:
+                raise RuntimeError(
+                    "SHIPAGENT_REQUIRE_PERSISTENT_CREDENTIAL_KEY is set but key source is "
+                    "'platformdirs'. Set SHIPAGENT_CREDENTIAL_KEY or "
+                    "SHIPAGENT_CREDENTIAL_KEY_FILE for persistent deployments."
+                )
+            logger.info(
+                "Using auto-generated key from local filesystem. "
+                "For production or containerized deployments, set "
+                "SHIPAGENT_CREDENTIAL_KEY or SHIPAGENT_CREDENTIAL_KEY_FILE."
+            )
+        with get_db_context() as db:
+            from src.services.connection_service import ConnectionService
+
+            conn_service = ConnectionService(db=db)
+            check_results = conn_service.check_all()
+            if check_results:
+                logger.info("Provider credential check results: %s", check_results)
+    except (RuntimeError, ValueError):
+        raise  # Key config errors + strict policy — must not be swallowed
+    except CredentialDecryptionError as e:
+        logger.warning(
+            "Provider credential check failed (non-blocking): %s: %s",
+            type(e).__name__, e, exc_info=True,
+        )
+    except Exception as e:
+        logger.error(
+            "Unexpected error during provider credential check: %s: %s",
+            type(e).__name__, e, exc_info=True,
+        )
+
     allow_multi_worker = os.environ.get("SHIPAGENT_ALLOW_MULTI_WORKER", "false").lower()
     if allow_multi_worker not in {"1", "true", "yes", "on"}:
         logger.warning(
@@ -527,6 +576,39 @@ if allowed_origins:
     )
 
 
+@app.exception_handler(RequestValidationError)
+async def custom_validation_handler(request: Request, exc: RequestValidationError):
+    """Sanitize 422 validation errors to prevent secret leakage.
+
+    For /connections/* routes: strip raw input values and wrap in standard error schema.
+    For all other routes: preserve default FastAPI behavior.
+    """
+    if request.url.path.startswith("/api/v1/connections"):
+        from src.utils.redaction import sanitize_error_message
+
+        safe_errors = []
+        for err in exc.errors():
+            safe_errors.append({
+                "type": err.get("type", "unknown"),
+                "loc": err.get("loc", []),
+                "msg": sanitize_error_message(str(err.get("msg", "Validation error"))),
+            })
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": "VALIDATION_ERROR",
+                    "message": "Invalid request payload",
+                },
+                "detail": safe_errors,
+            },
+        )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()},
+    )
+
+
 @app.exception_handler(ShipAgentError)
 async def shipagent_error_handler(
     request: Request, exc: ShipAgentError
@@ -562,6 +644,7 @@ app.include_router(platforms.router, prefix="/api/v1")
 app.include_router(saved_data_sources.router, prefix="/api/v1")
 app.include_router(conversations.router, prefix="/api/v1")
 app.include_router(agent_audit.router, prefix="/api/v1")
+app.include_router(connections.router, prefix="/api/v1")
 app.include_router(contacts.router, prefix="/api/v1")
 app.include_router(commands.router, prefix="/api/v1")
 
@@ -649,16 +732,26 @@ async def readiness_check():
         checks["filter_token_secret"] = {"status": "ok"}
         status = "ready"
 
-    missing_ups = [
-        key
-        for key in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET", "UPS_ACCOUNT_NUMBER")
-        if not os.environ.get(key)
-    ]
-    if missing_ups:
-        checks["ups_credentials"] = {"status": "degraded", "missing": missing_ups}
+    # Check UPS credentials via runtime resolver (DB priority, env fallback)
+    try:
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        ups_creds = resolve_ups_credentials()
+        if ups_creds is not None:
+            checks["ups_credentials"] = {
+                "status": "configured",
+                "environment": ups_creds.environment,
+            }
+        else:
+            checks["ups_credentials"] = {
+                "status": "degraded",
+                "message": "No UPS credentials in DB or env vars",
+            }
+            status = "degraded"
+    except Exception:
+        logger.warning("Readiness check: UPS credential resolution failed", exc_info=True)
+        checks["ups_credentials"] = {"status": "degraded", "message": "Credential check failed"}
         status = "degraded"
-    else:
-        checks["ups_credentials"] = {"status": "configured"}
 
     # MCP gateway health (best-effort, non-blocking)
     try:

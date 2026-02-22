@@ -175,12 +175,12 @@ def test_prompt_contains_safety_rules():
 
 
 def test_prompt_contains_current_date():
-    """System prompt includes the current date for temporal context."""
-    from datetime import datetime
+    """System prompt includes the current date (UTC) for temporal context."""
+    from datetime import UTC, datetime
 
     prompt = build_system_prompt()
-    today = datetime.now().strftime("%Y-%m-%d")
-    assert today in prompt
+    today_utc = datetime.now(UTC).strftime("%Y-%m-%d")
+    assert today_utc in prompt
 
 
 def test_prompt_returns_string():

@@ -88,3 +88,8 @@ repomix-output.xml
 *.db-wal
 
 node_modules/
+
+# Encryption key for provider credentials
+.shipagent_key
+# Test-created temp key artifacts
+.shipagent_key_*

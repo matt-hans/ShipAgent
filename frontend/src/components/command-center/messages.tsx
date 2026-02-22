@@ -9,7 +9,7 @@
 
 import * as React from 'react';
 import { useAppState, type ConversationMessage } from '@/hooks/useAppState';
-import { cn, formatRelativeTime } from '@/lib/utils';
+import { formatRelativeTime } from '@/lib/utils';
 import { Package } from 'lucide-react';
 import { PackageIcon, HardDriveIcon, CopyIcon, CheckIcon } from '@/components/ui/icons';
 import { ShopifyIcon } from '@/components/ui/brand-icons';
