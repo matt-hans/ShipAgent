@@ -42,16 +42,22 @@ export class ApiError extends Error {
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let errorResponse: ErrorResponse | null = null;
+    let rawJson: Record<string, unknown> | null = null;
     try {
-      errorResponse = await response.json();
+      rawJson = await response.json();
+      errorResponse = rawJson as ErrorResponse | null;
     } catch {
       // Response may not be JSON
     }
-    throw new ApiError(
-      response.status,
-      errorResponse,
-      errorResponse?.message || `HTTP ${response.status}: ${response.statusText}`
-    );
+    // Extract message from either shape:
+    //   Standard: { message: "..." }
+    //   Connection routes: { error: { message: "..." } }
+    const nestedError = rawJson?.error as Record<string, unknown> | undefined;
+    const message =
+      (typeof nestedError?.message === 'string' ? nestedError.message : null) ||
+      errorResponse?.message ||
+      `HTTP ${response.status}: ${response.statusText}`;
+    throw new ApiError(response.status, errorResponse, message);
   }
   return response.json();
 }

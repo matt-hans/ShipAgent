@@ -1,10 +1,12 @@
 """Tests for runtime credential adapter (DB priority, env fallback)."""
 
+import logging
 import os
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from src.db.models import Base
@@ -503,3 +505,174 @@ class TestShopifyPayloadContract:
         )
         assert result["is_new"] is True
         assert result["runtime_usable"] is True
+
+
+class TestEnvironmentSelectionSafety:
+    """Tests for safe environment auto-selection when both envs are configured."""
+
+    def test_both_envs_logs_warning(self, db_session, key_dir, caplog):
+        """Warning is logged when both test and production credentials exist."""
+        from src.services.connection_service import ConnectionService
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "prod_id", "client_secret": "prod_sec"},
+            metadata={}, environment="production", display_name="UPS Prod",
+        )
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "test_id", "client_secret": "test_sec"},
+            metadata={}, environment="test", display_name="UPS Test",
+        )
+
+        for var in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET", "UPS_BASE_URL"):
+            os.environ.pop(var, None)
+
+        with caplog.at_level(logging.WARNING):
+            result = resolve_ups_credentials(environment=None, db=db_session, key_dir=key_dir)
+
+        assert result is not None
+        assert any("both" in msg.lower() for msg in caplog.messages)
+
+    def test_both_envs_respects_base_url_hint(self, db_session, key_dir):
+        """Auto-selection uses UPS_BASE_URL to pick the preferred environment."""
+        from src.services.connection_service import ConnectionService
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "prod_id", "client_secret": "prod_sec"},
+            metadata={}, environment="production", display_name="UPS Prod",
+        )
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "test_id", "client_secret": "test_sec"},
+            metadata={}, environment="test", display_name="UPS Test",
+        )
+
+        # Set UPS_BASE_URL to CIE → should prefer test
+        os.environ["UPS_BASE_URL"] = "https://wwwcie.ups.com"
+        try:
+            result = resolve_ups_credentials(environment=None, db=db_session, key_dir=key_dir)
+            assert result is not None
+            assert result.environment == "test"
+            assert result.client_id == "test_id"
+        finally:
+            os.environ.pop("UPS_BASE_URL", None)
+
+    def test_explicit_env_skips_auto_selection(self, db_session, key_dir, caplog):
+        """Explicit environment= bypasses auto-selection and warning."""
+        from src.services.connection_service import ConnectionService
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "prod_id", "client_secret": "prod_sec"},
+            metadata={}, environment="production", display_name="UPS Prod",
+        )
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "test_id", "client_secret": "test_sec"},
+            metadata={}, environment="test", display_name="UPS Test",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = resolve_ups_credentials(environment="test", db=db_session, key_dir=key_dir)
+
+        assert result is not None
+        assert result.environment == "test"
+        # No "both" warning when explicit
+        assert not any("both" in msg.lower() for msg in caplog.messages)
+
+    def test_single_env_no_warning(self, db_session, key_dir, caplog):
+        """No warning when only one environment is configured."""
+        from src.services.connection_service import ConnectionService
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "test_id", "client_secret": "test_sec"},
+            metadata={}, environment="test", display_name="UPS Test",
+        )
+
+        for var in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET"):
+            os.environ.pop(var, None)
+
+        with caplog.at_level(logging.WARNING):
+            result = resolve_ups_credentials(environment=None, db=db_session, key_dir=key_dir)
+
+        assert result is not None
+        assert result.environment == "test"
+        assert not any("both" in msg.lower() for msg in caplog.messages)
+
+
+class TestNarrowedExceptionHandling:
+    """Tests for narrowed exception handling in auto-acquire paths."""
+
+    def test_operational_error_falls_back_with_warning(self, key_dir, caplog):
+        """OperationalError from SessionLocal falls back to env with warning."""
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        os.environ["UPS_CLIENT_ID"] = "env_id"
+        os.environ["UPS_CLIENT_SECRET"] = "env_sec"
+        try:
+            def broken_session():
+                raise OperationalError("select 1", {}, Exception("db locked"))
+
+            with caplog.at_level(logging.WARNING):
+                with patch("src.db.connection.SessionLocal", broken_session):
+                    result = resolve_ups_credentials(environment="test", key_dir=key_dir)
+
+            assert result is not None
+            assert result.client_id == "env_id"
+            assert any("auto-acquire" in msg.lower() for msg in caplog.messages)
+        finally:
+            os.environ.pop("UPS_CLIENT_ID", None)
+            os.environ.pop("UPS_CLIENT_SECRET", None)
+
+    def test_import_error_falls_back_with_warning(self, key_dir, caplog):
+        """ImportError from SessionLocal falls back to env with warning."""
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        os.environ["UPS_CLIENT_ID"] = "env_id"
+        os.environ["UPS_CLIENT_SECRET"] = "env_sec"
+        try:
+            def broken_session():
+                raise ImportError("No module named src.db.connection")
+
+            with caplog.at_level(logging.WARNING):
+                with patch("src.db.connection.SessionLocal", broken_session):
+                    result = resolve_ups_credentials(environment="test", key_dir=key_dir)
+
+            assert result is not None
+            assert result.client_id == "env_id"
+            assert any("auto-acquire" in msg.lower() for msg in caplog.messages)
+        finally:
+            os.environ.pop("UPS_CLIENT_ID", None)
+            os.environ.pop("UPS_CLIENT_SECRET", None)
+
+    def test_unexpected_error_falls_back_with_exc_info(self, key_dir, caplog):
+        """Unexpected exceptions fall back to env with exc_info logged."""
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        os.environ["UPS_CLIENT_ID"] = "env_id"
+        os.environ["UPS_CLIENT_SECRET"] = "env_sec"
+        try:
+            def broken_session():
+                raise ValueError("something unexpected")
+
+            with caplog.at_level(logging.WARNING):
+                with patch("src.db.connection.SessionLocal", broken_session):
+                    result = resolve_ups_credentials(environment="test", key_dir=key_dir)
+
+            assert result is not None
+            assert result.client_id == "env_id"
+            assert any("unexpected" in msg.lower() for msg in caplog.messages)
+        finally:
+            os.environ.pop("UPS_CLIENT_ID", None)
+            os.environ.pop("UPS_CLIENT_SECRET", None)

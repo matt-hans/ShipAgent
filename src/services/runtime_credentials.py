@@ -12,6 +12,7 @@ import logging
 import os
 from urllib.parse import urlparse
 
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from src.services.connection_types import (
@@ -40,6 +41,51 @@ def _try_db_ups(db: Session, key_dir: str | None, environment: str) -> UPSCreden
     return service.get_ups_credentials(environment)
 
 
+def _derive_preferred_env() -> str:
+    """Derive the preferred UPS environment from UPS_BASE_URL env var.
+
+    Returns 'test' if UPS_BASE_URL contains 'wwwcie', otherwise 'production'.
+    """
+    env_base_url = os.environ.get("UPS_BASE_URL", "").strip()
+    if "wwwcie" in env_base_url:
+        return "test"
+    return "production"
+
+
+def _db_lookup_ups(
+    db: Session, key_dir: str | None, environment: str | None,
+) -> UPSCredentials | None:
+    """Run UPS DB lookup logic on a given session.
+
+    When environment is None, uses the preferred env first, then the
+    alternate. Logs a warning when both environments have credentials.
+    """
+    preferred = _derive_preferred_env()
+
+    if environment is not None:
+        return _try_db_ups(db, key_dir, environment)
+
+    # Auto-select: try preferred env first, then alternate
+    first_env = preferred
+    second_env = "test" if preferred == "production" else "production"
+
+    result = _try_db_ups(db, key_dir, first_env)
+    alt_result = _try_db_ups(db, key_dir, second_env)
+
+    if result is not None and alt_result is not None:
+        logger.warning(
+            "UPS credentials found for both '%s' and '%s' environments. "
+            "Auto-selected '%s' (derived from UPS_BASE_URL). "
+            "Pass environment= explicitly to override.",
+            first_env, second_env, first_env,
+        )
+        return result
+
+    if result is not None:
+        return result
+    return alt_result
+
+
 def resolve_ups_credentials(
     *,
     environment: str | None = None,
@@ -49,9 +95,9 @@ def resolve_ups_credentials(
     """Resolve UPS credentials with DB priority, env fallback.
 
     Args:
-        environment: 'test' or 'production'. When None, checks DB for any
-            stored connection (production first, then test) and falls back
-            to deriving environment from UPS_BASE_URL env var.
+        environment: 'test' or 'production'. When None, auto-selects using
+            the UPS_BASE_URL env var to determine preferred environment.
+            Logs a warning if both test and production credentials exist.
         db: SQLAlchemy session. When None a short-lived session is
             auto-acquired so DB credentials are always checked.
         key_dir: Encryption key directory (optional).
@@ -63,40 +109,33 @@ def resolve_ups_credentials(
 
     # --- DB lookup (auto-acquire session when not provided) ---
     if db is not None:
-        result = _try_db_ups(db, key_dir, environment or "production")
+        result = _db_lookup_ups(db, key_dir, environment)
         if result is not None:
             return result
-        # If explicit environment was None, also try the other env
-        if environment is None:
-            result = _try_db_ups(db, key_dir, "test")
-            if result is not None:
-                return result
     else:
         try:
             from src.db.connection import SessionLocal
 
             auto_db = SessionLocal()
             try:
-                result = _try_db_ups(auto_db, key_dir, environment or "production")
+                result = _db_lookup_ups(auto_db, key_dir, environment)
                 if result is not None:
                     return result
-                if environment is None:
-                    result = _try_db_ups(auto_db, key_dir, "test")
-                    if result is not None:
-                        return result
             finally:
                 auto_db.close()
+        except (ImportError, OperationalError) as exc:
+            logger.warning(
+                "Auto-acquire DB session failed (%s); proceeding to env fallback",
+                type(exc).__name__,
+            )
         except Exception:
-            logger.debug("Auto-acquire DB session failed; proceeding to env fallback")
+            logger.warning(
+                "Unexpected error auto-acquiring DB session; proceeding to env fallback",
+                exc_info=True,
+            )
 
     # --- Env fallback ---
-    resolved_env = environment
-    if resolved_env is None:
-        env_base_url = os.environ.get("UPS_BASE_URL", "").strip()
-        if "wwwcie" in env_base_url:
-            resolved_env = "test"
-        else:
-            resolved_env = "production"
+    resolved_env = environment or _derive_preferred_env()
 
     client_id = os.environ.get("UPS_CLIENT_ID", "").strip()
     client_secret = os.environ.get("UPS_CLIENT_SECRET", "").strip()
@@ -196,8 +235,16 @@ def resolve_shopify_credentials(
                     return result
             finally:
                 auto_db.close()
+        except (ImportError, OperationalError) as exc:
+            logger.warning(
+                "Auto-acquire DB session failed (%s); proceeding to env fallback",
+                type(exc).__name__,
+            )
         except Exception:
-            logger.debug("Auto-acquire DB session failed; proceeding to env fallback")
+            logger.warning(
+                "Unexpected error auto-acquiring DB session; proceeding to env fallback",
+                exc_info=True,
+            )
 
     # --- Env fallback ---
     env_token = os.environ.get("SHOPIFY_ACCESS_TOKEN", "").strip()
