@@ -15,7 +15,21 @@ import type {
   SaveProviderRequest,
 } from '@/types/api';
 
-const API_BASE = '/api/v1';
+/**
+ * API base URL.
+ *
+ * In Tauri mode: window.__SHIPAGENT_PORT__ is injected by the sidecar
+ * port reporter. Tauri reads "SHIPAGENT_PORT=XXXXX" from sidecar stdout
+ * and injects it into the WebView — no TOCTOU race condition.
+ *
+ * In dev mode (Vite): relative URL is proxied to localhost:8000 by vite.config.ts.
+ * The Vite proxy ONLY intercepts /api/ paths — it does NOT interfere with
+ * Tauri IPC calls or other non-API routes.
+ */
+const TAURI_PORT = (window as any).__SHIPAGENT_PORT__;
+const API_BASE = TAURI_PORT
+  ? `http://127.0.0.1:${TAURI_PORT}/api/v1`
+  : '/api/v1';
 
 /**
  * Custom error class for API errors.
