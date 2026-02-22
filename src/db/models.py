@@ -11,6 +11,7 @@ from typing import Optional
 from uuid import uuid4
 
 from sqlalchemy import (
+    CheckConstraint,
     ForeignKey,
     Index,
     Integer,
@@ -840,6 +841,12 @@ class AppSettings(Base):
     """
 
     __tablename__ = "app_settings"
+    __table_args__ = (
+        CheckConstraint(
+            "batch_concurrency >= 1 AND batch_concurrency <= 20",
+            name="ck_batch_concurrency_range",
+        ),
+    )
 
     # Fixed ID enforces the singleton invariant — only one row can ever exist.
     SINGLETON_ID = "app-settings-singleton"

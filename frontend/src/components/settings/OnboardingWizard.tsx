@@ -103,9 +103,10 @@ export function OnboardingWizard() {
       setSaving(false);
       return;
     }
-    // Refresh state — best-effort, don't block completion
-    try { await refreshAppSettings(); } catch { /* ignore */ }
-    try { await refreshCredentialStatus(); } catch { /* ignore */ }
+    // Best-effort refresh — onboarding is already complete in DB,
+    // so the UI will sync on next navigation even if these fail.
+    try { await refreshAppSettings(); } catch { /* non-critical */ }
+    try { await refreshCredentialStatus(); } catch { /* non-critical */ }
     setSaving(false);
   };
 

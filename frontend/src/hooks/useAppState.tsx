@@ -205,6 +205,7 @@ interface AppState {
   // App settings + onboarding state
   appSettings: AppSettings | null;
   appSettingsLoading: boolean;
+  appSettingsError: string | null;
   credentialStatus: CredentialStatus | null;
   refreshAppSettings: () => Promise<void>;
   refreshCredentialStatus: () => Promise<void>;
@@ -280,14 +281,18 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   // App settings + onboarding state
   const [appSettings, setAppSettings] = React.useState<AppSettings | null>(null);
   const [appSettingsLoading, setAppSettingsLoading] = React.useState(true);
+  const [appSettingsError, setAppSettingsError] = React.useState<string | null>(null);
   const [credentialStatus, setCredentialStatus] = React.useState<CredentialStatus | null>(null);
 
   const refreshAppSettings = React.useCallback(async () => {
     try {
+      setAppSettingsError(null);
       const settings = await api.getSettings();
       setAppSettings(settings);
-    } catch (error) {
+    } catch (error: any) {
+      const msg = error?.message || 'Failed to fetch app settings';
       console.error('Failed to fetch app settings:', error);
+      setAppSettingsError(msg);
     }
   }, []);
 
@@ -449,6 +454,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     refreshProviderConnections,
     appSettings,
     appSettingsLoading,
+    appSettingsError,
     credentialStatus,
     refreshAppSettings,
     refreshCredentialStatus,

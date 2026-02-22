@@ -12,7 +12,9 @@ from src.db.models import AppSettings, utc_now_iso
 
 logger = logging.getLogger(__name__)
 
-# Fields that can be updated via PATCH
+# Fields that can be updated via PATCH /settings.
+# onboarding_completed is intentionally excluded — it can only be set
+# via the dedicated complete_onboarding() method / POST endpoint.
 _MUTABLE_FIELDS = {
     "agent_model", "batch_concurrency",
     "shipper_name", "shipper_attention_name",
@@ -20,7 +22,6 @@ _MUTABLE_FIELDS = {
     "shipper_city", "shipper_state", "shipper_zip",
     "shipper_country", "shipper_phone",
     "ups_account_number", "ups_environment",
-    "onboarding_completed",
 }
 
 
@@ -64,5 +65,14 @@ class SettingsService:
         return settings
 
     def complete_onboarding(self) -> AppSettings:
-        """Mark onboarding as completed."""
-        return self.update({"onboarding_completed": True})
+        """Mark onboarding as completed.
+
+        Uses direct attribute set rather than update() because
+        onboarding_completed is intentionally excluded from _MUTABLE_FIELDS
+        to prevent toggling via PATCH /settings.
+        """
+        settings = self.get_or_create()
+        settings.onboarding_completed = True
+        settings.updated_at = utc_now_iso()
+        self._db.flush()
+        return settings

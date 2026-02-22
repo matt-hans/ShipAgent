@@ -1078,6 +1078,7 @@ export interface CredentialStatus {
   ups_client_secret: boolean;
   shopify_access_token: boolean;
   filter_token_secret: boolean;
+  shipagent_api_key: boolean;
 }
 
 // === Provider Connection Types ===

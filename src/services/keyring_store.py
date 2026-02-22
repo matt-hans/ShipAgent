@@ -1,7 +1,7 @@
 """Secure credential storage using the system keychain.
 
 Uses the `keyring` library which maps to:
-  macOS: Keychain Access (Secure Enclave on Apple Silicon)
+  macOS: Keychain Services (user login keychain)
   Windows: Windows Credential Manager (future)
   Linux: Secret Service API (future)
 
@@ -16,15 +16,15 @@ logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "com.shipagent.app"
 
-# Credentials managed by this store
-MANAGED_CREDENTIALS = [
+# Credentials managed by this store (immutable — used for membership checks)
+MANAGED_CREDENTIALS = frozenset({
     "ANTHROPIC_API_KEY",
     "UPS_CLIENT_ID",
     "UPS_CLIENT_SECRET",
     "SHOPIFY_ACCESS_TOKEN",
     "FILTER_TOKEN_SECRET",
     "SHIPAGENT_API_KEY",
-]
+})
 
 
 class KeyringStore:
@@ -45,7 +45,7 @@ class KeyringStore:
         """Store a credential value in keyring and sync to os.environ.
 
         Syncing to os.environ ensures the runtime credential resolver
-        (which checks DB → env) can find keyring-stored credentials
+        (which checks keyring → env) can find keyring-stored credentials
         without requiring a restart.
         """
         try:

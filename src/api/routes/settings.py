@@ -6,7 +6,6 @@ All endpoints use /api/v1/settings prefix.
 
 import logging
 import os
-from enum import Enum
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -19,10 +18,6 @@ from src.services.settings_service import SettingsService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
-
-# Sentinel for distinguishing "field omitted" from "explicitly set to null".
-_UNSET = object()
-
 
 class SettingsResponse(BaseModel):
     """Response schema for app settings."""
@@ -47,31 +42,29 @@ class SettingsResponse(BaseModel):
 class SettingsPatch(BaseModel):
     """Request schema for updating settings (true PATCH semantics).
 
-    All fields default to _UNSET sentinel. Only fields present in the
-    JSON body will have non-sentinel values. Sending null explicitly
-    clears the field.
+    Uses Pydantic's model_fields_set to distinguish omitted fields from
+    fields explicitly set to null. Only fields present in the JSON body
+    appear in get_updates().
     """
-    agent_model: Any = _UNSET
-    batch_concurrency: Any = _UNSET
-    shipper_name: Any = _UNSET
-    shipper_attention_name: Any = _UNSET
-    shipper_address1: Any = _UNSET
-    shipper_address2: Any = _UNSET
-    shipper_city: Any = _UNSET
-    shipper_state: Any = _UNSET
-    shipper_zip: Any = _UNSET
-    shipper_country: Any = _UNSET
-    shipper_phone: Any = _UNSET
-    ups_account_number: Any = _UNSET
-    ups_environment: Any = _UNSET
-
-    model_config = {"arbitrary_types_allowed": True}
+    agent_model: str | None = None
+    batch_concurrency: int | None = None
+    shipper_name: str | None = None
+    shipper_attention_name: str | None = None
+    shipper_address1: str | None = None
+    shipper_address2: str | None = None
+    shipper_city: str | None = None
+    shipper_state: str | None = None
+    shipper_zip: str | None = None
+    shipper_country: str | None = None
+    shipper_phone: str | None = None
+    ups_account_number: str | None = None
+    ups_environment: str | None = None
 
     @field_validator("batch_concurrency", mode="before")
     @classmethod
     def validate_batch_concurrency(cls, v: Any) -> Any:
         """Ensure batch_concurrency is in [1, 20] when provided."""
-        if v is _UNSET or v is None:
+        if v is None:
             return v
         if not isinstance(v, int):
             raise ValueError("batch_concurrency must be an integer")
@@ -83,7 +76,7 @@ class SettingsPatch(BaseModel):
     @classmethod
     def validate_shipper_country(cls, v: Any) -> Any:
         """Ensure shipper_country is a 2-letter code when provided."""
-        if v is _UNSET or v is None:
+        if v is None:
             return v
         if not isinstance(v, str) or len(v) != 2:
             raise ValueError("shipper_country must be a 2-letter ISO code")
@@ -92,8 +85,7 @@ class SettingsPatch(BaseModel):
     def get_updates(self) -> dict[str, Any]:
         """Return only fields that were explicitly set in the request."""
         return {
-            k: v for k, v in self.__dict__.items()
-            if v is not _UNSET and k != "__pydantic_extra__"
+            k: getattr(self, k) for k in self.model_fields_set
         }
 
 
@@ -104,6 +96,7 @@ class CredentialStatusResponse(BaseModel):
     ups_client_secret: bool = False
     shopify_access_token: bool = False
     filter_token_secret: bool = False
+    shipagent_api_key: bool = False
 
 
 def _get_service(db: Session = Depends(get_db)) -> SettingsService:
@@ -144,7 +137,7 @@ def update_settings(
 class SetCredentialRequest(BaseModel):
     """Request to set a credential in the secure store."""
     key: str
-    value: str
+    value: str = Field(min_length=1)
 
 
 @router.get("/credentials/status", response_model=CredentialStatusResponse)
@@ -163,6 +156,7 @@ def get_credential_status() -> CredentialStatusResponse:
         ups_client_secret=status.get("UPS_CLIENT_SECRET", False),
         shopify_access_token=status.get("SHOPIFY_ACCESS_TOKEN", False),
         filter_token_secret=status.get("FILTER_TOKEN_SECRET", False),
+        shipagent_api_key=status.get("SHIPAGENT_API_KEY", False),
     )
 
 

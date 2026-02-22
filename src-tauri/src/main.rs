@@ -10,11 +10,17 @@
 // Our PyInstaller one-folder build produces a directory, so we bundle it
 // as a Tauri resource and resolve the executable path at runtime.
 
+use std::sync::Mutex;
 use tauri::Manager;
+use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
 /// Maximum time (seconds) to wait for the backend to report its port.
 const SIDECAR_TIMEOUT_SECS: u64 = 30;
+
+/// Holds the backend child process handle so it isn't dropped prematurely.
+/// Stored in Tauri managed state for explicit lifecycle control.
+struct BackendProcess(Mutex<Option<CommandChild>>);
 
 #[tauri::command]
 async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
@@ -33,15 +39,23 @@ async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
         ));
     }
 
+    let path_str = resource_path
+        .to_str()
+        .ok_or_else(|| format!("Resource path contains invalid UTF-8: {}", resource_path.display()))?;
+
     let shell = app.shell();
 
     // Spawn backend — tauri-plugin-shell manages lifecycle automatically.
     // Port 0 tells uvicorn to bind to an OS-assigned port.
-    let (mut rx, _child) = shell
-        .command(resource_path.to_str().unwrap())
+    let (mut rx, child) = shell
+        .command(path_str)
         .args(["serve", "--port", "0"])
         .spawn()
         .map_err(|e| format!("Failed to spawn backend: {e}"))?;
+
+    // Store child handle in managed state to prevent premature drop.
+    let state = app.state::<BackendProcess>();
+    *state.0.lock().unwrap() = Some(child);
 
     // Read stdout line-by-line until we see the port report, with a timeout
     // to prevent hanging forever if the backend crashes during startup.
@@ -66,8 +80,9 @@ async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
                         }
                     }
                     CommandEvent::Error(e) => {
-                        eprintln!("Backend stderr: {e}");
-                        // Don't return error on stderr — uvicorn logs go here
+                        // CommandEvent::Error may be stderr lines or I/O errors.
+                        // Don't treat as fatal — uvicorn logs go to stderr.
+                        eprintln!("Backend process event: {e}");
                     }
                     CommandEvent::Terminated(payload) => {
                         return Err(format!("Backend exited early: {:?}", payload.code));
@@ -93,6 +108,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(BackendProcess(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![start_sidecar])
         .setup(|_app| {
             // The frontend JS calls `invoke('start_sidecar')` on load and
