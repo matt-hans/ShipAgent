@@ -15,7 +15,19 @@ import type {
   SaveProviderRequest,
 } from '@/types/api';
 
-const API_BASE = '/api/v1';
+/**
+ * Resolve the API base URL dynamically.
+ *
+ * In Tauri mode: window.__SHIPAGENT_PORT__ is injected by initSidecar()
+ * before the app renders. Evaluated per-call (not module-static) so it
+ * picks up the port even if set after module load.
+ *
+ * In dev mode (Vite): relative URL is proxied to localhost:8000 by vite.config.ts.
+ */
+function getApiBase(): string {
+  const port = (window as any).__SHIPAGENT_PORT__;
+  return port ? `http://127.0.0.1:${port}/api/v1` : '/api/v1';
+}
 
 /**
  * Custom error class for API errors.
@@ -69,7 +81,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
  * @returns Full job information.
  */
 export async function getJob(jobId: string): Promise<Job> {
-  const response = await fetch(`${API_BASE}/jobs/${jobId}`);
+  const response = await fetch(`${getApiBase()}/jobs/${jobId}`);
   return parseResponse<Job>(response);
 }
 
@@ -93,8 +105,8 @@ export async function getJobs(params: {
 
   const queryString = searchParams.toString();
   const url = queryString
-    ? `${API_BASE}/jobs?${queryString}`
-    : `${API_BASE}/jobs`;
+    ? `${getApiBase()}/jobs?${queryString}`
+    : `${getApiBase()}/jobs`;
 
   const response = await fetch(url);
   return parseResponse<JobListResponse>(response);
@@ -107,7 +119,7 @@ export async function getJobs(params: {
  * @returns List of job rows.
  */
 export async function getJobRows(jobId: string): Promise<JobRow[]> {
-  const response = await fetch(`${API_BASE}/jobs/${jobId}/rows`);
+  const response = await fetch(`${getApiBase()}/jobs/${jobId}/rows`);
   return parseResponse<JobRow[]>(response);
 }
 
@@ -137,7 +149,7 @@ export async function confirmJob(
   if (selectedServiceCode) {
     payload.selected_service_code = selectedServiceCode;
   }
-  const response = await fetch(`${API_BASE}/jobs/${jobId}/confirm`, {
+  const response = await fetch(`${getApiBase()}/jobs/${jobId}/confirm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -151,7 +163,7 @@ export async function confirmJob(
  * @param jobId - The job UUID.
  */
 export async function cancelJob(jobId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/jobs/${jobId}/status`, {
+  const response = await fetch(`${getApiBase()}/jobs/${jobId}/status`, {
     method: 'PATCH',
     headers: {
       'Content-Type': 'application/json',
@@ -170,7 +182,7 @@ export async function cancelJob(jobId: string): Promise<void> {
  * @returns Current progress state.
  */
 export async function getJobProgress(jobId: string): Promise<JobProgress> {
-  const response = await fetch(`${API_BASE}/jobs/${jobId}/progress`);
+  const response = await fetch(`${getApiBase()}/jobs/${jobId}/progress`);
   return parseResponse<JobProgress>(response);
 }
 
@@ -181,7 +193,7 @@ export async function getJobProgress(jobId: string): Promise<JobProgress> {
  * @returns The full URL for EventSource connection.
  */
 export function getProgressStreamUrl(jobId: string): string {
-  return `${API_BASE}/jobs/${jobId}/progress/stream`;
+  return `${getApiBase()}/jobs/${jobId}/progress/stream`;
 }
 
 /**
@@ -191,7 +203,7 @@ export function getProgressStreamUrl(jobId: string): string {
  * @returns The full URL for the merged PDF endpoint.
  */
 export function getMergedLabelsUrl(jobId: string): string {
-  return `${API_BASE}/jobs/${jobId}/labels/merged`;
+  return `${getApiBase()}/jobs/${jobId}/labels/merged`;
 }
 
 /**
@@ -200,7 +212,7 @@ export function getMergedLabelsUrl(jobId: string): string {
  * @param jobId - The job UUID.
  */
 export async function deleteJob(jobId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/jobs/${jobId}`, {
+  const response = await fetch(`${getApiBase()}/jobs/${jobId}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -218,7 +230,7 @@ export async function skipRows(
   jobId: string,
   rowNumbers: number[]
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/jobs/${jobId}/rows/skip`, {
+  const response = await fetch(`${getApiBase()}/jobs/${jobId}/rows/skip`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ row_numbers: rowNumbers }),
@@ -245,7 +257,7 @@ import type {
 export async function importDataSource(
   config: DataSourceImportRequest
 ): Promise<DataSourceImportResponse> {
-  const response = await fetch(`${API_BASE}/data-sources/import`, {
+  const response = await fetch(`${getApiBase()}/data-sources/import`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
@@ -264,7 +276,7 @@ export async function uploadDataSource(
 ): Promise<DataSourceImportResponse> {
   const formData = new FormData();
   formData.append('file', file);
-  const response = await fetch(`${API_BASE}/data-sources/upload`, {
+  const response = await fetch(`${getApiBase()}/data-sources/upload`, {
     method: 'POST',
     body: formData,
   });
@@ -275,7 +287,7 @@ export async function uploadDataSource(
  * Disconnect the currently connected data source.
  */
 export async function disconnectDataSource(): Promise<void> {
-  const response = await fetch(`${API_BASE}/data-sources/disconnect`, {
+  const response = await fetch(`${getApiBase()}/data-sources/disconnect`, {
     method: 'POST',
   });
   if (!response.ok) {
@@ -287,7 +299,7 @@ export async function disconnectDataSource(): Promise<void> {
  * Get the currently connected data source status.
  */
 export async function getDataSourceStatus(): Promise<DataSourceStatusResponse> {
-  const response = await fetch(`${API_BASE}/data-sources/status`);
+  const response = await fetch(`${getApiBase()}/data-sources/status`);
   return parseResponse<DataSourceStatusResponse>(response);
 }
 
@@ -309,7 +321,7 @@ export async function getSavedDataSources(
   const params = new URLSearchParams();
   if (sourceType) params.set('source_type', sourceType);
   const qs = params.toString();
-  const url = qs ? `${API_BASE}/saved-sources?${qs}` : `${API_BASE}/saved-sources`;
+  const url = qs ? `${getApiBase()}/saved-sources?${qs}` : `${getApiBase()}/saved-sources`;
   const response = await fetch(url);
   return parseResponse<SavedDataSourceListResponse>(response);
 }
@@ -327,7 +339,7 @@ export async function reconnectSavedSource(
 ): Promise<{ status: string; source_type: string; row_count: number; column_count: number }> {
   const body: Record<string, unknown> = { source_id: sourceId };
   if (connectionString) body.connection_string = connectionString;
-  const response = await fetch(`${API_BASE}/saved-sources/reconnect`, {
+  const response = await fetch(`${getApiBase()}/saved-sources/reconnect`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -341,7 +353,7 @@ export async function reconnectSavedSource(
  * @param sourceId - UUID of the source to delete.
  */
 export async function deleteSavedSource(sourceId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/saved-sources/${sourceId}`, {
+  const response = await fetch(`${getApiBase()}/saved-sources/${sourceId}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -358,7 +370,7 @@ export async function deleteSavedSource(sourceId: string): Promise<void> {
 export async function bulkDeleteSavedSources(
   sourceIds: string[]
 ): Promise<{ status: string; count: number }> {
-  const response = await fetch(`${API_BASE}/saved-sources/bulk-delete`, {
+  const response = await fetch(`${getApiBase()}/saved-sources/bulk-delete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ source_ids: sourceIds }),
@@ -385,7 +397,7 @@ import type {
 export async function createConversation(
   options?: { interactive_shipping?: boolean },
 ): Promise<CreateConversationResponse> {
-  const response = await fetch(`${API_BASE}/conversations/`, {
+  const response = await fetch(`${getApiBase()}/conversations/`, {
     method: 'POST',
     headers: options ? { 'Content-Type': 'application/json' } : undefined,
     body: options ? JSON.stringify(options) : undefined,
@@ -404,7 +416,7 @@ export async function sendConversationMessage(
   sessionId: string,
   content: string
 ): Promise<SendMessageResponse> {
-  const response = await fetch(`${API_BASE}/conversations/${sessionId}/messages`, {
+  const response = await fetch(`${getApiBase()}/conversations/${sessionId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
@@ -435,7 +447,7 @@ export async function uploadDocument(
   if (notes) formData.append('notes', notes);
 
   const response = await fetch(
-    `${API_BASE}/conversations/${sessionId}/upload-document`,
+    `${getApiBase()}/conversations/${sessionId}/upload-document`,
     { method: 'POST', body: formData },
   );
   return parseResponse<UploadDocumentResponse>(response);
@@ -448,7 +460,7 @@ export async function uploadDocument(
  * @returns Full URL for EventSource connection.
  */
 export function getConversationStreamUrl(sessionId: string): string {
-  return `${API_BASE}/conversations/${sessionId}/stream`;
+  return `${getApiBase()}/conversations/${sessionId}/stream`;
 }
 
 // === Chat Session Persistence API ===
@@ -465,7 +477,7 @@ export async function listConversations(
   activeOnly = true,
 ): Promise<ChatSessionSummary[]> {
   const response = await fetch(
-    `${API_BASE}/conversations/?active_only=${activeOnly}`,
+    `${getApiBase()}/conversations/?active_only=${activeOnly}`,
   );
   return parseResponse<ChatSessionSummary[]>(response);
 }
@@ -486,7 +498,7 @@ export async function getConversationMessages(
   const params = new URLSearchParams({ offset: String(offset) });
   if (limit !== undefined) params.set('limit', String(limit));
   const response = await fetch(
-    `${API_BASE}/conversations/${sessionId}/messages?${params}`,
+    `${getApiBase()}/conversations/${sessionId}/messages?${params}`,
   );
   return parseResponse<SessionDetail>(response);
 }
@@ -501,7 +513,7 @@ export async function updateConversationTitle(
   sessionId: string,
   title: string,
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/conversations/${sessionId}`, {
+  const response = await fetch(`${getApiBase()}/conversations/${sessionId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title }),
@@ -516,7 +528,7 @@ export async function updateConversationTitle(
  */
 export async function exportConversation(sessionId: string): Promise<void> {
   const response = await fetch(
-    `${API_BASE}/conversations/${sessionId}/export`,
+    `${getApiBase()}/conversations/${sessionId}/export`,
   );
   if (!response.ok) {
     throw new ApiError(response.status, null, `Export failed: HTTP ${response.status}`);
@@ -545,7 +557,7 @@ export async function saveArtifactMessage(
   content: string,
   metadata: Record<string, unknown>,
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/conversations/${sessionId}/artifacts`, {
+  const response = await fetch(`${getApiBase()}/conversations/${sessionId}/artifacts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content, metadata }),
@@ -561,7 +573,7 @@ export async function saveArtifactMessage(
  * @param sessionId - Conversation session ID.
  */
 export async function deleteConversation(sessionId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/conversations/${sessionId}`, {
+  const response = await fetch(`${getApiBase()}/conversations/${sessionId}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -586,7 +598,7 @@ import type {
  * @returns Connection status for all platforms.
  */
 export async function listConnections(): Promise<ListConnectionsResponse> {
-  const response = await fetch(`${API_BASE}/platforms/connections`);
+  const response = await fetch(`${getApiBase()}/platforms/connections`);
   return parseResponse<ListConnectionsResponse>(response);
 }
 
@@ -603,7 +615,7 @@ export async function connectPlatform(
   credentials: Record<string, unknown>,
   storeUrl?: string
 ): Promise<ConnectPlatformResponse> {
-  const response = await fetch(`${API_BASE}/platforms/${platform}/connect`, {
+  const response = await fetch(`${getApiBase()}/platforms/${platform}/connect`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -624,7 +636,7 @@ export async function connectPlatform(
 export async function disconnectPlatform(
   platform: PlatformType
 ): Promise<{ success: boolean }> {
-  const response = await fetch(`${API_BASE}/platforms/${platform}/disconnect`, {
+  const response = await fetch(`${getApiBase()}/platforms/${platform}/disconnect`, {
     method: 'POST',
   });
   return parseResponse<{ success: boolean }>(response);
@@ -639,7 +651,7 @@ export async function disconnectPlatform(
 export async function testConnection(
   platform: PlatformType
 ): Promise<{ success: boolean; status: string }> {
-  const response = await fetch(`${API_BASE}/platforms/${platform}/test`);
+  const response = await fetch(`${getApiBase()}/platforms/${platform}/test`);
   return parseResponse<{ success: boolean; status: string }>(response);
 }
 
@@ -663,8 +675,8 @@ export async function listPlatformOrders(
 
   const queryString = params.toString();
   const url = queryString
-    ? `${API_BASE}/platforms/${platform}/orders?${queryString}`
-    : `${API_BASE}/platforms/${platform}/orders`;
+    ? `${getApiBase()}/platforms/${platform}/orders?${queryString}`
+    : `${getApiBase()}/platforms/${platform}/orders`;
 
   const response = await fetch(url);
   return parseResponse<ListOrdersResponse>(response);
@@ -679,7 +691,7 @@ export async function listPlatformOrders(
  * @returns Status indicating whether credentials are configured and valid.
  */
 export async function getShopifyEnvStatus(): Promise<ShopifyEnvStatus> {
-  const response = await fetch(`${API_BASE}/platforms/shopify/env-status`);
+  const response = await fetch(`${getApiBase()}/platforms/shopify/env-status`);
   return parseResponse<ShopifyEnvStatus>(response);
 }
 
@@ -712,8 +724,8 @@ export async function listContacts(params: {
 
   const queryString = searchParams.toString();
   const url = queryString
-    ? `${API_BASE}/contacts?${queryString}`
-    : `${API_BASE}/contacts`;
+    ? `${getApiBase()}/contacts?${queryString}`
+    : `${getApiBase()}/contacts`;
 
   const response = await fetch(url);
   return parseResponse<ContactListResponse>(response);
@@ -726,7 +738,7 @@ export async function listContacts(params: {
  * @returns Contact details.
  */
 export async function getContactByHandle(handle: string): Promise<Contact> {
-  const response = await fetch(`${API_BASE}/contacts/by-handle/${handle}`);
+  const response = await fetch(`${getApiBase()}/contacts/by-handle/${handle}`);
   return parseResponse<Contact>(response);
 }
 
@@ -737,7 +749,7 @@ export async function getContactByHandle(handle: string): Promise<Contact> {
  * @returns Created contact.
  */
 export async function createContact(data: ContactCreate): Promise<Contact> {
-  const response = await fetch(`${API_BASE}/contacts`, {
+  const response = await fetch(`${getApiBase()}/contacts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -756,7 +768,7 @@ export async function updateContact(
   contactId: string,
   data: ContactUpdate
 ): Promise<Contact> {
-  const response = await fetch(`${API_BASE}/contacts/${contactId}`, {
+  const response = await fetch(`${getApiBase()}/contacts/${contactId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -770,7 +782,7 @@ export async function updateContact(
  * @param contactId - The contact UUID.
  */
 export async function deleteContact(contactId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/contacts/${contactId}`, {
+  const response = await fetch(`${getApiBase()}/contacts/${contactId}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -803,8 +815,8 @@ export async function listCommands(params: {
 
   const queryString = searchParams.toString();
   const url = queryString
-    ? `${API_BASE}/commands?${queryString}`
-    : `${API_BASE}/commands`;
+    ? `${getApiBase()}/commands?${queryString}`
+    : `${getApiBase()}/commands`;
 
   const response = await fetch(url);
   return parseResponse<CommandListResponse>(response);
@@ -817,7 +829,7 @@ export async function listCommands(params: {
  * @returns Created command.
  */
 export async function createCommand(data: CommandCreate): Promise<CustomCommand> {
-  const response = await fetch(`${API_BASE}/commands`, {
+  const response = await fetch(`${getApiBase()}/commands`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -836,7 +848,7 @@ export async function updateCommand(
   commandId: string,
   data: CommandUpdate
 ): Promise<CustomCommand> {
-  const response = await fetch(`${API_BASE}/commands/${commandId}`, {
+  const response = await fetch(`${getApiBase()}/commands/${commandId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -850,7 +862,7 @@ export async function updateCommand(
  * @param commandId - The command UUID.
  */
 export async function deleteCommand(commandId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/commands/${commandId}`, {
+  const response = await fetch(`${getApiBase()}/commands/${commandId}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -862,13 +874,13 @@ export async function deleteCommand(commandId: string): Promise<void> {
 
 /** List all provider connections (no credentials exposed). */
 export async function listProviderConnections(): Promise<ProviderConnectionInfo[]> {
-  const response = await fetch(`${API_BASE}/connections/`);
+  const response = await fetch(`${getApiBase()}/connections/`);
   return parseResponse(response);
 }
 
 /** Get a single connection by key. */
 export async function getProviderConnection(connectionKey: string): Promise<ProviderConnectionInfo> {
-  const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(connectionKey)}`);
+  const response = await fetch(`${getApiBase()}/connections/${encodeURIComponent(connectionKey)}`);
   return parseResponse(response);
 }
 
@@ -877,7 +889,7 @@ export async function saveProviderCredentials(
   provider: string,
   payload: SaveProviderRequest,
 ): Promise<{ connection_key: string; is_new: boolean }> {
-  const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(provider)}/save`, {
+  const response = await fetch(`${getApiBase()}/connections/${encodeURIComponent(provider)}/save`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -887,7 +899,7 @@ export async function saveProviderCredentials(
 
 /** Delete a connection by key. */
 export async function deleteProviderConnection(connectionKey: string): Promise<{ deleted: boolean }> {
-  const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(connectionKey)}`, {
+  const response = await fetch(`${getApiBase()}/connections/${encodeURIComponent(connectionKey)}`, {
     method: 'DELETE',
   });
   return parseResponse(response);
@@ -900,7 +912,7 @@ export async function validateProviderConnection(connectionKey: string): Promise
   message: string;
   details?: Record<string, unknown>;
 }> {
-  const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(connectionKey)}/validate`, {
+  const response = await fetch(`${getApiBase()}/connections/${encodeURIComponent(connectionKey)}/validate`, {
     method: 'POST',
   });
   // Validation returns 422 for invalid creds (not a fatal error), so parse body directly
@@ -910,8 +922,50 @@ export async function validateProviderConnection(connectionKey: string): Promise
 
 /** Disconnect a connection (preserves credentials). */
 export async function disconnectProvider(connectionKey: string): Promise<ProviderConnectionInfo> {
-  const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(connectionKey)}/disconnect`, {
+  const response = await fetch(`${getApiBase()}/connections/${encodeURIComponent(connectionKey)}/disconnect`, {
     method: 'POST',
   });
   return parseResponse(response);
+}
+
+// === Settings API ===
+
+import type { AppSettings, CredentialStatus } from '@/types/api';
+
+/** Get application settings. */
+export async function getSettings(): Promise<AppSettings> {
+  const r = await fetch(`${getApiBase()}/settings`);
+  return parseResponse<AppSettings>(r);
+}
+
+/** Update application settings (patch semantics). */
+export async function updateSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
+  const r = await fetch(`${getApiBase()}/settings`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  return parseResponse<AppSettings>(r);
+}
+
+/** Get credential status (never returns values). */
+export async function getCredentialStatus(): Promise<CredentialStatus> {
+  const r = await fetch(`${getApiBase()}/settings/credentials/status`);
+  return parseResponse<CredentialStatus>(r);
+}
+
+/** Store a credential in the secure store (keychain). */
+export async function setCredential(key: string, value: string): Promise<void> {
+  const r = await fetch(`${getApiBase()}/settings/credentials`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key, value }),
+  });
+  await parseResponse(r);
+}
+
+/** Mark onboarding as completed. */
+export async function completeOnboarding(): Promise<void> {
+  const r = await fetch(`${getApiBase()}/settings/onboarding/complete`, { method: 'POST' });
+  await parseResponse(r);
 }

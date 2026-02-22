@@ -55,6 +55,7 @@ from src.orchestrator.agent.intent_detection import (
     is_shipping_request,
 )
 from src.services.agent_session_manager import AgentSessionManager
+from src.services.batch_engine import BatchEngine
 from src.services.conversation_persistence_service import ConversationPersistenceService
 from src.services.decision_audit_context import (
     get_decision_job_id,
@@ -608,7 +609,7 @@ async def _process_agent_message(
         agent_turns_count,
         preview_rows_rated,
         preview_total_rows,
-        os.environ.get("BATCH_CONCURRENCY", "5"),
+        BatchEngine._resolve_concurrency(),
         session.interactive_shipping,
         first_event_source,
         ttfb,
