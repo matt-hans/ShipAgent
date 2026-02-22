@@ -613,6 +613,44 @@ if allowed_origins:
 # (e.g. nginx, Caddy, or cloud load balancer) in front of this app.
 
 
+# Maximum request body size for non-upload JSON endpoints (H-3, CWE-400).
+# File uploads have their own 50MB limit in data_sources.py.
+_MAX_REQUEST_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
+
+# Path patterns exempt from body size enforcement (they have their own limits).
+_SIZE_EXEMPT_PREFIXES = ("/api/v1/data-sources/upload",)
+_SIZE_EXEMPT_SUFFIXES = ("/upload-document",)
+
+
+def _is_size_exempt(path: str) -> bool:
+    """Check if path is exempt from request body size enforcement."""
+    return path.startswith(_SIZE_EXEMPT_PREFIXES) or path.endswith(_SIZE_EXEMPT_SUFFIXES)
+
+
+@app.middleware("http")
+async def enforce_request_body_size(request: Request, call_next):
+    """Reject requests with bodies larger than _MAX_REQUEST_BODY_BYTES.
+
+    Prevents OOM via oversized JSON payloads on non-upload endpoints (H-3, CWE-400).
+    File upload endpoints are exempt (they enforce their own limit).
+    """
+    if request.method in ("POST", "PUT", "PATCH"):
+        path = request.url.path
+        if not _is_size_exempt(path):
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > _MAX_REQUEST_BODY_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": (
+                            f"Request body exceeds "
+                            f"{_MAX_REQUEST_BODY_BYTES // (1024 * 1024)}MB limit."
+                        )
+                    },
+                )
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     """Add standard security headers to all responses.
@@ -634,7 +672,7 @@ async def add_security_headers(request: Request, call_next):
         "connect-src 'self'"
     )
     response.headers["Strict-Transport-Security"] = (
-        "max-age=31536000; includeSubDomains"
+        "max-age=31536000; includeSubDomains; preload"
     )
     return response
 
@@ -680,13 +718,17 @@ async def shipagent_error_handler(
     Returns:
         JSONResponse with error details.
     """
+    # Redact details to prevent internal information leakage (M-3, CWE-209)
+    safe_details = (
+        sanitize_error_message(str(exc.details)) if exc.details else None
+    )
     return JSONResponse(
         status_code=400,
         content={
             "error_code": exc.code,
             "message": exc.message,
             "remediation": exc.remediation,
-            "details": exc.details if exc.details else None,
+            "details": safe_details,
         },
     )
 

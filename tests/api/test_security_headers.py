@@ -95,3 +95,50 @@ class TestUniversalErrorSanitization:
             assert data["error"]["code"] == "VALIDATION_ERROR"
             for err in data["detail"]:
                 assert "input" not in err
+
+
+class TestHSTSPreload:
+    """Tests for L-1: HSTS preload directive."""
+
+    def test_hsts_includes_preload(self, client: TestClient):
+        """HSTS header includes preload directive."""
+        response = client.get("/health")
+        hsts = response.headers.get("Strict-Transport-Security", "")
+        assert "preload" in hsts
+        assert "includeSubDomains" in hsts
+        assert "max-age=31536000" in hsts
+
+
+class TestRequestBodySizeLimit:
+    """Tests for H-3: request body size limit middleware (CWE-400)."""
+
+    def test_oversized_content_length_rejected(self, client: TestClient):
+        """POST with Content-Length > 10MB returns 413."""
+        response = client.post(
+            "/api/v1/conversations/",
+            json={"message": "test"},
+            headers={"Content-Length": str(11 * 1024 * 1024)},
+        )
+        assert response.status_code == 413
+
+    def test_normal_request_accepted(self, client: TestClient):
+        """Normal-sized requests pass through the middleware."""
+        response = client.post(
+            "/api/v1/conversations/",
+            json={"message": "test"},
+        )
+        # Should not be 413 — actual status depends on route logic
+        assert response.status_code != 413
+
+
+class TestErrorDetailRedaction:
+    """Tests for M-3: ShipAgentError detail redaction (CWE-209)."""
+
+    def test_shipagent_error_handler_redacts_details(self):
+        """ShipAgentError handler source uses sanitize_error_message for details."""
+        import inspect
+
+        from src.api.main import shipagent_error_handler
+
+        source = inspect.getsource(shipagent_error_handler)
+        assert "sanitize_error_message" in source

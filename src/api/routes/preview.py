@@ -44,12 +44,14 @@ _batch_tasks: set[asyncio.Task[None]] = set()
 def _track_batch_task(task: asyncio.Task[None]) -> None:
     """Register a background batch task for graceful shutdown drain."""
     _batch_tasks.add(task)
-    task.add_done_callback(lambda done: _batch_tasks.discard(done))
+    task.add_done_callback(_batch_tasks.discard)
 
 
 async def shutdown_batch_runtime(timeout_seconds: float = 15.0) -> None:
     """Drain/cancel outstanding background batch tasks on service shutdown."""
-    pending = [task for task in list(_batch_tasks) if not task.done()]
+    # Snapshot to avoid RuntimeError if done_callback mutates during iteration (M-5, CWE-362)
+    snapshot = set(_batch_tasks)
+    pending = [task for task in snapshot if not task.done()]
     if not pending:
         return
 

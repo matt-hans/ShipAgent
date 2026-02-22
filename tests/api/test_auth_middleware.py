@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 
 from src.api.middleware.auth import (
     _AUTH_FAIL_MAX,
+    _auth_lock,
+    _get_client_ip,
     reset_rate_limiter,
     validate_api_key_strength,
 )
@@ -113,4 +115,69 @@ class TestAuthRateLimit:
         # Should work again (401, not 429)
         resp = client.get("/api/v1/jobs", headers={"X-API-Key": "wrong-key"})
         assert resp.status_code == 401
+
+
+class TestRateLimiterThreadSafety:
+    """Tests for B-1: thread-safe rate limiter (CWE-362)."""
+
+    def test_auth_lock_exists(self):
+        """_auth_lock is a threading.Lock instance."""
+        import threading
+
+        assert isinstance(_auth_lock, type(threading.Lock()))
+
+    def test_rate_limiter_uses_lock(self):
+        """_is_rate_limited and _record_auth_failure use _auth_lock."""
+        import inspect
+
+        from src.api.middleware.auth import _is_rate_limited, _record_auth_failure
+
+        source_limited = inspect.getsource(_is_rate_limited)
+        assert "_auth_lock" in source_limited
+
+        source_record = inspect.getsource(_record_auth_failure)
+        assert "_auth_lock" in source_record
+
+    def test_reset_rate_limiter_uses_lock(self):
+        """reset_rate_limiter also acquires _auth_lock."""
+        import inspect
+
+        source = inspect.getsource(reset_rate_limiter)
+        assert "_auth_lock" in source
+
+
+class TestTrustedProxyConfig:
+    """Tests for H-2: X-Forwarded-For trust configuration (CWE-348)."""
+
+    def test_get_client_ip_ignores_xff_by_default(self):
+        """Without SHIPAGENT_TRUST_PROXY, X-Forwarded-For is ignored."""
+        from unittest.mock import MagicMock
+
+        import src.api.middleware.auth as auth_mod
+
+        original = auth_mod._TRUST_PROXY
+        try:
+            auth_mod._TRUST_PROXY = False
+            request = MagicMock()
+            request.headers = {"X-Forwarded-For": "1.2.3.4"}
+            request.client.host = "127.0.0.1"
+            assert _get_client_ip(request) == "127.0.0.1"
+        finally:
+            auth_mod._TRUST_PROXY = original
+
+    def test_get_client_ip_uses_xff_when_trusted(self):
+        """With SHIPAGENT_TRUST_PROXY=true, X-Forwarded-For is used."""
+        from unittest.mock import MagicMock
+
+        import src.api.middleware.auth as auth_mod
+
+        original = auth_mod._TRUST_PROXY
+        try:
+            auth_mod._TRUST_PROXY = True
+            request = MagicMock()
+            request.headers = {"X-Forwarded-For": "1.2.3.4, 5.6.7.8"}
+            request.client.host = "127.0.0.1"
+            assert _get_client_ip(request) == "1.2.3.4"
+        finally:
+            auth_mod._TRUST_PROXY = original
 

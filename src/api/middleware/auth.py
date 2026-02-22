@@ -12,6 +12,7 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import threading
 import time
 
 from fastapi import Request
@@ -33,18 +34,32 @@ _PUBLIC_PATH_PREFIXES = (
 _AUTH_FAIL_MAX = 10  # Max failures per IP in the time window
 _AUTH_FAIL_WINDOW_SECONDS = 300  # 5-minute sliding window
 _auth_failures: dict[str, list[float]] = {}
+_auth_lock = threading.Lock()  # Protects _auth_failures (B-1, CWE-362)
+
+# --- Trusted proxy configuration (H-2, CWE-348) ---
+# When SHIPAGENT_TRUST_PROXY is set to "1" or "true", X-Forwarded-For is used
+# for client IP extraction. When unset or "0", only request.client.host is used,
+# preventing attackers from spoofing IPs to bypass rate limiting.
+_TRUST_PROXY = os.environ.get("SHIPAGENT_TRUST_PROXY", "").strip().lower() in ("1", "true")
 
 
 def _get_client_ip(request: Request) -> str:
-    """Extract client IP from request, respecting X-Forwarded-For."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Extract client IP from request.
+
+    Only uses X-Forwarded-For when SHIPAGENT_TRUST_PROXY is enabled,
+    preventing IP spoofing when not behind a trusted reverse proxy (CWE-348).
+    """
+    if _TRUST_PROXY:
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
 
 
 def _is_rate_limited(client_ip: str) -> bool:
     """Check if the client IP has exceeded the auth failure rate limit.
+
+    Thread-safe via _auth_lock (B-1, CWE-362).
 
     Args:
         client_ip: Client IP address.
@@ -52,29 +67,34 @@ def _is_rate_limited(client_ip: str) -> bool:
     Returns:
         True if the client should be blocked.
     """
-    now = time.monotonic()
-    timestamps = _auth_failures.get(client_ip, [])
-    # Prune expired entries
-    timestamps = [t for t in timestamps if now - t < _AUTH_FAIL_WINDOW_SECONDS]
-    _auth_failures[client_ip] = timestamps
-    return len(timestamps) >= _AUTH_FAIL_MAX
+    with _auth_lock:
+        now = time.monotonic()
+        timestamps = _auth_failures.get(client_ip, [])
+        # Prune expired entries
+        timestamps = [t for t in timestamps if now - t < _AUTH_FAIL_WINDOW_SECONDS]
+        _auth_failures[client_ip] = timestamps
+        return len(timestamps) >= _AUTH_FAIL_MAX
 
 
 def _record_auth_failure(client_ip: str) -> None:
     """Record an auth failure for the given client IP.
 
+    Thread-safe via _auth_lock (B-1, CWE-362).
+
     Args:
         client_ip: Client IP address.
     """
-    now = time.monotonic()
-    if client_ip not in _auth_failures:
-        _auth_failures[client_ip] = []
-    _auth_failures[client_ip].append(now)
+    with _auth_lock:
+        now = time.monotonic()
+        if client_ip not in _auth_failures:
+            _auth_failures[client_ip] = []
+        _auth_failures[client_ip].append(now)
 
 
 def reset_rate_limiter() -> None:
     """Reset the rate limiter state. Used by tests."""
-    _auth_failures.clear()
+    with _auth_lock:
+        _auth_failures.clear()
 
 
 # --- Key strength validation ---

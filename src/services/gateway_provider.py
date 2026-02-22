@@ -23,22 +23,20 @@ _data_gateway_lock = asyncio.Lock()
 async def get_data_gateway() -> DataSourceMCPClient:
     """Get or create the process-global DataSourceMCPClient.
 
-    Thread-safe via double-checked locking. If a previous connect()
-    failed, the stale instance is discarded and a fresh one created.
+    Always acquires the lock to prevent returning a stale reference
+    that a concurrent task may be replacing (B-2, CWE-362).
 
     Returns:
         The shared DataSourceMCPClient instance.
     """
     global _data_gateway
-    if _data_gateway is not None and _data_gateway.is_connected:
-        return _data_gateway
     async with _data_gateway_lock:
         if _data_gateway is None or not _data_gateway.is_connected:
             client = DataSourceMCPClient()
             await client.connect()
             _data_gateway = client
             logger.info("DataSourceMCPClient singleton initialized")
-    return _data_gateway
+        return _data_gateway
 
 
 # -- ExternalSourcesMCPClient singleton ------------------------------------
@@ -49,22 +47,20 @@ _ext_sources_lock = asyncio.Lock()
 async def get_external_sources_client() -> ExternalSourcesMCPClient:
     """Get or create the process-global ExternalSourcesMCPClient.
 
-    Thread-safe via double-checked locking. If a previous connect()
-    failed, the stale instance is discarded and a fresh one created.
+    Always acquires the lock to prevent returning a stale reference
+    that a concurrent task may be replacing (B-2, CWE-362).
 
     Returns:
         The shared ExternalSourcesMCPClient instance.
     """
     global _ext_sources_client
-    if _ext_sources_client is not None and _ext_sources_client.is_connected:
-        return _ext_sources_client
     async with _ext_sources_lock:
         if _ext_sources_client is None or not _ext_sources_client.is_connected:
             client = ExternalSourcesMCPClient()
             await client.connect()
             _ext_sources_client = client
             logger.info("ExternalSourcesMCPClient singleton initialized")
-    return _ext_sources_client
+        return _ext_sources_client
 
 
 def get_data_gateway_if_connected() -> DataSourceMCPClient | None:
@@ -118,17 +114,13 @@ def _build_ups_gateway() -> Any:
 async def get_ups_gateway() -> Any:
     """Get or create the process-global UPSMCPClient.
 
-    Thread-safe via double-checked locking. If a previous connect()
-    failed or the client disconnected, a fresh one is created.
+    Always acquires the lock to prevent returning a stale reference
+    that a concurrent task may be replacing (B-2, CWE-362).
 
     Returns:
         The shared UPSMCPClient instance.
     """
     global _ups_gateway
-    if _ups_gateway is not None:
-        connected = getattr(_ups_gateway, "is_connected", False)
-        if isinstance(connected, bool) and connected:
-            return _ups_gateway
     async with _ups_gateway_lock:
         if _ups_gateway is not None:
             connected = getattr(_ups_gateway, "is_connected", False)
@@ -140,7 +132,7 @@ async def get_ups_gateway() -> Any:
         await client.connect()
         _ups_gateway = client
         logger.info("UPSMCPClient singleton initialized")
-    return _ups_gateway
+        return _ups_gateway
 
 
 async def check_gateway_health() -> dict[str, dict[str, str]]:
