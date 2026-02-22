@@ -1,6 +1,8 @@
-"""Tests for database URL configuration precedence."""
+"""Tests for database URL configuration precedence and migration security."""
 
-from src.db.connection import get_database_url
+import inspect
+
+from src.db.connection import _migrate_provider_connections, get_database_url
 
 
 def test_get_database_url_prefers_database_url(monkeypatch):
@@ -22,4 +24,14 @@ def test_get_database_url_defaults_to_local_sqlite(monkeypatch):
     monkeypatch.delenv("SHIPAGENT_DB_PATH", raising=False)
 
     assert get_database_url() == "sqlite:///./shipagent.db"
+
+
+class TestMigrationParameterizedSQL:
+    """Tests for CPB-3: parameterized SQL in database migration (CWE-89)."""
+
+    def test_migration_uses_parameterized_binding(self):
+        """Verify _migrate_provider_connections uses :now_utc binding, not f-string."""
+        source = inspect.getsource(_migrate_provider_connections)
+        assert ":now_utc" in source, "Migration must use parameterized :now_utc binding"
+        assert 'f"' not in source or "now_utc" not in source.split('f"')[1] if 'f"' in source else True
 

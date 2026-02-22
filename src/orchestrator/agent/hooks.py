@@ -109,8 +109,8 @@ async def validate_shipping_input(
     # Log validation attempt to stderr
     _log_to_stderr(f"[VALIDATION] Pre-hook checking: {tool_name} | ID: {tool_use_id}")
 
-    # Validate create_shipment tool (mcp__ups__create_shipment)
-    if "create_shipment" in tool_name:
+    # Validate create_shipment tool — exact match prevents bypass (CWE-183)
+    if tool_name == "mcp__ups__create_shipment":
         # Only deny when tool_input is not a dict (e.g. None, str, list).
         # Empty dicts and partial payloads are allowed — MCP preflight
         # handles missing-field validation and returns actionable errors.
@@ -148,7 +148,7 @@ async def validate_void_shipment(
 
     _log_to_stderr(f"[VALIDATION] Pre-hook checking: {tool_name} | ID: {tool_use_id}")
 
-    if "void_shipment" in tool_name:
+    if tool_name == "mcp__ups__void_shipment":
         # Check for tracking number / shipment identification number
         tracking = (
             tool_input.get("trackingNumber")
@@ -188,8 +188,8 @@ async def validate_data_query(
     # Log validation attempt to stderr
     _log_to_stderr(f"[VALIDATION] Pre-hook checking: {tool_name} | ID: {tool_use_id}")
 
-    # Warn about queries without WHERE clause
-    if "query_data" in tool_name:
+    # Warn about queries without WHERE clause — exact match prevents bypass (CWE-183)
+    if tool_name == "mcp__data_source__query_data":
         sql_query = tool_input.get("query", "").upper()
         if "SELECT" in sql_query and "WHERE" not in sql_query:
             _log_to_stderr(
@@ -198,7 +198,7 @@ async def validate_data_query(
             )
 
     # Check for potentially dangerous operations (informational warning)
-    if "query_data" in tool_name:
+    if tool_name == "mcp__data_source__query_data":
         sql_query = tool_input.get("query", "").upper()
         dangerous_keywords = ["DROP", "DELETE", "TRUNCATE", "ALTER", "INSERT", "UPDATE"]
         for keyword in dangerous_keywords:
@@ -239,12 +239,12 @@ async def validate_pre_tool(
     # Log validation attempt to stderr
     _log_to_stderr(f"[VALIDATION] Pre-hook (generic): {tool_name} | ID: {tool_use_id}")
 
-    # Route to specific validators based on tool name
-    if "create_shipment" in tool_name:
+    # Route to specific validators — exact match prevents bypass (CWE-183)
+    if tool_name == "mcp__ups__create_shipment":
         return await validate_shipping_input(input_data, tool_use_id, context)
-    elif "void_shipment" in tool_name:
+    elif tool_name == "mcp__ups__void_shipment":
         return await validate_void_shipment(input_data, tool_use_id, context)
-    elif "query_data" in tool_name:
+    elif tool_name == "mcp__data_source__query_data":
         return await validate_data_query(input_data, tool_use_id, context)
 
     # Default: allow all other tools
@@ -999,7 +999,7 @@ def create_shipping_hook(
             f"interactive={interactive_shipping}"
         )
 
-        if "create_shipment" in tool_name:
+        if tool_name == "mcp__ups__create_shipment":
             if not interactive_shipping:
                 return _deny_with_reason(
                     "Interactive shipping is disabled. "

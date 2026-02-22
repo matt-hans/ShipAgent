@@ -338,14 +338,20 @@ class SAPClient(PlatformClient):
         conditions = []
 
         if filters.status:
-            conditions.append(f"OverallSDProcessStatus eq '{filters.status}'")
+            # Escape single quotes to prevent OData filter injection (CWE-943)
+            safe_status = filters.status.replace("'", "''")
+            conditions.append(f"OverallSDProcessStatus eq '{safe_status}'")
 
         if filters.date_from:
+            # Escape single quotes to prevent OData filter injection (CWE-943)
+            safe_date_from = filters.date_from.replace("'", "''")
             # Convert ISO date to OData datetime format
-            conditions.append(f"CreationDate ge datetime'{filters.date_from}T00:00:00'")
+            conditions.append(f"CreationDate ge datetime'{safe_date_from}T00:00:00'")
 
         if filters.date_to:
-            conditions.append(f"CreationDate le datetime'{filters.date_to}T23:59:59'")
+            # Escape single quotes to prevent OData filter injection (CWE-943)
+            safe_date_to = filters.date_to.replace("'", "''")
+            conditions.append(f"CreationDate le datetime'{safe_date_to}T23:59:59'")
 
         return " and ".join(conditions)
 

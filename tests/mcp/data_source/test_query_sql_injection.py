@@ -158,3 +158,64 @@ class TestQueryDataKeywordBlocking:
         stripped = _strip_sql_comments(sql)
         assert stripped == sql
         assert stripped.strip().upper().startswith("SELECT")
+
+
+class TestDuckDBFileAccessBlocking:
+    """Tests for DuckDB-specific file-reading function blocking (H-1, CWE-89).
+
+    Verifies that auto-variants, scan functions, and remote access keywords
+    are blocked to prevent filesystem/network data exfiltration.
+    """
+
+    @pytest.mark.parametrize(
+        "keyword",
+        [
+            "READ_CSV_AUTO",
+            "READ_JSON_AUTO",
+            "READ_PARQUET_AUTO",
+            "SCAN_CSV",
+            "SCAN_PARQUET",
+            "SCAN_JSON",
+            "HTTPFS",
+            "S3",
+        ],
+    )
+    def test_file_access_keywords_detectable(self, keyword):
+        """New DuckDB file-access keywords are detected after comment stripping."""
+        sql_with_comment = f"SELECT /* {keyword} */ * FROM t"
+        stripped = _strip_sql_comments(sql_with_comment)
+        assert keyword not in stripped.upper()
+
+        sql_plain = f"SELECT * FROM {keyword}('file.csv')"
+        stripped_plain = _strip_sql_comments(sql_plain)
+        assert keyword in stripped_plain.upper()
+
+    def test_read_csv_auto_in_blocklist(self):
+        """READ_CSV_AUTO must be in the dangerous keywords list."""
+        import re as re_mod
+
+        from src.mcp.data_source.tools.query_tools import query_data
+
+        source = __import__("inspect").getsource(query_data)
+        assert "READ_CSV_AUTO" in source
+
+    def test_scan_functions_in_blocklist(self):
+        """SCAN_CSV/SCAN_PARQUET/SCAN_JSON must be in the dangerous keywords list."""
+        import inspect as insp
+
+        from src.mcp.data_source.tools.query_tools import query_data
+
+        source = insp.getsource(query_data)
+        assert "SCAN_CSV" in source
+        assert "SCAN_PARQUET" in source
+        assert "SCAN_JSON" in source
+
+    def test_httpfs_s3_in_blocklist(self):
+        """HTTPFS and S3 must be in the dangerous keywords list."""
+        import inspect as insp
+
+        from src.mcp.data_source.tools.query_tools import query_data
+
+        source = insp.getsource(query_data)
+        assert "HTTPFS" in source
+        assert "S3" in source

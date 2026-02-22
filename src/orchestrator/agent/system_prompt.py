@@ -10,6 +10,7 @@ Example:
 """
 
 import os
+import re
 from datetime import UTC, datetime
 
 from src.orchestrator.filter_schema_inference import (
@@ -50,6 +51,24 @@ The Data Source MCP now supports all common file formats:
 - CSV/TSV/SSV/Excel: Tracking numbers written back to original file.
 - JSON/XML/EDI: Companion results CSV generated ({filename}_results.csv).
 """
+
+
+def _sanitize_for_prompt(value: str, max_len: int = 64) -> str:
+    """Sanitize user-controlled values for safe system prompt embedding.
+
+    Strips control characters, newlines, and truncates to prevent
+    prompt injection via column names or sample values (CWE-94).
+
+    Args:
+        value: Raw string from user-controlled data (column name, sample value).
+        max_len: Maximum allowed length after sanitization.
+
+    Returns:
+        Cleaned, truncated string safe for prompt interpolation.
+    """
+    clean = str(value).replace("\n", " ").replace("\r", " ")
+    clean = re.sub(r"[\x00-\x1f\x7f]", "", clean)
+    return clean[:max_len]
 
 
 def _build_contacts_section(contacts: list[dict]) -> str:
@@ -161,15 +180,18 @@ def _build_schema_section(
     max_chars = _resolve_sample_char_limit()
     for col in source_info.columns:
         nullable = "nullable" if col.nullable else "not null"
+        col_display = _sanitize_for_prompt(col.name)
         samples = column_samples.get(col.name) if column_samples else None
         if samples:
             sample_str = ", ".join(
-                _format_schema_sample(sample, max_chars)
+                _sanitize_for_prompt(
+                    _format_schema_sample(sample, max_chars), max_len=max_chars
+                )
                 for sample in samples[:_MAX_SCHEMA_SAMPLES]
             )
-            lines.append(f"  - {col.name} ({col.type}, {nullable}) — samples: {sample_str}")
+            lines.append(f"  - {col_display} ({col.type}, {nullable}) — samples: {sample_str}")
         else:
-            lines.append(f"  - {col.name} ({col.type}, {nullable})")
+            lines.append(f"  - {col_display} ({col.type}, {nullable})")
     return "\n".join(lines)
 
 
