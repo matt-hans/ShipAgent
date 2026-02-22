@@ -54,6 +54,22 @@ def get_default_db_path() -> Path:
 
 
 def ensure_dirs_exist() -> None:
-    """Create all required directories if they don't exist."""
+    """Create all required directories if they don't exist.
+
+    Raises:
+        SystemExit: If any directory cannot be created (permissions, disk full).
+    """
+    import logging
+    import sys
+
+    _logger = logging.getLogger(__name__)
     for d in [get_data_dir(), get_labels_dir(), get_log_dir()]:
-        d.mkdir(parents=True, exist_ok=True)
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            _logger.critical(
+                "Cannot create required directory %s: %s. "
+                "Check disk permissions and available space.",
+                d, exc,
+            )
+            sys.exit(1)

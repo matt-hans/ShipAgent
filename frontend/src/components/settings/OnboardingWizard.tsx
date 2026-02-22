@@ -78,28 +78,35 @@ export function OnboardingWizard() {
     setSaving(true);
     setError(null);
     try {
-      // Save shipper address if any field is filled
+      // Save shipper address if any field is filled (best-effort —
+      // address save failure should not block onboarding completion).
       const hasAddress = shipperName || shipperAddress1 || shipperCity;
       if (hasAddress) {
-        await api.updateSettings({
-          shipper_name: shipperName || null,
-          shipper_phone: shipperPhone || null,
-          shipper_address1: shipperAddress1 || null,
-          shipper_address2: shipperAddress2 || null,
-          shipper_city: shipperCity || null,
-          shipper_state: shipperState || null,
-          shipper_zip: shipperZip || null,
-          shipper_country: shipperCountry || null,
-        });
+        try {
+          await api.updateSettings({
+            shipper_name: shipperName || null,
+            shipper_phone: shipperPhone || null,
+            shipper_address1: shipperAddress1 || null,
+            shipper_address2: shipperAddress2 || null,
+            shipper_city: shipperCity || null,
+            shipper_state: shipperState || null,
+            shipper_zip: shipperZip || null,
+            shipper_country: shipperCountry || null,
+          });
+        } catch (addrErr: any) {
+          console.warn('Shipper address save failed (non-blocking):', addrErr);
+        }
       }
       await api.completeOnboarding();
-      await refreshAppSettings();
-      await refreshCredentialStatus();
     } catch (e: any) {
       setError(e.message || 'Failed to complete onboarding.');
-    } finally {
       setSaving(false);
+      return;
     }
+    // Refresh state — best-effort, don't block completion
+    try { await refreshAppSettings(); } catch { /* ignore */ }
+    try { await refreshCredentialStatus(); } catch { /* ignore */ }
+    setSaving(false);
   };
 
   return (

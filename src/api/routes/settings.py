@@ -168,7 +168,11 @@ def get_credential_status() -> CredentialStatusResponse:
 
 @router.post("/credentials")
 def set_credential(data: SetCredentialRequest) -> dict:
-    """Set a credential in the secure store (keychain)."""
+    """Set a credential in the secure store (keychain).
+
+    Returns 503 with actionable message if the keychain is unavailable,
+    so the onboarding UI can display a helpful error instead of a raw 500.
+    """
     from src.services.keyring_store import KeyringStore, MANAGED_CREDENTIALS
     if data.key not in MANAGED_CREDENTIALS:
         raise HTTPException(
@@ -176,7 +180,18 @@ def set_credential(data: SetCredentialRequest) -> dict:
             detail=f"Unknown credential: {data.key}. Valid: {MANAGED_CREDENTIALS}"
         )
     store = KeyringStore()
-    store.set(data.key, data.value)
+    try:
+        store.set(data.key, data.value)
+    except Exception as exc:
+        logger.error("Failed to store credential %s: %s", data.key, exc)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Could not save {data.key} to system keychain. "
+                "The keychain may be locked or unavailable. "
+                "Try unlocking your keychain and retry."
+            ),
+        ) from None
     return {"status": "stored", "key": data.key}
 
 
