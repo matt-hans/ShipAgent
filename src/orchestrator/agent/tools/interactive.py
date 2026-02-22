@@ -276,12 +276,15 @@ async def preview_interactive_shipment_tool(
             "Provide a numeric weight in pounds (e.g., 1.0, 5, 10.5)."
         )
 
-    # Config guard: ensure UPS account number is set
+    # Config guard: ensure UPS credentials are available
+    from src.services.runtime_credentials import resolve_ups_credentials
+
+    ups_creds = resolve_ups_credentials()
     account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "").strip()
     if not account_number:
         return _err(
-            "UPS_ACCOUNT_NUMBER environment variable is not set. "
-            "Configure it in your .env file before using interactive shipping."
+            "UPS account number is not configured. "
+            "Set UPS_ACCOUNT_NUMBER in your .env file or connect UPS in Settings."
         )
 
     # Resolve shipper from env, overlay optional overrides

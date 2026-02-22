@@ -1181,8 +1181,10 @@ async def ship_command_pipeline_tool(
         return _err("No rows matched the provided filter.")
 
     from src.services.batch_engine import BatchEngine
+    from src.services.runtime_credentials import resolve_ups_credentials
     from src.services.ups_payload_builder import build_shipper
 
+    ups_creds = resolve_ups_credentials()
     account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
     shipper = build_shipper()
     ups = await _get_ups_client()
@@ -1362,8 +1364,10 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     try:
         from src.services.batch_engine import BatchEngine
+        from src.services.runtime_credentials import resolve_ups_credentials
         from src.services.ups_payload_builder import build_shipper
 
+        ups_creds = resolve_ups_credentials()
         account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
         shipper = build_shipper()
         ups = await _get_ups_client()

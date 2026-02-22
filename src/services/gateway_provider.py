@@ -84,24 +84,32 @@ _ups_gateway_lock = asyncio.Lock()
 
 
 def _build_ups_gateway() -> Any:
-    """Build a UPSMCPClient configured from environment variables.
+    """Build a UPSMCPClient using runtime credential resolution.
 
-    Uses deferred import to avoid circular imports.
+    Resolves credentials via runtime_credentials adapter (DB priority,
+    env var fallback). Uses deferred import to avoid circular imports.
 
     Returns:
         A new UPSMCPClient instance (not yet connected).
+
+    Raises:
+        RuntimeError: If no UPS credentials are available.
     """
     import os
 
+    from src.services.runtime_credentials import resolve_ups_credentials
     from src.services.ups_mcp_client import UPSMCPClient
 
-    base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
-    environment = "test" if "wwwcie" in base_url else "production"
+    creds = resolve_ups_credentials()
+    if creds is None:
+        raise RuntimeError(
+            "No UPS credentials configured. Open Settings to connect UPS."
+        )
 
     return UPSMCPClient(
-        client_id=os.environ.get("UPS_CLIENT_ID", ""),
-        client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
-        environment=environment,
+        client_id=creds.client_id,
+        client_secret=creds.client_secret,
+        environment=creds.environment,
         account_number=os.environ.get("UPS_ACCOUNT_NUMBER", ""),
     )
 

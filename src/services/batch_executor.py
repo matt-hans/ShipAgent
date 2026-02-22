@@ -151,15 +151,22 @@ async def execute_batch(
 
     shipper = await get_shipper_for_job(job)
 
-    base_url = os.environ.get("UPS_BASE_URL", "https://wwwcie.ups.com")
-    environment = "test" if "wwwcie" in base_url else "production"
+    # Resolve UPS credentials via runtime adapter (DB priority, env fallback)
+    from src.services.runtime_credentials import resolve_ups_credentials
+
+    ups_creds = resolve_ups_credentials()
+    if ups_creds is None:
+        raise RuntimeError(
+            "No UPS credentials configured. Open Settings to connect UPS."
+        )
+
     account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
 
     try:
         async with UPSMCPClient(
-            client_id=os.environ.get("UPS_CLIENT_ID", ""),
-            client_secret=os.environ.get("UPS_CLIENT_SECRET", ""),
-            environment=environment,
+            client_id=ups_creds.client_id,
+            client_secret=ups_creds.client_secret,
+            environment=ups_creds.environment,
             account_number=account_number,
         ) as ups:
             engine = BatchEngine(
