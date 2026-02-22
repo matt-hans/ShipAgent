@@ -19,7 +19,7 @@ These fixes prevent production failures and are woven into the tasks below:
 | # | Issue | Fix | Affected Tasks |
 |---|-------|-----|---------------|
 | 1 | **PyInstaller one-file cold-start penalty** — each MCP subprocess re-extracts _MEIPASS (1-3s delay) | Switch to **one-folder (COLLECT)** build. `get_resource_dir()` uses `sys.executable` parent dir, not `_MEIPASS`. | 1, 9 |
-| 2 | **Missing Apple Notarization** — signed-but-not-notarized apps are blocked by Gatekeeper on macOS 10.15+ | Add `APPLE_API_ISSUER` + `APPLE_API_KEY` secrets and `xcrun notarytool` to CI. | 12 |
+| 2 | **Missing Apple Notarization** — signed-but-not-notarized apps are blocked by Gatekeeper on macOS 10.15+ | Add **App Store Connect API Keys** (`APPLE_API_ISSUER` + `APPLE_API_KEY_ID` + `APPLE_API_KEY`) and `xcrun notarytool` to CI. API Keys are more reliable than Apple ID + App-Specific Passwords. | 12 |
 | 3 | **Custom Rust sidecar = zombie processes** — force-quit leaves orphaned Python processes | Replace custom `std::process::Command` with **`tauri-plugin-shell`** native Sidecar support (auto-kills children). | 10 |
 | 4 | **No auto-updater task** — design says "auto-updating" but plan had no updater implementation | Add **`tauri-plugin-updater`**, Ed25519 key generation, frontend update check UI. | New Task 16 |
 | 5 | **TOCTOU port race condition** — find free port → drop → another app steals it | Uvicorn binds to port 0, prints `SHIPAGENT_PORT=XXXXX` to stdout. Tauri reads from sidecar stdout stream. | 3, 7, 10 |
@@ -28,6 +28,10 @@ These fixes prevent production failures and are woven into the tasks below:
 | 8 | **SQLite locking under concurrency** — multiple MCP subprocesses hitting same DB | Enable **WAL mode** via `PRAGMA journal_mode=WAL;` in `connection.py`. | 4 |
 | 9 | **Secret logged to stdout** — auto-generated FILTER_TOKEN_SECRET could leak | Log the event but **never log the value**. Use `logger.info("Auto-generated FILTER_TOKEN_SECRET")` only. | 14 |
 | 10 | **Vite proxy interference** — dev proxy must not intercept Tauri IPC calls | Scope Vite proxy to `/api/` prefix only (already correct), add explicit exclusion comment. | 7 |
+| 11 | **Tauri `externalBin` vs one-folder build** — `externalBin` expects a single file, but PyInstaller one-folder output is a directory; Tauri build panics | Use `bundle.resources` instead of `externalBin`. Launch via `shell.command()` with dynamic `resource_dir()` path, not `shell.sidecar()`. | 9, 10, 12 |
+| 12 | **Apple Notarization reliability** — Apple ID + App-Specific Passwords cause random CI timeouts | Switch to **App Store Connect API Keys** (`APPLE_API_ISSUER` + `APPLE_API_KEY_ID` + `APPLE_API_KEY`), which are 100x more reliable. | 12 |
+| 13 | **SQLite WAL performance** — WAL mode without `synchronous=NORMAL` doesn't get full performance benefit | Add `PRAGMA synchronous=NORMAL;` alongside `journal_mode=WAL` for optimal throughput without sacrificing durability. | 4 |
+| 14 | **Private repo auto-updater 404** — `tauri-plugin-updater` cannot fetch `latest.json` from private GitHub repos | Document the issue with fix options: inject `Authorization: Bearer` header in Rust, or use a proxy server, or make repo public. | 16 |
 
 ---
 
@@ -643,9 +647,16 @@ engine = create_engine(url, connect_args={"check_same_thread": False})
 
 @event.listens_for(engine, "connect")
 def _set_sqlite_pragma(dbapi_connection, connection_record):
-    """Enable WAL mode for concurrent access from MCP subprocesses."""
+    """Enable WAL mode and optimal sync for concurrent MCP subprocess access.
+
+    WAL mode allows concurrent readers + a single writer without blocking.
+    synchronous=NORMAL gives full WAL performance benefit without sacrificing
+    durability — commits are durable after the WAL is fsynced, but checkpoints
+    may lose a few recent transactions on power loss (acceptable for desktop).
+    """
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;")
+    cursor.execute("PRAGMA synchronous=NORMAL;")
     cursor.close()
 ```
 
@@ -1813,6 +1824,7 @@ Update the generated config with:
 {
   "productName": "ShipAgent",
   "identifier": "com.shipagent.app",
+  "version": "0.1.0",
   "build": {
     "frontendDist": "../frontend/dist",
     "devUrl": "http://localhost:5173"
@@ -1841,10 +1853,23 @@ Update the generated config with:
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["shipagent-core"]
+    "resources": {
+      "../dist/shipagent-core": "backend-dist"
+    }
   }
 }
 ```
+
+**CRITICAL:** We use `bundle.resources` — NOT `externalBin`.
+
+Tauri's `externalBin` expects a single executable file. PyInstaller's one-folder
+build produces a *directory* (`dist/shipagent-core/` with the executable + all
+`.dylib`/`.so` dependencies alongside it). Pointing `externalBin` at a directory
+causes the Rust build to panic when it tries to `chmod +x` a directory.
+
+`bundle.resources` copies the entire directory tree into the app bundle's
+`Resources/backend-dist/` folder. At runtime, we resolve the executable path via
+`app.path().resource_dir().join("backend-dist/shipagent-core")`.
 
 **Step 4: Create sidecar management using `tauri-plugin-shell`**
 
@@ -1864,7 +1889,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
-Add the sidecar capability in `src-tauri/capabilities/default.json`:
+Add the shell capability in `src-tauri/capabilities/default.json`:
 
 ```json
 {
@@ -1878,37 +1903,66 @@ Add the sidecar capability in `src-tauri/capabilities/default.json`:
     "shell:allow-kill",
     {
       "identifier": "shell:allow-execute",
-      "allow": [{ "name": "shipagent-core", "sidecar": true }]
+      "allow": [
+        {
+          "name": "backend",
+          "cmd": { "regex": "^.*/backend-dist/shipagent-core$" }
+        }
+      ]
     },
     "updater:default"
   ]
 }
 ```
 
+**NOTE:** We use `cmd.regex` to allow execution of the binary inside the bundled
+`Resources/backend-dist/` directory. This replaces the `sidecar: true` pattern
+because we're using `resources` instead of `externalBin`.
+
 Create `src-tauri/src/main.rs`:
 
 ```rust
 // ShipAgent Tauri v2 desktop wrapper.
 //
-// Spawns the shipagent-core Python sidecar using tauri-plugin-shell
-// (auto-kills on parent crash — no zombies). Reads the dynamically
-// assigned port from sidecar stdout ("SHIPAGENT_PORT=XXXXX").
+// Spawns the shipagent-core Python backend from the bundled resources
+// directory using tauri-plugin-shell (auto-kills on parent crash — no
+// zombies). Reads the dynamically assigned port from sidecar stdout
+// ("SHIPAGENT_PORT=XXXXX").
+//
+// IMPORTANT: We use shell.command() with a dynamic resource_dir() path,
+// NOT shell.sidecar(). Tauri's sidecar() is for externalBin (single files).
+// Our PyInstaller one-folder build produces a directory, so we bundle it
+// as a Tauri resource and resolve the executable path at runtime.
 
 use tauri::Manager;
 use tauri_plugin_shell::ShellExt;
 
 #[tauri::command]
 async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
+    // Resolve the absolute path to the executable inside the resource directory.
+    // Tauri copies the one-folder build to Resources/backend-dist/ at bundle time.
+    let resource_path = app.path()
+        .resource_dir()
+        .map_err(|e| format!("Failed to resolve resource dir: {e}"))?
+        .join("backend-dist")
+        .join("shipagent-core");
+
+    if !resource_path.exists() {
+        return Err(format!(
+            "Backend binary not found at: {}",
+            resource_path.display()
+        ));
+    }
+
     let shell = app.shell();
 
-    // Spawn sidecar — tauri-plugin-shell manages lifecycle automatically.
+    // Spawn backend — tauri-plugin-shell manages lifecycle automatically.
     // Port 0 tells uvicorn to bind to an OS-assigned port.
     let (mut rx, _child) = shell
-        .sidecar("shipagent-core")
-        .map_err(|e| format!("Failed to create sidecar command: {e}"))?
+        .command(resource_path.to_str().unwrap())
         .args(["serve", "--port", "0"])
         .spawn()
-        .map_err(|e| format!("Failed to spawn sidecar: {e}"))?;
+        .map_err(|e| format!("Failed to spawn backend: {e}"))?;
 
     // Read stdout line-by-line until we see the port report.
     use tauri_plugin_shell::process::CommandEvent;
@@ -1924,16 +1978,16 @@ async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
                 }
             }
             CommandEvent::Error(e) => {
-                return Err(format!("Sidecar error: {e}"));
+                return Err(format!("Backend stderr: {e}"));
             }
             CommandEvent::Terminated(payload) => {
-                return Err(format!("Sidecar exited early: {:?}", payload.code));
+                return Err(format!("Backend exited early: {:?}", payload.code));
             }
             _ => {}
         }
     }
 
-    port.ok_or_else(|| "Sidecar did not report a port".to_string())
+    port.ok_or_else(|| "Backend did not report a port".to_string())
 }
 
 fn main() {
@@ -1941,8 +1995,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![start_sidecar])
-        .setup(|app| {
-            // Inject port discovery into the WebView once sidecar is ready.
+        .setup(|_app| {
             // The frontend JS calls `invoke('start_sidecar')` on load and
             // sets `window.__SHIPAGENT_PORT__` with the returned port.
             Ok(())
@@ -1972,9 +2025,15 @@ export async function initSidecar(): Promise<void> {
 }
 ```
 
-**Step 5: Add sidecar binary to Tauri bundle**
+**Step 5: Verify resource bundling**
 
-Place the `shipagent-core` binary at `src-tauri/binaries/shipagent-core-{target_triple}` (Tauri convention for external binaries).
+The `tauri.conf.json` `resources` field maps `../dist/shipagent-core` → `backend-dist`.
+During `tauri build`, Tauri copies the entire one-folder directory into:
+`ShipAgent.app/Contents/Resources/backend-dist/`
+
+For **dev mode** (`tauri dev`), ensure `dist/shipagent-core/` exists by running
+`scripts/bundle_backend.sh` first. Tauri resolves the resource path relative to
+the project root during dev.
 
 **Step 6: Test dev mode**
 
@@ -2097,11 +2156,17 @@ Required GitHub Secrets:
 - `APPLE_CERTIFICATE` — Base64-encoded .p12 Developer ID certificate
 - `APPLE_CERTIFICATE_PASSWORD` — .p12 password
 - `APPLE_SIGNING_IDENTITY` — e.g. "Developer ID Application: Your Name (TEAM_ID)"
-- `APPLE_ID` — Apple ID email
-- `APPLE_PASSWORD` — App-specific password (not your Apple ID password)
+- `APPLE_API_ISSUER` — App Store Connect API Issuer UUID (from App Store Connect → Users and Access → Integrations → App Store Connect API)
+- `APPLE_API_KEY_ID` — App Store Connect API Key ID (e.g. "ABCDEF1234")
+- `APPLE_API_KEY` — Base64-encoded .p8 private key file content
 - `APPLE_TEAM_ID` — 10-character Team ID
 - `TAURI_SIGNING_PRIVATE_KEY` — Ed25519 private key for auto-updater signing (see Task 16)
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — Password for the updater key
+
+**NOTE:** We use **App Store Connect API Keys** for notarization instead of
+Apple ID + App-Specific Passwords. Apple frequently throttles and times out the
+legacy auth method in CI. API Keys are 100x more reliable and are Apple's
+recommended approach for automated workflows.
 
 ```yaml
 # .github/workflows/release.yml
@@ -2210,12 +2275,9 @@ jobs:
           codesign --verify --deep --strict dist/shipagent-core/shipagent-core
           echo "Sidecar codesigning: PASSED"
 
-      - name: Copy sidecar to Tauri binaries
-        run: |
-          mkdir -p src-tauri/binaries
-          # One-folder build: copy the entire directory
-          cp -R dist/shipagent-core \
-            "src-tauri/binaries/shipagent-core-${{ matrix.target }}"
+      # NO "Copy sidecar to Tauri binaries" step needed.
+      # The tauri.conf.json resources field ("../dist/shipagent-core": "backend-dist")
+      # tells Tauri to bundle the one-folder output directly from dist/.
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -2224,8 +2286,10 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # App Store Connect API Keys for notarization (more reliable than Apple ID)
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -2239,17 +2303,21 @@ jobs:
 
       # Apple Notarization: Required on macOS 10.15+.
       # Signed-but-not-notarized apps are blocked by Gatekeeper.
-      # tauri-action handles notarization when APPLE_ID + APPLE_PASSWORD
-      # + APPLE_TEAM_ID are set. If using manual build, run:
+      #
+      # We use App Store Connect API Keys (APPLE_API_ISSUER + APPLE_API_KEY_ID
+      # + APPLE_API_KEY) instead of Apple ID + App-Specific Passwords.
+      # Reason: Apple frequently throttles and times out the legacy auth in CI.
+      # API keys are Apple's recommended approach for automated workflows.
+      #
+      # tauri-action handles notarization automatically when these env vars
+      # are set. For manual builds:
       #
       #   xcrun notarytool submit ShipAgent.dmg \
-      #     --apple-id "$APPLE_ID" \
-      #     --password "$APPLE_PASSWORD" \
-      #     --team-id "$APPLE_TEAM_ID" \
+      #     --issuer "$APPLE_API_ISSUER" \
+      #     --key-id "$APPLE_API_KEY_ID" \
+      #     --key "$APPLE_API_KEY_PATH" \
       #     --wait
       #   xcrun stapler staple ShipAgent.dmg
-      #
-      # tauri-action v0 handles this automatically via the env vars above.
 ```
 
 Also create `src-tauri/entitlements.plist` for the sidecar:
@@ -2520,6 +2588,21 @@ Add the updater plugin configuration to `src-tauri/tauri.conf.json`:
 The `latest.json` file is auto-generated by `tauri-action` during CI and uploaded
 alongside the DMG. It contains: version, platform URLs, signatures, and release notes.
 
+**Private Repo Warning:** If `matt-hans/ShipAgent` is a **private** GitHub repository,
+the updater will get a 404 when fetching `latest.json` because it has no auth token.
+Fix options (choose one):
+1. **Make the repo public** — simplest, no auth needed.
+2. **Inject a GitHub PAT in Rust** — pass a `Bearer` token header to the updater:
+   ```rust
+   tauri_plugin_updater::Builder::new()
+       .header("Authorization", format!("Bearer {}", github_pat))
+       .build()
+   ```
+3. **Use a proxy server** — Cloudflare Worker or AWS Lambda that authenticates
+   and serves the update manifest publicly.
+
+If the repo is public, ignore this.
+
 **Step 3: Create UpdateChecker frontend component**
 
 ```typescript
@@ -2647,15 +2730,15 @@ git commit -m "feat: auto-updater with Ed25519 signing, GitHub Releases endpoint
 | 1 | Runtime detection utility (`is_bundled()`, one-folder aware) | 15 min |
 | 2 | MCP config bundled mode support | 30 min |
 | 3 | Bundle entry point + `PortReportingServer` (TOCTOU fix) | 30 min |
-| 4 | Production file paths with `platformdirs` + **SQLite WAL mode** | 45 min |
+| 4 | Production file paths with `platformdirs` + **SQLite WAL + synchronous=NORMAL** | 45 min |
 | 5 | Settings DB table, service, and API routes | 1 hour |
 | 6 | Keyring integration for secure credentials | 45 min |
 | 7 | Dynamic port for frontend API client + Vite proxy scoping | 15 min |
 | 8 | Onboarding wizard component | 1.5 hours |
 | 9 | PyInstaller spec file (one-folder COLLECT) and build script | 1 hour |
-| 10 | Tauri project initialization with **`tauri-plugin-shell`** sidecar | 1.5 hours |
+| 10 | Tauri project initialization with **`resources` + `shell.command()`** sidecar | 1.5 hours |
 | 11 | Version bump script | 15 min |
-| 12 | GitHub Actions release pipeline (**matrix build** + **codesign sidecar** + **notarization**) | 1 hour |
+| 12 | GitHub Actions release pipeline (**matrix build** + **codesign sidecar** + **API Key notarization**) | 1 hour |
 | 13 | Expand ShipmentBehaviourSection | 45 min |
 | 14 | Startup directory initialization + secret auto-gen (**never log value**) | 30 min |
 | 15 | Integration testing | 30 min |
@@ -2688,3 +2771,7 @@ git commit -m "feat: auto-updater with Ed25519 signing, GitHub Releases endpoint
 - Fix #8 (SQLite WAL mode): Task 4
 - Fix #9 (secret logging): Task 14
 - Fix #10 (Vite proxy scope): Task 7
+- Fix #11 (externalBin → resources): Tasks 9, 10, 12
+- Fix #12 (API Key notarization): Task 12
+- Fix #13 (synchronous=NORMAL): Task 4
+- Fix #14 (private repo updater): Task 16
