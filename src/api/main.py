@@ -52,6 +52,7 @@ from src.api.routes import (  # noqa: E402
     preview,
     progress,
     saved_data_sources,
+    settings,
 )
 from src.db.connection import init_db  # noqa: E402
 from src.db.models import JobStatus  # noqa: E402
@@ -459,12 +460,76 @@ async def lifespan(app: FastAPI):
         "default", category=DeprecationWarning, module="claude_agent_sdk"
     )
 
+    # Create data/log/label directories (no-op in dev, creates platformdirs in bundled)
+    from src.utils.paths import ensure_dirs_exist
+
+    ensure_dirs_exist()
+
+    init_db()
+
+    # Load all keyring credentials into env (keyring → env sync).
+    # This ensures runtime resolvers find onboarding-saved credentials
+    # without requiring a restart. Env vars already set take priority.
+    try:
+        from src.services.keyring_store import KeyringStore
+
+        _kr_store = KeyringStore()
+        _loaded_count = _kr_store.load_all_to_env()
+        if _loaded_count:
+            logger.info("Loaded %d credentials from keychain into env", _loaded_count)
+    except Exception:
+        logger.warning("Keyring load failed; credentials from env only", exc_info=True)
+
+    # Auto-generate FILTER_TOKEN_SECRET if absent (env → keyring → generate)
+    import secrets as _secrets
+
+    if not os.environ.get("FILTER_TOKEN_SECRET"):
+        try:
+            _kr_store = KeyringStore()
+            _existing_fts = _kr_store.get("FILTER_TOKEN_SECRET")
+            if not _existing_fts:
+                _generated_fts = _secrets.token_hex(32)
+                _kr_store.set("FILTER_TOKEN_SECRET", _generated_fts)
+                # CRITICAL: Never log the secret value — only log the event.
+                logger.info(
+                    "Auto-generated FILTER_TOKEN_SECRET and stored in keychain"
+                )
+            else:
+                os.environ["FILTER_TOKEN_SECRET"] = _existing_fts
+                logger.info("Loaded FILTER_TOKEN_SECRET from keychain")
+        except Exception:
+            # Keyring unavailable — persist to a local file so the same
+            # secret survives restarts (prevents token continuity breakage).
+            from src.utils.paths import get_data_dir
+
+            _fts_path = get_data_dir() / ".filter_token_secret"
+            if _fts_path.exists():
+                _generated_fts = _fts_path.read_text().strip()
+                logger.info(
+                    "Loaded FILTER_TOKEN_SECRET from fallback file"
+                )
+            else:
+                _generated_fts = _secrets.token_hex(32)
+                try:
+                    # Use os.open with restricted mode to avoid a brief
+                    # window where the file is world-readable.
+                    fd = os.open(str(_fts_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "w") as f:
+                        f.write(_generated_fts)
+                    logger.warning(
+                        "Keyring unavailable; FILTER_TOKEN_SECRET persisted to file"
+                    )
+                except OSError:
+                    logger.warning(
+                        "Could not persist FILTER_TOKEN_SECRET fallback file; "
+                        "secret is in-memory only and will not survive restart"
+                    )
+            os.environ["FILTER_TOKEN_SECRET"] = _generated_fts
+
     # Fail fast if filter token secret is missing or too short
     from src.orchestrator.filter_config import validate_filter_config
 
     validate_filter_config()
-
-    init_db()
 
     # --- Provider credential check ---
     from src.services.credential_encryption import (
@@ -747,6 +812,7 @@ app.include_router(agent_audit.router, prefix="/api/v1")
 app.include_router(connections.router, prefix="/api/v1")
 app.include_router(contacts.router, prefix="/api/v1")
 app.include_router(commands.router, prefix="/api/v1")
+app.include_router(settings.router, prefix="/api/v1")
 
 
 @app.get("/health")

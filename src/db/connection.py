@@ -54,7 +54,8 @@ def get_database_url() -> str:
             return db_path
         return f"sqlite:///{db_path}"
 
-    return "sqlite:///./shipagent.db"
+    from src.utils.paths import get_default_db_path
+    return f"sqlite:///{get_default_db_path()}"
 
 
 def get_async_database_url() -> str:
@@ -91,14 +92,21 @@ async_engine = create_async_engine(
 # Enable foreign keys for SQLite
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection: Any, connection_record: Any) -> None:
-    """Enable foreign key constraints for SQLite connections.
+    """Configure SQLite pragmas for correctness and concurrency.
 
-    SQLite has foreign keys disabled by default. This pragma enables them
-    for every connection to ensure referential integrity.
+    Enables:
+    - foreign_keys=ON: Referential integrity (disabled by default in SQLite).
+    - journal_mode=WAL: Allows concurrent readers + a single writer without
+      blocking — critical for multiple MCP subprocesses hitting the same DB.
+    - synchronous=NORMAL: Full WAL performance benefit without sacrificing
+      durability. Commits are durable after WAL fsync; checkpoints may lose
+      a few recent transactions on power loss (acceptable for desktop app).
     """
     if DATABASE_URL.startswith("sqlite"):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA synchronous=NORMAL;")
         cursor.close()
 
 
