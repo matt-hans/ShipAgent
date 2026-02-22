@@ -97,6 +97,80 @@ class TestXMLAdapter:
             mod.MAX_FILE_SIZE_BYTES = original
 
 
+class TestXMLAdapterNumericTypes:
+    """Test that XML numeric values get correct DuckDB types."""
+
+    def test_numeric_elements_become_numeric_types(self, conn, xml_file):
+        """Numeric XML text content should produce BIGINT/DOUBLE columns."""
+        xml = """\
+<?xml version="1.0"?>
+<Orders>
+  <Order>
+    <Name>Widget</Name>
+    <Qty>10</Qty>
+    <Weight>5.5</Weight>
+    <Price>29.99</Price>
+  </Order>
+  <Order>
+    <Name>Gadget</Name>
+    <Qty>3</Qty>
+    <Weight>12.0</Weight>
+    <Price>149.00</Price>
+  </Order>
+</Orders>
+"""
+        path = xml_file(xml)
+        adapter = XMLAdapter()
+        result = adapter.import_data(conn, file_path=path)
+        type_map = {c.name: c.type for c in result.columns}
+        assert type_map["Name"] == "VARCHAR"
+        assert type_map["Qty"] == "BIGINT"
+        assert type_map["Weight"] == "DOUBLE"
+        # Price has mixed int+float coercion (149.00 → float, 29.99 → float) → DOUBLE
+        assert type_map["Price"] == "DOUBLE"
+
+    def test_numeric_queries_work_without_cast(self, conn, xml_file):
+        """SQL numeric comparisons on XML-sourced data should work without CAST."""
+        xml = """\
+<?xml version="1.0"?>
+<Items>
+  <Item><Name>Light</Name><Weight>5</Weight></Item>
+  <Item><Name>Heavy</Name><Weight>25</Weight></Item>
+  <Item><Name>Heavier</Name><Weight>50</Weight></Item>
+</Items>
+"""
+        path = xml_file(xml)
+        adapter = XMLAdapter()
+        adapter.import_data(conn, file_path=path)
+        rows = conn.execute(
+            "SELECT Name FROM imported_data WHERE Weight > 20"
+        ).fetchall()
+        names = {r[0] for r in rows}
+        assert names == {"Heavy", "Heavier"}
+
+    def test_real_xml_file_numeric_types(self, conn):
+        """Test against actual XML test data file."""
+        from pathlib import Path
+
+        xml_path = Path("test_data/shipments_orders.xml")
+        if not xml_path.exists():
+            pytest.skip("test_data/shipments_orders.xml not found")
+
+        adapter = XMLAdapter()
+        result = adapter.import_data(conn, file_path=str(xml_path))
+        type_map = {c.name: c.type for c in result.columns}
+
+        assert type_map["WeightLbs"] == "DOUBLE", f"WeightLbs should be DOUBLE, got {type_map['WeightLbs']}"
+        assert type_map["DeclaredValue"] == "DOUBLE", f"DeclaredValue should be DOUBLE, got {type_map['DeclaredValue']}"
+        assert type_map["RecipientName"] == "VARCHAR"
+
+        # Numeric comparison must work
+        rows = conn.execute(
+            "SELECT COUNT(*) FROM imported_data WHERE WeightLbs > 20"
+        ).fetchone()
+        assert rows[0] > 0
+
+
 class TestXMLAdapterMetadata:
     """Test get_metadata returns correct info."""
 

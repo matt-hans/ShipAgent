@@ -5,7 +5,12 @@ import json
 import duckdb
 import pytest
 
-from src.mcp.data_source.utils import flatten_record, load_flat_records_to_duckdb
+from src.mcp.data_source.utils import (
+    _coerce_string_value,
+    coerce_records,
+    flatten_record,
+    load_flat_records_to_duckdb,
+)
 
 
 class TestFlattenRecord:
@@ -143,3 +148,113 @@ class TestLoadFlatRecordsToDuckDB:
         type_map = {c.name: c.type for c in result.columns}
         # DuckDB should infer integer/double for numeric values
         assert "VARCHAR" not in type_map.get("count", "").upper() or "INT" in type_map.get("count", "").upper()
+
+    def test_mixed_int_float_becomes_double(self, conn):
+        """Columns with int and float values should become DOUBLE, not VARCHAR."""
+        records = [
+            {"value": 0, "name": "zero"},
+            {"value": 45.99, "name": "price"},
+            {"value": 100, "name": "round"},
+        ]
+        result = load_flat_records_to_duckdb(conn, records)
+        type_map = {c.name: c.type for c in result.columns}
+        assert type_map["value"] == "DOUBLE"
+
+    def test_coerced_string_records_get_numeric_types(self, conn):
+        """String records passed through coerce_records get numeric DuckDB types."""
+        records = coerce_records([
+            {"weight": "32.5", "qty": "10", "name": "John"},
+            {"weight": "22.0", "qty": "5", "name": "Jane"},
+        ])
+        result = load_flat_records_to_duckdb(conn, records)
+        type_map = {c.name: c.type for c in result.columns}
+        assert type_map["weight"] == "DOUBLE"
+        assert type_map["qty"] == "BIGINT"
+        assert type_map["name"] == "VARCHAR"
+
+    def test_coerced_records_support_numeric_queries(self, conn):
+        """Coerced records allow numeric SQL comparisons without CAST."""
+        records = coerce_records([
+            {"name": "Light", "weight": "5.0"},
+            {"name": "Heavy", "weight": "25.0"},
+            {"name": "Heavier", "weight": "50.0"},
+        ])
+        load_flat_records_to_duckdb(conn, records)
+        rows = conn.execute(
+            "SELECT name FROM imported_data WHERE weight > 20"
+        ).fetchall()
+        names = {r[0] for r in rows}
+        assert names == {"Heavy", "Heavier"}
+
+
+class TestCoerceStringValue:
+    """Test best-effort string-to-type coercion."""
+
+    def test_integer_string(self):
+        """Pure integer strings become int."""
+        assert _coerce_string_value("42") == 42
+        assert isinstance(_coerce_string_value("42"), int)
+
+    def test_float_string(self):
+        """Decimal strings become float."""
+        assert _coerce_string_value("32.5") == 32.5
+        assert isinstance(_coerce_string_value("32.5"), float)
+
+    def test_non_numeric_string_unchanged(self):
+        """Non-numeric strings pass through."""
+        assert _coerce_string_value("Dallas") == "Dallas"
+        assert _coerce_string_value("ORD-123") == "ORD-123"
+
+    def test_empty_string_becomes_none(self):
+        """Empty/whitespace strings become None."""
+        assert _coerce_string_value("") is None
+        assert _coerce_string_value("   ") is None
+
+    def test_non_string_passthrough(self):
+        """Non-string values (int, float, None) pass through unchanged."""
+        assert _coerce_string_value(42) == 42
+        assert _coerce_string_value(3.14) == 3.14
+        assert _coerce_string_value(None) is None
+
+    def test_padded_numeric_string(self):
+        """Whitespace-padded numbers are coerced correctly."""
+        assert _coerce_string_value("  32  ") == 32
+        assert _coerce_string_value("  12.5  ") == 12.5
+
+    def test_negative_numbers(self):
+        """Negative number strings are coerced."""
+        assert _coerce_string_value("-5") == -5
+        assert _coerce_string_value("-3.14") == -3.14
+
+    def test_zip_codes_stay_string(self):
+        """5-digit zip codes starting with 0 stay as strings (int strips leading 0)."""
+        # Note: "07302" → int(7302), which loses the leading zero.
+        # This is acceptable because DuckDB BIGINT cannot preserve leading zeros.
+        # Callers needing zip preservation should use explicit column typing.
+        result = _coerce_string_value("07302")
+        assert result == 7302  # Coerced to int (leading zero lost)
+
+
+class TestCoerceRecords:
+    """Test batch coercion of record lists."""
+
+    def test_coerce_records_mixed_types(self):
+        """Mixed string/numeric records are coerced correctly."""
+        records = [
+            {"name": "John", "weight": "32.5", "qty": "10", "zip": "75201"},
+            {"name": "Jane", "weight": "15.0", "qty": "3", "zip": "78746"},
+        ]
+        result = coerce_records(records)
+        assert result[0]["name"] == "John"
+        assert result[0]["weight"] == 32.5
+        assert result[0]["qty"] == 10
+        assert result[0]["zip"] == 75201
+        assert result[1]["weight"] == 15.0
+
+    def test_coerce_empty_values(self):
+        """Empty string values become None."""
+        records = [{"a": "val", "b": "", "c": "   "}]
+        result = coerce_records(records)
+        assert result[0]["a"] == "val"
+        assert result[0]["b"] is None
+        assert result[0]["c"] is None

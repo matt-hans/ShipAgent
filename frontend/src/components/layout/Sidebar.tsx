@@ -18,13 +18,15 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId, onNewChat }: SidebarProps) {
-  const { activeSourceType, activeSourceInfo } = useAppState();
+  const { activeSourceType, activeSourceInfo, interactiveShipping } = useAppState();
 
   const hasDataSource = activeSourceType !== null;
 
   // Determine connection label for tooltip
   const connectionLabel = activeSourceInfo
-    ? `Active: ${activeSourceInfo.label}`
+    ? interactiveShipping
+      ? `Standby: ${activeSourceInfo.label}`
+      : `Active: ${activeSourceInfo.label}`
     : 'Connect data source';
 
   return (
@@ -50,19 +52,23 @@ export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId, onNewCh
             onClick={onToggle}
             className={cn(
               'w-10 h-10 flex items-center justify-center rounded-lg transition-colors',
-              hasDataSource ? 'bg-primary/20 text-primary' : 'bg-slate-800 text-slate-500 hover:text-slate-300'
+              hasDataSource && interactiveShipping
+                ? 'bg-slate-800/80 text-slate-400'
+                : hasDataSource
+                  ? 'bg-primary/20 text-primary'
+                  : 'bg-slate-800 text-slate-500 hover:text-slate-300'
             )}
             title={connectionLabel}
           >
             {activeSourceType === 'shopify' ? (
               <div className="relative">
                 <ShopifyIcon className="w-5 h-5 text-[#5BBF3D]" />
-                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-success rounded-full" />
+                <span className={cn('absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full', interactiveShipping ? 'bg-slate-500' : 'bg-success')} />
               </div>
             ) : activeSourceType === 'local' ? (
               <div className="relative">
                 <HardDriveIcon className="w-5 h-5 text-primary" />
-                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-success rounded-full" />
+                <span className={cn('absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full', interactiveShipping ? 'bg-slate-500' : 'bg-success')} />
               </div>
             ) : (
               <DataSourceIcon className="w-5 h-5" connected={false} />
