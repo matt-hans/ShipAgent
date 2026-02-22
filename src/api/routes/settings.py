@@ -97,19 +97,45 @@ def update_settings(
         raise HTTPException(status_code=400, detail=str(e)) from None
 
 
+class SetCredentialRequest(BaseModel):
+    """Request to set a credential in the secure store."""
+    key: str
+    value: str
+
+
 @router.get("/credentials/status", response_model=CredentialStatusResponse)
 def get_credential_status() -> CredentialStatusResponse:
     """Check which credentials are configured (never returns values).
 
-    Checks env vars for credential presence.
+    Checks keyring first (production), then env vars (dev fallback).
     """
+    from src.services.keyring_store import KeyringStore
+    store = KeyringStore()
+
+    def _is_set(key: str) -> bool:
+        return store.has(key) or bool(os.environ.get(key, "").strip())
+
     return CredentialStatusResponse(
-        anthropic_api_key=bool(os.environ.get("ANTHROPIC_API_KEY", "").strip()),
-        ups_client_id=bool(os.environ.get("UPS_CLIENT_ID", "").strip()),
-        ups_client_secret=bool(os.environ.get("UPS_CLIENT_SECRET", "").strip()),
-        shopify_access_token=bool(os.environ.get("SHOPIFY_ACCESS_TOKEN", "").strip()),
-        filter_token_secret=bool(os.environ.get("FILTER_TOKEN_SECRET", "").strip()),
+        anthropic_api_key=_is_set("ANTHROPIC_API_KEY"),
+        ups_client_id=_is_set("UPS_CLIENT_ID"),
+        ups_client_secret=_is_set("UPS_CLIENT_SECRET"),
+        shopify_access_token=_is_set("SHOPIFY_ACCESS_TOKEN"),
+        filter_token_secret=_is_set("FILTER_TOKEN_SECRET"),
     )
+
+
+@router.post("/credentials")
+def set_credential(data: SetCredentialRequest) -> dict:
+    """Set a credential in the secure store (keychain)."""
+    from src.services.keyring_store import KeyringStore, MANAGED_CREDENTIALS
+    if data.key not in MANAGED_CREDENTIALS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown credential: {data.key}. Valid: {MANAGED_CREDENTIALS}"
+        )
+    store = KeyringStore()
+    store.set(data.key, data.value)
+    return {"status": "stored", "key": data.key}
 
 
 @router.post("/onboarding/complete")
