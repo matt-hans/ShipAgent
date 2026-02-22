@@ -50,7 +50,12 @@ class TestReadyzCredentials:
         for var in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET", "UPS_ACCOUNT_NUMBER"):
             monkeypatch.delenv(var, raising=False)
 
-        resp = client.get("/readyz")
+        with patch(
+            "src.services.runtime_credentials.resolve_ups_credentials",
+            return_value=None,
+        ):
+            resp = client.get("/readyz")
+
         data = resp.json()
         assert data["checks"]["ups_credentials"]["status"] == "degraded"
         assert data["status"] == "degraded"
