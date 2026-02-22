@@ -33,7 +33,32 @@ LARGE_TABLE_THRESHOLD = 10000
 _SAFE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
-def _validate_identifier(name: str, label: str = "identifier") -> str:
+class SafeIdentifier(str):
+    """SQL identifier validated against injection (CWE-89).
+
+    Wraps str so validated identifiers can be used directly in f-strings.
+    Validation is enforced at construction time — impossible to forget.
+
+    Args:
+        value: The identifier string to validate.
+        label: Human-readable label for error messages.
+
+    Raises:
+        ValueError: If the identifier contains unsafe characters.
+    """
+
+    def __new__(cls, value: str, label: str = "identifier") -> "SafeIdentifier":
+        """Create a new SafeIdentifier after validation."""
+        if not _SAFE_IDENTIFIER_RE.match(value):
+            raise ValueError(
+                f"Invalid {label}: {value!r}. "
+                "Identifiers must contain only letters, digits, and underscores, "
+                "and must start with a letter or underscore."
+            )
+        return super().__new__(cls, value)
+
+
+def _validate_identifier(name: str, label: str = "identifier") -> SafeIdentifier:
     """Validate a SQL identifier against injection (CWE-89).
 
     Args:
@@ -41,18 +66,28 @@ def _validate_identifier(name: str, label: str = "identifier") -> str:
         label: Human-readable label for error messages.
 
     Returns:
-        The validated identifier string.
+        SafeIdentifier wrapping the validated string.
 
     Raises:
         ValueError: If the identifier contains unsafe characters.
     """
-    if not _SAFE_IDENTIFIER_RE.match(name):
-        raise ValueError(
-            f"Invalid {label}: {name!r}. "
-            "Identifiers must contain only letters, digits, and underscores, "
-            "and must start with a letter or underscore."
-        )
-    return name
+    return SafeIdentifier(name, label)
+
+
+def _sanitize_connection_string(connection_string: str) -> str:
+    """Escape single quotes in a connection string for safe SQL interpolation (CWE-89).
+
+    DuckDB's ATTACH statement does not support parameterized DDL, so
+    connection strings must be escaped before interpolation into the SQL
+    statement. This prevents SQL injection via crafted connection strings.
+
+    Args:
+        connection_string: Raw database connection URL.
+
+    Returns:
+        Connection string with single quotes escaped ('' for DuckDB).
+    """
+    return connection_string.replace("'", "''")
 
 
 class DatabaseAdapter(BaseSourceAdapter):
@@ -226,9 +261,11 @@ class DatabaseAdapter(BaseSourceAdapter):
         _validate_identifier(schema, "schema")
         db_type = self._detect_db_type(connection_string)
 
-        # Attach database temporarily as read-only
+        # Attach database temporarily as read-only.
+        # Escape connection_string to prevent SQL injection (CWE-89, Finding 1).
+        safe_cs = _sanitize_connection_string(connection_string)
         conn.execute(
-            f"ATTACH '{connection_string}' AS remote_db (TYPE {db_type}, READ_ONLY)"
+            f"ATTACH '{safe_cs}' AS remote_db (TYPE {db_type}, READ_ONLY)"
         )
 
         try:
@@ -325,9 +362,11 @@ class DatabaseAdapter(BaseSourceAdapter):
         _validate_identifier(schema, "schema")
         db_type = self._detect_db_type(connection_string)
 
-        # Attach database temporarily as read-only
+        # Attach database temporarily as read-only.
+        # Escape connection_string to prevent SQL injection (CWE-89, Finding 1).
+        safe_cs = _sanitize_connection_string(connection_string)
         conn.execute(
-            f"ATTACH '{connection_string}' AS remote_db (TYPE {db_type}, READ_ONLY)"
+            f"ATTACH '{safe_cs}' AS remote_db (TYPE {db_type}, READ_ONLY)"
         )
 
         try:

@@ -138,7 +138,7 @@ class BatchEngine:
         except ValueError:
             logger.warning("Invalid BATCH_CONCURRENCY=%r, defaulting to 5", raw)
             return 5
-        return max(1, value)
+        return max(1, min(20, value))  # Match DB constraint ceiling (CWE-770)
 
     @staticmethod
     def _resolve_timeout_seconds(env_key: str, default: float) -> float:
