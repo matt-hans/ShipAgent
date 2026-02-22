@@ -62,6 +62,8 @@ dmypy.json
 # Build
 *.manifest
 *.spec
+# Exception: PyInstaller spec file is intentionally tracked
+!shipagent-core.spec
 
 # OS
 .DS_Store
