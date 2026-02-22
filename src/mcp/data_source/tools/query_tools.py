@@ -1,11 +1,56 @@
 """Data query tools for Data Source MCP."""
 
+import re
 from typing import Any
 
 from fastmcp import Context
 
 from ..models import SOURCE_ROW_NUM_COLUMN, QueryResult, RowData
 from ..utils import compute_row_checksum
+
+# Regex for valid SQL type identifiers used in CAST expressions.
+# Allows types like VARCHAR, DOUBLE, DECIMAL(10,2), TIMESTAMP WITH TIME ZONE.
+_VALID_TYPE_RE = re.compile(r"^[A-Z][A-Z0-9_ ]*(\(\d+([, ]\d+)*\))?$")
+
+# Regex patterns for stripping SQL comments before keyword checks.
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+
+
+def _safe_cast_expression(col: str, type_str: str) -> str:
+    """Build a safe CAST expression with type validation.
+
+    Args:
+        col: Column name (will be double-quoted).
+        type_str: SQL type string to validate.
+
+    Returns:
+        SQL CAST expression string.
+
+    Raises:
+        ValueError: If type_str contains invalid characters.
+    """
+    normalized = type_str.strip().upper()
+    if not _VALID_TYPE_RE.match(normalized):
+        raise ValueError(
+            f"Invalid type override '{type_str}' for column '{col}'. "
+            "Only standard SQL type identifiers are allowed."
+        )
+    return f'CAST("{col}" AS {normalized}) AS "{col}"'
+
+
+def _strip_sql_comments(sql: str) -> str:
+    """Remove SQL block and line comments to prevent keyword bypass.
+
+    Args:
+        sql: Raw SQL string.
+
+    Returns:
+        SQL with all comments removed.
+    """
+    result = _BLOCK_COMMENT_RE.sub(" ", sql)
+    result = _LINE_COMMENT_RE.sub(" ", result)
+    return result
 
 
 async def get_row(row_number: int, ctx: Context) -> dict:
@@ -38,17 +83,20 @@ async def get_row(row_number: int, ctx: Context) -> dict:
     select_parts = []
     for col in columns:
         if col in type_overrides:
-            select_parts.append(f'CAST("{col}" AS {type_overrides[col]}) AS "{col}"')
+            select_parts.append(_safe_cast_expression(col, type_overrides[col]))
         else:
             select_parts.append(f'"{col}"')
 
     select_clause = ", ".join(select_parts)
 
     # Look up by identity column (parameterized)
-    result = db.execute(f"""
+    result = db.execute(
+        f"""
         SELECT {select_clause} FROM imported_data
         WHERE {SOURCE_ROW_NUM_COLUMN} = $1
-    """, [row_number]).fetchone()
+    """,
+        [row_number],
+    ).fetchone()
 
     if result is None:
         raise ValueError(f"Row {row_number} not found. Data may have fewer rows.")
@@ -56,11 +104,7 @@ async def get_row(row_number: int, ctx: Context) -> dict:
     row_dict = dict(zip(columns, result, strict=False))
     checksum = compute_row_checksum(row_dict)
 
-    return RowData(
-        row_number=row_number,
-        data=row_dict,
-        checksum=checksum
-    ).model_dump()
+    return RowData(row_number=row_number, data=row_dict, checksum=checksum).model_dump()
 
 
 async def get_rows_by_filter(
@@ -110,7 +154,7 @@ async def get_rows_by_filter(
     select_parts = []
     for col in columns:
         if col in type_overrides:
-            select_parts.append(f'CAST("{col}" AS {type_overrides[col]}) AS "{col}"')
+            select_parts.append(_safe_cast_expression(col, type_overrides[col]))
         else:
             select_parts.append(f'"{col}"')
 
@@ -118,18 +162,21 @@ async def get_rows_by_filter(
 
     # Get total count first — parameterized
     total_count = db.execute(
-        f'SELECT COUNT(*) FROM imported_data WHERE {where_sql}',
+        f"SELECT COUNT(*) FROM imported_data WHERE {where_sql}",
         query_params,
     ).fetchone()[0]
 
     # Use persisted identity column for stable row identity across filters
-    results = db.execute(f"""
+    results = db.execute(
+        f"""
         SELECT {SOURCE_ROW_NUM_COLUMN}, {select_clause}
         FROM imported_data
         WHERE {where_sql}
         ORDER BY {SOURCE_ROW_NUM_COLUMN}
         LIMIT {limit} OFFSET {offset}
-    """, query_params).fetchall()
+    """,
+        query_params,
+    ).fetchall()
 
     # Process results — identity column is the first column
     rows = []
@@ -137,18 +184,13 @@ async def get_rows_by_filter(
         row_num = row[0]
         row_data = dict(zip(columns, row[1:], strict=False))
         checksum = compute_row_checksum(row_data)
-        rows.append(RowData(
-            row_number=row_num,
-            data=row_data,
-            checksum=checksum
-        ).model_dump())
+        rows.append(
+            RowData(row_number=row_num, data=row_data, checksum=checksum).model_dump()
+        )
 
     await ctx.info(f"Found {total_count} matching rows, returning {len(rows)}")
 
-    return QueryResult(
-        rows=rows,
-        total_count=total_count
-    ).model_dump()
+    return QueryResult(rows=rows, total_count=total_count).model_dump()
 
 
 async def query_data(
@@ -170,15 +212,45 @@ async def query_data(
     """
     db = ctx.request_context.lifespan_context["db"]
 
-    # Security: Only allow SELECT
-    sql_upper = sql.strip().upper()
+    # Security: Only allow SELECT — strip comments first to prevent bypass
+    stripped = _strip_sql_comments(sql)
+    sql_upper = stripped.strip().upper()
     if not sql_upper.startswith("SELECT"):
         raise ValueError("Only SELECT queries are allowed")
 
-    # Block dangerous keywords
-    dangerous = ["DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE", "TRUNCATE"]
+    # Reject stacked queries (semicolons)
+    if ";" in sql_upper:
+        raise ValueError("Multiple statements are not allowed")
+
+    # Block dangerous keywords (DML, DDL, and DuckDB-specific functions).
+    # Uses word-boundary matching to avoid false positives on table/column
+    # names like "imported_data" matching "IMPORT".
+    dangerous = [
+        "DROP",
+        "DELETE",
+        "INSERT",
+        "UPDATE",
+        "ALTER",
+        "CREATE",
+        "TRUNCATE",
+        "COPY",
+        "ATTACH",
+        "DETACH",
+        "EXPORT",
+        "IMPORT",
+        "LOAD",
+        "INSTALL",
+        "CALL",
+        "PRAGMA",
+        "SET",
+        "EXECUTE",
+        "READ_CSV",
+        "READ_PARQUET",
+        "READ_JSON",
+        "GLOB",
+    ]
     for keyword in dangerous:
-        if keyword in sql_upper:
+        if re.search(rf"\b{keyword}\b", sql_upper):
             raise ValueError(f"Query contains forbidden keyword: {keyword}")
 
     await ctx.info(f"Executing query: {sql[:100]}...")

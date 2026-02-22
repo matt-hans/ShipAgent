@@ -4,12 +4,12 @@
  * Fields: Client ID, Client Secret, Account Number (optional).
  * Environment tab toggle: Test / Production (required selection, no default).
  * Each environment submits as its own connection_key.
- * After save: form collapses, shows masked placeholders.
+ * After save: auto-validates against UPS OAuth, shows result.
  */
 
 import * as React from 'react';
 import { cn } from '@/lib/utils';
-import { saveProviderCredentials } from '@/lib/api';
+import { saveProviderCredentials, validateProviderConnection } from '@/lib/api';
 import type { ProviderConnectionInfo } from '@/types/api';
 
 interface UPSConnectFormProps {
@@ -26,6 +26,7 @@ export function UPSConnectForm({ existingConnections, onSaved }: UPSConnectFormP
   const [accountNumber, setAccountNumber] = React.useState('');
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [success, setSuccess] = React.useState<string | null>(null);
   const [showForm, setShowForm] = React.useState(false);
 
   // Check if the selected environment already has a connection
@@ -45,9 +46,10 @@ export function UPSConnectForm({ existingConnections, onSaved }: UPSConnectFormP
 
     setSaving(true);
     setError(null);
+    setSuccess(null);
 
     try {
-      await saveProviderCredentials('ups', {
+      const saveResult = await saveProviderCredentials('ups', {
         auth_mode: 'client_credentials',
         credentials: {
           client_id: clientId.trim(),
@@ -61,11 +63,19 @@ export function UPSConnectForm({ existingConnections, onSaved }: UPSConnectFormP
         environment: environment,
       });
 
-      // Reset form
-      setClientId('');
-      setClientSecret('');
-      setAccountNumber('');
-      setShowForm(false);
+      // Auto-validate: test credentials against UPS OAuth
+      const connectionKey = saveResult.connection_key;
+      const validation = await validateProviderConnection(connectionKey);
+
+      if (validation.valid) {
+        setSuccess(validation.message);
+        setClientId('');
+        setClientSecret('');
+        setAccountNumber('');
+        setShowForm(false);
+      } else {
+        setError(validation.message);
+      }
       onSaved();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to save credentials';
@@ -190,6 +200,13 @@ export function UPSConnectForm({ existingConnections, onSaved }: UPSConnectFormP
             </p>
           )}
 
+          {/* Success */}
+          {success && (
+            <p className="text-[11px] text-success bg-success/10 px-2.5 py-1.5 rounded-md">
+              {success}
+            </p>
+          )}
+
           {/* Actions */}
           <div className="flex gap-2">
             <button
@@ -200,12 +217,13 @@ export function UPSConnectForm({ existingConnections, onSaved }: UPSConnectFormP
               {saving && (
                 <span className="block w-3 h-3 border-2 border-primary-foreground border-t-transparent rounded-full animate-spin" />
               )}
-              {saving ? 'Saving...' : existingForEnv ? 'Replace Credentials' : 'Save Credentials'}
+              {saving ? 'Saving & Validating...' : existingForEnv ? 'Replace Credentials' : 'Save & Validate'}
             </button>
             <button
               onClick={() => {
                 setShowForm(false);
                 setError(null);
+                setSuccess(null);
                 setEnvironment(null);
               }}
               className="text-xs py-1.5 px-3 rounded-md border border-border text-muted-foreground hover:bg-muted/50 transition-colors"

@@ -97,6 +97,7 @@ export function ConnectionsSection({ isOpen, onToggle }: ConnectionsSectionProps
             onToggle={() => toggleProvider('ups')}
             onDelete={handleDelete}
             onDisconnect={handleDisconnect}
+            onValidated={refreshProviderConnections}
           >
             <UPSConnectForm
               existingConnections={upsConnections}
@@ -113,6 +114,7 @@ export function ConnectionsSection({ isOpen, onToggle }: ConnectionsSectionProps
             onToggle={() => toggleProvider('shopify')}
             onDelete={handleDelete}
             onDisconnect={handleDisconnect}
+            onValidated={refreshProviderConnections}
           >
             <ShopifyConnectForm
               existingConnection={shopifyConnections[0] ?? null}

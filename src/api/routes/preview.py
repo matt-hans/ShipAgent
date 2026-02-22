@@ -7,6 +7,7 @@ frontend updates.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 from datetime import UTC, datetime
@@ -63,6 +64,7 @@ async def shutdown_batch_runtime(timeout_seconds: float = 15.0) -> None:
         for task in still_pending:
             task.cancel()
         await asyncio.gather(*still_pending, return_exceptions=True)
+
 
 @router.get("/jobs/{job_id}/preview", response_model=BatchPreviewResponse)
 def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewResponse:
@@ -122,7 +124,9 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
                 city = order_data_dict.get("ship_to_city", "")
                 state = order_data_dict.get("ship_to_state", "")
                 city_state = f"{city}, {state}" if city and state else "Pending"
-                service_code = order_data_dict.get("service_code", ServiceCode.GROUND.value)
+                service_code = order_data_dict.get(
+                    "service_code", ServiceCode.GROUND.value
+                )
                 service = SERVICE_CODE_NAMES.get(service_code, "UPS Ground")
             except json.JSONDecodeError:
                 pass
@@ -165,8 +169,16 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
     for row in rows:
         if getattr(row, "duties_taxes_cents", None):
             total_duties_taxes += row.duties_taxes_cents
-        if getattr(row, "destination_country", None) and row.destination_country not in (DEFAULT_ORIGIN_COUNTRY, "PR"):
+        if getattr(
+            row, "destination_country", None
+        ) and row.destination_country not in (DEFAULT_ORIGIN_COUNTRY, "PR"):
             international_count += 1
+
+    # Compute preview integrity hash from all row checksums (TOCTOU protection)
+    checksum_concat = "".join(r.row_checksum for r in rows)
+    preview_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
+    job.preview_hash = preview_hash
+    db.commit()
 
     return BatchPreviewResponse(
         job_id=job_id,
@@ -208,22 +220,28 @@ async def _execute_batch(
     observer = _get_sse_observer()
     db = next(get_db_session())
     try:
-        total_rows = db.query(Job).filter(Job.id == job_id).with_entities(
-            Job.total_rows
-        ).scalar() or 0
+        total_rows = (
+            db.query(Job)
+            .filter(Job.id == job_id)
+            .with_entities(Job.total_rows)
+            .scalar()
+            or 0
+        )
         await observer.on_batch_started(job_id, total_rows)
 
         async def on_progress(event_type: str, **kwargs) -> None:
             """Adapt progress events to SSE observer calls."""
             if event_type == "row_completed":
                 await observer.on_row_completed(
-                    job_id, kwargs["row_number"],
+                    job_id,
+                    kwargs["row_number"],
                     kwargs.get("tracking_number", ""),
                     kwargs.get("cost_cents", 0),
                 )
             elif event_type == "row_failed":
                 await observer.on_row_failed(
-                    job_id, kwargs["row_number"],
+                    job_id,
+                    kwargs["row_number"],
                     kwargs.get("error_code", "E-3005"),
                     kwargs.get("error_message", "Unknown error"),
                 )
@@ -237,14 +255,17 @@ async def _execute_batch(
 
         if result["failed"] == 0:
             await observer.on_batch_completed(
-                job_id, result["successful"] + result["failed"],
-                result["successful"], result["total_cost_cents"],
+                job_id,
+                result["successful"] + result["failed"],
+                result["successful"],
+                result["total_cost_cents"],
                 duties_taxes_cents=result.get("total_duties_taxes_cents", 0),
                 international_row_count=result.get("international_row_count", 0),
             )
         else:
             await observer.on_batch_failed(
-                job_id, "E-3005",
+                job_id,
+                "E-3005",
                 f"{result['failed']} row(s) failed during execution",
                 result["successful"] + result["failed"],
                 duties_taxes_cents=result.get("total_duties_taxes_cents", 0),
@@ -321,6 +342,22 @@ async def confirm_job(
             detail=f"Job cannot be confirmed. Current status: {job.status}. "
             "Only pending jobs can be confirmed.",
         )
+
+    # TOCTOU check: verify rows haven't changed since preview
+    if job.preview_hash:
+        current_rows = (
+            db.query(JobRow)
+            .filter(JobRow.job_id == job_id)
+            .order_by(JobRow.row_number)
+            .all()
+        )
+        checksum_concat = "".join(r.row_checksum for r in current_rows)
+        current_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
+        if current_hash != job.preview_hash:
+            raise HTTPException(
+                status_code=409,
+                detail="Job data has changed since preview. Please re-preview before confirming.",
+            )
 
     # Write-back preference: user toggle overrides, but interactive always off
     if req and req.write_back_enabled is not None:

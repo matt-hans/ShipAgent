@@ -254,6 +254,68 @@ class TestServiceConstructionFailure:
         assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
 
 
+class TestValidateConnection:
+
+    def test_validate_not_found(self, test_client):
+        """POST /connections/{key}/validate returns 404 for missing connection."""
+        resp = test_client.post("/api/v1/connections/ups:test/validate")
+        assert resp.status_code == 404
+        assert resp.json()["error"]["code"] == "NOT_FOUND"
+
+    def test_validate_shopify_auth_failure(self, test_client):
+        """POST /connections/{key}/validate returns 422 with descriptive error for invalid Shopify token."""
+        # Save credentials first
+        save_resp = test_client.post(
+            "/api/v1/connections/shopify/save",
+            json=_shopify_payload(),
+        )
+        assert save_resp.status_code == 201
+        connection_key = save_resp.json()["connection_key"]
+
+        # Validate — will fail because token is fake
+        resp = test_client.post(f"/api/v1/connections/{connection_key}/validate")
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["valid"] is False
+        assert body["status"] == "error"
+        assert len(body["message"]) > 0
+
+    def test_validate_ups_auth_failure(self, test_client):
+        """POST /connections/{key}/validate returns 422 with descriptive error for invalid UPS creds."""
+        # Save credentials first
+        save_resp = test_client.post(
+            "/api/v1/connections/ups/save",
+            json=_ups_payload(),
+        )
+        assert save_resp.status_code == 201
+        connection_key = save_resp.json()["connection_key"]
+
+        # Validate — will fail because creds are fake
+        resp = test_client.post(f"/api/v1/connections/{connection_key}/validate")
+        assert resp.status_code == 422
+        body = resp.json()
+        assert body["valid"] is False
+        assert body["status"] == "error"
+        assert len(body["message"]) > 0
+
+    def test_validate_updates_status_to_error(self, test_client):
+        """Validation failure updates connection status to 'error' with error code."""
+        save_resp = test_client.post(
+            "/api/v1/connections/shopify/save",
+            json=_shopify_payload(),
+        )
+        connection_key = save_resp.json()["connection_key"]
+
+        # Validate (will fail)
+        test_client.post(f"/api/v1/connections/{connection_key}/validate")
+
+        # Get connection — status should be 'error'
+        get_resp = test_client.get(f"/api/v1/connections/{connection_key}")
+        conn = get_resp.json()
+        assert conn["status"] == "error"
+        assert conn["last_error_code"] is not None
+
+
 class TestCustom422Handler:
 
     def test_422_redaction_strips_input_values(self, test_client):

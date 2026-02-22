@@ -157,7 +157,15 @@ async def upload_data_source(
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
-    ext = os.path.splitext(file.filename)[1].lower()
+    # Sanitize filename: strip directory components to prevent path traversal
+    safe_name = Path(file.filename).name
+    if not safe_name or safe_name.startswith("."):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid filename",
+        )
+
+    ext = os.path.splitext(safe_name)[1].lower()
     source_type = EXTENSION_MAP.get(ext)
     if source_type is None:
         raise HTTPException(
@@ -169,13 +177,20 @@ async def upload_data_source(
         )
     # Save uploaded file to disk
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    dest = UPLOAD_DIR / file.filename
+    dest = (UPLOAD_DIR / safe_name).resolve()
+    if not dest.is_relative_to(UPLOAD_DIR.resolve()):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid filename",
+        )
     try:
         with open(dest, "wb") as f:
             shutil.copyfileobj(file.file, f)
     except OSError as e:
         logger.exception("Failed to save uploaded file: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}") from None
+        raise HTTPException(
+            status_code=500, detail=f"Failed to save file: {e}"
+        ) from None
     finally:
         await file.close()
 

@@ -707,3 +707,307 @@ class ConnectionService:
                 store_domain=store_domain,
                 access_token=creds.get("access_token", ""),
             )
+
+    # --- Live Credential Validation ---
+
+    async def validate_connection(self, connection_key: str) -> dict:
+        """Validate saved credentials against the real provider API.
+
+        Decrypts stored credentials, makes a lightweight API call to verify
+        they work, and updates the connection status to 'connected' on success
+        or 'error' on failure.
+
+        Args:
+            connection_key: Unique connection identifier.
+
+        Returns:
+            Dict with 'valid', 'status', 'message', and optional 'details'.
+
+        Raises:
+            ConnectionValidationError: If connection not found or not validatable.
+        """
+        row = self._db.query(ProviderConnection).filter_by(
+            connection_key=connection_key
+        ).first()
+        if row is None:
+            raise ConnectionValidationError(
+                "NOT_FOUND", f"Connection '{connection_key}' not found"
+            )
+
+        # Decrypt credentials
+        try:
+            aad = _build_aad(row)
+            creds = decrypt_credentials(row.encrypted_credentials, self._key, aad=aad)
+        except CredentialDecryptionError as e:
+            self._update_validation_status(
+                row, "needs_reconnect", "DECRYPT_FAILED", str(e)
+            )
+            return {
+                "valid": False,
+                "status": "needs_reconnect",
+                "message": "Credentials could not be decrypted. Re-enter credentials.",
+            }
+
+        metadata = _deserialize_metadata(row)
+
+        if row.provider == "shopify":
+            return await self._validate_shopify(row, creds, metadata)
+        elif row.provider == "ups":
+            return await self._validate_ups(row, creds)
+        else:
+            return {
+                "valid": False,
+                "status": row.status,
+                "message": f"Validation not supported for provider '{row.provider}'",
+            }
+
+    async def _validate_shopify(
+        self, row: ProviderConnection, creds: dict, metadata: dict,
+    ) -> dict:
+        """Validate Shopify credentials by calling the shop.json endpoint.
+
+        Args:
+            row: ProviderConnection ORM row.
+            creds: Decrypted credential dict.
+            metadata: Deserialized metadata dict.
+
+        Returns:
+            Validation result dict.
+        """
+        import httpx
+
+        store_domain = metadata.get("store_domain", "")
+        access_token = creds.get("access_token", "")
+
+        if not store_domain or not access_token:
+            self._update_validation_status(
+                row, "error", "MISSING_FIELD", "store_domain or access_token missing"
+            )
+            return {
+                "valid": False,
+                "status": "error",
+                "message": "Incomplete credentials: store domain or access token is missing.",
+            }
+
+        # Normalize domain
+        domain = store_domain.replace("https://", "").replace("http://", "").rstrip("/")
+        api_url = f"https://{domain}/admin/api/2024-01/shop.json"
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    api_url,
+                    headers={
+                        "X-Shopify-Access-Token": access_token,
+                        "Content-Type": "application/json",
+                    },
+                )
+
+            if response.status_code == 200:
+                shop_data = response.json().get("shop", {})
+                shop_name = shop_data.get("name", domain)
+                self._update_validation_status(row, "connected", None, None)
+                return {
+                    "valid": True,
+                    "status": "connected",
+                    "message": f"Successfully connected to Shopify store: {shop_name}",
+                    "details": {"shop_name": shop_name, "domain": domain},
+                }
+            elif response.status_code == 401:
+                self._update_validation_status(
+                    row, "error", "AUTH_FAILED",
+                    "Access token is invalid or has been revoked"
+                )
+                return {
+                    "valid": False,
+                    "status": "error",
+                    "message": "Authentication failed: access token is invalid or revoked. Check your Shopify Admin API access token.",
+                }
+            elif response.status_code == 403:
+                self._update_validation_status(
+                    row, "error", "PERMISSION_DENIED",
+                    "Token lacks required scopes"
+                )
+                return {
+                    "valid": False,
+                    "status": "error",
+                    "message": "Permission denied: the access token lacks required API scopes.",
+                }
+            elif response.status_code == 404:
+                self._update_validation_status(
+                    row, "error", "STORE_NOT_FOUND",
+                    f"Store '{domain}' not found"
+                )
+                return {
+                    "valid": False,
+                    "status": "error",
+                    "message": f"Store not found: '{domain}' does not exist or is unavailable.",
+                }
+            else:
+                self._update_validation_status(
+                    row, "error", "API_ERROR",
+                    f"HTTP {response.status_code}"
+                )
+                return {
+                    "valid": False,
+                    "status": "error",
+                    "message": f"Shopify API returned HTTP {response.status_code}.",
+                }
+        except httpx.ConnectError:
+            self._update_validation_status(
+                row, "error", "DNS_ERROR",
+                f"Cannot resolve '{domain}'"
+            )
+            return {
+                "valid": False,
+                "status": "error",
+                "message": f"Cannot reach store: '{domain}' could not be resolved. Check the store domain.",
+            }
+        except httpx.TimeoutException:
+            self._update_validation_status(
+                row, "error", "TIMEOUT",
+                "Connection timed out"
+            )
+            return {
+                "valid": False,
+                "status": "error",
+                "message": "Connection timed out. Try again.",
+            }
+        except Exception as e:
+            logger.warning("Shopify validation error: %s", e, exc_info=True)
+            self._update_validation_status(
+                row, "error", "VALIDATION_ERROR", str(e)
+            )
+            return {
+                "valid": False,
+                "status": "error",
+                "message": f"Validation failed: {sanitize_error_message(str(e))}",
+            }
+
+    async def _validate_ups(self, row: ProviderConnection, creds: dict) -> dict:
+        """Validate UPS credentials by requesting an OAuth token.
+
+        Args:
+            row: ProviderConnection ORM row.
+            creds: Decrypted credential dict.
+
+        Returns:
+            Validation result dict.
+        """
+        import httpx
+
+        client_id = creds.get("client_id", "")
+        client_secret = creds.get("client_secret", "")
+        environment = row.environment or "test"
+
+        if not client_id or not client_secret:
+            self._update_validation_status(
+                row, "error", "MISSING_FIELD", "client_id or client_secret missing"
+            )
+            return {
+                "valid": False,
+                "status": "error",
+                "message": "Incomplete credentials: Client ID or Client Secret is missing.",
+            }
+
+        base_url = _UPS_BASE_URLS.get(environment, _UPS_BASE_URLS["production"])
+        token_url = f"{base_url}/security/v1/oauth/token"
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    token_url,
+                    data={"grant_type": "client_credentials"},
+                    auth=(client_id, client_secret),
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+
+            if response.status_code == 200:
+                self._update_validation_status(row, "connected", None, None)
+                return {
+                    "valid": True,
+                    "status": "connected",
+                    "message": f"Successfully authenticated with UPS ({environment}).",
+                    "details": {"environment": environment},
+                }
+            elif response.status_code == 401:
+                self._update_validation_status(
+                    row, "error", "AUTH_FAILED",
+                    "Client credentials are invalid"
+                )
+                return {
+                    "valid": False,
+                    "status": "error",
+                    "message": "Authentication failed: Client ID or Client Secret is invalid.",
+                }
+            elif response.status_code == 403:
+                self._update_validation_status(
+                    row, "error", "PERMISSION_DENIED",
+                    "Account lacks required permissions"
+                )
+                return {
+                    "valid": False,
+                    "status": "error",
+                    "message": "Permission denied: UPS account lacks required permissions.",
+                }
+            else:
+                self._update_validation_status(
+                    row, "error", "API_ERROR",
+                    f"HTTP {response.status_code}"
+                )
+                return {
+                    "valid": False,
+                    "status": "error",
+                    "message": f"UPS API returned HTTP {response.status_code}.",
+                }
+        except httpx.ConnectError:
+            self._update_validation_status(
+                row, "error", "CONNECT_ERROR",
+                f"Cannot reach UPS ({environment})"
+            )
+            return {
+                "valid": False,
+                "status": "error",
+                "message": f"Cannot reach UPS API ({environment}). Check your network connection.",
+            }
+        except httpx.TimeoutException:
+            self._update_validation_status(
+                row, "error", "TIMEOUT",
+                "Connection timed out"
+            )
+            return {
+                "valid": False,
+                "status": "error",
+                "message": "Connection timed out. Try again.",
+            }
+        except Exception as e:
+            logger.warning("UPS validation error: %s", e, exc_info=True)
+            self._update_validation_status(
+                row, "error", "VALIDATION_ERROR", str(e)
+            )
+            return {
+                "valid": False,
+                "status": "error",
+                "message": f"Validation failed: {sanitize_error_message(str(e))}",
+            }
+
+    def _update_validation_status(
+        self, row: ProviderConnection, status: str,
+        error_code: str | None, error_message: str | None,
+    ) -> None:
+        """Update a connection's status after validation.
+
+        Args:
+            row: ProviderConnection ORM row.
+            status: New status value.
+            error_code: Optional error code.
+            error_message: Optional error message (sanitized before storage).
+        """
+        row.status = status
+        row.last_error_code = error_code
+        row.error_message = sanitize_error_message(error_message) if error_message else None
+        row.updated_at = _utc_now_iso()
+        try:
+            self._db.commit()
+        except IntegrityError:
+            self._db.rollback()

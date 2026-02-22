@@ -55,6 +55,7 @@ from src.db.models import JobStatus  # noqa: E402
 from src.errors import ShipAgentError  # noqa: E402
 from src.services.batch_engine import BatchEngine  # noqa: E402
 from src.services.ups_mcp_client import UPSMCPClient  # noqa: E402
+from src.utils.redaction import sanitize_error_message  # noqa: E402
 
 # Frontend build directory
 FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
@@ -178,10 +179,15 @@ async def _process_watched_file(file_path: str, config) -> None:
                     else:
                         _cfg_path = os.environ.get("SHIPAGENT_CONFIG_PATH")
                         global_config = load_config(config_path=_cfg_path)
-                        global_rules = global_config.auto_confirm if global_config else AutoConfirmRules()
+                        global_rules = (
+                            global_config.auto_confirm
+                            if global_config
+                            else AutoConfirmRules()
+                        )
                         folder_rules = AutoConfirmRules(
                             enabled=True,
-                            max_cost_cents=config.max_cost_cents or global_rules.max_cost_cents,
+                            max_cost_cents=config.max_cost_cents
+                            or global_rules.max_cost_cents,
                             max_rows=config.max_rows or global_rules.max_rows,
                             max_cost_per_row_cents=global_rules.max_cost_per_row_cents,
                             allowed_services=global_rules.allowed_services,
@@ -189,9 +195,11 @@ async def _process_watched_file(file_path: str, config) -> None:
                             allow_warnings=global_rules.allow_warnings,
                         )
 
-                        rows = db.query(JobRow).filter(
-                            JobRow.job_id == pending_job_id
-                        ).all()
+                        rows = (
+                            db.query(JobRow)
+                            .filter(JobRow.job_id == pending_job_id)
+                            .all()
+                        )
                         row_costs = [r.cost_cents or 0 for r in rows]
 
                         service_codes_set: set[str] = set()
@@ -233,7 +241,9 @@ async def _process_watched_file(file_path: str, config) -> None:
                             ) -> None:
                                 logger.info(
                                     "Watchdog progress [%s]: %s %s",
-                                    pending_job_id, event_type, kwargs,
+                                    pending_job_id,
+                                    event_type,
+                                    kwargs,
                                 )
 
                             await execute_batch(
@@ -264,11 +274,14 @@ async def _process_watched_file(file_path: str, config) -> None:
 
         except Exception as e:
             logger.exception("Watchdog: failed processing %s", processing_path.name)
-            _watchdog_service.fail_file(processing_path, {
-                "error": str(e),
-                "file": str(file_path),
-                "command": config.command,
-            })
+            _watchdog_service.fail_file(
+                processing_path,
+                {
+                    "error": str(e),
+                    "file": str(file_path),
+                    "command": config.command,
+                },
+            )
 
 
 def _parse_iso_timestamp(value: str | None) -> datetime | None:
@@ -374,7 +387,8 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
             await ups_client.connect()
         except Exception as e:
             logger.warning(
-                "UPS MCP unavailable for recovery (rows stay in_flight): %s", e,
+                "UPS MCP unavailable for recovery (rows stay in_flight): %s",
+                e,
             )
             ups_client = None
 
@@ -386,7 +400,8 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
                     account_number="",
                 )
                 recovery_result = await engine.recover_in_flight_rows(
-                    job.id, rows,
+                    job.id,
+                    rows,
                 )
                 logger.info(
                     "Job %s recovery: %d recovered, %d needs_review, %d unresolved",
@@ -404,7 +419,8 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
             except Exception as e:
                 logger.error(
                     "Recovery failed for job %s (non-blocking): %s",
-                    job.id, e,
+                    job.id,
+                    e,
                 )
 
         # Clean up the temporary UPS client
@@ -435,7 +451,9 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     _startup_time = _time.time()
     _ensure_agent_sdk_available()
-    warnings.filterwarnings("default", category=DeprecationWarning, module="claude_agent_sdk")
+    warnings.filterwarnings(
+        "default", category=DeprecationWarning, module="claude_agent_sdk"
+    )
 
     # Fail fast if filter token secret is missing or too short
     from src.orchestrator.filter_config import validate_filter_config
@@ -454,12 +472,16 @@ async def lifespan(app: FastAPI):
         key_info = get_key_source_info()
         logger.info(
             "Credential key source: %s (%s)",
-            key_info["source"], key_info.get("path", "n/a"),
+            key_info["source"],
+            key_info.get("path", "n/a"),
         )
         if key_info["source"] == "platformdirs":
-            strict = os.environ.get(
-                "SHIPAGENT_REQUIRE_PERSISTENT_CREDENTIAL_KEY", ""
-            ).lower() == "true"
+            strict = (
+                os.environ.get(
+                    "SHIPAGENT_REQUIRE_PERSISTENT_CREDENTIAL_KEY", ""
+                ).lower()
+                == "true"
+            )
             if strict:
                 raise RuntimeError(
                     "SHIPAGENT_REQUIRE_PERSISTENT_CREDENTIAL_KEY is set but key source is "
@@ -483,12 +505,16 @@ async def lifespan(app: FastAPI):
     except CredentialDecryptionError as e:
         logger.warning(
             "Provider credential check failed (non-blocking): %s: %s",
-            type(e).__name__, e, exc_info=True,
+            type(e).__name__,
+            e,
+            exc_info=True,
         )
     except Exception as e:
         logger.error(
             "Unexpected error during provider credential check: %s: %s",
-            type(e).__name__, e, exc_info=True,
+            type(e).__name__,
+            e,
+            exc_info=True,
         )
 
     allow_multi_worker = os.environ.get("SHIPAGENT_ALLOW_MULTI_WORKER", "false").lower()
@@ -519,6 +545,7 @@ async def lifespan(app: FastAPI):
     config_path = os.environ.get("SHIPAGENT_CONFIG_PATH")
     if config_path:
         from src.cli.config import load_config as _load_config
+
         cfg = _load_config(config_path=config_path)
         if cfg and cfg.watch_folders:
             from src.cli.watchdog_service import HotFolderService
@@ -539,7 +566,9 @@ async def lifespan(app: FastAPI):
                             break
 
             await _watchdog_service.start(process_callback=_process_watched_file)
-            logger.info("Watchdog started with %d watch folders", len(cfg.watch_folders))
+            logger.info(
+                "Watchdog started with %d watch folders", len(cfg.watch_folders)
+            )
 
     yield
 
@@ -575,37 +604,46 @@ if allowed_origins:
         allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     )
 
+# NOTE: Rate limiting is not implemented at the application level.
+# In production, rate limiting should be handled by the reverse proxy
+# (e.g. nginx, Caddy, or cloud load balancer) in front of this app.
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add standard security headers to all responses."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return response
+
 
 @app.exception_handler(RequestValidationError)
 async def custom_validation_handler(request: Request, exc: RequestValidationError):
-    """Sanitize 422 validation errors to prevent secret leakage.
+    """Sanitize all 422 validation errors to prevent secret leakage.
 
-    For /connections/* routes: strip raw input values and wrap in standard error schema.
-    For all other routes: preserve default FastAPI behavior.
+    Strips raw input values and redacts sensitive patterns from error
+    messages across all routes — not just /connections/*.
     """
-    if request.url.path.startswith("/api/v1/connections"):
-        from src.utils.redaction import sanitize_error_message
-
-        safe_errors = []
-        for err in exc.errors():
-            safe_errors.append({
+    safe_errors = []
+    for err in exc.errors():
+        safe_errors.append(
+            {
                 "type": err.get("type", "unknown"),
                 "loc": err.get("loc", []),
                 "msg": sanitize_error_message(str(err.get("msg", "Validation error"))),
-            })
-        return JSONResponse(
-            status_code=422,
-            content={
-                "error": {
-                    "code": "VALIDATION_ERROR",
-                    "message": "Invalid request payload",
-                },
-                "detail": safe_errors,
-            },
+            }
         )
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors()},
+        content={
+            "error": {
+                "code": "VALIDATION_ERROR",
+                "message": "Invalid request payload",
+            },
+            "detail": safe_errors,
+        },
     )
 
 
@@ -667,7 +705,9 @@ def health_check() -> dict:
     # Count active (running) jobs
     try:
         db = next(_get_db())
-        active_jobs = db.query(Job).filter(Job.status == JobStatus.running.value).count()
+        active_jobs = (
+            db.query(Job).filter(Job.status == JobStatus.running.value).count()
+        )
         db.close()
     except Exception:
         active_jobs = 0
@@ -679,7 +719,10 @@ def health_check() -> dict:
         version = "unknown"
 
     # Watchdog status
-    watchdog_active = _watchdog_service is not None and getattr(_watchdog_service, "_observer", None) is not None
+    watchdog_active = (
+        _watchdog_service is not None
+        and getattr(_watchdog_service, "_observer", None) is not None
+    )
     watch_folders: list[str] = []
     if _watchdog_service and hasattr(_watchdog_service, "_configs"):
         watch_folders = [c.path for c in _watchdog_service._configs]
@@ -749,8 +792,13 @@ async def readiness_check():
             }
             status = "degraded"
     except Exception:
-        logger.warning("Readiness check: UPS credential resolution failed", exc_info=True)
-        checks["ups_credentials"] = {"status": "degraded", "message": "Credential check failed"}
+        logger.warning(
+            "Readiness check: UPS credential resolution failed", exc_info=True
+        )
+        checks["ups_credentials"] = {
+            "status": "degraded",
+            "message": "Credential check failed",
+        }
         status = "degraded"
 
     # MCP gateway health (best-effort, non-blocking)

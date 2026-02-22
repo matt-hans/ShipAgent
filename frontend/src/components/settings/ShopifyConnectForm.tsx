@@ -6,10 +6,11 @@
  *
  * Validates store domain against *.myshopify.com on blur.
  * Normalizes domain on submit (strips protocol, trailing slash).
+ * Auto-validates credentials against Shopify API after save.
  */
 
 import * as React from 'react';
-import { saveProviderCredentials } from '@/lib/api';
+import { saveProviderCredentials, validateProviderConnection } from '@/lib/api';
 import type { ProviderConnectionInfo } from '@/types/api';
 
 interface ShopifyConnectFormProps {
@@ -39,6 +40,7 @@ export function ShopifyConnectForm({ existingConnection, onSaved }: ShopifyConne
   const [domainError, setDomainError] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [success, setSuccess] = React.useState<string | null>(null);
   const [showForm, setShowForm] = React.useState(false);
 
   const handleDomainBlur = () => {
@@ -62,9 +64,10 @@ export function ShopifyConnectForm({ existingConnection, onSaved }: ShopifyConne
 
     setSaving(true);
     setError(null);
+    setSuccess(null);
 
     try {
-      await saveProviderCredentials('shopify', {
+      const saveResult = await saveProviderCredentials('shopify', {
         auth_mode: 'legacy_token',
         credentials: {
           access_token: accessToken.trim(),
@@ -75,9 +78,18 @@ export function ShopifyConnectForm({ existingConnection, onSaved }: ShopifyConne
         display_name: normalized,
       });
 
-      setStoreDomain('');
-      setAccessToken('');
-      setShowForm(false);
+      // Auto-validate: test credentials against Shopify API
+      const connectionKey = saveResult.connection_key;
+      const validation = await validateProviderConnection(connectionKey);
+
+      if (validation.valid) {
+        setSuccess(validation.message);
+        setStoreDomain('');
+        setAccessToken('');
+        setShowForm(false);
+      } else {
+        setError(validation.message);
+      }
       onSaved();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed to save credentials';
@@ -161,6 +173,13 @@ export function ShopifyConnectForm({ existingConnection, onSaved }: ShopifyConne
         </p>
       )}
 
+      {/* Success */}
+      {success && (
+        <p className="text-[11px] text-success bg-success/10 px-2.5 py-1.5 rounded-md">
+          {success}
+        </p>
+      )}
+
       {/* Actions */}
       <div className="flex gap-2">
         <button
@@ -171,12 +190,13 @@ export function ShopifyConnectForm({ existingConnection, onSaved }: ShopifyConne
           {saving && (
             <span className="block w-3 h-3 border-2 border-primary-foreground border-t-transparent rounded-full animate-spin" />
           )}
-          {saving ? 'Saving...' : existingConnection ? 'Replace Credentials' : 'Save Credentials'}
+          {saving ? 'Saving & Validating...' : existingConnection ? 'Replace Credentials' : 'Save & Validate'}
         </button>
         <button
           onClick={() => {
             setShowForm(false);
             setError(null);
+            setSuccess(null);
             setDomainError(null);
           }}
           className="text-xs py-1.5 px-3 rounded-md border border-border text-muted-foreground hover:bg-muted/50 transition-colors"
