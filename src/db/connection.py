@@ -319,13 +319,15 @@ def _migrate_provider_connections(conn: Any, log: Any) -> None:
     if null_ts_count and null_ts_count > 0:
         conn.execute(
             text(
-                f"UPDATE provider_connections SET created_at = '{now_utc}' WHERE created_at IS NULL"
-            )
+                "UPDATE provider_connections SET created_at = :now_utc WHERE created_at IS NULL"
+            ),
+            {"now_utc": now_utc},
         )
         conn.execute(
             text(
-                f"UPDATE provider_connections SET updated_at = '{now_utc}' WHERE updated_at IS NULL"
-            )
+                "UPDATE provider_connections SET updated_at = :now_utc WHERE updated_at IS NULL"
+            ),
+            {"now_utc": now_utc},
         )
         log.info(
             "Backfilled timestamps on %d provider_connections rows.", null_ts_count

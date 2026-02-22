@@ -478,6 +478,31 @@ class TestSAPClientODataHelpers:
         result = sap_client._build_odata_filter(filters)
         assert result == ""
 
+    def test_build_odata_filter_escapes_single_quotes_in_status(self, sap_client):
+        """OData filter escapes single quotes in status to prevent injection (H-2, CWE-943)."""
+        filters = OrderFilters(status="A' or 1 eq 1 or status eq '")
+        result = sap_client._build_odata_filter(filters)
+        # Single quotes should be doubled to prevent OData filter injection
+        assert "''" in result
+        assert "A' or 1 eq 1" not in result
+
+    def test_build_odata_filter_escapes_single_quotes_in_dates(self, sap_client):
+        """OData filter escapes single quotes in date fields (H-2, CWE-943)."""
+        filters = OrderFilters(date_from="2024-01-01' or 1 eq 1 or x eq '")
+        result = sap_client._build_odata_filter(filters)
+        # Single quotes must be doubled — the injected payload stays inside the string literal
+        assert "''" in result
+        # The raw unescaped single quote should NOT appear (it should be doubled)
+        assert "01' or" not in result  # Would be "01'' or" after escaping
+
+    def test_build_odata_filter_safe_values_unchanged(self, sap_client):
+        """Normal filter values without quotes pass through unchanged."""
+        filters = OrderFilters(status="A", date_from="2024-01-01", date_to="2024-01-31")
+        result = sap_client._build_odata_filter(filters)
+        assert "OverallSDProcessStatus eq 'A'" in result
+        assert "2024-01-01T00:00:00" in result
+        assert "2024-01-31T23:59:59" in result
+
 
 class TestSAPClientCleanup:
     """Test SAPClient cleanup and resource management."""

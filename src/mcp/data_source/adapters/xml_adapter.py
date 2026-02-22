@@ -12,14 +12,22 @@ Per CONTEXT.md:
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import xmltodict
+import defusedxml
+
+defusedxml.defuse_stdlib()  # Disable DTD/entity processing globally (CWE-611)
+
+import xmltodict  # noqa: E402
 
 if TYPE_CHECKING:
     from duckdb import DuckDBPyConnection
 
-from src.mcp.data_source.adapters.base import BaseSourceAdapter
-from src.mcp.data_source.models import ImportResult
-from src.mcp.data_source.utils import coerce_records, flatten_record, load_flat_records_to_duckdb
+from src.mcp.data_source.adapters.base import BaseSourceAdapter  # noqa: E402
+from src.mcp.data_source.models import ImportResult  # noqa: E402
+from src.mcp.data_source.utils import (  # noqa: E402
+    coerce_records,
+    flatten_record,
+    load_flat_records_to_duckdb,
+)
 
 # Guard against OOM — xmltodict.parse() buffers entire file in memory.
 MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB

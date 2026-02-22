@@ -1017,3 +1017,64 @@ class TestFilterTokenSecretCache:
 
         # Cleanup: reset cache for other tests
         hooks._FILTER_TOKEN_SECRET = None
+
+
+class TestHookExactMatching:
+    """Tests for exact tool name matching to prevent hook bypass (M-1, CWE-183).
+
+    Verifies that security hooks use exact string equality (==) instead of
+    substring matching ('in') to prevent bypass via crafted tool names
+    like 'not_create_shipment' or 'create_shipment_evil'.
+    """
+
+    @pytest.mark.asyncio
+    async def test_substring_tool_name_not_matched(self):
+        """A tool name containing 'create_shipment' as substring should NOT be gated."""
+        from src.orchestrator.agent.hooks import create_shipping_hook
+
+        hook = create_shipping_hook(interactive_shipping=False)
+        # This crafted tool name should NOT trigger the create_shipment hook
+        result = await hook(
+            {"tool_name": "evil_create_shipment_wrapper", "tool_input": {}},
+            "test-id",
+            None,
+        )
+        assert result == {}, "Substring tool names must not match; only exact match should trigger"
+
+    @pytest.mark.asyncio
+    async def test_exact_tool_name_still_denied(self):
+        """The exact tool name 'mcp__ups__create_shipment' should still be denied."""
+        from src.orchestrator.agent.hooks import create_shipping_hook
+
+        hook = create_shipping_hook(interactive_shipping=False)
+        result = await hook(
+            {"tool_name": "mcp__ups__create_shipment", "tool_input": {}},
+            "test-id",
+            None,
+        )
+        assert "deny" in str(result)
+
+    @pytest.mark.asyncio
+    async def test_validate_pre_tool_exact_routing(self):
+        """validate_pre_tool routes only exact tool names, not substrings."""
+        from src.orchestrator.agent.hooks import validate_pre_tool
+
+        # A substring match should NOT be routed to validate_shipping_input
+        result = await validate_pre_tool(
+            {"tool_name": "fake_create_shipment_tool", "tool_input": {}},
+            "test-id",
+            None,
+        )
+        assert result == {}, "Substring tool names must pass through validate_pre_tool"
+
+    @pytest.mark.asyncio
+    async def test_validate_pre_tool_void_exact_routing(self):
+        """validate_pre_tool routes void_shipment only by exact match."""
+        from src.orchestrator.agent.hooks import validate_pre_tool
+
+        result = await validate_pre_tool(
+            {"tool_name": "fake_void_shipment_tool", "tool_input": {}},
+            "test-id",
+            None,
+        )
+        assert result == {}, "Substring void_shipment tool names must pass through"

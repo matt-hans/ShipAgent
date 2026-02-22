@@ -245,9 +245,17 @@ async def query_data(
         "SET",
         "EXECUTE",
         "READ_CSV",
+        "READ_CSV_AUTO",
         "READ_PARQUET",
+        "READ_PARQUET_AUTO",
         "READ_JSON",
+        "READ_JSON_AUTO",
+        "SCAN_CSV",
+        "SCAN_PARQUET",
+        "SCAN_JSON",
         "GLOB",
+        "HTTPFS",
+        "S3",
     ]
     for keyword in dangerous:
         if re.search(rf"\b{keyword}\b", sql_upper):
