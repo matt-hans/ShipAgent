@@ -32,7 +32,7 @@ RUNTIME_USABLE_STATUSES: frozenset[str] = VALID_STATUSES - SKIP_STATUSES
 CREDENTIAL_SCHEMAS: dict[str, dict[str, dict[str, int]]] = {
     "ups:client_credentials": {
         "required": {"client_id": 1024, "client_secret": 1024},
-        "optional": {},
+        "optional": {"account_number": 10},
     },
     "shopify:legacy_token": {
         "required": {"access_token": 4096},
@@ -56,6 +56,7 @@ class UPSCredentials:
     client_secret: str
     environment: str
     base_url: str
+    account_number: str = ""
 
 
 @dataclass(frozen=True)

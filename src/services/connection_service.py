@@ -278,6 +278,7 @@ class ConnectionService:
             Dict with connection metadata.
         """
         result = {
+            "id": row.id,
             "connection_key": row.connection_key,
             "provider": row.provider,
             "display_name": row.display_name,
@@ -285,6 +286,7 @@ class ConnectionService:
             "environment": row.environment,
             "status": row.status,
             "metadata": _deserialize_metadata(row),
+            "last_validated_at": None,
             "last_error_code": row.last_error_code,
             "error_message": row.error_message,
             "schema_version": row.schema_version,
@@ -607,11 +609,13 @@ class ConnectionService:
             return None
 
         base_url = _UPS_BASE_URLS.get(environment, _UPS_BASE_URLS["production"])
+        metadata = _deserialize_metadata(row)
         return UPSCredentials(
             client_id=creds["client_id"],
             client_secret=creds["client_secret"],
             environment=environment,
             base_url=base_url,
+            account_number=creds.get("account_number", "") or metadata.get("account_number", ""),
         )
 
     def get_shopify_credentials(

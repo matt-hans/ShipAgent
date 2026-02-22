@@ -160,7 +160,7 @@ async def execute_batch(
             "No UPS credentials configured. Open Settings to connect UPS."
         )
 
-    account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
+    account_number = ups_creds.account_number or os.environ.get("UPS_ACCOUNT_NUMBER", "")
 
     try:
         async with UPSMCPClient(

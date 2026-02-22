@@ -584,12 +584,14 @@ async def custom_validation_handler(request: Request, exc: RequestValidationErro
     For all other routes: preserve default FastAPI behavior.
     """
     if request.url.path.startswith("/api/v1/connections"):
+        from src.utils.redaction import sanitize_error_message
+
         safe_errors = []
         for err in exc.errors():
             safe_errors.append({
                 "type": err.get("type", "unknown"),
                 "loc": err.get("loc", []),
-                "msg": err.get("msg", "Validation error"),
+                "msg": sanitize_error_message(str(err.get("msg", "Validation error"))),
             })
         return JSONResponse(
             status_code=422,

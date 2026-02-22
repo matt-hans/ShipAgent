@@ -1,6 +1,7 @@
 """Tests for runtime credential adapter (DB priority, env fallback)."""
 
 import os
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -12,7 +13,10 @@ from src.db.models import Base
 @pytest.fixture
 def db_session():
     """Provide in-memory DB session."""
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+    )
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine)()
     yield session
@@ -229,3 +233,273 @@ class TestResolveShopifyCredentials:
         finally:
             os.environ.pop("SHOPIFY_ACCESS_TOKEN", None)
             os.environ.pop("SHOPIFY_STORE_DOMAIN", None)
+
+
+class TestResolverAutoAcquiresDB:
+    """Tests for the critical path: resolver called without db= parameter.
+
+    This is how all real call sites invoke the resolver — without passing
+    a DB session. The resolver must auto-acquire a session from SessionLocal
+    to read DB-stored credentials.
+    """
+
+    def test_ups_resolver_no_db_reads_from_database(self, db_session, key_dir):
+        """UPS resolver auto-acquires DB session and reads credentials."""
+        from src.services.connection_service import ConnectionService
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        # Save credentials to DB
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "auto_id", "client_secret": "auto_sec"},
+            metadata={}, environment="production", display_name="UPS Prod",
+        )
+
+        # Clear env vars so only DB can provide creds
+        for var in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET"):
+            os.environ.pop(var, None)
+
+        # Patch SessionLocal to return our test session
+        mock_session_factory = sessionmaker(bind=db_session.get_bind())
+        with patch("src.db.connection.SessionLocal", mock_session_factory):
+            result = resolve_ups_credentials(environment="production", key_dir=key_dir)
+
+        assert result is not None
+        assert result.client_id == "auto_id"
+        assert result.client_secret == "auto_sec"
+
+    def test_shopify_resolver_no_db_reads_from_database(self, db_session, key_dir):
+        """Shopify resolver auto-acquires DB session and reads credentials."""
+        from src.services.connection_service import ConnectionService
+        from src.services.runtime_credentials import resolve_shopify_credentials
+
+        # Save credentials to DB
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="shopify", auth_mode="legacy_token",
+            credentials={"access_token": "auto_tok"},
+            metadata={"store_domain": "auto.myshopify.com"}, display_name="Auto",
+        )
+
+        # Clear env vars
+        for var in ("SHOPIFY_ACCESS_TOKEN", "SHOPIFY_STORE_DOMAIN"):
+            os.environ.pop(var, None)
+
+        mock_session_factory = sessionmaker(bind=db_session.get_bind())
+        with patch("src.db.connection.SessionLocal", mock_session_factory):
+            result = resolve_shopify_credentials(key_dir=key_dir)
+
+        assert result is not None
+        assert result.access_token == "auto_tok"
+        assert result.store_domain == "auto.myshopify.com"
+
+    def test_ups_auto_db_falls_back_to_env_when_no_db_rows(self, db_session, key_dir):
+        """When DB has no rows, auto-acquire still falls back to env."""
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        os.environ["UPS_CLIENT_ID"] = "env_id"
+        os.environ["UPS_CLIENT_SECRET"] = "env_sec"
+        try:
+            mock_session_factory = sessionmaker(bind=db_session.get_bind())
+            with patch("src.db.connection.SessionLocal", mock_session_factory):
+                result = resolve_ups_credentials(environment="test", key_dir=key_dir)
+            assert result is not None
+            assert result.client_id == "env_id"
+        finally:
+            os.environ.pop("UPS_CLIENT_ID", None)
+            os.environ.pop("UPS_CLIENT_SECRET", None)
+
+    def test_ups_auto_db_graceful_on_session_failure(self, key_dir):
+        """When SessionLocal fails, falls back to env vars gracefully."""
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        os.environ["UPS_CLIENT_ID"] = "env_id"
+        os.environ["UPS_CLIENT_SECRET"] = "env_sec"
+        try:
+            def broken_session():
+                raise RuntimeError("DB unavailable")
+
+            with patch("src.db.connection.SessionLocal", broken_session):
+                result = resolve_ups_credentials(environment="test", key_dir=key_dir)
+            assert result is not None
+            assert result.client_id == "env_id"
+        finally:
+            os.environ.pop("UPS_CLIENT_ID", None)
+            os.environ.pop("UPS_CLIENT_SECRET", None)
+
+    def test_ups_environment_none_discovers_stored_env(self, db_session, key_dir):
+        """When environment=None, resolver discovers stored connections."""
+        from src.services.connection_service import ConnectionService
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "test_id", "client_secret": "test_sec"},
+            metadata={}, environment="test", display_name="UPS Test",
+        )
+
+        for var in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET"):
+            os.environ.pop(var, None)
+
+        mock_session_factory = sessionmaker(bind=db_session.get_bind())
+        with patch("src.db.connection.SessionLocal", mock_session_factory):
+            result = resolve_ups_credentials(key_dir=key_dir)
+
+        assert result is not None
+        assert result.environment == "test"
+        assert result.client_id == "test_id"
+
+
+class TestUPSAccountNumberFlow:
+    """Tests for consistent UPS account number resolution."""
+
+    def test_account_number_stored_in_credentials(self, db_session, key_dir):
+        """Account number in credentials is returned by resolver."""
+        from src.services.connection_service import ConnectionService
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "id", "client_secret": "sec", "account_number": "123456"},
+            metadata={}, environment="test", display_name="UPS Test",
+        )
+        result = resolve_ups_credentials(environment="test", db=db_session, key_dir=key_dir)
+        assert result is not None
+        assert result.account_number == "123456"
+
+    def test_account_number_from_metadata_fallback(self, db_session, key_dir):
+        """Account number in metadata is returned when not in credentials."""
+        from src.services.connection_service import ConnectionService
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "id", "client_secret": "sec"},
+            metadata={"account_number": "654321"}, environment="test", display_name="UPS Test",
+        )
+        result = resolve_ups_credentials(environment="test", db=db_session, key_dir=key_dir)
+        assert result is not None
+        assert result.account_number == "654321"
+
+    def test_account_number_env_fallback(self, key_dir):
+        """Account number falls back to env when not in DB."""
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        os.environ["UPS_CLIENT_ID"] = "id"
+        os.environ["UPS_CLIENT_SECRET"] = "sec"
+        os.environ["UPS_ACCOUNT_NUMBER"] = "ENV999"
+        try:
+            result = resolve_ups_credentials(environment="test")
+            assert result is not None
+            # Env fallback populates account_number from env
+            assert result.account_number == "ENV999"
+        finally:
+            os.environ.pop("UPS_CLIENT_ID", None)
+            os.environ.pop("UPS_CLIENT_SECRET", None)
+            os.environ.pop("UPS_ACCOUNT_NUMBER", None)
+
+    def test_account_number_in_allowlist(self):
+        """Account number is accepted by credential allowlist validation."""
+        from src.services.connection_service import _validate_credential_keys
+
+        # Should not raise
+        _validate_credential_keys("ups", "client_credentials", {
+            "client_id": "id", "client_secret": "sec", "account_number": "123456",
+        })
+
+    def test_account_number_max_length(self):
+        """Account number exceeding max length is rejected."""
+        from src.services.connection_service import _validate_credential_keys
+        from src.services.connection_types import ConnectionValidationError
+
+        with pytest.raises(ConnectionValidationError, match="VALUE_TOO_LONG"):
+            _validate_credential_keys("ups", "client_credentials", {
+                "client_id": "id", "client_secret": "sec",
+                "account_number": "X" * 11,  # Max is 10
+            })
+
+
+class TestResponseContractAlignment:
+    """Tests ensuring backend response matches frontend ProviderConnectionInfo type."""
+
+    def test_response_includes_id_field(self, db_session, key_dir):
+        """Response dict includes 'id' field matching DB row id."""
+        from src.services.connection_service import ConnectionService
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "id", "client_secret": "sec"},
+            metadata={}, environment="test", display_name="UPS",
+        )
+        connections = service.list_connections()
+        assert len(connections) == 1
+        assert "id" in connections[0]
+        assert connections[0]["id"] is not None
+        assert len(connections[0]["id"]) > 0  # UUID string
+
+    def test_response_includes_last_validated_at(self, db_session, key_dir):
+        """Response dict includes 'last_validated_at' (null for now)."""
+        from src.services.connection_service import ConnectionService
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "id", "client_secret": "sec"},
+            metadata={}, environment="test", display_name="UPS",
+        )
+        connections = service.list_connections()
+        assert "last_validated_at" in connections[0]
+        assert connections[0]["last_validated_at"] is None
+
+
+class TestShopifyPayloadContract:
+    """Tests ensuring Shopify form payload shape matches backend expectations."""
+
+    def test_store_domain_must_be_in_metadata(self, db_session, key_dir):
+        """Backend requires store_domain in metadata, not credentials."""
+        from src.services.connection_service import ConnectionService
+        from src.services.connection_types import ConnectionValidationError
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+
+        # store_domain only in credentials (not metadata) should fail
+        with pytest.raises(ConnectionValidationError):
+            service.save_connection(
+                provider="shopify", auth_mode="legacy_token",
+                credentials={"access_token": "tok", "store_domain": "s.myshopify.com"},
+                metadata={},  # Missing store_domain here
+                display_name="Store",
+            )
+
+    def test_empty_metadata_fails_for_shopify(self, db_session, key_dir):
+        """Shopify without store_domain in metadata is rejected."""
+        from src.services.connection_service import ConnectionService
+        from src.services.connection_types import ConnectionValidationError
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        with pytest.raises(ConnectionValidationError, match="store_domain is required"):
+            service.save_connection(
+                provider="shopify", auth_mode="legacy_token",
+                credentials={"access_token": "tok"},
+                metadata={},
+                display_name="Store",
+            )
+
+    def test_correct_payload_shape_succeeds(self, db_session, key_dir):
+        """Correct payload with store_domain in metadata succeeds."""
+        from src.services.connection_service import ConnectionService
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        result = service.save_connection(
+            provider="shopify", auth_mode="legacy_token",
+            credentials={"access_token": "tok"},
+            metadata={"store_domain": "correct.myshopify.com"},
+            display_name="Store",
+        )
+        assert result["is_new"] is True
+        assert result["runtime_usable"] is True

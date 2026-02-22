@@ -1185,7 +1185,10 @@ async def ship_command_pipeline_tool(
     from src.services.ups_payload_builder import build_shipper
 
     ups_creds = resolve_ups_credentials()
-    account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
+    account_number = (
+        (ups_creds.account_number if ups_creds else "")
+        or os.environ.get("UPS_ACCOUNT_NUMBER", "")
+    )
     shipper = build_shipper()
     ups = await _get_ups_client()
     row_map: dict[int, dict[str, Any]] = {}
@@ -1368,7 +1371,10 @@ async def batch_execute_tool(args: dict[str, Any]) -> dict[str, Any]:
         from src.services.ups_payload_builder import build_shipper
 
         ups_creds = resolve_ups_credentials()
-        account_number = os.environ.get("UPS_ACCOUNT_NUMBER", "")
+        account_number = (
+            (ups_creds.account_number if ups_creds else "")
+            or os.environ.get("UPS_ACCOUNT_NUMBER", "")
+        )
         shipper = build_shipper()
         ups = await _get_ups_client()
 
