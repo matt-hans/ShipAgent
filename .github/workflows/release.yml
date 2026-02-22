@@ -1,0 +1,149 @@
+# .github/workflows/release.yml
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+env:
+  PYTHON_VERSION: '3.12'
+  NODE_VERSION: '20'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e '.[dev]'
+      - name: Lint
+        run: .venv/bin/ruff check src/ tests/
+      - name: Test
+        run: .venv/bin/pytest -k "not stream and not sse and not progress" --timeout=60
+
+  build-macos:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14      # Apple Silicon (arm64)
+            target: aarch64-apple-darwin
+          - runner: macos-13      # Intel (x86_64)
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Python dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -e '.[dev]'
+
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Build Python sidecar
+        run: |
+          .venv/bin/python -m PyInstaller shipagent-core.spec --clean --noconfirm
+
+      - name: Import Apple certificate
+        if: env.APPLE_CERTIFICATE != ''
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import certificate.p12 -k build.keychain \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+          rm certificate.p12
+
+      # CRITICAL: Codesign the sidecar binary BEFORE Tauri bundles it.
+      # Without this, the sidecar has a different signing identity than the
+      # app wrapper, causing macOS Keychain to show "wants to access" prompts.
+      - name: Codesign sidecar binary
+        if: env.APPLE_SIGNING_IDENTITY != ''
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          echo "--- Codesigning sidecar (one-folder build) ---"
+          # Sign all .dylib and .so files in the one-folder output first
+          find dist/shipagent-core -name '*.dylib' -o -name '*.so' | while read f; do
+            codesign --force --sign "$APPLE_SIGNING_IDENTITY" \
+              --options runtime --timestamp "$f"
+          done
+          # Sign the main executable
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" \
+            --options runtime --timestamp --entitlements src-tauri/entitlements.plist \
+            dist/shipagent-core/shipagent-core
+          # Verify
+          codesign --verify --deep --strict dist/shipagent-core/shipagent-core
+          echo "Sidecar codesigning: PASSED"
+
+      # NO "Copy sidecar to Tauri binaries" step needed.
+      # The tauri.conf.json resources field ("../dist/shipagent-core": "backend-dist")
+      # tells Tauri to bundle the one-folder output directly from dist/.
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          # App Store Connect API Keys for notarization (more reliable than Apple ID)
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'ShipAgent ${{ github.ref_name }}'
+          releaseBody: 'See the [changelog](https://github.com/matt-hans/ShipAgent/blob/main/CHANGELOG.md) for details.'
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+      # Apple Notarization: Required on macOS 10.15+.
+      # Signed-but-not-notarized apps are blocked by Gatekeeper.
+      #
+      # We use App Store Connect API Keys (APPLE_API_ISSUER + APPLE_API_KEY_ID
+      # + APPLE_API_KEY) instead of Apple ID + App-Specific Passwords.
+      # Reason: Apple frequently throttles and times out the legacy auth in CI.
+      # API keys are Apple's recommended approach for automated workflows.
+      #
+      # tauri-action handles notarization automatically when these env vars
+      # are set. For manual builds:
+      #
+      #   xcrun notarytool submit ShipAgent.dmg \
+      #     --issuer "$APPLE_API_ISSUER" \
+      #     --key-id "$APPLE_API_KEY_ID" \
+      #     --key "$APPLE_API_KEY_PATH" \
+      #     --wait
+      #   xcrun stapler staple ShipAgent.dmg
