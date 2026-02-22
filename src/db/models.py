@@ -45,12 +45,14 @@ class JobStatus(str, Enum):
 
     Lifecycle: pending -> running -> completed/failed/cancelled
                running -> paused -> running (on reconnect)
+               running -> completed_with_warnings (write-back failure)
     """
 
     pending = "pending"
     running = "running"
     paused = "paused"
     completed = "completed"
+    completed_with_warnings = "completed_with_warnings"
     failed = "failed"
     cancelled = "cancelled"
 

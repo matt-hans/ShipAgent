@@ -21,6 +21,7 @@ class JobStatusEnum(str, Enum):
     running = "running"
     paused = "paused"
     completed = "completed"
+    completed_with_warnings = "completed_with_warnings"
     failed = "failed"
     cancelled = "cancelled"
 

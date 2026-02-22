@@ -285,6 +285,25 @@ async def test_cancel_session_message_tasks_cancels_active_tasks():
     assert task.cancelled()
 
 
+class TestSessionHistoryLock:
+    """Tests for M-4: session history mutation protection (CWE-362)."""
+
+    def test_session_has_history_lock(self):
+        """AgentSession has a threading.Lock for history protection."""
+        import threading
+
+        session = AgentSession("test-1")
+        assert hasattr(session, "_history_lock")
+        assert isinstance(session._history_lock, type(threading.Lock()))
+
+    def test_add_message_uses_history_lock(self):
+        """add_message source contains _history_lock."""
+        import inspect
+
+        source = inspect.getsource(AgentSession.add_message)
+        assert "_history_lock" in source
+
+
 class TestSessionTTL:
     """Tests for L-3: session idle timeout (CWE-613)."""
 

@@ -8,6 +8,7 @@ All endpoints use /api/v1/saved-sources prefix.
 """
 
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -135,6 +136,26 @@ async def reconnect_saved_source(
                     detail="connection_string is required to reconnect database sources",
                 )
             query = source.db_query or "SELECT * FROM shipments"
+
+            # L-2: Validate saved db_query against the same dangerous keyword
+            # blocklist used in query_tools.py (CWE-89 defense-in-depth).
+            _DANGEROUS_KEYWORDS = [
+                "DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE",
+                "TRUNCATE", "COPY", "ATTACH", "DETACH", "EXPORT", "IMPORT",
+                "LOAD", "INSTALL", "CALL", "PRAGMA", "SET", "EXECUTE",
+            ]
+            query_upper = query.strip().upper()
+            if not query_upper.startswith("SELECT"):
+                raise HTTPException(
+                    status_code=400, detail="Only SELECT queries are allowed."
+                )
+            for kw in _DANGEROUS_KEYWORDS:
+                if re.search(rf"\b{kw}\b", query_upper):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Query contains forbidden keyword: {kw}",
+                    )
+
             result = await gw.import_database(
                 connection_string=payload.connection_string,
                 query=query,

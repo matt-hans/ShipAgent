@@ -135,6 +135,49 @@ async def test_check_gateway_health_all_states():
         provider._ups_gateway = orig_ups
 
 
+class TestGatewayShutdownLocking:
+    """Tests for H-5: shutdown_gateways acquires locks (CWE-362)."""
+
+    def test_shutdown_acquires_all_locks(self):
+        """shutdown_gateways source acquires all three locks."""
+        import inspect
+
+        import src.services.gateway_provider as gp
+
+        source = inspect.getsource(gp.shutdown_gateways)
+        assert "_data_gateway_lock" in source
+        assert "_ext_sources_lock" in source
+        assert "_ups_gateway_lock" in source
+
+    def test_shutdown_sets_none_inside_lock(self):
+        """Each gateway is set to None inside its lock scope."""
+        import inspect
+        import textwrap
+
+        import src.services.gateway_provider as gp
+
+        source = inspect.getsource(gp.shutdown_gateways)
+        lines = textwrap.dedent(source).strip().splitlines()
+
+        # For each gateway, verify "= None" appears AFTER "async with" lock
+        for lock_name, none_pattern in [
+            ("_data_gateway_lock", "_data_gateway = None"),
+            ("_ext_sources_lock", "_ext_sources_client = None"),
+            ("_ups_gateway_lock", "_ups_gateway = None"),
+        ]:
+            lock_line = None
+            none_line = None
+            for i, line in enumerate(lines):
+                if lock_name in line and "async with" in line:
+                    lock_line = i
+                if none_pattern in line and lock_line is not None:
+                    none_line = i
+                    break
+            assert lock_line is not None, f"{lock_name} not found in shutdown"
+            assert none_line is not None, f"{none_pattern} not after {lock_name}"
+            assert none_line > lock_line, f"{none_pattern} before {lock_name}"
+
+
 class TestGatewayLockingFix:
     """Tests for B-2: gateway provider always acquires lock (CWE-362)."""
 

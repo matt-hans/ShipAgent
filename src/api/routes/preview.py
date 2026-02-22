@@ -366,6 +366,20 @@ async def confirm_job(
     # Re-fetch job after atomic transition for subsequent logic
     job = db.query(Job).filter(Job.id == job_id).first()
 
+    # SECURITY: Require preview to have been run before confirming (H-1, CWE-367).
+    # Agent Design Invariant #4: "No tool skips approval." A job with no
+    # preview_hash means the user never saw estimated costs.
+    if not job.preview_hash:
+        # Roll back the CAS transition so the job returns to pending
+        job.status = "pending"
+        job.started_at = None
+        db.commit()
+        raise HTTPException(
+            status_code=400,
+            detail="Job must be previewed before confirmation. "
+            "Call batch_preview first to review costs.",
+        )
+
     # TOCTOU check: verify rows haven't changed since preview
     if job.preview_hash:
         current_rows = (

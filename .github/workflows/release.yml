@@ -26,6 +26,14 @@ jobs:
       - name: Test
         run: .venv/bin/pytest -k "not stream and not sse and not progress" --timeout=60
 
+      - name: Block placeholder secrets in release config
+        run: |
+          if grep -rq "REPLACE_WITH" src-tauri/tauri.conf.json; then
+            echo "ERROR: tauri.conf.json contains placeholder values (REPLACE_WITH)."
+            echo "Replace with real keys before releasing."
+            exit 1
+          fi
+
   build-macos:
     needs: test
     strategy:

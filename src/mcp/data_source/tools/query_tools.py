@@ -263,11 +263,25 @@ async def query_data(
 
     await ctx.info(f"Executing query: {sql[:100]}...")
 
-    results = db.execute(sql).fetchall()
-    columns = [desc[0] for desc in db.description]
+    # Defense-in-depth (H-3, CWE-89): execute inside a read-only transaction
+    # so DuckDB rejects any write operation even if the keyword blocklist
+    # is bypassed via future DuckDB features or Unicode homoglyphs.
+    try:
+        db.execute("BEGIN TRANSACTION READ ONLY")
+        results = db.execute(sql).fetchall()
+        columns = [desc[0] for desc in db.description]
+        rows = [dict(zip(columns, row, strict=False)) for row in results]
+        db.execute("COMMIT")
+    except Exception:
+        # Roll back the read-only transaction on any error
+        try:
+            db.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
 
     return {
         "columns": columns,
-        "rows": [dict(zip(columns, row, strict=False)) for row in results],
+        "rows": rows,
         "row_count": len(results),
     }

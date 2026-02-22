@@ -16,6 +16,7 @@ Example:
 import asyncio
 import logging
 import os
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -58,22 +59,27 @@ class AgentSession:
         self.terminating: bool = False
         self.confirmed_resolutions: dict[str, Any] = {}  # token → confirmed ResolvedFilterSpec
         self.lock = asyncio.Lock()
+        self._history_lock = threading.Lock()  # Protects history + last_active (M-4, CWE-362)
         self.prewarm_task: asyncio.Task[Any] | None = None
         self.message_tasks: set[asyncio.Task[Any]] = set()
 
     def add_message(self, role: str, content: str) -> None:
         """Append a message to the conversation history.
 
+        Thread-safe: acquires _history_lock to prevent interleaved
+        mutations from concurrent API requests (M-4, CWE-362).
+
         Args:
             role: Message role ('user' or 'assistant').
             content: Message content text.
         """
-        self.last_active = datetime.now(UTC)
-        self.history.append({
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now(UTC).isoformat(),
-        })
+        with self._history_lock:
+            self.last_active = datetime.now(UTC)
+            self.history.append({
+                "role": role,
+                "content": content,
+                "timestamp": datetime.now(UTC).isoformat(),
+            })
 
 
 # Idle session timeout (L-3, CWE-613). Default 4 hours. Override with

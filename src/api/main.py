@@ -79,14 +79,23 @@ def _parse_allowed_origins() -> list[str]:
 
 
 def _ensure_agent_sdk_available() -> None:
-    """Fail fast when backend is not running with the project virtualenv."""
+    """Fail fast when backend is not running with the project virtualenv.
+
+    SHIPAGENT_SKIP_SDK_CHECK is a DEV-ONLY escape hatch for running tests
+    or frontend work without the full agent SDK. It must NEVER be set in
+    production builds (L-5). The CI release workflow blocks placeholder
+    values, and this flag is logged as a warning.
+    """
     if os.environ.get("SHIPAGENT_SKIP_SDK_CHECK", "").strip().lower() in {
         "1",
         "true",
         "yes",
         "on",
     }:
-        logger.warning("Skipping claude_agent_sdk availability check by configuration.")
+        logger.warning(
+            "SECURITY: SHIPAGENT_SKIP_SDK_CHECK is set — skipping SDK validation. "
+            "This is a DEV-ONLY flag and must NOT be used in production (L-5)."
+        )
         return
     try:
         import claude_agent_sdk  # noqa: F401
