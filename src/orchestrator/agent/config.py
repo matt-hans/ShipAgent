@@ -74,12 +74,21 @@ class MCPServerConfig(TypedDict):
 def get_data_mcp_config() -> MCPServerConfig:
     """Get configuration for the Data Source MCP server.
 
-    The Data MCP runs as a Python module using FastMCP with stdio transport.
-    PYTHONPATH is set to PROJECT_ROOT to enable proper module imports.
+    In bundled mode, spawns self with 'mcp-data' subcommand.
+    In dev mode, runs as a Python module using FastMCP with stdio transport.
 
     Returns:
         MCPServerConfig with Python command and module path
     """
+    from src.utils.runtime import is_bundled
+
+    if is_bundled():
+        return MCPServerConfig(
+            command=sys.executable,
+            args=["mcp-data"],
+            env={"PATH": os.environ.get("PATH", "")},
+        )
+
     return MCPServerConfig(
         command=_get_python_command(),
         args=["-m", "src.mcp.data_source.server"],
@@ -136,25 +145,36 @@ def get_ups_mcp_config(
     # Mitigations: Docker --pid=private isolates /proc, single-user model
     # means no cross-user process enumeration, and credentials are
     # short-lived tokens resolved from the DB at session creation time.
+    from src.utils.runtime import is_bundled
+
+    ups_env = {
+        "CLIENT_ID": client_id,
+        "CLIENT_SECRET": client_secret,
+        "ENVIRONMENT": environment,
+        "UPS_ACCOUNT_NUMBER": os.environ.get("UPS_ACCOUNT_NUMBER", ""),
+        "UPS_MCP_SPECS_DIR": specs_dir,
+        "PATH": os.environ.get("PATH", ""),
+    }
+
+    if is_bundled():
+        return MCPServerConfig(
+            command=sys.executable,
+            args=["mcp-ups"],
+            env=ups_env,
+        )
+
     return MCPServerConfig(
         command=_get_python_command(),
         args=["-m", "ups_mcp"],
-        env={
-            "CLIENT_ID": client_id,
-            "CLIENT_SECRET": client_secret,
-            "ENVIRONMENT": environment,
-            "UPS_ACCOUNT_NUMBER": os.environ.get("UPS_ACCOUNT_NUMBER", ""),
-            "UPS_MCP_SPECS_DIR": specs_dir,
-            "PATH": os.environ.get("PATH", ""),
-        },
+        env=ups_env,
     )
 
 
 def get_external_sources_mcp_config() -> MCPServerConfig:
     """Get configuration for the External Sources Gateway MCP server.
 
-    The External Sources MCP runs as a Python module using FastMCP with stdio transport.
-    PYTHONPATH is set to PROJECT_ROOT to enable proper module imports.
+    In bundled mode, spawns self with 'mcp-external' subcommand.
+    In dev mode, runs as a Python module using FastMCP with stdio transport.
 
     This MCP provides unified access to external platforms:
     - Shopify (Admin API)
@@ -165,6 +185,15 @@ def get_external_sources_mcp_config() -> MCPServerConfig:
     Returns:
         MCPServerConfig with Python command and module path
     """
+    from src.utils.runtime import is_bundled
+
+    if is_bundled():
+        return MCPServerConfig(
+            command=sys.executable,
+            args=["mcp-external"],
+            env={"PATH": os.environ.get("PATH", "")},
+        )
+
     return MCPServerConfig(
         command=_get_python_command(),
         args=["-m", "src.mcp.external_sources.server"],
