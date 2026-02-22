@@ -214,6 +214,46 @@ class TestDisconnectConnection:
         assert resp.status_code == 404
 
 
+class TestServiceConstructionFailure:
+
+    def test_save_returns_json_500_on_service_init_failure(self, test_client, monkeypatch):
+        """Service construction failure returns structured JSON 500, not bare text.
+
+        When ConnectionService.__init__ raises (e.g. encryption key issue),
+        the route must still return a JSON error envelope so the frontend
+        can display a meaningful message.
+        """
+        from src.services.connection_service import ConnectionService
+
+        original_init = ConnectionService.__init__
+
+        def bad_init(self, db, key_dir=None):
+            raise RuntimeError("Key file permission denied")
+
+        monkeypatch.setattr(ConnectionService, "__init__", bad_init)
+
+        resp = test_client.post("/api/v1/connections/ups/save", json=_ups_payload())
+        assert resp.status_code == 500
+        assert resp.headers["content-type"] == "application/json"
+        body = resp.json()
+        assert body["error"]["code"] == "INTERNAL_ERROR"
+        assert "permission denied" in body["error"]["message"].lower()
+
+    def test_list_returns_json_500_on_service_init_failure(self, test_client, monkeypatch):
+        """List endpoint also returns structured JSON 500 on init failure."""
+        from src.services.connection_service import ConnectionService
+
+        def bad_init(self, db, key_dir=None):
+            raise RuntimeError("Key not found")
+
+        monkeypatch.setattr(ConnectionService, "__init__", bad_init)
+
+        resp = test_client.get("/api/v1/connections/")
+        assert resp.status_code == 500
+        assert resp.headers["content-type"] == "application/json"
+        assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
 class TestCustom422Handler:
 
     def test_422_redaction_strips_input_values(self, test_client):

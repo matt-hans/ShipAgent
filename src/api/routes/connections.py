@@ -2,7 +2,12 @@
 
 Handles CRUD operations for provider connections (UPS, Shopify).
 Uses Pydantic models for request validation. Credential values are
-never echoed in error responses — the custom 422 handler sanitizes them.
+never echoed in error responses -- the custom 422 handler sanitizes them.
+
+ConnectionService is created inside each route handler (not via FastAPI
+Depends) so that construction failures (e.g. encryption key issues) are
+caught by the route's own try/except and returned as structured JSON
+instead of a bare 500 from FastAPI's dependency-injection layer.
 """
 
 import logging
@@ -36,40 +41,80 @@ class SaveConnectionRequest(BaseModel):
     environment: str | None = Field(None, description="UPS environment (test/production)")
 
 
-def _get_service(db: Session = Depends(get_db)) -> ConnectionService:
-    """Dependency to provide a ConnectionService instance."""
+def _build_service(db: Session) -> ConnectionService:
+    """Create a ConnectionService from a DB session.
+
+    Separated from the route handlers so it can be called inside
+    try/except blocks, ensuring construction errors are caught.
+
+    Args:
+        db: SQLAlchemy session.
+
+    Returns:
+        Configured ConnectionService instance.
+    """
     return ConnectionService(db=db)
 
 
+def _internal_error(e: Exception, operation: str) -> JSONResponse:
+    """Build a structured 500 response and log the full traceback.
+
+    Args:
+        e: The exception that was raised.
+        operation: Human-readable operation name for the log message.
+
+    Returns:
+        JSONResponse with error envelope.
+    """
+    logger.error(
+        "Unexpected error during %s: %s: %s",
+        operation, type(e).__name__, e,
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"code": "INTERNAL_ERROR", "message": sanitize_error_message(str(e))}},
+    )
+
+
 @router.get("/")
-def list_connections(service: ConnectionService = Depends(_get_service)):
+def list_connections(db: Session = Depends(get_db)):
     """List all provider connections (no credentials exposed)."""
-    return service.list_connections()
+    try:
+        service = _build_service(db)
+        return service.list_connections()
+    except Exception as e:
+        return _internal_error(e, "list connections")
 
 
 @router.get("/{connection_key:path}")
 def get_connection(
     connection_key: str,
-    service: ConnectionService = Depends(_get_service),
+    db: Session = Depends(get_db),
 ):
     """Get a single connection by key (no credentials exposed)."""
-    conn = service.get_connection(connection_key)
-    if conn is None:
-        return JSONResponse(
-            status_code=404,
-            content={"error": {"code": "NOT_FOUND", "message": f"Connection '{connection_key}' not found"}},
-        )
-    return conn
+    try:
+        service = _build_service(db)
+        conn = service.get_connection(connection_key)
+        if conn is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "NOT_FOUND", "message": f"Connection '{connection_key}' not found"}},
+            )
+        return conn
+    except Exception as e:
+        return _internal_error(e, "get connection")
 
 
 @router.post("/{provider}/save")
 def save_connection(
     provider: str,
     body: SaveConnectionRequest,
-    service: ConnectionService = Depends(_get_service),
+    db: Session = Depends(get_db),
 ):
     """Save or overwrite a provider connection with encrypted credentials."""
     try:
+        service = _build_service(db)
         result = service.save_connection(
             provider=provider,
             auth_mode=body.auth_mode,
@@ -86,38 +131,42 @@ def save_connection(
             content={"error": {"code": e.code, "message": e.message}},
         )
     except Exception as e:
-        logger.error("Unexpected error saving connection: %s", type(e).__name__)
-        return JSONResponse(
-            status_code=500,
-            content={"error": {"code": "INTERNAL_ERROR", "message": sanitize_error_message(str(e))}},
-        )
+        return _internal_error(e, "save connection")
 
 
 @router.delete("/{connection_key:path}")
 def delete_connection(
     connection_key: str,
-    service: ConnectionService = Depends(_get_service),
+    db: Session = Depends(get_db),
 ):
     """Delete a connection by key."""
-    deleted = service.delete_connection(connection_key)
-    if not deleted:
-        return JSONResponse(
-            status_code=404,
-            content={"error": {"code": "NOT_FOUND", "message": f"Connection '{connection_key}' not found"}},
-        )
-    return {"deleted": True, "connection_key": connection_key}
+    try:
+        service = _build_service(db)
+        deleted = service.delete_connection(connection_key)
+        if not deleted:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "NOT_FOUND", "message": f"Connection '{connection_key}' not found"}},
+            )
+        return {"deleted": True, "connection_key": connection_key}
+    except Exception as e:
+        return _internal_error(e, "delete connection")
 
 
 @router.post("/{connection_key:path}/disconnect")
 def disconnect_connection(
     connection_key: str,
-    service: ConnectionService = Depends(_get_service),
+    db: Session = Depends(get_db),
 ):
     """Set a connection to 'disconnected' status (preserves credentials)."""
-    conn = service.disconnect(connection_key)
-    if conn is None:
-        return JSONResponse(
-            status_code=404,
-            content={"error": {"code": "NOT_FOUND", "message": f"Connection '{connection_key}' not found"}},
-        )
-    return conn
+    try:
+        service = _build_service(db)
+        conn = service.disconnect(connection_key)
+        if conn is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": {"code": "NOT_FOUND", "message": f"Connection '{connection_key}' not found"}},
+            )
+        return conn
+    except Exception as e:
+        return _internal_error(e, "disconnect connection")
