@@ -829,3 +829,51 @@ class ConversationMessage(Base):
             f"<ConversationMessage(id={self.id!r}, role={self.role!r}, "
             f"seq={self.sequence})>"
         )
+
+
+class AppSettings(Base):
+    """Application-wide settings singleton.
+
+    Stores non-sensitive configuration that was previously scattered across
+    env vars. One row per installation. Created on first access via
+    SettingsService.get_or_create().
+    """
+
+    __tablename__ = "app_settings"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+
+    # Agent config
+    agent_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    batch_concurrency: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
+
+    # Shipper defaults
+    shipper_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    shipper_attention_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    shipper_address1: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipper_address2: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    shipper_city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    shipper_state: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    shipper_zip: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    shipper_country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    shipper_phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
+
+    # UPS non-sensitive config
+    ups_account_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ups_environment: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # Onboarding state
+    onboarding_completed: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default="0"
+    )
+
+    # Timestamps
+    created_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+    updated_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+
+    def __repr__(self) -> str:
+        return f"<AppSettings(id={self.id!r}, onboarding={self.onboarding_completed})>"

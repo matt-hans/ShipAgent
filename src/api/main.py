@@ -52,6 +52,7 @@ from src.api.routes import (  # noqa: E402
     preview,
     progress,
     saved_data_sources,
+    settings,
 )
 from src.db.connection import init_db  # noqa: E402
 from src.db.models import JobStatus  # noqa: E402
@@ -705,6 +706,7 @@ app.include_router(agent_audit.router, prefix="/api/v1")
 app.include_router(connections.router, prefix="/api/v1")
 app.include_router(contacts.router, prefix="/api/v1")
 app.include_router(commands.router, prefix="/api/v1")
+app.include_router(settings.router, prefix="/api/v1")
 
 
 @app.get("/health")
