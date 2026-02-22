@@ -893,6 +893,21 @@ export async function deleteProviderConnection(connectionKey: string): Promise<{
   return parseResponse(response);
 }
 
+/** Validate saved credentials against the real provider API. */
+export async function validateProviderConnection(connectionKey: string): Promise<{
+  valid: boolean;
+  status: string;
+  message: string;
+  details?: Record<string, unknown>;
+}> {
+  const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(connectionKey)}/validate`, {
+    method: 'POST',
+  });
+  // Validation returns 422 for invalid creds (not a fatal error), so parse body directly
+  const data = await response.json();
+  return data;
+}
+
 /** Disconnect a connection (preserves credentials). */
 export async function disconnectProvider(connectionKey: string): Promise<ProviderConnectionInfo> {
   const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(connectionKey)}/disconnect`, {

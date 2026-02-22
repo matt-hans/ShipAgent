@@ -22,18 +22,14 @@ class TestGetPreview:
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
-    def test_preview_no_rows(
-        self, client: TestClient, sample_job: Job
-    ):
+    def test_preview_no_rows(self, client: TestClient, sample_job: Job):
         """Returns 400 when job has no rows."""
         response = client.get(f"/api/v1/jobs/{sample_job.id}/preview")
 
         assert response.status_code == 400
         assert "no rows" in response.json()["detail"].lower()
 
-    def test_preview_returns_data(
-        self, client: TestClient, job_with_rows: Job
-    ):
+    def test_preview_returns_data(self, client: TestClient, job_with_rows: Job):
         """Returns BatchPreviewResponse with preview data."""
         response = client.get(f"/api/v1/jobs/{job_with_rows.id}/preview")
 
@@ -47,9 +43,7 @@ class TestGetPreview:
         assert "total_estimated_cost_cents" in data
         assert "rows_with_warnings" in data
 
-    def test_preview_returns_all_rows(
-        self, client: TestClient, test_db: Session
-    ):
+    def test_preview_returns_all_rows(self, client: TestClient, test_db: Session):
         """Preview returns all rows for full scrollable display."""
         job = Job(
             name="Large Job",
@@ -80,9 +74,7 @@ class TestGetPreview:
         assert len(data["preview_rows"]) == 20
         assert data["additional_rows"] == 0
 
-    def test_preview_row_structure(
-        self, client: TestClient, job_with_rows: Job
-    ):
+    def test_preview_row_structure(self, client: TestClient, job_with_rows: Job):
         """Preview rows have correct structure."""
         response = client.get(f"/api/v1/jobs/{job_with_rows.id}/preview")
 
@@ -138,9 +130,7 @@ class TestConfirmJob:
         test_db.refresh(sample_job)
         assert sample_job.status == "running"
 
-    def test_confirm_already_running(
-        self, client: TestClient, test_db: Session
-    ):
+    def test_confirm_already_running(self, client: TestClient, test_db: Session):
         """Returns 400 when job is already running."""
         job = Job(
             name="Running Job",
@@ -157,9 +147,7 @@ class TestConfirmJob:
         assert "cannot be confirmed" in response.json()["detail"].lower()
         assert "running" in response.json()["detail"].lower()
 
-    def test_confirm_completed_job(
-        self, client: TestClient, test_db: Session
-    ):
+    def test_confirm_completed_job(self, client: TestClient, test_db: Session):
         """Returns 400 when job is already completed."""
         job = Job(
             name="Completed Job",
@@ -175,9 +163,7 @@ class TestConfirmJob:
         assert response.status_code == 400
         assert "cannot be confirmed" in response.json()["detail"].lower()
 
-    def test_confirm_failed_job(
-        self, client: TestClient, test_db: Session
-    ):
+    def test_confirm_failed_job(self, client: TestClient, test_db: Session):
         """Returns 400 when job has failed."""
         job = Job(
             name="Failed Job",
@@ -193,9 +179,7 @@ class TestConfirmJob:
         assert response.status_code == 400
         assert "cannot be confirmed" in response.json()["detail"].lower()
 
-    def test_confirm_response_format(
-        self, client: TestClient, sample_job: Job
-    ):
+    def test_confirm_response_format(self, client: TestClient, sample_job: Job):
         """Confirm response has correct format."""
         response = client.post(f"/api/v1/jobs/{sample_job.id}/confirm")
 
@@ -205,9 +189,7 @@ class TestConfirmJob:
         assert "message" in data
         assert data["status"] == "confirmed"
 
-    def test_confirm_write_back_disabled(
-        self, client: TestClient, test_db: Session
-    ):
+    def test_confirm_write_back_disabled(self, client: TestClient, test_db: Session):
         """Confirm with write_back_enabled=false stores preference on job."""
         job = Job(
             name="No Write-back Job",
@@ -325,3 +307,126 @@ class TestConfirmJob:
 
         assert response.status_code == 200
         mocked_execute.assert_called_once_with(job.id, selected_service_code="01")
+
+
+class TestPreviewHash:
+    """Tests for preview integrity hash (F-5 TOCTOU protection)."""
+
+    def test_preview_sets_hash(self, client: TestClient, test_db: Session):
+        """Preview endpoint stores preview_hash on the job."""
+        job = Job(
+            name="Hash Test Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+            total_rows=2,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        for i in range(1, 3):
+            row = JobRow(
+                job_id=job.id,
+                row_number=i,
+                row_checksum=f"checksum_{i}",
+                status=RowStatus.pending.value,
+                cost_cents=1000,
+            )
+            test_db.add(row)
+        test_db.commit()
+
+        response = client.get(f"/api/v1/jobs/{job.id}/preview")
+        assert response.status_code == 200
+
+        test_db.refresh(job)
+        assert job.preview_hash is not None
+        assert len(job.preview_hash) == 64  # SHA-256 hex digest
+
+    def test_confirm_succeeds_when_hash_matches(
+        self, client: TestClient, test_db: Session
+    ):
+        """Confirm succeeds when row data hasn't changed since preview."""
+        job = Job(
+            name="Hash Match Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+            total_rows=2,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        for i in range(1, 3):
+            row = JobRow(
+                job_id=job.id,
+                row_number=i,
+                row_checksum=f"checksum_{i}",
+                status=RowStatus.pending.value,
+                cost_cents=1000,
+            )
+            test_db.add(row)
+        test_db.commit()
+
+        # Preview to set hash
+        client.get(f"/api/v1/jobs/{job.id}/preview")
+
+        # Confirm — should succeed since rows unchanged
+        response = client.post(f"/api/v1/jobs/{job.id}/confirm")
+        assert response.status_code == 200
+
+    def test_confirm_returns_409_when_rows_changed(
+        self, client: TestClient, test_db: Session
+    ):
+        """Confirm returns 409 when row data changed after preview."""
+        job = Job(
+            name="Hash Mismatch Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+            total_rows=2,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        for i in range(1, 3):
+            row = JobRow(
+                job_id=job.id,
+                row_number=i,
+                row_checksum=f"checksum_{i}",
+                status=RowStatus.pending.value,
+                cost_cents=1000,
+            )
+            test_db.add(row)
+        test_db.commit()
+
+        # Preview to set hash
+        client.get(f"/api/v1/jobs/{job.id}/preview")
+
+        # Tamper with row checksums after preview
+        rows = test_db.query(JobRow).filter(JobRow.job_id == job.id).all()
+        rows[0].row_checksum = "tampered_checksum"
+        test_db.commit()
+
+        # Confirm — should fail with 409
+        response = client.post(f"/api/v1/jobs/{job.id}/confirm")
+        assert response.status_code == 409
+        assert "re-preview" in response.json()["detail"].lower()
+
+    def test_confirm_works_when_preview_hash_null(
+        self, client: TestClient, test_db: Session
+    ):
+        """Confirm works for jobs created before preview_hash was added."""
+        job = Job(
+            name="No Hash Job",
+            original_command="Test command",
+            status=JobStatus.pending.value,
+        )
+        test_db.add(job)
+        test_db.commit()
+        test_db.refresh(job)
+
+        # No preview, so preview_hash is None
+        assert job.preview_hash is None
+
+        response = client.post(f"/api/v1/jobs/{job.id}/confirm")
+        assert response.status_code == 200

@@ -153,6 +153,31 @@ def delete_connection(
         return _internal_error(e, "delete connection")
 
 
+@router.post("/{connection_key:path}/validate")
+async def validate_connection(
+    connection_key: str,
+    db: Session = Depends(get_db),
+):
+    """Validate saved credentials against the real provider API.
+
+    Tests credentials by making a lightweight API call to the provider.
+    Updates the connection status to 'connected' on success or 'error'
+    on failure with a specific error code and message.
+    """
+    try:
+        service = _build_service(db)
+        result = await service.validate_connection(connection_key)
+        status_code = 200 if result["valid"] else 422
+        return JSONResponse(status_code=status_code, content=result)
+    except ConnectionValidationError as e:
+        return JSONResponse(
+            status_code=404 if e.code == "NOT_FOUND" else 400,
+            content={"error": {"code": e.code, "message": e.message}},
+        )
+    except Exception as e:
+        return _internal_error(e, "validate connection")
+
+
 @router.post("/{connection_key:path}/disconnect")
 def disconnect_connection(
     connection_key: str,

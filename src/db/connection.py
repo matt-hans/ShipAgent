@@ -75,7 +75,9 @@ ASYNC_DATABASE_URL = get_async_database_url()
 # Sync engine
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    connect_args={"check_same_thread": False}
+    if DATABASE_URL.startswith("sqlite")
+    else {},
     echo=os.environ.get("SQL_ECHO", "").lower() == "true",
 )
 
@@ -222,7 +224,8 @@ def _migrate_provider_connections(conn: Any, log: Any) -> None:
     from sqlalchemy.exc import OperationalError
 
     # Step 1: Create table if not exists
-    conn.execute(text("""
+    conn.execute(
+        text("""
         CREATE TABLE IF NOT EXISTS provider_connections (
             id TEXT PRIMARY KEY,
             connection_key TEXT NOT NULL,
@@ -240,7 +243,8 @@ def _migrate_provider_connections(conn: Any, log: Any) -> None:
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
-    """))
+    """)
+    )
 
     # Step 2: Introspect existing columns and add missing ones
     result = conn.execute(text("PRAGMA table_info(provider_connections)"))
@@ -248,16 +252,37 @@ def _migrate_provider_connections(conn: Any, log: Any) -> None:
 
     pc_migrations: list[tuple[str, str]] = [
         ("provider", "ALTER TABLE provider_connections ADD COLUMN provider TEXT"),
-        ("display_name", "ALTER TABLE provider_connections ADD COLUMN display_name TEXT"),
+        (
+            "display_name",
+            "ALTER TABLE provider_connections ADD COLUMN display_name TEXT",
+        ),
         ("auth_mode", "ALTER TABLE provider_connections ADD COLUMN auth_mode TEXT"),
         ("environment", "ALTER TABLE provider_connections ADD COLUMN environment TEXT"),
         ("status", "ALTER TABLE provider_connections ADD COLUMN status TEXT"),
-        ("encrypted_credentials", "ALTER TABLE provider_connections ADD COLUMN encrypted_credentials TEXT"),
-        ("metadata_json", "ALTER TABLE provider_connections ADD COLUMN metadata_json TEXT"),
-        ("last_error_code", "ALTER TABLE provider_connections ADD COLUMN last_error_code TEXT"),
-        ("error_message", "ALTER TABLE provider_connections ADD COLUMN error_message TEXT"),
-        ("schema_version", "ALTER TABLE provider_connections ADD COLUMN schema_version INTEGER"),
-        ("key_version", "ALTER TABLE provider_connections ADD COLUMN key_version INTEGER"),
+        (
+            "encrypted_credentials",
+            "ALTER TABLE provider_connections ADD COLUMN encrypted_credentials TEXT",
+        ),
+        (
+            "metadata_json",
+            "ALTER TABLE provider_connections ADD COLUMN metadata_json TEXT",
+        ),
+        (
+            "last_error_code",
+            "ALTER TABLE provider_connections ADD COLUMN last_error_code TEXT",
+        ),
+        (
+            "error_message",
+            "ALTER TABLE provider_connections ADD COLUMN error_message TEXT",
+        ),
+        (
+            "schema_version",
+            "ALTER TABLE provider_connections ADD COLUMN schema_version INTEGER",
+        ),
+        (
+            "key_version",
+            "ALTER TABLE provider_connections ADD COLUMN key_version INTEGER",
+        ),
         ("created_at", "ALTER TABLE provider_connections ADD COLUMN created_at TEXT"),
         ("updated_at", "ALTER TABLE provider_connections ADD COLUMN updated_at TEXT"),
     ]
@@ -285,33 +310,44 @@ def _migrate_provider_connections(conn: Any, log: Any) -> None:
         conn.execute(text(stmt))
 
     # Backfill timestamps
-    ts_result = conn.execute(text(
-        "SELECT COUNT(*) FROM provider_connections WHERE created_at IS NULL OR updated_at IS NULL"
-    ))
+    ts_result = conn.execute(
+        text(
+            "SELECT COUNT(*) FROM provider_connections WHERE created_at IS NULL OR updated_at IS NULL"
+        )
+    )
     null_ts_count = ts_result.scalar()
     if null_ts_count and null_ts_count > 0:
-        conn.execute(text(
-            f"UPDATE provider_connections SET created_at = '{now_utc}' WHERE created_at IS NULL"
-        ))
-        conn.execute(text(
-            f"UPDATE provider_connections SET updated_at = '{now_utc}' WHERE updated_at IS NULL"
-        ))
-        log.info("Backfilled timestamps on %d provider_connections rows.", null_ts_count)
+        conn.execute(
+            text(
+                f"UPDATE provider_connections SET created_at = '{now_utc}' WHERE created_at IS NULL"
+            )
+        )
+        conn.execute(
+            text(
+                f"UPDATE provider_connections SET updated_at = '{now_utc}' WHERE updated_at IS NULL"
+            )
+        )
+        log.info(
+            "Backfilled timestamps on %d provider_connections rows.", null_ts_count
+        )
 
     # Step 4: Duplicate-key pre-check before unique index creation
-    dup_result = conn.execute(text(
-        "SELECT connection_key, COUNT(*) c "
-        "FROM provider_connections "
-        "GROUP BY connection_key "
-        "HAVING c > 1"
-    ))
+    dup_result = conn.execute(
+        text(
+            "SELECT connection_key, COUNT(*) c "
+            "FROM provider_connections "
+            "GROUP BY connection_key "
+            "HAVING c > 1"
+        )
+    )
     duplicates = dup_result.fetchall()
     if duplicates:
         dup_count = len(duplicates)
         dup_keys = [row[0] for row in duplicates]
         log.error(
             "Found %d duplicate connection_key values: %s — resolve before migration can proceed",
-            dup_count, dup_keys,
+            dup_count,
+            dup_keys,
         )
         raise RuntimeError(
             f"Found {dup_count} duplicate connection_key values — resolve before migration can proceed"
@@ -369,6 +405,11 @@ def _ensure_columns_exist(conn: Any) -> None:
                 "is_interactive",
                 "ALTER TABLE jobs ADD COLUMN is_interactive BOOLEAN NOT NULL DEFAULT 0",
             ),
+            # Preview integrity hash for TOCTOU protection
+            (
+                "preview_hash",
+                "ALTER TABLE jobs ADD COLUMN preview_hash VARCHAR(64)",
+            ),
             # International shipping columns — jobs table
             (
                 "total_duties_taxes_cents",
@@ -386,14 +427,18 @@ def _ensure_columns_exist(conn: Any) -> None:
                     conn.execute(text(ddl))
                 except OperationalError as e:
                     if "duplicate column" in str(e).lower():
-                        log.debug("Column %s already exists (concurrent add).", col_name)
+                        log.debug(
+                            "Column %s already exists (concurrent add).", col_name
+                        )
                     else:
                         log.error("Failed to add column %s: %s", col_name, e)
                         raise
 
     # job_rows table migrations
     job_rows_exists = conn.execute(
-        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_rows' LIMIT 1")
+        text(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='job_rows' LIMIT 1"
+        )
     ).fetchone()
 
     if job_rows_exists:
@@ -438,7 +483,9 @@ def _ensure_columns_exist(conn: Any) -> None:
                     conn.execute(text(ddl))
                 except OperationalError as e:
                     if "duplicate column" in str(e).lower():
-                        log.debug("Column %s already exists (concurrent add).", col_name)
+                        log.debug(
+                            "Column %s already exists (concurrent add).", col_name
+                        )
                     else:
                         log.error("Failed to add column %s: %s", col_name, e)
                         raise

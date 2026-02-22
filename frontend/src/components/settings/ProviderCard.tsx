@@ -6,8 +6,9 @@
  */
 
 import * as React from 'react';
-import { ChevronDown, Trash2, Unplug } from 'lucide-react';
+import { ChevronDown, Trash2, Unplug, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { validateProviderConnection } from '@/lib/api';
 import type { ProviderConnectionInfo, ProviderConnectionStatus } from '@/types/api';
 
 const STATUS_LABELS: Record<ProviderConnectionStatus, string> = {
@@ -43,6 +44,8 @@ interface ProviderCardProps {
   onDelete: (connectionKey: string) => Promise<void>;
   /** Called after disconnect succeeds */
   onDisconnect: (connectionKey: string) => Promise<void>;
+  /** Called after validation to refresh state */
+  onValidated?: () => void;
   /** The credential form component */
   children: React.ReactNode;
 }
@@ -55,10 +58,16 @@ export function ProviderCard({
   onToggle,
   onDelete,
   onDisconnect,
+  onValidated,
   children,
 }: ProviderCardProps) {
   const [pendingAction, setPendingAction] = React.useState<string | null>(null);
   const [confirmDeleteKey, setConfirmDeleteKey] = React.useState<string | null>(null);
+  const [validationResult, setValidationResult] = React.useState<{
+    key: string;
+    valid: boolean;
+    message: string;
+  } | null>(null);
 
   const configuredCount = connections.filter(
     (c) => c.status !== 'disconnected'
@@ -81,6 +90,20 @@ export function ProviderCard({
     } finally {
       setPendingAction(null);
       setConfirmDeleteKey(null);
+    }
+  };
+
+  const handleValidate = async (key: string) => {
+    setPendingAction(`validate:${key}`);
+    setValidationResult(null);
+    try {
+      const result = await validateProviderConnection(key);
+      setValidationResult({ key, valid: result.valid, message: result.message });
+      if (onValidated) onValidated();
+    } catch {
+      setValidationResult({ key, valid: false, message: 'Validation request failed.' });
+    } finally {
+      setPendingAction(null);
     }
   };
 
@@ -144,18 +167,32 @@ export function ProviderCard({
 
               <div className="flex items-center gap-1 ml-2">
                 {conn.status !== 'disconnected' && (
-                  <button
-                    onClick={() => handleDisconnect(conn.connection_key)}
-                    disabled={pendingAction !== null}
-                    className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground disabled:opacity-50"
-                    title="Temporarily disable this connection. Credentials are preserved."
-                  >
-                    {pendingAction === `disconnect:${conn.connection_key}` ? (
-                      <span className="block w-3.5 h-3.5 border-2 border-muted-foreground border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      <Unplug className="w-3.5 h-3.5" />
-                    )}
-                  </button>
+                  <>
+                    <button
+                      onClick={() => handleValidate(conn.connection_key)}
+                      disabled={pendingAction !== null}
+                      className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-primary disabled:opacity-50"
+                      title="Test credentials against the provider API"
+                    >
+                      {pendingAction === `validate:${conn.connection_key}` ? (
+                        <span className="block w-3.5 h-3.5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <Zap className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    <button
+                      onClick={() => handleDisconnect(conn.connection_key)}
+                      disabled={pendingAction !== null}
+                      className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground disabled:opacity-50"
+                      title="Temporarily disable this connection. Credentials are preserved."
+                    >
+                      {pendingAction === `disconnect:${conn.connection_key}` ? (
+                        <span className="block w-3.5 h-3.5 border-2 border-muted-foreground border-t-transparent rounded-full animate-spin" />
+                      ) : (
+                        <Unplug className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </>
                 )}
 
                 {confirmDeleteKey === conn.connection_key ? (
@@ -187,6 +224,20 @@ export function ProviderCard({
               </div>
             </div>
           ))}
+
+          {/* Validation result */}
+          {validationResult && (
+            <div
+              className={cn(
+                'text-[11px] px-2.5 py-1.5 rounded-md',
+                validationResult.valid
+                  ? 'bg-success/10 text-success border border-success/30'
+                  : 'bg-destructive/10 text-destructive border border-destructive/30'
+              )}
+            >
+              {validationResult.message}
+            </div>
+          )}
 
           {/* Credential form */}
           {children}

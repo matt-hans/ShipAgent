@@ -137,6 +137,12 @@ class Job(Base):
     Tracks the overall status of a batch processing job, including
     aggregate metrics (row counts, costs) and error information.
 
+    Security note (F-1): This model has no user_id / tenant_id column.
+    ShipAgent is currently a single-tenant, single-user local application.
+    For multi-user support, add a user_id foreign key, enforce row-level
+    filtering in all queries, and add authorization checks in API routes
+    to prevent insecure direct object reference (IDOR) across tenants.
+
     Attributes:
         id: UUID primary key
         name: User-provided job name
@@ -159,9 +165,7 @@ class Job(Base):
 
     __tablename__ = "jobs"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     original_command: Mapped[str] = mapped_column(Text, nullable=False)
@@ -191,6 +195,9 @@ class Job(Base):
     write_back_enabled: Mapped[bool] = mapped_column(
         nullable=False, default=True, server_default="1"
     )
+
+    # Preview integrity hash (SHA-256 of all row checksums at preview time)
+    preview_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Timestamps (ISO8601 strings for SQLite compatibility)
     created_at: Mapped[str] = mapped_column(
@@ -252,9 +259,7 @@ class JobRow(Base):
 
     __tablename__ = "job_rows"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     job_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
@@ -281,12 +286,8 @@ class JobRow(Base):
     idempotency_key: Mapped[str | None] = mapped_column(
         String(200), nullable=True, index=True
     )
-    ups_shipment_id: Mapped[str | None] = mapped_column(
-        String(50), nullable=True
-    )
-    ups_tracking_number: Mapped[str | None] = mapped_column(
-        String(50), nullable=True
-    )
+    ups_shipment_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    ups_tracking_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
     recovery_attempt_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
@@ -336,9 +337,7 @@ class AuditLog(Base):
 
     __tablename__ = "audit_logs"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     job_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
@@ -373,9 +372,7 @@ class AgentDecisionRun(Base):
 
     __tablename__ = "agent_decision_runs"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     job_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
@@ -419,9 +416,7 @@ class AgentDecisionEvent(Base):
 
     __tablename__ = "agent_decision_events"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     run_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("agent_decision_runs.id", ondelete="CASCADE"),
@@ -480,21 +475,15 @@ class WriteBackTask(Base):
 
     __tablename__ = "write_back_tasks"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     job_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
     )
     row_number: Mapped[int] = mapped_column(nullable=False)
     tracking_number: Mapped[str] = mapped_column(String(50), nullable=False)
     shipped_at: Mapped[str] = mapped_column(String(50), nullable=False)
-    status: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="pending"
-    )
-    retry_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, default=0
-    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso
     )
@@ -542,9 +531,7 @@ class SavedDataSource(Base):
 
     __tablename__ = "saved_data_sources"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     source_type: Mapped[str] = mapped_column(String(20), nullable=False)
 
@@ -598,9 +585,7 @@ class Contact(Base):
 
     __tablename__ = "contacts"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     handle: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     attention_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -615,15 +600,9 @@ class Contact(Base):
     country_code: Mapped[str] = mapped_column(
         String(2), nullable=False, server_default="US"
     )
-    use_as_ship_to: Mapped[bool] = mapped_column(
-        nullable=False, server_default="1"
-    )
-    use_as_shipper: Mapped[bool] = mapped_column(
-        nullable=False, server_default="0"
-    )
-    use_as_third_party: Mapped[bool] = mapped_column(
-        nullable=False, server_default="0"
-    )
+    use_as_ship_to: Mapped[bool] = mapped_column(nullable=False, server_default="1")
+    use_as_shipper: Mapped[bool] = mapped_column(nullable=False, server_default="0")
+    use_as_third_party: Mapped[bool] = mapped_column(nullable=False, server_default="0")
     tags: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_used_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -648,12 +627,14 @@ class Contact(Base):
         if not self.tags:
             return []
         import json
+
         return json.loads(self.tags)
 
     @tag_list.setter
     def tag_list(self, value: list[str]) -> None:
         """Serialize a Python list into JSON for the tags column."""
         import json
+
         self.tags = json.dumps(value) if value else None
 
     def __repr__(self) -> str:
@@ -690,9 +671,7 @@ class ProviderConnection(Base):
 
     __tablename__ = "provider_connections"
 
-    id: Mapped[str] = mapped_column(
-        Text, primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=generate_uuid)
     connection_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     display_name: Mapped[str] = mapped_column(Text, nullable=False)
@@ -708,9 +687,7 @@ class ProviderConnection(Base):
     created_at: Mapped[str] = mapped_column(Text, nullable=False, default=utc_now_iso)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False, default=utc_now_iso)
 
-    __table_args__ = (
-        Index("idx_provider_connections_provider", "provider"),
-    )
+    __table_args__ = (Index("idx_provider_connections_provider", "provider"),)
 
     def __repr__(self) -> str:
         return (
@@ -733,9 +710,7 @@ class CustomCommand(Base):
 
     __tablename__ = "custom_commands"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
@@ -779,17 +754,11 @@ class ConversationSession(Base):
     """
 
     __tablename__ = "conversation_sessions"
-    __table_args__ = (
-        Index("ix_convsess_active_updated", "is_active", "updated_at"),
-    )
+    __table_args__ = (Index("ix_convsess_active_updated", "is_active", "updated_at"),)
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    mode: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="batch"
-    )
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="batch")
     context_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(nullable=False, default=True)
     created_at: Mapped[str] = mapped_column(
@@ -834,9 +803,7 @@ class ConversationMessage(Base):
         Index("ix_convmsg_session_type", "session_id", "message_type"),
     )
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=generate_uuid
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     session_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("conversation_sessions.id", ondelete="CASCADE"),

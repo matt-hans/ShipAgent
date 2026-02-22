@@ -1,4 +1,11 @@
-"""Optional API-key auth middleware for local/prod deployments."""
+"""Optional API-key auth middleware for local/prod deployments.
+
+Security note (F-1): This middleware provides API-key authentication
+(shared secret) but not per-user authorization. All authenticated
+requests share the same privilege level. For multi-user deployments,
+add user-scoped tokens (e.g. JWT), enforce row-level access control
+on Job/Session queries, and validate ownership before mutations.
+"""
 
 from __future__ import annotations
 
