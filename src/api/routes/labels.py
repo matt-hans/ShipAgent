@@ -5,6 +5,8 @@ and merged PDF downloads of all labels for a job.
 """
 
 import io
+import logging
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,8 +16,43 @@ from sqlalchemy.orm import Session
 
 from src.db.connection import get_db
 from src.db.models import Job, JobRow
+from src.services.batch_engine import DEFAULT_LABELS_DIR
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["labels"])
+
+# Resolved labels directory — all label paths must be contained within this tree.
+_LABELS_BASE_DIR = Path(
+    os.environ.get("UPS_LABELS_OUTPUT_DIR", str(DEFAULT_LABELS_DIR))
+).resolve()
+
+
+def _validate_label_path(raw_path: str) -> Path:
+    """Validate that a label path is contained within the labels directory.
+
+    Prevents path traversal attacks (CWE-22) by resolving the path and
+    checking it falls within the configured labels base directory.
+
+    Args:
+        raw_path: Raw label path string from the database.
+
+    Returns:
+        Resolved Path object.
+
+    Raises:
+        HTTPException: 403 if path escapes the labels directory.
+    """
+    resolved = Path(raw_path).resolve()
+    if not resolved.is_relative_to(_LABELS_BASE_DIR):
+        logger.warning(
+            "Path traversal attempt blocked: %s (base: %s)", raw_path, _LABELS_BASE_DIR
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Label path is outside the allowed directory.",
+        )
+    return resolved
 
 
 @router.get("/labels/{tracking_number}")
@@ -57,8 +94,8 @@ def get_label(
             detail=f"No label available for tracking number: {tracking_number}",
         )
 
-    # Verify file exists
-    label_path = Path(row.label_path)
+    # Validate path containment (CWE-22) and verify file exists
+    label_path = _validate_label_path(row.label_path)
     if not label_path.exists():
         raise HTTPException(
             status_code=404,
@@ -118,7 +155,16 @@ def download_labels_merged(
     for row in rows:
         if not row.label_path:
             continue
-        path = Path(row.label_path)
+        try:
+            path = _validate_label_path(row.label_path)
+        except HTTPException:
+            # Skip rows with path traversal — log and continue
+            logger.warning(
+                "Skipping label with invalid path for row %s in job %s",
+                row.row_number,
+                job_id,
+            )
+            continue
         if not path.exists():
             continue
         try:
@@ -187,7 +233,7 @@ def get_label_by_row(
             detail=f"No label available for row {row_number} in job {job_id}",
         )
 
-    label_path = Path(row.label_path)
+    label_path = _validate_label_path(row.label_path)
     if not label_path.exists():
         raise HTTPException(
             status_code=404,

@@ -1,6 +1,6 @@
 """Optional API-key auth middleware for local/prod deployments.
 
-Security note (F-1): This middleware provides API-key authentication
+Security note (F-11): This middleware provides API-key authentication
 (shared secret) but not per-user authorization. All authenticated
 requests share the same privilege level. For multi-user deployments,
 add user-scoped tokens (e.g. JWT), enforce row-level access control
@@ -10,10 +10,14 @@ on Job/Session queries, and validate ownership before mutations.
 from __future__ import annotations
 
 import hmac
+import logging
 import os
+import time
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
+
+logger = logging.getLogger(__name__)
 
 _PUBLIC_PATH_PREFIXES = (
     "/health",
@@ -24,6 +28,73 @@ _PUBLIC_PATH_PREFIXES = (
     "/assets/",
     "/static/",
 )
+
+# --- Rate limiting for auth failures (F-6, CWE-307) ---
+_AUTH_FAIL_MAX = 10  # Max failures per IP in the time window
+_AUTH_FAIL_WINDOW_SECONDS = 300  # 5-minute sliding window
+_auth_failures: dict[str, list[float]] = {}
+
+
+def _get_client_ip(request: Request) -> str:
+    """Extract client IP from request, respecting X-Forwarded-For."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _is_rate_limited(client_ip: str) -> bool:
+    """Check if the client IP has exceeded the auth failure rate limit.
+
+    Args:
+        client_ip: Client IP address.
+
+    Returns:
+        True if the client should be blocked.
+    """
+    now = time.monotonic()
+    timestamps = _auth_failures.get(client_ip, [])
+    # Prune expired entries
+    timestamps = [t for t in timestamps if now - t < _AUTH_FAIL_WINDOW_SECONDS]
+    _auth_failures[client_ip] = timestamps
+    return len(timestamps) >= _AUTH_FAIL_MAX
+
+
+def _record_auth_failure(client_ip: str) -> None:
+    """Record an auth failure for the given client IP.
+
+    Args:
+        client_ip: Client IP address.
+    """
+    now = time.monotonic()
+    if client_ip not in _auth_failures:
+        _auth_failures[client_ip] = []
+    _auth_failures[client_ip].append(now)
+
+
+def reset_rate_limiter() -> None:
+    """Reset the rate limiter state. Used by tests."""
+    _auth_failures.clear()
+
+
+# --- Key strength validation ---
+_MIN_API_KEY_LENGTH = 32
+
+
+def validate_api_key_strength() -> None:
+    """Validate that the configured API key meets minimum strength requirements.
+
+    Called at startup. Raises ValueError if key is set but too short.
+
+    Raises:
+        ValueError: If SHIPAGENT_API_KEY is set but shorter than 32 characters.
+    """
+    key = os.environ.get("SHIPAGENT_API_KEY", "").strip()
+    if key and len(key) < _MIN_API_KEY_LENGTH:
+        raise ValueError(
+            f"SHIPAGENT_API_KEY is too short ({len(key)} chars). "
+            f"Minimum length is {_MIN_API_KEY_LENGTH} characters for security."
+        )
 
 
 def get_expected_api_key() -> str:
@@ -43,7 +114,11 @@ def should_authenticate(path: str) -> bool:
 
 
 async def maybe_require_api_key(request: Request, call_next) -> Response:
-    """FastAPI middleware entrypoint for optional API-key auth."""
+    """FastAPI middleware entrypoint for optional API-key auth.
+
+    Includes in-process rate limiting (F-6): blocks client IPs that
+    exceed _AUTH_FAIL_MAX failures within _AUTH_FAIL_WINDOW_SECONDS.
+    """
     if request.method.upper() == "OPTIONS":
         return await call_next(request)
 
@@ -51,8 +126,19 @@ async def maybe_require_api_key(request: Request, call_next) -> Response:
     if not expected_key or not should_authenticate(request.url.path):
         return await call_next(request)
 
+    client_ip = _get_client_ip(request)
+
+    # Check rate limit before processing the key
+    if _is_rate_limited(client_ip):
+        logger.warning("Auth rate limit exceeded for IP %s", client_ip)
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many authentication failures. Try again later."},
+        )
+
     provided_key = request.headers.get("X-API-Key", "")
     if not provided_key or not hmac.compare_digest(provided_key, expected_key):
+        _record_auth_failure(client_ip)
         return JSONResponse(
             status_code=401,
             content={"detail": "Invalid or missing API key"},
