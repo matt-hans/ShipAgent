@@ -25,6 +25,8 @@ import type {
   CustomCommand,
   ChatSessionSummary,
   ProviderConnectionInfo,
+  AppSettings,
+  CredentialStatus,
 } from '@/types/api';
 import * as api from '@/lib/api';
 
@@ -199,6 +201,13 @@ interface AppState {
   providerConnectionsLoading: boolean;
   providerConnectionsVersion: number;
   refreshProviderConnections: () => void;
+
+  // App settings + onboarding state
+  appSettings: AppSettings | null;
+  appSettingsLoading: boolean;
+  credentialStatus: CredentialStatus | null;
+  refreshAppSettings: () => Promise<void>;
+  refreshCredentialStatus: () => Promise<void>;
 }
 
 const AppStateContext = React.createContext<AppState | null>(null);
@@ -266,6 +275,48 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const refreshChatSessions = React.useCallback(() => {
     setChatSessionsVersion((v) => v + 1);
+  }, []);
+
+  // App settings + onboarding state
+  const [appSettings, setAppSettings] = React.useState<AppSettings | null>(null);
+  const [appSettingsLoading, setAppSettingsLoading] = React.useState(true);
+  const [credentialStatus, setCredentialStatus] = React.useState<CredentialStatus | null>(null);
+
+  const refreshAppSettings = React.useCallback(async () => {
+    try {
+      const settings = await api.getSettings();
+      setAppSettings(settings);
+    } catch (error) {
+      console.error('Failed to fetch app settings:', error);
+    }
+  }, []);
+
+  const refreshCredentialStatus = React.useCallback(async () => {
+    try {
+      const status = await api.getCredentialStatus();
+      setCredentialStatus(status);
+    } catch (error) {
+      console.error('Failed to fetch credential status:', error);
+    }
+  }, []);
+
+  // Fetch settings on mount
+  React.useEffect(() => {
+    setAppSettingsLoading(true);
+    Promise.all([
+      api.getSettings(),
+      api.getCredentialStatus(),
+    ])
+      .then(([settings, creds]) => {
+        setAppSettings(settings);
+        setCredentialStatus(creds);
+      })
+      .catch((error) => {
+        console.error('Failed to fetch initial settings:', error);
+      })
+      .finally(() => {
+        setAppSettingsLoading(false);
+      });
   }, []);
 
   // Provider connections state
@@ -396,6 +447,11 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     providerConnectionsLoading,
     providerConnectionsVersion,
     refreshProviderConnections,
+    appSettings,
+    appSettingsLoading,
+    credentialStatus,
+    refreshAppSettings,
+    refreshCredentialStatus,
   };
 
   return (
