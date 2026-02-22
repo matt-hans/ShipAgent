@@ -145,19 +145,17 @@ def test_batch_concurrency_reads_from_db(
         assert result == 12
 
 
-def test_batch_concurrency_clamps_to_range(
+def test_batch_concurrency_db_constraint_rejects_out_of_range(
     db_session: Session, service: SettingsService
 ):
-    """BatchEngine._resolve_concurrency() clamps DB value to [1, 20]."""
+    """DB CheckConstraint rejects batch_concurrency outside [1, 20]."""
+    from sqlalchemy.exc import IntegrityError
+
     settings = service.get_or_create()
     settings.batch_concurrency = 50
-    db_session.commit()
-
-    with patch("src.db.connection.SessionLocal", return_value=db_session):
-        from src.services.batch_engine import BatchEngine
-
-        result = BatchEngine._resolve_concurrency()
-        assert result == 20  # Clamped to max
+    with pytest.raises(IntegrityError, match="CHECK constraint"):
+        db_session.commit()
+    db_session.rollback()
 
 
 # ─── Fix P2: Singleton enforcement ──────────────────────────────────

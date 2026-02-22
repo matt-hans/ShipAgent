@@ -125,7 +125,7 @@ class BatchEngine:
             finally:
                 db.close()
         except Exception:
-            pass  # DB not available, fall through to env
+            logger.debug("Could not read batch_concurrency from DB", exc_info=True)
 
         # Env var fallback
         raw = os.environ.get("BATCH_CONCURRENCY", "5")

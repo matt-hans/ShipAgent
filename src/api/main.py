@@ -511,8 +511,11 @@ async def lifespan(app: FastAPI):
             else:
                 _generated_fts = _secrets.token_hex(32)
                 try:
-                    _fts_path.write_text(_generated_fts)
-                    _fts_path.chmod(0o600)
+                    # Use os.open with restricted mode to avoid a brief
+                    # window where the file is world-readable.
+                    fd = os.open(str(_fts_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    with os.fdopen(fd, "w") as f:
+                        f.write(_generated_fts)
                 except OSError:
                     logger.warning(
                         "Could not persist FILTER_TOKEN_SECRET fallback file"
