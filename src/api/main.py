@@ -467,23 +467,43 @@ async def lifespan(app: FastAPI):
 
     init_db()
 
+    # Load all keyring credentials into env (keyring → env sync).
+    # This ensures runtime resolvers find onboarding-saved credentials
+    # without requiring a restart. Env vars already set take priority.
+    try:
+        from src.services.keyring_store import KeyringStore
+
+        _kr_store = KeyringStore()
+        _loaded_count = _kr_store.load_all_to_env()
+        if _loaded_count:
+            logger.info("Loaded %d credentials from keychain into env", _loaded_count)
+    except Exception:
+        logger.warning("Keyring load failed; credentials from env only", exc_info=True)
+
     # Auto-generate FILTER_TOKEN_SECRET if absent (env → keyring → generate)
     import secrets as _secrets
 
     if not os.environ.get("FILTER_TOKEN_SECRET"):
-        from src.services.keyring_store import KeyringStore
-
-        _kr_store = KeyringStore()
-        _existing_fts = _kr_store.get("FILTER_TOKEN_SECRET")
-        if not _existing_fts:
+        try:
+            _kr_store = KeyringStore()
+            _existing_fts = _kr_store.get("FILTER_TOKEN_SECRET")
+            if not _existing_fts:
+                _generated_fts = _secrets.token_hex(32)
+                _kr_store.set("FILTER_TOKEN_SECRET", _generated_fts)
+                # CRITICAL: Never log the secret value — only log the event.
+                logger.info(
+                    "Auto-generated FILTER_TOKEN_SECRET and stored in keychain"
+                )
+            else:
+                os.environ["FILTER_TOKEN_SECRET"] = _existing_fts
+                logger.info("Loaded FILTER_TOKEN_SECRET from keychain")
+        except Exception:
+            # Keyring unavailable — generate in-memory only
             _generated_fts = _secrets.token_hex(32)
-            _kr_store.set("FILTER_TOKEN_SECRET", _generated_fts)
             os.environ["FILTER_TOKEN_SECRET"] = _generated_fts
-            # CRITICAL: Never log the secret value — only log the event.
-            logger.info("Auto-generated FILTER_TOKEN_SECRET and stored in keychain")
-        else:
-            os.environ["FILTER_TOKEN_SECRET"] = _existing_fts
-            logger.info("Loaded FILTER_TOKEN_SECRET from keychain")
+            logger.warning(
+                "Keyring unavailable; FILTER_TOKEN_SECRET generated in-memory only"
+            )
 
     # Fail fast if filter token secret is missing or too short
     from src.orchestrator.filter_config import validate_filter_config

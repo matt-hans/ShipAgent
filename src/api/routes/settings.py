@@ -6,9 +6,11 @@ All endpoints use /api/v1/settings prefix.
 
 import logging
 import os
+from enum import Enum
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from src.db.connection import get_db
@@ -17,6 +19,9 @@ from src.services.settings_service import SettingsService
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+
+# Sentinel for distinguishing "field omitted" from "explicitly set to null".
+_UNSET = object()
 
 
 class SettingsResponse(BaseModel):
@@ -40,20 +45,56 @@ class SettingsResponse(BaseModel):
 
 
 class SettingsPatch(BaseModel):
-    """Request schema for updating settings (all fields optional)."""
-    agent_model: str | None = None
-    batch_concurrency: int | None = None
-    shipper_name: str | None = None
-    shipper_attention_name: str | None = None
-    shipper_address1: str | None = None
-    shipper_address2: str | None = None
-    shipper_city: str | None = None
-    shipper_state: str | None = None
-    shipper_zip: str | None = None
-    shipper_country: str | None = None
-    shipper_phone: str | None = None
-    ups_account_number: str | None = None
-    ups_environment: str | None = None
+    """Request schema for updating settings (true PATCH semantics).
+
+    All fields default to _UNSET sentinel. Only fields present in the
+    JSON body will have non-sentinel values. Sending null explicitly
+    clears the field.
+    """
+    agent_model: Any = _UNSET
+    batch_concurrency: Any = _UNSET
+    shipper_name: Any = _UNSET
+    shipper_attention_name: Any = _UNSET
+    shipper_address1: Any = _UNSET
+    shipper_address2: Any = _UNSET
+    shipper_city: Any = _UNSET
+    shipper_state: Any = _UNSET
+    shipper_zip: Any = _UNSET
+    shipper_country: Any = _UNSET
+    shipper_phone: Any = _UNSET
+    ups_account_number: Any = _UNSET
+    ups_environment: Any = _UNSET
+
+    model_config = {"arbitrary_types_allowed": True}
+
+    @field_validator("batch_concurrency", mode="before")
+    @classmethod
+    def validate_batch_concurrency(cls, v: Any) -> Any:
+        """Ensure batch_concurrency is in [1, 20] when provided."""
+        if v is _UNSET or v is None:
+            return v
+        if not isinstance(v, int):
+            raise ValueError("batch_concurrency must be an integer")
+        if v < 1 or v > 20:
+            raise ValueError("batch_concurrency must be between 1 and 20")
+        return v
+
+    @field_validator("shipper_country", mode="before")
+    @classmethod
+    def validate_shipper_country(cls, v: Any) -> Any:
+        """Ensure shipper_country is a 2-letter code when provided."""
+        if v is _UNSET or v is None:
+            return v
+        if not isinstance(v, str) or len(v) != 2:
+            raise ValueError("shipper_country must be a 2-letter ISO code")
+        return v.upper()
+
+    def get_updates(self) -> dict[str, Any]:
+        """Return only fields that were explicitly set in the request."""
+        return {
+            k: v for k, v in self.__dict__.items()
+            if v is not _UNSET and k != "__pydantic_extra__"
+        }
 
 
 class CredentialStatusResponse(BaseModel):
@@ -85,8 +126,11 @@ def update_settings(
     service: SettingsService = Depends(_get_service),
     db: Session = Depends(get_db),
 ) -> SettingsResponse:
-    """Update application settings (patch semantics)."""
-    updates = {k: v for k, v in data.model_dump().items() if v is not None}
+    """Update application settings (true PATCH semantics).
+
+    Omitted fields are unchanged. Fields set to null are cleared.
+    """
+    updates = data.get_updates()
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     try:
@@ -107,20 +151,18 @@ class SetCredentialRequest(BaseModel):
 def get_credential_status() -> CredentialStatusResponse:
     """Check which credentials are configured (never returns values).
 
-    Checks keyring first (production), then env vars (dev fallback).
+    Uses get_all_status() for a single-pass check across keyring + env.
     """
     from src.services.keyring_store import KeyringStore
     store = KeyringStore()
-
-    def _is_set(key: str) -> bool:
-        return store.has(key) or bool(os.environ.get(key, "").strip())
+    status = store.get_all_status()
 
     return CredentialStatusResponse(
-        anthropic_api_key=_is_set("ANTHROPIC_API_KEY"),
-        ups_client_id=_is_set("UPS_CLIENT_ID"),
-        ups_client_secret=_is_set("UPS_CLIENT_SECRET"),
-        shopify_access_token=_is_set("SHOPIFY_ACCESS_TOKEN"),
-        filter_token_secret=_is_set("FILTER_TOKEN_SECRET"),
+        anthropic_api_key=status.get("ANTHROPIC_API_KEY", False),
+        ups_client_id=status.get("UPS_CLIENT_ID", False),
+        ups_client_secret=status.get("UPS_CLIENT_SECRET", False),
+        shopify_access_token=status.get("SHOPIFY_ACCESS_TOKEN", False),
+        filter_token_secret=status.get("FILTER_TOKEN_SECRET", False),
     )
 
 

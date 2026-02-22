@@ -42,9 +42,21 @@ class KeyringStore:
             return None
 
     def set(self, key: str, value: str) -> None:
-        """Store a credential value."""
-        keyring.set_password(self._service, key, value)
-        logger.info("Stored credential: %s", key)
+        """Store a credential value in keyring and sync to os.environ.
+
+        Syncing to os.environ ensures the runtime credential resolver
+        (which checks DB → env) can find keyring-stored credentials
+        without requiring a restart.
+        """
+        try:
+            keyring.set_password(self._service, key, value)
+            logger.info("Stored credential: %s", key)
+        except Exception:
+            logger.warning("Keyring write failed for %s", key, exc_info=True)
+            raise
+        # Sync to process environment so runtime resolvers pick it up immediately
+        import os
+        os.environ[key] = value
 
     def delete(self, key: str) -> None:
         """Remove a credential."""
@@ -53,11 +65,39 @@ class KeyringStore:
             logger.info("Deleted credential: %s", key)
         except keyring.errors.PasswordDeleteError:
             logger.debug("Credential %s not found for deletion", key)
+        # Also remove from process environment
+        import os
+        os.environ.pop(key, None)
 
     def has(self, key: str) -> bool:
         """Check if a credential is set."""
         return self.get(key) is not None
 
     def get_all_status(self) -> dict[str, bool]:
-        """Return status of all managed credentials."""
-        return {key: self.has(key) for key in MANAGED_CREDENTIALS}
+        """Return status of all managed credentials (single pass)."""
+        import os
+        return {
+            key: (self.get(key) is not None) or bool(os.environ.get(key, "").strip())
+            for key in MANAGED_CREDENTIALS
+        }
+
+    def load_all_to_env(self) -> int:
+        """Load all keyring credentials into os.environ (startup sync).
+
+        Only sets env vars that are not already set, so explicit env
+        configuration always takes priority.
+
+        Returns:
+            Number of credentials loaded from keyring.
+        """
+        import os
+        loaded = 0
+        for key in MANAGED_CREDENTIALS:
+            if os.environ.get(key, "").strip():
+                continue  # Env already set, don't override
+            value = self.get(key)
+            if value:
+                os.environ[key] = value
+                loaded += 1
+                logger.debug("Loaded %s from keyring into env", key)
+        return loaded

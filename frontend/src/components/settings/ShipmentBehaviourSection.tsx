@@ -42,18 +42,31 @@ export function ShipmentBehaviourSection({
     }
   }, [appSettings?.batch_concurrency]);
 
+  // Debounce DB writes so dragging the slider doesn't fire per-pixel.
+  const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const saveConcurrency = React.useCallback(
-    async (value: number) => {
+    (value: number) => {
       setConcurrency(value);
-      try {
-        await updateSettings({ batch_concurrency: value });
-        refreshAppSettings();
-      } catch (err) {
-        console.error('Failed to save concurrency:', err);
-      }
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(async () => {
+        try {
+          await updateSettings({ batch_concurrency: value });
+          refreshAppSettings();
+        } catch (err) {
+          console.error('Failed to save concurrency:', err);
+        }
+      }, 400);
     },
     [refreshAppSettings],
   );
+
+  // Cleanup debounce timer on unmount
+  React.useEffect(() => {
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, []);
 
   // Shipper address fields
   const [shipperDirty, setShipperDirty] = React.useState(false);

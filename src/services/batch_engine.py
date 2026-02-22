@@ -110,7 +110,24 @@ class BatchEngine:
 
     @staticmethod
     def _resolve_concurrency() -> int:
-        """Resolve preview/execute concurrency from env with safe fallback."""
+        """Resolve concurrency: Settings DB → env var → default 5."""
+        # Try Settings DB first
+        try:
+            from src.db.connection import SessionLocal
+            from src.services.settings_service import SettingsService
+
+            db = SessionLocal()
+            try:
+                service = SettingsService(db)
+                settings = service.get_or_create()
+                if settings.batch_concurrency is not None:
+                    return max(1, min(20, settings.batch_concurrency))
+            finally:
+                db.close()
+        except Exception:
+            pass  # DB not available, fall through to env
+
+        # Env var fallback
         raw = os.environ.get("BATCH_CONCURRENCY", "5")
         try:
             value = int(raw)

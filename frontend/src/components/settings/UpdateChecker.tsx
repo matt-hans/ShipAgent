@@ -6,7 +6,7 @@
  * Only renders inside Tauri — hidden in Vite dev mode.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 interface UpdateInfo {
   version: string;
@@ -16,6 +16,8 @@ interface UpdateInfo {
 export function UpdateChecker() {
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [installing, setInstalling] = useState(false);
+  // Cache the check result to avoid redundant network calls on install.
+  const cachedResultRef = useRef<any>(null);
 
   useEffect(() => {
     if (!(window as any).__TAURI__) return;
@@ -25,6 +27,7 @@ export function UpdateChecker() {
         const { check } = await import('@tauri-apps/plugin-updater');
         const result = await check();
         if (result?.available) {
+          cachedResultRef.current = result;
           setUpdate({
             version: result.version,
             body: result.body ?? 'Bug fixes and improvements.',
@@ -45,8 +48,12 @@ export function UpdateChecker() {
   async function handleInstall() {
     setInstalling(true);
     try {
-      const { check } = await import('@tauri-apps/plugin-updater');
-      const result = await check();
+      // Use cached result if available, otherwise re-check.
+      let result = cachedResultRef.current;
+      if (!result?.available) {
+        const { check } = await import('@tauri-apps/plugin-updater');
+        result = await check();
+      }
       if (result?.available) {
         await result.downloadAndInstall();
       }

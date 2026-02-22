@@ -32,12 +32,12 @@ class SettingsService:
 
     def get_or_create(self) -> AppSettings:
         """Return the settings singleton, creating it if absent."""
-        settings = self._db.query(AppSettings).first()
+        settings = self._db.get(AppSettings, AppSettings.SINGLETON_ID)
         if settings is None:
-            settings = AppSettings()
+            settings = AppSettings(id=AppSettings.SINGLETON_ID)
             self._db.add(settings)
             self._db.flush()
-            logger.info("Created AppSettings singleton: %s", settings.id)
+            logger.info("Created AppSettings singleton")
         return settings
 
     def update(self, patch: dict[str, Any]) -> AppSettings:
