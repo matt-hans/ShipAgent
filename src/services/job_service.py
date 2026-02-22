@@ -46,11 +46,13 @@ VALID_TRANSITIONS: dict[JobStatus, list[JobStatus]] = {
     JobStatus.running: [
         JobStatus.paused,
         JobStatus.completed,
+        JobStatus.completed_with_warnings,
         JobStatus.failed,
         JobStatus.cancelled,
     ],
     JobStatus.paused: [JobStatus.running, JobStatus.cancelled],
     JobStatus.completed: [],  # terminal
+    JobStatus.completed_with_warnings: [],  # terminal (M-2: write-back failure)
     JobStatus.failed: [],  # terminal (retry creates new job with same rows)
     JobStatus.cancelled: [],  # terminal
 }

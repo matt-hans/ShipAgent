@@ -4,6 +4,7 @@ Provides test client, database session, and sample data fixtures
 for testing FastAPI endpoints.
 """
 
+import hashlib
 import os
 from collections.abc import Generator
 from pathlib import Path
@@ -107,11 +108,14 @@ def sample_job(test_db: Session) -> Job:
     Returns:
         Job instance with pending status.
     """
+    # Hash of empty checksum_concat (no rows yet) — required by H-1 + TOCTOU
+    empty_hash = hashlib.sha256("".encode()).hexdigest()
     job = Job(
         name="Test Job",
         original_command="Ship all orders using UPS Ground",
         status=JobStatus.pending.value,
         total_rows=5,
+        preview_hash=empty_hash,  # H-1: confirm requires preview
     )
     test_db.add(job)
     test_db.commit()

@@ -13,6 +13,10 @@ from sqlalchemy.orm import Session
 
 from src.db.models import Job, JobRow, JobStatus, RowStatus
 
+# SHA-256 of empty string — used for jobs with no rows that still need
+# a valid preview_hash to pass the H-1 + TOCTOU checks.
+_EMPTY_PREVIEW_HASH = hashlib.sha256("".encode()).hexdigest()
+
 
 class TestGetPreview:
     """Tests for GET /api/v1/jobs/{job_id}/preview endpoint."""
@@ -197,6 +201,7 @@ class TestConfirmJob:
             name="No Write-back Job",
             original_command="Test command",
             status=JobStatus.pending.value,
+            preview_hash=_EMPTY_PREVIEW_HASH,
         )
         test_db.add(job)
         test_db.commit()
@@ -219,6 +224,7 @@ class TestConfirmJob:
             name="Default Write-back Job",
             original_command="Test command",
             status=JobStatus.pending.value,
+            preview_hash=_EMPTY_PREVIEW_HASH,
         )
         test_db.add(job)
         test_db.commit()
@@ -239,6 +245,7 @@ class TestConfirmJob:
             original_command="Test command",
             status=JobStatus.pending.value,
             is_interactive=True,
+            preview_hash=_EMPTY_PREVIEW_HASH,
         )
         test_db.add(job)
         test_db.commit()
@@ -262,6 +269,7 @@ class TestConfirmJob:
             original_command="Test command",
             status=JobStatus.pending.value,
             is_interactive=False,
+            preview_hash=_EMPTY_PREVIEW_HASH,
         )
         test_db.add(job)
         test_db.commit()
@@ -286,6 +294,7 @@ class TestConfirmJob:
             original_command="Test command",
             status=JobStatus.pending.value,
             is_interactive=True,
+            preview_hash=_EMPTY_PREVIEW_HASH,
         )
         test_db.add(job)
         test_db.commit()
@@ -414,10 +423,14 @@ class TestPreviewHash:
         assert response.status_code == 409
         assert "re-preview" in response.json()["detail"].lower()
 
-    def test_confirm_works_when_preview_hash_null(
+    def test_confirm_rejected_when_preview_hash_null(
         self, client: TestClient, test_db: Session
     ):
-        """Confirm works for jobs created before preview_hash was added."""
+        """Confirm rejects jobs that haven't been previewed (H-1, CWE-367).
+
+        Agent Design Invariant #4: 'No tool skips approval.' A job with no
+        preview_hash means the user never saw estimated costs.
+        """
         job = Job(
             name="No Hash Job",
             original_command="Test command",
@@ -431,7 +444,12 @@ class TestPreviewHash:
         assert job.preview_hash is None
 
         response = client.post(f"/api/v1/jobs/{job.id}/confirm")
-        assert response.status_code == 200
+        assert response.status_code == 400
+        assert "previewed" in response.json()["detail"].lower()
+
+        # Verify job is still pending (rolled back)
+        test_db.refresh(job)
+        assert job.status == JobStatus.pending.value
 
 
 class TestConfirmAtomicRace:
@@ -445,6 +463,7 @@ class TestConfirmAtomicRace:
             name="Race Test Job",
             original_command="Test command",
             status=JobStatus.pending.value,
+            preview_hash=_EMPTY_PREVIEW_HASH,
         )
         test_db.add(job)
         test_db.commit()

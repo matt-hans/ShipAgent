@@ -161,24 +161,34 @@ async def check_gateway_health() -> dict[str, dict[str, str]]:
 
 
 async def shutdown_gateways() -> None:
-    """Shutdown hook — disconnect all gateway clients. Call from FastAPI lifespan."""
+    """Shutdown hook — disconnect all gateway clients. Call from FastAPI lifespan.
+
+    Acquires each gateway lock before setting to None to prevent race
+    conditions with concurrent get_*_gateway() calls (H-5, CWE-362).
+    """
     global _data_gateway, _ext_sources_client, _ups_gateway
     invalidate_mapping_cache()
-    if _data_gateway is not None:
-        try:
-            await _data_gateway.disconnect_mcp()
-        except Exception as e:
-            logger.warning("Failed to disconnect DataSourceMCPClient: %s", e)
-        _data_gateway = None
-    if _ext_sources_client is not None:
-        try:
-            await _ext_sources_client.disconnect()
-        except Exception as e:
-            logger.warning("Failed to disconnect ExternalSourcesMCPClient: %s", e)
-        _ext_sources_client = None
-    if _ups_gateway is not None:
-        try:
-            await _ups_gateway.disconnect()
-        except Exception as e:
-            logger.warning("Failed to disconnect UPSMCPClient: %s", e)
-        _ups_gateway = None
+
+    async with _data_gateway_lock:
+        if _data_gateway is not None:
+            try:
+                await _data_gateway.disconnect_mcp()
+            except Exception as e:
+                logger.warning("Failed to disconnect DataSourceMCPClient: %s", e)
+            _data_gateway = None
+
+    async with _ext_sources_lock:
+        if _ext_sources_client is not None:
+            try:
+                await _ext_sources_client.disconnect()
+            except Exception as e:
+                logger.warning("Failed to disconnect ExternalSourcesMCPClient: %s", e)
+            _ext_sources_client = None
+
+    async with _ups_gateway_lock:
+        if _ups_gateway is not None:
+            try:
+                await _ups_gateway.disconnect()
+            except Exception as e:
+                logger.warning("Failed to disconnect UPSMCPClient: %s", e)
+            _ups_gateway = None

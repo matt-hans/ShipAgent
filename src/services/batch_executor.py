@@ -227,8 +227,24 @@ async def execute_batch(
         )
         intl_duties = sum(r.duties_taxes_cents or 0 for r in intl_rows)
 
-        # Final job update — status, counters, timestamps
-        final_status = "completed" if failed == 0 else "failed"
+        # Final job update — status, counters, timestamps.
+        # Surface write-back failures so users know tracking numbers
+        # weren't persisted back to source files (M-2, CWE-391).
+        write_back = result.get("write_back", {})
+        wb_status = write_back.get("status", "skipped")
+        if failed == 0 and wb_status in ("error", "partial"):
+            final_status = "completed_with_warnings"
+            wb_msg = write_back.get("message", "Write-back failed")
+            job.error_message = f"Shipments succeeded but write-back {wb_status}: {wb_msg}"
+            logger.warning(
+                "Job %s completed with write-back %s: %s",
+                job_id, wb_status, wb_msg,
+            )
+        elif failed == 0:
+            final_status = "completed"
+        else:
+            final_status = "failed"
+
         job.processed_rows = successful + failed
         job.successful_rows = successful
         job.failed_rows = failed

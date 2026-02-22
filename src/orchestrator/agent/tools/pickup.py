@@ -6,7 +6,13 @@ find_locations, get_service_center_facilities.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac as hmac_mod
+import json
 import logging
+import os
+import time
 from typing import Any
 
 from src.orchestrator.agent.tools.core import (
@@ -20,6 +26,102 @@ from src.services.errors import UPSServiceError
 
 logger = logging.getLogger(__name__)
 _ON_CALL_PICKUP_TYPE = "oncall"
+
+# HMAC confirmation token infrastructure (H-2, CWE-347).
+# Mirrors the filter token pattern in hooks.py.
+_PICKUP_TOKEN_TTL_SECONDS = 600  # 10 minutes
+_PICKUP_TOKEN_SECRET: str | None = None
+
+
+def _get_pickup_token_secret() -> str:
+    """Return the pickup confirmation token secret.
+
+    Uses FILTER_TOKEN_SECRET env var (shared with filter enforcement).
+    Falls back to a process-unique random secret.
+    """
+    global _PICKUP_TOKEN_SECRET
+    if _PICKUP_TOKEN_SECRET is None:
+        _PICKUP_TOKEN_SECRET = os.environ.get(
+            "FILTER_TOKEN_SECRET", ""
+        ) or hashlib.sha256(os.urandom(32)).hexdigest()
+    return _PICKUP_TOKEN_SECRET
+
+
+def _issue_pickup_token(action: str, details_hash: str) -> str:
+    """Issue an HMAC-signed confirmation token for a pickup action.
+
+    Args:
+        action: The action being confirmed ("schedule" or "cancel").
+        details_hash: SHA-256 hash of the operation details.
+
+    Returns:
+        Base64-encoded signed token string.
+    """
+    secret = _get_pickup_token_secret()
+    payload = {
+        "action": action,
+        "details_hash": details_hash,
+        "expires_at": time.time() + _PICKUP_TOKEN_TTL_SECONDS,
+    }
+    payload_json = json.dumps(payload, sort_keys=True)
+    signature = hmac_mod.new(
+        secret.encode(), payload_json.encode(), hashlib.sha256
+    ).hexdigest()
+    payload["signature"] = signature
+    return base64.b64encode(json.dumps(payload).encode()).decode()
+
+
+def _validate_pickup_token(token: str, action: str, details_hash: str) -> str | None:
+    """Validate an HMAC-signed pickup confirmation token.
+
+    Args:
+        token: Base64-encoded signed token.
+        action: Expected action ("schedule" or "cancel").
+        details_hash: Expected SHA-256 hash of operation details.
+
+    Returns:
+        None if valid, error message string if invalid.
+    """
+    secret = _get_pickup_token_secret()
+    try:
+        decoded = json.loads(base64.b64decode(token))
+    except Exception:
+        return "Confirmation token is malformed."
+
+    if time.time() > decoded.get("expires_at", 0):
+        return "Confirmation token has expired. Re-run the preview/rate step."
+
+    signature = decoded.pop("signature", None)
+    if signature is None:
+        return "Confirmation token missing signature."
+
+    payload_json = json.dumps(decoded, sort_keys=True)
+    expected_sig = hmac_mod.new(
+        secret.encode(), payload_json.encode(), hashlib.sha256
+    ).hexdigest()
+    if not hmac_mod.compare_digest(signature, expected_sig):
+        return "Confirmation token signature is invalid (tampered)."
+
+    if decoded.get("action") != action:
+        return f"Token action mismatch: expected '{action}', got '{decoded.get('action')}'."
+
+    if decoded.get("details_hash") != details_hash:
+        return "Confirmation token details do not match the current request."
+
+    return None
+
+
+def _hash_pickup_details(details: dict[str, Any]) -> str:
+    """Compute a stable SHA-256 hash of pickup operation details.
+
+    Args:
+        details: Dict of pickup parameters to hash.
+
+    Returns:
+        Hex digest string.
+    """
+    canonical = json.dumps(details, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 async def schedule_pickup_tool(
@@ -41,12 +143,6 @@ async def schedule_pickup_tool(
     Returns:
         Tool response with PRN on success, or error envelope.
     """
-    if not args.pop("confirmed", False):
-        return _err(
-            "Safety gate: schedule_pickup requires explicit user confirmation. "
-            "Present pickup details to the user first, then call again with "
-            "confirmed=True."
-        )
     # Capture input details for enriched completion event
     input_details = {
         "address_line": args.get("address_line", ""),
@@ -60,6 +156,24 @@ async def schedule_pickup_tool(
         "contact_name": args.get("contact_name", ""),
         "phone_number": args.get("phone_number", ""),
     }
+
+    # Safety gate: validate HMAC confirmation token (H-2, CWE-347).
+    # The token proves that rate_pickup was called and the user saw the preview.
+    # Falls back to boolean confirmed=True for backward compatibility with
+    # existing agent prompts, but token is preferred.
+    confirmation_token = args.pop("confirmation_token", None)
+    if confirmation_token:
+        details_hash = _hash_pickup_details(input_details)
+        token_error = _validate_pickup_token(confirmation_token, "schedule", details_hash)
+        if token_error:
+            return _err(f"Safety gate: {token_error}")
+    elif not args.pop("confirmed", False):
+        return _err(
+            "Safety gate: schedule_pickup requires explicit user confirmation. "
+            "Present pickup details to the user first via rate_pickup, then call "
+            "again with the confirmation_token from the rate response."
+        )
+
     try:
         client = await _get_ups_client()
         result = await client.schedule_pickup(**args)
@@ -96,12 +210,24 @@ async def cancel_pickup_tool(
     Returns:
         Tool response with cancellation status, or error envelope.
     """
-    if not args.pop("confirmed", False):
+    # Safety gate: validate HMAC confirmation token (H-2, CWE-347).
+    cancel_details = {
+        "cancel_by": args.get("cancel_by", "prn"),
+        "prn": args.get("prn", ""),
+    }
+    confirmation_token = args.pop("confirmation_token", None)
+    if confirmation_token:
+        details_hash = _hash_pickup_details(cancel_details)
+        token_error = _validate_pickup_token(confirmation_token, "cancel", details_hash)
+        if token_error:
+            return _err(f"Safety gate: {token_error}")
+    elif not args.pop("confirmed", False):
         return _err(
             "Safety gate: cancel_pickup requires explicit user confirmation. "
             "Present cancellation details to the user first, then call again "
-            "with confirmed=True."
+            "with a confirmation_token."
         )
+
     try:
         client = await _get_ups_client()
         cancel_by = args.get("cancel_by", "prn")
@@ -156,16 +282,22 @@ async def rate_pickup_tool(
             "pickup_type": _ON_CALL_PICKUP_TYPE,
         }
         result = await client.rate_pickup(**rate_args)
-        # Emit pickup_preview with all details + rate
+        # Issue HMAC-signed confirmation token (H-2, CWE-347)
+        details_hash = _hash_pickup_details(input_details)
+        confirmation_token = _issue_pickup_token("schedule", details_hash)
+
+        # Emit pickup_preview with all details + rate + token
         payload = {
             **input_details,
             "charges": result.get("charges", []),
             "grand_total": result.get("grandTotal", "0"),
+            "confirmation_token": confirmation_token,
         }
         _emit_event("pickup_preview", payload, bridge=bridge)
         return _ok(
             "Pickup rate estimate displayed. Waiting for user to confirm or cancel "
-            "via the preview card. Do NOT call schedule_pickup until the user confirms."
+            "via the preview card. Do NOT call schedule_pickup until the user confirms. "
+            f"Pass confirmation_token={confirmation_token!r} when calling schedule_pickup."
         )
     except UPSServiceError as e:
         return _err(f"[{e.code}] {e.message}")
