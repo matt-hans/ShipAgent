@@ -1050,3 +1050,48 @@ export interface SessionDetail {
   session: ChatSessionSummary;
   messages: PersistedMessage[];
 }
+
+// === Provider Connection Types ===
+
+export type ProviderType = 'ups' | 'shopify';
+
+/**
+ * Provider connection status.
+ * Phase 1: only 'configured', 'disconnected', 'needs_reconnect' are actively produced.
+ * 'connected', 'validating', 'error' are reserved for Phase 2 live validation.
+ */
+export type ProviderConnectionStatus =
+  | 'configured'
+  | 'validating'
+  | 'connected'
+  | 'disconnected'
+  | 'error'
+  | 'needs_reconnect';
+
+export type ProviderAuthMode = 'client_credentials' | 'legacy_token' | 'client_credentials_shopify';
+
+export interface ProviderConnectionInfo {
+  id: string;
+  connection_key: string;
+  provider: ProviderType;
+  display_name: string;
+  auth_mode: ProviderAuthMode;
+  environment: string | null;
+  status: ProviderConnectionStatus;
+  metadata: Record<string, unknown>;
+  last_validated_at: string | null;
+  last_error_code: string | null;
+  error_message: string | null;
+  runtime_usable: boolean;
+  runtime_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SaveProviderRequest {
+  auth_mode: ProviderAuthMode;
+  credentials: Record<string, string>;
+  metadata: Record<string, unknown>;
+  display_name: string;
+  environment?: string;
+}

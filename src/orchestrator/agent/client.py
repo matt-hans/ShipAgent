@@ -166,16 +166,15 @@ class OrchestrationAgent:
         self, max_turns: int, permission_mode: str
     ) -> ClaudeAgentOptions:
         """Create ClaudeAgentOptions with MCP servers, hooks, and streaming."""
-        # Get MCP server configs for external servers
-        mcp_configs = create_mcp_servers_config()
+        # Resolve UPS credentials via runtime adapter (DB priority, env fallback)
+        from src.services.runtime_credentials import resolve_ups_credentials
 
-        # UPS MCP config (stdio via venv python)
-        ups_config: McpStdioServerConfig = {
-            "type": "stdio",
-            "command": mcp_configs["ups"]["command"],
-            "args": mcp_configs["ups"]["args"],
-            "env": mcp_configs["ups"]["env"],
-        }
+        ups_creds = resolve_ups_credentials()
+        if ups_creds:
+            logger.info("Agent session using UPS environment=%s", ups_creds.environment)
+
+        # Get MCP server configs (UPS key omitted if no credentials)
+        mcp_configs = create_mcp_servers_config(ups_credentials=ups_creds)
 
         # Create orchestrator MCP server for in-process tools
         orchestrator_mcp = _create_orchestrator_mcp_server(
@@ -189,13 +188,27 @@ class OrchestrationAgent:
             # NOTE: "external" and "data" MCP servers removed from agent.
             # Data source access routes through DataSourceMCPClient singleton
             # in gateway_provider. Agent tools call the gateway directly.
-            "ups": ups_config,
         }
 
         allowed_tools = [
             "mcp__orchestrator__*",
-            "mcp__ups__*",
         ]
+
+        # Only add UPS MCP if credentials are available
+        if "ups" in mcp_configs:
+            ups_config: McpStdioServerConfig = {
+                "type": "stdio",
+                "command": mcp_configs["ups"]["command"],
+                "args": mcp_configs["ups"]["args"],
+                "env": mcp_configs["ups"]["env"],
+            }
+            mcp_servers["ups"] = ups_config
+            allowed_tools.append("mcp__ups__*")
+        else:
+            logger.warning(
+                "UPS MCP not configured — agent will start without UPS tools. "
+                "Connect UPS in Settings to enable shipping operations."
+            )
 
         return ClaudeAgentOptions(
             system_prompt=self._system_prompt,

@@ -660,6 +660,65 @@ class Contact(Base):
         return f"<Contact(handle={self.handle!r}, name={self.display_name!r})>"
 
 
+class ProviderConnection(Base):
+    """Encrypted provider credential storage for UPS and Shopify.
+
+    Stores AES-256-GCM encrypted credentials with versioned envelope,
+    AAD binding, and per-row status tracking. Single-user local app —
+    no user_id scoping.
+
+    Attributes:
+        id: UUID4 text primary key.
+        connection_key: Unique key (e.g., 'ups:test', 'shopify:store.myshopify.com').
+        provider: Provider identifier ('ups' or 'shopify').
+        display_name: Human-readable name for UI display.
+        auth_mode: Authentication mode ('client_credentials', 'legacy_token',
+            'client_credentials_shopify').
+        environment: UPS only — 'test' or 'production'.
+        status: Connection status ('configured', 'validating', 'connected',
+            'disconnected', 'error', 'needs_reconnect').
+        encrypted_credentials: AES-256-GCM JSON envelope string.
+        metadata_json: TEXT column (not SQLAlchemy JSON) — parsed via json.loads()
+            in service layer. Contains provider-specific metadata.
+        last_error_code: Structured error code from last failure.
+        error_message: Sanitized error message from last failure.
+        schema_version: Envelope schema version (always 1 in Phase 1).
+        key_version: Encryption key version (always 1 in Phase 1).
+        created_at: ISO8601 UTC timestamp (YYYY-MM-DDTHH:MM:SSZ).
+        updated_at: ISO8601 UTC timestamp, service-managed (no ORM onupdate).
+    """
+
+    __tablename__ = "provider_connections"
+
+    id: Mapped[str] = mapped_column(
+        Text, primary_key=True, default=generate_uuid
+    )
+    connection_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str] = mapped_column(Text, nullable=False)
+    auth_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    environment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="configured")
+    encrypted_credentials: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True, default="{}")
+    last_error_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False, default=utc_now_iso)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False, default=utc_now_iso)
+
+    __table_args__ = (
+        Index("idx_provider_connections_provider", "provider"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<ProviderConnection(key={self.connection_key!r}, "
+            f"provider={self.provider!r}, status={self.status!r})>"
+        )
+
+
 class CustomCommand(Base):
     """User-defined slash command that expands to a shipping instruction.
 
