@@ -732,16 +732,25 @@ async def readiness_check():
         checks["filter_token_secret"] = {"status": "ok"}
         status = "ready"
 
-    missing_ups = [
-        key
-        for key in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET", "UPS_ACCOUNT_NUMBER")
-        if not os.environ.get(key)
-    ]
-    if missing_ups:
-        checks["ups_credentials"] = {"status": "degraded", "missing": missing_ups}
+    # Check UPS credentials via runtime resolver (DB priority, env fallback)
+    try:
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        ups_creds = resolve_ups_credentials()
+        if ups_creds is not None:
+            checks["ups_credentials"] = {
+                "status": "configured",
+                "environment": ups_creds.environment,
+            }
+        else:
+            checks["ups_credentials"] = {
+                "status": "degraded",
+                "message": "No UPS credentials in DB or env vars",
+            }
+            status = "degraded"
+    except Exception:
+        checks["ups_credentials"] = {"status": "degraded", "message": "Credential check failed"}
         status = "degraded"
-    else:
-        checks["ups_credentials"] = {"status": "configured"}
 
     # MCP gateway health (best-effort, non-blocking)
     try:
