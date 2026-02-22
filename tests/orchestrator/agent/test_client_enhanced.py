@@ -358,8 +358,10 @@ class TestBackwardCompatibility:
         assert hasattr(agent, "process_command")
         assert asyncio.iscoroutinefunction(agent.process_command)
 
-    def test_mcp_servers_still_configured(self):
-        """Core MCP servers (ups, orchestrator) still present; data via gateway."""
+    def test_mcp_servers_still_configured(self, monkeypatch):
+        """Core MCP servers (ups, orchestrator) present when creds set; data via gateway."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
         agent = OrchestrationAgent()
         servers = agent._options.mcp_servers
         assert "ups" in servers

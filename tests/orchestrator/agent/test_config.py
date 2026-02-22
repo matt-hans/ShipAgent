@@ -85,6 +85,12 @@ class TestDataMCPConfig:
 class TestUPSMCPConfig:
     """Tests for UPS MCP configuration."""
 
+    @pytest.fixture(autouse=True)
+    def _set_ups_env(self, monkeypatch):
+        """Provide UPS credentials so get_ups_mcp_config returns a config."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "test_id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "test_secret")
+
     def test_command_is_python_interpreter(self):
         """UPS MCP should use a valid Python interpreter."""
         config = get_ups_mcp_config()
@@ -119,6 +125,8 @@ class TestUPSMCPConfig:
     def test_env_derives_test_environment(self):
         """Should derive 'test' environment from wwwcie base URL."""
         with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("UPS_CLIENT_ID", "id")
+            mp.setenv("UPS_CLIENT_SECRET", "sec")
             mp.setenv("UPS_BASE_URL", "https://wwwcie.ups.com")
 
             config = get_ups_mcp_config()
@@ -127,6 +135,8 @@ class TestUPSMCPConfig:
     def test_env_derives_production_environment(self):
         """Should derive 'production' environment from production base URL."""
         with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("UPS_CLIENT_ID", "id")
+            mp.setenv("UPS_CLIENT_SECRET", "sec")
             mp.setenv("UPS_BASE_URL", "https://onlinetools.ups.com")
 
             config = get_ups_mcp_config()
@@ -135,6 +145,8 @@ class TestUPSMCPConfig:
     def test_env_defaults_to_test(self):
         """Should default to test environment when UPS_BASE_URL is not set."""
         with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("UPS_CLIENT_ID", "id")
+            mp.setenv("UPS_CLIENT_SECRET", "sec")
             mp.delenv("UPS_BASE_URL", raising=False)
 
             config = get_ups_mcp_config()
@@ -145,20 +157,14 @@ class TestUPSMCPConfig:
         config = get_ups_mcp_config()
         assert "PATH" in config["env"]
 
-    def test_missing_credentials_still_returns_config(self):
-        """Config should still be returned even if credentials are missing."""
+    def test_missing_credentials_returns_none(self):
+        """Returns None when UPS credentials are missing."""
         with pytest.MonkeyPatch.context() as mp:
             mp.delenv("UPS_CLIENT_ID", raising=False)
             mp.delenv("UPS_CLIENT_SECRET", raising=False)
 
             config = get_ups_mcp_config()
-
-            assert "command" in config
-            assert "args" in config
-            assert "env" in config
-            # Should have empty strings for missing credentials
-            assert config["env"]["CLIENT_ID"] == ""
-            assert config["env"]["CLIENT_SECRET"] == ""
+            assert config is None
 
     def test_missing_credentials_logs_warning(self, caplog):
         """Should log a warning when UPS credentials are missing."""
@@ -171,9 +177,7 @@ class TestUPSMCPConfig:
             with caplog.at_level(logging.WARNING, logger="src.orchestrator.agent.config"):
                 get_ups_mcp_config()
 
-            assert "Missing UPS credentials" in caplog.text
-            assert "UPS_CLIENT_ID" in caplog.text
-            assert "UPS_CLIENT_SECRET" in caplog.text
+            assert "No UPS credentials available" in caplog.text
 
     def test_args_is_list(self):
         """Args should be a list."""
@@ -189,13 +193,26 @@ class TestUPSMCPConfig:
 class TestCreateMCPServersConfig:
     """Tests for the combined MCP servers configuration."""
 
-    def test_returns_dict_with_all_servers(self):
-        """Should return config for data, external, and ups servers."""
+    def test_returns_dict_with_data_and_external(self):
+        """Should always return config for data and external servers."""
         config = create_mcp_servers_config()
         assert isinstance(config, dict)
         assert "data" in config
         assert "external" in config
+
+    def test_includes_ups_when_credentials_available(self, monkeypatch):
+        """Should include UPS config when credentials are set."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
+        config = create_mcp_servers_config()
         assert "ups" in config
+
+    def test_omits_ups_when_no_credentials(self, monkeypatch):
+        """Should omit UPS config when no credentials are available."""
+        monkeypatch.delenv("UPS_CLIENT_ID", raising=False)
+        monkeypatch.delenv("UPS_CLIENT_SECRET", raising=False)
+        config = create_mcp_servers_config()
+        assert "ups" not in config
 
     def test_data_config_is_valid(self):
         """Data config should have required keys."""
@@ -223,13 +240,17 @@ class TestCreateMCPServersConfig:
         config = create_mcp_servers_config()
         assert config["external"]["command"] == _get_python_command()
 
-    def test_ups_uses_preferred_python(self):
+    def test_ups_uses_preferred_python(self, monkeypatch):
         """UPS server should use the preferred Python command."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
         config = create_mcp_servers_config()
         assert config["ups"]["command"] == _get_python_command()
 
-    def test_ups_config_is_valid(self):
+    def test_ups_config_is_valid(self, monkeypatch):
         """UPS config should have required keys."""
+        monkeypatch.setenv("UPS_CLIENT_ID", "id")
+        monkeypatch.setenv("UPS_CLIENT_SECRET", "sec")
         config = create_mcp_servers_config()
         ups_config = config["ups"]
         assert "command" in ups_config
