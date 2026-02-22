@@ -78,6 +78,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_agent_model() -> str | None:
+    """Read agent_model from DB settings, returning None on failure.
+
+    Returns:
+        The agent model string if set, or None to fall back to env/default.
+    """
+    try:
+        from src.db.connection import get_db_context
+        from src.services.settings_service import SettingsService
+        with get_db_context() as db:
+            return SettingsService(db).get_or_create().agent_model
+    except Exception:
+        logger.warning("Failed to read agent_model from settings")
+        return None
+
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 # Module-level session manager — shared across all conversation endpoints.
@@ -247,6 +263,7 @@ async def _ensure_agent(
         system_prompt=system_prompt,
         interactive_shipping=session.interactive_shipping,
         session_id=session.session_id,
+        model=_resolve_agent_model(),
     )
     await agent.start()
 

@@ -10,7 +10,7 @@
  */
 
 import * as React from 'react';
-import { ChevronDown, FileOutput, AlertTriangle, Gauge, MapPin } from 'lucide-react';
+import { ChevronDown, FileOutput, AlertTriangle, Gauge, MapPin, Cpu } from 'lucide-react';
 import { useAppState } from '@/hooks/useAppState';
 import { updateSettings } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -34,6 +34,9 @@ export function ShipmentBehaviourSection({
   const [concurrency, setConcurrency] = React.useState(
     appSettings?.batch_concurrency ?? 5,
   );
+  const [agentModel, setAgentModel] = React.useState(
+    appSettings?.agent_model ?? 'claude-haiku-4-5-20251001',
+  );
   const [saveError, setSaveError] = React.useState<string | null>(null);
 
   // Sync concurrency slider when appSettings changes
@@ -42,6 +45,13 @@ export function ShipmentBehaviourSection({
       setConcurrency(appSettings.batch_concurrency);
     }
   }, [appSettings?.batch_concurrency]);
+
+  // Sync agent model when appSettings changes
+  React.useEffect(() => {
+    if (appSettings?.agent_model) {
+      setAgentModel(appSettings.agent_model);
+    }
+  }, [appSettings?.agent_model]);
 
   // Debounce DB writes so dragging the slider doesn't fire per-pixel.
   const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -71,10 +81,23 @@ export function ShipmentBehaviourSection({
     };
   }, []);
 
+  const saveAgentModel = async (value: string) => {
+    setAgentModel(value);
+    try {
+      await updateSettings({ agent_model: value });
+      setSaveError(null);
+      refreshAppSettings();
+    } catch (err) {
+      console.error('Failed to save agent model:', err);
+      setSaveError('Failed to save agent model.');
+    }
+  };
+
   // Shipper address fields
   const [shipperDirty, setShipperDirty] = React.useState(false);
   const [shipperFields, setShipperFields] = React.useState({
     shipper_name: '',
+    shipper_attention_name: '',
     shipper_phone: '',
     shipper_address1: '',
     shipper_address2: '',
@@ -89,6 +112,7 @@ export function ShipmentBehaviourSection({
     if (appSettings) {
       setShipperFields({
         shipper_name: appSettings.shipper_name ?? '',
+        shipper_attention_name: appSettings.shipper_attention_name ?? '',
         shipper_phone: appSettings.shipper_phone ?? '',
         shipper_address1: appSettings.shipper_address1 ?? '',
         shipper_address2: appSettings.shipper_address2 ?? '',
@@ -207,6 +231,28 @@ export function ShipmentBehaviourSection({
             </p>
           </div>
 
+          {/* Agent model */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Cpu className="h-4 w-4 text-muted-foreground" />
+              <label className="text-sm font-medium text-foreground">
+                Agent Model
+              </label>
+            </div>
+            <select
+              value={agentModel}
+              onChange={(e) => saveAgentModel(e.target.value)}
+              className="w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+            >
+              <option value="claude-haiku-4-5-20251001">Haiku 4.5 (default)</option>
+              <option value="claude-sonnet-4-6">Sonnet 4.6</option>
+              <option value="claude-opus-4-6">Opus 4.6</option>
+            </select>
+            <p className="text-[10px] text-slate-500">
+              Changes apply to new conversations.
+            </p>
+          </div>
+
           {/* Default shipper address */}
           <div className="space-y-3">
             <div className="flex items-center gap-2">
@@ -222,6 +268,13 @@ export function ShipmentBehaviourSection({
                 placeholder="Company Name"
                 value={shipperFields.shipper_name}
                 onChange={(e) => handleShipperChange('shipper_name', e.target.value)}
+                className="col-span-2 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"
+              />
+              <input
+                type="text"
+                placeholder="Contact Name"
+                value={shipperFields.shipper_attention_name}
+                onChange={(e) => handleShipperChange('shipper_attention_name', e.target.value)}
                 className="col-span-2 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground"
               />
               <input

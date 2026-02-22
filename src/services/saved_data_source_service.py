@@ -1,14 +1,15 @@
 """Service for persisting and reconnecting data source connections.
 
 Saves display metadata for every connected data source so users can
-reconnect with one click. File-based sources (CSV/Excel) store the
-server-side file path. Database sources store only display info — no
-credentials are ever persisted.
+reconnect with one click. File-based sources (CSV/Excel/JSON/XML/EDI/
+fixed-width) store the server-side file path. Database sources store
+only display info — no credentials are ever persisted.
 
 Example:
     with get_db_context() as db:
         sources = SavedDataSourceService.list_sources(db)
         SavedDataSourceService.save_or_update_csv(db, "/uploads/orders.csv", 150, 12)
+        SavedDataSourceService.save_or_update_file(db, "/uploads/data.json", "json", 50, 8)
 """
 
 import logging
@@ -59,7 +60,7 @@ class SavedDataSourceService:
 
         Args:
             db: SQLAlchemy session.
-            source_type: Optional filter ('csv', 'excel', 'database').
+            source_type: Optional filter ('csv', 'excel', 'json', 'xml', 'fixed_width', 'edi', 'database').
 
         Returns:
             List of SavedDataSource records.
@@ -186,6 +187,57 @@ class SavedDataSourceService:
         db.add(record)
         db.flush()
         logger.info("Saved new Excel source: %s", name)
+        return record
+
+    @staticmethod
+    def save_or_update_file(
+        db: Session,
+        file_path: str,
+        source_type: str,
+        row_count: int,
+        column_count: int,
+    ) -> SavedDataSource:
+        """Upsert a generic file-based data source record (keyed by source_type + file_path).
+
+        Handles json, xml, fixed_width, edi, and any future file-based types
+        that don't need type-specific metadata (like Excel's sheet_name).
+
+        Args:
+            db: SQLAlchemy session.
+            file_path: Absolute server-side path to the file.
+            source_type: Source type identifier (e.g. 'json', 'xml', 'fixed_width', 'edi').
+            row_count: Number of rows imported.
+            column_count: Number of columns discovered.
+
+        Returns:
+            The created or updated SavedDataSource.
+        """
+        existing = db.query(SavedDataSource).filter(
+            SavedDataSource.source_type == source_type,
+            SavedDataSource.file_path == file_path,
+        ).first()
+
+        name = Path(file_path).name
+
+        if existing:
+            existing.row_count = row_count
+            existing.column_count = column_count
+            existing.last_used_at = utc_now_iso()
+            existing.name = name
+            db.flush()
+            logger.info("Updated saved %s source: %s", source_type, name)
+            return existing
+
+        record = SavedDataSource(
+            name=name,
+            source_type=source_type,
+            file_path=file_path,
+            row_count=row_count,
+            column_count=column_count,
+        )
+        db.add(record)
+        db.flush()
+        logger.info("Saved new %s source: %s", source_type, name)
         return record
 
     @staticmethod

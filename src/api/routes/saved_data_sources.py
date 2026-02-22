@@ -24,6 +24,9 @@ from src.services.saved_data_source_service import SavedDataSourceService
 
 logger = logging.getLogger(__name__)
 
+# File-based source types that reconnect via the universal import_file path
+_FILE_BASED_TYPES = frozenset({"json", "xml", "fixed_width", "edi"})
+
 router = APIRouter(prefix="/saved-sources", tags=["saved-sources"])
 
 
@@ -113,6 +116,16 @@ async def reconnect_saved_source(
                 )
             result = await gw.import_excel(
                 file_path=source.file_path, sheet=source.sheet_name
+            )
+
+        elif source.source_type in _FILE_BASED_TYPES:
+            if not source.file_path:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No file path stored for this {source.source_type} source",
+                )
+            result = await gw.import_file(
+                file_path=source.file_path, format_hint=source.source_type
             )
 
         elif source.source_type == "database":

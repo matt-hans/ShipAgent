@@ -607,6 +607,32 @@ class DataSourceMCPClient:
         except Exception as e:
             logger.warning("Auto-save Excel source failed (non-critical): %s", e)
 
+    # Generic file-based types supported by auto-save
+    _GENERIC_FILE_TYPES = frozenset({"json", "xml", "fixed_width", "edi"})
+
+    @staticmethod
+    def _auto_save_generic_file(
+        file_path: str, source_type: str, row_count: int, column_count: int
+    ) -> None:
+        """Persist generic file source metadata for future reconnection.
+
+        Args:
+            file_path: Absolute path to the file.
+            source_type: Source type identifier (e.g. 'json', 'xml', 'fixed_width', 'edi').
+            row_count: Number of rows imported.
+            column_count: Number of columns discovered.
+        """
+        try:
+            from src.db.connection import get_db_context
+            from src.services.saved_data_source_service import SavedDataSourceService
+
+            with get_db_context() as db:
+                SavedDataSourceService.save_or_update_file(
+                    db, file_path, source_type, row_count, column_count
+                )
+        except Exception as e:
+            logger.warning("Auto-save %s source failed (non-critical): %s", source_type, e)
+
     @staticmethod
     def _auto_save_file(
         file_path: str,
@@ -634,8 +660,11 @@ class DataSourceMCPClient:
             DataSourceMCPClient._auto_save_excel(
                 file_path, sheet, row_count, column_count
             )
+        elif source_type in DataSourceMCPClient._GENERIC_FILE_TYPES:
+            DataSourceMCPClient._auto_save_generic_file(
+                file_path, source_type, row_count, column_count
+            )
         else:
-            # JSON, XML, EDI, etc. — no auto-save path yet; log for visibility
             logger.debug(
                 "No auto-save handler for source_type=%s (file=%s)",
                 source_type,

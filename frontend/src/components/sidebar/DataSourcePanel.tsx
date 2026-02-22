@@ -17,7 +17,7 @@ import {
   reconnectSavedSource,
   getDataSourceStatus,
 } from '@/lib/api';
-import type { DataSourceInfo } from '@/types/api';
+import type { DataSourceInfo, DataSourceType } from '@/types/api';
 import { RecentSourcesModal } from '@/components/RecentSourcesModal';
 import { toDataSourceColumns } from '@/components/sidebar/dataSourceMappers';
 import { HardDriveIcon, InfoIcon } from '@/components/ui/icons';
@@ -26,7 +26,7 @@ import { Switch } from '@/components/ui/switch';
 
 /** Extracts a display filename from a DataSourceInfo. */
 export function extractFileName(ds: DataSourceInfo): string | null {
-  const path = ds.csv_path || ds.excel_path;
+  const path = ds.csv_path || ds.excel_path || ds.file_path;
   if (!path) return null;
   const segments = path.split('/');
   return segments[segments.length - 1] || null;
@@ -90,8 +90,9 @@ export function DataSourceSection() {
         const sourceType = String(status.source_type || '').toLowerCase();
         setBackendSourceType(sourceType || null);
 
-        if (sourceType === 'csv' || sourceType === 'excel' || sourceType === 'database') {
-          const localType = sourceType as 'csv' | 'excel' | 'database';
+        const KNOWN_TYPES = new Set<string>(['csv', 'excel', 'json', 'xml', 'fixed_width', 'edi', 'database']);
+        if (KNOWN_TYPES.has(sourceType)) {
+          const localType = sourceType as DataSourceType;
           const path = status.file_path || undefined;
           setDataSource({
             type: localType,
@@ -102,6 +103,7 @@ export function DataSourceSection() {
             connected_at: new Date().toISOString(),
             csv_path: localType === 'csv' ? path : undefined,
             excel_path: localType === 'excel' ? path : undefined,
+            file_path: KNOWN_TYPES.has(localType) && localType !== 'csv' && localType !== 'excel' && localType !== 'database' ? path : undefined,
           });
         }
       } catch {
@@ -244,13 +246,14 @@ export function DataSourceSection() {
 
       const result = await reconnectSavedSource(match.id);
       const source: DataSourceInfo = {
-        type: match.source_type as 'csv' | 'excel',
+        type: match.source_type,
         status: 'connected' as const,
         row_count: result.row_count,
         column_count: result.column_count,
         connected_at: new Date().toISOString(),
         csv_path: match.source_type === 'csv' ? match.file_path ?? undefined : undefined,
         excel_path: match.source_type === 'excel' ? match.file_path ?? undefined : undefined,
+        file_path: match.file_path ?? undefined,
       };
       setDataSource(source);
       setBackendSourceType(match.source_type);
