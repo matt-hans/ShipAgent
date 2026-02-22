@@ -469,6 +469,49 @@ class TestAutoDetectColSpecs:
             f"HAZMAT values should be N/Y only, got: {haz_values}"
         )
 
+    def test_numeric_columns_get_numeric_duckdb_types(self):
+        """FWF numeric columns must become DOUBLE/BIGINT, not VARCHAR.
+
+        Regression test for the core bug: all FWF values were strings,
+        causing DuckDB to assign VARCHAR to numeric columns, which broke
+        SQL comparisons like WHERE WT_LBS > 20.
+        """
+        import duckdb as _duckdb
+        from pathlib import Path
+
+        fwf_path = Path("test_data/shipments_domestic.fwf")
+        if not fwf_path.exists():
+            import pytest
+            pytest.skip("test_data/shipments_domestic.fwf not found")
+
+        with open(fwf_path, encoding="utf-8") as f:
+            lines = f.readlines()
+
+        specs, names = auto_detect_col_specs(lines)
+        conn = _duckdb.connect(":memory:")
+        adapter = FixedWidthAdapter()
+        adapter.import_data(conn, str(fwf_path), col_specs=specs, names=names, header=True)
+
+        schema = conn.execute("DESCRIBE imported_data").fetchall()
+        type_map = {col[0]: col[1] for col in schema}
+
+        # Numeric columns must not be VARCHAR
+        assert type_map["WT_LBS"] == "DOUBLE", f"WT_LBS should be DOUBLE, got {type_map['WT_LBS']}"
+        assert type_map["LEN"] == "BIGINT", f"LEN should be BIGINT, got {type_map['LEN']}"
+        assert type_map["WID"] == "BIGINT", f"WID should be BIGINT, got {type_map['WID']}"
+        assert type_map["HGT"] == "BIGINT", f"HGT should be BIGINT, got {type_map['HGT']}"
+        assert type_map["VALUE"] == "DOUBLE", f"VALUE should be DOUBLE, got {type_map['VALUE']}"
+
+        # Text columns must remain VARCHAR
+        assert type_map["RECIPIENT_NAME"] == "VARCHAR"
+        assert type_map["CITY"] == "VARCHAR"
+        assert type_map["SERVICE"] == "VARCHAR"
+
+        # Numeric comparisons must work without CAST
+        rows = conn.execute("SELECT COUNT(*) FROM imported_data WHERE WT_LBS > 20").fetchone()
+        assert rows[0] > 0, "No rows found with WT_LBS > 20 — numeric comparison broken"
+        conn.close()
+
     def test_uses_all_data_lines_not_just_first_five(self):
         """Space-fraction analysis uses ALL data lines, not just first 5.
 

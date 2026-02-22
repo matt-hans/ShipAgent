@@ -354,9 +354,11 @@ export function DataSourceSection() {
       {(shopifyEnvConnected || shopifyEnvStatus?.configured || showShopifyForm) && (
         <div className={cn(
           'rounded-lg border overflow-hidden transition-colors',
-          isShopifyActive
-            ? 'border-l-4 border-l-[#5BBF3D] border-[#5BBF3D]/30 bg-[#5BBF3D]/5'
-            : 'border-slate-800'
+          isShopifyActive && interactiveShipping
+            ? 'border-l-4 border-l-slate-500 border-slate-600/30 bg-slate-800/20'
+            : isShopifyActive
+              ? 'border-l-4 border-l-[#5BBF3D] border-[#5BBF3D]/30 bg-[#5BBF3D]/5'
+              : 'border-slate-800'
         )}>
           <div className="flex items-center justify-between p-2.5 bg-slate-800/30">
             <div className="flex items-center gap-2">
@@ -366,6 +368,8 @@ export function DataSourceSection() {
             <div className="flex items-center gap-2">
               {isCheckingShopifyEnv ? (
                 <span className="text-[10px] font-mono text-slate-500">Checking...</span>
+              ) : shopifyEnvConnected && isShopifyActive && interactiveShipping ? (
+                <span className="badge badge-neutral text-[9px]">STANDBY</span>
               ) : shopifyEnvConnected && isShopifyActive ? (
                 <span className="badge badge-success text-[9px]">ACTIVE</span>
               ) : shopifyEnvConnected ? (
@@ -389,12 +393,12 @@ export function DataSourceSection() {
 
           {/* Active Shopify info */}
           {shopifyEnvConnected && isShopifyActive && (
-            <div className="p-2.5 border-t border-[#5BBF3D]/20">
+            <div className={cn('p-2.5 border-t', interactiveShipping ? 'border-slate-700' : 'border-[#5BBF3D]/20')}>
               <p className="text-xs text-slate-300">
                 {shopifyStoreName}
               </p>
               <p className="text-[10px] font-mono text-slate-500 mt-0.5">
-                Auto-detected from environment
+                {interactiveShipping ? 'Available in batch mode' : 'Auto-detected from environment'}
               </p>
             </div>
           )}
@@ -496,9 +500,11 @@ export function DataSourceSection() {
       {dataSource?.status === 'connected' && (
         <div className={cn(
           'rounded-lg border overflow-hidden transition-colors',
-          isLocalActive
-            ? 'border-l-4 border-l-primary border-primary/30 bg-primary/5'
-            : 'border-slate-800'
+          isLocalActive && interactiveShipping
+            ? 'border-l-4 border-l-slate-500 border-slate-600/30 bg-slate-800/20'
+            : isLocalActive
+              ? 'border-l-4 border-l-primary border-primary/30 bg-primary/5'
+              : 'border-slate-800'
         )}>
           <div className="flex items-center justify-between p-2.5">
             <div className="flex items-center gap-2">
@@ -506,7 +512,9 @@ export function DataSourceSection() {
               <span className="text-xs font-medium text-slate-200">{localFileName}</span>
             </div>
             <div className="flex items-center gap-2">
-              {isLocalActive ? (
+              {isLocalActive && interactiveShipping ? (
+                <span className="badge badge-neutral text-[9px]">STANDBY</span>
+              ) : isLocalActive ? (
                 <span className="badge badge-success text-[9px]">ACTIVE</span>
               ) : (
                 <span className="text-[10px] font-mono text-slate-500">Available</span>
@@ -516,7 +524,7 @@ export function DataSourceSection() {
           <div className="px-2.5 pb-2.5 flex items-center justify-between">
             <div className="flex gap-4 text-[10px] font-mono">
               <span className="text-slate-500">
-                Rows: <span className={isLocalActive ? 'text-success' : 'text-slate-400'}>{dataSource.row_count?.toLocaleString() || '...'}</span>
+                Rows: <span className={isLocalActive && !interactiveShipping ? 'text-success' : 'text-slate-400'}>{dataSource.row_count?.toLocaleString() || '...'}</span>
               </span>
               <span className="text-slate-500">
                 Cols: <span className="text-slate-300">{dataSource.column_count}</span>
@@ -529,6 +537,11 @@ export function DataSourceSection() {
               Disconnect
             </button>
           </div>
+          {isLocalActive && interactiveShipping && (
+            <div className="px-2.5 pb-2 -mt-1">
+              <p className="text-[10px] font-mono text-slate-500">Available in batch mode</p>
+            </div>
+          )}
         </div>
       )}
 
