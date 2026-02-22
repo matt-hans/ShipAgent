@@ -38,6 +38,7 @@ def reset_fallback_flags():
 
     runtime_credentials._ups_fallback_warned = False
     runtime_credentials._shopify_fallback_warned = False
+    runtime_credentials._ups_dual_env_warned = False
     yield
 
 
@@ -676,3 +677,35 @@ class TestNarrowedExceptionHandling:
         finally:
             os.environ.pop("UPS_CLIENT_ID", None)
             os.environ.pop("UPS_CLIENT_SECRET", None)
+
+
+class TestDualEnvWarningGuard:
+    """Tests that the dual-env warning only fires once per process."""
+
+    def test_dual_env_warning_fires_only_once(self, db_session, key_dir, caplog):
+        """Repeated resolve calls with both envs only warn once."""
+        from src.services.connection_service import ConnectionService
+        from src.services.runtime_credentials import resolve_ups_credentials
+
+        service = ConnectionService(db=db_session, key_dir=key_dir)
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "prod_id", "client_secret": "prod_sec"},
+            metadata={}, environment="production", display_name="UPS Prod",
+        )
+        service.save_connection(
+            provider="ups", auth_mode="client_credentials",
+            credentials={"client_id": "test_id", "client_secret": "test_sec"},
+            metadata={}, environment="test", display_name="UPS Test",
+        )
+
+        for var in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET", "UPS_BASE_URL"):
+            os.environ.pop(var, None)
+
+        with caplog.at_level(logging.WARNING):
+            resolve_ups_credentials(environment=None, db=db_session, key_dir=key_dir)
+            resolve_ups_credentials(environment=None, db=db_session, key_dir=key_dir)
+            resolve_ups_credentials(environment=None, db=db_session, key_dir=key_dir)
+
+        both_warnings = [m for m in caplog.messages if "both" in m.lower()]
+        assert len(both_warnings) == 1

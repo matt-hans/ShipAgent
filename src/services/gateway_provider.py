@@ -106,6 +106,7 @@ def _build_ups_gateway() -> Any:
             "No UPS credentials configured. Open Settings to connect UPS."
         )
 
+    logger.info("UPS gateway using environment=%s", creds.environment)
     return UPSMCPClient(
         client_id=creds.client_id,
         client_secret=creds.client_secret,
