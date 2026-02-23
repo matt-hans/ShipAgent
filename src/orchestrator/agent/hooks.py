@@ -627,8 +627,8 @@ _FILTER_SCOPED_TOOLS = frozenset({
 # Banned keys that indicate raw SQL injection attempts
 _BANNED_SQL_KEYS = frozenset({"where_clause", "sql", "query", "raw_sql"})
 
-# Cached FILTER_TOKEN_SECRET to avoid repeated os.environ lookups
-_FILTER_TOKEN_SECRET: str | None = None
+# NOTE: No module-level cache for FILTER_TOKEN_SECRET — always read from
+# os.environ so that runtime rotation takes effect immediately (M-3 fix).
 
 # One-time-use token set to prevent replay attacks within TTL (CWE-294).
 # In-memory cache is the fast path; DB is the durable truth store that
@@ -703,14 +703,12 @@ def _persist_token_consumed(token_hash: str, expires_at: float) -> None:
 
 
 def _get_filter_token_secret() -> str:
-    """Return the cached FILTER_TOKEN_SECRET value.
+    """Return the current FILTER_TOKEN_SECRET value from environment.
 
-    Reads from os.environ on first call, then returns cached value.
+    Always reads from os.environ (no module-level cache) so that runtime
+    secret rotation takes effect immediately without a process restart.
     """
-    global _FILTER_TOKEN_SECRET
-    if _FILTER_TOKEN_SECRET is None:
-        _FILTER_TOKEN_SECRET = os.environ.get("FILTER_TOKEN_SECRET", "")
-    return _FILTER_TOKEN_SECRET
+    return os.environ.get("FILTER_TOKEN_SECRET", "")
 
 
 def _get_filter_token_secrets() -> list[str]:

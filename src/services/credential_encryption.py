@@ -173,7 +173,13 @@ def get_or_create_key(key_dir: str | None = None) -> bytes:
     if platform.system() != "Windows":
         os.chmod(key_path, stat.S_IRUSR | stat.S_IWUSR)
 
-    logger.info("Generated new encryption key at %s", key_path)
+    logger.warning(
+        "Generated new encryption key at %s. "
+        "IMPORTANT: Back up this file — losing it makes all encrypted credentials "
+        "unrecoverable. For production, set SHIPAGENT_CREDENTIAL_KEY or "
+        "SHIPAGENT_CREDENTIAL_KEY_FILE instead.",
+        key_path,
+    )
     return key
 
 
