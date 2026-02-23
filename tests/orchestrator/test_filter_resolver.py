@@ -636,3 +636,39 @@ class TestResolverExplanationOperators:
         assert "and" in result.lower()
         assert "or" in result.lower()
         assert ";" not in result
+
+
+class TestFilterResolverWithoutTokenSecret:
+    """Verify resolve_filter_intent works without FILTER_TOKEN_SECRET set."""
+
+    def test_resolve_filter_intent_works_without_token_secret(self, monkeypatch):
+        """Resolution should succeed with ephemeral fallback when env var is unset."""
+        from src.orchestrator.filter_resolver import _get_token_secret, resolve_filter_intent
+
+        # Clear the env var AND any cached fallback from prior tests
+        monkeypatch.delenv("FILTER_TOKEN_SECRET", raising=False)
+        if hasattr(_get_token_secret, "_fallback"):
+            delattr(_get_token_secret, "_fallback")
+
+        intent = _intent(
+            FilterGroup(
+                logic="AND",
+                conditions=[
+                    SemanticReference(semantic_key="california", target_column="state")
+                ],
+            )
+        )
+        result = resolve_filter_intent(
+            intent, SCHEMA_COLS, COL_TYPES, SCHEMA_SIG
+        )
+        assert result.status == ResolutionStatus.RESOLVED
+        # Resolution token should still be generated via ephemeral secret
+        assert result.resolution_token is not None
+
+    def test_validate_filter_config_does_not_raise_when_unset(self, monkeypatch):
+        """validate_filter_config should warn, not raise, when secret is missing."""
+        from src.orchestrator.filter_config import validate_filter_config
+
+        monkeypatch.delenv("FILTER_TOKEN_SECRET", raising=False)
+        # Should not raise
+        validate_filter_config()

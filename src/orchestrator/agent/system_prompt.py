@@ -547,18 +547,17 @@ If `ship_command_pipeline` returns an error:
 ### Batch Refinement (after preview)
 
 When the user requests changes to an existing batch preview (e.g., "use the fastest service",
-"switch to Ground", "make it 5 lbs"), re-run `ship_command_pipeline` with ONLY the changed
-parameters. The system caches the filter automatically — do NOT re-pass `filter_spec`.
+"switch to Ground", "make it 5 lbs"), immediately re-run `ship_command_pipeline`. Do NOT
+discuss options or ask clarifying questions — just make the change.
 
-1. Call `ship_command_pipeline` with the SAME `command` text as the original
-2. Pass ONLY the updated parameter (e.g., `service_code`, `packaging_type`, `weight`)
-3. Do NOT include `filter_spec` — the system reuses the cached filter from the original call
-4. If the original used `all_rows=true`, pass `all_rows=true` again
-5. The system automatically replaces the old preview and cleans up the superseded job
-6. After the new preview appears, respond with ONLY one brief sentence summarizing the change
+1. Call `ship_command_pipeline` with the SAME `command` text as the original — do NOT include `filter_spec`
+2. Pass the updated parameter (e.g., `service_code`, `packaging_type`, `weight`)
+3. If the original used `all_rows=true`, pass `all_rows=true` again
+4. The `service_code` override applies to ALL rows in the batch uniformly
+5. After the new preview appears, respond with ONLY one brief sentence summarizing the change
 
 Common refinement patterns:
-- "use fastest/cheapest service" → Re-run with the appropriate `service_code` for the lane (e.g., "07" for Worldwide Express, "65" for Saver)
+- "use fastest/cheapest service" → Re-run with appropriate service_code for the lane
 - "switch to Ground" → Re-run with `service_code: "03"`
 - "change packaging to PAK" → Re-run with `packaging_type: "PAK"`
 

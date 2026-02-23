@@ -61,33 +61,45 @@ class FilterConfigError(Exception):
 def _get_token_secret() -> str:
     """Lazy getter for FILTER_TOKEN_SECRET env var.
 
-    Raises FilterConfigError on first use if not set. Not validated at import
-    time to avoid breaking unrelated tests and code paths.
+    Returns the env var value if set. Otherwise generates an ephemeral
+    in-process fallback so that token generation works in dev/test
+    environments without requiring explicit configuration.
 
     Returns:
         The token secret string.
-
-    Raises:
-        FilterConfigError: If FILTER_TOKEN_SECRET is not set.
     """
     secret = os.environ.get("FILTER_TOKEN_SECRET")
     if not secret:
-        raise FilterConfigError(
-            "FILTER_TOKEN_SECRET environment variable is required for "
-            "Tier B confirmation tokens. Set it in your .env file."
+        import logging as _logging
+        import secrets as _secrets
+
+        _logging.getLogger(__name__).warning(
+            "FILTER_TOKEN_SECRET not set; using ephemeral fallback."
         )
+        if not hasattr(_get_token_secret, "_fallback"):
+            _get_token_secret._fallback = _secrets.token_hex(32)  # type: ignore[attr-defined]
+        return _get_token_secret._fallback  # type: ignore[attr-defined]
     return secret
 
 
 def validate_filter_config() -> None:
     """Validate filter configuration at startup.
 
-    Called by FastAPI lifespan to fail fast at server boot.
-
-    Raises:
-        FilterConfigError: If required configuration is missing.
+    Called by FastAPI lifespan. Logs a warning if FILTER_TOKEN_SECRET
+    is not set but does not raise, allowing the server to start in
+    dev/test environments.
     """
-    _get_token_secret()
+    import logging as _logging
+
+    _logger = _logging.getLogger(__name__)
+    secret = os.environ.get("FILTER_TOKEN_SECRET")
+    if not secret:
+        _logger.warning("FILTER_TOKEN_SECRET not set; using ephemeral fallback.")
+        return
+    if len(secret) < 32:
+        _logger.warning(
+            "FILTER_TOKEN_SECRET shorter than 32 chars; consider using a longer value."
+        )
 
 
 # ---------------------------------------------------------------------------
