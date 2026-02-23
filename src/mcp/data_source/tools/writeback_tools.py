@@ -10,11 +10,17 @@ Per CONTEXT.md Decision 4:
 - shipped_at uses ISO8601 format
 """
 
+import re
 from datetime import UTC, datetime
+from pathlib import Path
 
 from fastmcp import Context
 
 from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN
+
+# Strict identifier regex: only alphanumeric, underscores, and dots (for schema.table).
+# Prevents SQL injection via crafted table names (CWE-89).
+_TABLE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 from src.services.write_back_utils import (
     apply_csv_updates_atomic,
     apply_delimited_updates_atomic,
@@ -67,6 +73,24 @@ async def write_back(
         shipped_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     source_type = current_source.get("type")
+
+    # Redundant path containment check for file-based sources (CWE-22 mitigation).
+    # The import path was validated at import time, but we re-validate here
+    # as defense-in-depth in case the stored metadata was modified.
+    if source_type in ("csv", "delimited", "json", "xml", "edi", "fixed_width", "excel"):
+        file_path = current_source.get("path", "")
+        if file_path:
+            resolved = Path(file_path).resolve()
+            # Block write-back to system directories
+            _blocked_prefixes = ("/etc", "/usr", "/bin", "/sbin", "/var/run", "/proc", "/sys")
+            if any(str(resolved).startswith(p) for p in _blocked_prefixes):
+                raise ValueError(
+                    f"Write-back path is in a restricted system directory: {resolved}"
+                )
+            if not resolved.parent.exists():
+                raise ValueError(
+                    f"Write-back target directory does not exist: {resolved.parent}"
+                )
 
     await ctx.info(
         f"Writing tracking number {tracking_number} to row {row_number} "
@@ -204,12 +228,22 @@ async def _write_back_database(
             "Database write-back requires a simple SELECT ... FROM table_name query."
         )
 
+    # Validate table name against strict identifier pattern (CWE-89 mitigation).
+    if not _TABLE_IDENTIFIER_RE.match(table_name):
+        raise ValueError(
+            f"Invalid table identifier for write-back: {table_name!r}. "
+            "Only alphanumeric characters, underscores, and dots are allowed."
+        )
+
+    # Double-quote for DuckDB identifier escaping (defense-in-depth).
+    safe_table = f'"{table_name}"'
+
     await ctx.info(f"Updating database table {table_name} row {row_number}")
 
     # Use parameterized query to prevent SQL injection
     # Note: DuckDB uses $1, $2 syntax for parameters
     update_sql = f"""
-        UPDATE {table_name}
+        UPDATE {safe_table}
         SET tracking_number = $1, shipped_at = $2
         WHERE {SOURCE_ROW_NUM_COLUMN} = $3
     """

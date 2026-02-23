@@ -15,5 +15,13 @@ export async function initSidecar(): Promise<void> {
 
   const { invoke } = await import(/* @vite-ignore */ TAURI_CORE);
   const port = await invoke<number>('start_sidecar');
+
+  // Validate the discovered port is in the IANA ephemeral range (CWE-693).
+  // Prevents the frontend from connecting to well-known service ports
+  // if the sidecar reports an unexpected value.
+  if (port < 1024 || port > 65535) {
+    throw new Error(`Sidecar reported invalid port: ${port}`);
+  }
+
   (window as any).__SHIPAGENT_PORT__ = port;
 }

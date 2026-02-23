@@ -891,3 +891,30 @@ class AppSettings(Base):
 
     def __repr__(self) -> str:
         return f"<AppSettings(id={self.id!r}, onboarding={self.onboarding_completed})>"
+
+
+class FilterTokenConsumed(Base):
+    """Persisted consumed filter tokens for replay prevention (CWE-294).
+
+    Tokens are recorded here after first use so they cannot be replayed
+    across process restarts. Expired rows are pruned on startup and
+    periodically during validation.
+
+    Attributes:
+        token_hash: SHA-256 hash of the base64-encoded token string.
+        expires_at: Unix timestamp after which the token is invalid.
+        consumed_at: ISO8601 timestamp when the token was consumed.
+    """
+
+    __tablename__ = "filter_token_consumed"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    expires_at: Mapped[float] = mapped_column(nullable=False)
+    consumed_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+
+    __table_args__ = (Index("idx_ftc_expires_at", "expires_at"),)
+
+    def __repr__(self) -> str:
+        return f"<FilterTokenConsumed(hash={self.token_hash[:12]}...)>"
