@@ -23,7 +23,7 @@ os.environ.setdefault(
     "test-filter-token-secret-with-32chars",
 )
 
-from src.api.main import app
+from src.api.main import _rate_limit_windows, app
 from src.db.connection import get_db
 from src.db.models import Base, Job, JobRow, JobStatus, RowStatus
 
@@ -55,6 +55,14 @@ def mock_agent_processing():
         _noop_process,
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_rate_limiter():
+    """Reset session-creation rate limiter between tests."""
+    _rate_limit_windows.clear()
+    yield
+    _rate_limit_windows.clear()
 
 
 @pytest.fixture

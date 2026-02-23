@@ -195,9 +195,11 @@ class TestOrchestrationAgentIntegration:
 
     @pytest.fixture
     def skip_without_api_key(self):
-        """Skip test if API key not available."""
+        """Skip if agent SDK cannot connect (no key or nested session)."""
         if not os.environ.get("ANTHROPIC_API_KEY"):
             pytest.skip("ANTHROPIC_API_KEY not set")
+        if os.environ.get("CLAUDECODE"):
+            pytest.skip("Cannot run SDK integration tests inside Claude Code session")
 
     @pytest.mark.asyncio
     async def test_agent_lifecycle(self, skip_without_api_key):
