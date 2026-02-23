@@ -17,7 +17,7 @@ import { CustomCommandsSection } from './CustomCommandsSection';
 
 export function SettingsFlyout() {
   const { settingsFlyoutOpen, setSettingsFlyoutOpen } = useAppState();
-  const [openSection, setOpenSection] = React.useState<string | null>('connections');
+  const [openSection, setOpenSection] = React.useState<string | null>(null);
 
   if (!settingsFlyoutOpen) return null;
 

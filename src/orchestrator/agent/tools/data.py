@@ -20,7 +20,6 @@ from src.orchestrator.agent.tools.core import (
     _ok,
     _store_fetched_rows,
     get_data_gateway,
-    get_external_sources_client,
 )
 from src.orchestrator.models.filter_spec import (
     FilterCompilationError,
@@ -742,44 +741,14 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
     return _ok({"platforms": platforms})
 
 
-def _prepare_shopify_import_rows(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Normalize Shopify rows for deterministic import schema.
-
-    Preserves optional keys (including None values) and unions keys across all
-    rows so schema coverage does not depend on the first record.
-    """
-    filtered_rows: list[dict[str, Any]] = []
-    all_keys: set[str] = set()
-
-    for order in orders:
-        row = {
-            key: value
-            for key, value in order.items()
-            if key not in ("items", "raw_data")
-        }
-        filtered_rows.append(row)
-        all_keys.update(row.keys())
-
-    ordered_keys = sorted(all_keys)
-    normalized_rows = [{key: row.get(key) for key in ordered_keys} for row in filtered_rows]
-    normalized_rows.sort(
-        key=lambda row: (
-            str(row.get("order_id", "")),
-            str(row.get("order_number", "")),
-        )
-    )
-    return normalized_rows
-
-
 async def connect_shopify_tool(
     args: dict[str, Any],
     bridge: "EventEmitterBridge | None" = None,
 ) -> dict[str, Any]:
     """Connect to Shopify and import orders as active data source.
 
-    Resolves Shopify credentials via runtime_credentials adapter
-    (DB priority, env fallback). Calls ExternalSourcesMCPClient to
-    connect + fetch, then DataSourceGateway to import records.
+    Delegates to the shared ShopifyActivationService for the full
+    connect → fetch → normalize → import flow.
 
     Args:
         args: Empty dict (credentials resolved via adapter).
@@ -788,57 +757,21 @@ async def connect_shopify_tool(
     Returns:
         MCP tool response dict.
     """
-    from src.services.runtime_credentials import resolve_shopify_credentials
-
-    shopify_creds = resolve_shopify_credentials()
-    if shopify_creds is None:
-        return _err(
-            "Shopify credentials not configured. "
-            "Connect Shopify in Settings or set SHOPIFY_ACCESS_TOKEN "
-            "and SHOPIFY_STORE_DOMAIN environment variables."
-        )
-    access_token = shopify_creds.access_token
-    store_domain = shopify_creds.store_domain
-
-    ext = await get_external_sources_client()
-
-    # Connect
-    connect_result = await ext.connect_platform(
-        platform="shopify",
-        credentials={"access_token": access_token},
-        store_url=f"https://{store_domain}",
+    from src.services.shopify_activation_service import (
+        ShopifyActivationError,
+        activate_shopify_as_data_source,
     )
-    if not connect_result.get("success"):
-        return _err(
-            f"Failed to connect to Shopify: "
-            f"{connect_result.get('error', 'Unknown error')}"
-        )
 
-    # Fetch orders
-    orders_result = await ext.fetch_orders("shopify", limit=250)
-    if not orders_result.get("success"):
-        return _err(
-            f"Failed to fetch Shopify orders: "
-            f"{orders_result.get('error', 'Unknown error')}"
-        )
+    try:
+        result = await activate_shopify_as_data_source()
+    except ShopifyActivationError as exc:
+        return _err(str(exc))
+    except Exception as exc:
+        logger.error("connect_shopify_tool unexpected error: %s", exc)
+        return _err(f"Shopify activation failed: {exc}")
 
-    orders = orders_result.get("orders", [])
-    if not orders:
-        return _err("No orders found in Shopify store.")
-
-    # Deterministic import with stable schema coverage across all rows.
-    flat_orders = _prepare_shopify_import_rows(orders)
-
-    # Import via gateway
-    gw = await get_data_gateway()
-    import_result = await gw.import_from_records(flat_orders, "shopify")
-
-    count = import_result.get("row_count", len(flat_orders))
     return _ok({
-        "message": (
-            f"Connected to Shopify and imported {count} orders "
-            f"as active data source."
-        ),
+        "message": result["message"],
         "platform": "shopify",
-        "orders_imported": count,
+        "orders_imported": result["row_count"],
     })

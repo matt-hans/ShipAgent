@@ -193,6 +193,8 @@ interface AppState {
   setChatSessions: (sessions: ChatSessionSummary[]) => void;
   chatSessionsVersion: number;
   refreshChatSessions: () => void;
+  deleteChatSession: (sessionId: string) => Promise<void>;
+  deleteAllChatSessions: () => Promise<void>;
   activeSessionTitle: string | null;
   setActiveSessionTitle: (title: string | null) => void;
 
@@ -276,6 +278,27 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
 
   const refreshChatSessions = React.useCallback(() => {
     setChatSessionsVersion((v) => v + 1);
+  }, []);
+
+  const deleteChatSession = React.useCallback(async (sessionId: string) => {
+    // Delete in DB first, then update state to match
+    await api.deleteConversation(sessionId);
+    setChatSessions((prev) => {
+      const next = prev.filter((s) => s.id !== sessionId);
+      return next;
+    });
+  }, []);
+
+  const deleteAllChatSessions = React.useCallback(async () => {
+    // Optimistic update — clear all sessions immediately
+    setChatSessions([]);
+    try {
+      await api.deleteAllConversations();
+    } catch (err) {
+      console.error('Failed to delete all sessions:', err);
+      // Re-fetch to restore accurate state on failure
+      setChatSessionsVersion((v) => v + 1);
+    }
   }, []);
 
   // App settings + onboarding state
@@ -448,6 +471,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     setChatSessions,
     chatSessionsVersion,
     refreshChatSessions,
+    deleteChatSession,
+    deleteAllChatSessions,
     activeSessionTitle,
     setActiveSessionTitle,
     providerConnections,

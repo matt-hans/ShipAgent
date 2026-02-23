@@ -248,6 +248,15 @@ def _build_filter_rules(schema_columns: set[str] | None = None) -> str:
             f"- For fulfillment filters: use `{fulfillment_col}` equals "
             "`\"unfulfilled\"` or `\"fulfilled\"` (not null checks)."
         )
+    company_cols = [
+        c for c in ("company_name", "company", "business_name", "ship_to_company") if c in _cols
+    ]
+    if company_cols:
+        cols_str = "` or `".join(company_cols)
+        hint_lines.append(
+            f"- For company/business recipient filters, use `BUSINESS_RECIPIENT` semantic key "
+            f"targeting `{cols_str}` (expands to: column IS NOT BLANK)."
+        )
     _schema_hints = "\n".join(hint_lines)
 
     return f"""

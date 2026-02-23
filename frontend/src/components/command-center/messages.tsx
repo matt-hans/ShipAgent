@@ -35,15 +35,15 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="absolute top-2 right-2 p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity bg-slate-800/80 hover:bg-slate-700 text-slate-400 hover:text-slate-200"
+      className="p-1 rounded opacity-0 group-hover:opacity-100 transition-opacity text-slate-500 hover:text-slate-300"
       title={state === 'error' ? 'Copy failed' : 'Copy to clipboard'}
     >
       {state === 'copied' ? (
-        <CheckIcon className="w-3.5 h-3.5 text-green-400" />
+        <CheckIcon className="w-3 h-3 text-green-400" />
       ) : state === 'error' ? (
         <span className="text-red-400 text-[10px] font-medium px-0.5">!</span>
       ) : (
-        <CopyIcon className="w-3.5 h-3.5" />
+        <CopyIcon className="w-3 h-3" />
       )}
     </button>
   );
@@ -57,17 +57,19 @@ export function SystemMessage({ message }: { message: ConversationMessage }) {
         <PackageIcon className="w-4 h-4 text-cyan-400" />
       </div>
 
-      <div className="flex-1 space-y-2 relative group">
+      <div className="flex-1 space-y-1 group">
         <div className="message-system prose prose-invert max-w-none prose-sm prose-p:leading-relaxed prose-pre:bg-slate-800/50 prose-pre:border prose-pre:border-slate-700/50">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>
             {message.content}
           </ReactMarkdown>
         </div>
-        <CopyButton text={message.content} />
 
-        <span className="text-[10px] font-mono text-slate-500">
-          {formatRelativeTime(message.timestamp)}
-        </span>
+        <div className="flex items-center gap-1">
+          <span className="text-[10px] font-mono text-slate-500">
+            {formatRelativeTime(message.timestamp)}
+          </span>
+          <CopyButton text={message.content} />
+        </div>
       </div>
     </div>
   );
@@ -77,15 +79,17 @@ export function SystemMessage({ message }: { message: ConversationMessage }) {
 export function UserMessage({ message }: { message: ConversationMessage }) {
   return (
     <div className="flex gap-3 justify-end animate-fade-in-up">
-      <div className="flex-1 space-y-2 flex flex-col items-end relative group">
+      <div className="flex-1 space-y-1 flex flex-col items-end group">
         <div className="message-user">
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         </div>
-        <CopyButton text={message.content} />
 
-        <span className="text-[10px] font-mono text-slate-500">
-          {formatRelativeTime(message.timestamp)}
-        </span>
+        <div className="flex items-center gap-1">
+          <CopyButton text={message.content} />
+          <span className="text-[10px] font-mono text-slate-500">
+            {formatRelativeTime(message.timestamp)}
+          </span>
+        </div>
       </div>
     </div>
   );
