@@ -1285,6 +1285,17 @@ async def ship_command_pipeline_tool(
                     except (TypeError, json.JSONDecodeError):
                         parsed = {}
                     row_map[db_row.row_number] = parsed
+
+                # Compute preview integrity hash (TOCTOU protection).
+                # Must match the algorithm in src/api/routes/preview.py
+                # so that confirm_job() accepts agent-created previews.
+                checksum_concat = "|".join(
+                    f"{r.row_number}:{r.row_checksum}" for r in db_rows
+                )
+                job.preview_hash = hashlib.sha256(
+                    checksum_concat.encode()
+                ).hexdigest()
+                db.commit()
             except Exception as e:
                 logger.error(
                     "ship_command_pipeline preview failed for %s: %s", job.id, e
