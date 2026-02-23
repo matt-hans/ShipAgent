@@ -226,10 +226,10 @@ class TestShopifyEnvStatusUsesGateway:
 
         from src.api.main import app
 
-        with patch.dict(os.environ, {}, clear=True):
-            # Explicitly unset the keys
-            os.environ.pop("SHOPIFY_ACCESS_TOKEN", None)
-            os.environ.pop("SHOPIFY_STORE_DOMAIN", None)
+        with patch(
+            "src.services.runtime_credentials.resolve_shopify_credentials",
+            return_value=None,
+        ):
             client = TestClient(app)
             response = client.get("/api/v1/platforms/shopify/env-status")
 

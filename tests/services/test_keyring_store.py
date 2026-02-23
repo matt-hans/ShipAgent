@@ -59,8 +59,14 @@ def test_delete_credential(mock_kr):
 @patch("src.services.keyring_store.keyring")
 def test_get_all_status(mock_kr):
     """get_all_status() returns dict of credential name to bool."""
-    mock_kr.get_password.side_effect = lambda svc, key: "val" if key == "ANTHROPIC_API_KEY" else None
-    store = KeyringStore()
-    status = store.get_all_status()
-    assert status["ANTHROPIC_API_KEY"] is True
-    assert status["UPS_CLIENT_ID"] is False
+    from src.services.keyring_store import MANAGED_CREDENTIALS
+
+    mock_kr.get_password.side_effect = (
+        lambda svc, key: "val" if key == "ANTHROPIC_API_KEY" else None
+    )
+    clean_env = {key: "" for key in MANAGED_CREDENTIALS}
+    with patch.dict("os.environ", clean_env):
+        store = KeyringStore()
+        status = store.get_all_status()
+        assert status["ANTHROPIC_API_KEY"] is True
+        assert status["UPS_CLIENT_ID"] is False
