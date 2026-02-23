@@ -901,3 +901,66 @@ class TestPipelineFilterSpec:
         is_error, content = _parse_tool_result(result)
         assert is_error is False
         assert "compiled_filter" not in content
+
+    @pytest.mark.asyncio
+    async def test_pipeline_applies_service_code_regardless_of_command_text(self):
+        """service_code should be applied even when command has no service alias."""
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        bridge = EventEmitterBridge()
+        # Simulate refinement: cached filter from original command
+        bridge.last_resolved_filter_command = "ship unfulfilled orders to northeast"
+        bridge.last_resolved_filter_spec = _make_resolved_spec()
+        bridge.last_resolved_filter_schema_signature = "test_sig"
+
+        engine = _mock_batch_engine()
+        p = _pipeline_patches(gw, engine)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool(
+                {
+                    # Refinement command — no service alias in text
+                    "command": "ship unfulfilled orders to northeast",
+                    "service_code": "03",
+                },
+                bridge=bridge,
+            )
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "preview_ready"
+        # Verify engine.preview was called with service_code="03"
+        preview_call = engine.preview.call_args
+        assert preview_call.kwargs.get("service_code") == "03"
+
+    @pytest.mark.asyncio
+    async def test_pipeline_skips_mismatch_checks_for_cached_filter_spec(self):
+        """Refinement via cached filter_spec should skip command mismatch checks."""
+        from src.orchestrator.agent.tools.core import EventEmitterBridge
+        from src.orchestrator.agent.tools.pipeline import ship_command_pipeline_tool
+
+        gw = _mock_gateway()
+        bridge = EventEmitterBridge()
+        # Original command had region; refinement command does not
+        bridge.last_resolved_filter_command = "ship orders to northeast"
+        bridge.last_resolved_filter_spec = _make_northeast_resolved_spec()
+        bridge.last_resolved_filter_schema_signature = "test_sig"
+
+        p = _pipeline_patches(gw)
+
+        with p[0], p[1], p[2], p[3], p[4], p[5], p[6]:
+            result = await ship_command_pipeline_tool(
+                {
+                    # Refinement: same command, different service
+                    "command": "ship orders to northeast",
+                    "service_code": "03",
+                },
+                bridge=bridge,
+            )
+
+        is_error, content = _parse_tool_result(result)
+        # Should succeed — mismatch checks skipped for cached spec
+        assert is_error is False
+        assert content["status"] == "preview_ready"

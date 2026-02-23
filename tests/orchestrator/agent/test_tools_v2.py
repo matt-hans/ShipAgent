@@ -425,8 +425,8 @@ async def test_ship_command_pipeline_applies_explicit_service_override_to_rows()
 
 
 @pytest.mark.asyncio
-async def test_ship_command_pipeline_ignores_implicit_service_code_default():
-    """Commands without explicit service should use row-level service data."""
+async def test_ship_command_pipeline_always_applies_service_code():
+    """service_code override is always applied when provided, regardless of command text."""
     fetched_rows = [
         {"order_id": "1", "service_code": "02"},
         {"order_id": "2", "service_code": "12"},
@@ -480,7 +480,6 @@ async def test_ship_command_pipeline_ignores_implicit_service_code_default():
         result = await ship_command_pipeline_tool(
             {
                 "command": "ship all orders",
-                # Simulates agent filling an implicit default even though user did not.
                 "service_code": "03",
                 "all_rows": True,
             }
@@ -488,11 +487,12 @@ async def test_ship_command_pipeline_ignores_implicit_service_code_default():
 
     assert result["isError"] is False
     assert captured_row_data
-    assert json.loads(captured_row_data[0]["order_data"])["service_code"] == "02"
-    assert json.loads(captured_row_data[1]["order_data"])["service_code"] == "12"
+    # service_code override "03" should be applied to all rows
+    assert json.loads(captured_row_data[0]["order_data"])["service_code"] == "03"
+    assert json.loads(captured_row_data[1]["order_data"])["service_code"] == "03"
 
     preview_kwargs = MockEngine.return_value.preview.await_args.kwargs
-    assert preview_kwargs["service_code"] is None
+    assert preview_kwargs["service_code"] == "03"
 
 
 @pytest.mark.asyncio

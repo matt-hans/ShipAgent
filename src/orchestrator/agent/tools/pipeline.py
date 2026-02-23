@@ -834,19 +834,12 @@ async def ship_command_pipeline_tool(
     raw_service_code = args.get("service_code")
     service_code: str | None = None
     if raw_service_code:
-        resolved = translate_service_name(str(raw_service_code))
-        if _command_explicitly_requests_service(validation_command):
-            service_code = resolved
-            logger.info(
-                "ship_command_pipeline applying explicit service override=%s",
-                service_code,
-            )
-        else:
-            logger.info(
-                "ship_command_pipeline ignoring implicit service_code=%s for "
-                "command without explicit service; using row-level service data",
-                raw_service_code,
-            )
+        service_code = translate_service_name(str(raw_service_code))
+        logger.info(
+            "ship_command_pipeline applying service override=%s (raw=%s)",
+            service_code,
+            raw_service_code,
+        )
 
     raw_packaging = args.get("packaging_type")
     packaging_override: str | None = None
@@ -931,142 +924,147 @@ async def ship_command_pipeline_tool(
         except Exception as e:
             return _err(f"Invalid filter_spec structure: {e}")
 
-        expected_region = _expected_region_from_command(validation_command)
-        if expected_region and not _spec_includes_region(spec, expected_region):
-            return _err(
-                f"Filter mismatch: command references region '{expected_region}' "
-                "but filter_spec does not include a matching state filter. "
-                "Re-run resolve_filter_intent with the correct region semantic key."
-            )
-        if _command_requests_business_filter(validation_command) and not _spec_includes_business_filter(spec):
-            return _err(
-                "Filter mismatch: command requests companies/business recipients, "
-                "but filter_spec does not include a business/company predicate. "
-                "Re-run resolve_filter_intent and include BUSINESS_RECIPIENT."
-            )
-        expected_states = _expected_state_codes_from_command(validation_command)
-        state_column = _resolve_state_column(schema_columns)
-        if expected_states and not state_column:
-            return _err(
-                "Filter mismatch: command includes explicit state constraints "
-                f"{sorted(expected_states)}, but this data source has no recognized "
-                "state column. Reconnect source and re-run resolve_filter_intent."
-            )
-        if expected_states and state_column:
-            spec_states = _spec_state_codes(spec, state_column)
-            if spec_states and not expected_states.issubset(spec_states):
+        # Skip mismatch checks when reusing a cached filter_spec for
+        # refinement — the spec was already validated during the original call.
+        # Re-running checks against a refinement command (different wording)
+        # produces false positives.
+        if not used_cached_filter_spec:
+            expected_region = _expected_region_from_command(validation_command)
+            if expected_region and not _spec_includes_region(spec, expected_region):
                 return _err(
-                    "Filter mismatch: command constrains states to "
-                    f"{sorted(expected_states)}, but filter_spec uses "
-                    f"{sorted(spec_states)}. Re-run resolve_filter_intent with "
-                    "the exact state set."
+                    f"Filter mismatch: command references region '{expected_region}' "
+                    "but filter_spec does not include a matching state filter. "
+                    "Re-run resolve_filter_intent with the correct region semantic key."
                 )
-            if not spec_states:
-                _append_state_filter(spec, state_column, expected_states)
-                filter_spec_raw = spec.model_dump()
-                enforced_state_codes = sorted(expected_states)
-                logger.info(
-                    "ship_command_pipeline enforced state set=%s on column=%s",
-                    enforced_state_codes,
-                    state_column,
+            if _command_requests_business_filter(validation_command) and not _spec_includes_business_filter(spec):
+                return _err(
+                    "Filter mismatch: command requests companies/business recipients, "
+                    "but filter_spec does not include a business/company predicate. "
+                    "Re-run resolve_filter_intent and include BUSINESS_RECIPIENT."
                 )
+            expected_states = _expected_state_codes_from_command(validation_command)
+            state_column = _resolve_state_column(schema_columns)
+            if expected_states and not state_column:
+                return _err(
+                    "Filter mismatch: command includes explicit state constraints "
+                    f"{sorted(expected_states)}, but this data source has no recognized "
+                    "state column. Reconnect source and re-run resolve_filter_intent."
+                )
+            if expected_states and state_column:
+                spec_states = _spec_state_codes(spec, state_column)
+                if spec_states and not expected_states.issubset(spec_states):
+                    return _err(
+                        "Filter mismatch: command constrains states to "
+                        f"{sorted(expected_states)}, but filter_spec uses "
+                        f"{sorted(spec_states)}. Re-run resolve_filter_intent with "
+                        "the exact state set."
+                    )
+                if not spec_states:
+                    _append_state_filter(spec, state_column, expected_states)
+                    filter_spec_raw = spec.model_dump()
+                    enforced_state_codes = sorted(expected_states)
+                    logger.info(
+                        "ship_command_pipeline enforced state set=%s on column=%s",
+                        enforced_state_codes,
+                        state_column,
+                    )
 
-        expected_lower, expected_upper = _requested_total_bounds_from_command(
-            validation_command
-        )
-        total_column = _resolve_total_column(schema_columns)
-        if (expected_lower or expected_upper) and not total_column:
-            return _err(
-                "Filter mismatch: command includes total/amount bounds, but this "
-                "data source has no recognized total column. Re-run "
-                "resolve_filter_intent with a source that includes totals."
+            expected_lower, expected_upper = _requested_total_bounds_from_command(
+                validation_command
             )
-        if (expected_lower or expected_upper) and total_column:
-            actual_lower, actual_upper = _spec_total_bounds(spec, total_column)
-            if (
-                expected_lower
-                and actual_lower
-                and (
-                    abs(expected_lower[0] - actual_lower[0]) > 1e-9
-                    or expected_lower[1] != actual_lower[1]
-                )
-            ):
+            total_column = _resolve_total_column(schema_columns)
+            if (expected_lower or expected_upper) and not total_column:
                 return _err(
-                    "Filter mismatch: command lower total bound is "
-                    f"{expected_lower[0]}, but filter_spec uses {actual_lower[0]}. "
-                    "Re-run resolve_filter_intent with the exact price range."
+                    "Filter mismatch: command includes total/amount bounds, but this "
+                    "data source has no recognized total column. Re-run "
+                    "resolve_filter_intent with a source that includes totals."
                 )
-            if (
-                expected_upper
-                and actual_upper
-                and (
-                    abs(expected_upper[0] - actual_upper[0]) > 1e-9
-                    or expected_upper[1] != actual_upper[1]
-                )
-            ):
-                return _err(
-                    "Filter mismatch: command upper total bound is "
-                    f"{expected_upper[0]}, but filter_spec uses {actual_upper[0]}. "
-                    "Re-run resolve_filter_intent with the exact price range."
-                )
-            if (
-                (expected_lower and not actual_lower)
-                or (expected_upper and not actual_upper)
-            ):
-                _append_total_bounds_filter(
-                    spec,
-                    total_column,
-                    expected_lower if not actual_lower else None,
-                    expected_upper if not actual_upper else None,
-                )
-                filter_spec_raw = spec.model_dump()
-                enforced_total_bounds = {
-                    "column": total_column,
-                    "lower": expected_lower[0] if expected_lower else None,
-                    "upper": expected_upper[0] if expected_upper else None,
-                }
-                logger.info(
-                    "ship_command_pipeline enforced total bounds=%s on column=%s",
-                    enforced_total_bounds,
-                    total_column,
-                )
+            if (expected_lower or expected_upper) and total_column:
+                actual_lower, actual_upper = _spec_total_bounds(spec, total_column)
+                if (
+                    expected_lower
+                    and actual_lower
+                    and (
+                        abs(expected_lower[0] - actual_lower[0]) > 1e-9
+                        or expected_lower[1] != actual_lower[1]
+                    )
+                ):
+                    return _err(
+                        "Filter mismatch: command lower total bound is "
+                        f"{expected_lower[0]}, but filter_spec uses {actual_lower[0]}. "
+                        "Re-run resolve_filter_intent with the exact price range."
+                    )
+                if (
+                    expected_upper
+                    and actual_upper
+                    and (
+                        abs(expected_upper[0] - actual_upper[0]) > 1e-9
+                        or expected_upper[1] != actual_upper[1]
+                    )
+                ):
+                    return _err(
+                        "Filter mismatch: command upper total bound is "
+                        f"{expected_upper[0]}, but filter_spec uses {actual_upper[0]}. "
+                        "Re-run resolve_filter_intent with the exact price range."
+                    )
+                if (
+                    (expected_lower and not actual_lower)
+                    or (expected_upper and not actual_upper)
+                ):
+                    _append_total_bounds_filter(
+                        spec,
+                        total_column,
+                        expected_lower if not actual_lower else None,
+                        expected_upper if not actual_upper else None,
+                    )
+                    filter_spec_raw = spec.model_dump()
+                    enforced_total_bounds = {
+                        "column": total_column,
+                        "lower": expected_lower[0] if expected_lower else None,
+                        "upper": expected_upper[0] if expected_upper else None,
+                    }
+                    logger.info(
+                        "ship_command_pipeline enforced total bounds=%s on column=%s",
+                        enforced_total_bounds,
+                        total_column,
+                    )
 
-        expected_fulfillment = _requested_fulfillment_status_from_command(validation_command)
-        fulfillment_column = _resolve_fulfillment_status_column(schema_columns)
-        if expected_fulfillment and not fulfillment_column:
-            return _err(
-                "Filter mismatch: command requests fulfillment status filtering, "
-                "but this data source has no recognized fulfillment_status column."
-            )
-        if expected_fulfillment and fulfillment_column:
-            if _spec_conflicts_with_expected_fulfillment_status(
-                spec,
-                fulfillment_column,
-                expected_fulfillment,
-            ):
+            expected_fulfillment = _requested_fulfillment_status_from_command(validation_command)
+            fulfillment_column = _resolve_fulfillment_status_column(schema_columns)
+            if expected_fulfillment and not fulfillment_column:
                 return _err(
-                    "Filter mismatch: command requests "
-                    f"'{expected_fulfillment}' orders, but filter_spec enforces a "
-                    "different fulfillment_status. Re-run resolve_filter_intent "
-                    "with the exact fulfillment status."
+                    "Filter mismatch: command requests fulfillment status filtering, "
+                    "but this data source has no recognized fulfillment_status column."
                 )
-            if not _spec_includes_expected_fulfillment_status(
-                spec,
-                fulfillment_column,
-                expected_fulfillment,
-            ):
-                _append_fulfillment_status_condition(
+            if expected_fulfillment and fulfillment_column:
+                if _spec_conflicts_with_expected_fulfillment_status(
                     spec,
                     fulfillment_column,
                     expected_fulfillment,
-                )
-                filter_spec_raw = spec.model_dump()
-                enforced_fulfillment_status = expected_fulfillment
-                logger.info(
-                    "ship_command_pipeline enforced fulfillment_status=%s on column=%s",
-                    expected_fulfillment,
+                ):
+                    return _err(
+                        "Filter mismatch: command requests "
+                        f"'{expected_fulfillment}' orders, but filter_spec enforces a "
+                        "different fulfillment_status. Re-run resolve_filter_intent "
+                        "with the exact fulfillment status."
+                    )
+                if not _spec_includes_expected_fulfillment_status(
+                    spec,
                     fulfillment_column,
-                )
+                    expected_fulfillment,
+                ):
+                    _append_fulfillment_status_condition(
+                        spec,
+                        fulfillment_column,
+                        expected_fulfillment,
+                    )
+                    filter_spec_raw = spec.model_dump()
+                    enforced_fulfillment_status = expected_fulfillment
+                    logger.info(
+                        "ship_command_pipeline enforced fulfillment_status=%s on column=%s",
+                        expected_fulfillment,
+                        fulfillment_column,
+                    )
 
         try:
             compiled = compile_filter_spec(
