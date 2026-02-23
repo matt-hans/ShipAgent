@@ -24,7 +24,9 @@ from src.services.filter_constants import BUSINESS_PREDICATES, REGIONS
 
 # International service codes for labeling
 _INTERNATIONAL_SERVICES = frozenset({"07", "08", "11", "54", "65"})
-_MAX_SCHEMA_SAMPLES = 5
+_MAX_SCHEMA_SAMPLES = 3
+# Cap total sample characters embedded in system prompt to limit injection surface (CWE-94).
+_MAX_TOTAL_SAMPLE_CHARS = 500
 MAX_PROMPT_CONTACTS = 20
 
 FILE_IMPORT_INSTRUCTIONS = """
@@ -97,9 +99,9 @@ def _build_contacts_section(contacts: list[dict]) -> str:
     lines.append("Available contacts:")
 
     for c in contacts[:MAX_PROMPT_CONTACTS]:
-        handle = c.get("handle", "unknown")
-        city = c.get("city", "").replace("\n", " ").replace("\r", "")[:50]
-        state = c.get("state_province", "").replace("\n", " ").replace("\r", "")[:20]
+        handle = _sanitize_for_prompt(c.get("handle", "unknown"), max_len=30)
+        city = _sanitize_for_prompt(c.get("city", ""), max_len=50)
+        state = _sanitize_for_prompt(c.get("state_province", ""), max_len=20)
 
         # Build roles list
         roles = []
@@ -178,18 +180,25 @@ def _build_schema_section(
     lines.append("")
     lines.append("Columns:")
     max_chars = _resolve_sample_char_limit()
+    total_sample_chars = 0
+    samples_budget_exhausted = False
     for col in source_info.columns:
         nullable = "nullable" if col.nullable else "not null"
         col_display = _sanitize_for_prompt(col.name)
         samples = column_samples.get(col.name) if column_samples else None
-        if samples:
+        if samples and not samples_budget_exhausted:
             sample_str = ", ".join(
                 _sanitize_for_prompt(
                     _format_schema_sample(sample, max_chars), max_len=max_chars
                 )
                 for sample in samples[:_MAX_SCHEMA_SAMPLES]
             )
-            lines.append(f"  - {col_display} ({col.type}, {nullable}) — samples: {sample_str}")
+            total_sample_chars += len(sample_str)
+            if total_sample_chars > _MAX_TOTAL_SAMPLE_CHARS:
+                samples_budget_exhausted = True
+                lines.append(f"  - {col_display} ({col.type}, {nullable})")
+            else:
+                lines.append(f"  - {col_display} ({col.type}, {nullable}) — samples: {sample_str}")
         else:
             lines.append(f"  - {col_display} ({col.type}, {nullable})")
     return "\n".join(lines)

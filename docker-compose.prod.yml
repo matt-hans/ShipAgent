@@ -18,6 +18,8 @@ services:
     volumes:
       - shipagent-data:/app/data
       - shipagent-labels:/app/labels
+    networks:
+      - shipagent-internal
     user: "1000:1000"
     read_only: true
     tmpfs:
@@ -40,3 +42,8 @@ volumes:
     driver: local
   shipagent-labels:
     driver: local
+
+networks:
+  shipagent-internal:
+    driver: bridge
+    internal: true

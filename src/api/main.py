@@ -6,6 +6,7 @@ when available.
 """
 
 import asyncio
+import hmac as _hmac
 import json as _json
 import logging
 import os
@@ -35,6 +36,7 @@ from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
 from src.api.middleware.auth import (  # noqa: E402
+    get_expected_api_key,
     maybe_require_api_key,
     validate_api_key_strength,
 )
@@ -944,16 +946,39 @@ app.include_router(commands.router, prefix="/api/v1")
 app.include_router(settings.router, prefix="/api/v1")
 
 
-@app.get("/health")
-def health_check() -> dict:
-    """Health check endpoint with system status.
+def _is_request_authenticated(request: Request) -> bool:
+    """Check if the request carries a valid API key (CWE-200 mitigation).
 
-    Returns all fields required by the CLI HealthStatus contract:
-    status, version, uptime_seconds, active_jobs, watchdog_active, watch_folders.
+    Used by /health and /readyz to gate detailed diagnostics. When no API key
+    is configured (single-user desktop mode), returns True so diagnostics are
+    still available.
+
+    Args:
+        request: Incoming HTTP request.
 
     Returns:
-        Dictionary with health status and metrics.
+        True if authenticated or auth is disabled.
     """
+    expected = get_expected_api_key()
+    if not expected:
+        return True  # Auth disabled — desktop single-user mode
+    provided = request.headers.get("X-API-Key", "")
+    return bool(provided and _hmac.compare_digest(provided, expected))
+
+
+@app.get("/health")
+def health_check(request: Request) -> dict:
+    """Health check endpoint with system status (CWE-200 hardened).
+
+    Returns detailed diagnostics only when authenticated. When
+    unauthenticated (and API key is configured), returns only the
+    binary status to prevent information disclosure.
+
+    Returns:
+        Dictionary with health status (and metrics if authenticated).
+    """
+    is_authed = _is_request_authenticated(request)
+
     from src.db.connection import get_db as _get_db
     from src.db.models import Job, JobStatus
 
@@ -984,23 +1009,33 @@ def health_check() -> dict:
     if _watchdog_service and hasattr(_watchdog_service, "_configs"):
         watch_folders = [c.path for c in _watchdog_service._configs]
 
-    return {
-        "status": "healthy",
-        "version": version,
-        "uptime_seconds": uptime,
-        "active_jobs": active_jobs,
-        "watchdog_active": watchdog_active,
-        "watch_folders": watch_folders,
-    }
+    if is_authed:
+        return {
+            "status": "healthy",
+            "version": version,
+            "uptime_seconds": uptime,
+            "active_jobs": active_jobs,
+            "watchdog_active": watchdog_active,
+            "watch_folders": watch_folders,
+        }
+
+    # Unauthenticated: return only binary status (CWE-200)
+    return {"status": "healthy"}
 
 
 @app.get("/readyz")
-async def readiness_check():
-    """Dependency-aware readiness check for local/container deployments."""
+async def readiness_check(request: Request):
+    """Dependency-aware readiness check (CWE-200 hardened).
+
+    Returns full diagnostic details only when authenticated. Unauthenticated
+    requests receive only the binary status to prevent infrastructure
+    information disclosure.
+    """
     from sqlalchemy import text
 
     from src.db.connection import get_db_context
 
+    is_authed = _is_request_authenticated(request)
     uptime = int(_time.time() - _startup_time) if _startup_time else 0
     checks: dict[str, dict[str, Any]] = {}
 
@@ -1011,18 +1046,23 @@ async def readiness_check():
         checks["database"] = {"status": "ok"}
     except Exception as exc:
         logger.error("Readiness check: database error: %s", exc, exc_info=True)
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "not_ready",
-                "uptime_seconds": uptime,
-                "checks": {
-                    "database": {
-                        "status": "error",
-                        "message": "Database connectivity check failed",
+        if is_authed:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "uptime_seconds": uptime,
+                    "checks": {
+                        "database": {
+                            "status": "error",
+                            "message": "Database connectivity check failed",
+                        },
                     },
                 },
-            },
+            )
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready"},
         )
 
     filter_secret = os.environ.get("FILTER_TOKEN_SECRET", "")
@@ -1073,11 +1113,15 @@ async def readiness_check():
     except Exception:
         checks["mcp_gateways"] = {"status": "check_failed"}
 
-    return {
-        "status": status,
-        "uptime_seconds": uptime,
-        "checks": checks,
-    }
+    if is_authed:
+        return {
+            "status": status,
+            "uptime_seconds": uptime,
+            "checks": checks,
+        }
+
+    # Unauthenticated: binary status only (CWE-200)
+    return {"status": "ok" if status == "ready" else "error"}
 
 
 @app.get("/api")
