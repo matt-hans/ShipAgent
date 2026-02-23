@@ -710,6 +710,73 @@ async def test_ship_command_pipeline_uses_emit_preview_ready_helper():
     mock_emit.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_ship_command_pipeline_sets_preview_hash():
+    """Pipeline computes and stores preview_hash on the job after preview.
+
+    This is critical for the confirm_job endpoint's TOCTOU check.
+    Without preview_hash, the confirm route returns 400.
+    """
+    import hashlib
+
+    fetched_rows = [{"order_id": "1", "service_code": "03"}]
+    preview_result = {
+        "job_id": "job-hash",
+        "total_rows": 1,
+        "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
+        "total_estimated_cost_cents": 1000,
+    }
+
+    mock_db_row = MagicMock()
+    mock_db_row.row_number = 1
+    mock_db_row.row_checksum = "abc123"
+    mock_db_row.order_data = json.dumps({"service_code": "03"})
+
+    with (
+        patch(
+            "src.orchestrator.agent.tools.pipeline.get_data_gateway"
+        ) as mock_gw_fn,
+        patch(
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch(
+            "src.services.ups_payload_builder.build_shipper",
+            return_value={"name": "Store"},
+        ),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
+    ):
+        mock_gw = AsyncMock()
+        mock_gw.get_rows_by_filter.return_value = fetched_rows
+        mock_gw_fn.return_value = mock_gw
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-hash"
+        mock_job.preview_hash = None
+        MockJS.return_value.create_job.return_value = mock_job
+        MockJS.return_value.get_rows.return_value = [mock_db_row]
+        MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
+
+        result = await ship_command_pipeline_tool(
+            {"command": "Ship all orders", "all_rows": True}
+        )
+
+    assert result["isError"] is False
+    # Verify preview_hash was set on the job
+    expected_concat = f"{mock_db_row.row_number}:{mock_db_row.row_checksum}"
+    expected_hash = hashlib.sha256(expected_concat.encode()).hexdigest()
+    assert mock_job.preview_hash == expected_hash
+    # Verify db.commit() was called (to persist the hash)
+    mock_db.commit.assert_called()
+
+
 # ---------------------------------------------------------------------------
 # get_platform_status_tool
 # ---------------------------------------------------------------------------
