@@ -220,6 +220,7 @@ class OrchestrationAgent:
             allowed_tools=allowed_tools,
             hooks=create_hook_matchers(
                 interactive_shipping=self._interactive_shipping,
+                bridge=self.emitter_bridge,
             ),
             # Enable real-time token streaming via StreamEvent
             include_partial_messages=True,

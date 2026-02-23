@@ -1077,3 +1077,190 @@ class TestHookExactMatching:
             None,
         )
         assert result == {}, "Substring void_shipment tool names must pass through"
+
+
+class TestCreateFilterSpecHook:
+    """Tests for create_filter_spec_hook — bridge-aware same-session refinement.
+
+    Verifies that the factory-produced hook:
+    - Allows refinement calls where the agent re-passes a consumed token that
+      matches the session bridge cache (same-session reuse, not a replay).
+    - Strips filter_spec from tool_input so the pipeline cache path activates.
+    - Still falls through to full validation for fresh/unknown tokens.
+    - Correctly handles the no-bridge case (falls through to stateless validation).
+    - Protects against cross-session replay (different bridge cache, same token).
+    """
+
+    def _make_bridge_with_token(self, token: str) -> object:
+        """Return a mock bridge with last_resolved_filter_spec set to include token."""
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            last_resolved_filter_spec={"resolution_token": token, "status": "RESOLVED"},
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_bridge_falls_through_to_stateless_validation(self):
+        """Without a bridge, hook behaves like validate_filter_spec_on_pipeline."""
+        from src.orchestrator.agent.hooks import create_filter_spec_hook
+
+        hook = create_filter_spec_hook(bridge=None)
+        # No filter_spec in args → allow (stateless path)
+        result = await hook(
+            {"tool_name": "ship_command_pipeline", "tool_input": {}},
+            "test-id",
+            None,
+        )
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_no_filter_spec_in_args_allowed(self):
+        """When no filter_spec is present, hook allows (cache path)."""
+        from src.orchestrator.agent.hooks import create_filter_spec_hook
+
+        bridge = self._make_bridge_with_token("some-token")
+        hook = create_filter_spec_hook(bridge=bridge)
+        result = await hook(
+            {"tool_name": "ship_command_pipeline", "tool_input": {"command": "ship all"}},
+            "test-id",
+            None,
+        )
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_all_rows_path_allowed(self):
+        """all_rows=true path is allowed without filter_spec validation."""
+        from src.orchestrator.agent.hooks import create_filter_spec_hook
+
+        bridge = self._make_bridge_with_token("some-token")
+        hook = create_filter_spec_hook(bridge=bridge)
+        result = await hook(
+            {"tool_name": "ship_command_pipeline", "tool_input": {"all_rows": True}},
+            "test-id",
+            None,
+        )
+        assert result == {}
+
+    @pytest.mark.asyncio
+    async def test_same_session_consumed_token_strips_filter_spec(self):
+        """Consumed token matching bridge cache: strips filter_spec, allows (refinement)."""
+        import hashlib
+        from unittest.mock import patch
+
+        from src.orchestrator.agent import hooks
+        from src.orchestrator.agent.hooks import create_filter_spec_hook
+
+        token = "my-session-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+        bridge = self._make_bridge_with_token(token)
+        hook = create_filter_spec_hook(bridge=bridge)
+
+        tool_input = {
+            "command": "ship all",
+            "filter_spec": {"resolution_token": token, "status": "RESOLVED"},
+        }
+
+        # Simulate token already consumed in-memory
+        with patch.dict(hooks.__dict__, {
+            "_used_filter_tokens": {token_hash},
+        }):
+            result = await hook(
+                {"tool_name": "ship_command_pipeline", "tool_input": tool_input},
+                "test-id",
+                None,
+            )
+
+        # Should allow (empty dict = allow)
+        assert result == {}
+        # filter_spec should have been stripped from tool_input
+        assert "filter_spec" not in tool_input
+
+    @pytest.mark.asyncio
+    async def test_cross_session_consumed_token_falls_through_to_denial(self):
+        """Consumed token NOT matching bridge cache → falls through to full validation."""
+        import hashlib
+        from unittest.mock import patch
+
+        from src.orchestrator.agent import hooks
+        from src.orchestrator.agent.hooks import create_filter_spec_hook
+
+        token = "attacker-replayed-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+        # Bridge has a DIFFERENT token (different session)
+        bridge = self._make_bridge_with_token("legitimate-session-token")
+        hook = create_filter_spec_hook(bridge=bridge)
+
+        tool_input = {
+            "command": "ship all",
+            "filter_spec": {"resolution_token": token, "status": "RESOLVED"},
+        }
+
+        # Simulate token consumed (from another session)
+        with patch.dict(hooks.__dict__, {
+            "_used_filter_tokens": {token_hash},
+        }):
+            result = await hook(
+                {"tool_name": "ship_command_pipeline", "tool_input": tool_input},
+                "test-id",
+                None,
+            )
+
+        # Should fall through to full validation which will deny (HMAC will fail)
+        # The replay denial path in validate_filter_spec_on_pipeline kicks in
+        decision = result.get("hookSpecificOutput", {}).get("permissionDecision", "")
+        assert decision == "deny", "Cross-session replay must be denied"
+
+    @pytest.mark.asyncio
+    async def test_no_bridge_cache_consumed_token_falls_through(self):
+        """Consumed token with bridge having no cache → falls through to full validation."""
+        import hashlib
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from src.orchestrator.agent import hooks
+        from src.orchestrator.agent.hooks import create_filter_spec_hook
+
+        token = "replayed-token"
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+        # Bridge exists but has no last_resolved_filter_spec
+        bridge = SimpleNamespace(last_resolved_filter_spec=None)
+        hook = create_filter_spec_hook(bridge=bridge)
+
+        tool_input = {
+            "filter_spec": {"resolution_token": token, "status": "RESOLVED"},
+        }
+
+        with patch.dict(hooks.__dict__, {
+            "_used_filter_tokens": {token_hash},
+        }):
+            result = await hook(
+                {"tool_name": "ship_command_pipeline", "tool_input": tool_input},
+                "test-id",
+                None,
+            )
+
+        decision = result.get("hookSpecificOutput", {}).get("permissionDecision", "")
+        assert decision == "deny", "No bridge cache + consumed token must be denied"
+
+    def test_create_hook_matchers_accepts_bridge_param(self):
+        """create_hook_matchers accepts optional bridge kwarg."""
+        from types import SimpleNamespace
+
+        bridge = SimpleNamespace(last_resolved_filter_spec=None)
+        matchers = create_hook_matchers(bridge=bridge)
+        assert "PreToolUse" in matchers
+        assert "PostToolUse" in matchers
+
+    def test_create_hook_matchers_without_bridge_still_works(self):
+        """create_hook_matchers without bridge is backward compatible."""
+        matchers = create_hook_matchers()
+        assert "PreToolUse" in matchers
+        # Verify the filter_spec hook is attached to ship_command_pipeline
+        pipeline_matchers = [
+            m for m in matchers["PreToolUse"]
+            if m.matcher == "ship_command_pipeline"
+        ]
+        assert len(pipeline_matchers) == 1
+        assert len(pipeline_matchers[0].hooks) == 2  # deny_raw_sql + filter_spec_hook
