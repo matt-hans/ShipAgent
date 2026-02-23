@@ -224,16 +224,15 @@ def _filter_spec_resolved() -> dict:
 
 
 class TestValidateFilterSpecOnPipeline:
-    """Validate filter_spec and Tier-B token on pipeline and fetch_rows."""
+    """Validate simplified filter_spec structural check on pipeline and fetch_rows.
 
-    @pytest.fixture(autouse=True)
-    def _set_token_secret(self, monkeypatch):
-        """Set FILTER_TOKEN_SECRET for token operations."""
-        monkeypatch.setenv("FILTER_TOKEN_SECRET", _TEST_SECRET)
+    Token HMAC/replay/expiry enforcement removed for prototype simplicity.
+    Only validates that filter_spec has a root dict.
+    """
 
     @pytest.mark.anyio
-    async def test_denies_tier_b_missing_token(self):
-        """Denies pipeline with NEEDS_CONFIRMATION but no resolution_token."""
+    async def test_allows_filter_spec_with_root(self):
+        """Allows filter_spec with root field regardless of token."""
         spec = _filter_spec_with_confirmation()
         result = await validate_filter_spec_on_pipeline(
             {
@@ -243,15 +242,12 @@ class TestValidateFilterSpecOnPipeline:
             tool_use_id="test-8",
             context=None,
         )
-        assert _is_denied(result)
-        assert "token" in _denial_reason(result).lower()
+        assert not _is_denied(result)
 
     @pytest.mark.anyio
-    async def test_denies_expired_token(self):
-        """Denies pipeline with expired token."""
-        spec = _filter_spec_with_confirmation()
-        # Create a token that expired 100 seconds ago
-        spec["resolution_token"] = _make_valid_token(ttl=-100)
+    async def test_allows_resolved_spec_without_token(self):
+        """Allows RESOLVED spec even without resolution_token (simplified)."""
+        spec = _filter_spec_resolved()
         result = await validate_filter_spec_on_pipeline(
             {
                 "tool_name": "ship_command_pipeline",
@@ -260,157 +256,36 @@ class TestValidateFilterSpecOnPipeline:
             tool_use_id="test-9",
             context=None,
         )
-        assert _is_denied(result)
+        assert not _is_denied(result)
 
     @pytest.mark.anyio
-    async def test_denies_tampered_signature(self):
-        """Denies pipeline with tampered HMAC signature."""
-        spec = _filter_spec_with_confirmation()
-        token = _make_valid_token()
-        # Tamper: decode, change signature, re-encode
-        decoded = json.loads(base64.urlsafe_b64decode(token))
-        decoded["signature"] = "tampered" + decoded["signature"][8:]
-        spec["resolution_token"] = base64.urlsafe_b64encode(
-            json.dumps(decoded).encode()
-        ).decode()
+    async def test_denies_filter_spec_without_root(self):
+        """Denies filter_spec missing root field."""
         result = await validate_filter_spec_on_pipeline(
             {
                 "tool_name": "ship_command_pipeline",
-                "tool_input": {"filter_spec": spec},
+                "tool_input": {"filter_spec": {"status": "RESOLVED"}},
             },
             tool_use_id="test-10",
             context=None,
         )
         assert _is_denied(result)
+        assert "root" in _denial_reason(result).lower()
 
     @pytest.mark.anyio
-    async def test_denies_spec_hash_mismatch(self):
-        """Denies pipeline with token whose resolved_spec_hash doesn't match."""
-        spec = _filter_spec_with_confirmation()
-        spec["resolution_token"] = _make_valid_token(spec_hash="wrong_hash")
-        result = await validate_filter_spec_on_pipeline(
-            {
-                "tool_name": "ship_command_pipeline",
-                "tool_input": {"filter_spec": spec},
-            },
-            tool_use_id="test-11",
-            context=None,
-        )
-        assert _is_denied(result)
-
-    @pytest.mark.anyio
-    async def test_denies_schema_signature_mismatch(self):
-        """Denies pipeline with token whose schema_signature doesn't match."""
-        spec = _filter_spec_with_confirmation()
-        spec["resolution_token"] = _make_valid_token(schema_signature="different_sig")
-        result = await validate_filter_spec_on_pipeline(
-            {
-                "tool_name": "ship_command_pipeline",
-                "tool_input": {"filter_spec": spec},
-            },
-            tool_use_id="test-12",
-            context=None,
-        )
-        assert _is_denied(result)
-
-    @pytest.mark.anyio
-    async def test_denies_dict_version_mismatch(self):
-        """Denies pipeline with token whose dict_version doesn't match."""
-        spec = _filter_spec_with_confirmation()
-        spec["resolution_token"] = _make_valid_token(dict_version="0.0.0")
-        result = await validate_filter_spec_on_pipeline(
-            {
-                "tool_name": "ship_command_pipeline",
-                "tool_input": {"filter_spec": spec},
-            },
-            tool_use_id="test-13",
-            context=None,
-        )
-        assert _is_denied(result)
-
-    @pytest.mark.anyio
-    async def test_allows_valid_tier_b_token(self):
-        """Allows pipeline with valid Tier-B token (all bindings match)."""
-        spec = _filter_spec_with_confirmation()
-        # Compute spec hash the same way the hook will — using FilterGroup.model_dump_json()
-        # to match the serialization used by filter_resolver.py when generating the token.
-        root_json = FilterGroup(**spec["root"]).model_dump_json()
-        spec_hash = hashlib.sha256(root_json.encode()).hexdigest()
-        spec["resolution_token"] = _make_valid_token(
-            schema_signature="sig123",
-            dict_version="1.0.0",
-            spec_hash=spec_hash,
-        )
-        result = await validate_filter_spec_on_pipeline(
-            {
-                "tool_name": "ship_command_pipeline",
-                "tool_input": {"filter_spec": spec},
-            },
-            tool_use_id="test-14",
-            context=None,
-        )
-        assert not _is_denied(result)
-
-    @pytest.mark.anyio
-    async def test_denies_tier_a_without_token(self):
-        """Denies pipeline with RESOLVED spec but no resolution_token."""
+    async def test_allows_repeated_calls_same_spec(self):
+        """Allows the same filter_spec to be used multiple times (no replay prevention)."""
         spec = _filter_spec_resolved()
-        result = await validate_filter_spec_on_pipeline(
-            {
-                "tool_name": "ship_command_pipeline",
-                "tool_input": {"filter_spec": spec},
-            },
-            tool_use_id="test-15",
-            context=None,
-        )
-        assert _is_denied(result)
-        assert "resolution_token" in _denial_reason(result).lower()
-
-    @pytest.mark.anyio
-    async def test_allows_tier_a_with_valid_token(self):
-        """Allows pipeline with RESOLVED spec and valid token."""
-        spec = _filter_spec_resolved()
-        # Compute spec hash the same way the hook will — using FilterGroup.model_dump_json()
-        root_json = FilterGroup(**spec["root"]).model_dump_json()
-        spec_hash = hashlib.sha256(root_json.encode()).hexdigest()
-        spec["resolution_token"] = _make_valid_token(
-            schema_signature="sig123",
-            dict_version="1.0.0",
-            spec_hash=spec_hash,
-        )
-        result = await validate_filter_spec_on_pipeline(
-            {
-                "tool_name": "ship_command_pipeline",
-                "tool_input": {"filter_spec": spec},
-            },
-            tool_use_id="test-15b",
-            context=None,
-        )
-        assert not _is_denied(result)
-
-    @pytest.mark.anyio
-    async def test_denies_needs_confirmation_token(self):
-        """Denies pipeline with valid token that carries NEEDS_CONFIRMATION status."""
-        spec = _filter_spec_with_confirmation()
-        # Compute spec hash the same way the hook will — using FilterGroup.model_dump_json()
-        root_json = FilterGroup(**spec["root"]).model_dump_json()
-        spec_hash = hashlib.sha256(root_json.encode()).hexdigest()
-        spec["resolution_token"] = _make_valid_token(
-            schema_signature="sig123",
-            dict_version="1.0.0",
-            spec_hash=spec_hash,
-            resolution_status="NEEDS_CONFIRMATION",
-        )
-        result = await validate_filter_spec_on_pipeline(
-            {
-                "tool_name": "ship_command_pipeline",
-                "tool_input": {"filter_spec": spec},
-            },
-            tool_use_id="test-15c",
-            context=None,
-        )
-        assert _is_denied(result)
-        assert "needs_confirmation" in _denial_reason(result).lower()
+        for i in range(3):
+            result = await validate_filter_spec_on_pipeline(
+                {
+                    "tool_name": "ship_command_pipeline",
+                    "tool_input": {"filter_spec": spec},
+                },
+                tool_use_id=f"test-11-{i}",
+                context=None,
+            )
+            assert not _is_denied(result)
 
     @pytest.mark.anyio
     async def test_ignores_unrelated_tools(self):
@@ -434,6 +309,19 @@ class TestValidateFilterSpecOnPipeline:
                 "tool_input": {"all_rows": True},
             },
             tool_use_id="test-17",
+            context=None,
+        )
+        assert not _is_denied(result)
+
+    @pytest.mark.anyio
+    async def test_allows_no_filter_spec(self):
+        """Allows when no filter_spec present (pipeline uses cache)."""
+        result = await validate_filter_spec_on_pipeline(
+            {
+                "tool_name": "ship_command_pipeline",
+                "tool_input": {"command": "ship all"},
+            },
+            tool_use_id="test-18",
             context=None,
         )
         assert not _is_denied(result)

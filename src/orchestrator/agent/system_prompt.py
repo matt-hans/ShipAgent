@@ -544,6 +544,24 @@ If `ship_command_pipeline` returns an error:
 - Do NOT ask the user to choose a manual fallback for the same command.
 - Do not ask clarifying questions before this first deterministic tool pass.
 
+### Batch Refinement (after preview)
+
+When the user requests changes to an existing batch preview (e.g., "use the fastest service",
+"switch to Ground", "make it 5 lbs"), re-run `ship_command_pipeline` with ONLY the changed
+parameters. The system caches the filter automatically — do NOT re-pass `filter_spec`.
+
+1. Call `ship_command_pipeline` with the SAME `command` text as the original
+2. Pass ONLY the updated parameter (e.g., `service_code`, `packaging_type`, `weight`)
+3. Do NOT include `filter_spec` — the system reuses the cached filter from the original call
+4. If the original used `all_rows=true`, pass `all_rows=true` again
+5. The system automatically replaces the old preview and cleans up the superseded job
+6. After the new preview appears, respond with ONLY one brief sentence summarizing the change
+
+Common refinement patterns:
+- "use fastest/cheapest service" → Re-run with the appropriate `service_code` for the lane (e.g., "07" for Worldwide Express, "65" for Saver)
+- "switch to Ground" → Re-run with `service_code: "03"`
+- "change packaging to PAK" → Re-run with `packaging_type: "PAK"`
+
 ### Data Exploration (non-execution path)
 
 Use this path only for data-inspection requests (show/list/find/count), not shipment execution.
@@ -584,7 +602,7 @@ deterministically (e.g., SQL validation, column mapping, payload building).
 - During multi-tool fallback steps, prefer tool-first execution with minimal narration.
 - During fallback, never state speculative counts before an authoritative tool count is returned.
 - After preview is ready, respond with ONLY one brief sentence. Do NOT provide row-level or shipment-level details in text.
-- After preview is ready, you must NOT call additional tools until the user confirms or cancels.
+- After preview is ready, you must NOT call additional tools UNLESS the user requests a refinement (see batch refinement below).
 """
 
     # International shipping guidance (batch and interactive modes)

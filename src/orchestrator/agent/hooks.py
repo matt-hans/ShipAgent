@@ -20,14 +20,10 @@ Usage:
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import hmac as hmac_mod
 import json
 import logging
 import os
 import sys
-import threading
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -59,7 +55,6 @@ __all__ = [
     "detect_error_response",
     "create_hook_matchers",
     "create_shipping_hook",
-    "create_filter_spec_hook",
     "validate_schedule_pickup",
     "validate_cancel_pickup",
     "validate_track_package",
@@ -629,112 +624,10 @@ _FILTER_SCOPED_TOOLS = frozenset({
 # Banned keys that indicate raw SQL injection attempts
 _BANNED_SQL_KEYS = frozenset({"where_clause", "sql", "query", "raw_sql"})
 
-# NOTE: No module-level cache for FILTER_TOKEN_SECRET — always read from
-# os.environ so that runtime rotation takes effect immediately (M-3 fix).
 
-# One-time-use token set to prevent replay attacks within TTL (CWE-294).
-# In-memory cache is the fast path; DB is the durable truth store that
-# survives process restarts.
-_used_filter_tokens: set[str] = set()
-_used_tokens_expiry: dict[str, float] = {}  # token_hash → expiry timestamp
-
-# Periodic cleanup threshold to avoid unbounded growth
-_TOKEN_CLEANUP_INTERVAL = 300  # 5 minutes
-_last_token_cleanup: float = 0.0
-
-# Lock protects _used_filter_tokens, _used_tokens_expiry, and
-# _last_token_cleanup from concurrent-request race conditions (CWE-362).
-_token_lock = threading.Lock()
-
-
-def _cleanup_expired_tokens() -> None:
-    """Remove expired entries from the in-memory used-token set.
-
-    Must be called under _token_lock to prevent race conditions on
-    _last_token_cleanup (CWE-362, Finding 8).
-    """
-    global _last_token_cleanup
-    now = time.time()
-    if now - _last_token_cleanup < _TOKEN_CLEANUP_INTERVAL:
-        return
-    _last_token_cleanup = now
-    expired = [h for h, exp in _used_tokens_expiry.items() if now > exp]
-    for h in expired:
-        _used_filter_tokens.discard(h)
-        del _used_tokens_expiry[h]
-
-
-def _is_token_consumed_db(token_hash: str) -> bool:
-    """Check if a token was already consumed in the DB (CWE-294 replay prevention)."""
-    try:
-        from src.db.connection import SessionLocal
-
-        db = SessionLocal()
-        try:
-            row = db.execute(
-                __import__("sqlalchemy").text(
-                    "SELECT 1 FROM filter_token_consumed "
-                    "WHERE token_hash = :h AND expires_at > :now"
-                ),
-                {"h": token_hash, "now": time.time()},
-            ).first()
-            return row is not None
-        finally:
-            db.close()
-    except Exception:
-        # DB unavailable — fall through to in-memory only
-        return False
-
-
-def _persist_token_consumed(token_hash: str, expires_at: float) -> None:
-    """Persist a consumed token to the DB for cross-restart replay prevention."""
-    try:
-        from src.db.connection import SessionLocal
-
-        db = SessionLocal()
-        try:
-            db.execute(
-                __import__("sqlalchemy").text(
-                    "INSERT OR IGNORE INTO filter_token_consumed "
-                    "(token_hash, expires_at, consumed_at) VALUES (:h, :e, :c)"
-                ),
-                {
-                    "h": token_hash,
-                    "e": expires_at,
-                    "c": datetime.now(UTC).isoformat(),
-                },
-            )
-            db.commit()
-        finally:
-            db.close()
-    except Exception:
-        # Non-blocking — in-memory set still protects within this process
-        logger.warning("Failed to persist consumed filter token to DB")
-
-
-def _get_filter_token_secret() -> str:
-    """Return the current FILTER_TOKEN_SECRET value from environment.
-
-    Always reads from os.environ (no module-level cache) so that runtime
-    secret rotation takes effect immediately without a process restart.
-    """
-    return os.environ.get("FILTER_TOKEN_SECRET", "")
-
-
-def _get_filter_token_secrets() -> list[str]:
-    """Return current and previous filter token secrets for rotation.
-
-    Supports FILTER_TOKEN_SECRET_PREV for grace-period key rotation.
-    Returns a list of valid secrets (current first, previous second).
-    """
-    secrets = []
-    current = _get_filter_token_secret()
-    if current:
-        secrets.append(current)
-    prev = os.environ.get("FILTER_TOKEN_SECRET_PREV", "").strip()
-    if prev:
-        secrets.append(prev)
-    return secrets
+# Legacy token infrastructure removed — prototype does not need HMAC/replay
+# prevention on filter_spec tokens. The pipeline's own structural validation
+# (ResolvedFilterSpec Pydantic model) and the deny_raw_sql hook are sufficient.
 
 
 def _find_banned_keys_recursive(obj: Any, banned: frozenset[str]) -> set[str]:
@@ -865,17 +758,10 @@ async def validate_filter_spec_on_pipeline(
     tool_use_id: str | None,
     context: Any,
 ) -> dict[str, Any]:
-    """Validate filter_spec structure and Tier-B token on pipeline/fetch_rows.
+    """Lightweight structural check on filter_spec for pipeline/fetch_rows.
 
-    Enforcement checklist (all must pass or deny):
-    1. If all_rows=true and no filter_spec, allow.
-    2. If filter_spec has status NEEDS_CONFIRMATION:
-       a. resolution_token MUST be present
-       b. HMAC signature is valid (not tampered)
-       c. Token TTL has not expired
-       d. Token schema_signature matches filter_spec
-       e. Token dict_version matches filter_spec
-       f. Token resolved_spec_hash matches SHA-256 of incoming root
+    Only validates that filter_spec has a root dict when present.
+    Token HMAC/replay/expiry enforcement removed for prototype simplicity.
 
     Args:
         input_data: Contains 'tool_name' and 'tool_input' keys.
@@ -891,198 +777,25 @@ async def validate_filter_spec_on_pipeline(
 
     tool_input = input_data.get("tool_input", {})
 
-    # all_rows path — no filter_spec validation needed
+    # all_rows path — always allow
     if tool_input.get("all_rows"):
         return {}
 
     filter_spec = tool_input.get("filter_spec")
     if not isinstance(filter_spec, dict):
+        # No filter_spec provided — pipeline will use cache or error
         return {}
 
-    # Enforce resolution_token for ALL filter_specs regardless of status.
-    # A client could flip status from NEEDS_CONFIRMATION to RESOLVED to bypass
-    # validation. The token is the server-side proof of provenance.
-    token = filter_spec.get("resolution_token")
-    if not token:
+    # Basic structural check: filter_spec must have a root
+    if "root" not in filter_spec:
         _log_to_stderr(
-            f"[FILTER ENFORCEMENT] DENYING missing resolution_token "
-            f"for filter_spec | ID: {tool_use_id}"
-        )
-        return _deny_with_reason(
-            "All filter_spec submissions require a resolution_token proving "
-            "server-side provenance. Use resolve_filter_intent first."
-        )
-
-    def _deny_token(reason: str, message: str) -> dict[str, Any]:
-        logger.warning(
-            "metric=token_validation_failure_total reason=%s tool=%s",
-            reason,
-            tool_name,
-        )
-        return _deny_with_reason(message)
-
-    if not _get_filter_token_secret():
-        return _deny_token(
-            "secret_missing",
-            "FILTER_TOKEN_SECRET is not configured. Cannot validate resolution token."
-        )
-
-    try:
-        decoded = json.loads(base64.urlsafe_b64decode(token))
-    except (json.JSONDecodeError, ValueError):
-        return _deny_token(
-            "token_malformed",
-            "Resolution token is malformed (invalid base64/JSON).",
-        )
-
-    # Check expiry
-    if time.time() > decoded.get("expires_at", 0):
-        _log_to_stderr(
-            f"[FILTER ENFORCEMENT] DENYING expired token | ID: {tool_use_id}"
-        )
-        return _deny_token(
-            "token_expired",
-            "Resolution token has expired. Re-resolve the filter.",
-        )
-
-    # Verify HMAC signature — try current and previous secrets for rotation support.
-    signature = decoded.pop("signature", None)
-    if signature is None:
-        return _deny_token(
-            "signature_missing",
-            "Resolution token missing HMAC signature.",
-        )
-
-    payload_json = json.dumps(decoded, sort_keys=True)
-    secrets_to_try = _get_filter_token_secrets()
-    signature_valid = False
-    for try_secret in secrets_to_try:
-        expected_sig = hmac_mod.new(
-            try_secret.encode(), payload_json.encode(), hashlib.sha256
-        ).hexdigest()
-        if hmac_mod.compare_digest(signature, expected_sig):
-            signature_valid = True
-            break
-
-    if not signature_valid:
-        _log_to_stderr(
-            f"[FILTER ENFORCEMENT] DENYING tampered token | ID: {tool_use_id}"
-        )
-        return _deny_token(
-            "signature_invalid",
-            "Resolution token HMAC signature is invalid (tampered).",
-        )
-
-    # Replay prevention: reject tokens already consumed (CWE-294).
-    # Check in-memory cache first (fast path), then DB (survives restarts).
-    # Lock protects cleanup + check atomicity (CWE-362, Finding 8).
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
-    with _token_lock:
-        _cleanup_expired_tokens()
-        token_consumed_in_memory = token_hash in _used_filter_tokens
-    if token_consumed_in_memory or _is_token_consumed_db(token_hash):
-        _log_to_stderr(
-            f"[FILTER ENFORCEMENT] DENYING replayed token | ID: {tool_use_id}"
-        )
-        return _deny_token(
-            "token_replayed",
-            "Resolution token has already been used. Re-resolve the filter.",
-        )
-
-    # Check schema_signature binding
-    if decoded.get("schema_signature") != filter_spec.get("schema_signature"):
-        return _deny_token(
-            "schema_signature_mismatch",
-            "Resolution token schema_signature does not match filter_spec. "
-            "The data source may have changed."
-        )
-
-    # Check dict_version binding
-    if decoded.get("canonical_dict_version") != filter_spec.get("canonical_dict_version"):
-        return _deny_token(
-            "dict_version_mismatch",
-            "Resolution token dict_version does not match filter_spec. "
-            "Canonical dictionaries may have been updated."
-        )
-
-    # Check resolved_spec_hash binding.
-    # IMPORTANT: use the same serializer that the resolver uses
-    # (FilterGroup.model_dump_json()) so key ordering is identical.
-    # json.dumps(sort_keys=True) produces a different string than Pydantic's
-    # model_dump_json() because their key orderings differ, causing a permanent
-    # hash mismatch that denies every filter_spec that went through resolve_filter_intent.
-    root = filter_spec.get("root", {})
-    try:
-        from src.orchestrator.models.filter_spec import FilterGroup as _FilterGroup
-        root_json = _FilterGroup(**root).model_dump_json()
-    except Exception:
-        # Fallback: if the root dict cannot be parsed back into a FilterGroup
-        # (malformed payload), treat it as a tamper attempt.
-        return _deny_token(
-            "spec_hash_malformed",
-            "Resolution token spec hash could not be computed: filter_spec root is malformed.",
-        )
-    actual_hash = hashlib.sha256(root_json.encode()).hexdigest()
-    if decoded.get("resolved_spec_hash") != actual_hash:
-        return _deny_token(
-            "spec_hash_mismatch",
-            "Resolution token spec hash does not match the filter_spec root. "
-            "The filter may have been modified after resolution."
-        )
-
-    mode = _determinism_mode()
-    # Transition-safe checks for new deterministic binding fields.
-    for key in (
-        "source_fingerprint",
-        "compiler_version",
-        "mapping_version",
-        "normalizer_version",
-    ):
-        token_val = str(decoded.get(key, "") or "")
-        spec_val = str(filter_spec.get(key, "") or "")
-        if not token_val or not spec_val:
-            logger.warning(
-                "metric=token_binding_missing_total field=%s tool=%s mode=%s",
-                key,
-                tool_name,
-                mode,
-            )
-            if mode == "enforce":
-                return _deny_token(
-                    f"{key}_missing",
-                    f"Resolution token/filter_spec missing required binding field "
-                    f"'{key}'. Re-run resolve_filter_intent.",
-                )
-            continue
-        if token_val != spec_val:
-            return _deny_token(
-                f"{key}_mismatch",
-                f"Resolution token field '{key}' does not match filter_spec.",
-            )
-
-    # Check resolution_status — token must prove RESOLVED status.
-    # A NEEDS_CONFIRMATION token cannot be used to execute; the agent must
-    # go through confirm → re-resolve to get a RESOLVED token.
-    token_status = decoded.get("resolution_status", "")
-    if token_status != "RESOLVED":
-        _log_to_stderr(
-            f"[FILTER ENFORCEMENT] DENYING non-RESOLVED token (status={token_status}) "
+            f"[FILTER ENFORCEMENT] DENYING filter_spec without root "
             f"| ID: {tool_use_id}"
         )
-        return _deny_token(
-            "status_not_resolved",
-            f"Resolution token has status '{token_status}', not 'RESOLVED'. "
-            "Tier-B filters require user confirmation before execution. "
-            "Use confirm_filter_interpretation then re-resolve."
+        return _deny_with_reason(
+            "filter_spec must contain a 'root' field. "
+            "Use resolve_filter_intent to create a valid filter_spec."
         )
-
-    # All validations passed — mark token as consumed to prevent replay.
-    # Lock protects in-memory set mutation (CWE-362, Finding 8).
-    expires_at = decoded.get("expires_at", time.time() + 600)
-    with _token_lock:
-        _used_filter_tokens.add(token_hash)
-        _used_tokens_expiry[token_hash] = expires_at
-    _persist_token_consumed(token_hash, expires_at)
 
     return {}
 
@@ -1141,92 +854,6 @@ def create_shipping_hook(
     return _validate_shipping
 
 
-def create_filter_spec_hook(bridge: Any | None = None):
-    """Factory that creates a bridge-aware filter_spec validation hook.
-
-    Wraps ``validate_filter_spec_on_pipeline`` with same-session token reuse
-    detection. When a token has already been consumed (replay prevention)
-    but the submitted filter_spec matches the session's cached resolved spec
-    (same token hash), this is legitimate same-session refinement where the
-    agent redundantly re-passed the filter_spec from its conversation context.
-    In that case the hook strips the filter_spec from tool_input so the
-    pipeline falls through to its bridge-cache path, which does not consume
-    the token.
-
-    Security properties preserved:
-    - Cross-session replay: still denied (consumed token, no bridge cache match)
-    - Tampered filter_spec: still denied (signature check runs first)
-    - Expired tokens: still denied (expiry check runs first)
-    - Different-source reuse: still denied (schema_signature check in pipeline)
-    - True replays: still denied (no bridge or bridge cache mismatch)
-
-    Args:
-        bridge: The session's EventEmitterBridge, used to check last_resolved_filter_spec.
-
-    Returns:
-        Async hook function with bridge captured via closure.
-    """
-
-    async def _validate_filter_spec_with_bridge(
-        input_data: dict[str, Any],
-        tool_use_id: str | None,
-        context: Any,
-    ) -> dict[str, Any]:
-        """Validate filter_spec with same-session refinement awareness."""
-        tool_name = input_data.get("tool_name", "")
-        if tool_name not in ("ship_command_pipeline", "fetch_rows"):
-            return {}
-
-        tool_input = input_data.get("tool_input", {})
-
-        # all_rows path — no filter_spec validation needed
-        if tool_input.get("all_rows"):
-            return {}
-
-        filter_spec = tool_input.get("filter_spec")
-        if not isinstance(filter_spec, dict):
-            return {}
-
-        # Check if we can short-circuit replay prevention for same-session reuse
-        # before the full validation runs. This handles the refinement scenario
-        # where the agent re-passes the filter_spec (with already-consumed token)
-        # from its in-context memory of the prior resolve_filter_intent result.
-        token = filter_spec.get("resolution_token")
-        if token and bridge is not None:
-            token_hash = hashlib.sha256(token.encode()).hexdigest()
-            with _token_lock:
-                token_consumed_in_memory = token_hash in _used_filter_tokens
-            if token_consumed_in_memory:
-                # Token is consumed — check if this is the same-session cached spec
-                cached_spec = getattr(bridge, "last_resolved_filter_spec", None)
-                if isinstance(cached_spec, dict):
-                    cached_token = cached_spec.get("resolution_token")
-                    if cached_token and isinstance(cached_token, str):
-                        cached_token_hash = hashlib.sha256(
-                            cached_token.encode()
-                        ).hexdigest()
-                        if cached_token_hash == token_hash:
-                            # Same token as the session cache — this is the agent
-                            # re-passing its cached filter_spec for a refinement call.
-                            # Strip filter_spec from tool_input so the pipeline
-                            # falls through to its bridge-cache path (no new token
-                            # consumed, security intact). Mutating tool_input is
-                            # intentional: we own this dict at hook time.
-                            _log_to_stderr(
-                                f"[FILTER ENFORCEMENT] Refinement detected: "
-                                f"stripping redundant filter_spec (same-session token) "
-                                f"to activate cache path | ID: {tool_use_id}"
-                            )
-                            tool_input.pop("filter_spec", None)
-                            # Allow — pipeline will use bridge.last_resolved_filter_spec
-                            return {}
-
-        # Fall through to the standard stateless validation
-        return await validate_filter_spec_on_pipeline(input_data, tool_use_id, context)
-
-    return _validate_filter_spec_with_bridge
-
-
 # =============================================================================
 # Hook Matcher Factory
 # =============================================================================
@@ -1241,26 +868,14 @@ def create_hook_matchers(
     Returns a dict structure ready for ClaudeAgentOptions(hooks=...).
     Uses HookMatcher dataclass instances as required by the Claude Agent SDK.
 
-    The create_shipment pre-hook is produced by ``create_shipping_hook()``
-    so the ``interactive_shipping`` flag is captured per-instance via closure,
-    avoiding global mutable state.
-
-    The filter_spec validation hook is produced by ``create_filter_spec_hook()``
-    with the session bridge so that same-session refinement calls (where the
-    agent re-passes an already-consumed token) are handled gracefully by
-    stripping the redundant filter_spec and letting the pipeline cache path
-    take over, rather than being denied as replays.
-
     Args:
         interactive_shipping: Whether interactive single-shipment mode is enabled.
-        bridge: Optional EventEmitterBridge for the current agent session. When
-            provided, enables same-session token reuse detection for refinement.
+        bridge: Unused, kept for backward compatibility.
 
     Returns:
         Dict with PreToolUse and PostToolUse hook configurations.
     """
     shipping_hook = create_shipping_hook(interactive_shipping=interactive_shipping)
-    filter_spec_hook = create_filter_spec_hook(bridge=bridge)
 
     return {
         "PreToolUse": [
@@ -1271,11 +886,11 @@ def create_hook_matchers(
             ),
             HookMatcher(
                 matcher="ship_command_pipeline",
-                hooks=[deny_raw_sql_in_filter_tools, filter_spec_hook],
+                hooks=[deny_raw_sql_in_filter_tools, validate_filter_spec_on_pipeline],
             ),
             HookMatcher(
                 matcher="fetch_rows",
-                hooks=[deny_raw_sql_in_filter_tools, filter_spec_hook],
+                hooks=[deny_raw_sql_in_filter_tools, validate_filter_spec_on_pipeline],
             ),
             # UPS safety hooks
             HookMatcher(

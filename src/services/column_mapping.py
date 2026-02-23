@@ -100,6 +100,11 @@ _FIELD_TO_ORDER_DATA: dict[str, str] = {
     "invoiceComments": "invoice_comments",
     "freightCharges": "freight_charges",
     "insuranceCharges": "insurance_charges",
+    # Commodity / customs fields (flat per-row; synthesized into commodities list)
+    "commodity.hsCode": "hs_code",
+    "commodity.originCountry": "commodity_origin_country",
+    "commodity.quantity": "commodity_quantity",
+    "commodity.unitOfMeasure": "commodity_unit_of_measure",
 }
 
 
@@ -161,13 +166,19 @@ def apply_mapping(mapping: dict[str, str], row: dict[str, Any]) -> dict[str, Any
 _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     # (must_contain_all, must_not_contain, simplified_path)
     # Address fields (check multi-word patterns before single-word)
+    # "street" is an explicit addressLine1 synonym (XML: Address_Street)
+    (["street"], [], "shipTo.addressLine1"),
+    (["floor"], [], "shipTo.addressLine2"),
+    (["suite"], [], "shipTo.addressLine2"),
     (["address", "2"], [], "shipTo.addressLine2"),
     (["address", "3"], [], "shipTo.addressLine3"),
     (["address", "1"], [], "shipTo.addressLine1"),
     (["address_line_2"], [], "shipTo.addressLine2"),
     (["address_line_3"], [], "shipTo.addressLine3"),
     (["address_line_1"], [], "shipTo.addressLine1"),
-    (["address"], ["2", "3"], "shipTo.addressLine1"),
+    # Generic "address" fallback — exclude subfield tokens to prevent
+    # Address_City, Address_State etc. from claiming addressLine1.
+    (["address"], ["2", "3", "city", "state", "zip", "postal", "country", "floor", "suite"], "shipTo.addressLine1"),
     # Recipient name (before generic "name")
     # Explicit ship_to patterns must come first so customer_name can't steal the slot.
     (["recipient", "name"], [], "shipTo.name"),
@@ -266,6 +277,15 @@ _AUTO_MAP_RULES: list[tuple[list[str], list[str], str]] = [
     (["lift", "gate", "deliver"], [], "liftGateDelivery"),
     (["carbon", "neutral"], [], "carbonNeutral"),
     (["notification", "email"], ["customer"], "notification.email"),
+    # Commodity / customs fields
+    (["hs_code"], [], "commodity.hsCode"),
+    (["hscode"], [], "commodity.hsCode"),
+    (["hs", "code"], [], "commodity.hsCode"),
+    (["tariff"], [], "commodity.hsCode"),
+    (["commodity", "code"], [], "commodity.hsCode"),
+    (["origin", "country"], ["address", "ship"], "commodity.originCountry"),
+    (["commodity", "quantity"], [], "commodity.quantity"),
+    (["unit", "measure"], [], "commodity.unitOfMeasure"),
     # International forms
     (["terms", "shipment"], [], "termsOfShipment"),
     (["purchase", "order", "number"], ["phone"], "purchaseOrderNumber"),

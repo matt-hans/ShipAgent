@@ -188,6 +188,7 @@ async def preview_interactive_shipment_tool(
     from src.services.batch_engine import BatchEngine
     from src.services.errors import UPSServiceError
     from src.services.international_rules import (
+        enrich_order_data_for_international,
         get_requirements,
         recipient_state_required,
         validate_international_readiness,
@@ -382,6 +383,8 @@ async def preview_interactive_shipment_tool(
     requirements = get_requirements(shipper_country, ship_to_country, service_code)
     if requirements.not_shippable_reason:
         return _err(requirements.not_shippable_reason)
+
+    enrich_order_data_for_international(order_data, shipper, requirements)
 
     if requirements.is_international or requirements.requires_invoice_line_total:
         validation_errors = validate_international_readiness(order_data, requirements)

@@ -150,27 +150,25 @@ export function DataSourceSection() {
 
   // --- Source switching handlers ---
 
-  /** Switch to Shopify: disconnect local source and activate Shopify via backend. */
+  /** Switch to Shopify: activate Shopify first, then clear local source on success. */
   const handleSwitchToShopify = async () => {
-    if (dataSource) {
-      setCachedLocalConfig({
-        type: dataSource.type as 'csv' | 'excel' | 'database',
-        file_path: dataSource.csv_path || dataSource.excel_path,
-      });
-    }
-    try { await disconnectDataSource(); } catch { /* best-effort */ }
-    setDataSource(null);
-    setBackendSourceType(null);
     setImportError(null);
-
     setIsConnecting(true);
     try {
       const result = await activateShopify();
-      if (result.success) {
-        setBackendSourceType('shopify');
-      } else {
+      if (!result.success) {
         setImportError(result.error || 'Failed to activate Shopify');
+        return;
       }
+      // Activation succeeded — now safe to clear local state
+      if (dataSource) {
+        setCachedLocalConfig({
+          type: dataSource.type as 'csv' | 'excel' | 'database',
+          file_path: dataSource.csv_path || dataSource.excel_path,
+        });
+      }
+      setDataSource(null);
+      setBackendSourceType('shopify');
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Failed to activate Shopify');
     } finally {

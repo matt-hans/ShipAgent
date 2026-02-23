@@ -354,10 +354,13 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
 
   // Clear transient agent events after each completed run to bound memory.
   // Title is now set synchronously on user message save, so refresh immediately.
+  // Also reset isRefining — if the agent finished without emitting a preview_ready
+  // event (e.g. replied with text only), the spinner would otherwise persist.
   React.useEffect(() => {
     if (wasProcessingRef.current && !conv.isProcessing) {
       suppressNextMessageRef.current = false;
       lastProcessedEventRef.current = 0;
+      setIsRefining(false);
       conv.clearEvents();
       refreshChatSessions();
     }

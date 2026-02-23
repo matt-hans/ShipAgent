@@ -27,6 +27,7 @@ from src.services.errors import UPSServiceError
 from src.services.gateway_provider import get_data_gateway, get_external_sources_client
 from src.services.idempotency import generate_idempotency_key
 from src.services.international_rules import (
+    enrich_order_data_for_international,
     get_requirements,
     validate_international_readiness,
 )
@@ -261,6 +262,9 @@ class BatchEngine:
                         oid = str(order_data.get("order_id") or order_data.get("order_number") or "")
                         if oid and oid in commodity_cache:
                             order_data["commodities"] = commodity_cache[oid]
+
+                    # Enrich order_data with shipper defaults and field aliases
+                    enrich_order_data_for_international(order_data, shipper, requirements)
 
                     if requirements.is_international or requirements.requires_invoice_line_total:
                         validation_errors = validate_international_readiness(
@@ -538,6 +542,9 @@ class BatchEngine:
                         oid = str(order_data.get("order_id") or order_data.get("order_number") or "")
                         if oid and oid in exec_commodity_cache:
                             order_data["commodities"] = exec_commodity_cache[oid]
+
+                    # Enrich order_data with shipper defaults and field aliases
+                    enrich_order_data_for_international(order_data, shipper, requirements)
 
                     if requirements.is_international or requirements.requires_invoice_line_total:
                         validation_errors = validate_international_readiness(
