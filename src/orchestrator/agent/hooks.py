@@ -630,8 +630,9 @@ _BANNED_SQL_KEYS = frozenset({"where_clause", "sql", "query", "raw_sql"})
 # Cached FILTER_TOKEN_SECRET to avoid repeated os.environ lookups
 _FILTER_TOKEN_SECRET: str | None = None
 
-# One-time-use token set to prevent replay attacks within TTL (CWE-294, Finding 8).
-# In-memory set is sufficient for single-process desktop app.
+# One-time-use token set to prevent replay attacks within TTL (CWE-294).
+# In-memory cache is the fast path; DB is the durable truth store that
+# survives process restarts.
 _used_filter_tokens: set[str] = set()
 _used_tokens_expiry: dict[str, float] = {}  # token_hash → expiry timestamp
 
@@ -641,7 +642,7 @@ _last_token_cleanup: float = 0.0
 
 
 def _cleanup_expired_tokens() -> None:
-    """Remove expired entries from the used-token set."""
+    """Remove expired entries from the in-memory used-token set."""
     global _last_token_cleanup
     now = time.time()
     if now - _last_token_cleanup < _TOKEN_CLEANUP_INTERVAL:
@@ -653,6 +654,54 @@ def _cleanup_expired_tokens() -> None:
         del _used_tokens_expiry[h]
 
 
+def _is_token_consumed_db(token_hash: str) -> bool:
+    """Check if a token was already consumed in the DB (CWE-294 replay prevention)."""
+    try:
+        from src.db.connection import SessionLocal
+
+        db = SessionLocal()
+        try:
+            row = db.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT 1 FROM filter_token_consumed "
+                    "WHERE token_hash = :h AND expires_at > :now"
+                ),
+                {"h": token_hash, "now": time.time()},
+            ).first()
+            return row is not None
+        finally:
+            db.close()
+    except Exception:
+        # DB unavailable — fall through to in-memory only
+        return False
+
+
+def _persist_token_consumed(token_hash: str, expires_at: float) -> None:
+    """Persist a consumed token to the DB for cross-restart replay prevention."""
+    try:
+        from src.db.connection import SessionLocal
+
+        db = SessionLocal()
+        try:
+            db.execute(
+                __import__("sqlalchemy").text(
+                    "INSERT OR IGNORE INTO filter_token_consumed "
+                    "(token_hash, expires_at, consumed_at) VALUES (:h, :e, :c)"
+                ),
+                {
+                    "h": token_hash,
+                    "e": expires_at,
+                    "c": datetime.now(UTC).isoformat(),
+                },
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        # Non-blocking — in-memory set still protects within this process
+        logger.warning("Failed to persist consumed filter token to DB")
+
+
 def _get_filter_token_secret() -> str:
     """Return the cached FILTER_TOKEN_SECRET value.
 
@@ -662,6 +711,22 @@ def _get_filter_token_secret() -> str:
     if _FILTER_TOKEN_SECRET is None:
         _FILTER_TOKEN_SECRET = os.environ.get("FILTER_TOKEN_SECRET", "")
     return _FILTER_TOKEN_SECRET
+
+
+def _get_filter_token_secrets() -> list[str]:
+    """Return current and previous filter token secrets for rotation.
+
+    Supports FILTER_TOKEN_SECRET_PREV for grace-period key rotation.
+    Returns a list of valid secrets (current first, previous second).
+    """
+    secrets = []
+    current = _get_filter_token_secret()
+    if current:
+        secrets.append(current)
+    prev = os.environ.get("FILTER_TOKEN_SECRET_PREV", "").strip()
+    if prev:
+        secrets.append(prev)
+    return secrets
 
 
 def _find_banned_keys_recursive(obj: Any, banned: frozenset[str]) -> set[str]:
@@ -848,8 +913,7 @@ async def validate_filter_spec_on_pipeline(
         )
         return _deny_with_reason(message)
 
-    secret = _get_filter_token_secret()
-    if not secret:
+    if not _get_filter_token_secret():
         return _deny_token(
             "secret_missing",
             "FILTER_TOKEN_SECRET is not configured. Cannot validate resolution token."
@@ -873,7 +937,7 @@ async def validate_filter_spec_on_pipeline(
             "Resolution token has expired. Re-resolve the filter.",
         )
 
-    # Verify HMAC signature
+    # Verify HMAC signature — try current and previous secrets for rotation support.
     signature = decoded.pop("signature", None)
     if signature is None:
         return _deny_token(
@@ -882,10 +946,17 @@ async def validate_filter_spec_on_pipeline(
         )
 
     payload_json = json.dumps(decoded, sort_keys=True)
-    expected_sig = hmac_mod.new(
-        secret.encode(), payload_json.encode(), hashlib.sha256
-    ).hexdigest()
-    if not hmac_mod.compare_digest(signature, expected_sig):
+    secrets_to_try = _get_filter_token_secrets()
+    signature_valid = False
+    for try_secret in secrets_to_try:
+        expected_sig = hmac_mod.new(
+            try_secret.encode(), payload_json.encode(), hashlib.sha256
+        ).hexdigest()
+        if hmac_mod.compare_digest(signature, expected_sig):
+            signature_valid = True
+            break
+
+    if not signature_valid:
         _log_to_stderr(
             f"[FILTER ENFORCEMENT] DENYING tampered token | ID: {tool_use_id}"
         )
@@ -894,10 +965,11 @@ async def validate_filter_spec_on_pipeline(
             "Resolution token HMAC signature is invalid (tampered).",
         )
 
-    # Replay prevention: reject tokens already consumed (CWE-294, Finding 8).
+    # Replay prevention: reject tokens already consumed (CWE-294).
+    # Check in-memory cache first (fast path), then DB (survives restarts).
     _cleanup_expired_tokens()
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    if token_hash in _used_filter_tokens:
+    if token_hash in _used_filter_tokens or _is_token_consumed_db(token_hash):
         _log_to_stderr(
             f"[FILTER ENFORCEMENT] DENYING replayed token | ID: {tool_use_id}"
         )
@@ -994,8 +1066,10 @@ async def validate_filter_spec_on_pipeline(
         )
 
     # All validations passed — mark token as consumed to prevent replay.
+    expires_at = decoded.get("expires_at", time.time() + 600)
     _used_filter_tokens.add(token_hash)
-    _used_tokens_expiry[token_hash] = decoded.get("expires_at", time.time() + 600)
+    _used_tokens_expiry[token_hash] = expires_at
+    _persist_token_consumed(token_hash, expires_at)
 
     return {}
 

@@ -564,6 +564,33 @@ def _ensure_columns_exist(conn: Any) -> None:
         except OperationalError as e:
             log.warning("Agent decision ledger migration step failed: %s", e)
 
+    # --- filter_token_consumed table for replay prevention (CWE-294) ---
+    conn.execute(
+        text("""
+        CREATE TABLE IF NOT EXISTS filter_token_consumed (
+            token_hash VARCHAR(64) PRIMARY KEY,
+            expires_at REAL NOT NULL,
+            consumed_at VARCHAR(50) NOT NULL
+        )
+        """)
+    )
+    try:
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_ftc_expires_at "
+                "ON filter_token_consumed (expires_at)"
+            )
+        )
+    except OperationalError:
+        pass
+
+    # Prune expired tokens on startup
+    import time as _time_mod
+    conn.execute(
+        text("DELETE FROM filter_token_consumed WHERE expires_at < :now"),
+        {"now": _time_mod.time()},
+    )
+
     # --- provider_connections table migration ---
     _migrate_provider_connections(conn, log)
 

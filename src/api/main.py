@@ -683,6 +683,18 @@ app.middleware("http")(maybe_require_api_key)
 # CORS allowlist is env-driven. If unset, CORS is disabled (same-origin only).
 allowed_origins = _parse_allowed_origins()
 if allowed_origins:
+    # Reject wildcard (*) combined with allow_credentials=True (CWE-346).
+    # Browsers ignore credentials with wildcard origins, but misconfigured
+    # proxies may not. Fail-fast prevents a dangerous configuration.
+    if "*" in allowed_origins:
+        logger.critical(
+            "SECURITY: ALLOWED_ORIGINS contains '*' with allow_credentials=True. "
+            "This is a dangerous configuration. Use explicit origins instead."
+        )
+        raise RuntimeError(
+            "ALLOWED_ORIGINS='*' with allow_credentials=True is not allowed. "
+            "Specify explicit origins (e.g., 'http://localhost:5173')."
+        )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
