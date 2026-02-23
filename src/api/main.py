@@ -290,8 +290,8 @@ async def _process_watched_file(file_path: str, config) -> None:
             _watchdog_service.fail_file(
                 processing_path,
                 {
-                    "error": str(e),
-                    "file": str(file_path),
+                    "error": sanitize_error_message(str(e)),
+                    "file": processing_path.name,
                     "command": config.command,
                 },
             )
@@ -660,11 +660,17 @@ async def lifespan(app: FastAPI):
     await shutdown_gateways()
 
 
-# Disable OpenAPI/Swagger docs in production when SHIPAGENT_DISABLE_DOCS is set
-# (CWE-200). Prevents full API schema exposure on unauthenticated endpoints.
-_disable_docs = os.environ.get("SHIPAGENT_DISABLE_DOCS", "").strip().lower() in (
-    "1", "true", "yes", "on",
-)
+# Disable OpenAPI/Swagger docs when explicitly requested or when API key auth
+# is active (CWE-200). Prevents full API schema exposure on authenticated deployments.
+# Set SHIPAGENT_DISABLE_DOCS=false to force-enable docs even with an API key.
+_docs_override = os.environ.get("SHIPAGENT_DISABLE_DOCS", "").strip().lower()
+if _docs_override in ("0", "false", "no", "off"):
+    _disable_docs = False
+elif _docs_override in ("1", "true", "yes", "on"):
+    _disable_docs = True
+else:
+    # Auto-disable when API key is configured (production-like deployment)
+    _disable_docs = bool(os.environ.get("SHIPAGENT_API_KEY", "").strip())
 
 # Create FastAPI app with async lifespan for startup recovery + shutdown cleanup
 app = FastAPI(
@@ -709,6 +715,7 @@ if allowed_origins:
 # exhaustion in the Tauri desktop context where no reverse proxy exists.
 # ---------------------------------------------------------------------------
 import collections as _collections
+import threading as _threading
 
 # Per-IP sliding window with bounded capacity (CWE-770).
 # Max 10,000 tracked IPs to prevent memory exhaustion from IP rotation attacks.
@@ -716,6 +723,9 @@ _RATE_LIMIT_MAX_IPS = 10_000
 _rate_limit_windows: _collections.OrderedDict[str, _collections.deque] = (
     _collections.OrderedDict()
 )
+# Lock protecting _rate_limit_windows from concurrent access (CWE-362).
+# Required because uvicorn may run async handlers on a thread pool.
+_rate_limit_lock = _threading.Lock()
 _RATE_LIMIT_MAX_REQUESTS = 30  # max requests per window
 _RATE_LIMIT_WINDOW_SECONDS = 60  # sliding window duration
 
@@ -740,30 +750,31 @@ async def rate_limit_session_creation(request: Request, call_next):
         client_ip = request.client.host if request.client else "unknown"
         now = _time.time()
 
-        # Evict oldest IPs when capacity is reached (CWE-770 mitigation)
-        while len(_rate_limit_windows) >= _RATE_LIMIT_MAX_IPS:
-            _rate_limit_windows.popitem(last=False)
+        with _rate_limit_lock:
+            # Evict oldest IPs when capacity is reached (CWE-770 mitigation)
+            while len(_rate_limit_windows) >= _RATE_LIMIT_MAX_IPS:
+                _rate_limit_windows.popitem(last=False)
 
-        window = _rate_limit_windows.setdefault(client_ip, _collections.deque())
-        # Move to end for LRU ordering
-        _rate_limit_windows.move_to_end(client_ip)
-        # Evict expired entries
-        cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
-        while window and window[0] < cutoff:
-            window.popleft()
+            window = _rate_limit_windows.setdefault(client_ip, _collections.deque())
+            # Move to end for LRU ordering
+            _rate_limit_windows.move_to_end(client_ip)
+            # Evict expired entries
+            cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
+            while window and window[0] < cutoff:
+                window.popleft()
 
-        if len(window) >= _RATE_LIMIT_MAX_REQUESTS:
-            return JSONResponse(
-                status_code=429,
-                content={
-                    "detail": (
-                        f"Rate limit exceeded: max {_RATE_LIMIT_MAX_REQUESTS} "
-                        f"requests per {_RATE_LIMIT_WINDOW_SECONDS}s. "
-                        "Please wait before retrying."
-                    )
-                },
-            )
-        window.append(now)
+            if len(window) >= _RATE_LIMIT_MAX_REQUESTS:
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "detail": (
+                            f"Rate limit exceeded: max {_RATE_LIMIT_MAX_REQUESTS} "
+                            f"requests per {_RATE_LIMIT_WINDOW_SECONDS}s. "
+                            "Please wait before retrying."
+                        )
+                    },
+                )
+            window.append(now)
 
     return await call_next(request)
 
@@ -811,6 +822,26 @@ async def enforce_request_body_size(request: Request, call_next):
                             )
                         },
                     )
+            else:
+                # No Content-Length header — read body in chunks to enforce limit
+                # (CWE-400: prevents bypass via chunked transfer encoding).
+                body_chunks = []
+                total = 0
+                async for chunk in request.stream():
+                    total += len(chunk)
+                    if total > _MAX_REQUEST_BODY_BYTES:
+                        return JSONResponse(
+                            status_code=413,
+                            content={
+                                "detail": (
+                                    f"Request body exceeds "
+                                    f"{_MAX_REQUEST_BODY_BYTES // (1024 * 1024)}MB limit."
+                                )
+                            },
+                        )
+                    body_chunks.append(chunk)
+                # Re-inject the consumed body so downstream handlers can read it.
+                request._body = b"".join(body_chunks)
     return await call_next(request)
 
 
@@ -1095,9 +1126,21 @@ if FRONTEND_DIR.exists():
             # but return 404 just in case
             return FileResponse(FRONTEND_DIR / "index.html")
 
-        # Check if the path matches an actual file in dist
+        # Serve only files with known-safe static extensions (CWE-552).
+        # Prevents the catch-all from exposing sensitive dotfiles (.env, .htaccess)
+        # or unexpected file types that may land in the dist directory.
+        _ALLOWED_STATIC_EXTENSIONS = frozenset({
+            ".html", ".css", ".js", ".mjs", ".jsx", ".ts", ".tsx",
+            ".json", ".map", ".svg", ".png", ".jpg", ".jpeg", ".gif",
+            ".ico", ".webp", ".woff", ".woff2", ".ttf", ".eot",
+            ".pdf", ".txt", ".xml", ".webmanifest",
+        })
         requested_file = FRONTEND_DIR / full_path
-        if requested_file.exists() and requested_file.is_file():
+        if (
+            requested_file.exists()
+            and requested_file.is_file()
+            and requested_file.suffix.lower() in _ALLOWED_STATIC_EXTENSIONS
+        ):
             return FileResponse(requested_file)
 
         # Default: serve index.html for SPA routing

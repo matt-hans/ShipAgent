@@ -996,27 +996,26 @@ class TestInteractiveShippingHookEnforcement:
 
 
 class TestFilterTokenSecretCache:
-    """Tests for _get_filter_token_secret() caching."""
+    """Tests for _get_filter_token_secret() live env reads (M-3 fix)."""
 
-    def test_filter_token_secret_cached(self):
-        """_get_filter_token_secret reads env once and caches."""
+    def test_filter_token_secret_reads_env_live(self):
+        """_get_filter_token_secret always reads from os.environ (no stale cache)."""
         from unittest.mock import patch
 
         from src.orchestrator.agent import hooks
 
-        # Reset cache
-        hooks._FILTER_TOKEN_SECRET = None
-
-        with patch.dict("os.environ", {"FILTER_TOKEN_SECRET": "test-secret-value"}):
+        with patch.dict("os.environ", {"FILTER_TOKEN_SECRET": "secret-v1"}):
             first = hooks._get_filter_token_secret()
-            assert first == "test-secret-value"
+            assert first == "secret-v1"
 
-        # Second call should return cached value even though env was restored
-        second = hooks._get_filter_token_secret()
-        assert second == "test-secret-value"
+        with patch.dict("os.environ", {"FILTER_TOKEN_SECRET": "secret-v2"}):
+            second = hooks._get_filter_token_secret()
+            assert second == "secret-v2"
 
-        # Cleanup: reset cache for other tests
-        hooks._FILTER_TOKEN_SECRET = None
+        # Without env var, returns empty string
+        with patch.dict("os.environ", {}, clear=True):
+            third = hooks._get_filter_token_secret()
+            assert third == ""
 
 
 class TestHookExactMatching:

@@ -81,6 +81,20 @@ async def import_data_source(
                     status_code=400,
                     detail="connection_string and query are required for database import",
                 )
+            # Restrict to local file-based databases only (CWE-918 SSRF mitigation).
+            # Remote connection strings (postgres://, mysql://, etc.) could be used
+            # to probe internal networks or exfiltrate data.
+            _ALLOWED_DB_SCHEMES = ("sqlite", "duckdb")
+            conn_lower = payload.connection_string.strip().lower()
+            if not any(conn_lower.startswith(s) for s in _ALLOWED_DB_SCHEMES):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Only local file-based databases are supported "
+                        f"(schemes: {', '.join(_ALLOWED_DB_SCHEMES)}). "
+                        "Remote database connections are not allowed."
+                    ),
+                )
             result = await gw.import_database(
                 connection_string=payload.connection_string,
                 query=payload.query,
