@@ -354,6 +354,75 @@ def get_requirements(
     )
 
 
+def enrich_order_data_for_international(
+    order_data: dict,
+    shipper: dict[str, str],
+    requirements: RequirementSet,
+) -> None:
+    """Fill missing international fields from shipper config and field aliases.
+
+    Mutates order_data in-place. Must be called BEFORE validate_international_readiness()
+    so that validation sees enriched data.
+
+    Enrichment rules:
+    - shipper_attention_name ← shipper["name"] (if missing)
+    - shipper_phone ← shipper["phone"] (if missing)
+    - shipment_description ← description (if missing)
+    - commodities ← synthesized from flat hs_code/description/declared_value fields (if missing)
+
+    Args:
+        order_data: Mutable order data dict.
+        shipper: Shipper dict from build_shipper() with keys like name, phone, etc.
+        requirements: Lane requirements from get_requirements().
+    """
+    if not requirements.is_international:
+        return
+
+    # Shipper contact defaults from shipper config
+    if requirements.requires_shipper_contact:
+        if not order_data.get("shipper_attention_name"):
+            fallback = shipper.get("name", "").strip()
+            if fallback:
+                order_data["shipper_attention_name"] = fallback
+        if not order_data.get("shipper_phone"):
+            fallback = shipper.get("phone", "").strip()
+            if fallback:
+                order_data["shipper_phone"] = fallback
+
+    # Description alias: "description" → "shipment_description"
+    if requirements.requires_description and not order_data.get("shipment_description"):
+        fallback = str(order_data.get("description", "")).strip()
+        if fallback:
+            order_data["shipment_description"] = fallback
+
+    # Commodity synthesis from flat fields
+    if requirements.requires_commodities and not order_data.get("commodities"):
+        commodity_desc = (
+            order_data.get("description")
+            or order_data.get("shipment_description")
+            or ""
+        )
+        hs_code = order_data.get("hs_code", "")
+        declared_val = (
+            order_data.get("declared_value")
+            or order_data.get("invoice_monetary_value", "")
+        )
+        if commodity_desc and (hs_code or declared_val):
+            origin_country = shipper.get("countryCode", "US")
+            order_data["commodities"] = [{
+                "description": str(commodity_desc),
+                "commodity_code": str(hs_code) if hs_code else "",
+                "origin_country": str(
+                    order_data.get("commodity_origin_country") or origin_country
+                ).upper(),
+                "quantity": int(order_data.get("commodity_quantity", 1)),
+                "unit_value": str(declared_val) if declared_val else "0",
+                "unit_of_measure": str(
+                    order_data.get("commodity_unit_of_measure", "PCS")
+                ).upper(),
+            }]
+
+
 def validate_international_readiness(
     order_data: dict,
     requirements: RequirementSet,

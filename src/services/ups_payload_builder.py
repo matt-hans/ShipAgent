@@ -660,14 +660,52 @@ def build_shipment_request(
         }
 
     # Description — add as top-level key in simplified
+    # Fall back from explicit shipment_description to generic description.
     if requirements.requires_description:
-        desc = order_data.get("shipment_description", "")
+        desc = (
+            order_data.get("shipment_description")
+            or order_data.get("description")
+            or ""
+        )
         if desc:
-            result["description"] = desc[:UPS_ADDRESS_MAX_LEN]
+            result["description"] = str(desc)[:UPS_ADDRESS_MAX_LEN]
 
     # InternationalForms — build from commodities and add to simplified
     if requirements.requires_international_forms:
         commodities = order_data.get("commodities", [])
+
+        # Auto-synthesize a single commodity from flat row fields when no
+        # explicit commodities list was provided.  This allows XML/CSV
+        # sources with hs_code + description + declared_value columns to
+        # produce valid international shipments without manual commodity
+        # construction by the LLM.
+        if not commodities:
+            commodity_desc = (
+                order_data.get("description")
+                or order_data.get("shipment_description")
+                or ""
+            )
+            hs_code = order_data.get("hs_code", "")
+            declared_val = order_data.get("declared_value") or order_data.get(
+                "invoice_monetary_value", ""
+            )
+            if commodity_desc and (hs_code or declared_val):
+                commodities = [
+                    {
+                        "description": str(commodity_desc),
+                        "commodity_code": str(hs_code) if hs_code else "0000.00.00",
+                        "origin_country": str(
+                            order_data.get("commodity_origin_country")
+                            or origin_country
+                        ).upper(),
+                        "quantity": int(order_data.get("commodity_quantity", 1)),
+                        "unit_value": str(declared_val),
+                        "unit_of_measure": str(
+                            order_data.get("commodity_unit_of_measure", "PCS")
+                        ).upper(),
+                    }
+                ]
+
         if commodities:
             reason_for_export = str(
                 order_data.get("reason_for_export", DEFAULT_REASON_FOR_EXPORT)

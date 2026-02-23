@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from src.services.international_rules import (
     SUPPORTED_INTERNATIONAL_SERVICES,
+    enrich_order_data_for_international,
     get_requirements,
     is_lane_enabled,
     validate_international_readiness,
@@ -443,3 +444,105 @@ class TestLaneEnabled:
             assert is_lane_enabled("US", "GB") is True
             assert is_lane_enabled("DE", "FR") is True
             assert is_lane_enabled("JP", "AU") is True
+
+
+class TestEnrichOrderDataForInternational:
+    """Test pre-validation enrichment of order_data from shipper config."""
+
+    def _mx_requirements(self):
+        with patch.dict(os.environ, {"INTERNATIONAL_ENABLED_LANES": "*"}):
+            return get_requirements("US", "MX", "07")
+
+    def test_shipper_attention_name_from_shipper_config(self):
+        """shipper_attention_name defaults to shipper name."""
+        order_data = {}
+        shipper = {"name": "Acme Corp", "phone": "5551234567", "countryCode": "US"}
+        enrich_order_data_for_international(order_data, shipper, self._mx_requirements())
+        assert order_data["shipper_attention_name"] == "Acme Corp"
+
+    def test_shipper_phone_from_shipper_config(self):
+        """shipper_phone defaults to shipper phone."""
+        order_data = {}
+        shipper = {"name": "Acme Corp", "phone": "5551234567", "countryCode": "US"}
+        enrich_order_data_for_international(order_data, shipper, self._mx_requirements())
+        assert order_data["shipper_phone"] == "5551234567"
+
+    def test_existing_values_not_overwritten(self):
+        """Explicit order_data values take precedence over shipper defaults."""
+        order_data = {"shipper_attention_name": "Custom", "shipper_phone": "9990001111"}
+        shipper = {"name": "Acme Corp", "phone": "5551234567", "countryCode": "US"}
+        enrich_order_data_for_international(order_data, shipper, self._mx_requirements())
+        assert order_data["shipper_attention_name"] == "Custom"
+        assert order_data["shipper_phone"] == "9990001111"
+
+    def test_description_aliased_to_shipment_description(self):
+        """description field aliases to shipment_description for validation."""
+        order_data = {"description": "Auto Parts"}
+        shipper = {"name": "A", "phone": "1", "countryCode": "US"}
+        enrich_order_data_for_international(order_data, shipper, self._mx_requirements())
+        assert order_data["shipment_description"] == "Auto Parts"
+
+    def test_shipment_description_not_overwritten(self):
+        """Explicit shipment_description is not overwritten by description."""
+        order_data = {"shipment_description": "Explicit", "description": "Generic"}
+        shipper = {"name": "A", "phone": "1", "countryCode": "US"}
+        enrich_order_data_for_international(order_data, shipper, self._mx_requirements())
+        assert order_data["shipment_description"] == "Explicit"
+
+    def test_commodity_synthesis_from_flat_fields(self):
+        """Commodities list auto-synthesized from flat hs_code/description."""
+        order_data = {
+            "description": "Engine Parts",
+            "hs_code": "84099199",
+            "declared_value": "150.00",
+        }
+        shipper = {"name": "A", "phone": "1", "countryCode": "US"}
+        enrich_order_data_for_international(order_data, shipper, self._mx_requirements())
+        assert len(order_data["commodities"]) == 1
+        c = order_data["commodities"][0]
+        assert c["description"] == "Engine Parts"
+        assert c["commodity_code"] == "84099199"
+        assert c["unit_value"] == "150.00"
+        assert c["origin_country"] == "US"
+
+    def test_no_commodity_synthesis_without_description(self):
+        """No commodity synthesized when description is missing."""
+        order_data = {"hs_code": "84099199"}
+        shipper = {"name": "A", "phone": "1", "countryCode": "US"}
+        enrich_order_data_for_international(order_data, shipper, self._mx_requirements())
+        assert "commodities" not in order_data
+
+    def test_existing_commodities_not_overwritten(self):
+        """Explicit commodities list is preserved."""
+        existing = [{"description": "Custom", "commodity_code": "1234"}]
+        order_data = {"commodities": existing, "description": "Other", "hs_code": "9999"}
+        shipper = {"name": "A", "phone": "1", "countryCode": "US"}
+        enrich_order_data_for_international(order_data, shipper, self._mx_requirements())
+        assert order_data["commodities"] is existing
+
+    def test_domestic_not_enriched(self):
+        """Domestic shipments are not enriched."""
+        order_data = {}
+        shipper = {"name": "Acme Corp", "phone": "5551234567", "countryCode": "US"}
+        req = get_requirements("US", "US", "03")
+        enrich_order_data_for_international(order_data, shipper, req)
+        assert "shipper_attention_name" not in order_data
+
+    def test_enriched_data_passes_validation(self):
+        """Order data enriched from shipper + flat fields passes validation."""
+        order_data = {
+            "ship_to_country": "MX",
+            "ship_to_name": "Maria Garcia",
+            "ship_to_phone": "5215551234",
+            "ship_to_state": "AGU",
+            "description": "Auto Parts",
+            "hs_code": "84099199",
+            "declared_value": "150.00",
+            "invoice_currency_code": "USD",
+            "invoice_monetary_value": "150.00",
+        }
+        shipper = {"name": "Acme Corp", "phone": "5551234567", "countryCode": "US"}
+        req = self._mx_requirements()
+        enrich_order_data_for_international(order_data, shipper, req)
+        errors = validate_international_readiness(order_data, req)
+        assert errors == [], [e.message for e in errors]

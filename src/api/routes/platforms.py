@@ -120,7 +120,7 @@ class ShopifyActivateResponse(BaseModel):
     success: bool
     row_count: int = 0
     source_type: str | None = None
-    columns: list[dict[str, Any]] = Field(default_factory=list)
+    columns: list[Any] = Field(default_factory=list)
     error: str | None = None
 
 

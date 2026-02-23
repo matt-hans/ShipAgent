@@ -533,13 +533,21 @@ def _emit_preview_ready(
         "total_estimated_cost_cents": result.get("total_estimated_cost_cents", 0),
         "rows_with_warnings": rows_with_warnings,
         "message": (
-            "Preview card has been displayed to the user. STOP HERE. "
+            "Preview card has been displayed to the user. "
             "Respond with one brief sentence asking the user to review "
-            "the preview and click Confirm or Cancel."
+            "the preview and click Confirm or Cancel. "
+            "If the user requests a refinement (e.g., change service, weight, packaging), "
+            "re-call ship_command_pipeline with ONLY the updated parameters "
+            "(service_code, packaging_type, etc.) and the same command text. "
+            "Do NOT pass filter_spec again — the system caches it automatically. "
+            "If the original used all_rows=true, pass all_rows=true again."
         ),
     }
-    # Include filter metadata fields for transparency and audit
-    for key in ("filter_explanation", "compiled_filter", "filter_audit"):
+    # Include filter metadata for transparency and audit (NOT filter_spec —
+    # re-passing it triggers replay-prevention denial; the pipeline cache
+    # handles filter reuse automatically).
+    for key in ("filter_explanation", "compiled_filter", "filter_audit",
+                "all_rows"):
         if key in result:
             response[key] = result[key]
     return _ok(response)

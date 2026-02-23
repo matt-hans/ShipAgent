@@ -370,24 +370,23 @@ class TestSampleInjectionSurface:
 # ============================================================================
 
 
-class TestFilterTokenRaceCondition:
-    """Verify filter token operations are thread-safe."""
+class TestFilterSpecValidation:
+    """Verify filter_spec structural validation still works after simplification."""
 
-    def test_token_lock_exists(self):
-        """_token_lock is a threading.Lock instance."""
-        from src.orchestrator.agent.hooks import _token_lock
+    @pytest.mark.asyncio
+    async def test_filter_spec_without_root_denied(self):
+        """filter_spec without root field is denied."""
+        from src.orchestrator.agent.hooks import validate_filter_spec_on_pipeline
 
-        assert isinstance(_token_lock, type(threading.Lock()))
-
-    def test_cleanup_expired_tokens_under_lock(self):
-        """_cleanup_expired_tokens can be called under lock without deadlock."""
-        from src.orchestrator.agent.hooks import (
-            _cleanup_expired_tokens,
-            _token_lock,
+        result = await validate_filter_spec_on_pipeline(
+            {"tool_name": "ship_command_pipeline", "tool_input": {
+                "filter_spec": {"status": "RESOLVED"},
+            }},
+            "test-id",
+            None,
         )
-
-        with _token_lock:
-            _cleanup_expired_tokens()  # Should not deadlock
+        decision = result.get("hookSpecificOutput", {}).get("permissionDecision", "")
+        assert decision == "deny"
 
 
 # ============================================================================

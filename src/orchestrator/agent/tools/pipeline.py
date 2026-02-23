@@ -780,9 +780,24 @@ async def ship_command_pipeline_tool(
                     cached_command_raw,
                     validation_command,
                 )
-                if same_command or same_filter_semantics:
+                # Refinement path: current command has no filter qualifiers
+                # (e.g., "ship all orders with Ground") so it's a service/param
+                # change only — safe to reuse the cached filter.
+                is_refinement = (
+                    not _command_implies_filter(validation_command)
+                    and isinstance(cached_spec_raw, dict)
+                )
+                if same_command or same_filter_semantics or is_refinement:
                     cached_spec = cached_spec_raw
-                    if same_filter_semantics and not same_command:
+                    if is_refinement and not same_command:
+                        logger.info(
+                            "ship_command_pipeline reusing cached filter_spec for "
+                            "refinement (no filter qualifiers in current command) "
+                            "cached_command=%r current_command=%r",
+                            cached_command_raw[:120],
+                            validation_command[:120],
+                        )
+                    elif same_filter_semantics and not same_command:
                         logger.info(
                             "ship_command_pipeline reusing cached filter_spec via "
                             "semantic-equivalence cached_command=%r current_command=%r",
@@ -1316,13 +1331,16 @@ async def ship_command_pipeline_tool(
     rows_with_warnings = sum(1 for row in preview_rows if row.get("warnings"))
     result["rows_with_warnings"] = rows_with_warnings
 
-    # Attach filter metadata for audit trail
+    # Attach filter metadata for audit trail and refinement reuse
     if filter_explanation:
         result["filter_explanation"] = filter_explanation
     if filter_audit:
         result["filter_audit"] = filter_audit
     if filter_spec_raw:
         result["compiled_filter"] = where_sql
+        result["filter_spec"] = filter_spec_raw
+    if all_rows:
+        result["all_rows"] = True
 
     _audit_event(
         "pipeline",
