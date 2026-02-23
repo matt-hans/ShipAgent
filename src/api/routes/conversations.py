@@ -1097,11 +1097,12 @@ async def stream_events(request: Request, session_id: str) -> EventSourceRespons
     Connect to this endpoint after sending a message to receive
     real-time agent events (thinking, tool calls, messages, etc.).
 
-    Security note (F-5, CWE-284): This endpoint checks session existence
-    but not ownership. Session IDs are UUID v4 (122 bits of entropy),
-    making brute-force infeasible. The API key middleware provides
-    perimeter auth. For multi-user deployments, add session ownership
-    validation (e.g. match session.user_id against the authenticated user).
+    Security note (F-5, CWE-284): Single-tenant app — session ownership is
+    enforced by the perimeter API key middleware (all authenticated requests
+    share the same privilege level). Session IDs use UUID v4 (122 bits of
+    entropy), making brute-force infeasible. If this application is ever
+    extended to multi-tenant, add a session.user_id column and enforce
+    ownership checks: ``if session.user_id != authenticated_user.id: 403``.
 
     Args:
         request: FastAPI request for disconnect detection.

@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -640,9 +641,17 @@ _used_tokens_expiry: dict[str, float] = {}  # token_hash → expiry timestamp
 _TOKEN_CLEANUP_INTERVAL = 300  # 5 minutes
 _last_token_cleanup: float = 0.0
 
+# Lock protects _used_filter_tokens, _used_tokens_expiry, and
+# _last_token_cleanup from concurrent-request race conditions (CWE-362).
+_token_lock = threading.Lock()
+
 
 def _cleanup_expired_tokens() -> None:
-    """Remove expired entries from the in-memory used-token set."""
+    """Remove expired entries from the in-memory used-token set.
+
+    Must be called under _token_lock to prevent race conditions on
+    _last_token_cleanup (CWE-362, Finding 8).
+    """
     global _last_token_cleanup
     now = time.time()
     if now - _last_token_cleanup < _TOKEN_CLEANUP_INTERVAL:
@@ -965,9 +974,12 @@ async def validate_filter_spec_on_pipeline(
 
     # Replay prevention: reject tokens already consumed (CWE-294).
     # Check in-memory cache first (fast path), then DB (survives restarts).
-    _cleanup_expired_tokens()
+    # Lock protects cleanup + check atomicity (CWE-362, Finding 8).
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    if token_hash in _used_filter_tokens or _is_token_consumed_db(token_hash):
+    with _token_lock:
+        _cleanup_expired_tokens()
+        token_consumed_in_memory = token_hash in _used_filter_tokens
+    if token_consumed_in_memory or _is_token_consumed_db(token_hash):
         _log_to_stderr(
             f"[FILTER ENFORCEMENT] DENYING replayed token | ID: {tool_use_id}"
         )
@@ -1064,9 +1076,11 @@ async def validate_filter_spec_on_pipeline(
         )
 
     # All validations passed — mark token as consumed to prevent replay.
+    # Lock protects in-memory set mutation (CWE-362, Finding 8).
     expires_at = decoded.get("expires_at", time.time() + 600)
-    _used_filter_tokens.add(token_hash)
-    _used_tokens_expiry[token_hash] = expires_at
+    with _token_lock:
+        _used_filter_tokens.add(token_hash)
+        _used_tokens_expiry[token_hash] = expires_at
     _persist_token_consumed(token_hash, expires_at)
 
     return {}

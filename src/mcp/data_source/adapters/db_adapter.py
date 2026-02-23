@@ -261,7 +261,7 @@ class DatabaseAdapter(BaseSourceAdapter):
         Returns:
             List of dicts with table name and row count estimate
         """
-        _validate_identifier(schema, "schema")
+        schema = _validate_identifier(schema, "schema")
         db_type = self._detect_db_type(connection_string)
 
         # Attach database temporarily as read-only.
@@ -375,7 +375,7 @@ class DatabaseAdapter(BaseSourceAdapter):
         Raises:
             ValueError: If query targets large table without WHERE clause
         """
-        _validate_identifier(schema, "schema")
+        schema = _validate_identifier(schema, "schema")
         db_type = self._detect_db_type(connection_string)
 
         # Attach database temporarily as read-only.

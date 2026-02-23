@@ -137,17 +137,24 @@ def _ok(data: Any) -> dict[str, Any]:
 
 
 def _err(message: str) -> dict[str, Any]:
-    """Build an error tool response.
+    """Build an error tool response with sanitized content (CWE-200).
+
+    Applies sanitize_error_message() to strip sensitive key=value pairs
+    (credentials, tokens) from error text before it flows through SSE
+    events to the frontend (Finding 11).
 
     Args:
-        message: Human-readable error message.
+        message: Human-readable error message (may contain raw exception text).
 
     Returns:
-        MCP tool response dict with isError=True.
+        MCP tool response dict with isError=True and sanitized message.
     """
+    from src.utils.redaction import sanitize_error_message
+
+    safe_message = sanitize_error_message(message) or message
     return {
         "isError": True,
-        "content": [{"type": "text", "text": message}],
+        "content": [{"type": "text", "text": safe_message}],
     }
 
 

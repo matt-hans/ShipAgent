@@ -17,6 +17,7 @@ Example usage:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -26,6 +27,13 @@ from src.mcp.external_sources.models import (
     OrderFilters,
     TrackingUpdate,
 )
+
+# Safe SQL identifier pattern — alphanumeric + underscore, max 128 chars (CWE-89).
+_SAFE_IDENT = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]{0,127}$")
+
+# Pagination bounds to prevent DoS via extreme values (CWE-20).
+_MAX_OFFSET = 100_000
+_MAX_LIMIT = 1_000
 
 # Handle optional oracledb dependency
 ORACLEDB_AVAILABLE = False
@@ -70,6 +78,26 @@ DEFAULT_TABLE_CONFIG: dict[str, Any] = {
 }
 
 
+def _quote_identifier(name: str) -> str:
+    """Quote an Oracle SQL identifier safely (CWE-89).
+
+    Validates the identifier against _SAFE_IDENT pattern, then wraps it in
+    double quotes to prevent SQL injection via table or column names.
+
+    Args:
+        name: Raw identifier name (table name or column name).
+
+    Returns:
+        Double-quoted safe identifier string.
+
+    Raises:
+        ValueError: If the name does not match the safe identifier pattern.
+    """
+    if not _SAFE_IDENT.match(name):
+        raise ValueError(f"Invalid SQL identifier: {name!r}")
+    return f'"{name}"'
+
+
 class OracleClient(PlatformClient):
     """Oracle database platform client.
 
@@ -90,15 +118,26 @@ class OracleClient(PlatformClient):
     def __init__(self, table_config: dict[str, Any] | None = None) -> None:
         """Initialize Oracle client.
 
+        Validates all table and column identifiers at init to prevent SQL
+        injection (CWE-89). Invalid identifiers raise ValueError immediately.
+
         Args:
             table_config: Optional custom table/column mapping configuration.
                          If not provided, DEFAULT_TABLE_CONFIG is used.
+
+        Raises:
+            ValueError: If any table or column name fails identifier validation.
         """
         self._connection: Any = None
         self._table_config = table_config or DEFAULT_TABLE_CONFIG.copy()
         # Ensure columns dict exists with defaults
         if "columns" not in self._table_config:
             self._table_config["columns"] = DEFAULT_TABLE_CONFIG["columns"].copy()
+
+        # Validate all identifiers at init time (CWE-89 defense-in-depth)
+        _quote_identifier(self._table_config["orders_table"])
+        for logical_name, col_name in self._table_config["columns"].items():
+            _quote_identifier(col_name)
 
     @property
     def platform_name(self) -> str:
@@ -214,7 +253,7 @@ class OracleClient(PlatformClient):
         self._check_connected()
 
         columns = self._build_select_columns()
-        table = self._table_config["orders_table"]
+        table = _quote_identifier(self._table_config["orders_table"])
         where_clause, params = self._build_where_clause(filters)
         pagination = self._build_pagination_clause(filters)
 
@@ -255,7 +294,7 @@ class OracleClient(PlatformClient):
         self._check_connected()
 
         columns = self._build_select_columns()
-        table = self._table_config["orders_table"]
+        table = _quote_identifier(self._table_config["orders_table"])
         id_column = self._get_column("order_id")
 
         sql = f"SELECT {columns} FROM {table} WHERE {id_column} = :order_id"
@@ -287,7 +326,7 @@ class OracleClient(PlatformClient):
         """
         self._check_connected()
 
-        table = self._table_config["orders_table"]
+        table = _quote_identifier(self._table_config["orders_table"])
         tracking_column = self._get_column("tracking_number")
         id_column = self._get_column("order_id")
 
@@ -340,26 +379,35 @@ class OracleClient(PlatformClient):
         await self.close()
 
     def _get_column(self, logical_name: str) -> str:
-        """Get the mapped column name for a logical field.
+        """Get the safely quoted column name for a logical field (CWE-89).
 
         Args:
             logical_name: The logical field name (e.g., 'order_id').
 
         Returns:
-            The mapped database column name (e.g., 'ORDER_ID').
+            The double-quoted database column name (e.g., '"ORDER_ID"').
+
+        Raises:
+            ValueError: If the column name fails identifier validation.
         """
-        return self._table_config["columns"].get(
+        raw = self._table_config["columns"].get(
             logical_name, logical_name.upper()
         )
+        return _quote_identifier(raw)
 
     def _build_select_columns(self) -> str:
-        """Build the SELECT column list from configuration.
+        """Build the SELECT column list from configuration (CWE-89).
+
+        All column names are validated and double-quoted to prevent injection.
 
         Returns:
-            Comma-separated list of column names.
+            Comma-separated list of safely quoted column names.
+
+        Raises:
+            ValueError: If any column name fails identifier validation.
         """
         columns = self._table_config["columns"]
-        return ", ".join(columns.values())
+        return ", ".join(_quote_identifier(col) for col in columns.values())
 
     def _build_where_clause(
         self, filters: OrderFilters
@@ -396,22 +444,39 @@ class OracleClient(PlatformClient):
         return "1=1", params
 
     def _build_pagination_clause(self, filters: OrderFilters) -> str:
-        """Build pagination clause (Oracle 12c+ syntax).
+        """Build pagination clause (Oracle 12c+ syntax) with range validation (CWE-20).
+
+        Validates offset and limit to prevent integer injection or DoS via
+        extreme values.
 
         Args:
             filters: Filters containing limit and offset.
 
         Returns:
             OFFSET/FETCH clause string.
-        """
-        parts = []
 
-        if filters.offset > 0:
-            parts.append(f" OFFSET {filters.offset} ROWS")
+        Raises:
+            ValueError: If offset or limit is out of valid range.
+        """
+        offset = int(filters.offset)
+        limit = int(filters.limit)
+
+        if offset < 0 or offset > _MAX_OFFSET:
+            raise ValueError(
+                f"offset must be between 0 and {_MAX_OFFSET}, got {offset}"
+            )
+        if limit < 1 or limit > _MAX_LIMIT:
+            raise ValueError(
+                f"limit must be between 1 and {_MAX_LIMIT}, got {limit}"
+            )
+
+        parts = []
+        if offset > 0:
+            parts.append(f" OFFSET {offset} ROWS")
         else:
             parts.append(" OFFSET 0 ROWS")
 
-        parts.append(f" FETCH FIRST {filters.limit} ROWS ONLY")
+        parts.append(f" FETCH FIRST {limit} ROWS ONLY")
 
         return "".join(parts)
 
