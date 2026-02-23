@@ -581,6 +581,18 @@ export async function deleteConversation(sessionId: string): Promise<void> {
   }
 }
 
+/**
+ * Soft-delete all active conversation sessions.
+ *
+ * @returns The count of deleted sessions.
+ */
+export async function deleteAllConversations(): Promise<{ deleted: number }> {
+  const response = await fetch(`${getApiBase()}/conversations/bulk-delete`, {
+    method: 'POST',
+  });
+  return parseResponse(response);
+}
+
 // === External Platform API ===
 
 import type {
@@ -626,6 +638,27 @@ export async function connectPlatform(
     }),
   });
   return parseResponse<ConnectPlatformResponse>(response);
+}
+
+/**
+ * Activate Shopify as the active data source.
+ *
+ * Performs backend connect + fetch + import in a single call.
+ * Used by the UI when switching from a local source to Shopify.
+ *
+ * @returns Activation result with row count and column info.
+ */
+export async function activateShopify(): Promise<{
+  success: boolean;
+  row_count: number;
+  source_type: string | null;
+  columns: Array<Record<string, unknown>>;
+  error: string | null;
+}> {
+  const response = await fetch(`${getApiBase()}/platforms/shopify/activate`, {
+    method: 'POST',
+  });
+  return parseResponse(response);
 }
 
 /**

@@ -114,6 +114,16 @@ class ShopifyEnvStatusResponse(BaseModel):
     error: str | None = Field(None, description="Error message if validation failed")
 
 
+class ShopifyActivateResponse(BaseModel):
+    """Response from Shopify activation (connect + fetch + import)."""
+
+    success: bool
+    row_count: int = 0
+    source_type: str | None = None
+    columns: list[dict[str, Any]] = Field(default_factory=list)
+    error: str | None = None
+
+
 # === Routes ===
 
 
@@ -140,6 +150,42 @@ async def list_connections() -> ListConnectionsResponse:
         connections=connections,
         count=len(connections),
     )
+
+
+@router.post("/shopify/activate", response_model=ShopifyActivateResponse)
+async def activate_shopify() -> ShopifyActivateResponse:
+    """Activate Shopify as the active data source.
+
+    Performs the full flow: resolve credentials, connect to Shopify,
+    fetch orders, normalize, and import into the Data Source MCP.
+    This endpoint is called by the frontend when switching to Shopify.
+
+    Returns:
+        Activation result with row count and column info.
+    """
+    from src.services.shopify_activation_service import (
+        ShopifyActivationError,
+        activate_shopify_as_data_source,
+    )
+
+    try:
+        result = await activate_shopify_as_data_source()
+        return ShopifyActivateResponse(
+            success=True,
+            row_count=result["row_count"],
+            source_type=result["source_type"],
+            columns=result.get("columns", []),
+        )
+    except ShopifyActivationError as exc:
+        return ShopifyActivateResponse(
+            success=False,
+            error=str(exc),
+        )
+    except Exception as exc:
+        return ShopifyActivateResponse(
+            success=False,
+            error=f"Unexpected error during Shopify activation: {exc}",
+        )
 
 
 @router.post("/{platform}/connect", response_model=ConnectPlatformResponse)

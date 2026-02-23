@@ -289,6 +289,21 @@ class ConversationPersistenceService:
         self._db.commit()
         return True
 
+    def soft_delete_all_sessions(self) -> int:
+        """Soft-delete all active sessions.
+
+        Returns:
+            Number of sessions marked inactive.
+        """
+        now = utc_now_iso()
+        count = (
+            self._db.query(ConversationSession)
+            .filter(ConversationSession.is_active == True)  # noqa: E712
+            .update({"is_active": False, "updated_at": now})
+        )
+        self._db.commit()
+        return count
+
     def count_assistant_messages(self, session_id: str) -> int:
         """Count assistant messages in a session.
 

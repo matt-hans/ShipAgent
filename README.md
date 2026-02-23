@@ -23,7 +23,7 @@ Available as a native desktop app (macOS/Windows/Linux) or Docker deployment.
 - **Crash Recovery** — Resume interrupted batches from exactly where they stopped
 
 ### Desktop App
-- **Native Desktop** — Tauri v2 desktop app for macOS, Windows, and Linux
+- **Native Desktop** — Tauri v2 desktop app for macOS
 - **Auto-Updater** — Ed25519-signed updates via GitHub Releases
 - **Onboarding Wizard** — 3-step setup: Anthropic API key, UPS credentials, shipper address
 - **Settings Flyout** — Connections, shipment behavior, address book, custom commands
@@ -836,9 +836,6 @@ Follow the UPSMCPClient pattern:
 - [x] Phase 14: Address Book, Custom Commands, Settings UI
 - [x] Phase 15: Production Packaging (Tauri v2, PyInstaller, Keyring, Onboarding, Auto-Updater)
 - [x] Phase 16: Connection Management & Security Hardening
-- [ ] P1 — Multi-Carrier (FedEx, USPS)
-- [ ] P2 — Google Sheets, Webhooks
-- [ ] P3 — Smart Routing (optimal carrier+service recommendation)
 
 ---
 

@@ -16,6 +16,7 @@ import {
   getSavedDataSources,
   reconnectSavedSource,
   getDataSourceStatus,
+  activateShopify,
 } from '@/lib/api';
 import type { DataSourceInfo, DataSourceType } from '@/types/api';
 import { RecentSourcesModal } from '@/components/RecentSourcesModal';
@@ -127,7 +128,7 @@ export function DataSourceSection() {
         detail: `${dataSource.row_count?.toLocaleString() ?? '?'} rows`,
         sourceKind: dataSource.type === 'database' ? 'database' : 'file',
       });
-    } else if (backendSourceType === 'shopify' || (!backendSourceType && (shopifyAvailable || shopifyEnvConnected))) {
+    } else if (backendSourceType === 'shopify') {
       setActiveSourceType('shopify');
       setActiveSourceInfo({
         type: 'shopify',
@@ -142,8 +143,6 @@ export function DataSourceSection() {
   }, [
     dataSource,
     backendSourceType,
-    shopifyAvailable,
-    shopifyEnvConnected,
     shopifyStoreName,
     setActiveSourceType,
     setActiveSourceInfo,
@@ -151,7 +150,7 @@ export function DataSourceSection() {
 
   // --- Source switching handlers ---
 
-  /** Switch to Shopify: disconnect local source so backend routes to Shopify. */
+  /** Switch to Shopify: disconnect local source and activate Shopify via backend. */
   const handleSwitchToShopify = async () => {
     if (dataSource) {
       setCachedLocalConfig({
@@ -162,7 +161,21 @@ export function DataSourceSection() {
     try { await disconnectDataSource(); } catch { /* best-effort */ }
     setDataSource(null);
     setBackendSourceType(null);
-    // useEffect will set Shopify as active
+    setImportError(null);
+
+    setIsConnecting(true);
+    try {
+      const result = await activateShopify();
+      if (result.success) {
+        setBackendSourceType('shopify');
+      } else {
+        setImportError(result.error || 'Failed to activate Shopify');
+      }
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Failed to activate Shopify');
+    } finally {
+      setIsConnecting(false);
+    }
   };
 
   /** Open native file picker for CSV or Excel. */
@@ -374,9 +387,10 @@ export function DataSourceSection() {
               </p>
               <button
                 onClick={handleSwitchToShopify}
-                className="w-full py-1.5 text-xs font-medium rounded border border-[#5BBF3D]/40 text-[#5BBF3D] hover:bg-[#5BBF3D]/10 transition-colors"
+                disabled={isConnecting}
+                className="w-full py-1.5 text-xs font-medium rounded border border-[#5BBF3D]/40 text-[#5BBF3D] hover:bg-[#5BBF3D]/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Use Shopify
+                {isConnecting ? 'Activating...' : 'Use Shopify'}
               </button>
             </div>
           )}

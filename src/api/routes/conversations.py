@@ -1190,6 +1190,43 @@ async def delete_conversation(session_id: str) -> Response:
     return Response(status_code=204)
 
 
+@router.post("/bulk-delete", status_code=200)
+async def bulk_delete_conversations() -> dict[str, int]:
+    """Soft-delete all active conversation sessions.
+
+    Marks every active session as inactive in the database, then stops
+    any running agents and clears in-memory state for each.
+
+    Returns:
+        JSON with ``deleted`` count.
+    """
+    from src.db.connection import get_db_context
+
+    # Soft-delete all active sessions in DB
+    try:
+        with get_db_context() as db:
+            svc = ConversationPersistenceService(db)
+            count = svc.soft_delete_all_sessions()
+    except Exception as e:
+        logger.error("Failed to bulk soft-delete sessions: %s", e)
+        raise HTTPException(status_code=500, detail="Bulk delete failed") from None
+
+    # Stop all in-memory sessions
+    session_ids = list(_session_manager.list_sessions())
+    for sid in session_ids:
+        session = _session_manager.get_session(sid)
+        if session is not None:
+            session.terminating = True
+        await _session_manager.cancel_session_prewarm_task(sid)
+        await _session_manager.cancel_session_message_tasks(sid)
+        await _session_manager.stop_session_agent(sid)
+        _session_manager.remove_session(sid)
+        _event_queues.pop(sid, None)
+
+    logger.info("Bulk-deleted %d conversation sessions", count)
+    return {"deleted": count}
+
+
 # === Chat Session Persistence Endpoints ===
 
 

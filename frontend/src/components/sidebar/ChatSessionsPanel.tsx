@@ -2,13 +2,13 @@
  * Chat sessions panel for the sidebar.
  *
  * Lists persistent conversation sessions grouped by recency.
- * Supports session switching, deletion, and new chat creation.
+ * Supports session switching, deletion, clear all, and new chat creation.
  */
 
 import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { cn, formatTimeAgo } from '@/lib/utils';
-import { listConversations, deleteConversation, getConversationMessages, exportConversation } from '@/lib/api';
+import { listConversations, getConversationMessages, exportConversation } from '@/lib/api';
 import type { ChatSessionSummary, PersistedMessage, SessionContext } from '@/types/api';
 import type { ConversationMessage } from '@/hooks/useAppState';
 import { TrashIcon, PlusIcon, DownloadIcon } from '@/components/ui/icons';
@@ -69,17 +69,23 @@ export function ChatSessionsPanel({
   onNewChat,
   activeSessionId,
 }: ChatSessionsPanelProps) {
-  const { chatSessionsVersion, setChatSessions } = useAppState();
-  const [sessions, setSessions] = React.useState<ChatSessionSummary[]>([]);
+  const {
+    chatSessions,
+    setChatSessions,
+    chatSessionsVersion,
+    deleteChatSession,
+    deleteAllChatSessions,
+  } = useAppState();
   const [isLoading, setIsLoading] = React.useState(true);
   const [deletingId, setDeletingId] = React.useState<string | null>(null);
+  const [isClearingAll, setIsClearingAll] = React.useState(false);
+  const [confirmClearAll, setConfirmClearAll] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   const loadSessions = React.useCallback(async () => {
     try {
       setError(null);
       const data = await listConversations();
-      setSessions(data);
       setChatSessions(data);
     } catch (err) {
       console.error('Failed to load chat sessions:', err);
@@ -98,8 +104,7 @@ export function ChatSessionsPanel({
     setDeletingId(sessionId);
     setError(null);
     try {
-      await deleteConversation(sessionId);
-      setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      await deleteChatSession(sessionId);
     } catch (err) {
       console.error('Failed to delete session:', err);
       setError('Failed to delete session');
@@ -107,6 +112,31 @@ export function ChatSessionsPanel({
       setDeletingId(null);
     }
   };
+
+  const handleClearAll = async () => {
+    if (!confirmClearAll) {
+      setConfirmClearAll(true);
+      return;
+    }
+    setIsClearingAll(true);
+    setError(null);
+    setConfirmClearAll(false);
+    try {
+      await deleteAllChatSessions();
+    } catch (err) {
+      console.error('Failed to clear all sessions:', err);
+      setError('Failed to clear history');
+    } finally {
+      setIsClearingAll(false);
+    }
+  };
+
+  // Reset confirmation when clicking elsewhere
+  React.useEffect(() => {
+    if (!confirmClearAll) return;
+    const timer = setTimeout(() => setConfirmClearAll(false), 3000);
+    return () => clearTimeout(timer);
+  }, [confirmClearAll]);
 
   const handleExport = async (e: React.MouseEvent, sessionId: string) => {
     e.stopPropagation();
@@ -138,7 +168,7 @@ export function ChatSessionsPanel({
     }
   };
 
-  const grouped = groupByDate(sessions);
+  const grouped = groupByDate(chatSessions);
   const groupOrder = ['Today', 'Yesterday', 'Previous 7 Days', 'Older'];
 
   if (isLoading) {
@@ -155,14 +185,33 @@ export function ChatSessionsPanel({
     <div className="p-3 space-y-3">
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-slate-300">Chat Sessions</span>
-        <button
-          onClick={onNewChat}
-          className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded bg-primary/20 text-primary hover:bg-primary/30 transition-colors"
-          title="New chat"
-        >
-          <PlusIcon className="w-3 h-3" />
-          New Chat
-        </button>
+        <div className="flex items-center gap-1.5">
+          {chatSessions.length > 0 && (
+            <button
+              onClick={handleClearAll}
+              disabled={isClearingAll}
+              className={cn(
+                'flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded transition-colors',
+                confirmClearAll
+                  ? 'bg-red-500/20 text-red-400 hover:bg-red-500/30'
+                  : 'bg-slate-700/50 text-slate-400 hover:bg-slate-700 hover:text-slate-300',
+                isClearingAll && 'opacity-50 cursor-not-allowed'
+              )}
+              title={confirmClearAll ? 'Click again to confirm' : 'Clear all chats'}
+            >
+              <TrashIcon className="w-3 h-3" />
+              {confirmClearAll ? 'Confirm' : 'Clear All'}
+            </button>
+          )}
+          <button
+            onClick={onNewChat}
+            className="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded bg-primary/20 text-primary hover:bg-primary/30 transition-colors"
+            title="New chat"
+          >
+            <PlusIcon className="w-3 h-3" />
+            New Chat
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -172,7 +221,7 @@ export function ChatSessionsPanel({
       )}
 
       <div className="space-y-3 flex-1 overflow-y-auto scrollable">
-        {sessions.length === 0 ? (
+        {chatSessions.length === 0 ? (
           <p className="text-xs text-slate-500 text-center py-4">
             No conversations yet. Start typing to begin.
           </p>

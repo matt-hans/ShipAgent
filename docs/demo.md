@@ -561,6 +561,10 @@ Each phase demonstrates a distinct agentic capability. The sequence progresses f
 
 ---
 
+### XML
+| **Agent Prompt** | `Show me all shipments going to Mexico` |
+| **Expected Result** | 2 rows: SHP-001 (Carlos Mendoza, Mexico City CDMX 06600, Worldwide Express, Electronics accessories, HS: 8471.30.01, $350.00) and SHP-004 (Sofia Ramirez, Guadalajara JAL 44100, Expedited, Artisan textiles, HS: 6302.60.00, $125.00). Country = `MX`. |
+| **What This Tests** | Country filter on namespaced XML data, international address parsing |
 ### Phase 2: Excel Source-Agnostic Proof
 
 **Setup:** Click Disconnect in sidebar → Click Excel button → Upload `test_data/sample_shipments.xlsx` (identical data, different format)

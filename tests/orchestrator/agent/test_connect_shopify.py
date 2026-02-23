@@ -1,20 +1,28 @@
-"""Tests for connect_shopify agent tool."""
+"""Tests for connect_shopify agent tool.
+
+Tests mock the shared shopify_activation_service since the tool now
+delegates all logic there.
+"""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# Mock targets: the service module where the actual logic lives.
+_SVC = "src.services.shopify_activation_service"
+
 
 @pytest.mark.asyncio
 async def test_connect_shopify_fetches_and_imports():
     """connect_shopify tool should connect platform, fetch orders, import via gateway."""
+    fake_creds = MagicMock()
+    fake_creds.access_token = "shpat_test"
+    fake_creds.store_domain = "test.myshopify.com"
+
     with (
-        patch("src.orchestrator.agent.tools.data.get_external_sources_client") as mock_ext,
-        patch("src.orchestrator.agent.tools.data.get_data_gateway") as mock_gw,
-        patch.dict("os.environ", {
-            "SHOPIFY_ACCESS_TOKEN": "shpat_test",
-            "SHOPIFY_STORE_DOMAIN": "test.myshopify.com",
-        }),
+        patch(f"{_SVC}.resolve_shopify_credentials", return_value=fake_creds),
+        patch(f"{_SVC}.get_external_sources_client") as mock_ext,
+        patch(f"{_SVC}.get_data_gateway") as mock_gw,
     ):
         ext_client = AsyncMock()
         ext_client.connect_platform.return_value = {"success": True}
@@ -49,8 +57,10 @@ async def test_connect_shopify_fetches_and_imports():
 
 @pytest.mark.asyncio
 async def test_connect_shopify_missing_credentials():
-    """connect_shopify returns error when env vars not set."""
-    with patch.dict("os.environ", {}, clear=True):
+    """connect_shopify returns error when credentials not configured."""
+    with (
+        patch(f"{_SVC}.resolve_shopify_credentials", return_value=None),
+    ):
         from src.orchestrator.agent.tools.data import connect_shopify_tool
 
         result = await connect_shopify_tool(args={}, bridge=None)
@@ -63,7 +73,7 @@ async def test_connect_shopify_missing_credentials():
 async def test_connect_shopify_connect_failure():
     """connect_shopify returns error when platform connect fails."""
     with (
-        patch("src.orchestrator.agent.tools.data.get_external_sources_client") as mock_ext,
+        patch(f"{_SVC}.get_external_sources_client") as mock_ext,
         patch.dict("os.environ", {
             "SHOPIFY_ACCESS_TOKEN": "shpat_test",
             "SHOPIFY_STORE_DOMAIN": "test.myshopify.com",
@@ -88,7 +98,7 @@ async def test_connect_shopify_connect_failure():
 async def test_connect_shopify_no_orders():
     """connect_shopify returns error when no orders found."""
     with (
-        patch("src.orchestrator.agent.tools.data.get_external_sources_client") as mock_ext,
+        patch(f"{_SVC}.get_external_sources_client") as mock_ext,
         patch.dict("os.environ", {
             "SHOPIFY_ACCESS_TOKEN": "shpat_test",
             "SHOPIFY_STORE_DOMAIN": "test.myshopify.com",
@@ -122,7 +132,7 @@ def test_connect_shopify_registered_in_definitions():
 
 def test_prepare_shopify_import_rows_unions_keys_and_keeps_optional_fields():
     """Import rows should expose a stable union schema across all orders."""
-    from src.orchestrator.agent.tools.data import _prepare_shopify_import_rows
+    from src.services.shopify_activation_service import _prepare_shopify_import_rows
 
     rows = _prepare_shopify_import_rows(
         [
