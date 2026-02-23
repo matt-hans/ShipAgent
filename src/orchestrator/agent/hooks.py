@@ -59,6 +59,7 @@ __all__ = [
     "detect_error_response",
     "create_hook_matchers",
     "create_shipping_hook",
+    "create_filter_spec_hook",
     "validate_schedule_pickup",
     "validate_cancel_pickup",
     "validate_track_package",
@@ -1140,6 +1141,92 @@ def create_shipping_hook(
     return _validate_shipping
 
 
+def create_filter_spec_hook(bridge: Any | None = None):
+    """Factory that creates a bridge-aware filter_spec validation hook.
+
+    Wraps ``validate_filter_spec_on_pipeline`` with same-session token reuse
+    detection. When a token has already been consumed (replay prevention)
+    but the submitted filter_spec matches the session's cached resolved spec
+    (same token hash), this is legitimate same-session refinement where the
+    agent redundantly re-passed the filter_spec from its conversation context.
+    In that case the hook strips the filter_spec from tool_input so the
+    pipeline falls through to its bridge-cache path, which does not consume
+    the token.
+
+    Security properties preserved:
+    - Cross-session replay: still denied (consumed token, no bridge cache match)
+    - Tampered filter_spec: still denied (signature check runs first)
+    - Expired tokens: still denied (expiry check runs first)
+    - Different-source reuse: still denied (schema_signature check in pipeline)
+    - True replays: still denied (no bridge or bridge cache mismatch)
+
+    Args:
+        bridge: The session's EventEmitterBridge, used to check last_resolved_filter_spec.
+
+    Returns:
+        Async hook function with bridge captured via closure.
+    """
+
+    async def _validate_filter_spec_with_bridge(
+        input_data: dict[str, Any],
+        tool_use_id: str | None,
+        context: Any,
+    ) -> dict[str, Any]:
+        """Validate filter_spec with same-session refinement awareness."""
+        tool_name = input_data.get("tool_name", "")
+        if tool_name not in ("ship_command_pipeline", "fetch_rows"):
+            return {}
+
+        tool_input = input_data.get("tool_input", {})
+
+        # all_rows path — no filter_spec validation needed
+        if tool_input.get("all_rows"):
+            return {}
+
+        filter_spec = tool_input.get("filter_spec")
+        if not isinstance(filter_spec, dict):
+            return {}
+
+        # Check if we can short-circuit replay prevention for same-session reuse
+        # before the full validation runs. This handles the refinement scenario
+        # where the agent re-passes the filter_spec (with already-consumed token)
+        # from its in-context memory of the prior resolve_filter_intent result.
+        token = filter_spec.get("resolution_token")
+        if token and bridge is not None:
+            token_hash = hashlib.sha256(token.encode()).hexdigest()
+            with _token_lock:
+                token_consumed_in_memory = token_hash in _used_filter_tokens
+            if token_consumed_in_memory:
+                # Token is consumed — check if this is the same-session cached spec
+                cached_spec = getattr(bridge, "last_resolved_filter_spec", None)
+                if isinstance(cached_spec, dict):
+                    cached_token = cached_spec.get("resolution_token")
+                    if cached_token and isinstance(cached_token, str):
+                        cached_token_hash = hashlib.sha256(
+                            cached_token.encode()
+                        ).hexdigest()
+                        if cached_token_hash == token_hash:
+                            # Same token as the session cache — this is the agent
+                            # re-passing its cached filter_spec for a refinement call.
+                            # Strip filter_spec from tool_input so the pipeline
+                            # falls through to its bridge-cache path (no new token
+                            # consumed, security intact). Mutating tool_input is
+                            # intentional: we own this dict at hook time.
+                            _log_to_stderr(
+                                f"[FILTER ENFORCEMENT] Refinement detected: "
+                                f"stripping redundant filter_spec (same-session token) "
+                                f"to activate cache path | ID: {tool_use_id}"
+                            )
+                            tool_input.pop("filter_spec", None)
+                            # Allow — pipeline will use bridge.last_resolved_filter_spec
+                            return {}
+
+        # Fall through to the standard stateless validation
+        return await validate_filter_spec_on_pipeline(input_data, tool_use_id, context)
+
+    return _validate_filter_spec_with_bridge
+
+
 # =============================================================================
 # Hook Matcher Factory
 # =============================================================================
@@ -1147,6 +1234,7 @@ def create_shipping_hook(
 
 def create_hook_matchers(
     interactive_shipping: bool = False,
+    bridge: Any | None = None,
 ) -> dict[str, list[HookMatcher]]:
     """Create hook matchers with mode-aware enforcement.
 
@@ -1157,13 +1245,22 @@ def create_hook_matchers(
     so the ``interactive_shipping`` flag is captured per-instance via closure,
     avoiding global mutable state.
 
+    The filter_spec validation hook is produced by ``create_filter_spec_hook()``
+    with the session bridge so that same-session refinement calls (where the
+    agent re-passes an already-consumed token) are handled gracefully by
+    stripping the redundant filter_spec and letting the pipeline cache path
+    take over, rather than being denied as replays.
+
     Args:
         interactive_shipping: Whether interactive single-shipment mode is enabled.
+        bridge: Optional EventEmitterBridge for the current agent session. When
+            provided, enables same-session token reuse detection for refinement.
 
     Returns:
         Dict with PreToolUse and PostToolUse hook configurations.
     """
     shipping_hook = create_shipping_hook(interactive_shipping=interactive_shipping)
+    filter_spec_hook = create_filter_spec_hook(bridge=bridge)
 
     return {
         "PreToolUse": [
@@ -1174,11 +1271,11 @@ def create_hook_matchers(
             ),
             HookMatcher(
                 matcher="ship_command_pipeline",
-                hooks=[deny_raw_sql_in_filter_tools, validate_filter_spec_on_pipeline],
+                hooks=[deny_raw_sql_in_filter_tools, filter_spec_hook],
             ),
             HookMatcher(
                 matcher="fetch_rows",
-                hooks=[deny_raw_sql_in_filter_tools, validate_filter_spec_on_pipeline],
+                hooks=[deny_raw_sql_in_filter_tools, filter_spec_hook],
             ),
             # UPS safety hooks
             HookMatcher(
