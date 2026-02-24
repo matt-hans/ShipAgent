@@ -58,23 +58,23 @@ from src.services.ups_service_codes import (  # noqa: E402
 )
 
 
-def normalize_phone(phone: str | None) -> str:
+def normalize_phone(phone: str | int | None) -> str:
     """Normalize phone number to digits only.
 
     UPS requires 7-15 digit phone numbers. Handles both domestic
     and international formats (strips formatting, preserves country code).
 
     Args:
-        phone: Raw phone number string (may contain dashes, spaces, parens, +)
+        phone: Raw phone number (string or numeric from typed sources).
 
     Returns:
         Digits-only phone number, or empty string if invalid/missing.
     """
-    if not phone:
+    if phone is None:
         return ""
 
     # Strip all non-digit characters
-    digits = re.sub(r"\D", "", phone)
+    digits = re.sub(r"\D", "", str(phone))
 
     # Accept 7-15 digits (international range)
     if len(digits) < UPS_PHONE_MIN_DIGITS:
@@ -84,22 +84,22 @@ def normalize_phone(phone: str | None) -> str:
     return digits[:UPS_PHONE_MAX_DIGITS]
 
 
-def normalize_zip(postal_code: str | None) -> str:
+def normalize_zip(postal_code: str | int | None) -> str:
     """Normalize postal code.
 
     For US codes: handles 5-digit and ZIP+4 formats.
     For international codes: passes through with whitespace trimmed.
 
     Args:
-        postal_code: Raw postal code string.
+        postal_code: Raw postal code (string or numeric from typed sources).
 
     Returns:
         Normalized postal code.
     """
-    if not postal_code:
+    if postal_code is None:
         return ""
 
-    postal_code = postal_code.strip()
+    postal_code = str(postal_code).strip()
 
     # Extract digits to check if this is a US ZIP
     digits = re.sub(r"\D", "", postal_code)
@@ -115,23 +115,23 @@ def normalize_zip(postal_code: str | None) -> str:
     return postal_code
 
 
-def truncate_address(address: str | None, max_length: int = UPS_ADDRESS_MAX_LEN) -> str:
+def truncate_address(address: str | int | None, max_length: int = UPS_ADDRESS_MAX_LEN) -> str:
     """Truncate address without cutting words.
 
     UPS limits address lines to 35 characters. This function
     truncates at word boundaries for cleaner results.
 
     Args:
-        address: Raw address string
+        address: Raw address value (string or numeric from typed sources)
         max_length: Maximum length (default UPS_ADDRESS_MAX_LEN)
 
     Returns:
         Truncated address string
     """
-    if not address:
+    if address is None:
         return ""
 
-    address = address.strip()
+    address = str(address).strip()
 
     if len(address) <= max_length:
         return address
@@ -234,10 +234,10 @@ def build_ship_to(order_data: dict[str, Any]) -> dict[str, str]:
         "phone": normalize_phone(order_data.get("ship_to_phone")),
         "addressLine1": truncate_address(order_data.get("ship_to_address1", "")),
         "addressLine2": truncate_address(order_data.get("ship_to_address2")),
-        "city": order_data.get("ship_to_city", ""),
-        "stateProvinceCode": order_data.get("ship_to_state", ""),
+        "city": str(order_data.get("ship_to_city", "")),
+        "stateProvinceCode": str(order_data.get("ship_to_state", "")),
         "postalCode": normalize_zip(order_data.get("ship_to_postal_code")),
-        "countryCode": order_data.get("ship_to_country", ""),
+        "countryCode": str(order_data.get("ship_to_country", "")),
     }
 
 

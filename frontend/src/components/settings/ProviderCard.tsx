@@ -46,6 +46,8 @@ interface ProviderCardProps {
   onDisconnect: (connectionKey: string) => Promise<void>;
   /** Called after validation to refresh state */
   onValidated?: () => void;
+  /** Active environment for providers with multiple env connections (e.g., UPS test/production). */
+  activeEnvironment?: string | null;
   /** The credential form component */
   children: React.ReactNode;
 }
@@ -59,6 +61,7 @@ export function ProviderCard({
   onDelete,
   onDisconnect,
   onValidated,
+  activeEnvironment,
   children,
 }: ProviderCardProps) {
   const [pendingAction, setPendingAction] = React.useState<string | null>(null);
@@ -117,7 +120,19 @@ export function ProviderCard({
         <div className="flex items-center gap-2">
           {icon}
           <span className="font-medium text-foreground">{providerName}</span>
-          {connections.length > 0 && (
+          {activeEnvironment && configuredCount > 0 && (
+            <span
+              className={cn(
+                'text-[10px] px-1.5 py-0.5 rounded-full border',
+                activeEnvironment === 'production'
+                  ? 'bg-success/15 text-success border-success/30'
+                  : 'bg-info/15 text-info border-info/30'
+              )}
+            >
+              {activeEnvironment === 'test' ? 'Test' : 'Prod'}
+            </span>
+          )}
+          {connections.length > 0 && !activeEnvironment && (
             <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
               {configuredCount}/{totalSlots}
             </span>
@@ -154,9 +169,16 @@ export function ProviderCard({
                   </span>
                 </div>
                 {conn.environment && (
-                  <span className="text-[10px] text-muted-foreground">
-                    {conn.environment}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground">
+                      {conn.environment}
+                    </span>
+                    {activeEnvironment && conn.environment === activeEnvironment && conn.status === 'connected' && (
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-primary/15 text-primary border border-primary/30 font-medium">
+                        Active
+                      </span>
+                    )}
+                  </div>
                 )}
                 {!conn.runtime_usable && conn.runtime_reason && (
                   <p className="text-[10px] text-warning mt-0.5">

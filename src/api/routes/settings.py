@@ -72,6 +72,16 @@ class SettingsPatch(BaseModel):
             raise ValueError("batch_concurrency must be between 1 and 20")
         return v
 
+    @field_validator("ups_environment", mode="before")
+    @classmethod
+    def validate_ups_environment(cls, v: Any) -> Any:
+        """Ensure ups_environment is 'test' or 'production' when provided."""
+        if v is None:
+            return v
+        if v not in ("test", "production"):
+            raise ValueError("ups_environment must be 'test' or 'production'")
+        return v
+
     @field_validator("shipper_country", mode="before")
     @classmethod
     def validate_shipper_country(cls, v: Any) -> Any:
