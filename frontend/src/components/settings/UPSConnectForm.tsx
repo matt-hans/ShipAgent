@@ -9,7 +9,7 @@
 
 import * as React from 'react';
 import { cn } from '@/lib/utils';
-import { saveProviderCredentials, validateProviderConnection } from '@/lib/api';
+import { saveProviderCredentials, validateProviderConnection, updateSettings } from '@/lib/api';
 import type { ProviderConnectionInfo } from '@/types/api';
 
 interface UPSConnectFormProps {
@@ -68,6 +68,13 @@ export function UPSConnectForm({ existingConnections, onSaved }: UPSConnectFormP
       const validation = await validateProviderConnection(connectionKey);
 
       if (validation.valid) {
+        // Auto-set active environment when saving the first connection
+        const otherEnvConnected = existingConnections.some(
+          (c) => c.environment !== environment && c.status === 'connected'
+        );
+        if (!otherEnvConnected) {
+          await updateSettings({ ups_environment: environment }).catch(() => {});
+        }
         setSuccess(validation.message);
         setClientId('');
         setClientSecret('');

@@ -702,10 +702,10 @@ class TestDualEnvWarningGuard:
         for var in ("UPS_CLIENT_ID", "UPS_CLIENT_SECRET", "UPS_BASE_URL"):
             os.environ.pop(var, None)
 
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.INFO):
             resolve_ups_credentials(environment=None, db=db_session, key_dir=key_dir)
             resolve_ups_credentials(environment=None, db=db_session, key_dir=key_dir)
             resolve_ups_credentials(environment=None, db=db_session, key_dir=key_dir)
 
-        both_warnings = [m for m in caplog.messages if "both" in m.lower()]
-        assert len(both_warnings) == 1
+        both_msgs = [m for m in caplog.messages if "both" in m.lower()]
+        assert len(both_msgs) == 1

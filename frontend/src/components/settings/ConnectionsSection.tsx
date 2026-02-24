@@ -9,7 +9,7 @@ import * as React from 'react';
 import { ChevronDown, Key, Plug } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppState } from '@/hooks/useAppState';
-import { deleteProviderConnection, disconnectProvider } from '@/lib/api';
+import { deleteProviderConnection, disconnectProvider, updateSettings } from '@/lib/api';
 import { ProviderCard } from './ProviderCard';
 import { UPSConnectForm } from './UPSConnectForm';
 import { ShopifyConnectForm } from './ShopifyConnectForm';
@@ -37,9 +37,12 @@ export function ConnectionsSection({ isOpen, onToggle }: ConnectionsSectionProps
     refreshProviderConnections,
     credentialStatus,
     refreshCredentialStatus,
+    appSettings,
+    refreshAppSettings,
   } = useAppState();
 
   const [openProvider, setOpenProvider] = React.useState<string | null>(null);
+  const [envSwitching, setEnvSwitching] = React.useState(false);
 
   const upsConnections = providerConnections.filter((c) => c.provider === 'ups');
   const shopifyConnections = providerConnections.filter((c) => c.provider === 'shopify');
@@ -56,6 +59,19 @@ export function ConnectionsSection({ isOpen, onToggle }: ConnectionsSectionProps
 
   const toggleProvider = (provider: string) => {
     setOpenProvider(openProvider === provider ? null : provider);
+  };
+
+  const activeUpsEnv = appSettings?.ups_environment as 'test' | 'production' | null;
+
+  const handleEnvSwitch = async (env: 'test' | 'production') => {
+    if (env === activeUpsEnv || envSwitching) return;
+    setEnvSwitching(true);
+    try {
+      await updateSettings({ ups_environment: env });
+      await refreshAppSettings();
+    } finally {
+      setEnvSwitching(false);
+    }
   };
 
   const totalConfigured =
@@ -134,7 +150,47 @@ export function ConnectionsSection({ isOpen, onToggle }: ConnectionsSectionProps
             onDelete={handleDelete}
             onDisconnect={handleDisconnect}
             onValidated={refreshProviderConnections}
+            activeEnvironment={activeUpsEnv}
           >
+            {/* Active environment toggle — same credentials work for both envs */}
+            {upsConnections.some((c) => c.status === 'connected') && (
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                  Active Environment
+                </label>
+                <div className="flex gap-1.5">
+                  {(['test', 'production'] as const).map((env) => {
+                    const isActive = activeUpsEnv === env || (!activeUpsEnv && env === 'production');
+                    return (
+                      <button
+                        key={env}
+                        onClick={() => handleEnvSwitch(env)}
+                        disabled={envSwitching}
+                        className={cn(
+                          'flex-1 text-xs py-1.5 px-2 rounded-md border transition-colors',
+                          isActive
+                            ? env === 'production'
+                              ? 'bg-success/10 border-success/40 text-success font-medium'
+                              : 'bg-info/10 border-info/40 text-info font-medium'
+                            : 'border-border text-muted-foreground hover:bg-muted/50',
+                          envSwitching && 'opacity-50 cursor-not-allowed'
+                        )}
+                      >
+                        {env === 'test' ? 'Test (CIE)' : 'Production'}
+                        {isActive && (
+                          <span className="ml-1 text-[9px]">
+                            {envSwitching ? '...' : '(active)'}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Same credentials, different API endpoints. New conversations use the selected environment.
+                </p>
+              </div>
+            )}
             <UPSConnectForm
               existingConnections={upsConnections}
               onSaved={refreshProviderConnections}

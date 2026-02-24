@@ -42,11 +42,38 @@ def _try_db_ups(db: Session, key_dir: str | None, environment: str) -> UPSCreden
     return service.get_ups_credentials(environment)
 
 
-def _derive_preferred_env() -> str:
-    """Derive the preferred UPS environment from UPS_BASE_URL env var.
+def _read_settings_ups_environment() -> str | None:
+    """Read ups_environment from AppSettings DB singleton.
 
-    Returns 'test' if UPS_BASE_URL contains 'wwwcie', otherwise 'production'.
+    Returns 'test' or 'production' if explicitly set, None otherwise.
     """
+    try:
+        from src.db.connection import SessionLocal
+        from src.db.models import AppSettings
+
+        db = SessionLocal()
+        try:
+            settings = db.get(AppSettings, AppSettings.SINGLETON_ID)
+            if settings and settings.ups_environment in ("test", "production"):
+                return settings.ups_environment
+        finally:
+            db.close()
+    except Exception:
+        pass
+    return None
+
+
+def _derive_preferred_env() -> str:
+    """Derive the preferred UPS environment.
+
+    Resolution order:
+        1. AppSettings.ups_environment (DB singleton) — set via Settings UI toggle
+        2. UPS_BASE_URL env var — 'test' if contains 'wwwcie', else 'production'
+    """
+    explicit = _read_settings_ups_environment()
+    if explicit is not None:
+        return explicit
+
     env_base_url = os.environ.get("UPS_BASE_URL", "").strip()
     if "wwwcie" in env_base_url:
         return "test"
@@ -59,9 +86,12 @@ def _db_lookup_ups(
     """Run UPS DB lookup logic on a given session.
 
     When environment is None, uses the preferred env first, then the
-    alternate. Logs a warning when both environments have credentials.
+    alternate. When the user has explicitly set ups_environment in Settings
+    and only the alternate env has credentials, the credentials are reused
+    with the preferred environment (same OAuth creds work for both UPS envs).
     """
     preferred = _derive_preferred_env()
+    explicit_setting = _read_settings_ups_environment()
 
     if environment is not None:
         return _try_db_ups(db, key_dir, environment)
@@ -76,10 +106,9 @@ def _db_lookup_ups(
     if result is not None and alt_result is not None:
         global _ups_dual_env_warned
         if not _ups_dual_env_warned:
-            logger.warning(
+            logger.info(
                 "UPS credentials found for both '%s' and '%s' environments. "
-                "Auto-selected '%s' (derived from UPS_BASE_URL). "
-                "Pass environment= explicitly to override.",
+                "Using '%s' (from Settings).",
                 first_env, second_env, first_env,
             )
             _ups_dual_env_warned = True
@@ -87,7 +116,25 @@ def _db_lookup_ups(
 
     if result is not None:
         return result
-    return alt_result
+
+    # Fallback: only alternate env has credentials.
+    if alt_result is not None:
+        # If user explicitly selected preferred env in Settings, reuse the
+        # alternate env's credentials with the preferred base URL (same OAuth
+        # credentials work for both UPS test and production environments).
+        if explicit_setting is not None and explicit_setting != alt_result.environment:
+            target_url = _UPS_BASE_URLS.get(preferred, _UPS_BASE_URLS["production"])
+            return UPSCredentials(
+                client_id=alt_result.client_id,
+                client_secret=alt_result.client_secret,
+                environment=preferred,
+                base_url=target_url,
+                account_number=alt_result.account_number,
+            )
+        # No explicit setting — return whatever connection exists as-is.
+        return alt_result
+
+    return None
 
 
 def resolve_ups_credentials(
