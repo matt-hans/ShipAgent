@@ -2,14 +2,15 @@
 """PlatformActivationService: connect → page → normalize → upsert → checkpoint.
 
 Orchestrates the full activation/refresh lifecycle for a platform integration.
-Uses PlatformGateway for MCP communication and DuckDB for order storage.
+Uses PlatformGateway for MCP communication and the Data Source MCP server
+for order storage (via upsert_records tool).
 
 Flow:
 1. Validate platform config exists
 2. Check for resume_cursor (crash recovery)
 3. Connect via auth.connect (gateway handles lazy spawn)
 4. Page through orders.list with cursor pagination
-5. For each page: map → upsert → checkpoint cursor
+5. For each page: map → upsert via Data Source MCP → checkpoint cursor
 6. On completion: clear cursor, advance watermark
 """
 from __future__ import annotations
@@ -18,12 +19,8 @@ import importlib
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
 from typing import Any
 
-import duckdb
-
-from src.mcp.data_source.tools.upsert_tools import upsert_records_to_duckdb
 from src.services.platform_models import (
     ActivationReport,
     PlatformError,
@@ -43,11 +40,9 @@ class PlatformActivationService:
         self,
         registry: Any,
         gateway: Any,
-        duckdb_conn: duckdb.DuckDBPyConnection,
     ):
         self._registry = registry
         self._gateway = gateway
-        self._conn = duckdb_conn
 
     async def activate_platform(
         self,
@@ -137,11 +132,9 @@ class PlatformActivationService:
                         warnings.append(f"Mapper error for order {order.get('id')}: {e}")
                         continue
 
-                # Upsert to DuckDB
+                # Upsert via Data Source MCP (shared DuckDB)
                 if rows:
-                    result = upsert_records_to_duckdb(
-                        self._conn, rows, TABLE_NAME, PK_COLUMNS,
-                    )
+                    result = await self._upsert_via_data_source(rows)
                     total_imported += result["inserted"] + result["updated"]
 
             # Track last watermark from pages
@@ -183,6 +176,25 @@ class PlatformActivationService:
             duration_seconds=round(duration, 2),
             warnings=warnings,
         )
+
+    async def _upsert_via_data_source(
+        self, rows: list[dict[str, Any]]
+    ) -> dict[str, int]:
+        """Upsert rows into the Data Source MCP server's DuckDB.
+
+        Uses the DataSourceMCPClient singleton to call the upsert_records
+        MCP tool, ensuring rows land in the same DuckDB the agent queries.
+
+        Args:
+            rows: Flat dicts to upsert.
+
+        Returns:
+            Dict with inserted, updated, skipped counts.
+        """
+        from src.services.gateway_provider import get_data_gateway
+
+        client = await get_data_gateway()
+        return await client.upsert_records(rows, TABLE_NAME, PK_COLUMNS)
 
     def _load_mapper(self, platform_id: str) -> Any:
         """Dynamically load the mapper for a platform.

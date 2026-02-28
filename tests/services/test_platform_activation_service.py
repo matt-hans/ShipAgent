@@ -2,14 +2,14 @@
 """Tests for PlatformActivationService.
 
 Uses FakeSession + mock registry to test the connect → page → normalize →
-upsert → checkpoint flow without real MCP processes or DuckDB.
+upsert → checkpoint flow without real MCP processes.
+
+Upserts are verified via a mock DataSourceMCPClient that captures calls
+to upsert_records, matching production behavior where rows flow through
+the Data Source MCP server's shared DuckDB.
 """
-import asyncio
-import uuid
 import pytest
-import duckdb
-from unittest.mock import MagicMock, patch, AsyncMock
-from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 from tests.services.fake_mcp_session import FakeSession
 from src.services.platform_models import (
@@ -18,7 +18,9 @@ from src.services.platform_models import (
     PlatformErrorCode,
     ActivationReport,
 )
-from src.mcp.data_source.tools.schema_migration import ensure_external_orders_table
+
+# Patch target: the deferred import resolves from gateway_provider each time
+_PATCH_TARGET = "src.services.gateway_provider.get_data_gateway"
 
 
 def _make_config(platform_id: str = "dummy") -> PlatformConfig:
@@ -101,78 +103,95 @@ def _make_order(order_id: str) -> dict:
     }
 
 
+class MockDataSourceClient:
+    """Mock DataSourceMCPClient that captures upsert_records calls."""
+
+    def __init__(self):
+        self.upsert_calls: list[dict] = []
+        self.total_inserted = 0
+
+    async def upsert_records(
+        self, records: list[dict], table_name: str, pk_columns: list[str]
+    ) -> dict:
+        """Record the upsert call and return synthetic counts."""
+        self.upsert_calls.append({
+            "records": records,
+            "table_name": table_name,
+            "pk_columns": pk_columns,
+        })
+        count = len(records)
+        self.total_inserted += count
+        return {"inserted": count, "updated": 0, "skipped": 0}
+
+
 @pytest.fixture
-def duckdb_conn():
-    """In-memory DuckDB connection with external_orders table."""
-    conn = duckdb.connect(":memory:")
-    ensure_external_orders_table(conn)
-    yield conn
-    conn.close()
+def mock_ds_client():
+    """Create a MockDataSourceClient and a coroutine factory for patching."""
+    client = MockDataSourceClient()
+
+    async def fake_get_data_gateway():
+        return client
+
+    return client, fake_get_data_gateway
 
 
 class TestActivateInitialSync:
     """Test full initial sync (mode='initial')."""
 
     @pytest.mark.asyncio
-    async def test_activate_initial_sync_full_pull(self, duckdb_conn):
-        """Pages through all orders, imports to DuckDB."""
+    async def test_activate_initial_sync_full_pull(self, mock_ds_client):
+        """Pages through all orders, upserts via Data Source MCP."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
 
+        client, fake_gw = mock_ds_client
         registry = _make_registry()
         session = _make_gateway_session()
         gateway = PlatformGateway(
             registry, session_factory=lambda cfg, ref: session
         )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
 
-        service = PlatformActivationService(
-            registry=registry,
-            gateway=gateway,
-            duckdb_conn=duckdb_conn,
-        )
-
-        report = await service.activate_platform("dummy", "test", mode="initial")
+        with patch(_PATCH_TARGET, new=fake_gw):
+            report = await service.activate_platform("dummy", "test", mode="initial")
 
         assert isinstance(report, ActivationReport)
         assert report.platform_id == "dummy"
         assert report.total_imported == 6
         assert report.pages_fetched == 2
 
-        # Verify DuckDB rows
-        count = duckdb_conn.execute(
-            "SELECT COUNT(*) FROM external_orders WHERE platform = 'dummy'"
-        ).fetchone()[0]
-        assert count == 6
+        # Verify upsert calls went through mock data gateway
+        assert len(client.upsert_calls) == 2  # one per page
+        assert client.total_inserted == 6
+
+        # Verify table_name and pk_columns are correct
+        for call in client.upsert_calls:
+            assert call["table_name"] == "external_orders"
+            assert call["pk_columns"] == ["platform", "external_id", "credential_ref"]
 
         await gateway.shutdown()
 
     @pytest.mark.asyncio
-    async def test_watermark_only_advanced_on_completion(self, duckdb_conn):
+    async def test_watermark_only_advanced_on_completion(self, mock_ds_client):
         """Watermark is set at end, not during page iteration."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
 
+        client, fake_gw = mock_ds_client
         registry = _make_registry()
         session = _make_gateway_session()
         gateway = PlatformGateway(
             registry, session_factory=lambda cfg, ref: session
         )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
 
-        service = PlatformActivationService(
-            registry=registry,
-            gateway=gateway,
-            duckdb_conn=duckdb_conn,
-        )
+        with patch(_PATCH_TARGET, new=fake_gw):
+            report = await service.activate_platform("dummy", "test", mode="initial")
 
-        report = await service.activate_platform("dummy", "test", mode="initial")
-
-        # Final checkpoint should have watermark
         assert report.watermark is not None
         assert report.watermark == "2026-02-25T10:00:00Z"
 
-        # Verify registry.record_sync_checkpoint was called
         assert registry.record_sync_checkpoint.call_count >= 1
-        # Last call should have watermark set (completion)
         last_call = registry.record_sync_checkpoint.call_args_list[-1]
         assert last_call.kwargs.get("watermark") or last_call[1].get("watermark") is not None
 
@@ -183,24 +202,21 @@ class TestCheckpoints:
     """Test checkpoint persistence per page."""
 
     @pytest.mark.asyncio
-    async def test_checkpoint_persisted_per_page(self, duckdb_conn):
+    async def test_checkpoint_persisted_per_page(self, mock_ds_client):
         """resume_cursor saved after each page batch."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
 
+        _, fake_gw = mock_ds_client
         registry = _make_registry()
         session = _make_gateway_session()
         gateway = PlatformGateway(
             registry, session_factory=lambda cfg, ref: session
         )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
 
-        service = PlatformActivationService(
-            registry=registry,
-            gateway=gateway,
-            duckdb_conn=duckdb_conn,
-        )
-
-        await service.activate_platform("dummy", "test", mode="initial")
+        with patch(_PATCH_TARGET, new=fake_gw):
+            await service.activate_platform("dummy", "test", mode="initial")
 
         # At least 2 checkpoint calls (one per page) + 1 completion
         assert registry.record_sync_checkpoint.call_count >= 2
@@ -212,14 +228,13 @@ class TestRefreshWithWatermark:
     """Test refresh mode uses watermark."""
 
     @pytest.mark.asyncio
-    async def test_activate_refresh_passes_since_to_orders_list(self, duckdb_conn):
+    async def test_activate_refresh_passes_since_to_orders_list(self, mock_ds_client):
         """Refresh mode passes since= param to orders.list."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
-        from src.db.models import PlatformSyncState
 
+        client, fake_gw = mock_ds_client
         registry = _make_registry()
-        # Simulate existing state with watermark
         mock_state = MagicMock()
         mock_state.last_completed_watermark = "2026-02-20T10:00:00Z"
         mock_state.resume_cursor = None
@@ -235,7 +250,6 @@ class TestRefreshWithWatermark:
             "paging": {"default_page_size": 3, "max_page_size": 3, "overlap_seconds": 0},
         }])
         session.program("auth.connect", [{"ok": True, "account_label": "test-store"}])
-        # Single page for refresh
         session.program("orders.list", [{
             "items": [_make_order("D001")],
             "next_cursor": None,
@@ -245,18 +259,11 @@ class TestRefreshWithWatermark:
         gateway = PlatformGateway(
             registry, session_factory=lambda cfg, ref: session
         )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
 
-        service = PlatformActivationService(
-            registry=registry,
-            gateway=gateway,
-            duckdb_conn=duckdb_conn,
-        )
+        with patch(_PATCH_TARGET, new=fake_gw):
+            report = await service.activate_platform("dummy", "test", mode="refresh")
 
-        report = await service.activate_platform("dummy", "test", mode="refresh")
-
-        # Verify since was passed in the orders.list call
-        # The gateway proxies to session.call_tool("orders.list", args)
-        # We verify the args contained since=
         assert report.total_imported == 1
 
         await gateway.shutdown()
@@ -266,13 +273,13 @@ class TestResumeFromCrash:
     """Test resume from cursor after simulated crash."""
 
     @pytest.mark.asyncio
-    async def test_resume_from_cursor_after_crash(self, duckdb_conn):
+    async def test_resume_from_cursor_after_crash(self, mock_ds_client):
         """If resume_cursor is set in state, activation resumes from it."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
 
+        client, fake_gw = mock_ds_client
         registry = _make_registry()
-        # Simulate crash: resume_cursor is set from previous partial sync
         mock_state = MagicMock()
         mock_state.last_completed_watermark = None
         mock_state.resume_cursor = "page2"
@@ -288,7 +295,6 @@ class TestResumeFromCrash:
             "paging": {"default_page_size": 3, "max_page_size": 3, "overlap_seconds": 0},
         }])
         session.program("auth.connect", [{"ok": True, "account_label": "test-store"}])
-        # Only page2 (resumed from cursor)
         session.program("orders.list", [{
             "items": [_make_order("D004"), _make_order("D005"), _make_order("D006")],
             "next_cursor": None,
@@ -298,16 +304,11 @@ class TestResumeFromCrash:
         gateway = PlatformGateway(
             registry, session_factory=lambda cfg, ref: session
         )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
 
-        service = PlatformActivationService(
-            registry=registry,
-            gateway=gateway,
-            duckdb_conn=duckdb_conn,
-        )
+        with patch(_PATCH_TARGET, new=fake_gw):
+            report = await service.activate_platform("dummy", "test", mode="initial")
 
-        report = await service.activate_platform("dummy", "test", mode="initial")
-
-        # Should only have fetched 1 page (resumed from page2)
         assert report.pages_fetched == 1
         assert report.total_imported == 3
 
@@ -318,31 +319,29 @@ class TestSyncRunId:
     """Test sync_run_id consistency."""
 
     @pytest.mark.asyncio
-    async def test_sync_run_id_consistent_within_run(self, duckdb_conn):
+    async def test_sync_run_id_consistent_within_run(self, mock_ds_client):
         """All rows in a single activation share the same sync_run_id."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
 
+        client, fake_gw = mock_ds_client
         registry = _make_registry()
         session = _make_gateway_session()
         gateway = PlatformGateway(
             registry, session_factory=lambda cfg, ref: session
         )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
 
-        service = PlatformActivationService(
-            registry=registry,
-            gateway=gateway,
-            duckdb_conn=duckdb_conn,
-        )
+        with patch(_PATCH_TARGET, new=fake_gw):
+            await service.activate_platform("dummy", "test", mode="initial")
 
-        await service.activate_platform("dummy", "test", mode="initial")
+        all_sync_ids = set()
+        for call in client.upsert_calls:
+            for record in call["records"]:
+                all_sync_ids.add(record.get("sync_run_id"))
 
-        # Check all rows have the same sync_run_id
-        rows = duckdb_conn.execute(
-            "SELECT DISTINCT sync_run_id FROM external_orders WHERE platform = 'dummy'"
-        ).fetchall()
-        assert len(rows) == 1
-        assert rows[0][0] is not None
+        assert len(all_sync_ids) == 1
+        assert None not in all_sync_ids
 
         await gateway.shutdown()
 
@@ -351,11 +350,12 @@ class TestBatchDedupe:
     """Test batch deduplication before upsert."""
 
     @pytest.mark.asyncio
-    async def test_re_upsert_skips_unchanged(self, duckdb_conn):
-        """Re-running activation with same data skips unchanged rows."""
+    async def test_re_upsert_delivers_rows_to_data_source(self, mock_ds_client):
+        """Second activation still delivers rows to Data Source MCP."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
 
+        client, fake_gw = mock_ds_client
         registry = _make_registry()
 
         # First activation
@@ -363,28 +363,25 @@ class TestBatchDedupe:
         gateway1 = PlatformGateway(
             registry, session_factory=lambda cfg, ref: session1
         )
-        service1 = PlatformActivationService(
-            registry=registry, gateway=gateway1, duckdb_conn=duckdb_conn,
-        )
-        report1 = await service1.activate_platform("dummy", "test", mode="initial")
+        service1 = PlatformActivationService(registry=registry, gateway=gateway1)
+        with patch(_PATCH_TARGET, new=fake_gw):
+            report1 = await service1.activate_platform("dummy", "test", mode="initial")
         assert report1.total_imported == 6
         await gateway1.shutdown()
 
-        # Second activation with same data — all should be skipped
+        # Second activation with same data
         session2 = _make_gateway_session()
         gateway2 = PlatformGateway(
             registry, session_factory=lambda cfg, ref: session2
         )
-        service2 = PlatformActivationService(
-            registry=registry, gateway=gateway2, duckdb_conn=duckdb_conn,
-        )
-        report2 = await service2.activate_platform("dummy", "test", mode="initial")
+        service2 = PlatformActivationService(registry=registry, gateway=gateway2)
+        with patch(_PATCH_TARGET, new=fake_gw):
+            report2 = await service2.activate_platform("dummy", "test", mode="initial")
 
-        # Still 6 rows total (no duplicates)
-        count = duckdb_conn.execute(
-            "SELECT COUNT(*) FROM external_orders WHERE platform = 'dummy'"
-        ).fetchone()[0]
-        assert count == 6
+        # Rows are sent to Data Source MCP — deduplication happens inside MCP
+        assert report2.total_imported == 6
+        # Total of 4 upsert calls (2 per activation, 2 pages each)
+        assert len(client.upsert_calls) == 4
 
         await gateway2.shutdown()
 
@@ -393,7 +390,7 @@ class TestUnknownPlatform:
     """Test error for unknown platform."""
 
     @pytest.mark.asyncio
-    async def test_unknown_platform_raises(self, duckdb_conn):
+    async def test_unknown_platform_raises(self):
         """Activating an unknown platform raises PlatformError."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
@@ -402,9 +399,7 @@ class TestUnknownPlatform:
         registry.get_config.return_value = None
         gateway = PlatformGateway(registry)
 
-        service = PlatformActivationService(
-            registry=registry, gateway=gateway, duckdb_conn=duckdb_conn,
-        )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
 
         with pytest.raises(PlatformError) as exc_info:
             await service.activate_platform("nonexistent", "primary", mode="initial")

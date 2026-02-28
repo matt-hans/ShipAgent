@@ -178,21 +178,63 @@ def get_activation_service() -> Any:
     return _activation_service
 
 
-async def init_platform_singletons(duckdb_conn: Any = None) -> None:
+def _build_platform_session_factory() -> Any:
+    """Build a session factory that spawns platform MCP servers via stdio.
+
+    Returns a callable (PlatformConfig, credential_ref) -> MCPClient that
+    creates stdio connections to per-platform MCP servers using MCPClient.
+
+    Returns:
+        Session factory callable.
+    """
+    import os
+    import sys
+
+    from mcp import StdioServerParameters
+    from src.services.mcp_client import MCPClient
+
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    venv_python = os.path.join(project_root, ".venv", "bin", "python3")
+    python_cmd = os.environ.get("MCP_PYTHON_PATH", "").strip()
+    if not python_cmd:
+        python_cmd = venv_python if os.path.exists(venv_python) else sys.executable
+
+    def factory(config: Any, credential_ref: str) -> MCPClient:
+        """Spawn a platform MCP server as a stdio subprocess.
+
+        Args:
+            config: PlatformConfig with mcp_module path.
+            credential_ref: Credential profile reference.
+
+        Returns:
+            Connected MCPClient wrapping the platform MCP server.
+        """
+        params = StdioServerParameters(
+            command=python_cmd,
+            args=["-m", config.mcp_module],
+            env={
+                "PYTHONPATH": project_root,
+                "PATH": os.environ.get("PATH", ""),
+                "CREDENTIAL_REF": credential_ref,
+            },
+        )
+        return MCPClient(params, max_retries=2, base_delay=1.0)
+
+    return factory
+
+
+async def init_platform_singletons() -> None:
     """Initialize platform singletons during app startup.
 
     Creates PlatformRegistry, PlatformGateway, and PlatformActivationService.
     Must be called once during FastAPI lifespan.
-
-    Args:
-        duckdb_conn: Optional DuckDB connection for activation service.
     """
     global _platform_registry, _platform_gateway, _activation_service
     async with _platform_lock:
         if _platform_registry is not None:
             return  # Already initialized
-
-        import duckdb as _duckdb
 
         from src.db.connection import SessionLocal
         from src.services.platform_registry import PlatformRegistry
@@ -201,16 +243,13 @@ async def init_platform_singletons(duckdb_conn: Any = None) -> None:
 
         _platform_registry = PlatformRegistry(session_factory=SessionLocal)
         _platform_gateway = PlatformGateway(
-            _platform_registry, session_factory=None,
+            _platform_registry,
+            session_factory=_build_platform_session_factory(),
         )
-
-        if duckdb_conn is None:
-            duckdb_conn = _duckdb.connect()  # In-memory for platform order ingestion
 
         _activation_service = PlatformActivationService(
             registry=_platform_registry,
             gateway=_platform_gateway,
-            duckdb_conn=duckdb_conn,
         )
         logger.info("Platform singletons initialized (registry, gateway, activation)")
 

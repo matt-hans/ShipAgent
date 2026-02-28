@@ -323,12 +323,28 @@ class TestDummyVerticalSliceIntegration:
         registry.record_health_check = MagicMock()
         return registry
 
+    def _mock_data_gateway(self, db):
+        """Build a mock DataSourceMCPClient that upserts to the local DuckDB."""
+        from src.mcp.data_source.tools.upsert_tools import upsert_records_to_duckdb
+
+        class LocalDSClient:
+            async def upsert_records(self, records, table_name, pk_columns):
+                return upsert_records_to_duckdb(db, records, table_name, pk_columns)
+
+        client = LocalDSClient()
+
+        async def fake_get():
+            return client
+
+        return fake_get
+
     @pytest.mark.asyncio
     async def test_full_activation_imports_all_pages(self, db):
         """Activate dummy platform -> 2 pages -> 6 orders in DuckDB."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
         from src.mcp.platforms.dummy.server import orders_list as dummy_orders_list
+        from unittest.mock import patch
 
         registry = self._make_registry()
         session = self._make_gateway_session()
@@ -339,11 +355,11 @@ class TestDummyVerticalSliceIntegration:
         session.program("orders.list", [page1, page2])
 
         gateway = PlatformGateway(registry, session_factory=lambda cfg, ref: session)
-        service = PlatformActivationService(
-            registry=registry, gateway=gateway, duckdb_conn=db,
-        )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
 
-        report = await service.activate_platform("dummy", "test", mode="initial")
+        with patch("src.services.gateway_provider.get_data_gateway", new=self._mock_data_gateway(db)):
+            report = await service.activate_platform("dummy", "test", mode="initial")
+
         assert report.total_imported == 6
         assert report.pages_fetched == 2
 
@@ -357,10 +373,9 @@ class TestDummyVerticalSliceIntegration:
         """Second activation with mode=refresh passes since= to orders.list."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
 
         registry = self._make_registry()
-        # Simulate existing state with watermark
         mock_state = MagicMock()
         mock_state.last_completed_watermark = "2026-02-20T10:00:00Z"
         mock_state.resume_cursor = None
@@ -376,11 +391,11 @@ class TestDummyVerticalSliceIntegration:
         }])
 
         gateway = PlatformGateway(registry, session_factory=lambda cfg, ref: session)
-        service = PlatformActivationService(
-            registry=registry, gateway=gateway, duckdb_conn=db,
-        )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
 
-        report = await service.activate_platform("dummy", "test", mode="refresh")
+        with patch("src.services.gateway_provider.get_data_gateway", new=self._mock_data_gateway(db)):
+            report = await service.activate_platform("dummy", "test", mode="refresh")
+
         assert report.total_imported == 1
         assert report.watermark == "2026-02-28T10:00:00Z"
 
@@ -391,7 +406,7 @@ class TestDummyVerticalSliceIntegration:
         """Set resume_cursor in registry, verify activation resumes from cursor."""
         from src.services.platform_activation_service import PlatformActivationService
         from src.services.platform_gateway import PlatformGateway
-        from unittest.mock import MagicMock
+        from unittest.mock import MagicMock, patch
 
         registry = self._make_registry()
         mock_state = MagicMock()
@@ -400,7 +415,6 @@ class TestDummyVerticalSliceIntegration:
         registry.get_state.return_value = mock_state
 
         session = self._make_gateway_session()
-        # Only page2 data (resumed from cursor)
         session.program("orders.list", [{
             "items": [
                 {"id": "D004", "order_number": "1004", "status": "open",
@@ -412,11 +426,11 @@ class TestDummyVerticalSliceIntegration:
         }])
 
         gateway = PlatformGateway(registry, session_factory=lambda cfg, ref: session)
-        service = PlatformActivationService(
-            registry=registry, gateway=gateway, duckdb_conn=db,
-        )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
 
-        report = await service.activate_platform("dummy", "test", mode="initial")
+        with patch("src.services.gateway_provider.get_data_gateway", new=self._mock_data_gateway(db)):
+            report = await service.activate_platform("dummy", "test", mode="initial")
+
         assert report.pages_fetched == 1
         assert report.total_imported == 1
 
