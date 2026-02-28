@@ -124,7 +124,242 @@ class ShopifyActivateResponse(BaseModel):
     error: str | None = None
 
 
-# === Routes ===
+# === Generic Platform Routes (federated architecture) ===
+
+
+class PlatformListResponse(BaseModel):
+    """Response from listing all registered platforms."""
+
+    success: bool
+    platforms: list[dict[str, Any]] = Field(default_factory=list)
+    total: int = 0
+    error: str | None = None
+
+
+class PlatformActivateRequest(BaseModel):
+    """Request body for platform activation."""
+
+    platform_id: str = Field(..., description="Platform identifier (e.g., 'shopify')")
+    credential_ref: str | None = Field(None, description="Credential profile name")
+
+
+class PlatformActivateResponse(BaseModel):
+    """Response from platform activation."""
+
+    success: bool
+    platform_id: str | None = None
+    mode: str | None = None
+    total_imported: int = 0
+    pages_fetched: int = 0
+    watermark: str | None = None
+    duration_seconds: float | None = None
+    error: str | None = None
+
+
+class PlatformStatusResponse(BaseModel):
+    """Detailed status for a single platform."""
+
+    success: bool
+    platform_id: str | None = None
+    display_name: str | None = None
+    connection_status: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    last_sync_row_count: int | None = None
+    error: str | None = None
+
+
+@router.get("/", response_model=PlatformListResponse)
+async def list_platforms() -> PlatformListResponse:
+    """List all registered platforms with connection status.
+
+    Uses PlatformRegistry to return summary of each platform.
+
+    Returns:
+        List of platform summaries with connection state.
+    """
+    try:
+        from src.services.gateway_provider import get_platform_registry
+
+        registry = get_platform_registry()
+        summaries = registry.get_platforms_summary()
+        platforms = []
+        for s in summaries:
+            platforms.append({
+                "platform_id": s.platform_id,
+                "display_name": s.display_name,
+                "connection_status": s.connection_status,
+                "enabled": s.enabled,
+                "has_credentials": s.has_credentials,
+                "health_ok": s.health_ok,
+                "last_sync_row_count": s.last_sync_row_count,
+                "capabilities": s.capabilities,
+                "account_label": s.account_label,
+            })
+        return PlatformListResponse(
+            success=True,
+            platforms=platforms,
+            total=len(platforms),
+        )
+    except RuntimeError:
+        # Platform singletons not initialized
+        return PlatformListResponse(
+            success=True,
+            platforms=[],
+            total=0,
+        )
+    except Exception as e:
+        return PlatformListResponse(
+            success=False,
+            error=f"Failed to list platforms: {e}",
+        )
+
+
+@router.post("/activate", response_model=PlatformActivateResponse)
+async def activate_platform(request: PlatformActivateRequest) -> PlatformActivateResponse:
+    """Activate a platform — full initial sync of orders into DuckDB.
+
+    Args:
+        request: Platform ID and optional credential reference.
+
+    Returns:
+        Activation report with import stats.
+    """
+    try:
+        from src.services.gateway_provider import get_activation_service
+
+        service = get_activation_service()
+        report = await service.activate_platform(
+            platform_id=request.platform_id,
+            credential_ref=request.credential_ref or "primary",
+            mode="initial",
+        )
+        return PlatformActivateResponse(
+            success=True,
+            platform_id=report.platform_id,
+            mode=report.mode,
+            total_imported=report.total_imported,
+            pages_fetched=report.pages_fetched,
+            watermark=report.watermark,
+            duration_seconds=report.duration_seconds,
+        )
+    except Exception as e:
+        return PlatformActivateResponse(
+            success=False,
+            platform_id=request.platform_id,
+            error=f"Activation failed: {e}",
+        )
+
+
+@router.post("/refresh", response_model=PlatformActivateResponse)
+async def refresh_platform(request: PlatformActivateRequest) -> PlatformActivateResponse:
+    """Refresh a platform — incremental sync using watermark.
+
+    Args:
+        request: Platform ID and optional credential reference.
+
+    Returns:
+        Refresh report with import stats.
+    """
+    try:
+        from src.services.gateway_provider import get_activation_service
+
+        service = get_activation_service()
+        report = await service.activate_platform(
+            platform_id=request.platform_id,
+            credential_ref=request.credential_ref or "primary",
+            mode="refresh",
+        )
+        return PlatformActivateResponse(
+            success=True,
+            platform_id=report.platform_id,
+            mode=report.mode,
+            total_imported=report.total_imported,
+            pages_fetched=report.pages_fetched,
+            watermark=report.watermark,
+            duration_seconds=report.duration_seconds,
+        )
+    except Exception as e:
+        return PlatformActivateResponse(
+            success=False,
+            platform_id=request.platform_id,
+            error=f"Refresh failed: {e}",
+        )
+
+
+class PlatformDisconnectRequest(BaseModel):
+    """Request body for platform disconnection."""
+
+    platform_id: str = Field(..., description="Platform identifier")
+    credential_ref: str | None = Field(None, description="Credential profile name")
+
+
+@router.post("/disconnect-platform", response_model=dict)
+async def disconnect_platform_generic(
+    request: PlatformDisconnectRequest,
+) -> dict:
+    """Disconnect a platform via PlatformGateway.
+
+    Args:
+        request: Platform ID and optional credential reference.
+
+    Returns:
+        Success status.
+    """
+    try:
+        from src.services.gateway_provider import get_platform_gateway
+
+        gateway = get_platform_gateway()
+        await gateway.disconnect(request.platform_id, request.credential_ref or "primary")
+        return {"success": True, "platform_id": request.platform_id, "status": "disconnected"}
+    except Exception as e:
+        return {"success": False, "error": f"Disconnect failed: {e}"}
+
+
+@router.get("/status/{platform_id}", response_model=PlatformStatusResponse)
+async def get_platform_status_detail(platform_id: str) -> PlatformStatusResponse:
+    """Get detailed status and capabilities for a specific platform.
+
+    Args:
+        platform_id: Platform identifier.
+
+    Returns:
+        Detailed platform status with capabilities.
+    """
+    try:
+        from src.services.gateway_provider import get_platform_registry
+
+        registry = get_platform_registry()
+        summaries = registry.get_platforms_summary()
+        for s in summaries:
+            if s.platform_id == platform_id:
+                return PlatformStatusResponse(
+                    success=True,
+                    platform_id=s.platform_id,
+                    display_name=s.display_name,
+                    connection_status=s.connection_status,
+                    capabilities=s.capabilities or [],
+                    last_sync_row_count=s.last_sync_row_count,
+                )
+        return PlatformStatusResponse(
+            success=False,
+            platform_id=platform_id,
+            error=f"Platform {platform_id} not found",
+        )
+    except RuntimeError:
+        return PlatformStatusResponse(
+            success=False,
+            platform_id=platform_id,
+            error="Platform singletons not initialized",
+        )
+    except Exception as e:
+        return PlatformStatusResponse(
+            success=False,
+            platform_id=platform_id,
+            error=f"Failed to get status: {e}",
+        )
+
+
+# === Legacy Routes (backward compatibility) ===
 
 
 @router.get("/connections", response_model=ListConnectionsResponse)
