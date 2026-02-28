@@ -881,6 +881,7 @@ export interface PickupPreview {
   phone_number: string;
   charges: Array<{ chargeCode: string; chargeLabel: string; chargeAmount: string }>;
   grand_total: string;
+  confirmation_token?: string;
 }
 
 // === Contact Book Types ===

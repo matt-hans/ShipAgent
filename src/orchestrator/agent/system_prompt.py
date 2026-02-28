@@ -683,7 +683,7 @@ administrator.
 
 - Pickup type is fixed to on-call. Do NOT ask the user to choose pickup type.
 - WORKFLOW: When user requests a pickup, call `rate_pickup` with ALL details (address, date, times, contact_name, phone_number). This displays a preview card with Confirm/Cancel buttons.
-- After the user confirms via the preview card, call `schedule_pickup` with the SAME details + confirmed=true.
+- After the user confirms via the preview card, call `schedule_pickup` with the SAME details + confirmed=true. The user's confirmation message will include the confirmation_token — pass it as the `confirmation_token` argument to schedule_pickup.
 - Do NOT call schedule_pickup without first calling rate_pickup — the preview card is mandatory.
 - Capture the PRN (Pickup Request Number) from the schedule response — needed for cancellation.
 - Use `cancel_pickup` with the PRN to cancel a scheduled pickup.
