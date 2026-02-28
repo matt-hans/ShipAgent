@@ -8,6 +8,8 @@ import pytest
 MAPPER_MODULES = [
     "src.mcp.platforms.shopify.mapper",
     "src.mcp.platforms.dummy.mapper",
+    "src.mcp.platforms.woocommerce.mapper",
+    "src.mcp.platforms.sap.mapper",
     # Add new platforms here as they're extracted
 ]
 
