@@ -221,7 +221,6 @@ def create_mcp_servers_config(
     """
     configs: dict[str, MCPServerConfig] = {
         "data": get_data_mcp_config(),
-        "external": get_external_sources_mcp_config(),
     }
     ups_config = get_ups_mcp_config(credentials=ups_credentials)
     if ups_config is not None:

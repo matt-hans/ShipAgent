@@ -834,6 +834,7 @@ def test_tool_definitions_filtered_for_interactive_mode():
         "push_document_to_shipment", "delete_paperless_document",
         "get_landed_cost", "track_package",
         "resolve_contact", "save_contact", "list_contacts", "delete_contact",
+        "list_platforms",
     }
     assert names == expected
 
