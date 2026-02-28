@@ -33,7 +33,6 @@ import { PaperlessCard } from '@/components/command-center/PaperlessCard';
 import { PaperlessUploadCard } from '@/components/command-center/PaperlessUploadCard';
 import { TrackingCard } from '@/components/command-center/TrackingCard';
 import { ContactCard } from '@/components/command-center/ContactCard';
-import { ChatTimeline } from '@/components/command-center/ChatTimeline';
 import {
   ActiveSourceBanner,
   InteractiveModeBanner,
@@ -673,7 +672,14 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
                     onConfirm={async () => {
                       setIsPickupConfirming(true);
                       try {
-                        await conv.sendMessage('Confirmed. Schedule the pickup.', interactiveShipping);
+                        const pd = message.metadata!.pickupPreview as PickupPreview;
+                        const tokenClause = pd.confirmation_token
+                          ? ` confirmation_token=${pd.confirmation_token}`
+                          : '';
+                        await conv.sendMessage(
+                          `Confirmed. Schedule the pickup with confirmed=true.${tokenClause}`,
+                          interactiveShipping,
+                        );
                       } finally {
                         setIsPickupConfirming(false);
                         setPickupPreview(null);
@@ -907,12 +913,6 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
           >
             <HistoryIcon className="w-4 h-4" />
           </button>
-          {conversation.length > 3 && (
-            <ChatTimeline
-              messages={conversation}
-              scrollContainerRef={scrollContainerRef}
-            />
-          )}
         </div>
       </div>
 
