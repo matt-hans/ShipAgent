@@ -24,6 +24,7 @@ class FakePlatformSummary:
     account_label: str | None = "my-store.myshopify.com"
     contract_version_ok: bool = True
     capabilities_stale: bool = False
+    is_active: bool = False
 
     def __post_init__(self):
         if self.capabilities is None:

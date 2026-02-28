@@ -228,6 +228,7 @@ class PlatformSummary:
     last_error: str | None
     contract_version_ok: bool
     capabilities_stale: bool
+    is_active: bool = False
 
 
 @dataclass

@@ -728,6 +728,58 @@ export async function getShopifyEnvStatus(): Promise<ShopifyEnvStatus> {
   return parseResponse<ShopifyEnvStatus>(response);
 }
 
+// === Federated Platform API ===
+
+import type {
+  ListFederatedPlatformsResponse,
+  SetActivePlatformsResponse,
+  ActivatePlatformResponse,
+} from '@/types/api';
+
+/**
+ * List all platforms in the federated registry with connection and activation state.
+ *
+ * @returns Platform list with status, capabilities, and active flag.
+ */
+export async function listFederatedPlatforms(): Promise<ListFederatedPlatformsResponse> {
+  const response = await fetch(`${getApiBase()}/platforms/`);
+  return parseResponse<ListFederatedPlatformsResponse>(response);
+}
+
+/**
+ * Set which platforms are active data sources.
+ *
+ * @param platformIds - Array of platform_id values to mark as active.
+ * @returns Updated active platform summaries.
+ */
+export async function setActivePlatforms(
+  platformIds: string[]
+): Promise<SetActivePlatformsResponse> {
+  const response = await fetch(`${getApiBase()}/platforms/active`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ active_platform_ids: platformIds }),
+  });
+  return parseResponse<SetActivePlatformsResponse>(response);
+}
+
+/**
+ * Activate a single platform as a data source (connect + import).
+ *
+ * @param platformId - The platform identifier to activate.
+ * @returns Activation result with import count.
+ */
+export async function activatePlatform(
+  platformId: string
+): Promise<ActivatePlatformResponse> {
+  const response = await fetch(`${getApiBase()}/platforms/activate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ platform_id: platformId }),
+  });
+  return parseResponse<ActivatePlatformResponse>(response);
+}
+
 // === Contact Book API ===
 
 import type {

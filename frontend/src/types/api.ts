@@ -1128,3 +1128,48 @@ export interface SaveProviderRequest {
   display_name: string;
   environment?: string;
 }
+
+// === Federated Platform Types ===
+
+/** Platform entry in the federated platform registry. */
+export interface FederatedPlatform {
+  platform_id: string;
+  display_name: string;
+  connection_status: string;
+  enabled: boolean;
+  has_credentials: boolean;
+  health_ok: boolean | null;
+  last_sync_row_count: number | null;
+  capabilities: string[];
+  account_label: string | null;
+  is_active: boolean;
+}
+
+/** Response from listing federated platforms. */
+export interface ListFederatedPlatformsResponse {
+  success: boolean;
+  platforms: FederatedPlatform[];
+  total: number;
+  error?: string;
+}
+
+/** Response from setting active platforms. */
+export interface SetActivePlatformsResponse {
+  success: boolean;
+  active_platforms: Array<{
+    platform_id: string;
+    display_name: string;
+    is_active: boolean;
+    connection_status: string;
+    last_sync_row_count: number | null;
+  }>;
+  error?: string;
+}
+
+/** Response from activating a single platform. */
+export interface ActivatePlatformResponse {
+  success: boolean;
+  platform_id?: string;
+  total_imported?: number;
+  error?: string;
+}

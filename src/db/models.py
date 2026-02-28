@@ -962,6 +962,11 @@ class PlatformSyncState(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Active data source toggle
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+
     # Capabilities cache
     capabilities_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     capabilities_contract_version: Mapped[Optional[str]] = mapped_column(

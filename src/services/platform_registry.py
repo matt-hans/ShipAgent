@@ -233,6 +233,32 @@ class PlatformRegistry:
             capabilities_fetched_at=datetime.now(timezone.utc),
         )
 
+    # --- Active platform selection ---
+
+    def set_platform_active(self, platform_id: str, credential_ref: str, active: bool) -> None:
+        """Set whether a platform is active as a data source.
+
+        Updates the is_active flag on the PlatformSyncState row.
+        Creates the state row if it does not exist yet.
+
+        Args:
+            platform_id: Platform identifier.
+            credential_ref: Credential profile reference.
+            active: Whether the platform should be active.
+        """
+        self.update_state(platform_id, credential_ref, is_active=active)
+
+    def get_active_platforms(self) -> list[PlatformSummary]:
+        """Return summaries for platforms that are both enabled and active.
+
+        Filters the full platform summary list to only those with
+        is_active=True and an enabled static config.
+
+        Returns:
+            List of active PlatformSummary instances.
+        """
+        return [s for s in self.get_platforms_summary() if s.is_active and s.enabled]
+
     # --- Summary (agent/UI facing) ---
 
     def _check_credentials(
@@ -274,6 +300,7 @@ class PlatformRegistry:
                         last_error=None,
                         contract_version_ok=True,
                         capabilities_stale=True,
+                        is_active=False,
                     ))
                 else:
                     for state in states:
@@ -300,6 +327,7 @@ class PlatformRegistry:
                             last_error=state.last_error_message,
                             contract_version_ok=cv_ok,
                             capabilities_stale=stale,
+                            is_active=state.is_active,
                         ))
 
         return summaries

@@ -168,6 +168,9 @@ class PlatformActivationService:
 
             cursor = next_cursor
 
+        # Mark platform as active after successful sync
+        self._registry.set_platform_active(platform_id, credential_ref, True)
+
         duration = time.monotonic() - start_time
 
         return ActivationReport(

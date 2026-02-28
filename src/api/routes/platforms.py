@@ -66,6 +66,22 @@ class PlatformDisconnectRequest(BaseModel):
     credential_ref: str | None = Field(None, description="Credential profile name")
 
 
+class SetActivePlatformsRequest(BaseModel):
+    """Request body for setting active platforms."""
+
+    active_platform_ids: list[str] = Field(
+        ..., description="Platform IDs to set as active"
+    )
+
+
+class SetActivePlatformsResponse(BaseModel):
+    """Response from setting active platforms."""
+
+    success: bool
+    active_platforms: list[dict[str, Any]] = Field(default_factory=list)
+    error: str | None = None
+
+
 # === Platform Routes (federated architecture) ===
 
 
@@ -95,6 +111,7 @@ async def list_platforms() -> PlatformListResponse:
                 "last_sync_row_count": s.last_sync_row_count,
                 "capabilities": s.capabilities,
                 "account_label": s.account_label,
+                "is_active": s.is_active,
             })
         return PlatformListResponse(
             success=True,
@@ -250,4 +267,63 @@ async def get_platform_status_detail(platform_id: str) -> PlatformStatusResponse
             success=False,
             platform_id=platform_id,
             error=f"Failed to get status: {e}",
+        )
+
+
+@router.patch("/active", response_model=SetActivePlatformsResponse)
+async def set_active_platforms(
+    request: SetActivePlatformsRequest,
+) -> SetActivePlatformsResponse:
+    """Set which platforms are active data sources.
+
+    Platforms in the list are set active; all others are deactivated.
+    Only connected platforms can be activated.
+
+    Args:
+        request: Contains list of platform IDs to activate.
+
+    Returns:
+        Updated list of active platforms.
+    """
+    try:
+        from src.services.gateway_provider import get_platform_registry
+
+        registry = get_platform_registry()
+        summaries = registry.get_platforms_summary()
+
+        # Build set of known platform IDs from current summaries
+        known_ids = {s.platform_id for s in summaries}
+        requested_ids = set(request.active_platform_ids)
+
+        # Activate requested platforms, deactivate everything else
+        for summary in summaries:
+            should_be_active = summary.platform_id in requested_ids
+            registry.set_platform_active(
+                summary.platform_id, summary.credential_ref, should_be_active,
+            )
+
+        # Return updated active platforms
+        active_summaries = registry.get_active_platforms()
+        active_list = [
+            {
+                "platform_id": s.platform_id,
+                "display_name": s.display_name,
+                "connection_status": s.connection_status,
+                "is_active": s.is_active,
+            }
+            for s in active_summaries
+        ]
+        return SetActivePlatformsResponse(
+            success=True,
+            active_platforms=active_list,
+        )
+    except RuntimeError:
+        return SetActivePlatformsResponse(
+            success=False,
+            error="Platform singletons not initialized",
+        )
+    except Exception as e:
+        return SetActivePlatformsResponse(
+            success=False,
+            error=f"Failed to set active platforms: {e}",
         )
