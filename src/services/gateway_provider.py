@@ -2,7 +2,7 @@
 
 All callers (API routes, agent tools, conversation processing) import
 gateway accessors from HERE. This module owns the singleton lifecycle.
-Never instantiate DataSourceMCPClient or ExternalSourcesMCPClient elsewhere.
+Never instantiate DataSourceMCPClient elsewhere.
 """
 
 import asyncio
@@ -10,7 +10,6 @@ import logging
 from typing import Any
 
 from src.services.data_source_mcp_client import DataSourceMCPClient
-from src.services.external_sources_mcp_client import ExternalSourcesMCPClient
 from src.services.mapping_cache import invalidate as invalidate_mapping_cache
 
 logger = logging.getLogger(__name__)
@@ -38,29 +37,6 @@ async def get_data_gateway() -> DataSourceMCPClient:
             logger.info("DataSourceMCPClient singleton initialized")
         return _data_gateway
 
-
-# -- ExternalSourcesMCPClient singleton ------------------------------------
-_ext_sources_client: ExternalSourcesMCPClient | None = None
-_ext_sources_lock = asyncio.Lock()
-
-
-async def get_external_sources_client() -> ExternalSourcesMCPClient:
-    """Get or create the process-global ExternalSourcesMCPClient.
-
-    Always acquires the lock to prevent returning a stale reference
-    that a concurrent task may be replacing (B-2, CWE-362).
-
-    Returns:
-        The shared ExternalSourcesMCPClient instance.
-    """
-    global _ext_sources_client
-    async with _ext_sources_lock:
-        if _ext_sources_client is None or not _ext_sources_client.is_connected:
-            client = ExternalSourcesMCPClient()
-            await client.connect()
-            _ext_sources_client = client
-            logger.info("ExternalSourcesMCPClient singleton initialized")
-        return _ext_sources_client
 
 
 def get_data_gateway_if_connected() -> DataSourceMCPClient | None:
@@ -253,7 +229,6 @@ async def check_gateway_health() -> dict[str, dict[str, str]]:
     results: dict[str, dict[str, str]] = {}
     for name, client in [
         ("data_source", _data_gateway),
-        ("external_sources", _ext_sources_client),
         ("ups", _ups_gateway),
     ]:
         if client is None:
@@ -275,7 +250,7 @@ async def shutdown_gateways() -> None:
     Acquires each gateway lock before setting to None to prevent race
     conditions with concurrent get_*_gateway() calls (H-5, CWE-362).
     """
-    global _data_gateway, _ext_sources_client, _ups_gateway
+    global _data_gateway, _ups_gateway
     invalidate_mapping_cache()
 
     async with _data_gateway_lock:
@@ -285,14 +260,6 @@ async def shutdown_gateways() -> None:
             except Exception as e:
                 logger.warning("Failed to disconnect DataSourceMCPClient: %s", e)
             _data_gateway = None
-
-    async with _ext_sources_lock:
-        if _ext_sources_client is not None:
-            try:
-                await _ext_sources_client.disconnect()
-            except Exception as e:
-                logger.warning("Failed to disconnect ExternalSourcesMCPClient: %s", e)
-            _ext_sources_client = None
 
     async with _ups_gateway_lock:
         if _ups_gateway is not None:

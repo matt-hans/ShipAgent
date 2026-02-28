@@ -170,40 +170,6 @@ def get_ups_mcp_config(
     )
 
 
-def get_external_sources_mcp_config() -> MCPServerConfig:
-    """Get configuration for the External Sources Gateway MCP server.
-
-    In bundled mode, spawns self with 'mcp-external' subcommand.
-    In dev mode, runs as a Python module using FastMCP with stdio transport.
-
-    This MCP provides unified access to external platforms:
-    - Shopify (Admin API)
-    - WooCommerce (REST API)
-    - SAP (OData)
-    - Oracle (Database)
-
-    Returns:
-        MCPServerConfig with Python command and module path
-    """
-    from src.utils.runtime import is_bundled
-
-    if is_bundled():
-        return MCPServerConfig(
-            command=sys.executable,
-            args=["mcp-external"],
-            env={"PATH": os.environ.get("PATH", "")},
-        )
-
-    return MCPServerConfig(
-        command=_get_python_command(),
-        args=["-m", "src.mcp.external_sources.server"],
-        env={
-            "PYTHONPATH": str(PROJECT_ROOT),
-            "PATH": os.environ.get("PATH", ""),
-        },
-    )
-
-
 def create_mcp_servers_config(
     ups_credentials: "UPSCredentials | None" = None,
 ) -> dict[str, MCPServerConfig]:
