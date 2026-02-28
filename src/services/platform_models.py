@@ -41,8 +41,11 @@ class PlatformErrorCode(str, Enum):
 
 
 @dataclass
-class PlatformError:
-    """Structured error from a platform MCP tool call."""
+class PlatformError(Exception):
+    """Structured error from a platform MCP tool call.
+
+    Extends Exception so it can be raised and caught in gateway/service code.
+    """
 
     error_code: PlatformErrorCode
     message: str
