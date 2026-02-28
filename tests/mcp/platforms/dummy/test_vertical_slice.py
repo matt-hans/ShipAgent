@@ -272,25 +272,152 @@ class TestDummyFullDataFlow:
         assert result["inserted"] == 2
 
 
-class TestDummyVerticalSlicePlaceholders:
-    """Placeholders for full activation integration tests.
+class TestDummyVerticalSliceIntegration:
+    """Full activation integration tests using PlatformGateway + ActivationService."""
 
-    These depend on PlatformGateway (Task 6) and PlatformActivationService (Task 7).
-    They will be filled in after those tasks are implemented.
-    """
+    @pytest.fixture
+    def db(self):
+        conn = duckdb.connect(":memory:")
+        ensure_external_orders_table(conn)
+        yield conn
+        conn.close()
+
+    def _make_gateway_session(self):
+        """Build a FakeSession with DummyPlatform responses."""
+        from tests.services.fake_mcp_session import FakeSession
+
+        session = FakeSession()
+        session.program("platform.health", [{"ok": True, "contract_version": "1.0"}])
+        session.program("platform.capabilities", [{
+            "platform_id": "dummy",
+            "contract_version": "1.0",
+            "supports": ["orders.list", "orders.get", "tracking.write_back"],
+            "limits": {"rate_limit_per_second": 100, "max_concurrency": 10},
+            "paging": {"default_page_size": 3, "max_page_size": 3, "overlap_seconds": 0},
+        }])
+        session.program("auth.connect", [{"ok": True, "account_label": "test-store"}])
+        return session
+
+    def _make_registry(self):
+        """Build a mock registry with dummy config."""
+        from unittest.mock import MagicMock
+        from src.services.platform_models import PlatformConfig
+
+        config = PlatformConfig(
+            platform_id="dummy",
+            display_name="Dummy (Test)",
+            default_profile="test",
+            required_secret_keys=[],
+            mcp_module="src.mcp.platforms.dummy.server",
+            mcp_bundle_subcommand="mcp-dummy",
+            contract_version="1.0",
+            default_sync_overlap_seconds=0,
+            enabled=True,
+        )
+        registry = MagicMock()
+        registry.get_config.return_value = config
+        registry.get_state.return_value = None
+        registry.update_state = MagicMock()
+        registry.record_sync_checkpoint = MagicMock()
+        registry.record_capabilities = MagicMock()
+        registry.record_health_check = MagicMock()
+        return registry
 
     @pytest.mark.asyncio
-    async def test_full_activation_imports_all_pages(self):
+    async def test_full_activation_imports_all_pages(self, db):
         """Activate dummy platform -> 2 pages -> 6 orders in DuckDB."""
-        # TODO: Wire up after PlatformGateway and ActivationService are built
-        pytest.skip("Requires PlatformGateway (Task 6) and ActivationService (Task 7)")
+        from src.services.platform_activation_service import PlatformActivationService
+        from src.services.platform_gateway import PlatformGateway
+        from src.mcp.platforms.dummy.server import orders_list as dummy_orders_list
+
+        registry = self._make_registry()
+        session = self._make_gateway_session()
+
+        # Program page responses matching the dummy server's fixed data
+        page1 = await dummy_orders_list()
+        page2 = await dummy_orders_list(cursor="page2")
+        session.program("orders.list", [page1, page2])
+
+        gateway = PlatformGateway(registry, session_factory=lambda cfg, ref: session)
+        service = PlatformActivationService(
+            registry=registry, gateway=gateway, duckdb_conn=db,
+        )
+
+        report = await service.activate_platform("dummy", "test", mode="initial")
+        assert report.total_imported == 6
+        assert report.pages_fetched == 2
+
+        count = db.execute("SELECT COUNT(*) FROM external_orders WHERE platform='dummy'").fetchone()[0]
+        assert count == 6
+
+        await gateway.shutdown()
 
     @pytest.mark.asyncio
-    async def test_refresh_with_watermark_skips_old_orders(self):
+    async def test_refresh_with_watermark(self, db):
         """Second activation with mode=refresh passes since= to orders.list."""
-        pytest.skip("Requires PlatformGateway (Task 6) and ActivationService (Task 7)")
+        from src.services.platform_activation_service import PlatformActivationService
+        from src.services.platform_gateway import PlatformGateway
+        from unittest.mock import MagicMock
+
+        registry = self._make_registry()
+        # Simulate existing state with watermark
+        mock_state = MagicMock()
+        mock_state.last_completed_watermark = "2026-02-20T10:00:00Z"
+        mock_state.resume_cursor = None
+        registry.get_state.return_value = mock_state
+
+        session = self._make_gateway_session()
+        session.program("orders.list", [{
+            "items": [{"id": "D001", "order_number": "1001", "status": "open",
+                       "line_items": [{"quantity": 1, "grams": 500}],
+                       "total_price": "25.00", "currency": "USD"}],
+            "next_cursor": None,
+            "watermark": "2026-02-28T10:00:00Z",
+        }])
+
+        gateway = PlatformGateway(registry, session_factory=lambda cfg, ref: session)
+        service = PlatformActivationService(
+            registry=registry, gateway=gateway, duckdb_conn=db,
+        )
+
+        report = await service.activate_platform("dummy", "test", mode="refresh")
+        assert report.total_imported == 1
+        assert report.watermark == "2026-02-28T10:00:00Z"
+
+        await gateway.shutdown()
 
     @pytest.mark.asyncio
-    async def test_resume_after_simulated_crash(self):
+    async def test_resume_after_simulated_crash(self, db):
         """Set resume_cursor in registry, verify activation resumes from cursor."""
-        pytest.skip("Requires PlatformGateway (Task 6) and ActivationService (Task 7)")
+        from src.services.platform_activation_service import PlatformActivationService
+        from src.services.platform_gateway import PlatformGateway
+        from unittest.mock import MagicMock
+
+        registry = self._make_registry()
+        mock_state = MagicMock()
+        mock_state.last_completed_watermark = None
+        mock_state.resume_cursor = "page2"
+        registry.get_state.return_value = mock_state
+
+        session = self._make_gateway_session()
+        # Only page2 data (resumed from cursor)
+        session.program("orders.list", [{
+            "items": [
+                {"id": "D004", "order_number": "1004", "status": "open",
+                 "line_items": [{"quantity": 1, "grams": 400}],
+                 "total_price": "75.00", "currency": "USD"},
+            ],
+            "next_cursor": None,
+            "watermark": "2026-02-25T10:00:00Z",
+        }])
+
+        gateway = PlatformGateway(registry, session_factory=lambda cfg, ref: session)
+        service = PlatformActivationService(
+            registry=registry, gateway=gateway, duckdb_conn=db,
+        )
+
+        report = await service.activate_platform("dummy", "test", mode="initial")
+        assert report.pages_fetched == 1
+        assert report.total_imported == 1
+
+        await gateway.shutdown()
