@@ -11,7 +11,9 @@ from typing import Optional
 from uuid import uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -918,3 +920,64 @@ class FilterTokenConsumed(Base):
 
     def __repr__(self) -> str:
         return f"<FilterTokenConsumed(hash={self.token_hash[:12]}...)>"
+
+
+class PlatformSyncState(Base):
+    """Persisted sync state for each platform integration.
+
+    Keyed by (platform_id, credential_ref) for multi-account support.
+    Stores sync checkpoints, health tracking, and capabilities cache.
+    """
+
+    __tablename__ = "platform_sync_state"
+
+    platform_id: Mapped[str] = mapped_column(String, primary_key=True)
+    credential_ref: Mapped[str] = mapped_column(String, primary_key=True)
+    connection_status: Mapped[str] = mapped_column(
+        String, default="disconnected"
+    )  # connected | disconnected | degraded | auth_expired
+    account_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    account_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    # Sync checkpoints (resumable)
+    resume_cursor: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_completed_watermark: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_sync_completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_sync_row_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Health tracking
+    last_health_check_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_health_ok: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    consecutive_failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_success_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_error_message: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    last_error_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Capabilities cache
+    capabilities_hash: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    capabilities_contract_version: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
+    capabilities_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    capabilities_fetched_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    def __repr__(self) -> str:
+        return (
+            f"<PlatformSyncState({self.platform_id}/{self.credential_ref} "
+            f"status={self.connection_status})>"
+        )
