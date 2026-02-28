@@ -135,6 +135,115 @@ async def get_ups_gateway() -> Any:
         return _ups_gateway
 
 
+# -- PlatformGateway + PlatformRegistry singletons ---------------------------
+_platform_registry: Any = None
+_platform_gateway: Any = None
+_activation_service: Any = None
+_platform_lock = asyncio.Lock()
+
+
+def get_platform_registry() -> Any:
+    """Get the PlatformRegistry singleton.
+
+    Must be initialized during FastAPI lifespan startup via
+    init_platform_singletons().
+
+    Returns:
+        The shared PlatformRegistry instance.
+
+    Raises:
+        RuntimeError: If not yet initialized.
+    """
+    if _platform_registry is None:
+        raise RuntimeError(
+            "PlatformRegistry not initialized. "
+            "Call init_platform_singletons() during app startup."
+        )
+    return _platform_registry
+
+
+def get_platform_gateway() -> Any:
+    """Get the PlatformGateway singleton.
+
+    Must be initialized during FastAPI lifespan startup via
+    init_platform_singletons().
+
+    Returns:
+        The shared PlatformGateway instance.
+
+    Raises:
+        RuntimeError: If not yet initialized.
+    """
+    if _platform_gateway is None:
+        raise RuntimeError(
+            "PlatformGateway not initialized. "
+            "Call init_platform_singletons() during app startup."
+        )
+    return _platform_gateway
+
+
+def get_activation_service() -> Any:
+    """Get the PlatformActivationService singleton.
+
+    Must be initialized during FastAPI lifespan startup via
+    init_platform_singletons().
+
+    Returns:
+        The shared PlatformActivationService instance.
+
+    Raises:
+        RuntimeError: If not yet initialized.
+    """
+    if _activation_service is None:
+        raise RuntimeError(
+            "PlatformActivationService not initialized. "
+            "Call init_platform_singletons() during app startup."
+        )
+    return _activation_service
+
+
+async def init_platform_singletons(duckdb_conn: Any = None) -> None:
+    """Initialize platform singletons during app startup.
+
+    Creates PlatformRegistry, PlatformGateway, and PlatformActivationService.
+    Must be called once during FastAPI lifespan.
+
+    Args:
+        duckdb_conn: Optional DuckDB connection for activation service.
+    """
+    global _platform_registry, _platform_gateway, _activation_service
+    async with _platform_lock:
+        if _platform_registry is not None:
+            return  # Already initialized
+
+        from src.services.platform_registry import PlatformRegistry
+        from src.services.platform_gateway import PlatformGateway
+        from src.services.platform_activation_service import PlatformActivationService
+
+        _platform_registry = PlatformRegistry()
+        _platform_gateway = PlatformGateway(_platform_registry)
+        _activation_service = PlatformActivationService(
+            registry=_platform_registry,
+            gateway=_platform_gateway,
+            duckdb_conn=duckdb_conn,
+        )
+        logger.info("Platform singletons initialized (registry, gateway, activation)")
+
+
+async def shutdown_platform_singletons() -> None:
+    """Shutdown platform singletons. Call from FastAPI lifespan."""
+    global _platform_registry, _platform_gateway, _activation_service
+    async with _platform_lock:
+        if _platform_gateway is not None:
+            try:
+                await _platform_gateway.shutdown()
+            except Exception as e:
+                logger.warning("Failed to shutdown PlatformGateway: %s", e)
+            _platform_gateway = None
+        _platform_registry = None
+        _activation_service = None
+
+
 async def check_gateway_health() -> dict[str, dict[str, str]]:
     """Probe connected MCP gateways for liveness. Non-blocking, best-effort.
 
