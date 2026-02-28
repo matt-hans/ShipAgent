@@ -417,16 +417,35 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   }, [federatedPlatformsVersion]);
 
   const togglePlatformActive = React.useCallback(async (platformId: string) => {
-    // Compute new active set by toggling the target platform
-    const newActiveIds = federatedPlatforms
-      .filter((p) => (p.platform_id === platformId ? !p.is_active : p.is_active))
-      .map((p) => p.platform_id);
-    try {
+    const platform = federatedPlatforms.find((p) => p.platform_id === platformId);
+    if (!platform) return;
+
+    // Toggling OFF — just remove from active set
+    if (platform.is_active) {
+      const newActiveIds = federatedPlatforms
+        .filter((p) => p.is_active && p.platform_id !== platformId)
+        .map((p) => p.platform_id);
       await api.setActivePlatforms(newActiveIds);
       refreshFederatedPlatforms();
-    } catch (err) {
-      console.error('Failed to toggle platform active state:', err);
+      return;
     }
+
+    // Toggling ON — check if the platform needs initial sync first
+    const needsSync = platform.connection_status !== 'synced';
+    if (needsSync && platform.has_credentials) {
+      // Trigger initial activation (connect + import), which also sets is_active
+      await api.activatePlatform(platformId);
+      refreshFederatedPlatforms();
+      return;
+    }
+
+    // Already synced — just add to active set
+    const newActiveIds = federatedPlatforms
+      .filter((p) => p.is_active)
+      .map((p) => p.platform_id)
+      .concat(platformId);
+    await api.setActivePlatforms(newActiveIds);
+    refreshFederatedPlatforms();
   }, [federatedPlatforms, refreshFederatedPlatforms]);
 
   // Refresh contacts from API
