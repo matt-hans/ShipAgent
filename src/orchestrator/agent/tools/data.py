@@ -747,8 +747,9 @@ async def connect_shopify_tool(
 ) -> dict[str, Any]:
     """Connect to Shopify and import orders as active data source.
 
-    Delegates to the shared ShopifyActivationService for the full
-    connect → fetch → normalize → import flow.
+    Migration shim: delegates to PlatformActivationService for the full
+    connect → page → normalize → upsert flow. Will be removed in Phase C
+    when the monolithic external_sources MCP is deleted.
 
     Args:
         args: Empty dict (credentials resolved via adapter).
@@ -757,21 +758,39 @@ async def connect_shopify_tool(
     Returns:
         MCP tool response dict.
     """
-    from src.services.shopify_activation_service import (
-        ShopifyActivationError,
-        activate_shopify_as_data_source,
-    )
+    from src.services.gateway_provider import get_activation_service
 
     try:
-        result = await activate_shopify_as_data_source()
-    except ShopifyActivationError as exc:
-        return _err(str(exc))
+        service = get_activation_service()
+        report = await service.activate_platform(
+            platform_id="shopify",
+            credential_ref=args.get("credential_ref", "primary"),
+            mode="initial",
+        )
+    except RuntimeError as exc:
+        # Singletons not initialized — fall back to old path
+        logger.warning("Platform singletons not ready, falling back: %s", exc)
+        from src.services.shopify_activation_service import (
+            ShopifyActivationError,
+            activate_shopify_as_data_source,
+        )
+        try:
+            result = await activate_shopify_as_data_source()
+        except ShopifyActivationError as inner_exc:
+            return _err(str(inner_exc))
+        except Exception as inner_exc:
+            return _err(f"Shopify activation failed: {inner_exc}")
+        return _ok({
+            "message": result["message"],
+            "platform": "shopify",
+            "orders_imported": result["row_count"],
+        })
     except Exception as exc:
         logger.error("connect_shopify_tool unexpected error: %s", exc)
         return _err(f"Shopify activation failed: {exc}")
 
     return _ok({
-        "message": result["message"],
+        "message": f"Shopify activated: {report.total_imported} orders imported",
         "platform": "shopify",
-        "orders_imported": result["row_count"],
+        "orders_imported": report.total_imported,
     })
