@@ -55,6 +55,10 @@ class PlatformError(Exception):
     request_id: str | None = None
     trace_id: str | None = None
 
+    def __post_init__(self) -> None:
+        """Pass message to Exception so str(e) works correctly."""
+        Exception.__init__(self, self.message)
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> PlatformError:
         """Parse from MCP tool error response."""

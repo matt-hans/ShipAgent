@@ -482,24 +482,15 @@ def build_system_prompt(
     elif source_info is not None:
         data_section = _build_schema_section(source_info, column_samples=column_samples)
     else:
-        from src.services.runtime_credentials import resolve_shopify_credentials
-        shopify_configured = resolve_shopify_credentials() is not None
-        if shopify_configured:
-            data_section = (
-                "No data source imported yet, but Shopify credentials are configured "
-                "in the environment.\n"
-                "You MUST call the connect_shopify tool FIRST to import Shopify orders "
-                "before doing anything else. Do not ask the user to connect a source — "
-                "just call connect_shopify immediately."
-            )
-        else:
-            data_section = (
-                "No data source connected. The user can still use tracking, pickup, "
-                "location finder, landed cost, and paperless document tools without a "
-                "data source. For batch shipping commands, ask the user to import a "
-                "file or connect a database source first.\n"
-                + FILE_IMPORT_INSTRUCTIONS
-            )
+        data_section = (
+            "No data source connected. The user can still use tracking, pickup, "
+            "location finder, landed cost, and paperless document tools without a "
+            "data source. For batch shipping commands, ask the user to import a "
+            "file or connect a database source first.\n"
+            "If platform credentials are configured (Shopify, Amazon, etc.), "
+            "call the activate_platform tool to import orders from the platform.\n"
+            + FILE_IMPORT_INSTRUCTIONS
+        )
 
     filter_rules_section = ""
     workflow_section = ""

@@ -192,12 +192,21 @@ async def init_platform_singletons(duckdb_conn: Any = None) -> None:
         if _platform_registry is not None:
             return  # Already initialized
 
+        import duckdb as _duckdb
+
+        from src.db.connection import SessionLocal
         from src.services.platform_registry import PlatformRegistry
         from src.services.platform_gateway import PlatformGateway
         from src.services.platform_activation_service import PlatformActivationService
 
-        _platform_registry = PlatformRegistry()
-        _platform_gateway = PlatformGateway(_platform_registry)
+        _platform_registry = PlatformRegistry(session_factory=SessionLocal)
+        _platform_gateway = PlatformGateway(
+            _platform_registry, session_factory=None,
+        )
+
+        if duckdb_conn is None:
+            duckdb_conn = _duckdb.connect()  # In-memory for platform order ingestion
+
         _activation_service = PlatformActivationService(
             registry=_platform_registry,
             gateway=_platform_gateway,

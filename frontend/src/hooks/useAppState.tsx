@@ -434,7 +434,10 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     const needsSync = platform.connection_status !== 'synced';
     if (needsSync && platform.has_credentials) {
       // Trigger initial activation (connect + import), which also sets is_active
-      await api.activatePlatform(platformId);
+      const result = await api.activatePlatform(platformId);
+      if (!result.success) {
+        throw new Error(result.error || 'Platform activation failed');
+      }
       refreshFederatedPlatforms();
       return;
     }
