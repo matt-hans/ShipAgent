@@ -10,6 +10,7 @@ MAPPER_MODULES = [
     "src.mcp.platforms.dummy.mapper",
     "src.mcp.platforms.woocommerce.mapper",
     "src.mcp.platforms.sap.mapper",
+    "src.mcp.platforms.amazon.mapper",
     # Add new platforms here as they're extracted
 ]
 
