@@ -321,6 +321,7 @@ class TestDummyVerticalSliceIntegration:
         registry.record_sync_checkpoint = MagicMock()
         registry.record_capabilities = MagicMock()
         registry.record_health_check = MagicMock()
+        registry.resolve_auth_args.return_value = {"credential_ref": "test"}
         return registry
 
     def _mock_data_gateway(self, db):

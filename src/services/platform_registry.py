@@ -23,6 +23,8 @@ from src.db.models import PlatformSyncState
 from src.services.keyring_store import KeyringStore
 from src.services.platform_models import (
     PlatformConfig,
+    PlatformError,
+    PlatformErrorCode,
     PlatformSummary,
 )
 
@@ -86,7 +88,7 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         platform_id="oracle",
         display_name="Oracle ERP",
         default_profile="primary",
-        required_secret_keys=["DSN", "USER", "PASSWORD"],
+        required_secret_keys=["HOST", "PORT", "SERVICE_NAME", "USER", "PASSWORD"],
         mcp_module="src.mcp.platforms.oracle.server",
         mcp_bundle_subcommand="mcp-oracle",
         contract_version="1.0",
@@ -105,6 +107,41 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         enabled=False,
     ),
 }
+
+# Maps keyring key names → auth.connect parameter names per platform.
+# Keys not listed here fall through to key_name.lower().
+SECRET_TO_AUTH_PARAM: dict[str, dict[str, str]] = {
+    "shopify": {
+        "ACCESS_TOKEN": "access_token",
+        "STORE_DOMAIN": "store_domain",
+    },
+    "amazon": {
+        "SP_API_CLIENT_ID": "client_id",
+        "SP_API_CLIENT_SECRET": "client_secret",
+        "SP_API_REFRESH_TOKEN": "refresh_token",
+        "MARKETPLACE_ID": "marketplace_id",
+    },
+    "woocommerce": {
+        "CONSUMER_KEY": "consumer_key",
+        "CONSUMER_SECRET": "consumer_secret",
+        "SITE_URL": "site_url",
+    },
+    "sap": {
+        "BASE_URL": "base_url",
+        "USERNAME": "username",
+        "PASSWORD": "password",
+        "CLIENT": "sap_client",
+    },
+    "oracle": {
+        "HOST": "host",
+        "PORT": "port",
+        "SERVICE_NAME": "service_name",
+        "USER": "user",
+        "PASSWORD": "password",
+    },
+    "dummy": {},
+}
+
 
 CAPABILITIES_TTL_SECONDS = 3600  # 1 hour
 
@@ -136,6 +173,53 @@ class PlatformRegistry:
         if enabled_only:
             configs = [c for c in configs if c.enabled]
         return configs
+
+    # --- Credential resolution ---
+
+    def resolve_auth_args(
+        self, platform_id: str, credential_ref: str,
+    ) -> dict[str, str]:
+        """Resolve auth.connect arguments from keyring secrets.
+
+        Reads each required_secret_key from the keyring, maps it to the
+        corresponding auth.connect parameter name, and returns the full
+        argument dict ready to pass to the MCP tool.
+
+        Args:
+            platform_id: Platform identifier.
+            credential_ref: Credential profile reference.
+
+        Returns:
+            Dict of auth.connect parameter names to secret values.
+
+        Raises:
+            PlatformError: If platform is unknown or a required secret is missing.
+        """
+        config = self.get_config(platform_id)
+        if config is None:
+            raise PlatformError(
+                error_code=PlatformErrorCode.INVALID_ARGUMENT,
+                message=f"Unknown platform: {platform_id}",
+            )
+
+        mapping = SECRET_TO_AUTH_PARAM.get(platform_id, {})
+        ks = KeyringStore()
+        args: dict[str, str] = {"credential_ref": credential_ref}
+
+        for key_name in config.required_secret_keys:
+            param_name = mapping.get(key_name, key_name.lower())
+            value = ks.get(keyring_key(platform_id, credential_ref, key_name))
+            if value is None:
+                raise PlatformError(
+                    error_code=PlatformErrorCode.AUTH_REQUIRED,
+                    message=(
+                        f"Missing credential: {key_name} for "
+                        f"{platform_id}/{credential_ref}"
+                    ),
+                )
+            args[param_name] = value
+
+        return args
 
     # --- Dynamic state ---
 

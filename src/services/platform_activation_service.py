@@ -86,10 +86,10 @@ class PlatformActivationService:
                 if watermark:
                     since = watermark
 
-        # Step 3: Connect via auth.connect
+        # Step 3: Connect via auth.connect — resolve secrets from keyring
+        auth_args = self._registry.resolve_auth_args(platform_id, credential_ref)
         await self._gateway.call_tool(
-            platform_id, credential_ref, "auth.connect",
-            {"credential_ref": credential_ref},
+            platform_id, credential_ref, "auth.connect", auth_args,
         )
 
         # Step 4: Load the mapper for this platform

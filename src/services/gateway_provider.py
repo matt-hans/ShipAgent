@@ -178,11 +178,58 @@ def get_activation_service() -> Any:
     return _activation_service
 
 
+class PlatformSessionAdapter:
+    """Adapts MCPClient to SessionProtocol expected by PlatformGateway.
+
+    MCPClient requires connect() before call_tool and exposes disconnect(),
+    but PlatformGateway expects call_tool to work immediately and uses close().
+
+    This adapter performs lazy connect on first call_tool and maps
+    close() → disconnect().
+    """
+
+    def __init__(self, client: Any) -> None:
+        """Initialize with an unconnected MCPClient.
+
+        Args:
+            client: MCPClient instance (not yet connected).
+        """
+        self._client = client
+        self._connected = False
+
+    async def _ensure_connected(self) -> None:
+        """Connect to the MCP server if not already connected."""
+        if not self._connected:
+            await self._client.connect()
+            self._connected = True
+
+    async def call_tool(self, tool_name: str, args: dict) -> dict:
+        """Call a tool on the platform MCP server.
+
+        Lazily connects on first invocation.
+
+        Args:
+            tool_name: MCP tool name.
+            args: Tool arguments dict.
+
+        Returns:
+            Parsed JSON response dict.
+        """
+        await self._ensure_connected()
+        return await self._client.call_tool(tool_name, args)
+
+    async def close(self) -> None:
+        """Disconnect the underlying MCPClient."""
+        if self._connected:
+            await self._client.disconnect()
+            self._connected = False
+
+
 def _build_platform_session_factory() -> Any:
     """Build a session factory that spawns platform MCP servers via stdio.
 
-    Returns a callable (PlatformConfig, credential_ref) -> MCPClient that
-    creates stdio connections to per-platform MCP servers using MCPClient.
+    Returns a callable (PlatformConfig, credential_ref) -> PlatformSessionAdapter
+    that creates stdio connections to per-platform MCP servers.
 
     Returns:
         Session factory callable.
@@ -201,7 +248,7 @@ def _build_platform_session_factory() -> Any:
     if not python_cmd:
         python_cmd = venv_python if os.path.exists(venv_python) else sys.executable
 
-    def factory(config: Any, credential_ref: str) -> MCPClient:
+    def factory(config: Any, credential_ref: str) -> PlatformSessionAdapter:
         """Spawn a platform MCP server as a stdio subprocess.
 
         Args:
@@ -209,7 +256,7 @@ def _build_platform_session_factory() -> Any:
             credential_ref: Credential profile reference.
 
         Returns:
-            Connected MCPClient wrapping the platform MCP server.
+            PlatformSessionAdapter wrapping an MCPClient.
         """
         params = StdioServerParameters(
             command=python_cmd,
@@ -220,7 +267,8 @@ def _build_platform_session_factory() -> Any:
                 "CREDENTIAL_REF": credential_ref,
             },
         )
-        return MCPClient(params, max_retries=2, base_delay=1.0)
+        client = MCPClient(params, max_retries=2, base_delay=1.0)
+        return PlatformSessionAdapter(client)
 
     return factory
 

@@ -9,8 +9,18 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import Base, PlatformSyncState
-from src.services.platform_models import PlatformConfig, CapabilityManifest
-from src.services.platform_registry import PlatformRegistry, PLATFORM_CONFIGS
+from src.services.platform_models import (
+    PlatformConfig,
+    PlatformError,
+    PlatformErrorCode,
+    CapabilityManifest,
+)
+from src.services.platform_registry import (
+    PlatformRegistry,
+    PLATFORM_CONFIGS,
+    SECRET_TO_AUTH_PARAM,
+    keyring_key,
+)
 
 
 @pytest.fixture
@@ -174,3 +184,80 @@ class TestPlatformSummary:
         shopify_summaries = [s for s in summaries if s.platform_id == "shopify"]
         assert len(shopify_summaries) >= 1
         assert shopify_summaries[0].has_credentials is True
+
+
+class TestResolveAuthArgs:
+    """Test resolve_auth_args credential resolution for auth.connect."""
+
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_dummy_returns_only_credential_ref(self, mock_ks_cls, registry):
+        """Dummy has no required secrets, so result is just credential_ref."""
+        mock_ks = MagicMock()
+        mock_ks_cls.return_value = mock_ks
+        args = registry.resolve_auth_args("dummy", "test")
+        assert args == {"credential_ref": "test"}
+
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_shopify_resolves_all_secrets(self, mock_ks_cls, registry):
+        """Shopify requires ACCESS_TOKEN and STORE_DOMAIN."""
+        mock_ks = MagicMock()
+        mock_ks.get.side_effect = lambda key: {
+            "shopify:primary:ACCESS_TOKEN": "shpat_xxx",
+            "shopify:primary:STORE_DOMAIN": "test-store.myshopify.com",
+        }.get(key)
+        mock_ks_cls.return_value = mock_ks
+
+        args = registry.resolve_auth_args("shopify", "primary")
+        assert args["credential_ref"] == "primary"
+        assert args["access_token"] == "shpat_xxx"
+        assert args["store_domain"] == "test-store.myshopify.com"
+
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_amazon_resolves_sp_api_secrets(self, mock_ks_cls, registry):
+        """Amazon maps SP_API_* keyring keys to auth.connect param names."""
+        mock_ks = MagicMock()
+        mock_ks.get.side_effect = lambda key: {
+            "amazon:primary:SP_API_CLIENT_ID": "amzn1.app.xxx",
+            "amazon:primary:SP_API_CLIENT_SECRET": "secret123",
+            "amazon:primary:SP_API_REFRESH_TOKEN": "Atzr|refresh",
+            "amazon:primary:MARKETPLACE_ID": "ATVPDKIKX0DER",
+        }.get(key)
+        mock_ks_cls.return_value = mock_ks
+
+        args = registry.resolve_auth_args("amazon", "primary")
+        assert args["client_id"] == "amzn1.app.xxx"
+        assert args["client_secret"] == "secret123"
+        assert args["refresh_token"] == "Atzr|refresh"
+        assert args["marketplace_id"] == "ATVPDKIKX0DER"
+
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_missing_secret_raises_auth_required(self, mock_ks_cls, registry):
+        """Missing keyring entry raises PlatformError with AUTH_REQUIRED."""
+        mock_ks = MagicMock()
+        mock_ks.get.return_value = None  # All keys missing
+        mock_ks_cls.return_value = mock_ks
+
+        with pytest.raises(PlatformError) as exc_info:
+            registry.resolve_auth_args("shopify", "primary")
+        assert exc_info.value.error_code == PlatformErrorCode.AUTH_REQUIRED
+        assert "ACCESS_TOKEN" in exc_info.value.message
+
+    def test_unknown_platform_raises(self, registry):
+        """Unknown platform raises PlatformError."""
+        with pytest.raises(PlatformError) as exc_info:
+            registry.resolve_auth_args("nonexistent", "primary")
+        assert exc_info.value.error_code == PlatformErrorCode.INVALID_ARGUMENT
+
+    def test_secret_to_auth_param_covers_all_platforms(self):
+        """Every platform in PLATFORM_CONFIGS has a SECRET_TO_AUTH_PARAM entry."""
+        for pid in PLATFORM_CONFIGS:
+            assert pid in SECRET_TO_AUTH_PARAM, f"Missing mapping for {pid}"
+
+    def test_secret_to_auth_param_covers_all_keys(self):
+        """Every required_secret_key has a mapping in SECRET_TO_AUTH_PARAM."""
+        for pid, config in PLATFORM_CONFIGS.items():
+            mapping = SECRET_TO_AUTH_PARAM[pid]
+            for key in config.required_secret_keys:
+                assert key in mapping, (
+                    f"Missing mapping for {pid}/{key}"
+                )

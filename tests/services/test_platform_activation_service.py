@@ -48,6 +48,8 @@ def _make_registry(config: PlatformConfig | None = None):
     registry.record_sync_checkpoint = MagicMock()
     registry.record_capabilities = MagicMock()
     registry.record_health_check = MagicMock()
+    # Dummy has no required_secret_keys, so auth args are just credential_ref
+    registry.resolve_auth_args.return_value = {"credential_ref": "test"}
     return registry
 
 
