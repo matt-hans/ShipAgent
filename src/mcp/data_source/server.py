@@ -45,6 +45,10 @@ async def lifespan(app: Any):
     conn.execute("INSTALL postgres; INSTALL mysql;")
     conn.execute("LOAD postgres; LOAD mysql;")
 
+    # Ensure external_orders table exists for platform order import
+    from src.mcp.data_source.tools.schema_migration import ensure_external_orders_table
+    ensure_external_orders_table(conn)
+
     yield {
         "db": conn,
         "current_source": None,  # Track active source metadata
