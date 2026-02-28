@@ -367,3 +367,60 @@ class TestDBFallbackCredentials:
         with pytest.raises(PlatformError) as exc_info:
             registry.resolve_auth_args("amazon", "primary")
         assert exc_info.value.error_code == PlatformErrorCode.AUTH_REQUIRED
+
+    @patch("src.services.platform_registry.resolve_shopify_credentials")
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_shopify_db_fallback_uses_store_domain_from_state(
+        self, mock_ks_cls, mock_resolve, registry,
+    ):
+        """Multi-store: DB fallback passes account_label as store_domain."""
+        from src.services.connection_types import ShopifyLegacyCredentials
+
+        mock_ks = MagicMock()
+        mock_ks.get.return_value = None
+        mock_ks_cls.return_value = mock_ks
+
+        # State has account_label set from a previous auth.connect
+        registry.update_state(
+            "shopify", "secondary",
+            connection_status="connected",
+            account_label="secondary-store.myshopify.com",
+        )
+
+        mock_resolve.return_value = ShopifyLegacyCredentials(
+            access_token="shpat_secondary",
+            store_domain="secondary-store.myshopify.com",
+        )
+
+        args = registry.resolve_auth_args("shopify", "secondary")
+        assert args["store_domain"] == "secondary-store.myshopify.com"
+        assert args["access_token"] == "shpat_secondary"
+
+        # Verify resolve_shopify_credentials was called with store_domain
+        mock_resolve.assert_called_once_with(
+            store_domain="secondary-store.myshopify.com",
+        )
+
+    @patch("src.services.platform_registry.resolve_shopify_credentials")
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_shopify_db_fallback_no_state_uses_first_available(
+        self, mock_ks_cls, mock_resolve, registry,
+    ):
+        """When no state exists, DB fallback uses first available (store_domain=None)."""
+        from src.services.connection_types import ShopifyLegacyCredentials
+
+        mock_ks = MagicMock()
+        mock_ks.get.return_value = None
+        mock_ks_cls.return_value = mock_ks
+
+        # No state exists for this credential_ref
+        mock_resolve.return_value = ShopifyLegacyCredentials(
+            access_token="shpat_first",
+            store_domain="first-store.myshopify.com",
+        )
+
+        args = registry.resolve_auth_args("shopify", "new_ref")
+        assert args["access_token"] == "shpat_first"
+
+        # Verify resolve_shopify_credentials was called without store_domain
+        mock_resolve.assert_called_once_with(store_domain=None)

@@ -291,9 +291,35 @@ async def set_active_platforms(
         registry = get_platform_registry()
         summaries = registry.get_platforms_summary()
 
-        # Build set of known platform IDs from current summaries
-        known_ids = {s.platform_id for s in summaries}
+        # Build lookup by platform_id
+        summary_by_id: dict[str, Any] = {}
+        for s in summaries:
+            summary_by_id[s.platform_id] = s
+
         requested_ids = set(request.active_platform_ids)
+        rejected: list[dict[str, str]] = []
+
+        # Validate: only connected platforms with credentials can be activated
+        for pid in requested_ids:
+            summary = summary_by_id.get(pid)
+            if summary is None:
+                rejected.append({"platform_id": pid, "reason": "unknown platform"})
+                continue
+            if summary.connection_status == "disconnected" and not summary.has_credentials:
+                rejected.append({
+                    "platform_id": pid,
+                    "reason": "not connected and no credentials available",
+                })
+
+        # If any requested platform was rejected, return error
+        if rejected:
+            reasons = "; ".join(
+                f"{r['platform_id']}: {r['reason']}" for r in rejected
+            )
+            return SetActivePlatformsResponse(
+                success=False,
+                error=f"Cannot activate: {reasons}",
+            )
 
         # Activate requested platforms, deactivate everything else
         for summary in summaries:
