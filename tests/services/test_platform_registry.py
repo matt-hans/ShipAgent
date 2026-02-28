@@ -230,12 +230,14 @@ class TestResolveAuthArgs:
         assert args["refresh_token"] == "Atzr|refresh"
         assert args["marketplace_id"] == "ATVPDKIKX0DER"
 
+    @patch("src.services.platform_registry.resolve_shopify_credentials")
     @patch("src.services.platform_registry.KeyringStore")
-    def test_missing_secret_raises_auth_required(self, mock_ks_cls, registry):
-        """Missing keyring entry raises PlatformError with AUTH_REQUIRED."""
+    def test_missing_secret_raises_auth_required(self, mock_ks_cls, mock_resolve, registry):
+        """Missing credentials in both keyring and DB raises AUTH_REQUIRED."""
         mock_ks = MagicMock()
-        mock_ks.get.return_value = None  # All keys missing
+        mock_ks.get.return_value = None  # All keyring keys missing
         mock_ks_cls.return_value = mock_ks
+        mock_resolve.return_value = None  # DB also empty
 
         with pytest.raises(PlatformError) as exc_info:
             registry.resolve_auth_args("shopify", "primary")
@@ -261,3 +263,107 @@ class TestResolveAuthArgs:
                 assert key in mapping, (
                     f"Missing mapping for {pid}/{key}"
                 )
+
+
+class TestDBFallbackCredentials:
+    """Test credential resolution from ConnectionService encrypted DB."""
+
+    @patch("src.services.platform_registry.resolve_shopify_credentials")
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_shopify_falls_back_to_db(self, mock_ks_cls, mock_resolve, registry):
+        """Shopify credentials resolved from DB when keyring is empty."""
+        from src.services.connection_types import ShopifyLegacyCredentials
+
+        # Keyring returns nothing
+        mock_ks = MagicMock()
+        mock_ks.get.return_value = None
+        mock_ks_cls.return_value = mock_ks
+
+        # DB returns credentials
+        mock_resolve.return_value = ShopifyLegacyCredentials(
+            access_token="shpat_from_db",
+            store_domain="db-store.myshopify.com",
+        )
+
+        args = registry.resolve_auth_args("shopify", "primary")
+        assert args["credential_ref"] == "primary"
+        assert args["access_token"] == "shpat_from_db"
+        assert args["store_domain"] == "db-store.myshopify.com"
+
+    @patch("src.services.platform_registry.resolve_shopify_credentials")
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_keyring_takes_priority_over_db(self, mock_ks_cls, mock_resolve, registry):
+        """Keyring credentials used when available, DB not consulted."""
+        from src.services.connection_types import ShopifyLegacyCredentials
+
+        # Keyring has credentials
+        mock_ks = MagicMock()
+        mock_ks.get.side_effect = lambda key: {
+            "shopify:primary:ACCESS_TOKEN": "shpat_keyring",
+            "shopify:primary:STORE_DOMAIN": "keyring-store.myshopify.com",
+        }.get(key)
+        mock_ks_cls.return_value = mock_ks
+
+        # DB also has credentials (should not be used)
+        mock_resolve.return_value = ShopifyLegacyCredentials(
+            access_token="shpat_db",
+            store_domain="db-store.myshopify.com",
+        )
+
+        args = registry.resolve_auth_args("shopify", "primary")
+        assert args["access_token"] == "shpat_keyring"
+        assert args["store_domain"] == "keyring-store.myshopify.com"
+        mock_resolve.assert_not_called()
+
+    @patch("src.services.platform_registry.resolve_shopify_credentials")
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_has_credentials_true_from_db(self, mock_ks_cls, mock_resolve, registry):
+        """has_credentials returns True when DB has credentials but keyring is empty."""
+        from src.services.connection_types import ShopifyLegacyCredentials
+
+        mock_ks = MagicMock()
+        mock_ks.has.return_value = False  # Keyring empty
+        mock_ks_cls.return_value = mock_ks
+
+        mock_resolve.return_value = ShopifyLegacyCredentials(
+            access_token="shpat_db",
+            store_domain="db-store.myshopify.com",
+        )
+
+        registry.update_state("shopify", "primary", connection_status="connected")
+        summaries = registry.get_platforms_summary()
+        shopify_summaries = [s for s in summaries if s.platform_id == "shopify"]
+        assert len(shopify_summaries) >= 1
+        assert shopify_summaries[0].has_credentials is True
+
+    @patch("src.services.platform_registry.resolve_shopify_credentials")
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_shopify_client_credentials_from_db(self, mock_ks_cls, mock_resolve, registry):
+        """ShopifyClientCredentials access_token is extracted correctly."""
+        from src.services.connection_types import ShopifyClientCredentials
+
+        mock_ks = MagicMock()
+        mock_ks.get.return_value = None
+        mock_ks_cls.return_value = mock_ks
+
+        mock_resolve.return_value = ShopifyClientCredentials(
+            client_id="client_id_xxx",
+            client_secret="client_secret_xxx",
+            store_domain="client-store.myshopify.com",
+            access_token="shpat_client",
+        )
+
+        args = registry.resolve_auth_args("shopify", "primary")
+        assert args["access_token"] == "shpat_client"
+        assert args["store_domain"] == "client-store.myshopify.com"
+
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_amazon_no_db_fallback_raises(self, mock_ks_cls, registry):
+        """Amazon has no DB fallback yet — raises AUTH_REQUIRED when keyring empty."""
+        mock_ks = MagicMock()
+        mock_ks.get.return_value = None
+        mock_ks_cls.return_value = mock_ks
+
+        with pytest.raises(PlatformError) as exc_info:
+            registry.resolve_auth_args("amazon", "primary")
+        assert exc_info.value.error_code == PlatformErrorCode.AUTH_REQUIRED

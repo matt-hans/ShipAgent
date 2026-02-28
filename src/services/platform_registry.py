@@ -27,6 +27,7 @@ from src.services.platform_models import (
     PlatformErrorCode,
     PlatformSummary,
 )
+from src.services.runtime_credentials import resolve_shopify_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -179,11 +180,12 @@ class PlatformRegistry:
     def resolve_auth_args(
         self, platform_id: str, credential_ref: str,
     ) -> dict[str, str]:
-        """Resolve auth.connect arguments from keyring secrets.
+        """Resolve auth.connect arguments from available credential sources.
 
-        Reads each required_secret_key from the keyring, maps it to the
-        corresponding auth.connect parameter name, and returns the full
-        argument dict ready to pass to the MCP tool.
+        Resolution order:
+            1. Namespaced keyring keys ({platform}:{ref}:{key})
+            2. ConnectionService encrypted DB (via runtime_credentials)
+            3. Environment variable fallback (via runtime_credentials)
 
         Args:
             platform_id: Platform identifier.
@@ -193,7 +195,7 @@ class PlatformRegistry:
             Dict of auth.connect parameter names to secret values.
 
         Raises:
-            PlatformError: If platform is unknown or a required secret is missing.
+            PlatformError: If platform is unknown or no credential source has data.
         """
         config = self.get_config(platform_id)
         if config is None:
@@ -202,24 +204,95 @@ class PlatformRegistry:
                 message=f"Unknown platform: {platform_id}",
             )
 
-        mapping = SECRET_TO_AUTH_PARAM.get(platform_id, {})
+        # No required secrets (e.g., dummy) — just return credential_ref
+        if not config.required_secret_keys:
+            return {"credential_ref": credential_ref}
+
+        # Try keyring first
+        args = self._resolve_from_keyring(config, credential_ref)
+        if args is not None:
+            return args
+
+        # Fallback: encrypted DB + env vars via runtime_credentials
+        args = self._resolve_from_connection_service(config, credential_ref)
+        if args is not None:
+            return args
+
+        # Nothing found — report first missing key
+        raise PlatformError(
+            error_code=PlatformErrorCode.AUTH_REQUIRED,
+            message=(
+                f"Missing credential: {config.required_secret_keys[0]} for "
+                f"{platform_id}/{credential_ref}. "
+                f"Save credentials via Settings or the Connections API."
+            ),
+        )
+
+    def _resolve_from_keyring(
+        self, config: PlatformConfig, credential_ref: str,
+    ) -> dict[str, str] | None:
+        """Try resolving all required secrets from namespaced keyring keys.
+
+        Returns complete args dict if ALL keys found, None if any key is missing.
+        """
+        mapping = SECRET_TO_AUTH_PARAM.get(config.platform_id, {})
         ks = KeyringStore()
         args: dict[str, str] = {"credential_ref": credential_ref}
 
         for key_name in config.required_secret_keys:
             param_name = mapping.get(key_name, key_name.lower())
-            value = ks.get(keyring_key(platform_id, credential_ref, key_name))
+            value = ks.get(keyring_key(config.platform_id, credential_ref, key_name))
             if value is None:
-                raise PlatformError(
-                    error_code=PlatformErrorCode.AUTH_REQUIRED,
-                    message=(
-                        f"Missing credential: {key_name} for "
-                        f"{platform_id}/{credential_ref}"
-                    ),
-                )
+                return None
             args[param_name] = value
 
         return args
+
+    def _resolve_from_connection_service(
+        self, config: PlatformConfig, credential_ref: str,
+    ) -> dict[str, str] | None:
+        """Try resolving credentials from encrypted DB via runtime_credentials.
+
+        Uses the existing resolve_shopify_credentials / resolve_ups_credentials
+        adapters, which check ConnectionService's encrypted DB rows and fall
+        back to environment variables.
+
+        Returns complete args dict if credentials found, None otherwise.
+        """
+        platform_id = config.platform_id
+
+        if platform_id == "shopify":
+            return self._resolve_shopify_from_db(credential_ref)
+
+        # Other platforms (amazon, woocommerce, sap, oracle) don't have
+        # ConnectionService resolvers yet. They fall through to None,
+        # which triggers the AUTH_REQUIRED error with a clear message.
+        return None
+
+    def _resolve_shopify_from_db(
+        self, credential_ref: str,
+    ) -> dict[str, str] | None:
+        """Resolve Shopify credentials from ConnectionService encrypted DB.
+
+        Maps ShopifyLegacyCredentials/ShopifyClientCredentials fields to
+        auth.connect parameter names.
+        """
+        try:
+            creds = resolve_shopify_credentials()
+            if creds is None:
+                return None
+
+            return {
+                "credential_ref": credential_ref,
+                "access_token": creds.access_token,
+                "store_domain": creds.store_domain,
+            }
+        except Exception:
+            logger.warning(
+                "Failed to resolve Shopify credentials from DB/env",
+                exc_info=True,
+            )
+            return None
 
     # --- Dynamic state ---
 
@@ -348,11 +421,25 @@ class PlatformRegistry:
     def _check_credentials(
         self, keyring: KeyringStore, config: PlatformConfig, credential_ref: str,
     ) -> bool:
-        """Check if all required credentials exist for a (platform, ref) profile."""
-        return all(
+        """Check if credentials exist for a (platform, ref) profile.
+
+        Checks keyring first, then falls back to ConnectionService encrypted DB.
+        """
+        if not config.required_secret_keys:
+            return True
+
+        # Check keyring first
+        if all(
             keyring.has(keyring_key(config.platform_id, credential_ref, k))
             for k in config.required_secret_keys
-        )
+        ):
+            return True
+
+        # Fallback: check ConnectionService DB
+        if self._resolve_from_connection_service(config, credential_ref) is not None:
+            return True
+
+        return False
 
     def get_platforms_summary(self) -> list[PlatformSummary]:
         """Join static config + dynamic state for all platforms."""
