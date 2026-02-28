@@ -93,6 +93,17 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         default_sync_overlap_seconds=300,
         enabled=True,
     ),
+    "dummy": PlatformConfig(
+        platform_id="dummy",
+        display_name="Dummy (Test)",
+        default_profile="test",
+        required_secret_keys=[],
+        mcp_module="src.mcp.platforms.dummy.server",
+        mcp_bundle_subcommand="mcp-dummy",
+        contract_version="1.0",
+        default_sync_overlap_seconds=0,
+        enabled=False,
+    ),
 }
 
 CAPABILITIES_TTL_SECONDS = 3600  # 1 hour
