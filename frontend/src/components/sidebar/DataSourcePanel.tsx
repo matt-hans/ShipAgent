@@ -23,9 +23,6 @@ import { HardDriveIcon, InfoIcon } from '@/components/ui/icons';
 import {
   ShopifyIcon,
   AmazonIcon,
-  WooCommerceIcon,
-  SAPIcon,
-  OracleIcon,
   PlatformIcon,
 } from '@/components/ui/brand-icons';
 import { Switch } from '@/components/ui/switch';
@@ -38,73 +35,43 @@ export function extractFileName(ds: DataSourceInfo): string | null {
   return segments[segments.length - 1] || null;
 }
 
-/** Brand color for each known platform. */
-const PLATFORM_COLORS: Record<string, string> = {
-  shopify: '#5BBF3D',
-  amazon: '#FF9900',
-  woocommerce: '#7F54B3',
-  sap: '#0070F2',
-  oracle: '#C74634',
-};
-
 /** Icon component for each known platform. Falls back to generic. */
 function getPlatformIcon(platformId: string, className?: string) {
   const icons: Record<string, React.FC<{ className?: string }>> = {
     shopify: ShopifyIcon,
     amazon: AmazonIcon,
-    woocommerce: WooCommerceIcon,
-    sap: SAPIcon,
-    oracle: OracleIcon,
   };
   const Icon = icons[platformId] || PlatformIcon;
   return <Icon className={className} />;
 }
 
-/** Connection status badge for a platform card. */
-function PlatformStatusBadge({
-  platform,
-  isActive,
-  interactiveShipping,
-}: {
-  platform: FederatedPlatform;
-  isActive: boolean;
-  interactiveShipping: boolean;
-}) {
-  if (platform.connection_status === 'syncing') {
-    return <span className="text-[10px] font-mono text-slate-500">Syncing...</span>;
+/** Platforms visible in the sidebar. Add IDs here when new integrations are ready. */
+const VISIBLE_PLATFORM_IDS = new Set(['shopify', 'amazon']);
+
+/** Inline status text for a platform row. */
+function platformStatusText(
+  platform: FederatedPlatform,
+  interactiveShipping: boolean,
+): { text: string; className: string } {
+  if (platform.is_active && interactiveShipping) {
+    return { text: 'Standby', className: 'text-slate-500' };
   }
-  if (isActive && interactiveShipping) {
-    return <span className="badge badge-neutral text-[9px]">STANDBY</span>;
-  }
-  if (isActive) {
-    return <span className="badge badge-success text-[9px]">ACTIVE</span>;
-  }
-  if (platform.connection_status === 'synced') {
-    return (
-      <span className="flex items-center gap-1.5">
-        <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
-        <span className="text-[10px] font-mono text-slate-500">Available</span>
-      </span>
-    );
+  if (platform.is_active) {
+    const orderCount = platform.last_sync_row_count;
+    const detail = orderCount ? `${orderCount.toLocaleString()} orders` : 'Connected';
+    return { text: detail, className: 'text-emerald-400' };
   }
   if (!platform.has_credentials) {
-    return (
-      <span className="flex items-center gap-1.5">
-        <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
-        <span className="text-[10px] font-mono text-slate-500">Not configured</span>
-      </span>
-    );
+    return { text: 'Not configured', className: 'text-slate-500' };
   }
-  return (
-    <span className="flex items-center gap-1.5">
-      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-      <span className="text-[10px] font-mono text-slate-500">Needs sync</span>
-    </span>
-  );
+  if (platform.connection_status === 'connected' || platform.connection_status === 'degraded') {
+    return { text: 'Available', className: 'text-slate-500' };
+  }
+  return { text: 'Needs sync', className: 'text-amber-400' };
 }
 
-/** Single platform card with toggle-to-activate behavior. */
-function PlatformCard({
+/** Compact single-line platform row with inline status and toggle/link. */
+function PlatformRow({
   platform,
   interactiveShipping,
   onToggle,
@@ -115,111 +82,42 @@ function PlatformCard({
   onToggle: (platformId: string) => void;
   isToggling: boolean;
 }) {
-  const isActive = platform.is_active;
-  const color = PLATFORM_COLORS[platform.platform_id] || '#94a3b8';
-  const canToggle = (platform.connection_status === 'synced' || isActive || platform.has_credentials) && !isToggling;
-
-  return (
-    <div
-      className={cn(
-        'rounded-lg border overflow-hidden transition-colors',
-        isActive && interactiveShipping
-          ? 'border-l-4 border-l-slate-500 border-slate-600/30 bg-slate-800/20'
-          : isActive
-            ? 'border-l-4 bg-opacity-5'
-            : 'border-slate-800'
-      )}
-      style={
-        isActive && !interactiveShipping
-          ? {
-              borderLeftColor: color,
-              borderColor: `${color}30`,
-              backgroundColor: `${color}0D`,
-            }
-          : undefined
-      }
-    >
-      <div className="flex items-center justify-between p-2.5 bg-slate-800/30">
-        <div className="flex items-center gap-2">
-          {getPlatformIcon(
-            platform.platform_id,
-            cn('w-5 h-5', isActive ? undefined : 'opacity-50'),
-          )}
-          <span
-            className={cn(
-              'text-xs font-medium',
-              platform.has_credentials ? 'text-slate-200' : 'text-slate-400',
-            )}
-          >
-            {platform.display_name}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          {isToggling ? (
-            <span className="text-[10px] font-mono text-slate-500">
-              {platform.connection_status !== 'synced' && !isActive ? 'Syncing...' : 'Updating...'}
-            </span>
-          ) : (
-            <PlatformStatusBadge
-              platform={platform}
-              isActive={isActive}
-              interactiveShipping={interactiveShipping}
-            />
-          )}
-          {(canToggle || isToggling) && (
-            <Switch
-              checked={isActive}
-              onCheckedChange={() => onToggle(platform.platform_id)}
-              disabled={isToggling}
-              className="scale-75"
-            />
-          )}
-        </div>
-      </div>
-
-      {/* Active platform detail row */}
-      {isActive && (
-        <div
-          className={cn('p-2.5 border-t', interactiveShipping ? 'border-slate-700' : '')}
-          style={
-            !interactiveShipping ? { borderColor: `${color}33` } : undefined
-          }
-        >
-          <p className="text-xs text-slate-300">
-            {platform.account_label || platform.display_name}
-          </p>
-          <p className="text-[10px] font-mono text-slate-500 mt-0.5">
-            {interactiveShipping
-              ? 'Available in batch mode'
-              : platform.last_sync_row_count != null
-                ? `${platform.last_sync_row_count.toLocaleString()} orders`
-                : 'Connected'}
-          </p>
-        </div>
-      )}
-
-      {/* Not configured — link to Settings */}
-      {!platform.has_credentials && !isActive && (
-        <NotConfiguredFooter platformId={platform.platform_id} />
-      )}
-    </div>
-  );
-}
-
-/** Footer for unconfigured platforms linking to settings. */
-function NotConfiguredFooter({ platformId }: { platformId: string }) {
   const { setSettingsFlyoutOpen } = useAppState();
-  const name =
-    platformId.charAt(0).toUpperCase() + platformId.slice(1);
+  const canToggle = (platform.is_active || platform.has_credentials) && !isToggling;
+  const status = platformStatusText(platform, interactiveShipping);
 
   return (
-    <div className="p-2.5 border-t border-slate-800">
-      <button
-        onClick={() => setSettingsFlyoutOpen(true)}
-        className="text-[10px] font-medium text-primary hover:underline"
+    <div className="flex items-center gap-2 py-1.5">
+      {getPlatformIcon(
+        platform.platform_id,
+        cn('w-4 h-4 shrink-0', platform.is_active ? undefined : 'opacity-50'),
+      )}
+      <span
+        className={cn(
+          'text-xs font-medium truncate',
+          platform.has_credentials ? 'text-slate-200' : 'text-slate-400',
+        )}
       >
-        Connect {name} in Settings &rarr;
-      </button>
+        {platform.display_name}
+      </span>
+      <span className={cn('text-[10px] font-mono ml-auto shrink-0', status.className)}>
+        {isToggling ? (platform.is_active ? 'Updating...' : 'Syncing...') : status.text}
+      </span>
+      {canToggle || isToggling ? (
+        <Switch
+          checked={platform.is_active}
+          onCheckedChange={() => onToggle(platform.platform_id)}
+          disabled={isToggling}
+          className="scale-75 shrink-0"
+        />
+      ) : !platform.has_credentials ? (
+        <button
+          onClick={() => setSettingsFlyoutOpen(true)}
+          className="text-[10px] font-medium text-primary hover:underline shrink-0"
+        >
+          Connect
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -251,9 +149,9 @@ export function DataSourceSection() {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [importError, setImportError] = React.useState<string | null>(null);
 
-  // Enabled platforms only (compile-time enabled flag)
+  // Visible platforms: must be enabled AND in the visible set
   const enabledPlatforms = React.useMemo(
-    () => federatedPlatforms.filter((p) => p.enabled),
+    () => federatedPlatforms.filter((p) => p.enabled && VISIBLE_PLATFORM_IDS.has(p.platform_id)),
     [federatedPlatforms],
   );
 
@@ -502,22 +400,22 @@ export function DataSourceSection() {
     <div className="p-3 space-y-3">
       <span className="text-xs font-medium text-slate-300">Data Sources</span>
 
-      {/* === PLATFORM CARDS === */}
+      {/* === PLATFORM ROWS === */}
       {federatedPlatformsLoading ? (
-        <div className="rounded-lg border border-slate-800 p-3">
-          <p className="text-[10px] font-mono text-slate-500 text-center">Loading platforms...</p>
+        <p className="text-[10px] font-mono text-slate-500 text-center py-2">Loading platforms...</p>
+      ) : enabledPlatforms.length > 0 ? (
+        <div className="space-y-0.5">
+          {enabledPlatforms.map((platform) => (
+            <PlatformRow
+              key={platform.platform_id}
+              platform={platform}
+              interactiveShipping={interactiveShipping}
+              onToggle={handleTogglePlatform}
+              isToggling={togglingPlatformId === platform.platform_id}
+            />
+          ))}
         </div>
-      ) : (
-        enabledPlatforms.map((platform) => (
-          <PlatformCard
-            key={platform.platform_id}
-            platform={platform}
-            interactiveShipping={interactiveShipping}
-            onToggle={handleTogglePlatform}
-            isToggling={togglingPlatformId === platform.platform_id}
-          />
-        ))
-      )}
+      ) : null}
 
       {/* === LOCAL DATA SOURCE CARD === */}
       {dataSource?.status === 'connected' && (

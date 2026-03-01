@@ -22,6 +22,7 @@ from src.services.connection_types import (
     VALID_ENVIRONMENTS,
     VALID_PROVIDERS,
     VALID_STATUSES,
+    AmazonSPAPICredentials,
     ConnectionValidationError,
     ShopifyClientCredentials,
     ShopifyLegacyCredentials,
@@ -117,6 +118,9 @@ def _build_connection_key(provider: str, auth_mode: str, environment: str | None
     elif provider == "shopify":
         store_domain = (metadata or {}).get("store_domain", "unknown")
         return f"shopify:{store_domain}"
+    elif provider == "amazon":
+        marketplace = (metadata or {}).get("marketplace_id", "default")
+        return f"amazon:{marketplace}"
     return f"{provider}:{environment or 'default'}"
 
 
@@ -241,6 +245,14 @@ class ConnectionService:
                     "MISSING_FIELD", "access_token is required for Shopify legacy_token"
                 )
 
+        # Amazon-specific validation
+        if provider == "amazon":
+            for key in ("client_id", "client_secret", "marketplace_id"):
+                if not credentials.get(key):
+                    raise ConnectionValidationError(
+                        "MISSING_FIELD", f"{key} is required for Amazon SP-API"
+                    )
+
         # Credential key allowlist + length validation
         _validate_credential_keys(provider, auth_mode, credentials)
 
@@ -316,7 +328,7 @@ class ConnectionService:
         """Save or overwrite a provider connection with encrypted credentials.
 
         Args:
-            provider: Provider name ('ups' or 'shopify').
+            provider: Provider name ('ups', 'shopify', or 'amazon').
             auth_mode: Authentication mode.
             credentials: Credential key-value pairs (encrypted before storage).
             metadata: Non-secret metadata (e.g. store_domain).
@@ -707,6 +719,79 @@ class ConnectionService:
                 store_domain=store_domain,
                 access_token=creds.get("access_token", ""),
             )
+
+    # --- Amazon Credential Resolution ---
+
+    def get_amazon_credentials(
+        self, marketplace_id: str,
+    ) -> AmazonSPAPICredentials | None:
+        """Resolve Amazon SP-API credentials for a specific marketplace.
+
+        Skips rows with status in SKIP_STATUSES.
+
+        Args:
+            marketplace_id: Amazon marketplace ID (e.g. 'ATVPDKIKX0DER').
+
+        Returns:
+            AmazonSPAPICredentials dataclass or None if not found/skipped.
+        """
+        connection_key = f"amazon:{marketplace_id}"
+        row = self._db.query(ProviderConnection).filter_by(
+            connection_key=connection_key,
+        ).first()
+        if row is None or row.status in SKIP_STATUSES:
+            return None
+
+        try:
+            aad = _build_aad(row)
+            creds = decrypt_credentials(row.encrypted_credentials, self._key, aad=aad)
+        except CredentialDecryptionError:
+            logger.warning("Failed to decrypt Amazon credentials for %s", connection_key)
+            return None
+
+        return AmazonSPAPICredentials(
+            client_id=creds["client_id"],
+            client_secret=creds["client_secret"],
+            marketplace_id=creds.get("marketplace_id", marketplace_id),
+            refresh_token=creds.get("refresh_token", ""),
+        )
+
+    def get_first_amazon_credentials(self) -> AmazonSPAPICredentials | None:
+        """Resolve the first available Amazon connection (deterministic default).
+
+        Queries DB with ORDER BY connection_key ASC, skips disconnected/needs_reconnect.
+
+        Returns:
+            AmazonSPAPICredentials or None.
+        """
+        row = (
+            self._db.query(ProviderConnection)
+            .filter(
+                ProviderConnection.provider == "amazon",
+                ~ProviderConnection.status.in_(SKIP_STATUSES),
+            )
+            .order_by(ProviderConnection.connection_key)
+            .first()
+        )
+        if row is None:
+            return None
+
+        metadata = _deserialize_metadata(row)
+        marketplace_id = metadata.get("marketplace_id", "ATVPDKIKX0DER")
+
+        try:
+            aad = _build_aad(row)
+            creds = decrypt_credentials(row.encrypted_credentials, self._key, aad=aad)
+        except CredentialDecryptionError:
+            logger.warning("Failed to decrypt Amazon credentials for %s", row.connection_key)
+            return None
+
+        return AmazonSPAPICredentials(
+            client_id=creds["client_id"],
+            client_secret=creds["client_secret"],
+            marketplace_id=creds.get("marketplace_id", marketplace_id),
+            refresh_token=creds.get("refresh_token", ""),
+        )
 
     # --- Live Credential Validation ---
 

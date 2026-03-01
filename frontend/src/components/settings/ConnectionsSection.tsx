@@ -13,8 +13,9 @@ import { deleteProviderConnection, disconnectProvider, updateSettings } from '@/
 import { ProviderCard } from './ProviderCard';
 import { UPSConnectForm } from './UPSConnectForm';
 import { ShopifyConnectForm } from './ShopifyConnectForm';
+import { AmazonConnectForm } from './AmazonConnectForm';
 import { AnthropicKeyForm } from './AnthropicKeyForm';
-import { ShopifyIcon } from '@/components/ui/brand-icons';
+import { ShopifyIcon, AmazonIcon } from '@/components/ui/brand-icons';
 
 /** Simple inline UPS shield icon. */
 function UPSIcon({ className }: { className?: string }) {
@@ -46,6 +47,7 @@ export function ConnectionsSection({ isOpen, onToggle }: ConnectionsSectionProps
 
   const upsConnections = providerConnections.filter((c) => c.provider === 'ups');
   const shopifyConnections = providerConnections.filter((c) => c.provider === 'shopify');
+  const amazonConnections = providerConnections.filter((c) => c.provider === 'amazon');
 
   const handleDelete = async (connectionKey: string) => {
     await deleteProviderConnection(connectionKey);
@@ -210,6 +212,23 @@ export function ConnectionsSection({ isOpen, onToggle }: ConnectionsSectionProps
           >
             <ShopifyConnectForm
               existingConnection={shopifyConnections[0] ?? null}
+              onSaved={refreshProviderConnections}
+            />
+          </ProviderCard>
+
+          {/* Amazon Provider */}
+          <ProviderCard
+            providerName="Amazon"
+            icon={<AmazonIcon className="h-4 w-4 text-[#FF9900]" />}
+            connections={amazonConnections}
+            isOpen={openProvider === 'amazon'}
+            onToggle={() => toggleProvider('amazon')}
+            onDelete={handleDelete}
+            onDisconnect={handleDisconnect}
+            onValidated={refreshProviderConnections}
+          >
+            <AmazonConnectForm
+              existingConnection={amazonConnections[0] ?? null}
               onSaved={refreshProviderConnections}
             />
           </ProviderCard>

@@ -431,7 +431,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     }
 
     // Toggling ON — check if the platform needs initial sync first
-    const needsSync = platform.connection_status !== 'synced';
+    // Backend uses 'connected' | 'disconnected' | 'degraded' | 'auth_expired' (never 'synced')
+    const needsSync = platform.connection_status === 'disconnected' || platform.connection_status === 'auth_expired';
     if (needsSync && platform.has_credentials) {
       // Trigger initial activation (connect + import), which also sets is_active
       const result = await api.activatePlatform(platformId);
@@ -442,7 +443,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Already synced — just add to active set
+    // Already connected/degraded or no credentials — just add to active set
     const newActiveIds = federatedPlatforms
       .filter((p) => p.is_active)
       .map((p) => p.platform_id)

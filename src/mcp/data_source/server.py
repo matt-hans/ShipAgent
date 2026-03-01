@@ -95,6 +95,7 @@ from src.mcp.data_source.tools.schema_tools import (  # noqa: E402
     override_column_type,
 )
 from src.mcp.data_source.tools.source_info_tools import (  # noqa: E402
+    activate_external_orders_source,
     clear_source,
     get_source_info,
     import_records,
@@ -131,6 +132,7 @@ mcp.tool()(write_back)
 mcp.tool()(get_source_info)
 mcp.tool()(import_records)
 mcp.tool()(clear_source)
+mcp.tool()(activate_external_orders_source)
 mcp.tool()(import_commodities)
 mcp.tool()(get_commodities_bulk)
 mcp.tool()(get_column_samples)

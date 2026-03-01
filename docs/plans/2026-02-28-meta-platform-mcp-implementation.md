@@ -2419,22 +2419,1014 @@ git commit -m "feat(platform): extract Oracle into standalone platform MCP"
 
 ### Task 14: Add Amazon Platform MCP
 
-New platform from scratch.
+New platform from scratch. Amazon uses the **Selling Partner API (SP-API)** with LWA OAuth 2.0 authentication, cursor-based pagination via `NextToken`, and two write-back paths (REST for single, Feeds API for bulk).
 
 **Files:**
-- Create: `src/mcp/platforms/amazon/` (server.py, client.py, mapper.py, constants.py, models.py)
+- Create: `src/mcp/platforms/amazon/__init__.py`
+- Create: `src/mcp/platforms/amazon/constants.py`
+- Create: `src/mcp/platforms/amazon/models.py`
+- Create: `src/mcp/platforms/amazon/auth.py`
+- Create: `src/mcp/platforms/amazon/client.py`
+- Create: `src/mcp/platforms/amazon/mapper.py`
+- Create: `src/mcp/platforms/amazon/server.py`
+- Modify: `src/services/platform_models.py` — add `"amazon"` entry to `PLATFORM_CONFIGS`
+- Modify: `src/services/keyring_store.py:21-28` — add Amazon credential keys to `MANAGED_CREDENTIALS`
+- Test: `tests/mcp/platforms/amazon/test_auth.py`
 - Test: `tests/mcp/platforms/amazon/test_mapper.py`
 - Test: `tests/mcp/platforms/amazon/test_server.py`
+- Test: `tests/mcp/platforms/amazon/test_client.py`
 
-Amazon SP-API specifics: OAuth with refresh token, marketplace-specific endpoints, LWA (Login with Amazon) token exchange. The client handles token refresh internally. Mapper normalizes Amazon order fields to the flat column contract.
+---
 
-**Add Amazon credential keys to KeyringStore:**
+#### Step 1: Write `constants.py` — SP-API endpoints, marketplace IDs, rate limits
 
-Modify `src/services/keyring_store.py:21-28` — add `AMAZON_SP_API_REFRESH_TOKEN`, `AMAZON_SP_API_CLIENT_ID`, `AMAZON_SP_API_CLIENT_SECRET`, `AMAZON_MARKETPLACE_ID` to `MANAGED_CREDENTIALS`.
+```python
+# src/mcp/platforms/amazon/constants.py
+"""Amazon SP-API constants and endpoint configuration."""
+
+# SP-API base URLs by region
+SP_API_ENDPOINTS = {
+    "na": "https://sellingpartnerapi-na.amazon.com",  # US, CA, MX, BR
+    "eu": "https://sellingpartnerapi-eu.amazon.com",   # UK, FR, DE, IT, ES, etc.
+    "fe": "https://sellingpartnerapi-fe.amazon.com",   # JP, AU, SG
+}
+
+# LWA (Login with Amazon) OAuth endpoint
+LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
+
+# Common marketplace IDs
+MARKETPLACE_IDS = {
+    "US": "ATVPDKIKX0DER",
+    "CA": "A2EUQ1WTGCTBG2",
+    "MX": "A1AM78C64UM0Y8",
+    "UK": "A1F83G8C2ARO7P",
+    "DE": "A1PA6795UKMFR9",
+    "FR": "A13V1IB3VIYZZH",
+    "JP": "A1VC38T7YXB528",
+    "AU": "A39IBJ37TRP1C6",
+}
+
+# API path templates
+ORDERS_PATH = "/orders/v0/orders"
+ORDER_ITEMS_PATH = "/orders/v0/orders/{order_id}/orderItems"
+SHIPMENT_CONFIRM_PATH = "/shipments/v1/confirmations"
+FEEDS_PATH = "/feeds/2021-06-30/feeds"
+FEED_STATUS_PATH = "/feeds/2021-06-30/feeds/{feed_id}"
+
+# Rate limits (requests per second)
+ORDERS_LIST_QPS = 1.0       # 1 req/sec, burst 2
+ORDER_ITEMS_QPS = 0.5       # 1 req/2sec, burst 2
+SHIPMENT_CONFIRM_QPS = 2.0  # 2 req/sec, burst 15
+FEEDS_SUBMIT_QPS = 0.5      # 1 req/2sec
+
+# Fulfillment channels
+MFN = "MFN"  # Merchant Fulfilled Network (we ship these)
+AFN = "AFN"  # Amazon Fulfilled Network (FBA — Amazon ships)
+
+# Write-back threshold: REST for ≤ this count, Feeds API above
+WRITE_BACK_BULK_THRESHOLD = 5
+
+# Feed type for order fulfillment
+FEED_TYPE_ORDER_FULFILLMENT = "POST_ORDER_FULFILLMENT_DATA"
+
+# Access token lifetime (seconds) — refresh before expiry
+ACCESS_TOKEN_LIFETIME = 3600
+ACCESS_TOKEN_REFRESH_BUFFER = 300  # Refresh 5 min before expiry
+```
+
+---
+
+#### Step 2: Write `models.py` — SP-API response models
+
+```python
+# src/mcp/platforms/amazon/models.py
+"""Pydantic models for Amazon SP-API responses."""
+from __future__ import annotations
+from datetime import datetime
+from pydantic import BaseModel
+
+
+class AmazonAddress(BaseModel):
+    Name: str | None = None
+    AddressLine1: str | None = None
+    AddressLine2: str | None = None
+    AddressLine3: str | None = None
+    City: str | None = None
+    StateOrRegion: str | None = None
+    PostalCode: str | None = None
+    CountryCode: str | None = None
+    Phone: str | None = None
+
+
+class AmazonMoney(BaseModel):
+    CurrencyCode: str = "USD"
+    Amount: str = "0"  # SP-API returns as string
+
+
+class AmazonOrder(BaseModel):
+    AmazonOrderId: str
+    OrderStatus: str
+    PurchaseDate: str | None = None
+    LastUpdateDate: str | None = None
+    FulfillmentChannel: str | None = None
+    OrderTotal: AmazonMoney | None = None
+    ShippingAddress: AmazonAddress | None = None
+    NumberOfItemsShipped: int = 0
+    NumberOfItemsUnshipped: int = 0
+    BuyerInfo: dict | None = None
+    ShipmentServiceLevelCategory: str | None = None
+    IsReplacementOrder: bool = False
+    MarketplaceId: str | None = None
+
+
+class AmazonOrderItem(BaseModel):
+    ASIN: str
+    SellerSKU: str | None = None
+    OrderItemId: str
+    Title: str | None = None
+    QuantityOrdered: int = 0
+    QuantityShipped: int = 0
+    ItemPrice: AmazonMoney | None = None
+    ItemTax: AmazonMoney | None = None
+
+
+class AmazonOrdersResponse(BaseModel):
+    NextToken: str | None = None
+    Orders: list[AmazonOrder] = []
+
+
+class AmazonOrderItemsResponse(BaseModel):
+    NextToken: str | None = None
+    OrderItems: list[AmazonOrderItem] = []
+```
+
+---
+
+#### Step 3: Write `auth.py` — LWA token management
+
+```python
+# src/mcp/platforms/amazon/auth.py
+"""LWA OAuth 2.0 token management for Amazon SP-API."""
+from __future__ import annotations
+import time
+import httpx
+from .constants import LWA_TOKEN_URL, ACCESS_TOKEN_LIFETIME, ACCESS_TOKEN_REFRESH_BUFFER
+
+
+class LWATokenManager:
+    """Manages LWA access token lifecycle with proactive refresh."""
+
+    def __init__(self, client_id: str, client_secret: str, refresh_token: str):
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._refresh_token = refresh_token
+        self._access_token: str | None = None
+        self._expires_at: float = 0.0
+
+    @property
+    def needs_refresh(self) -> bool:
+        """Token is missing or will expire within the buffer window."""
+        return (
+            self._access_token is None
+            or time.monotonic() >= self._expires_at - ACCESS_TOKEN_REFRESH_BUFFER
+        )
+
+    async def get_access_token(self, http_client: httpx.AsyncClient) -> str:
+        """Return a valid access token, refreshing if needed."""
+        if self.needs_refresh:
+            await self._refresh(http_client)
+        return self._access_token  # type: ignore[return-value]
+
+    async def _refresh(self, http_client: httpx.AsyncClient) -> None:
+        """Exchange refresh token for a new access token."""
+        response = await http_client.post(
+            LWA_TOKEN_URL,
+            data={
+                "grant_type": "refresh_token",
+                "client_id": self._client_id,
+                "client_secret": self._client_secret,
+                "refresh_token": self._refresh_token,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        self._access_token = data["access_token"]
+        self._expires_at = time.monotonic() + data.get("expires_in", ACCESS_TOKEN_LIFETIME)
+
+    def clear(self) -> None:
+        """Invalidate cached token (for auth.disconnect)."""
+        self._access_token = None
+        self._expires_at = 0.0
+```
+
+---
+
+#### Step 4: Write `client.py` — SP-API HTTP client
+
+```python
+# src/mcp/platforms/amazon/client.py
+"""Amazon SP-API HTTP client."""
+from __future__ import annotations
+import httpx
+from .auth import LWATokenManager
+from .constants import SP_API_ENDPOINTS, ORDERS_PATH, ORDER_ITEMS_PATH, MFN
+from .models import AmazonOrdersResponse, AmazonOrderItemsResponse
+
+
+class AmazonSPAPIClient:
+    """Thin HTTP wrapper for Amazon Selling Partner API."""
+
+    def __init__(
+        self,
+        token_manager: LWATokenManager,
+        marketplace_id: str,
+        region: str = "na",
+    ):
+        self._token_manager = token_manager
+        self._marketplace_id = marketplace_id
+        self._base_url = SP_API_ENDPOINTS[region]
+        self._http = httpx.AsyncClient(timeout=30.0)
+
+    async def _headers(self) -> dict[str, str]:
+        token = await self._token_manager.get_access_token(self._http)
+        return {
+            "x-amz-access-token": token,
+            "Content-Type": "application/json",
+        }
+
+    async def list_orders(
+        self,
+        *,
+        last_updated_after: str | None = None,
+        created_after: str | None = None,
+        next_token: str | None = None,
+        order_statuses: list[str] | None = None,
+        fulfillment_channels: list[str] | None = None,
+    ) -> AmazonOrdersResponse:
+        """Fetch a page of orders from SP-API."""
+        params: dict[str, str] = {"MarketplaceIds": self._marketplace_id}
+        if next_token:
+            params["NextToken"] = next_token
+        else:
+            if last_updated_after:
+                params["LastUpdatedAfter"] = last_updated_after
+            if created_after:
+                params["CreatedAfter"] = created_after
+            if order_statuses:
+                params["OrderStatuses"] = ",".join(order_statuses)
+            if fulfillment_channels:
+                params["FulfillmentChannels"] = ",".join(fulfillment_channels)
+            else:
+                # Default: only merchant-fulfilled orders (shippable by us)
+                params["FulfillmentChannels"] = MFN
+
+        headers = await self._headers()
+        resp = await self._http.get(
+            f"{self._base_url}{ORDERS_PATH}",
+            params=params,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        payload = resp.json().get("payload", {})
+        return AmazonOrdersResponse(**payload)
+
+    async def get_order_items(self, order_id: str) -> list:
+        """Fetch all items for a single order (handles pagination)."""
+        all_items = []
+        next_token = None
+        headers = await self._headers()
+        while True:
+            params: dict[str, str] = {}
+            if next_token:
+                params["NextToken"] = next_token
+            path = ORDER_ITEMS_PATH.format(order_id=order_id)
+            resp = await self._http.get(
+                f"{self._base_url}{path}",
+                params=params,
+                headers=headers,
+            )
+            resp.raise_for_status()
+            payload = resp.json().get("payload", {})
+            parsed = AmazonOrderItemsResponse(**payload)
+            all_items.extend(parsed.OrderItems)
+            if not parsed.NextToken:
+                break
+            next_token = parsed.NextToken
+        return all_items
+
+    async def confirm_shipment(
+        self,
+        order_id: str,
+        tracking_number: str,
+        carrier_code: str,
+        ship_date: str | None = None,
+    ) -> dict:
+        """Confirm shipment for a single order via REST API."""
+        from .constants import SHIPMENT_CONFIRM_PATH
+        headers = await self._headers()
+        body = {
+            "marketplaceId": self._marketplace_id,
+            "amazonOrderId": order_id,
+            "shippingConfirmations": [
+                {
+                    "packageReferenceId": "1",
+                    "trackingNumber": tracking_number,
+                    "carrierCode": carrier_code,
+                    **({"shipDate": ship_date} if ship_date else {}),
+                }
+            ],
+        }
+        resp = await self._http.post(
+            f"{self._base_url}{SHIPMENT_CONFIRM_PATH}",
+            json=body,
+            headers=headers,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def submit_fulfillment_feed(self, feed_xml: str) -> str:
+        """Submit a POST_ORDER_FULFILLMENT_DATA feed for bulk write-back. Returns feed_id."""
+        from .constants import FEEDS_PATH, FEED_TYPE_ORDER_FULFILLMENT
+        headers = await self._headers()
+        # Step 1: Create feed document
+        create_resp = await self._http.post(
+            f"{self._base_url}{FEEDS_PATH}",
+            json={
+                "feedType": FEED_TYPE_ORDER_FULFILLMENT,
+                "marketplaceIds": [self._marketplace_id],
+                "inputFeedDocumentId": "",  # Placeholder — actual impl creates feed doc first
+            },
+            headers=headers,
+        )
+        create_resp.raise_for_status()
+        return create_resp.json().get("feedId", "")
+
+    async def close(self) -> None:
+        """Clean up HTTP client."""
+        await self._http.aclose()
+```
+
+---
+
+#### Step 5: Write `mapper.py` — pure normalizer (SP-API → flat row)
+
+**This is the critical purity boundary.** The mapper is a pure function — it receives pre-fetched order + items data and returns a flat dict. No I/O, no MCP calls, no side effects.
+
+```python
+# src/mcp/platforms/amazon/mapper.py
+"""Pure mapper: Amazon SP-API order → external_orders flat row.
+
+This module MUST remain pure — no I/O, no network calls, no imports of
+client or auth modules. It receives pre-fetched data and returns flat dicts.
+"""
+from __future__ import annotations
+import hashlib
+import json
+import math
+from datetime import datetime, timezone
+
+
+MAPPING_VERSION = "1.0"
+
+
+def to_flat_row(
+    order: dict,
+    items: list[dict],
+    credential_ref: str,
+    sync_run_id: str,
+) -> dict:
+    """Convert an Amazon order + items into a flat external_orders row.
+
+    Args:
+        order: Raw AmazonOrder dict from SP-API.
+        items: List of AmazonOrderItem dicts for this order.
+        credential_ref: The credential profile (e.g., "primary").
+        sync_run_id: Unique ID for this sync run.
+
+    Returns:
+        Dict matching the external_orders DuckDB schema.
+    """
+    addr = order.get("ShippingAddress") or {}
+    order_total = order.get("OrderTotal") or {}
+
+    # Convert dollar string → cents
+    total_cents = _dollars_to_cents(order_total.get("Amount", "0"))
+
+    # Aggregate item data
+    item_count = sum(i.get("QuantityOrdered", 0) for i in items)
+    item_summaries = [
+        {
+            "asin": i.get("ASIN"),
+            "sku": i.get("SellerSKU"),
+            "title": i.get("Title"),
+            "qty": i.get("QuantityOrdered", 0),
+        }
+        for i in items
+    ]
+
+    # Derive fulfillment status from Amazon's channel + item counts
+    fulfillment_status = _derive_fulfillment_status(order)
+
+    row = {
+        "platform": "amazon",
+        "external_id": order["AmazonOrderId"],
+        "credential_ref": credential_ref,
+        "order_number": order["AmazonOrderId"],
+        "order_status": order.get("OrderStatus", "Unknown"),
+        "payment_status": "Paid" if order.get("OrderStatus") != "Pending" else "Pending",
+        "fulfillment_status": fulfillment_status,
+        "created_at": order.get("PurchaseDate"),
+        "updated_at": order.get("LastUpdateDate"),
+        "ship_to_name": addr.get("Name"),
+        "ship_to_company": None,  # SP-API doesn't distinguish company
+        "ship_to_address1": addr.get("AddressLine1"),
+        "ship_to_address2": _join_address_lines(addr.get("AddressLine2"), addr.get("AddressLine3")),
+        "ship_to_city": addr.get("City"),
+        "ship_to_state": addr.get("StateOrRegion"),
+        "ship_to_postal": addr.get("PostalCode"),
+        "ship_to_country": addr.get("CountryCode"),
+        "ship_to_phone": addr.get("Phone"),
+        "is_residential": True,  # Amazon orders are overwhelmingly residential
+        "total_weight_grams": None,  # SP-API doesn't provide weight at order level
+        "package_count": 1,
+        "shipping_method": order.get("ShipmentServiceLevelCategory"),
+        "service_code": None,  # Resolved by agent at ship time
+        "total_price_cents": total_cents,
+        "currency": order_total.get("CurrencyCode", "USD"),
+        "customer_name": addr.get("Name"),
+        "customer_email": None,  # SP-API restricts PII — not available without consent
+        "item_count": item_count,
+        "tags": _build_tags(order),
+        "mapping_version": MAPPING_VERSION,
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        "sync_run_id": sync_run_id,
+        "attrs_json": json.dumps({"items": item_summaries}, default=str),
+        "raw_json": json.dumps(order, default=str),
+    }
+
+    # Compute canonical hash from stable fields (excludes ingested_at, sync_run_id)
+    row["canonical_hash"] = _compute_hash(row)
+    return row
+
+
+def _dollars_to_cents(amount_str: str) -> int:
+    """Convert a dollar string like '29.99' to integer cents 2999."""
+    try:
+        return int(round(float(amount_str) * 100))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _derive_fulfillment_status(order: dict) -> str:
+    """Map Amazon's fulfillment channel + shipped counts to a status string."""
+    channel = order.get("FulfillmentChannel", "MFN")
+    if channel == "AFN":
+        return "fulfilled_by_amazon"
+    shipped = order.get("NumberOfItemsShipped", 0)
+    unshipped = order.get("NumberOfItemsUnshipped", 0)
+    if unshipped == 0 and shipped > 0:
+        return "shipped"
+    if shipped > 0 and unshipped > 0:
+        return "partially_shipped"
+    return "unfulfilled"
+
+
+def _join_address_lines(line2: str | None, line3: str | None) -> str | None:
+    """Combine address lines 2 and 3 into a single field."""
+    parts = [p for p in (line2, line3) if p]
+    return ", ".join(parts) if parts else None
+
+
+def _build_tags(order: dict) -> str | None:
+    """Build comma-separated tags from order attributes."""
+    tags = []
+    if order.get("IsReplacementOrder"):
+        tags.append("replacement")
+    if order.get("FulfillmentChannel") == "AFN":
+        tags.append("fba")
+    return ",".join(tags) if tags else None
+
+
+def _compute_hash(row: dict) -> str:
+    """Compute canonical hash from stable order fields.
+
+    Excludes volatile fields (ingested_at, sync_run_id, canonical_hash itself)
+    so the hash only changes when order data actually changes.
+    """
+    stable_keys = sorted(
+        k for k in row
+        if k not in ("canonical_hash", "ingested_at", "sync_run_id", "raw_json")
+    )
+    payload = json.dumps({k: row[k] for k in stable_keys}, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode()).hexdigest()[:16]
+```
+
+---
+
+#### Step 6: Write `server.py` — FastMCP server with 7 required contract tools
+
+```python
+# src/mcp/platforms/amazon/server.py
+"""Amazon Seller Central platform MCP server.
+
+Implements the standardized platform MCP contract (7 required tools).
+Spawned as an isolated stdio subprocess by PlatformGateway.
+"""
+from __future__ import annotations
+import os
+import json
+import uuid
+import logging
+from datetime import datetime, timezone, timedelta
+from mcp.server.fastmcp import FastMCP
+
+from .auth import LWATokenManager
+from .client import AmazonSPAPIClient
+from .mapper import to_flat_row
+from .constants import MFN, WRITE_BACK_BULK_THRESHOLD
+
+logger = logging.getLogger(__name__)
+
+mcp = FastMCP("amazon-platform")
+
+# Module-level client — initialized on auth.connect
+_client: AmazonSPAPIClient | None = None
+_token_manager: LWATokenManager | None = None
+
+
+def _keyring_key(credential_ref: str, key_name: str) -> str:
+    """Build namespaced keyring key."""
+    return f"amazon:{credential_ref}:{key_name}"
+
+
+@mcp.tool(name="platform.health")
+async def platform_health() -> dict:
+    """Check if the Amazon SP-API connection is healthy."""
+    if _client is None:
+        return {"healthy": False, "message": "Not connected. Call auth.connect first."}
+    try:
+        # Lightweight check — verify token is valid by refreshing if needed
+        await _token_manager.get_access_token(_client._http)
+        return {"healthy": True, "message": "SP-API access token valid."}
+    except Exception as e:
+        return {"healthy": False, "message": f"Token refresh failed: {e}"}
+
+
+@mcp.tool(name="platform.capabilities")
+async def platform_capabilities() -> dict:
+    """Return Amazon platform capability manifest."""
+    return {
+        "contract_version": "1.0",
+        "platform_id": "amazon",
+        "supports_write_back": True,
+        "supports_delta_sync": True,
+        "supports_bulk_write_back": True,
+        "default_fulfillment_filter": MFN,
+        "write_back_bulk_threshold": WRITE_BACK_BULK_THRESHOLD,
+        "rate_limits": {
+            "orders_list_qps": 1.0,
+            "order_items_qps": 0.5,
+            "shipment_confirm_qps": 2.0,
+        },
+    }
+
+
+@mcp.tool(name="auth.connect")
+async def auth_connect(credential_ref: str = "primary") -> dict:
+    """Connect to Amazon SP-API using credentials from keyring.
+
+    Idempotent — re-calling refreshes the access token.
+    """
+    global _client, _token_manager
+    from src.services.keyring_store import KeyringStore
+
+    ks = KeyringStore()
+    refresh_token = ks.get(_keyring_key(credential_ref, "SP_API_REFRESH_TOKEN"))
+    client_id = ks.get(_keyring_key(credential_ref, "SP_API_CLIENT_ID"))
+    client_secret = ks.get(_keyring_key(credential_ref, "SP_API_CLIENT_SECRET"))
+    marketplace_id = ks.get(_keyring_key(credential_ref, "MARKETPLACE_ID"))
+
+    missing = []
+    if not refresh_token:
+        missing.append("SP_API_REFRESH_TOKEN")
+    if not client_id:
+        missing.append("SP_API_CLIENT_ID")
+    if not client_secret:
+        missing.append("SP_API_CLIENT_SECRET")
+    if not marketplace_id:
+        missing.append("MARKETPLACE_ID")
+
+    if missing:
+        return {"connected": False, "error": f"Missing credentials: {', '.join(missing)}"}
+
+    _token_manager = LWATokenManager(client_id, client_secret, refresh_token)
+    _client = AmazonSPAPIClient(_token_manager, marketplace_id)
+
+    # Validate by fetching an access token
+    try:
+        import httpx
+        async with httpx.AsyncClient() as http:
+            await _token_manager.get_access_token(http)
+    except Exception as e:
+        _client = None
+        _token_manager = None
+        return {"connected": False, "error": f"LWA token exchange failed: {e}"}
+
+    return {"connected": True, "marketplace_id": marketplace_id}
+
+
+@mcp.tool(name="auth.disconnect")
+async def auth_disconnect() -> dict:
+    """Disconnect from Amazon SP-API."""
+    global _client, _token_manager
+    if _client:
+        await _client.close()
+    _client = None
+    if _token_manager:
+        _token_manager.clear()
+    _token_manager = None
+    return {"disconnected": True}
+
+
+@mcp.tool(name="orders.list")
+async def orders_list(
+    cursor: str | None = None,
+    watermark: str | None = None,
+    page_size: int = 100,  # SP-API doesn't support custom page size, but accept for contract
+) -> dict:
+    """List Amazon orders with cursor pagination and delta sync.
+
+    Args:
+        cursor: NextToken from a previous page (pass to continue pagination).
+        watermark: ISO8601 timestamp — fetch orders updated after this time.
+        page_size: Ignored by SP-API (max 100 per page), accepted for contract compliance.
+
+    Returns:
+        {"orders": [...], "next_cursor": "..." or null, "page_count": N}
+    """
+    if _client is None:
+        return {"error": "NOT_CONNECTED", "message": "Call auth.connect first"}
+
+    try:
+        response = await _client.list_orders(
+            next_token=cursor,
+            last_updated_after=watermark,
+            fulfillment_channels=[MFN],  # Only merchant-fulfilled orders
+        )
+    except Exception as e:
+        return {"error": "UPSTREAM_ERROR", "message": str(e)}
+
+    # Enrich each order with its items (N+1 pattern — unavoidable with SP-API)
+    enriched_orders = []
+    for order in response.Orders:
+        order_dict = order.model_dump()
+        try:
+            items = await _client.get_order_items(order.AmazonOrderId)
+            order_dict["_items"] = [i.model_dump() for i in items]
+        except Exception:
+            order_dict["_items"] = []
+        enriched_orders.append(order_dict)
+
+    return {
+        "orders": enriched_orders,
+        "next_cursor": response.NextToken,
+        "page_count": len(enriched_orders),
+    }
+
+
+@mcp.tool(name="orders.get")
+async def orders_get(external_id: str) -> dict:
+    """Get a single Amazon order by AmazonOrderId."""
+    if _client is None:
+        return {"error": "NOT_CONNECTED", "message": "Call auth.connect first"}
+
+    try:
+        # Use list_orders with a tight filter — SP-API doesn't have a get-by-id endpoint
+        # for the Orders v0 API. Use the order ID in the AmazonOrderIds parameter.
+        response = await _client.list_orders(
+            order_statuses=None,
+            fulfillment_channels=None,
+        )
+        # Filter client-side for the specific order
+        for order in response.Orders:
+            if order.AmazonOrderId == external_id:
+                order_dict = order.model_dump()
+                items = await _client.get_order_items(external_id)
+                order_dict["_items"] = [i.model_dump() for i in items]
+                return {"order": order_dict}
+        return {"error": "NOT_FOUND", "message": f"Order {external_id} not found"}
+    except Exception as e:
+        return {"error": "UPSTREAM_ERROR", "message": str(e)}
+
+
+@mcp.tool(name="tracking.write_back")
+async def tracking_write_back(
+    external_id: str,
+    tracking_number: str,
+    carrier_code: str,
+) -> dict:
+    """Write tracking info back to Amazon for a single order.
+
+    Uses the Shipment Confirmations REST API for individual orders.
+    Bulk write-back (>5 orders) should use the Feeds API path via
+    a dedicated bulk handler.
+    """
+    if _client is None:
+        return {"error": "NOT_CONNECTED", "message": "Call auth.connect first"}
+
+    try:
+        result = await _client.confirm_shipment(
+            order_id=external_id,
+            tracking_number=tracking_number,
+            carrier_code=carrier_code,
+        )
+        return {"success": True, "external_id": external_id, "result": result}
+    except Exception as e:
+        return {"success": False, "external_id": external_id, "error": str(e)}
+```
+
+---
+
+#### Step 7: Register Amazon in `PLATFORM_CONFIGS`
+
+Modify `src/services/platform_models.py` — add to `PLATFORM_CONFIGS` dict:
+
+```python
+"amazon": PlatformConfig(
+    platform_id="amazon",
+    display_name="Amazon Seller Central",
+    default_profile="primary",
+    required_secret_keys=["SP_API_REFRESH_TOKEN", "SP_API_CLIENT_ID", "SP_API_CLIENT_SECRET", "MARKETPLACE_ID"],
+    mcp_module="src.mcp.platforms.amazon.server",
+    mcp_bundle_subcommand="mcp-amazon",
+    contract_version="1.0",
+    default_sync_overlap_seconds=600,  # 10 min overlap (SP-API has eventual consistency)
+    enabled=True,
+),
+```
+
+---
+
+#### Step 8: Add Amazon credential keys to KeyringStore
+
+Modify `src/services/keyring_store.py:21-28` — add namespaced Amazon keys:
+
+```python
+# Add to MANAGED_CREDENTIALS list:
+"amazon:primary:SP_API_REFRESH_TOKEN",
+"amazon:primary:SP_API_CLIENT_ID",
+"amazon:primary:SP_API_CLIENT_SECRET",
+"amazon:primary:MARKETPLACE_ID",
+```
+
+---
+
+#### Step 9: Write failing tests for mapper purity
+
+```python
+# tests/mcp/platforms/amazon/test_mapper.py
+"""Tests for Amazon SP-API → flat row mapper.
+
+Mapper must be pure: no I/O, no network, deterministic output.
+"""
+import json
+import pytest
+from src.mcp.platforms.amazon.mapper import to_flat_row, _dollars_to_cents, _derive_fulfillment_status
+
+
+SAMPLE_ORDER = {
+    "AmazonOrderId": "111-2222222-3333333",
+    "OrderStatus": "Unshipped",
+    "PurchaseDate": "2026-02-28T10:00:00Z",
+    "LastUpdateDate": "2026-02-28T12:00:00Z",
+    "FulfillmentChannel": "MFN",
+    "OrderTotal": {"CurrencyCode": "USD", "Amount": "29.99"},
+    "ShippingAddress": {
+        "Name": "Jane Doe",
+        "AddressLine1": "123 Main St",
+        "AddressLine2": "Apt 4",
+        "AddressLine3": None,
+        "City": "Austin",
+        "StateOrRegion": "TX",
+        "PostalCode": "78701",
+        "CountryCode": "US",
+        "Phone": "+15125551234",
+    },
+    "NumberOfItemsShipped": 0,
+    "NumberOfItemsUnshipped": 2,
+    "IsReplacementOrder": False,
+    "ShipmentServiceLevelCategory": "Standard",
+}
+
+SAMPLE_ITEMS = [
+    {"ASIN": "B09ABCDEF1", "SellerSKU": "SKU-001", "OrderItemId": "OI1", "Title": "Widget A", "QuantityOrdered": 1},
+    {"ASIN": "B09ABCDEF2", "SellerSKU": "SKU-002", "OrderItemId": "OI2", "Title": "Widget B", "QuantityOrdered": 1},
+]
+
+
+class TestToFlatRow:
+    def test_maps_core_fields(self):
+        row = to_flat_row(SAMPLE_ORDER, SAMPLE_ITEMS, "primary", "run-001")
+        assert row["platform"] == "amazon"
+        assert row["external_id"] == "111-2222222-3333333"
+        assert row["credential_ref"] == "primary"
+        assert row["ship_to_name"] == "Jane Doe"
+        assert row["ship_to_city"] == "Austin"
+        assert row["ship_to_state"] == "TX"
+        assert row["ship_to_postal"] == "78701"
+        assert row["ship_to_country"] == "US"
+
+    def test_converts_dollars_to_cents(self):
+        row = to_flat_row(SAMPLE_ORDER, SAMPLE_ITEMS, "primary", "run-001")
+        assert row["total_price_cents"] == 2999
+
+    def test_aggregates_item_count(self):
+        row = to_flat_row(SAMPLE_ORDER, SAMPLE_ITEMS, "primary", "run-001")
+        assert row["item_count"] == 2
+
+    def test_items_in_attrs_json(self):
+        row = to_flat_row(SAMPLE_ORDER, SAMPLE_ITEMS, "primary", "run-001")
+        attrs = json.loads(row["attrs_json"])
+        assert len(attrs["items"]) == 2
+        assert attrs["items"][0]["asin"] == "B09ABCDEF1"
+
+    def test_raw_json_preserves_order(self):
+        row = to_flat_row(SAMPLE_ORDER, SAMPLE_ITEMS, "primary", "run-001")
+        raw = json.loads(row["raw_json"])
+        assert raw["AmazonOrderId"] == "111-2222222-3333333"
+
+    def test_hash_stability(self):
+        row1 = to_flat_row(SAMPLE_ORDER, SAMPLE_ITEMS, "primary", "run-001")
+        row2 = to_flat_row(SAMPLE_ORDER, SAMPLE_ITEMS, "primary", "run-002")
+        assert row1["canonical_hash"] == row2["canonical_hash"]
+
+    def test_hash_changes_on_data_change(self):
+        modified = {**SAMPLE_ORDER, "OrderStatus": "Shipped"}
+        row1 = to_flat_row(SAMPLE_ORDER, SAMPLE_ITEMS, "primary", "run-001")
+        row2 = to_flat_row(modified, SAMPLE_ITEMS, "primary", "run-001")
+        assert row1["canonical_hash"] != row2["canonical_hash"]
+
+    def test_missing_address_produces_nulls(self):
+        order = {**SAMPLE_ORDER, "ShippingAddress": None}
+        row = to_flat_row(order, SAMPLE_ITEMS, "primary", "run-001")
+        assert row["ship_to_name"] is None
+        assert row["ship_to_city"] is None
+
+    def test_address_line3_joins_with_line2(self):
+        order = {**SAMPLE_ORDER}
+        order["ShippingAddress"] = {**order["ShippingAddress"], "AddressLine2": "Suite A", "AddressLine3": "Floor 2"}
+        row = to_flat_row(order, SAMPLE_ITEMS, "primary", "run-001")
+        assert row["ship_to_address2"] == "Suite A, Floor 2"
+
+    def test_replacement_order_tagged(self):
+        order = {**SAMPLE_ORDER, "IsReplacementOrder": True}
+        row = to_flat_row(order, SAMPLE_ITEMS, "primary", "run-001")
+        assert "replacement" in row["tags"]
+
+
+class TestDollarsToCents:
+    def test_normal(self):
+        assert _dollars_to_cents("29.99") == 2999
+
+    def test_zero(self):
+        assert _dollars_to_cents("0") == 0
+
+    def test_invalid(self):
+        assert _dollars_to_cents("invalid") == 0
+
+    def test_none(self):
+        assert _dollars_to_cents(None) == 0
+
+
+class TestDeriveFulfillmentStatus:
+    def test_afn(self):
+        assert _derive_fulfillment_status({"FulfillmentChannel": "AFN"}) == "fulfilled_by_amazon"
+
+    def test_unfulfilled(self):
+        assert _derive_fulfillment_status({"FulfillmentChannel": "MFN", "NumberOfItemsShipped": 0, "NumberOfItemsUnshipped": 2}) == "unfulfilled"
+
+    def test_shipped(self):
+        assert _derive_fulfillment_status({"FulfillmentChannel": "MFN", "NumberOfItemsShipped": 2, "NumberOfItemsUnshipped": 0}) == "shipped"
+
+    def test_partial(self):
+        assert _derive_fulfillment_status({"FulfillmentChannel": "MFN", "NumberOfItemsShipped": 1, "NumberOfItemsUnshipped": 1}) == "partially_shipped"
+```
+
+---
+
+#### Step 10: Write contract compliance tests for server
+
+```python
+# tests/mcp/platforms/amazon/test_server.py
+"""Contract compliance tests for Amazon platform MCP server.
+
+Verifies all 7 required tools exist and response shapes match contract.
+Uses mcp.list_tools() (public API) — never accesses FastMCP internals.
+"""
+import pytest
+from src.mcp.platforms.amazon.server import mcp, platform_capabilities
+
+
+REQUIRED_TOOLS = [
+    "platform.health",
+    "platform.capabilities",
+    "auth.connect",
+    "auth.disconnect",
+    "orders.list",
+    "orders.get",
+    "tracking.write_back",
+]
+
+
+class TestContractCompliance:
+    @pytest.mark.asyncio
+    async def test_all_required_tools_registered(self):
+        tools = await mcp.list_tools()
+        tool_names = {t.name for t in tools}
+        for name in REQUIRED_TOOLS:
+            assert name in tool_names, f"Missing required tool: {name}"
+
+    @pytest.mark.asyncio
+    async def test_capabilities_shape(self):
+        result = await platform_capabilities()
+        assert result["contract_version"] == "1.0"
+        assert result["platform_id"] == "amazon"
+        assert isinstance(result["supports_write_back"], bool)
+        assert isinstance(result["supports_delta_sync"], bool)
+```
+
+---
+
+#### Step 11: Write auth tests
+
+```python
+# tests/mcp/platforms/amazon/test_auth.py
+"""Tests for LWA token manager."""
+import time
+import pytest
+import httpx
+from unittest.mock import AsyncMock, patch
+from src.mcp.platforms.amazon.auth import LWATokenManager
+
+
+class TestLWATokenManager:
+    def test_needs_refresh_initially(self):
+        tm = LWATokenManager("id", "secret", "refresh")
+        assert tm.needs_refresh is True
+
+    def test_needs_refresh_after_clear(self):
+        tm = LWATokenManager("id", "secret", "refresh")
+        tm._access_token = "token"
+        tm._expires_at = time.monotonic() + 3600
+        assert tm.needs_refresh is False
+        tm.clear()
+        assert tm.needs_refresh is True
+
+    @pytest.mark.asyncio
+    async def test_get_access_token_refreshes(self):
+        tm = LWATokenManager("id", "secret", "refresh")
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_response = AsyncMock()
+        mock_response.json.return_value = {"access_token": "new_token", "expires_in": 3600}
+        mock_response.raise_for_status = lambda: None
+        mock_client.post.return_value = mock_response
+
+        token = await tm.get_access_token(mock_client)
+        assert token == "new_token"
+        assert tm.needs_refresh is False
+```
+
+---
+
+#### Step 12: Run all tests
+
+Run: `pytest tests/mcp/platforms/amazon/ -v`
+Expected: All PASS
+
+---
+
+#### Step 13: Commit
 
 ```bash
+git add src/mcp/platforms/amazon/ tests/mcp/platforms/amazon/ src/services/platform_models.py src/services/keyring_store.py
 git commit -m "feat(platform): add Amazon Seller Central platform MCP with SP-API client"
 ```
+
+---
+
+#### Amazon SP-API Reference Summary
+
+| Concern | SP-API Detail | Our Mapping |
+|---------|--------------|-------------|
+| **Auth** | LWA OAuth `POST api.amazon.com/auth/o2/token` with `refresh_token` grant | `LWATokenManager` in `auth.py`, credentials via `amazon:{ref}:*` keyring keys |
+| **List Orders** | `GET /orders/v0/orders` + `NextToken` cursor | `orders.list` tool, `cursor` = `NextToken`, `watermark` = `LastUpdatedAfter` |
+| **Order Items** | `GET /orders/v0/orders/{id}/orderItems` (N+1) | Fetched inline during `orders.list`, stored in `attrs_json` |
+| **Write-Back (single)** | `POST /shipments/v1/confirmations` | `tracking.write_back` tool for ≤5 shipments |
+| **Write-Back (bulk)** | `POST_ORDER_FULFILLMENT_DATA` XML feed | `submit_fulfillment_feed` client method for >5 shipments |
+| **Rate Limits** | 1 QPS orders, 0.5 QPS items, 2 QPS confirmations | `PlatformGateway` token bucket: `rate_limit_qps=1.0` |
+| **MFN Filter** | `FulfillmentChannels=MFN` (only shippable orders) | Default in `constants.py`, capability flag |
+| **Marketplace** | `MarketplaceIds` required on every call | Stored as `amazon:{ref}:MARKETPLACE_ID` in keyring |
+| **PII Restrictions** | Email/phone restricted without buyer consent | `customer_email` = None, `ship_to_phone` from address only |
 
 ---
 

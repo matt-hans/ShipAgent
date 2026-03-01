@@ -92,4 +92,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "integration: marks tests that require external API access (deselect with '-m \"not integration\"')",
+    "sandbox: marks tests that require Amazon SP-API sandbox credentials (run with '-m sandbox')",
 ]

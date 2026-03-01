@@ -250,14 +250,18 @@ async def _ensure_agent(
             logger.warning("Failed to fetch column samples: %s", e)
 
     # Load prior conversation for resumed sessions
-    from src.services.conversation_handler import _load_prior_conversation
+    from src.services.conversation_handler import _load_prior_conversation, _get_active_platform_summaries
     prior_conversation = _load_prior_conversation(session.session_id)
+
+    # Fetch platform summaries so the agent knows what's connected
+    platform_summaries = _get_active_platform_summaries()
 
     system_prompt = build_system_prompt(
         source_info=source_info,
         interactive_shipping=session.interactive_shipping,
         column_samples=column_samples,
         prior_conversation=prior_conversation,
+        platform_summaries=platform_summaries if platform_summaries else None,
     )
     agent = OrchestrationAgent(
         system_prompt=system_prompt,

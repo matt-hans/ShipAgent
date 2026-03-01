@@ -92,22 +92,35 @@ class AmazonClient:
         }
 
     async def test_connection(self) -> dict[str, Any]:
-        """Test connection by calling getMarketplaceParticipations.
+        """Test connection by validating the LWA token exchange.
+
+        In sandbox mode, calls getOrders with TEST_CASE_200 since
+        getMarketplaceParticipations may not have sandbox support.
+        In production, calls getMarketplaceParticipations.
 
         Returns:
-            Marketplace participation info on success.
+            API response dict on success.
 
         Raises:
             PlatformError on failure.
         """
         headers = await self._get_headers()
 
+        if self._credentials.sandbox:
+            # Sandbox: use getOrders with test case parameter
+            url = f"{self._base_url}/orders/v0/orders"
+            params = {
+                "MarketplaceIds": self._credentials.marketplace_id,
+                "CreatedAfter": "TEST_CASE_200",
+            }
+        else:
+            # Production: marketplace participations
+            url = f"{self._base_url}/sellers/v1/marketplaceParticipations"
+            params = None
+
         async with httpx.AsyncClient(timeout=15.0) as client:
             try:
-                resp = await client.get(
-                    f"{self._base_url}/sellers/v1/marketplaceParticipations",
-                    headers=headers,
-                )
+                resp = await client.get(url, headers=headers, params=params)
                 if resp.status_code == 401:
                     raise PlatformError(
                         error_code=PlatformErrorCode.AUTH_EXPIRED,

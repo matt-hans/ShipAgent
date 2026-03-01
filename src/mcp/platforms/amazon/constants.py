@@ -21,6 +21,19 @@ MAX_CONCURRENCY = 2
 # LWA (Login with Amazon) endpoint
 LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 
+# SP-API base URLs by region
+BASE_URLS = {
+    "na": "https://sellingpartnerapi-na.amazon.com",
+    "eu": "https://sellingpartnerapi-eu.amazon.com",
+    "fe": "https://sellingpartnerapi-fe.amazon.com",
+}
+
+SANDBOX_BASE_URLS = {
+    "na": "https://sandbox.sellingpartnerapi-na.amazon.com",
+    "eu": "https://sandbox.sellingpartnerapi-eu.amazon.com",
+    "fe": "https://sandbox.sellingpartnerapi-fe.amazon.com",
+}
+
 # Token refresh buffer (seconds before expiry to refresh)
 TOKEN_REFRESH_BUFFER_SECONDS = 300  # 5 minutes
 

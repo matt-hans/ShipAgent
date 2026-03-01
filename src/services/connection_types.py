@@ -9,11 +9,12 @@ from dataclasses import dataclass, field
 
 # --- Shared Constants ---
 
-VALID_PROVIDERS: frozenset[str] = frozenset({"ups", "shopify"})
+VALID_PROVIDERS: frozenset[str] = frozenset({"ups", "shopify", "amazon"})
 
 VALID_AUTH_MODES: dict[str, frozenset[str]] = {
     "ups": frozenset({"client_credentials"}),
     "shopify": frozenset({"legacy_token", "client_credentials_shopify"}),
+    "amazon": frozenset({"sp_api"}),
 }
 
 VALID_ENVIRONMENTS: frozenset[str] = frozenset({"test", "production"})
@@ -41,6 +42,14 @@ CREDENTIAL_SCHEMAS: dict[str, dict[str, dict[str, int]]] = {
     "shopify:client_credentials_shopify": {
         "required": {"client_id": 1024, "client_secret": 1024},
         "optional": {"access_token": 4096},
+    },
+    "amazon:sp_api": {
+        "required": {
+            "client_id": 1024,
+            "client_secret": 1024,
+            "marketplace_id": 64,
+        },
+        "optional": {"refresh_token": 4096},
     },
 }
 
@@ -75,6 +84,20 @@ class ShopifyClientCredentials:
     client_secret: str
     store_domain: str
     access_token: str = field(default="")
+
+
+@dataclass(frozen=True)
+class AmazonSPAPICredentials:
+    """Typed credentials for Amazon Selling Partner API.
+
+    refresh_token is optional — sandbox apps use only client_id + client_secret.
+    Production apps obtain a refresh_token via the seller OAuth authorization flow.
+    """
+
+    client_id: str
+    client_secret: str
+    marketplace_id: str
+    refresh_token: str = ""
 
 
 # --- Validation Error ---

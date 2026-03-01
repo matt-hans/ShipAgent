@@ -265,6 +265,20 @@ class DataSourceMCPClient:
             "pk_columns": pk_columns,
         })
 
+    async def activate_external_orders(self) -> dict[str, Any]:
+        """Activate the external_orders table as the queryable data source.
+
+        Creates a VIEW named imported_data over the external_orders table,
+        enabling the agent's data tools (get_source_info, fetch_rows, etc.)
+        to query platform order data.
+
+        Called by PlatformActivationService after upserting orders.
+
+        Returns:
+            Dict with status, row_count, and source_type.
+        """
+        return await self._call_tool("activate_external_orders_source", {})
+
     async def import_file(
         self,
         file_path: str,

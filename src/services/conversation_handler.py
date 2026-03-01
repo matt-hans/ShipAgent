@@ -25,6 +25,34 @@ from src.services.gateway_provider import get_data_gateway
 
 logger = logging.getLogger(__name__)
 
+
+def _get_active_platform_summaries() -> list[dict]:
+    """Fetch platform summaries for active+connected platforms.
+
+    Returns a list of dicts suitable for system prompt injection.
+    Fails silently to avoid blocking agent creation.
+    """
+    try:
+        from src.services.gateway_provider import get_platform_registry
+        registry = get_platform_registry()
+        summaries = registry.get_platforms_summary()
+        return [
+            {
+                "platform_id": s.platform_id,
+                "display_name": s.display_name,
+                "connection_status": s.connection_status,
+                "has_credentials": s.has_credentials,
+                "last_sync_row_count": s.last_sync_row_count,
+                "account_label": s.account_label,
+                "is_active": s.is_active,
+            }
+            for s in summaries
+            if s.is_active or s.has_credentials
+        ]
+    except Exception:
+        logger.debug("Could not fetch platform summaries for system prompt", exc_info=True)
+        return []
+
 # Max messages to load for system prompt injection on resume
 MAX_RESUME_MESSAGES = 30
 
@@ -139,7 +167,11 @@ async def ensure_agent(
     contacts = _get_mru_contacts_for_prompt()
     contacts_hash = hashlib.sha256(json.dumps(contacts, sort_keys=True, default=str).encode()).hexdigest()[:8]
 
-    combined_hash = f"{source_hash}|interactive={interactive_shipping}|contacts={contacts_hash}"
+    # Fetch platform summaries so the agent knows what's connected
+    platform_summaries = _get_active_platform_summaries()
+    platforms_hash = hashlib.sha256(json.dumps(platform_summaries, sort_keys=True, default=str).encode()).hexdigest()[:8]
+
+    combined_hash = f"{source_hash}|interactive={interactive_shipping}|contacts={contacts_hash}|platforms={platforms_hash}"
 
     # Reuse existing agent if config hasn't changed
     if session.agent is not None and session.agent_source_hash == combined_hash:
@@ -170,6 +202,7 @@ async def ensure_agent(
         column_samples=column_samples,
         contacts=contacts,
         prior_conversation=prior_conversation,
+        platform_summaries=platform_summaries if platform_summaries else None,
     )
 
     agent = OrchestrationAgent(

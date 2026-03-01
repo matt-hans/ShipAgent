@@ -27,7 +27,7 @@ from src.services.platform_models import (
     PlatformErrorCode,
     PlatformSummary,
 )
-from src.services.runtime_credentials import resolve_shopify_credentials
+from src.services.runtime_credentials import resolve_amazon_credentials, resolve_shopify_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -264,7 +264,10 @@ class PlatformRegistry:
         if platform_id == "shopify":
             return self._resolve_shopify_from_db(credential_ref)
 
-        # Other platforms (amazon, woocommerce, sap, oracle) don't have
+        if platform_id == "amazon":
+            return self._resolve_amazon_from_db(credential_ref)
+
+        # Other platforms (woocommerce, sap, oracle) don't have
         # ConnectionService resolvers yet. They fall through to None,
         # which triggers the AUTH_REQUIRED error with a clear message.
         return None
@@ -304,6 +307,48 @@ class PlatformRegistry:
         except Exception:
             logger.warning(
                 "Failed to resolve Shopify credentials from DB/env",
+                exc_info=True,
+            )
+            return None
+
+    def _resolve_amazon_from_db(
+        self, credential_ref: str,
+    ) -> dict[str, str] | None:
+        """Resolve Amazon SP-API credentials from ConnectionService encrypted DB.
+
+        Uses account_id from PlatformSyncState (persisted by
+        PlatformActivationService after auth.connect) as marketplace_id for
+        targeted lookup. Falls back to first-available when no state exists.
+
+        Maps AmazonSPAPICredentials fields to auth.connect parameter names.
+        """
+        try:
+            marketplace_id: str | None = None
+            state = self.get_state("amazon", credential_ref)
+            if state and state.account_id:
+                marketplace_id = state.account_id
+
+            creds = resolve_amazon_credentials(marketplace_id=marketplace_id)
+            if creds is None:
+                return None
+
+            if not creds.refresh_token:
+                logger.warning(
+                    "Amazon credentials found but refresh_token is empty — "
+                    "cannot authenticate without refresh token"
+                )
+                return None
+
+            return {
+                "credential_ref": credential_ref,
+                "client_id": creds.client_id,
+                "client_secret": creds.client_secret,
+                "refresh_token": creds.refresh_token,
+                "marketplace_id": creds.marketplace_id,
+            }
+        except Exception:
+            logger.warning(
+                "Failed to resolve Amazon credentials from DB/env",
                 exc_info=True,
             )
             return None

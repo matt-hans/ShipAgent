@@ -173,6 +173,10 @@ class PlatformActivationService:
         # Mark platform as active after successful sync
         self._registry.set_platform_active(platform_id, credential_ref, True)
 
+        # Activate external_orders as the queryable data source so the agent's
+        # data tools (get_source_info, fetch_rows, etc.) can access the orders.
+        await self._activate_external_orders_view()
+
         duration = time.monotonic() - start_time
 
         return ActivationReport(
@@ -204,6 +208,27 @@ class PlatformActivationService:
 
         client = await get_data_gateway()
         return await client.upsert_records(rows, TABLE_NAME, PK_COLUMNS)
+
+    async def _activate_external_orders_view(self) -> None:
+        """Activate external_orders as the queryable data source.
+
+        Creates a VIEW named imported_data over external_orders so the
+        agent's data tools can query platform orders. Best-effort --
+        failures are logged but do not block activation.
+        """
+        try:
+            from src.services.gateway_provider import get_data_gateway
+
+            client = await get_data_gateway()
+            result = await client.activate_external_orders()
+            logger.info(
+                "Activated external_orders view: %s",
+                result.get("status", "unknown"),
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to activate external_orders view (non-critical): %s", e
+            )
 
     def _load_mapper(self, platform_id: str) -> Any:
         """Dynamically load the mapper for a platform.
