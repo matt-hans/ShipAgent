@@ -295,3 +295,101 @@ class TestGetOrderWithItems:
         assert order.items[0]["id"] == "i-99"
         assert order.item_count == 3
         mock_fetch_items.assert_called_once_with("222-0000001-0000001")
+
+
+from src.mcp.external_sources.models import TrackingUpdate
+
+
+class TestUpdateTracking:
+    """Test tracking write-back via confirmShipment."""
+
+    @pytest.mark.asyncio
+    async def test_update_tracking_with_stored_items(self):
+        """Confirms shipment using stored items for orderItems payload."""
+        client = AmazonClient()
+        client._authenticated = True
+        client._access_token = "test-token"
+        client._token_expires_at = 9999999999.0
+        client._marketplace_id = "ATVPDKIKX0DER"
+
+        # Pre-store items (simulating eager fetch)
+        client._order_items_cache = {
+            "ORDER-100": [
+                {"OrderItemId": "oi-1", "QuantityOrdered": 2},
+                {"OrderItemId": "oi-2", "QuantityOrdered": 1},
+            ]
+        }
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"payload": {}}
+
+        update = TrackingUpdate(
+            order_id="ORDER-100",
+            tracking_number="1Z999AA10123456784",
+            carrier="UPS",
+        )
+
+        with patch.object(
+            httpx.AsyncClient, "post", new_callable=AsyncMock
+        ) as mock_post:
+            mock_post.return_value = mock_response
+            result = await client.update_tracking(update)
+
+        assert result is True
+        # Verify the payload sent
+        call_kwargs = mock_post.call_args
+        body = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert body["marketplaceId"] == "ATVPDKIKX0DER"
+        assert body["packageDetail"]["carrierCode"] == "UPS"
+        assert body["packageDetail"]["trackingNumber"] == "1Z999AA10123456784"
+        assert len(body["packageDetail"]["orderItems"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_update_tracking_fallback_fetches_items(self):
+        """Falls back to _fetch_order_items when cache misses."""
+        client = AmazonClient()
+        client._authenticated = True
+        client._access_token = "test-token"
+        client._token_expires_at = 9999999999.0
+        client._marketplace_id = "ATVPDKIKX0DER"
+        client._order_items_cache = {}  # empty cache
+
+        mock_items = [{"OrderItemId": "oi-9", "QuantityOrdered": 1}]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        update = TrackingUpdate(
+            order_id="ORDER-200",
+            tracking_number="1Z111BB20123456784",
+            carrier="UPS",
+        )
+
+        with patch.object(
+            client, "_fetch_order_items", new_callable=AsyncMock
+        ) as mock_fetch:
+            mock_fetch.return_value = mock_items
+            with patch.object(
+                httpx.AsyncClient, "post", new_callable=AsyncMock
+            ) as mock_post:
+                mock_post.return_value = mock_response
+                result = await client.update_tracking(update)
+
+        assert result is True
+        mock_fetch.assert_called_once_with("ORDER-200")
+
+    @pytest.mark.asyncio
+    async def test_update_tracking_not_authenticated(self):
+        """Returns False when not authenticated."""
+        client = AmazonClient()
+        client._authenticated = False
+
+        update = TrackingUpdate(
+            order_id="ORDER-300",
+            tracking_number="1Z999CC30123456784",
+            carrier="UPS",
+        )
+
+        result = await client.update_tracking(update)
+        assert result is False

@@ -43,6 +43,7 @@ class AmazonClient(PlatformClient):
 
         self._access_token: str | None = None
         self._token_expires_at: float = 0.0
+        self._order_items_cache: dict[str, list[dict[str, Any]]] = {}
 
     @property
     def platform_name(self) -> str:
@@ -258,6 +259,8 @@ class AmazonClient(PlatformClient):
                             continue
                         order_id = str(order.get("AmazonOrderId", ""))
                         items = await self._fetch_order_items(order_id)
+                        if items:
+                            self._order_items_cache[order_id] = items
                         normalized_orders.append(self._normalize_order(order, items))
                         if len(normalized_orders) >= max_results:
                             break
@@ -300,13 +303,76 @@ class AmazonClient(PlatformClient):
                 return None
             order_id = str(payload.get("AmazonOrderId", ""))
             items = await self._fetch_order_items(order_id)
+            if items:
+                self._order_items_cache[order_id] = items
             return self._normalize_order(payload, items)
         except Exception:
             return None
 
     async def update_tracking(self, update: TrackingUpdate) -> bool:
-        """Tracking write-back is not yet implemented in compatibility mode."""
-        return False
+        """Write tracking number back to Amazon via confirmShipment.
+
+        Uses cached order items when available, falls back to
+        _fetch_order_items for a just-in-time retrieval.
+
+        Args:
+            update: Tracking update with order_id, tracking_number, carrier.
+
+        Returns:
+            True if Amazon accepted the shipment confirmation.
+        """
+        if not self._authenticated:
+            return False
+
+        token = await self._get_access_token()
+        if not token:
+            return False
+
+        # Resolve order items — cache first, JIT fallback
+        raw_items = self._order_items_cache.get(update.order_id)
+        if not raw_items:
+            raw_items = await self._fetch_order_items(update.order_id)
+
+        if not raw_items:
+            return False
+
+        order_items = [
+            {
+                "orderItemId": str(item.get("OrderItemId", "")),
+                "quantity": int(item.get("QuantityOrdered") or 1),
+            }
+            for item in raw_items
+        ]
+
+        from datetime import UTC, datetime
+
+        payload = {
+            "marketplaceId": self._marketplace_id,
+            "packageDetail": {
+                "packageReferenceId": "1",
+                "carrierCode": update.carrier,
+                "carrierName": update.carrier,
+                "trackingNumber": update.tracking_number,
+                "shipDate": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "orderItems": order_items,
+            },
+        }
+
+        headers = {
+            "x-amz-access-token": token,
+            "content-type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.post(
+                    f"{self._base_url()}/orders/v0/orders/{update.order_id}/shipment",
+                    headers=headers,
+                    json=payload,
+                )
+            return response.status_code in (200, 204)
+        except Exception:
+            return False
 
     # Weight unit conversion factors to grams
     _WEIGHT_TO_GRAMS: dict[str, float] = {
