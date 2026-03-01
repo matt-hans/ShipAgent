@@ -240,6 +240,31 @@ class DataSourceMCPClient:
             invalidate_mapping_cache()
         return result
 
+    async def upsert_records(
+        self,
+        records: list[dict[str, Any]],
+        table_name: str,
+        pk_columns: list[str],
+    ) -> dict[str, int]:
+        """Upsert records into a DuckDB table via the Data Source MCP server.
+
+        Delegates to the upsert_records MCP tool so that rows land in
+        the same in-memory DuckDB the agent queries through.
+
+        Args:
+            records: Flat dicts to upsert.
+            table_name: Target table name (e.g., 'external_orders').
+            pk_columns: Composite primary key column names.
+
+        Returns:
+            Dict with inserted, updated, skipped counts.
+        """
+        return await self._call_tool("upsert_records", {
+            "records": records,
+            "table_name": table_name,
+            "pk_columns": pk_columns,
+        })
+
     async def import_file(
         self,
         file_path: str,

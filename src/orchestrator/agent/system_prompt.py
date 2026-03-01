@@ -73,6 +73,52 @@ def _sanitize_for_prompt(value: str, max_len: int = 64) -> str:
     return clean[:max_len]
 
 
+def _build_platforms_section(platform_summaries: list[dict]) -> str:
+    """Build the platform status section for the system prompt.
+
+    Shows connected platforms with sync state so the agent knows what
+    order data is available. Only included when sync states exist.
+
+    Args:
+        platform_summaries: List of dicts with platform_id, display_name,
+            connection_status, last_sync_row_count, etc.
+
+    Returns:
+        Formatted string with platforms section, or empty string if none.
+    """
+    if not platform_summaries:
+        return ""
+
+    lines = ["## Connected Platforms", ""]
+    lines.append(
+        "The following e-commerce platforms have been activated. Their orders "
+        "are available in the `external_orders` DuckDB table for cross-platform "
+        "queries using the existing filter and fetch tools. Use `platform` column "
+        "to filter by platform (e.g., WHERE platform = 'shopify')."
+    )
+    lines.append("")
+
+    for p in platform_summaries:
+        pid = _sanitize_for_prompt(p.get("platform_id", "unknown"), max_len=30)
+        name = _sanitize_for_prompt(p.get("display_name", ""), max_len=50)
+        status = _sanitize_for_prompt(p.get("connection_status", "unknown"), max_len=20)
+        row_count = p.get("last_sync_row_count")
+        account = _sanitize_for_prompt(p.get("account_label", "") or "", max_len=50)
+        row_info = f", {row_count} orders" if row_count else ""
+
+        label = f"- **{name}** ({pid}): {status}{row_info}"
+        if account:
+            label += f" — {account}"
+        lines.append(label)
+
+    lines.append("")
+    lines.append(
+        "Use `list_platforms` for full status. Use `refresh_platform` to "
+        "pull latest orders. Use `activate_platform` for first-time setup."
+    )
+    return "\n".join(lines) + "\n"
+
+
 def _build_contacts_section(contacts: list[dict]) -> str:
     """Build the saved contacts catalogue for the system prompt.
 
@@ -399,6 +445,7 @@ def build_system_prompt(
     column_samples: dict[str, list] | None = None,
     contacts: list[dict] | None = None,
     prior_conversation: list[dict] | None = None,
+    platform_summaries: list[dict] | None = None,
 ) -> str:
     """Build the complete system prompt for the orchestration agent.
 
@@ -416,6 +463,7 @@ def build_system_prompt(
         column_samples: Optional sample values per column for filter grounding.
         contacts: Optional list of saved contacts for @handle resolution.
         prior_conversation: Optional list of {role, content} dicts for session resume.
+        platform_summaries: Optional list of platform summary dicts for connected platforms.
 
     Returns:
         Complete system prompt string.
@@ -434,24 +482,15 @@ def build_system_prompt(
     elif source_info is not None:
         data_section = _build_schema_section(source_info, column_samples=column_samples)
     else:
-        from src.services.runtime_credentials import resolve_shopify_credentials
-        shopify_configured = resolve_shopify_credentials() is not None
-        if shopify_configured:
-            data_section = (
-                "No data source imported yet, but Shopify credentials are configured "
-                "in the environment.\n"
-                "You MUST call the connect_shopify tool FIRST to import Shopify orders "
-                "before doing anything else. Do not ask the user to connect a source — "
-                "just call connect_shopify immediately."
-            )
-        else:
-            data_section = (
-                "No data source connected. The user can still use tracking, pickup, "
-                "location finder, landed cost, and paperless document tools without a "
-                "data source. For batch shipping commands, ask the user to import a "
-                "file or connect a database source first.\n"
-                + FILE_IMPORT_INSTRUCTIONS
-            )
+        data_section = (
+            "No data source connected. The user can still use tracking, pickup, "
+            "location finder, landed cost, and paperless document tools without a "
+            "data source. For batch shipping commands, ask the user to import a "
+            "file or connect a database source first.\n"
+            "If platform credentials are configured (Shopify, Amazon, etc.), "
+            "call the activate_platform tool to import orders from the platform.\n"
+            + FILE_IMPORT_INSTRUCTIONS
+        )
 
     filter_rules_section = ""
     workflow_section = ""
@@ -734,6 +773,9 @@ administrator.
     # Build contacts section if contacts are provided
     contacts_section = _build_contacts_section(contacts) if contacts else ""
 
+    # Build platforms section if platform summaries are provided
+    platforms_section = _build_platforms_section(platform_summaries) if platform_summaries else ""
+
     # Prior conversation section for session resume
     prior_section = ""
     if prior_conversation:
@@ -752,6 +794,7 @@ Current date (UTC): {current_date}
 
 {data_section}
 {contacts_section}
+{platforms_section}
 {prior_section}
 ## Filter Generation Rules
 

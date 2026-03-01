@@ -27,6 +27,7 @@ import type {
   ProviderConnectionInfo,
   AppSettings,
   CredentialStatus,
+  FederatedPlatform,
 } from '@/types/api';
 import * as api from '@/lib/api';
 
@@ -204,6 +205,13 @@ interface AppState {
   providerConnectionsVersion: number;
   refreshProviderConnections: () => void;
 
+  // Federated platforms state
+  federatedPlatforms: FederatedPlatform[];
+  federatedPlatformsLoading: boolean;
+  federatedPlatformsVersion: number;
+  refreshFederatedPlatforms: () => void;
+  togglePlatformActive: (platformId: string) => Promise<void>;
+
   // App settings + onboarding state
   appSettings: AppSettings | null;
   appSettingsLoading: boolean;
@@ -379,6 +387,70 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, [providerConnectionsVersion]);
 
+  // Federated platforms state
+  const [federatedPlatforms, setFederatedPlatforms] = React.useState<FederatedPlatform[]>([]);
+  const [federatedPlatformsLoading, setFederatedPlatformsLoading] = React.useState(true);
+  const [federatedPlatformsVersion, setFederatedPlatformsVersion] = React.useState(0);
+
+  const refreshFederatedPlatforms = React.useCallback(() => {
+    setFederatedPlatformsVersion((v) => v + 1);
+  }, []);
+
+  // Fetch federated platforms on mount and when version changes
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setFederatedPlatformsLoading(true);
+      try {
+        const result = await api.listFederatedPlatforms();
+        if (!cancelled && result.success) {
+          setFederatedPlatforms(result.platforms);
+        }
+      } catch (err) {
+        console.error('Failed to load federated platforms:', err);
+      } finally {
+        if (!cancelled) setFederatedPlatformsLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [federatedPlatformsVersion]);
+
+  const togglePlatformActive = React.useCallback(async (platformId: string) => {
+    const platform = federatedPlatforms.find((p) => p.platform_id === platformId);
+    if (!platform) return;
+
+    // Toggling OFF — just remove from active set
+    if (platform.is_active) {
+      const newActiveIds = federatedPlatforms
+        .filter((p) => p.is_active && p.platform_id !== platformId)
+        .map((p) => p.platform_id);
+      await api.setActivePlatforms(newActiveIds);
+      refreshFederatedPlatforms();
+      return;
+    }
+
+    // Toggling ON — check if the platform needs initial sync first
+    const needsSync = platform.connection_status !== 'synced';
+    if (needsSync && platform.has_credentials) {
+      // Trigger initial activation (connect + import), which also sets is_active
+      const result = await api.activatePlatform(platformId);
+      if (!result.success) {
+        throw new Error(result.error || 'Platform activation failed');
+      }
+      refreshFederatedPlatforms();
+      return;
+    }
+
+    // Already synced — just add to active set
+    const newActiveIds = federatedPlatforms
+      .filter((p) => p.is_active)
+      .map((p) => p.platform_id)
+      .concat(platformId);
+    await api.setActivePlatforms(newActiveIds);
+    refreshFederatedPlatforms();
+  }, [federatedPlatforms, refreshFederatedPlatforms]);
+
   // Refresh contacts from API
   const refreshContacts = React.useCallback(async () => {
     try {
@@ -479,6 +551,11 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
     providerConnectionsLoading,
     providerConnectionsVersion,
     refreshProviderConnections,
+    federatedPlatforms,
+    federatedPlatformsLoading,
+    federatedPlatformsVersion,
+    refreshFederatedPlatforms,
+    togglePlatformActive,
     appSettings,
     appSettingsLoading,
     appSettingsError,

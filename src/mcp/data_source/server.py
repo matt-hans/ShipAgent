@@ -45,6 +45,10 @@ async def lifespan(app: Any):
     conn.execute("INSTALL postgres; INSTALL mysql;")
     conn.execute("LOAD postgres; LOAD mysql;")
 
+    # Ensure external_orders table exists for platform order import
+    from src.mcp.data_source.tools.schema_migration import ensure_external_orders_table
+    ensure_external_orders_table(conn)
+
     yield {
         "db": conn,
         "current_source": None,  # Track active source metadata
@@ -95,6 +99,7 @@ from src.mcp.data_source.tools.source_info_tools import (  # noqa: E402
     get_source_info,
     import_records,
 )
+from src.mcp.data_source.tools.upsert_tools import upsert_records  # noqa: E402
 from src.mcp.data_source.tools.writeback_tools import write_back  # noqa: E402
 
 # EDI tools require pydifact — import lazily so missing dependency
@@ -129,6 +134,7 @@ mcp.tool()(clear_source)
 mcp.tool()(import_commodities)
 mcp.tool()(get_commodities_bulk)
 mcp.tool()(get_column_samples)
+mcp.tool()(upsert_records)
 if _edi_available:
     mcp.tool()(import_edi)
 

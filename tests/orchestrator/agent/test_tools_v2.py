@@ -21,7 +21,6 @@ from src.orchestrator.agent.tools.core import (
 )
 from src.orchestrator.agent.tools.data import (
     fetch_rows_tool,
-    get_platform_status_tool,
     get_schema_tool,
     get_source_info_tool,
 )
@@ -778,26 +777,6 @@ async def test_ship_command_pipeline_sets_preview_hash():
 
 
 # ---------------------------------------------------------------------------
-# get_platform_status_tool
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_platform_status():
-    """Returns connected platform statuses."""
-    with patch("src.orchestrator.agent.tools.data.get_data_gateway") as mock_gw_fn:
-        mock_gw = AsyncMock()
-        mock_gw.get_source_info.return_value = None
-        mock_gw_fn.return_value = mock_gw
-
-        result = await get_platform_status_tool({})
-
-    assert result["isError"] is False
-    data = json.loads(result["content"][0]["text"])
-    assert "platforms" in data
-
-
-# ---------------------------------------------------------------------------
 # get_all_tool_definitions
 # ---------------------------------------------------------------------------
 
@@ -827,13 +806,14 @@ def test_tool_definitions_filtered_for_interactive_mode():
     defs = get_all_tool_definitions(interactive_shipping=True)
     names = {d["name"] for d in defs}
     expected = {
-        "get_job_status", "get_platform_status", "preview_interactive_shipment",
+        "get_job_status", "preview_interactive_shipment",
         "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
         "find_locations", "get_service_center_facilities",
         "request_document_upload", "upload_paperless_document",
         "push_document_to_shipment", "delete_paperless_document",
         "get_landed_cost", "track_package",
         "resolve_contact", "save_contact", "list_contacts", "delete_contact",
+        "list_platforms",
     }
     assert names == expected
 
@@ -1765,9 +1745,8 @@ def test_v2_tools_available_in_interactive_mode():
     """
     defs = get_all_tool_definitions(interactive_shipping=True)
     names = {d["name"] for d in defs}
-    # Original 3 tools
+    # Original status + interactive tools
     assert "get_job_status" in names
-    assert "get_platform_status" in names
     assert "preview_interactive_shipment" in names
     # v2 tools now included
     v2_tools = {

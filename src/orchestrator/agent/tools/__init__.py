@@ -28,12 +28,18 @@ from src.orchestrator.agent.tools.core import (  # noqa: E402
 )
 from src.orchestrator.agent.tools.data import (  # noqa: E402
     confirm_filter_interpretation_tool,
-    connect_shopify_tool,
     fetch_rows_tool,
-    get_platform_status_tool,
     get_schema_tool,
     get_source_info_tool,
     resolve_filter_intent_tool,
+)
+from src.orchestrator.agent.tools.platforms import (  # noqa: E402
+    activate_platform_tool,
+    disconnect_platform_tool,
+    get_platform_capabilities_tool,
+    list_platforms_tool,
+    refresh_all_platforms_tool,
+    refresh_platform_tool,
 )
 from src.orchestrator.agent.tools.documents import (  # noqa: E402
     delete_paperless_document_tool,
@@ -278,27 +284,111 @@ def get_all_tool_definitions(
             },
             "handler": batch_execute_tool,
         },
+        # ---------------------------------------------------------------
+        # Federated platform tools (meta-platform operations)
+        # ---------------------------------------------------------------
         {
-            "name": "get_platform_status",
-            "description": "Check which external platforms (Shopify, etc.) are connected.",
-            "input_schema": {
-                "type": "object",
-                "properties": {},
-            },
-            "handler": get_platform_status_tool,
-        },
-        {
-            "name": "connect_shopify",
+            "name": "list_platforms",
             "description": (
-                "Connect to Shopify using env credentials, fetch orders, "
-                "and import them as the active data source. Call this when "
-                "no data source is active and Shopify env vars are configured."
+                "List all registered e-commerce platforms with their connection "
+                "status, credentials, sync history, and capabilities."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {},
             },
-            "handler": _bind_bridge(connect_shopify_tool, bridge),
+            "handler": list_platforms_tool,
+        },
+        {
+            "name": "activate_platform",
+            "description": (
+                "Activate a platform — connect and perform a full initial sync of "
+                "orders into DuckDB. Use this for first-time platform setup."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "platform_id": {
+                        "type": "string",
+                        "description": "Platform identifier (e.g., 'shopify', 'amazon').",
+                    },
+                    "credential_ref": {
+                        "type": "string",
+                        "description": "Credential profile (default: platform's default).",
+                    },
+                },
+                "required": ["platform_id"],
+            },
+            "handler": activate_platform_tool,
+        },
+        {
+            "name": "refresh_platform",
+            "description": (
+                "Refresh a platform — incremental sync using watermark. "
+                "Only fetches orders updated since last sync."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "platform_id": {
+                        "type": "string",
+                        "description": "Platform identifier (e.g., 'shopify', 'amazon').",
+                    },
+                    "credential_ref": {
+                        "type": "string",
+                        "description": "Credential profile (default: platform's default).",
+                    },
+                },
+                "required": ["platform_id"],
+            },
+            "handler": refresh_platform_tool,
+        },
+        {
+            "name": "refresh_all_platforms",
+            "description": "Refresh all connected platforms. Failures on individual platforms don't block others.",
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+            },
+            "handler": refresh_all_platforms_tool,
+        },
+        {
+            "name": "disconnect_platform",
+            "description": "Disconnect a platform — close the MCP connection and update state.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "platform_id": {
+                        "type": "string",
+                        "description": "Platform identifier.",
+                    },
+                    "credential_ref": {
+                        "type": "string",
+                        "description": "Credential profile (default: platform's default).",
+                    },
+                },
+                "required": ["platform_id"],
+            },
+            "handler": disconnect_platform_tool,
+        },
+        {
+            "name": "get_platform_capabilities",
+            "description": "Get capabilities for a specific platform (supported operations, limits, paging).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "platform_id": {
+                        "type": "string",
+                        "description": "Platform identifier.",
+                    },
+                    "credential_ref": {
+                        "type": "string",
+                        "description": "Credential profile (default: platform's default).",
+                    },
+                },
+                "required": ["platform_id"],
+            },
+            "handler": get_platform_capabilities_tool,
         },
         # ---------------------------------------------------------------
         # UPS MCP v2 — Pickup tools
@@ -766,7 +856,7 @@ def get_all_tool_definitions(
     # In interactive mode, expose status tools + interactive preview + v2 tools.
     # v2 tools work independently of data sources and are useful in both modes.
     interactive_allowed = {
-        "get_job_status", "get_platform_status",
+        "get_job_status", "list_platforms",
         # v2 tools — work independently of data source
         "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
         "find_locations", "get_service_center_facilities",

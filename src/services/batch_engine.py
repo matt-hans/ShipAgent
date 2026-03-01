@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from src.services.errors import UPSServiceError
-from src.services.gateway_provider import get_data_gateway, get_external_sources_client
+from src.services.gateway_provider import get_data_gateway, get_platform_gateway
 from src.services.idempotency import generate_idempotency_key
 from src.services.international_rules import (
     enrich_order_data_for_international,
@@ -835,14 +835,14 @@ class BatchEngine:
                 if source_info is not None:
                     source_type = source_info.get("source_type", "")
 
-                    # Route to external platform or local file write-back
-                    if source_type in (
-                        "shopify", "woocommerce", "sap", "oracle",
-                    ):
-                        ext = await get_external_sources_client()
-                        gw_result = await self._write_back_external(
-                            ext, source_type,
-                            successful_write_back_updates, rows,
+                    # Route to platform gateway or local file write-back
+                    if self._has_platform_rows(rows, successful_write_back_updates):
+                        platform_gw = get_platform_gateway()
+                        gw_result = await self._write_back_platform(
+                            gateway=platform_gw,
+                            updates=successful_write_back_updates,
+                            rows=rows,
+                            capabilities_cache={},
                         )
                     else:
                         gw_result = await gw.write_back_batch(
@@ -921,31 +921,59 @@ class BatchEngine:
             "write_back": write_back_result,
         }
 
-    async def _write_back_external(
+    def _has_platform_rows(
         self,
-        ext_client: Any,
-        platform: str,
+        rows: list[Any],
+        updates: dict[int, dict[str, Any]],
+    ) -> bool:
+        """Check if any rows in the update set have platform routing data.
+
+        Returns True if at least one row's order_data contains a 'platform' key,
+        indicating it came from a federated platform MCP and should be routed
+        through PlatformGateway.
+        """
+        row_map = {r.row_number: r for r in rows}
+        for row_number in updates:
+            row = row_map.get(row_number)
+            if row and row.order_data:
+                try:
+                    data = json.loads(row.order_data)
+                    if data.get("platform"):
+                        return True
+                except (json.JSONDecodeError, TypeError):
+                    continue
+        return False
+
+    async def _write_back_platform(
+        self,
+        gateway: Any,
         updates: dict[int, dict[str, Any]],
         rows: list[Any],
+        capabilities_cache: dict[tuple[str, str], dict],
     ) -> dict[str, Any]:
-        """Route tracking write-back to an external platform.
+        """Route tracking write-back through PlatformGateway.
 
-        Instead of writing tracking numbers back to a local file (CSV/Excel),
-        this method pushes them to the originating platform (e.g., Shopify)
-        via the ExternalSourcesMCPClient.
+        Reads platform, credential_ref, and external_id from each row's
+        order_data JSON. Caches capabilities per (platform, credential_ref)
+        to avoid redundant capability fetches. Skips rows whose platform
+        doesn't support tracking.write_back. Individual failures don't
+        abort the batch.
 
         Args:
-            ext_client: ExternalSourcesMCPClient instance
-            platform: Platform identifier (shopify, woocommerce, etc.)
-            updates: Map of row_number → {tracking_number, shipped_at}
-            rows: List of JobRow objects for order_data lookup
+            gateway: PlatformGateway instance.
+            updates: Map of row_number → {tracking_number, shipped_at}.
+            rows: List of JobRow objects for order_data lookup.
+            capabilities_cache: Mutable dict for caching capabilities per
+                (platform, credential_ref). Caller may pre-populate.
 
         Returns:
-            Dict matching write_back_batch schema:
-            {success_count, failure_count, errors}
+            Dict with success_count, failure_count, skipped_count, errors.
         """
+        from src.services.platform_models import PlatformError
+
         success = 0
         failures = 0
+        skipped = 0
         errors: list[dict[str, Any]] = []
 
         row_map = {r.row_number: r for r in rows}
@@ -954,52 +982,74 @@ class BatchEngine:
             row = row_map.get(row_number)
             if not row:
                 failures += 1
-                errors.append({
-                    "row_number": row_number,
-                    "error": f"Row {row_number} not found in job rows",
-                })
+                errors.append({"row_number": row_number, "error": "Row not found"})
                 continue
 
+            # Parse order_data for platform routing info
             if not row.order_data:
                 failures += 1
-                errors.append({
-                    "row_number": row_number,
-                    "error": "Missing order_data on row",
-                })
+                errors.append({"row_number": row_number, "error": "Missing order_data"})
                 continue
             try:
                 order_data = json.loads(row.order_data)
             except (json.JSONDecodeError, TypeError):
                 failures += 1
-                errors.append({
-                    "row_number": row_number,
-                    "error": "Malformed order_data JSON on row",
-                })
+                errors.append({"row_number": row_number, "error": "Malformed order_data"})
                 continue
-            order_id = order_data.get("order_id")
-            if not order_id:
+
+            platform_id = order_data.get("platform")
+            credential_ref = order_data.get("credential_ref")
+            order_id = order_data.get("external_id") or order_data.get("order_id")
+
+            if not platform_id or not order_id:
                 failures += 1
                 errors.append({
                     "row_number": row_number,
-                    "error": "Missing order_id in order_data",
+                    "error": "Missing platform or order_id in order_data",
                 })
                 continue
 
+            if not credential_ref:
+                credential_ref = "primary"
+
+            # Check capabilities (cached per platform+credential)
+            cache_key = (platform_id, credential_ref)
+            if cache_key not in capabilities_cache:
+                try:
+                    caps = await gateway.call_tool(
+                        platform_id, credential_ref,
+                        "platform.capabilities", {},
+                    )
+                    capabilities_cache[cache_key] = caps
+                except Exception as e:
+                    logger.warning(
+                        "Failed to fetch capabilities for %s/%s: %s",
+                        platform_id, credential_ref, e,
+                    )
+                    capabilities_cache[cache_key] = {"supports": []}
+
+            caps = capabilities_cache[cache_key]
+            if "tracking.write_back" not in caps.get("supports", []):
+                skipped += 1
+                continue
+
+            # Call tracking.write_back via gateway
             try:
-                result = await ext_client.update_tracking(
-                    platform=platform,
-                    order_id=str(order_id),
-                    tracking_number=data["tracking_number"],
-                    carrier=UPS_CARRIER_NAME,
+                await gateway.call_tool(
+                    platform_id, credential_ref,
+                    "tracking.write_back",
+                    {
+                        "order_id": str(order_id),
+                        "tracking_numbers": [data["tracking_number"]],
+                    },
                 )
-                if result.get("success"):
-                    success += 1
-                else:
-                    failures += 1
-                    errors.append({
-                        "row_number": row_number,
-                        "error": result.get("error", "Unknown platform error"),
-                    })
+                success += 1
+            except PlatformError as e:
+                failures += 1
+                errors.append({
+                    "row_number": row_number,
+                    "error": str(e),
+                })
             except Exception as e:
                 failures += 1
                 errors.append({
@@ -1010,6 +1060,7 @@ class BatchEngine:
         return {
             "success_count": success,
             "failure_count": failures,
+            "skipped_count": skipped,
             "errors": errors,
         }
 

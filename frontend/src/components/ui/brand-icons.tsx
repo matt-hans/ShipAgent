@@ -23,6 +23,88 @@ export function ShopifyIcon({ className }: { className?: string }) {
   );
 }
 
+export function AmazonIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <text
+        x="12"
+        y="17"
+        textAnchor="middle"
+        fontFamily="system-ui, -apple-system, sans-serif"
+        fontSize="18"
+        fontWeight="700"
+        fill="currentColor"
+      >
+        A
+      </text>
+    </svg>
+  );
+}
+
+export function WooCommerceIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <text
+        x="12"
+        y="17"
+        textAnchor="middle"
+        fontFamily="system-ui, -apple-system, sans-serif"
+        fontSize="18"
+        fontWeight="700"
+        fill="currentColor"
+      >
+        W
+      </text>
+    </svg>
+  );
+}
+
+export function SAPIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <text
+        x="12"
+        y="17"
+        textAnchor="middle"
+        fontFamily="system-ui, -apple-system, sans-serif"
+        fontSize="16"
+        fontWeight="700"
+        fill="currentColor"
+      >
+        SAP
+      </text>
+    </svg>
+  );
+}
+
+export function OracleIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <text
+        x="12"
+        y="17"
+        textAnchor="middle"
+        fontFamily="system-ui, -apple-system, sans-serif"
+        fontSize="18"
+        fontWeight="700"
+        fill="currentColor"
+      >
+        O
+      </text>
+    </svg>
+  );
+}
+
+/** Generic platform icon fallback. */
+export function PlatformIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className={className}>
+      <rect x="3" y="3" width="18" height="18" rx="3" />
+      <path d="M9 8h6M9 12h6M9 16h4" />
+    </svg>
+  );
+}
+
 /** DataSourceIcon with optional connected indicator dot. */
 export function DataSourceIcon({ className, connected }: { className?: string; connected?: boolean }) {
   return (

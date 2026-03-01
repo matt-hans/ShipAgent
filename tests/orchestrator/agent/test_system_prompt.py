@@ -137,16 +137,13 @@ def test_prompt_without_source_batch_demands_connection():
     assert "ask the user to connect" in lower
 
 
-def test_prompt_auto_imports_shopify_when_env_configured(monkeypatch):
-    """When Shopify env vars are set and no source, prompt demands connect_shopify call."""
-    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test_token")
-    monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "test.myshopify.com")
+def test_prompt_no_source_mentions_activate_platform():
+    """When no source is connected, prompt mentions activate_platform for platform imports."""
     prompt = build_system_prompt(source_info=None, interactive_shipping=False)
     lower = prompt.lower()
-    assert "connect_shopify" in lower
-    assert "must" in lower
-    # Data source section should direct auto-import, not ask user to connect a CSV/Excel
-    assert "shopify credentials are configured" in lower
+    assert "activate_platform" in lower
+    # Should mention platforms as an option
+    assert "platform" in lower
 
 
 def test_prompt_no_shopify_env_asks_user_to_connect(monkeypatch):

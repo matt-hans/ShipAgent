@@ -509,8 +509,10 @@ from src.db.models import Base, PlatformSyncState
 
 
 @pytest.fixture
-def db_session():
-    engine = create_engine("sqlite:///:memory:")
+def db_session(tmp_path):
+    """Use temp file DB (not :memory:) so multiple sessions see same data."""
+    db_path = str(tmp_path / "test_sync_state.db")
+    engine = create_engine(f"sqlite:///{db_path}")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
         yield session
@@ -671,6 +673,8 @@ git commit -m "feat(platform): add PlatformSyncState SQLAlchemy model with compo
 
 Static config + dynamic state management. Pure service, no MCP or gateway dependencies.
 
+**IMPORTANT: Session management pattern.** PlatformRegistry uses a `session_factory` (not a shared Session) to avoid "shared session across async tasks" bugs. Every method creates its own short-lived session internally.
+
 **Files:**
 - Create: `src/services/platform_registry.py`
 - Test: `tests/services/test_platform_registry.py`
@@ -680,11 +684,13 @@ Static config + dynamic state management. Pure service, no MCP or gateway depend
 ```python
 # tests/services/test_platform_registry.py
 """Tests for PlatformRegistry service."""
+import os
+import tempfile
 import pytest
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from src.db.models import Base, PlatformSyncState
 from src.services.platform_models import PlatformConfig, CapabilityManifest
@@ -692,16 +698,22 @@ from src.services.platform_registry import PlatformRegistry, PLATFORM_CONFIGS
 
 
 @pytest.fixture
-def db_session():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    with Session(engine) as session:
-        yield session
+def db_path(tmp_path):
+    """Use a temp file DB (not :memory:) so sessions see the same data."""
+    return str(tmp_path / "test_registry.db")
 
 
 @pytest.fixture
-def registry(db_session):
-    return PlatformRegistry(db_session)
+def session_factory(db_path):
+    engine = create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
+    return factory
+
+
+@pytest.fixture
+def registry(session_factory):
+    return PlatformRegistry(session_factory)
 
 
 class TestStaticConfig:
@@ -733,7 +745,7 @@ class TestDynamicState:
         state = registry.get_state("shopify", "primary")
         assert state is None
 
-    def test_update_state_creates_if_missing(self, registry, db_session):
+    def test_update_state_creates_if_missing(self, registry, session_factory):
         state = registry.update_state(
             "shopify", "primary",
             connection_status="connected",
@@ -742,10 +754,12 @@ class TestDynamicState:
         assert state.connection_status == "connected"
         assert state.account_label == "test-store.myshopify.com"
 
-        loaded = db_session.get(PlatformSyncState, ("shopify", "primary"))
-        assert loaded is not None
+        # Verify via separate session (proves data persisted)
+        with session_factory() as s:
+            loaded = s.get(PlatformSyncState, ("shopify", "primary"))
+            assert loaded is not None
 
-    def test_update_state_updates_existing(self, registry, db_session):
+    def test_update_state_updates_existing(self, registry):
         registry.update_state("shopify", "primary", connection_status="connected")
         registry.update_state("shopify", "primary", connection_status="degraded")
 
@@ -809,6 +823,28 @@ class TestDynamicState:
         assert len(states) == 2
 
 
+class TestCredentialRefNamespacing:
+    """Verify credentials are checked with namespaced keys: {platform}:{ref}:{key}."""
+
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_has_credentials_checks_namespaced_keys(self, mock_keyring_cls, registry):
+        mock_keyring = MagicMock()
+        calls = []
+        def has_side_effect(key):
+            calls.append(key)
+            return True
+        mock_keyring.has.side_effect = has_side_effect
+        mock_keyring_cls.return_value = mock_keyring
+
+        registry.update_state("shopify", "primary", connection_status="connected")
+        summaries = registry.get_platforms_summary()
+
+        # Verify keys are namespaced as shopify:primary:ACCESS_TOKEN etc.
+        shopify_calls = [c for c in calls if c.startswith("shopify:primary:")]
+        assert len(shopify_calls) > 0
+        assert "shopify:primary:ACCESS_TOKEN" in shopify_calls
+
+
 class TestPlatformSummary:
     @patch("src.services.platform_registry.KeyringStore")
     def test_get_platforms_summary(self, mock_keyring_cls, registry):
@@ -831,16 +867,27 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'src.services.platform_
 
 **Step 3: Implement PlatformRegistry**
 
+**CRITICAL: Session factory pattern.** PlatformRegistry takes a `session_factory` (callable returning Session), not a shared Session. Every method creates its own short-lived session, preventing "shared session across async tasks" bugs.
+
+**CRITICAL: Namespaced credential keys.** Keyring keys use `{platform_id}:{credential_ref}:{key_name}` format (e.g., `shopify:primary:ACCESS_TOKEN`). This prevents collisions between profiles and makes `has_credentials` checks unambiguous.
+
 ```python
 # src/services/platform_registry.py
 """PlatformRegistry: static config + persisted dynamic state for platform integrations.
 
 Extension point: add a PlatformConfig entry to PLATFORM_CONFIGS to register a new platform.
+
+Session management: uses session_factory pattern. Every method creates its own
+short-lived session to avoid shared-session-across-async-tasks bugs.
+
+Credential keys: namespaced as {platform_id}:{credential_ref}:{key_name}
+(e.g., shopify:primary:ACCESS_TOKEN) to support multi-profile.
 """
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -856,13 +903,15 @@ from src.services.platform_models import (
 logger = logging.getLogger(__name__)
 
 # --- Static platform configs (the extension point) ---
+# required_secret_keys are LOGICAL names, namespaced at runtime as
+# {platform_id}:{credential_ref}:{key_name}
 
 PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
     "shopify": PlatformConfig(
         platform_id="shopify",
         display_name="Shopify",
         default_profile="primary",
-        required_secret_keys=["SHOPIFY_ACCESS_TOKEN", "SHOPIFY_STORE_DOMAIN"],
+        required_secret_keys=["ACCESS_TOKEN", "STORE_DOMAIN"],
         mcp_module="src.mcp.platforms.shopify.server",
         mcp_bundle_subcommand="mcp-shopify",
         contract_version="1.0",
@@ -874,10 +923,10 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         display_name="Amazon Seller Central",
         default_profile="primary",
         required_secret_keys=[
-            "AMAZON_SP_API_REFRESH_TOKEN",
-            "AMAZON_SP_API_CLIENT_ID",
-            "AMAZON_SP_API_CLIENT_SECRET",
-            "AMAZON_MARKETPLACE_ID",
+            "SP_API_REFRESH_TOKEN",
+            "SP_API_CLIENT_ID",
+            "SP_API_CLIENT_SECRET",
+            "MARKETPLACE_ID",
         ],
         mcp_module="src.mcp.platforms.amazon.server",
         mcp_bundle_subcommand="mcp-amazon",
@@ -889,7 +938,7 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         platform_id="woocommerce",
         display_name="WooCommerce",
         default_profile="primary",
-        required_secret_keys=["WOOCOMMERCE_CONSUMER_KEY", "WOOCOMMERCE_CONSUMER_SECRET", "WOOCOMMERCE_SITE_URL"],
+        required_secret_keys=["CONSUMER_KEY", "CONSUMER_SECRET", "SITE_URL"],
         mcp_module="src.mcp.platforms.woocommerce.server",
         mcp_bundle_subcommand="mcp-woocommerce",
         contract_version="1.0",
@@ -900,7 +949,7 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         platform_id="sap",
         display_name="SAP Business One",
         default_profile="primary",
-        required_secret_keys=["SAP_BASE_URL", "SAP_USERNAME", "SAP_PASSWORD", "SAP_CLIENT"],
+        required_secret_keys=["BASE_URL", "USERNAME", "PASSWORD", "CLIENT"],
         mcp_module="src.mcp.platforms.sap.server",
         mcp_bundle_subcommand="mcp-sap",
         contract_version="1.0",
@@ -911,7 +960,7 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
         platform_id="oracle",
         display_name="Oracle ERP",
         default_profile="primary",
-        required_secret_keys=["ORACLE_DSN", "ORACLE_USER", "ORACLE_PASSWORD"],
+        required_secret_keys=["DSN", "USER", "PASSWORD"],
         mcp_module="src.mcp.platforms.oracle.server",
         mcp_bundle_subcommand="mcp-oracle",
         contract_version="1.0",
@@ -920,15 +969,23 @@ PLATFORM_CONFIGS: dict[str, PlatformConfig] = {
     ),
 }
 
-# Capabilities cache TTL
 CAPABILITIES_TTL_SECONDS = 3600  # 1 hour
 
 
-class PlatformRegistry:
-    """Registry for platform integrations — static config + persisted dynamic state."""
+def keyring_key(platform_id: str, credential_ref: str, key_name: str) -> str:
+    """Build namespaced keyring key: {platform_id}:{credential_ref}:{key_name}."""
+    return f"{platform_id}:{credential_ref}:{key_name}"
 
-    def __init__(self, db_session: Session):
-        self._db = db_session
+
+class PlatformRegistry:
+    """Registry for platform integrations — static config + persisted dynamic state.
+
+    Takes a session_factory (not a Session) — every method creates its own
+    short-lived session to avoid cross-task session sharing bugs.
+    """
+
+    def __init__(self, session_factory: Callable[[], Session]):
+        self._session_factory = session_factory
 
     # --- Static config ---
 
@@ -947,31 +1004,41 @@ class PlatformRegistry:
 
     def get_state(self, platform_id: str, credential_ref: str) -> PlatformSyncState | None:
         """Get persisted dynamic state for a platform connection."""
-        return self._db.get(PlatformSyncState, (platform_id, credential_ref))
+        with self._session_factory() as session:
+            state = session.get(PlatformSyncState, (platform_id, credential_ref))
+            if state:
+                session.expunge(state)
+            return state
 
     def list_states(self) -> list[PlatformSyncState]:
         """List all platform sync states."""
-        return self._db.query(PlatformSyncState).all()
+        with self._session_factory() as session:
+            states = session.query(PlatformSyncState).all()
+            for s in states:
+                session.expunge(s)
+            return states
 
     def update_state(self, platform_id: str, credential_ref: str, **fields: Any) -> PlatformSyncState:
         """Update (or create) dynamic state for a platform connection."""
         now = datetime.now(timezone.utc)
-        state = self.get_state(platform_id, credential_ref)
-        if state is None:
-            state = PlatformSyncState(
-                platform_id=platform_id,
-                credential_ref=credential_ref,
-                created_at=now,
-                updated_at=now,
-            )
-            self._db.add(state)
+        with self._session_factory() as session:
+            state = session.get(PlatformSyncState, (platform_id, credential_ref))
+            if state is None:
+                state = PlatformSyncState(
+                    platform_id=platform_id,
+                    credential_ref=credential_ref,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(state)
 
-        for key, value in fields.items():
-            if hasattr(state, key):
-                setattr(state, key, value)
-        state.updated_at = now
-        self._db.commit()
-        return state
+            for key, value in fields.items():
+                if hasattr(state, key):
+                    setattr(state, key, value)
+            state.updated_at = now
+            session.commit()
+            session.expunge(state)
+            return state
 
     def record_sync_checkpoint(
         self,
@@ -1030,63 +1097,72 @@ class PlatformRegistry:
 
     # --- Summary (agent/UI facing) ---
 
+    def _check_credentials(
+        self, keyring: KeyringStore, config: PlatformConfig, credential_ref: str,
+    ) -> bool:
+        """Check if all required credentials exist for a (platform, ref) profile."""
+        return all(
+            keyring.has(keyring_key(config.platform_id, credential_ref, k))
+            for k in config.required_secret_keys
+        )
+
     def get_platforms_summary(self) -> list[PlatformSummary]:
         """Join static config + dynamic state for all platforms."""
         keyring = KeyringStore()
         summaries: list[PlatformSummary] = []
 
-        for config in self.list_configs(enabled_only=True):
-            states = (
-                self._db.query(PlatformSyncState)
-                .filter(PlatformSyncState.platform_id == config.platform_id)
-                .all()
-            )
+        with self._session_factory() as session:
+            for config in self.list_configs(enabled_only=True):
+                states = (
+                    session.query(PlatformSyncState)
+                    .filter(PlatformSyncState.platform_id == config.platform_id)
+                    .all()
+                )
 
-            if not states:
-                # No dynamic state — report as unconfigured
-                has_creds = all(keyring.has(k) for k in config.required_secret_keys)
-                summaries.append(PlatformSummary(
-                    platform_id=config.platform_id,
-                    display_name=config.display_name,
-                    credential_ref=config.default_profile,
-                    enabled=config.enabled,
-                    connection_status="disconnected",
-                    account_label=None,
-                    last_sync_completed_at=None,
-                    last_sync_row_count=None,
-                    capabilities=None,
-                    has_credentials=has_creds,
-                    health_ok=None,
-                    last_error=None,
-                    contract_version_ok=True,
-                    capabilities_stale=True,
-                ))
-            else:
-                for state in states:
-                    caps = json.loads(state.capabilities_json).get("supports", []) if state.capabilities_json else None
-                    cv_ok = state.capabilities_contract_version == config.contract_version if state.capabilities_contract_version else True
-                    stale = True
-                    if state.capabilities_fetched_at:
-                        age = (datetime.now(timezone.utc) - state.capabilities_fetched_at).total_seconds()
-                        stale = age > CAPABILITIES_TTL_SECONDS
-                    has_creds = all(keyring.has(k) for k in config.required_secret_keys)
-
+                if not states:
+                    has_creds = self._check_credentials(keyring, config, config.default_profile)
                     summaries.append(PlatformSummary(
                         platform_id=config.platform_id,
                         display_name=config.display_name,
-                        credential_ref=state.credential_ref,
+                        credential_ref=config.default_profile,
                         enabled=config.enabled,
-                        connection_status=state.connection_status,
-                        account_label=state.account_label,
-                        last_sync_completed_at=state.last_sync_completed_at,
-                        last_sync_row_count=state.last_sync_row_count,
-                        capabilities=caps,
+                        connection_status="disconnected",
+                        account_label=None,
+                        last_sync_completed_at=None,
+                        last_sync_row_count=None,
+                        capabilities=None,
                         has_credentials=has_creds,
-                        health_ok=state.last_health_ok,
-                        last_error=state.last_error_message,
-                        contract_version_ok=cv_ok,
-                        capabilities_stale=stale,
+                        health_ok=None,
+                        last_error=None,
+                        contract_version_ok=True,
+                        capabilities_stale=True,
                     ))
+                else:
+                    for state in states:
+                        caps = json.loads(state.capabilities_json).get("supports", []) if state.capabilities_json else None
+                        cv_ok = state.capabilities_contract_version == config.contract_version if state.capabilities_contract_version else True
+                        stale = True
+                        if state.capabilities_fetched_at:
+                            age = (datetime.now(timezone.utc) - state.capabilities_fetched_at).total_seconds()
+                            stale = age > CAPABILITIES_TTL_SECONDS
+                        has_creds = self._check_credentials(keyring, config, state.credential_ref)
+
+                        summaries.append(PlatformSummary(
+                            platform_id=config.platform_id,
+                            display_name=config.display_name,
+                            credential_ref=state.credential_ref,
+                            enabled=config.enabled,
+                            connection_status=state.connection_status,
+                            account_label=state.account_label,
+                            last_sync_completed_at=state.last_sync_completed_at,
+                            last_sync_row_count=state.last_sync_row_count,
+                            capabilities=caps,
+                            has_credentials=has_creds,
+                            health_ok=state.last_health_ok,
+                            last_error=state.last_error_message,
+                            contract_version_ok=cv_ok,
+                            capabilities_stale=stale,
+                        ))
 
         return summaries
 ```
@@ -1271,9 +1347,18 @@ Expected: All PASS
 
 **Step 5: Write failing tests for server contract compliance**
 
+**IMPORTANT: Do NOT introspect FastMCP internals (e.g., `mcp._tool_manager`).** Test via
+the actual tool handler functions exported from server.py. This is resilient to FastMCP
+version changes. If you need to verify tool registration, use `mcp.list_tools()` (the
+public MCP method).
+
 ```python
 # tests/mcp/platforms/shopify/test_server.py
-"""Tests for Shopify platform MCP server contract compliance."""
+"""Tests for Shopify platform MCP server contract compliance.
+
+Tests call exported handler functions directly — no FastMCP internal introspection.
+"""
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
@@ -1282,30 +1367,49 @@ class TestShopifyServerContract:
     """Verify the Shopify MCP server implements the required tool contract."""
 
     def test_server_exposes_required_tools(self):
+        """Verify tool registration via the public list_tools() MCP method."""
         from src.mcp.platforms.shopify.server import mcp
-        tool_names = {t.name for t in mcp._tool_manager.tools.values()}
+        # Use the public API, not _tool_manager internals
+        tools = asyncio.get_event_loop().run_until_complete(mcp.list_tools())
+        tool_names = {t.name for t in tools}
         required = {"platform.health", "platform.capabilities", "auth.connect",
                      "auth.disconnect", "orders.list", "orders.get", "tracking.write_back"}
         assert required.issubset(tool_names), f"Missing tools: {required - tool_names}"
 
-    def test_health_includes_contract_version(self):
+    def test_health_returns_required_shape(self):
+        """Call the handler function directly and verify response shape."""
         from src.mcp.platforms.shopify.server import health
-        import asyncio
         result = asyncio.get_event_loop().run_until_complete(health())
-        assert "contract_version" in result
-        assert result["contract_version"] == "1.0"
+        # Required fields per contract
+        assert "ok" in result
         assert "platform_id" in result
         assert result["platform_id"] == "shopify"
+        assert "server_version" in result
+        assert "contract_version" in result
+        assert result["contract_version"] == "1.0"
+        assert "api_reachable" in result
+        assert "auth_valid" in result
 
-    def test_capabilities_includes_required_fields(self):
+    def test_capabilities_returns_required_shape(self):
+        """Call the handler function directly and verify response shape."""
         from src.mcp.platforms.shopify.server import capabilities
-        import asyncio
         result = asyncio.get_event_loop().run_until_complete(capabilities())
         assert "supports" in result
         assert "limits" in result
         assert "paging" in result
         assert "contract_version" in result
         assert "orders.list" in result["supports"]
+        # Verify paging contract fields
+        assert "default_page_size" in result["paging"]
+        assert "max_page_size" in result["paging"]
+        assert "overlap_seconds" in result["paging"]
+
+    def test_health_and_capabilities_contract_versions_match(self):
+        """Contract version must be consistent across tools."""
+        from src.mcp.platforms.shopify.server import health, capabilities
+        h = asyncio.get_event_loop().run_until_complete(health())
+        c = asyncio.get_event_loop().run_until_complete(capabilities())
+        assert h["contract_version"] == c["contract_version"]
 ```
 
 **Step 6: Implement server.py and client.py**
@@ -1322,6 +1426,233 @@ Expected: All PASS
 ```bash
 git add src/mcp/platforms/ tests/mcp/platforms/
 git commit -m "feat(platform): extract Shopify into standalone platform MCP with contract compliance"
+```
+
+---
+
+### Task 4.1: Mapper Purity Enforcement Test
+
+Verify that mapper modules under `src/mcp/platforms/` do not accidentally import FastMCP or server-side dependencies. This prevents circular imports and packaging issues.
+
+**Files:**
+- Test: `tests/mcp/platforms/test_mapper_purity.py`
+
+**Step 1: Write the purity test**
+
+```python
+# tests/mcp/platforms/test_mapper_purity.py
+"""Verify mapper modules are pure — no FastMCP or server imports."""
+import importlib
+import sys
+import pytest
+
+
+MAPPER_MODULES = [
+    "src.mcp.platforms.shopify.mapper",
+    # Add new platforms here as they're extracted
+]
+
+
+@pytest.mark.parametrize("module_path", MAPPER_MODULES)
+def test_mapper_does_not_import_fastmcp(module_path):
+    """Mapper modules must not pull in FastMCP or server dependencies."""
+    # Clear any cached imports to get a clean check
+    mod = importlib.import_module(module_path)
+    imported = set(sys.modules.keys())
+    fastmcp_imports = [m for m in imported if "fastmcp" in m.lower() or "mcp.server" in m]
+    assert not fastmcp_imports, (
+        f"{module_path} transitively imports FastMCP/server modules: {fastmcp_imports}"
+    )
+
+
+@pytest.mark.parametrize("module_path", MAPPER_MODULES)
+def test_mapper_does_not_import_its_own_server(module_path):
+    """Mapper must not import the server module from its own package."""
+    mod = importlib.import_module(module_path)
+    # Check that the corresponding server module was not imported
+    server_module = module_path.rsplit(".", 1)[0] + ".server"
+    assert server_module not in sys.modules, (
+        f"{module_path} imported its own server module: {server_module}"
+    )
+```
+
+**Step 2: Run test**
+
+Run: `pytest tests/mcp/platforms/test_mapper_purity.py -v`
+Expected: PASS (after Task 4 mappers are implemented correctly)
+
+**Step 3: Commit**
+
+```bash
+git add tests/mcp/platforms/test_mapper_purity.py
+git commit -m "test(platform): add mapper purity enforcement tests"
+```
+
+---
+
+### Task 5.0: DuckDB External Orders Schema Migration
+
+Create the `external_orders` table in the Data Source MCP. This must run before upsert tools or activation service.
+
+**Files:**
+- Create: `src/mcp/data_source/tools/schema_migration.py`
+- Modify: `src/mcp/data_source/server.py` (call migration in lifespan)
+- Test: `tests/mcp/data_source/test_schema_migration.py`
+
+**Step 1: Write failing test**
+
+```python
+# tests/mcp/data_source/test_schema_migration.py
+"""Tests for external_orders schema migration."""
+import pytest
+import duckdb
+from src.mcp.data_source.tools.schema_migration import ensure_external_orders_table
+
+
+class TestExternalOrdersSchema:
+    def test_creates_table_if_missing(self):
+        conn = duckdb.connect(":memory:")
+        ensure_external_orders_table(conn)
+        # Table should exist
+        result = conn.execute("SELECT * FROM external_orders LIMIT 0").description
+        column_names = [col[0] for col in result]
+        assert "platform" in column_names
+        assert "external_id" in column_names
+        assert "credential_ref" in column_names
+        assert "canonical_hash" in column_names
+        assert "raw_json" in column_names
+        assert "attrs_json" in column_names
+        conn.close()
+
+    def test_idempotent_creation(self):
+        conn = duckdb.connect(":memory:")
+        ensure_external_orders_table(conn)
+        ensure_external_orders_table(conn)  # Should not error
+        count = conn.execute("SELECT COUNT(*) FROM external_orders").fetchone()[0]
+        assert count == 0
+        conn.close()
+
+    def test_primary_key_exists(self):
+        conn = duckdb.connect(":memory:")
+        ensure_external_orders_table(conn)
+        # Insert duplicate PK should fail
+        conn.execute("""
+            INSERT INTO external_orders (platform, external_id, credential_ref, canonical_hash, ingested_at)
+            VALUES ('shopify', '1', 'primary', 'aaa', CURRENT_TIMESTAMP)
+        """)
+        with pytest.raises(duckdb.ConstraintException):
+            conn.execute("""
+                INSERT INTO external_orders (platform, external_id, credential_ref, canonical_hash, ingested_at)
+                VALUES ('shopify', '1', 'primary', 'bbb', CURRENT_TIMESTAMP)
+            """)
+        conn.close()
+
+    def test_schema_introspection_includes_platform(self):
+        """NL filter engine needs to see 'platform' in get_schema."""
+        conn = duckdb.connect(":memory:")
+        ensure_external_orders_table(conn)
+        cols = conn.execute("DESCRIBE external_orders").fetchall()
+        col_names = [c[0] for c in cols]
+        assert "platform" in col_names
+        assert "credential_ref" in col_names
+        assert "total_weight_grams" in col_names
+        # Verify weight is integer, not float
+        weight_col = next(c for c in cols if c[0] == "total_weight_grams")
+        assert "BIGINT" in weight_col[1].upper()
+        conn.close()
+```
+
+**Step 2: Run test to verify it fails**
+
+Run: `pytest tests/mcp/data_source/test_schema_migration.py -v`
+Expected: FAIL — import error
+
+**Step 3: Implement schema migration**
+
+```python
+# src/mcp/data_source/tools/schema_migration.py
+"""Schema migration for external_orders DuckDB table.
+
+Called during Data Source MCP lifespan to ensure the table exists
+before any upsert operations.
+"""
+from __future__ import annotations
+
+import logging
+import duckdb
+
+logger = logging.getLogger(__name__)
+
+EXTERNAL_ORDERS_DDL = """
+CREATE TABLE IF NOT EXISTS external_orders (
+    platform            VARCHAR NOT NULL,
+    external_id         VARCHAR NOT NULL,
+    credential_ref      VARCHAR NOT NULL,
+
+    order_number        VARCHAR,
+    order_status        VARCHAR,
+    payment_status      VARCHAR,
+    fulfillment_status  VARCHAR,
+    created_at          TIMESTAMPTZ,
+    updated_at          TIMESTAMPTZ,
+
+    ship_to_name        VARCHAR,
+    ship_to_company     VARCHAR,
+    ship_to_address1    VARCHAR,
+    ship_to_address2    VARCHAR,
+    ship_to_city        VARCHAR,
+    ship_to_state       VARCHAR,
+    ship_to_postal      VARCHAR,
+    ship_to_country     VARCHAR,
+    ship_to_phone       VARCHAR,
+    is_residential      BOOLEAN,
+
+    total_weight_grams  BIGINT,
+    package_count       INTEGER DEFAULT 1,
+    shipping_method     VARCHAR,
+    service_code        VARCHAR,
+
+    total_price_cents   BIGINT,
+    currency            VARCHAR DEFAULT 'USD',
+
+    customer_name       VARCHAR,
+    customer_email      VARCHAR,
+    item_count          INTEGER,
+    tags                VARCHAR,
+
+    canonical_hash      VARCHAR NOT NULL,
+    mapping_version     VARCHAR DEFAULT '1.0',
+    ingested_at         TIMESTAMPTZ NOT NULL,
+    sync_run_id         VARCHAR,
+
+    attrs_json          VARCHAR,
+    raw_json            VARCHAR,
+
+    PRIMARY KEY (platform, external_id, credential_ref)
+);
+"""
+
+
+def ensure_external_orders_table(conn: duckdb.DuckDBPyConnection) -> None:
+    """Create external_orders table if it doesn't exist."""
+    conn.execute(EXTERNAL_ORDERS_DDL)
+    logger.info("external_orders table ensured")
+```
+
+**Step 4: Wire into Data Source MCP lifespan**
+
+In `src/mcp/data_source/server.py`, call `ensure_external_orders_table(conn)` during the lifespan startup, after the DuckDB connection is created.
+
+**Step 5: Run tests**
+
+Run: `pytest tests/mcp/data_source/test_schema_migration.py -v`
+Expected: All PASS
+
+**Step 6: Commit**
+
+```bash
+git add src/mcp/data_source/tools/schema_migration.py tests/mcp/data_source/test_schema_migration.py src/mcp/data_source/server.py
+git commit -m "feat(data-source): add external_orders schema migration with PK constraints"
 ```
 
 ---
@@ -1445,12 +1776,24 @@ Expected: FAIL — import errors
 
 **Step 3: Implement upsert_records_to_duckdb**
 
+**CRITICAL: Uses atomic INSERT ... ON CONFLICT DO UPDATE ... WHERE canonical_hash differs.**
+Counts (inserted/updated/skipped) are computed from a single pre-read SELECT of existing hashes,
+then one bulk INSERT ... ON CONFLICT handles all writes atomically.
+
 ```python
 # src/mcp/data_source/tools/upsert_tools.py
 """DuckDB upsert operations for platform order import.
 
-Uses ON CONFLICT DO UPDATE ... WHERE hash differs for atomic,
-change-detection-aware upserts.
+Uses INSERT ... ON CONFLICT DO UPDATE ... WHERE canonical_hash <> excluded.canonical_hash
+for atomic, change-detection-aware upserts. See DuckDB docs:
+https://duckdb.org/docs/stable/sql/statements/insert.html
+
+Counting strategy:
+1. Dedupe batch by PK (keep last occurrence)
+2. Single SELECT of existing hashes for those PKs
+3. Classify: new (inserted) / changed (updated) / unchanged (skipped)
+4. Single INSERT ... ON CONFLICT for ALL rows (atomic)
+5. Return pre-computed counts
 """
 from __future__ import annotations
 
@@ -1466,12 +1809,63 @@ def _dedupe_batch(
     records: list[dict[str, Any]],
     pk_columns: list[str],
 ) -> list[dict[str, Any]]:
-    """Deduplicate records within a batch by PK, keeping the last occurrence."""
+    """Deduplicate records within a batch by PK, keeping the last occurrence.
+
+    Required because DuckDB INSERT ... ON CONFLICT errors when the same PK
+    appears multiple times in a single statement (common with overlap windows).
+    """
     seen: dict[tuple, dict[str, Any]] = {}
     for record in records:
         key = tuple(record.get(col) for col in pk_columns)
         seen[key] = record  # last one wins
     return list(seen.values())
+
+
+def _classify_records(
+    conn: duckdb.DuckDBPyConnection,
+    records: list[dict[str, Any]],
+    table_name: str,
+    pk_columns: list[str],
+) -> dict[str, int]:
+    """Pre-compute inserted/updated/skipped counts via hash comparison.
+
+    Single SELECT for all PKs in the batch. Returns counts only — the actual
+    write is handled by the ON CONFLICT upsert.
+    """
+    existing_hashes: dict[tuple, str] = {}
+    pk_tuples = [tuple(r.get(col) for col in pk_columns) for r in records]
+
+    if pk_tuples:
+        pk_cols_sql = ", ".join(pk_columns)
+        # Build safe parameterized IN clause
+        pk_placeholders = ", ".join(
+            f"({', '.join('?' for _ in pk_columns)})" for _ in pk_tuples
+        )
+        pk_values = [v for t in pk_tuples for v in t]
+        try:
+            rows = conn.execute(
+                f"SELECT {pk_cols_sql}, canonical_hash FROM {table_name} "
+                f"WHERE ({pk_cols_sql}) IN ({pk_placeholders})",
+                pk_values,
+            ).fetchall()
+            for row in rows:
+                key = tuple(row[:-1])
+                existing_hashes[key] = row[-1]
+        except duckdb.CatalogException:
+            pass  # Table doesn't exist yet — all records are inserts
+
+    inserted = updated = skipped = 0
+    for record in records:
+        key = tuple(record.get(col) for col in pk_columns)
+        existing_hash = existing_hashes.get(key)
+        if existing_hash is None:
+            inserted += 1
+        elif existing_hash != record.get("canonical_hash"):
+            updated += 1
+        else:
+            skipped += 1
+
+    return {"inserted": inserted, "updated": updated, "skipped": skipped}
 
 
 def upsert_records_to_duckdb(
@@ -1482,77 +1876,44 @@ def upsert_records_to_duckdb(
 ) -> dict[str, int]:
     """Upsert records into DuckDB with hash-based change detection.
 
-    Uses ON CONFLICT DO UPDATE ... WHERE canonical_hash differs.
-    Deduplicates within batch before upserting.
+    1. Deduplicates within batch (last occurrence wins per PK)
+    2. Pre-computes inserted/updated/skipped counts via hash comparison
+    3. Executes atomic INSERT ... ON CONFLICT DO UPDATE ... WHERE hash differs
+    4. Returns pre-computed counts
 
-    Returns counts: inserted, updated, skipped.
+    The ON CONFLICT ... WHERE clause ensures unchanged rows are skipped at
+    the SQL level, keeping DuckDB churn minimal.
     """
     if not records:
         return {"inserted": 0, "updated": 0, "skipped": 0}
 
-    # Dedupe within batch
+    # Step 1: Dedupe within batch (prevents DuckDB duplicate-PK-in-statement errors)
     deduped = _dedupe_batch(records, pk_columns)
 
-    # Get existing hashes for change detection
-    pk_tuples = [tuple(r.get(col) for col in pk_columns) for r in deduped]
-    pk_placeholders = ", ".join(
-        f"({', '.join('?' for _ in pk_columns)})" for _ in pk_tuples
+    # Step 2: Pre-compute counts
+    counts = _classify_records(conn, deduped, table_name, pk_columns)
+
+    # Step 3: Atomic upsert via ON CONFLICT DO UPDATE ... WHERE hash differs
+    columns = list(deduped[0].keys())
+    cols_sql = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    pk_conflict = ", ".join(pk_columns)
+
+    # Build SET clause for all non-PK columns
+    non_pk = [c for c in columns if c not in pk_columns]
+    set_clause = ", ".join(f"{c} = excluded.{c}" for c in non_pk)
+
+    upsert_sql = (
+        f"INSERT INTO {table_name} ({cols_sql}) VALUES ({placeholders}) "
+        f"ON CONFLICT ({pk_conflict}) DO UPDATE SET {set_clause} "
+        f"WHERE {table_name}.canonical_hash <> excluded.canonical_hash"
     )
-    pk_values = [v for t in pk_tuples for v in t]
-
-    existing_hashes: dict[tuple, str] = {}
-    if pk_values:
-        pk_cols_sql = ", ".join(pk_columns)
-        query = f"SELECT {pk_cols_sql}, canonical_hash FROM {table_name} WHERE ({pk_cols_sql}) IN ({pk_placeholders})"
-        try:
-            rows = conn.execute(query, pk_values).fetchall()
-            for row in rows:
-                key = tuple(row[:-1])
-                existing_hashes[key] = row[-1]
-        except duckdb.CatalogException:
-            pass  # Table doesn't exist yet
-
-    # Classify records
-    to_insert: list[dict[str, Any]] = []
-    to_update: list[dict[str, Any]] = []
-    skipped = 0
 
     for record in deduped:
-        key = tuple(record.get(col) for col in pk_columns)
-        existing_hash = existing_hashes.get(key)
-        if existing_hash is None:
-            to_insert.append(record)
-        elif existing_hash != record.get("canonical_hash"):
-            to_update.append(record)
-        else:
-            skipped += 1
+        values = [record.get(col) for col in columns]
+        conn.execute(upsert_sql, values)
 
-    # Insert new records
-    if to_insert:
-        columns = list(to_insert[0].keys())
-        cols_sql = ", ".join(columns)
-        placeholders = ", ".join("?" for _ in columns)
-        insert_sql = f"INSERT INTO {table_name} ({cols_sql}) VALUES ({placeholders})"
-        for record in to_insert:
-            values = [record.get(col) for col in columns]
-            conn.execute(insert_sql, values)
-
-    # Update changed records
-    if to_update:
-        columns = list(to_update[0].keys())
-        non_pk = [c for c in columns if c not in pk_columns]
-        set_clause = ", ".join(f"{c} = ?" for c in non_pk)
-        where_clause = " AND ".join(f"{c} = ?" for c in pk_columns)
-        update_sql = f"UPDATE {table_name} SET {set_clause} WHERE {where_clause}"
-        for record in to_update:
-            values = [record.get(c) for c in non_pk] + [record.get(c) for c in pk_columns]
-            conn.execute(update_sql, values)
-
-    return {
-        "inserted": len(to_insert),
-        "updated": len(to_update),
-        "skipped": skipped,
-    }
+    return counts
 ```
 
 **Step 4: Run tests to verify they pass**
@@ -1575,19 +1936,128 @@ git commit -m "feat(data-source): add upsert_records tool with hash-based change
 
 ---
 
+### Task 5.1: DummyPlatform MCP (Vertical Slice)
+
+**De-risk the orchestration core before dealing with real platform quirks.** Build a minimal DummyPlatform MCP that returns fixed 2-page order data. Then wire ActivationService against it to prove the end-to-end shape: spawn → connect → page → normalize → upsert → checkpoint.
+
+**Files:**
+- Create: `src/mcp/platforms/dummy/__init__.py`
+- Create: `src/mcp/platforms/dummy/server.py`
+- Create: `src/mcp/platforms/dummy/mapper.py`
+- Test: `tests/mcp/platforms/dummy/test_vertical_slice.py`
+
+**Step 1: Implement DummyPlatform MCP**
+
+Minimal FastMCP server implementing the full contract:
+- `platform.health()` — always returns ok, contract_version "1.0"
+- `platform.capabilities()` — supports ["orders.list", "orders.get"]
+- `auth.connect(credential_ref)` — always succeeds
+- `orders.list(cursor?, since?)` — returns 2 pages of 3 fixed orders each. Page 1 returns `next_cursor="page2"`, page 2 returns `next_cursor=None`
+- `orders.get(order_id)` — returns matching fixed order
+- `tracking.write_back(...)` — no-op success
+
+**Step 2: Implement DummyMapper**
+
+Pure mapper that converts dummy orders to flat DuckDB rows with canonical_hash.
+
+**Step 3: Add "dummy" to PLATFORM_CONFIGS (enabled=False by default, enabled in tests)**
+
+**Step 4: Write vertical slice integration test**
+
+```python
+# tests/mcp/platforms/dummy/test_vertical_slice.py
+"""End-to-end vertical slice: DummyPlatform -> Gateway -> ActivationService -> DuckDB."""
+import pytest
+# This test imports ActivationService, Gateway, Registry, and DummyPlatform
+# and proves the full chain works before real platform extraction.
+
+class TestDummyPlatformVerticalSlice:
+    @pytest.mark.asyncio
+    async def test_full_activation_imports_all_pages(self):
+        """Activate dummy platform -> 2 pages -> 6 orders in DuckDB."""
+        # Setup: registry, gateway, data gateway (DuckDB in-memory)
+        # Activate: activation_service.activate_platform("dummy", "test")
+        # Assert: 6 rows in external_orders with platform="dummy"
+        # Assert: watermark advanced, resume_cursor cleared
+        pass  # Implementation depends on Tasks 3-7 being wired
+
+    @pytest.mark.asyncio
+    async def test_refresh_with_watermark_skips_old_orders(self):
+        """Second activation with mode=refresh passes since= to orders.list."""
+        pass
+
+    @pytest.mark.asyncio
+    async def test_resume_after_simulated_crash(self):
+        """Set resume_cursor in registry, verify activation resumes from cursor."""
+        pass
+```
+
+**Step 5: Commit**
+
+```bash
+git add src/mcp/platforms/dummy/ tests/mcp/platforms/dummy/
+git commit -m "feat(platform): add DummyPlatform MCP for vertical slice testing"
+```
+
+---
+
 ### Task 6: PlatformGateway Service
 
 Runtime client manager with lazy spawn, idle reap, circuit breaker, QPS limiting, and state update queue. This is the most complex service.
 
 **Files:**
 - Create: `src/services/platform_gateway.py`
+- Create: `tests/services/fake_mcp_session.py` (test helper)
 - Test: `tests/services/test_platform_gateway.py`
+
+**IMPORTANT: Use a FakeSession, not pure mocks.** Mocks miss sequencing bugs (timeouts,
+cancellation, active_calls decrement in finally, probe exclusivity). The FakeSession has
+programmable behavior per tool and call counters.
+
+```python
+# tests/services/fake_mcp_session.py
+"""Fake MCP session for deterministic gateway tests."""
+from __future__ import annotations
+
+import asyncio
+from collections import defaultdict
+from typing import Any
+
+
+class FakeSession:
+    """Programmable fake MCP session for gateway testing.
+
+    Supports: success responses, error responses, timeouts, call counting.
+    """
+
+    def __init__(self):
+        self.call_count: dict[str, int] = defaultdict(int)
+        self._responses: dict[str, list[dict | Exception]] = {}
+        self._default_response: dict[str, Any] = {"success": True}
+        self.closed = False
+
+    def program(self, tool_name: str, responses: list[dict | Exception]):
+        """Set responses for a tool (consumed in order, last one repeats)."""
+        self._responses[tool_name] = list(responses)
+
+    async def call_tool(self, tool_name: str, args: dict) -> dict:
+        """Simulate an MCP tool call."""
+        self.call_count[tool_name] += 1
+        responses = self._responses.get(tool_name, [self._default_response])
+        response = responses.pop(0) if len(responses) > 1 else responses[0]
+        if isinstance(response, asyncio.TimeoutError):
+            raise response
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    async def close(self):
+        self.closed = True
+```
 
 **Step 1: Write failing tests for core gateway behavior**
 
-Tests should cover: lazy spawn, circuit breaker state transitions, active call tracking, idle reap safety, state update queue, QPS vs concurrency separation. Use mocks for the actual MCP subprocess — gateway tests verify lifecycle logic, not MCP protocol.
-
-Key test cases:
+Tests use FakeSession for deterministic behavior. Key test cases:
 - `test_call_tool_spawns_on_first_use` — connection created lazily
 - `test_call_tool_reuses_existing_connection` — second call doesn't respawn
 - `test_circuit_opens_after_consecutive_failures` — 5 TRANSIENT errors → open
@@ -1598,6 +2068,8 @@ Key test cases:
 - `test_reaper_tears_down_idle_connections` — idle > TTL → teardown
 - `test_contract_version_mismatch_raises` — wrong version → PlatformContractMismatchError
 - `test_disconnect_tears_down_and_updates_registry` — clean disconnect
+- `test_shutdown_flushes_state_update_queue` — enqueue updates, shutdown, verify flushed
+- `test_per_call_timeout_triggers_transient` — hung call → timeout → failure recorded
 
 **Step 2: Run tests to verify they fail**
 
@@ -1653,6 +2125,9 @@ Key test cases:
 - `test_capabilities_cached_after_connect` — registry.record_capabilities called
 - `test_activate_multiple_runs_in_parallel` — asyncio.gather with error handling
 - `test_batch_dedupe_before_upsert` — overlapping orders deduplicated
+- `test_sync_run_id_consistent_within_run` — all rows in a run share the same sync_run_id
+- `test_checkpoint_only_after_upsert_commit` — simulate upsert failure, verify cursor NOT advanced
+- `test_watermark_not_advanced_on_partial_failure` — crash mid-sync, watermark stays at previous value
 
 **Step 2-5: Implement, test, commit**
 
@@ -1821,7 +2296,14 @@ Route tracking write-back through PlatformGateway based on row columns.
 
 **Step 1: Write failing test for platform-aware write-back routing**
 
-Test that when a row has `platform="shopify"` and `credential_ref="primary"`, write-back calls `PlatformGateway.write_back_tracking()` with the correct arguments. Test capability caching (fetched once per platform per run, not per row).
+Test that when a row has `platform="shopify"` and `credential_ref="primary"`, write-back calls `PlatformGateway.write_back_tracking()` with the correct arguments.
+
+Key test cases:
+- `test_writeback_routes_to_correct_platform` — shopify rows → shopify gateway call
+- `test_capability_fetch_once_per_platform_per_run` — 5 shopify rows → 1 get_capabilities call
+- `test_writeback_skipped_when_unsupported` — platform without tracking.write_back in capabilities → no call
+- `test_rate_limited_writeback_does_not_fail_batch` — RATE_LIMITED on write-back retries, doesn't abort the batch
+- `test_reads_platform_from_row_columns_not_blob` — uses row.platform/row.credential_ref, not JSON parsing
 
 **Step 2: Modify BatchEngine._write_back_external()**
 
