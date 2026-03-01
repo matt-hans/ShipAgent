@@ -6,7 +6,7 @@ import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
 import type { Job } from '@/types/api';
 import { ChevronIcon, HardDriveIcon, HistoryIcon, PlusIcon } from '@/components/ui/icons';
-import { ShopifyIcon, DataSourceIcon } from '@/components/ui/brand-icons';
+import { ShopifyIcon, AmazonIcon, DataSourceIcon } from '@/components/ui/brand-icons';
 import { DataSourceSection } from '@/components/sidebar/DataSourcePanel';
 import { JobHistorySection } from '@/components/sidebar/JobHistoryPanel';
 interface SidebarProps {
@@ -63,6 +63,11 @@ export function Sidebar({ collapsed, onToggle, onSelectJob, activeJobId, onNewCh
             {activeSourceType === 'shopify' ? (
               <div className="relative">
                 <ShopifyIcon className="w-5 h-5 text-[#5BBF3D]" />
+                <span className={cn('absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full', interactiveShipping ? 'bg-slate-500' : 'bg-success')} />
+              </div>
+            ) : activeSourceType === 'amazon' ? (
+              <div className="relative">
+                <AmazonIcon className="w-5 h-5 text-[#FF9900]" />
                 <span className={cn('absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full', interactiveShipping ? 'bg-slate-500' : 'bg-success')} />
               </div>
             ) : activeSourceType === 'local' ? (

@@ -166,6 +166,7 @@ class ExternalSourcesMCPClient:
         platform: str,
         status: str | None = None,
         limit: int = 100,
+        include_items: bool = True,
     ) -> dict[str, Any]:
         """Fetch orders from a connected platform.
 
@@ -173,6 +174,7 @@ class ExternalSourcesMCPClient:
             platform: Platform identifier.
             status: Optional order status filter.
             limit: Max orders to return.
+            include_items: Fetch line items per order (set False for faster activation).
 
         Returns:
             Dict with orders list and count.
@@ -180,6 +182,8 @@ class ExternalSourcesMCPClient:
         args: dict[str, Any] = {"platform": platform, "limit": limit}
         if status:
             args["status"] = status
+        if not include_items:
+            args["include_items"] = False
         return await self._mcp.call_tool("list_orders", args)
 
     async def get_order(

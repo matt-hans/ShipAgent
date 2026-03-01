@@ -20,6 +20,7 @@ from src.mcp.external_sources.models import (
     PlatformType,
 )
 from src.services.gateway_provider import get_external_sources_client
+from src.services.runtime_credentials import resolve_amazon_credentials
 
 router = APIRouter(prefix="/platforms", tags=["platforms"])
 
@@ -111,6 +112,18 @@ class ShopifyEnvStatusResponse(BaseModel):
     valid: bool = Field(..., description="True if credentials validated against Shopify API")
     store_url: str | None = Field(None, description="Store URL from environment")
     store_name: str | None = Field(None, description="Shop name from Shopify API")
+    error: str | None = Field(None, description="Error message if validation failed")
+
+
+class AmazonEnvStatusResponse(BaseModel):
+    """Response from Amazon environment status check."""
+
+    configured: bool = Field(
+        ..., description="True if Amazon SP-API credentials are configured"
+    )
+    valid: bool = Field(..., description="True if credentials validated against Amazon API")
+    marketplace_id: str | None = Field(None, description="Amazon marketplace ID")
+    seller_name: str | None = Field(None, description="Seller/marketplace name from Amazon")
     error: str | None = Field(None, description="Error message if validation failed")
 
 
@@ -376,6 +389,69 @@ async def get_shopify_env_status() -> ShopifyEnvStatusResponse:
             valid=False,
             store_url=store_domain,
             store_name=None,
+            error=str(e),
+        )
+
+
+@router.get("/amazon/env-status", response_model=AmazonEnvStatusResponse)
+async def get_amazon_env_status() -> AmazonEnvStatusResponse:
+    """Check Amazon credentials via runtime_credentials adapter.
+
+    Resolves Amazon credentials (DB priority, env fallback) and validates
+    via the gateway's read-only validate_credentials tool.
+
+    Returns:
+        Status indicating whether credentials are configured and valid.
+    """
+    amazon_creds = resolve_amazon_credentials()
+    if amazon_creds is None:
+        return AmazonEnvStatusResponse(
+            configured=False,
+            valid=False,
+            marketplace_id=None,
+            seller_name=None,
+            error="No Amazon credentials configured. Connect Amazon in Settings.",
+        )
+
+    try:
+        ext = await get_external_sources_client()
+        result = await ext.validate_credentials(
+            platform="amazon",
+            credentials={
+                "client_id": amazon_creds.client_id,
+                "client_secret": amazon_creds.client_secret,
+                "refresh_token": amazon_creds.refresh_token,
+                "marketplace_id": amazon_creds.marketplace_id,
+                "sandbox": amazon_creds.sandbox,
+            },
+        )
+
+        if not result.get("valid"):
+            return AmazonEnvStatusResponse(
+                configured=True,
+                valid=False,
+                marketplace_id=amazon_creds.marketplace_id,
+                seller_name=None,
+                error=result.get("error", "Authentication failed - check credentials"),
+            )
+
+        shop = result.get("shop") or {}
+        seller_name = shop.get("name") if isinstance(shop, dict) else None
+
+        return AmazonEnvStatusResponse(
+            configured=True,
+            valid=True,
+            marketplace_id=amazon_creds.marketplace_id,
+            seller_name=seller_name,
+            error=None,
+        )
+
+    except Exception as e:
+        return AmazonEnvStatusResponse(
+            configured=True,
+            valid=False,
+            marketplace_id=amazon_creds.marketplace_id,
+            seller_name=None,
             error=str(e),
         )
 

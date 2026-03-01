@@ -681,12 +681,14 @@ def _persist_session_context(session_id: str, source_info: "DataSourceInfo | Non
         source_type = getattr(source_info, "source_type", None) or ""
         row_count = getattr(source_info, "row_count", 0) or 0
 
-        # Determine source category (local vs shopify)
+        # Determine source category (local vs platform)
         ds_type: str | None = None
         if source_type in ("csv", "excel", "database"):
             ds_type = "local"
         elif source_type == "shopify":
             ds_type = "shopify"
+        elif source_type == "amazon":
+            ds_type = "amazon"
 
         with get_db_context() as db:
             if ds_type == "local" and file_path:

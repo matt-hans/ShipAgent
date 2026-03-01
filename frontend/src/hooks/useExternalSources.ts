@@ -13,6 +13,7 @@ import {
   testConnection,
   listPlatformOrders,
   getShopifyEnvStatus,
+  getAmazonEnvStatus,
 } from '@/lib/api';
 import type {
   PlatformConnection,
@@ -20,6 +21,7 @@ import type {
   ExternalOrder,
   ConnectionStatus,
   ShopifyEnvStatus,
+  AmazonEnvStatus,
 } from '@/types/api';
 
 /** State for a single platform. */
@@ -55,6 +57,10 @@ export interface ExternalSourcesState {
   shopifyEnvStatus: ShopifyEnvStatus | null;
   /** True while checking Shopify environment status. */
   isCheckingEnv: boolean;
+  /** Amazon environment status (auto-detected credentials). */
+  amazonEnvStatus: AmazonEnvStatus | null;
+  /** True while checking Amazon environment status. */
+  isCheckingAmazonEnv: boolean;
 }
 
 /** Hook return type. */
@@ -96,10 +102,13 @@ export interface UseExternalSourcesReturn {
 
   /** Check Shopify environment status. */
   checkShopifyEnv: () => Promise<ShopifyEnvStatus | null>;
+
+  /** Check Amazon environment status. */
+  checkAmazonEnv: () => Promise<AmazonEnvStatus | null>;
 }
 
 /** All supported platforms. */
-const ALL_PLATFORMS: PlatformType[] = ['shopify', 'woocommerce', 'sap', 'oracle'];
+const ALL_PLATFORMS: PlatformType[] = ['shopify', 'amazon', 'woocommerce', 'sap', 'oracle'];
 
 /** Initial state for all platforms (constant, created once). */
 const INITIAL_PLATFORMS: Record<PlatformType, PlatformState> = ALL_PLATFORMS.reduce(
@@ -153,6 +162,8 @@ export function useExternalSources(): UseExternalSourcesReturn {
     error: null,
     shopifyEnvStatus: null,
     isCheckingEnv: false,
+    amazonEnvStatus: null,
+    isCheckingAmazonEnv: false,
   });
 
   // Helper to update a single platform's state
@@ -182,6 +193,7 @@ export function useExternalSources(): UseExternalSourcesReturn {
       // Reset all platforms first
       const newPlatforms: Record<PlatformType, PlatformState> = {
         shopify: { ...initialPlatformState },
+        amazon: { ...initialPlatformState },
         woocommerce: { ...initialPlatformState },
         sap: { ...initialPlatformState },
         oracle: { ...initialPlatformState },
@@ -399,6 +411,52 @@ export function useExternalSources(): UseExternalSourcesReturn {
     checkShopifyEnv();
   }, [checkShopifyEnv]);
 
+  // Check Amazon environment status
+  const checkAmazonEnv = useCallback(async (): Promise<AmazonEnvStatus | null> => {
+    setState((prev) => ({ ...prev, isCheckingAmazonEnv: true }));
+
+    try {
+      const status = await getAmazonEnvStatus();
+      setState((prev) => ({
+        ...prev,
+        amazonEnvStatus: status,
+        isCheckingAmazonEnv: false,
+      }));
+
+      if (status.valid) {
+        updatePlatformState('amazon', {
+          connection: {
+            platform: 'amazon',
+            store_url: null,
+            status: 'connected',
+            last_connected: new Date().toISOString(),
+            error_message: null,
+          },
+        });
+      }
+
+      return status;
+    } catch (err) {
+      setState((prev) => ({
+        ...prev,
+        amazonEnvStatus: {
+          configured: false,
+          valid: false,
+          marketplace_id: null,
+          seller_name: null,
+          error: err instanceof Error ? err.message : 'Failed to check Amazon env',
+        },
+        isCheckingAmazonEnv: false,
+      }));
+      return null;
+    }
+  }, [updatePlatformState]);
+
+  // Check Amazon environment status on mount
+  useEffect(() => {
+    checkAmazonEnv();
+  }, [checkAmazonEnv]);
+
   return {
     state,
     connect,
@@ -409,6 +467,7 @@ export function useExternalSources(): UseExternalSourcesReturn {
     getConnectionStatus,
     isConnected,
     checkShopifyEnv,
+    checkAmazonEnv,
   };
 }
 
