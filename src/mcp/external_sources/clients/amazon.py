@@ -301,7 +301,31 @@ class AmazonClient(PlatformClient):
         """Tracking write-back is not yet implemented in compatibility mode."""
         return False
 
-    def _normalize_order(self, order: dict[str, Any]) -> ExternalOrder:
+    # Weight unit conversion factors to grams
+    _WEIGHT_TO_GRAMS: dict[str, float] = {
+        "grams": 1.0,
+        "g": 1.0,
+        "kilograms": 1000.0,
+        "kg": 1000.0,
+        "ounces": 28.3495,
+        "oz": 28.3495,
+        "pounds": 453.592,
+        "lb": 453.592,
+        "lbs": 453.592,
+    }
+
+    def _normalize_order(
+        self, order: dict[str, Any], items: list[dict[str, Any]] | None = None
+    ) -> ExternalOrder:
+        """Normalize an Amazon order into ExternalOrder format.
+
+        Args:
+            order: Raw order dict from SP-API.
+            items: Optional list of order item dicts for enrichment.
+
+        Returns:
+            Normalized ExternalOrder.
+        """
         shipping = order.get("ShippingAddress") or {}
         buyer = order.get("BuyerInfo") or {}
         order_total = order.get("OrderTotal") or {}
@@ -311,6 +335,50 @@ class AmazonClient(PlatformClient):
 
         status = str(order.get("OrderStatus") or fulfillment_status)
         created_at = str(order.get("PurchaseDate") or "")
+
+        # Normalize line items when available
+        normalized_items: list[dict[str, Any]] = []
+        total_weight_grams: float | None = None
+        item_count: int | None = None
+
+        if items:
+            weight_sum = 0.0
+            has_weight = False
+            qty_sum = 0
+
+            for item in items:
+                qty = int(item.get("QuantityOrdered") or 1)
+                qty_sum += qty
+                price_info = item.get("ItemPrice") or {}
+
+                normalized_items.append({
+                    "id": str(item.get("OrderItemId", "")),
+                    "title": item.get("Title", ""),
+                    "quantity": qty,
+                    "price": str(price_info.get("Amount", "0.00")),
+                    "sku": item.get("SellerSKU", ""),
+                    "asin": item.get("ASIN", ""),
+                })
+
+                # Weight conversion
+                weight_info = item.get("ItemWeight") or {}
+                weight_val = weight_info.get("Value")
+                weight_unit = str(weight_info.get("Unit", "")).lower().strip()
+                if weight_val is not None and weight_unit:
+                    try:
+                        factor = self._WEIGHT_TO_GRAMS.get(weight_unit, 1.0)
+                        weight_sum += float(weight_val) * factor * qty
+                        has_weight = True
+                    except (ValueError, TypeError):
+                        pass
+
+            item_count = qty_sum if qty_sum > 0 else None
+            total_weight_grams = weight_sum if has_weight else None
+        else:
+            # Fallback: approximate item count from order-level fields
+            shipped = order.get("NumberOfItemsShipped") or 0
+            unshipped = order.get("NumberOfItemsUnshipped") or 0
+            item_count = (shipped + unshipped) or None
 
         return ExternalOrder(
             platform="amazon",
@@ -337,9 +405,9 @@ class AmazonClient(PlatformClient):
             financial_status=order.get("PaymentMethod"),
             fulfillment_status=fulfillment_status,
             tags=None,
-            total_weight_grams=None,
+            total_weight_grams=total_weight_grams,
             shipping_method=order.get("ShipmentServiceLevelCategory"),
-            item_count=(order.get("NumberOfItemsShipped") or 0) + (order.get("NumberOfItemsUnshipped") or 0),
+            item_count=item_count,
             customer_tags=None,
             customer_order_count=None,
             customer_total_spent=None,
@@ -355,6 +423,6 @@ class AmazonClient(PlatformClient):
                 "earliest_ship_date": order.get("EarliestShipDate"),
                 "latest_ship_date": order.get("LatestShipDate"),
             },
-            items=[],
+            items=normalized_items,
             raw_data=order,
         )

@@ -96,3 +96,89 @@ class TestFetchOrderItems:
             items = await client._fetch_order_items("ORDER-123")
 
         assert items == []
+
+
+class TestNormalizeOrderWithItems:
+    """Test _normalize_order with item enrichment."""
+
+    def test_normalize_with_items_populates_fields(self):
+        """Items are normalized into ExternalOrder.items with enrichment."""
+        client = AmazonClient()
+        client._marketplace_id = "ATVPDKIKX0DER"
+
+        order = {
+            "AmazonOrderId": "111-1234567-1234567",
+            "PurchaseDate": "2026-02-28T10:00:00Z",
+            "OrderStatus": "Unshipped",
+            "OrderTotal": {"Amount": "49.97", "CurrencyCode": "USD"},
+            "FulfillmentChannel": "MFN",
+            "ShippingAddress": {
+                "Name": "Jane Doe",
+                "AddressLine1": "123 Main St",
+                "City": "Springfield",
+                "StateOrRegion": "IL",
+                "PostalCode": "62701",
+                "CountryCode": "US",
+            },
+            "BuyerInfo": {"BuyerEmail": "jane@example.com"},
+            "ShipmentServiceLevelCategory": "Standard",
+            "NumberOfItemsShipped": 0,
+            "NumberOfItemsUnshipped": 3,
+        }
+
+        items = [
+            {
+                "OrderItemId": "item-1",
+                "Title": "Widget A",
+                "QuantityOrdered": 2,
+                "ItemPrice": {"Amount": "19.99", "CurrencyCode": "USD"},
+                "SellerSKU": "SKU-001",
+                "ASIN": "B00TEST123",
+                "ItemWeight": {"Value": "200", "Unit": "Grams"},
+                "ProductInfo": {"NumberOfItems": "1"},
+            },
+            {
+                "OrderItemId": "item-2",
+                "Title": "Widget B",
+                "QuantityOrdered": 1,
+                "ItemPrice": {"Amount": "9.99", "CurrencyCode": "USD"},
+                "SellerSKU": "SKU-002",
+                "ASIN": "B00TEST456",
+                "ItemWeight": {"Value": "0.5", "Unit": "Pounds"},
+            },
+        ]
+
+        result = client._normalize_order(order, items)
+
+        assert isinstance(result, ExternalOrder)
+        assert result.platform == "amazon"
+        assert result.order_id == "111-1234567-1234567"
+        assert len(result.items) == 2
+        assert result.items[0]["id"] == "item-1"
+        assert result.items[0]["sku"] == "SKU-001"
+        assert result.items[0]["asin"] == "B00TEST123"
+        assert result.items[0]["quantity"] == 2
+        assert result.item_count == 3  # 2 + 1
+        # Weight: (200g * 2) + (0.5 lb * 453.592 * 1) = 400 + 226.796 = ~626.8
+        assert result.total_weight_grams is not None
+        assert abs(result.total_weight_grams - 626.796) < 1.0
+
+    def test_normalize_without_items_backward_compatible(self):
+        """Passing no items preserves existing behavior."""
+        client = AmazonClient()
+        client._marketplace_id = "ATVPDKIKX0DER"
+
+        order = {
+            "AmazonOrderId": "222-1234567-1234567",
+            "PurchaseDate": "2026-02-28T10:00:00Z",
+            "OrderStatus": "Shipped",
+            "FulfillmentChannel": "AFN",
+            "ShippingAddress": {"Name": "Test", "AddressLine1": "456 Elm", "City": "Austin", "StateOrRegion": "TX", "PostalCode": "73301", "CountryCode": "US"},
+            "BuyerInfo": {},
+            "NumberOfItemsShipped": 2,
+            "NumberOfItemsUnshipped": 0,
+        }
+
+        result = client._normalize_order(order)
+        assert result.items == []
+        assert result.item_count == 2  # fallback to shipped + unshipped
