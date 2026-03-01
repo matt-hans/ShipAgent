@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import OrderedDict
 from typing import Any
 
 import httpx
@@ -21,6 +22,7 @@ class AmazonClient(PlatformClient):
 
     LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
     DEFAULT_MARKETPLACE_ID = "ATVPDKIKX0DER"
+    MAX_ITEMS_CACHE_SIZE = 500
 
     BASE_URLS = {
         "na": "https://sellingpartnerapi-na.amazon.com",
@@ -43,11 +45,18 @@ class AmazonClient(PlatformClient):
 
         self._access_token: str | None = None
         self._token_expires_at: float = 0.0
-        self._order_items_cache: dict[str, list[dict[str, Any]]] = {}
+        self._order_items_cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
 
     @property
     def platform_name(self) -> str:
         return "amazon"
+
+    def _cache_items(self, order_id: str, items: list[dict[str, Any]]) -> None:
+        """Store order items in bounded LRU cache, evicting oldest entries."""
+        self._order_items_cache[order_id] = items
+        self._order_items_cache.move_to_end(order_id)
+        while len(self._order_items_cache) > self.MAX_ITEMS_CACHE_SIZE:
+            self._order_items_cache.popitem(last=False)
 
     @staticmethod
     def _to_bool(value: Any) -> bool:
@@ -262,7 +271,7 @@ class AmazonClient(PlatformClient):
                         if filters.include_items:
                             items = await self._fetch_order_items(order_id)
                             if items:
-                                self._order_items_cache[order_id] = items
+                                self._cache_items(order_id, items)
                             # Rate limit: 1 req/sec for getOrderItems
                             await asyncio.sleep(1.0)
                         normalized_orders.append(self._normalize_order(order, items))
@@ -306,7 +315,7 @@ class AmazonClient(PlatformClient):
             order_id = str(payload.get("AmazonOrderId", ""))
             items = await self._fetch_order_items(order_id)
             if items:
-                self._order_items_cache[order_id] = items
+                self._cache_items(order_id, items)
             return self._normalize_order(payload, items)
         except Exception:
             return None
