@@ -878,6 +878,49 @@ class TestBatchEngineExternalWriteBack:
         assert result["write_back"]["status"] == "partial"
         mock_ext.update_tracking.assert_not_called()
 
+    async def test_amazon_write_back_routes_to_platform(
+        self, mock_ups_service, mock_db_session
+    ):
+        """Source type 'amazon' routes to ext.update_tracking(), not gw.write_back_batch()."""
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="TEST",
+        )
+        rows = [self._make_row(1, order_id="AMZ-1001")]
+
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"source_type": "amazon"}
+        )
+        mock_gw.write_back_batch = AsyncMock()
+
+        mock_ext = AsyncMock()
+        mock_ext.update_tracking = AsyncMock(
+            return_value={"success": True}
+        )
+
+        with patch(
+            "src.services.batch_engine.get_data_gateway",
+            new_callable=AsyncMock, return_value=mock_gw,
+        ), patch(
+            "src.services.batch_engine.get_external_sources_client",
+            new_callable=AsyncMock, return_value=mock_ext,
+        ):
+            result = await engine.execute(
+                job_id="job-amz-1", rows=rows,
+                shipper=self._make_shipper(),
+                write_back_enabled=True,
+            )
+
+        assert result["successful"] == 1
+        assert result["write_back"]["status"] == "success"
+        mock_ext.update_tracking.assert_called_once()
+        call_kwargs = mock_ext.update_tracking.call_args[1]
+        assert call_kwargs["platform"] == "amazon"
+        assert call_kwargs["order_id"] == "AMZ-1001"
+        mock_gw.write_back_batch.assert_not_called()
+
     async def test_local_write_back_unchanged_for_csv(
         self, mock_ups_service, mock_db_session
     ):

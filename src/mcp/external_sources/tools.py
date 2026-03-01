@@ -252,6 +252,7 @@ async def list_orders(
     status: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    include_items: bool = True,
 ) -> dict:
     """List orders from a connected platform.
 
@@ -306,6 +307,7 @@ async def list_orders(
         date_to=None,
         limit=limit,
         offset=offset,
+        include_items=include_items,
     )
 
     # Fetch orders through client

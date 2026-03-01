@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
 import { cn } from '@/lib/utils';
-import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows, saveArtifactMessage, reconnectSavedSource, getDataSourceStatus, getShopifyEnvStatus } from '@/lib/api';
+import { confirmJob, cancelJob, deleteJob, getJob, getMergedLabelsUrl, skipRows, saveArtifactMessage, reconnectSavedSource, getDataSourceStatus, getShopifyEnvStatus, getAmazonEnvStatus } from '@/lib/api';
 import { useConversation } from '@/hooks/useConversation';
 import type {
   Job,
@@ -508,6 +508,10 @@ export const CommandCenter = React.forwardRef<CommandCenterHandle, CommandCenter
     } else if (dsContext.type === 'shopify') {
       try {
         await getShopifyEnvStatus();
+      } catch { /* non-blocking */ }
+    } else if (dsContext.type === 'amazon') {
+      try {
+        await getAmazonEnvStatus();
       } catch { /* non-blocking */ }
     }
   }, [activeSourceType, dataSource, setDataSource, addMessage]);

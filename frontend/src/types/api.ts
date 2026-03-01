@@ -1027,7 +1027,7 @@ export interface CommandListResponse {
 
 /** Data source context persisted with a session for restoration. */
 export interface DataSourceContext {
-  type: 'local' | 'shopify' | null;
+  type: 'local' | 'shopify' | 'amazon' | null;
   source_type: string | null;
   saved_source_id: string | null;
   file_path: string | null;

@@ -258,14 +258,16 @@ class AmazonClient(PlatformClient):
                         if filters.status and str(order.get("OrderStatus", "")).lower() != str(filters.status).lower():
                             continue
                         order_id = str(order.get("AmazonOrderId", ""))
-                        items = await self._fetch_order_items(order_id)
-                        if items:
-                            self._order_items_cache[order_id] = items
+                        items: list[dict[str, Any]] | None = None
+                        if filters.include_items:
+                            items = await self._fetch_order_items(order_id)
+                            if items:
+                                self._order_items_cache[order_id] = items
+                            # Rate limit: 1 req/sec for getOrderItems
+                            await asyncio.sleep(1.0)
                         normalized_orders.append(self._normalize_order(order, items))
                         if len(normalized_orders) >= max_results:
                             break
-                        # Rate limit: 1 req/sec for getOrderItems
-                        await asyncio.sleep(1.0)
 
                     next_token = payload.get("NextToken")
                     if not next_token:
