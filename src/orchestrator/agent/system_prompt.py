@@ -436,13 +436,36 @@ def build_system_prompt(
     else:
         from src.services.runtime_credentials import resolve_shopify_credentials
         shopify_configured = resolve_shopify_credentials() is not None
-        if shopify_configured:
+        amazon_configured = all(
+            os.environ.get(key, "").strip()
+            for key in (
+                "AMAZON_SP_API_CLIENT_ID",
+                "AMAZON_SP_API_CLIENT_SECRET",
+                "AMAZON_SP_API_REFRESH_TOKEN",
+            )
+        )
+        if shopify_configured and amazon_configured:
+            data_section = (
+                "No data source imported yet, but Shopify and Amazon credentials are configured "
+                "in the environment.\n"
+                "You MUST call connect_shopify and connect_amazon (in that order) before "
+                "batch shipping. Do not ask for CSV/database first."
+            )
+        elif shopify_configured:
             data_section = (
                 "No data source imported yet, but Shopify credentials are configured "
                 "in the environment.\n"
                 "You MUST call the connect_shopify tool FIRST to import Shopify orders "
                 "before doing anything else. Do not ask the user to connect a source — "
                 "just call connect_shopify immediately."
+            )
+        elif amazon_configured:
+            data_section = (
+                "No data source imported yet, but Amazon credentials are configured "
+                "in the environment.\n"
+                "You MUST call the connect_amazon tool FIRST to import Amazon orders "
+                "before doing anything else. Do not ask the user to connect a source — "
+                "just call connect_amazon immediately."
             )
         else:
             data_section = (

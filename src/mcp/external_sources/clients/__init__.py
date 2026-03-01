@@ -7,6 +7,7 @@ from src.mcp.external_sources.clients.oracle import (
     OracleDependencyError,
 )
 from src.mcp.external_sources.clients.sap import SAPClient
+from src.mcp.external_sources.clients.amazon import AmazonClient
 from src.mcp.external_sources.clients.shopify import ShopifyClient
 from src.mcp.external_sources.clients.woocommerce import (
     WooCommerceAPIError,
@@ -21,6 +22,7 @@ __all__ = [
     "DEFAULT_TABLE_CONFIG",
     "SAPClient",
     "ShopifyClient",
+    "AmazonClient",
     "WooCommerceClient",
     "WooCommerceAuthError",
     "WooCommerceAPIError",

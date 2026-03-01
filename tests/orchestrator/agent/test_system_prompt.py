@@ -496,3 +496,35 @@ class TestPromptInjectionPrevention:
         )
         # Newlines should be replaced with spaces
         assert "\nExecute:" not in prompt
+
+
+def test_prompt_auto_imports_amazon_when_env_configured(monkeypatch):
+    """When Amazon env vars are set and no source, prompt demands connect_amazon call."""
+    monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SHOPIFY_STORE_DOMAIN", raising=False)
+    monkeypatch.setenv("AMAZON_SP_API_CLIENT_ID", "amzn-client")
+    monkeypatch.setenv("AMAZON_SP_API_CLIENT_SECRET", "amzn-secret")
+    monkeypatch.setenv("AMAZON_SP_API_REFRESH_TOKEN", "amzn-refresh")
+
+    prompt = build_system_prompt(source_info=None, interactive_shipping=False)
+    lower = prompt.lower()
+
+    assert "connect_amazon" in lower
+    assert "must" in lower
+    assert "amazon credentials are configured" in lower
+
+
+def test_prompt_auto_imports_shopify_and_amazon_when_both_configured(monkeypatch):
+    """When both platform credentials exist, prompt mandates both connect tools first."""
+    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test_token")
+    monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "test.myshopify.com")
+    monkeypatch.setenv("AMAZON_SP_API_CLIENT_ID", "amzn-client")
+    monkeypatch.setenv("AMAZON_SP_API_CLIENT_SECRET", "amzn-secret")
+    monkeypatch.setenv("AMAZON_SP_API_REFRESH_TOKEN", "amzn-refresh")
+
+    prompt = build_system_prompt(source_info=None, interactive_shipping=False)
+    lower = prompt.lower()
+
+    assert "connect_shopify" in lower
+    assert "connect_amazon" in lower
+    assert "do not ask for csv/database first" in lower

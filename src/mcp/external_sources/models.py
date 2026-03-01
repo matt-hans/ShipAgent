@@ -10,6 +10,7 @@ class PlatformType(str, Enum):
     """Supported external platforms."""
 
     SHOPIFY = "shopify"
+    AMAZON = "amazon"
     WOOCOMMERCE = "woocommerce"
     SAP = "sap"
     ORACLE = "oracle"

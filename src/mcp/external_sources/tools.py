@@ -43,6 +43,9 @@ def _create_platform_client(platform: str):
     if platform == "shopify":
         from src.mcp.external_sources.clients.shopify import ShopifyClient
         return ShopifyClient()
+    elif platform == "amazon":
+        from src.mcp.external_sources.clients.amazon import AmazonClient
+        return AmazonClient()
     elif platform == "woocommerce":
         from src.mcp.external_sources.clients.woocommerce import WooCommerceClient
         return WooCommerceClient()

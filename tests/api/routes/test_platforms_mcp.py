@@ -236,3 +236,46 @@ class TestShopifyEnvStatusUsesGateway:
         assert response.status_code == 200
         data = response.json()
         assert data["configured"] is False
+
+
+class TestAmazonActivationRoute:
+    """Verify Amazon compatibility activation endpoint wiring."""
+
+    @patch("src.services.amazon_activation_service.activate_amazon_as_data_source")
+    def test_amazon_activate_route_success(self, mock_activate):
+        """POST /platforms/amazon/activate returns normalized success payload."""
+        from fastapi.testclient import TestClient
+
+        from src.api.main import app
+
+        mock_activate.return_value = {
+            "row_count": 7,
+            "source_type": "amazon",
+            "columns": [{"name": "order_id", "type": "VARCHAR"}],
+        }
+
+        client = TestClient(app)
+        response = client.post("/api/v1/platforms/amazon/activate")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["row_count"] == 7
+        assert payload["source_type"] == "amazon"
+
+    @patch("src.services.amazon_activation_service.activate_amazon_as_data_source")
+    def test_amazon_activate_route_failure(self, mock_activate):
+        """POST /platforms/amazon/activate surfaces activation failure cleanly."""
+        from fastapi.testclient import TestClient
+
+        from src.api.main import app
+
+        mock_activate.side_effect = Exception("amazon auth failed")
+
+        client = TestClient(app)
+        response = client.post("/api/v1/platforms/amazon/activate")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is False
+        assert "amazon auth failed" in payload["error"].lower()
