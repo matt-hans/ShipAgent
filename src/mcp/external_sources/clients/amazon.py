@@ -106,6 +106,58 @@ class AmazonClient(PlatformClient):
         ok = await self._refresh_access_token()
         return self._access_token if ok else None
 
+    async def _fetch_order_items(self, order_id: str) -> list[dict[str, Any]]:
+        """Fetch order items from SP-API getOrderItems endpoint.
+
+        Args:
+            order_id: Amazon order ID.
+
+        Returns:
+            List of raw order item dicts from SP-API. Empty on failure.
+        """
+        if not self._authenticated:
+            return []
+
+        token = await self._get_access_token()
+        if not token:
+            return []
+
+        headers = {
+            "x-amz-access-token": token,
+            "content-type": "application/json",
+        }
+
+        all_items: list[dict[str, Any]] = []
+        next_token: str | None = None
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                while True:
+                    params: dict[str, str] = {}
+                    if next_token:
+                        params["NextToken"] = next_token
+
+                    response = await client.get(
+                        f"{self._base_url()}/orders/v0/orders/{order_id}/orderItems",
+                        headers=headers,
+                        params=params,
+                    )
+
+                    if response.status_code != 200:
+                        break
+
+                    payload = response.json().get("payload", {})
+                    items = payload.get("OrderItems", [])
+                    all_items.extend(items)
+
+                    next_token = payload.get("NextToken")
+                    if not next_token:
+                        break
+        except Exception:
+            return []
+
+        return all_items
+
     async def authenticate(self, credentials: dict) -> bool:
         self._client_id = str(credentials.get("client_id", "")).strip() or None
         self._client_secret = str(credentials.get("client_secret", "")).strip() or None
