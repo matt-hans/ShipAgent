@@ -188,6 +188,34 @@ async def activate_shopify() -> ShopifyActivateResponse:
         )
 
 
+
+@router.post("/amazon/activate", response_model=ShopifyActivateResponse)
+async def activate_amazon() -> ShopifyActivateResponse:
+    """Activate Amazon as the active data source."""
+    from src.services.amazon_activation_service import (
+        AmazonActivationError,
+        activate_amazon_as_data_source,
+    )
+
+    try:
+        result = await activate_amazon_as_data_source()
+        return ShopifyActivateResponse(
+            success=True,
+            row_count=result["row_count"],
+            source_type=result["source_type"],
+            columns=result.get("columns", []),
+        )
+    except AmazonActivationError as exc:
+        return ShopifyActivateResponse(
+            success=False,
+            error=str(exc),
+        )
+    except Exception as exc:
+        return ShopifyActivateResponse(
+            success=False,
+            error=f"Unexpected error during Amazon activation: {exc}",
+        )
+
 @router.post("/{platform}/connect", response_model=ConnectPlatformResponse)
 async def connect_platform(
     platform: str,

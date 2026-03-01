@@ -28,6 +28,7 @@ from src.orchestrator.agent.tools.core import (  # noqa: E402
 )
 from src.orchestrator.agent.tools.data import (  # noqa: E402
     confirm_filter_interpretation_tool,
+    connect_amazon_tool,
     connect_shopify_tool,
     fetch_rows_tool,
     get_platform_status_tool,
@@ -299,6 +300,19 @@ def get_all_tool_definitions(
                 "properties": {},
             },
             "handler": _bind_bridge(connect_shopify_tool, bridge),
+        },
+        {
+            "name": "connect_amazon",
+            "description": (
+                "Connect to Amazon using env credentials, fetch orders, "
+                "and import them as the active data source. Call this when "
+                "no data source is active and Amazon env vars are configured."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+            },
+            "handler": _bind_bridge(connect_amazon_tool, bridge),
         },
         # ---------------------------------------------------------------
         # UPS MCP v2 — Pickup tools

@@ -2057,3 +2057,74 @@ def test_python_command_prefers_venv():
 
         result = _get_python_command()
         assert result == _VENV_PYTHON
+
+
+@pytest.mark.asyncio
+async def test_connect_amazon_tool_success():
+    """connect_amazon returns success payload when activation succeeds."""
+    with patch(
+        "src.services.amazon_activation_service.activate_amazon_as_data_source",
+        new=AsyncMock(return_value={"message": "ok", "row_count": 12}),
+    ):
+        from src.orchestrator.agent.tools.data import connect_amazon_tool
+
+        result = await connect_amazon_tool({})
+
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["platform"] == "amazon"
+    assert payload["orders_imported"] == 12
+
+
+@pytest.mark.asyncio
+async def test_connect_amazon_tool_activation_error():
+    """connect_amazon returns _err when activation fails."""
+    from src.services.amazon_activation_service import AmazonActivationError
+
+    with patch(
+        "src.services.amazon_activation_service.activate_amazon_as_data_source",
+        new=AsyncMock(side_effect=AmazonActivationError("bad amazon creds", step="credentials")),
+    ):
+        from src.orchestrator.agent.tools.data import connect_amazon_tool
+
+        result = await connect_amazon_tool({})
+
+    assert result["isError"] is True
+    assert "bad amazon creds" in result["content"][0]["text"]
+
+
+def test_connect_amazon_tool_registered_batch_mode_only():
+    """connect_amazon appears in batch mode and is filtered from interactive mode."""
+    batch_defs = get_all_tool_definitions(interactive_shipping=False)
+    interactive_defs = get_all_tool_definitions(interactive_shipping=True)
+
+    assert "connect_amazon" in {d["name"] for d in batch_defs}
+    assert "connect_amazon" not in {d["name"] for d in interactive_defs}
+
+
+@pytest.mark.asyncio
+async def test_get_platform_status_reports_amazon_configuration_from_env():
+    """Platform status includes Amazon configured flag from env vars."""
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "AMAZON_SP_API_CLIENT_ID": "amzn-client",
+                "AMAZON_SP_API_CLIENT_SECRET": "amzn-secret",
+                "AMAZON_SP_API_REFRESH_TOKEN": "amzn-refresh",
+                "AMAZON_SP_API_MARKETPLACE_ID": "ATVPDKIKX0DER",
+            },
+            clear=False,
+        ),
+        patch("src.orchestrator.agent.tools.data.get_data_gateway") as mock_gw_fn,
+    ):
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info.return_value = None
+        mock_gw_fn.return_value = mock_gw
+
+        result = await get_platform_status_tool({})
+
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["platforms"]["amazon"]["configured"] is True
+    assert payload["platforms"]["amazon"]["connected"] is False
