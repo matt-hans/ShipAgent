@@ -104,11 +104,9 @@ class TestShopifyActivateEndpoint:
         assert body["row_count"] == 0
 
     def test_get_does_not_match_activate(self, client: TestClient):
-        """GET /platforms/shopify/activate hits the orders catch-all, not activate."""
+        """GET /platforms/shopify/activate does not invoke the activate handler."""
         # The activate endpoint is POST-only. A GET request to the same path
-        # will match /{platform}/orders with platform="shopify" and path="activate",
-        # which is not the activate endpoint. This test documents that behavior.
+        # returns 405 (Method Not Allowed) since the route is registered as POST.
+        # The important thing is POST works correctly.
         response = client.get("/api/v1/platforms/shopify/activate")
-        # It won't be 405 because FastAPI's catch-all /{platform}/orders route
-        # matches first. The important thing is POST works correctly.
-        assert response.status_code != 405 or response.status_code == 200
+        assert response.status_code in (404, 405)
