@@ -116,6 +116,10 @@ class EDIAdapter(BaseSourceAdapter):
         self, conn: "DuckDBPyConnection", orders: list[NormalizedOrder]
     ) -> None:
         """Load normalized orders into DuckDB table."""
+        # Drop any VIEW (from external_orders activation) before creating TABLE
+        from src.mcp.data_source.utils import drop_imported_data_view
+        drop_imported_data_view(conn)
+
         # Create table with normalized schema
         # _source_row_num BIGINT matches the standard used by all other adapters
         # (SOURCE_ROW_NUM_COLUMN from models.py) for deterministic row tracking.

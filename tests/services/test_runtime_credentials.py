@@ -39,7 +39,6 @@ def reset_fallback_flags():
     runtime_credentials._ups_fallback_warned = False
     runtime_credentials._shopify_fallback_warned = False
     runtime_credentials._ups_dual_env_warned = False
-    runtime_credentials._amazon_fallback_warned = False
     yield
 
 
@@ -237,97 +236,6 @@ class TestResolveShopifyCredentials:
         finally:
             os.environ.pop("SHOPIFY_ACCESS_TOKEN", None)
             os.environ.pop("SHOPIFY_STORE_DOMAIN", None)
-
-
-class TestResolveAmazonCredentials:
-
-    def test_amazon_db_credentials(self, db_session, key_dir):
-        """DB-stored Amazon credentials are returned."""
-        from src.services.connection_service import ConnectionService
-        from src.services.runtime_credentials import resolve_amazon_credentials
-
-        service = ConnectionService(db=db_session, key_dir=key_dir)
-        service.save_connection(
-            provider="amazon", auth_mode="sp_api",
-            credentials={
-                "client_id": "db-client",
-                "client_secret": "db-secret",
-                "refresh_token": "db-refresh",
-                "marketplace_id": "ATVPDKIKX0DER",
-            },
-            metadata={"marketplace_id": "ATVPDKIKX0DER"},
-            display_name="Amazon US",
-        )
-        result = resolve_amazon_credentials(marketplace_id="ATVPDKIKX0DER", db=db_session, key_dir=key_dir)
-        assert result is not None
-        assert result.client_id == "db-client"
-        assert result.refresh_token == "db-refresh"
-
-    def test_amazon_env_fallback(self, db_session, key_dir):
-        """Resolver falls back to Amazon env vars when no DB row exists."""
-        from src.services.runtime_credentials import resolve_amazon_credentials
-
-        os.environ["AMAZON_SP_API_CLIENT_ID"] = "env-client"
-        os.environ["AMAZON_SP_API_CLIENT_SECRET"] = "env-secret"
-        os.environ["AMAZON_SP_API_REFRESH_TOKEN"] = "env-refresh"
-        os.environ["AMAZON_SP_API_MARKETPLACE_ID"] = "A2EUQ1WTGCTBG2"
-        os.environ["AMAZON_SP_API_SANDBOX"] = "true"
-        try:
-            result = resolve_amazon_credentials(db=db_session, key_dir=key_dir)
-            assert result is not None
-            assert result.client_id == "env-client"
-            assert result.marketplace_id == "A2EUQ1WTGCTBG2"
-            assert result.sandbox is True
-        finally:
-            os.environ.pop("AMAZON_SP_API_CLIENT_ID", None)
-            os.environ.pop("AMAZON_SP_API_CLIENT_SECRET", None)
-            os.environ.pop("AMAZON_SP_API_REFRESH_TOKEN", None)
-            os.environ.pop("AMAZON_SP_API_MARKETPLACE_ID", None)
-            os.environ.pop("AMAZON_SP_API_SANDBOX", None)
-
-    def test_amazon_none_when_missing(self, db_session, key_dir):
-        """Resolver returns None when DB and env are unavailable."""
-        from src.services.runtime_credentials import resolve_amazon_credentials
-
-        os.environ.pop("AMAZON_SP_API_CLIENT_ID", None)
-        os.environ.pop("AMAZON_SP_API_CLIENT_SECRET", None)
-        os.environ.pop("AMAZON_SP_API_REFRESH_TOKEN", None)
-        os.environ.pop("AMAZON_SP_API_MARKETPLACE_ID", None)
-        result = resolve_amazon_credentials(db=db_session, key_dir=key_dir)
-        assert result is None
-
-    def test_amazon_deterministic_default(self, db_session, key_dir):
-        """When marketplace_id is omitted, first connection by key is returned."""
-        from src.services.connection_service import ConnectionService
-        from src.services.runtime_credentials import resolve_amazon_credentials
-
-        service = ConnectionService(db=db_session, key_dir=key_dir)
-        service.save_connection(
-            provider="amazon", auth_mode="sp_api",
-            credentials={
-                "client_id": "us-client",
-                "client_secret": "us-secret",
-                "refresh_token": "us-refresh",
-                "marketplace_id": "ATVPDKIKX0DER",
-            },
-            metadata={"marketplace_id": "ATVPDKIKX0DER"},
-            display_name="Amazon US",
-        )
-        service.save_connection(
-            provider="amazon", auth_mode="sp_api",
-            credentials={
-                "client_id": "ca-client",
-                "client_secret": "ca-secret",
-                "refresh_token": "ca-refresh",
-                "marketplace_id": "A2EUQ1WTGCTBG2",
-            },
-            metadata={"marketplace_id": "A2EUQ1WTGCTBG2"},
-            display_name="Amazon CA",
-        )
-
-        result = resolve_amazon_credentials(db=db_session, key_dir=key_dir)
-        assert result is not None
-        assert result.marketplace_id == "A2EUQ1WTGCTBG2"
 
 
 class TestResolverAutoAcquiresDB:

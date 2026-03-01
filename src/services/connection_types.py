@@ -47,12 +47,9 @@ CREDENTIAL_SCHEMAS: dict[str, dict[str, dict[str, int]]] = {
         "required": {
             "client_id": 1024,
             "client_secret": 1024,
-            "refresh_token": 4096,
-        },
-        "optional": {
             "marketplace_id": 64,
-            "sandbox": 8,
         },
+        "optional": {"refresh_token": 4096},
     },
 }
 
@@ -91,13 +88,16 @@ class ShopifyClientCredentials:
 
 @dataclass(frozen=True)
 class AmazonSPAPICredentials:
-    """Typed credentials for Amazon Selling Partner API."""
+    """Typed credentials for Amazon Selling Partner API.
+
+    refresh_token is optional — sandbox apps use only client_id + client_secret.
+    Production apps obtain a refresh_token via the seller OAuth authorization flow.
+    """
 
     client_id: str
     client_secret: str
-    refresh_token: str
-    marketplace_id: str = field(default="ATVPDKIKX0DER")
-    sandbox: bool = field(default=False)
+    marketplace_id: str
+    refresh_token: str = ""
 
 
 # --- Validation Error ---

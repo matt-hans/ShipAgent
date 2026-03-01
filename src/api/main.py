@@ -460,7 +460,11 @@ async def lifespan(app: FastAPI):
     global _startup_time, _watchdog_service
 
     from src.db.connection import get_db_context
-    from src.services.gateway_provider import shutdown_gateways
+    from src.services.gateway_provider import (
+        init_platform_singletons,
+        shutdown_gateways,
+        shutdown_platform_singletons,
+    )
     from src.services.job_service import JobService
 
     # --- Startup ---
@@ -621,6 +625,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error("Startup recovery failed (non-blocking): %s", e)
 
+    # Initialize platform singletons (registry, gateway, activation service)
+    try:
+        await init_platform_singletons()
+        logger.info("Platform singletons ready")
+    except Exception as e:
+        logger.warning("Platform singleton init failed (non-blocking): %s", e)
+
     # Start watchdog if configured
     config_path = os.environ.get("SHIPAGENT_CONFIG_PATH")
     if config_path:
@@ -659,6 +670,7 @@ async def lifespan(app: FastAPI):
 
     await preview.shutdown_batch_runtime()
     await conversations.shutdown_conversation_runtime()
+    await shutdown_platform_singletons()
     await shutdown_gateways()
 
 

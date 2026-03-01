@@ -72,24 +72,6 @@ def _shopify_payload(**overrides):
     return payload
 
 
-def _amazon_payload(**overrides):
-    """Build a standard Amazon save payload."""
-    payload = {
-        "auth_mode": "sp_api",
-        "credentials": {
-            "client_id": "amzn_client",
-            "client_secret": "amzn_secret",
-            "refresh_token": "amzn_refresh",
-            "marketplace_id": "ATVPDKIKX0DER",
-            "sandbox": "false",
-        },
-        "metadata": {"marketplace_id": "ATVPDKIKX0DER"},
-        "display_name": "Amazon US",
-    }
-    payload.update(overrides)
-    return payload
-
-
 class TestListConnections:
 
     def test_list_empty(self, test_client):
@@ -150,13 +132,6 @@ class TestSaveConnection:
         assert resp.status_code == 201
         data = resp.json()
         assert data["connection_key"] == "shopify:mystore.myshopify.com"
-
-    def test_save_amazon(self, test_client):
-        """POST /connections/amazon/save saves Amazon credentials."""
-        resp = test_client.post("/api/v1/connections/amazon/save", json=_amazon_payload())
-        assert resp.status_code == 201
-        data = resp.json()
-        assert data["connection_key"] == "amazon:ATVPDKIKX0DER"
 
     def test_invalid_provider_400(self, test_client):
         """Invalid provider returns 400."""

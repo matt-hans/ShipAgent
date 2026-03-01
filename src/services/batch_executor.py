@@ -58,35 +58,17 @@ async def get_shipper_for_job(job: Job) -> dict:
         logger.info("Using env shipper for local data source job %s", job.id)
         return build_shipper()
 
-    # Tier 3: Shopify shop address when no local source is active
+    # Tier 3: Platform registry check when no local source is active
     try:
-        shopify_token = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-        shopify_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
-        if shopify_token and shopify_domain:
-            from src.services.gateway_provider import get_external_sources_client
-            ext = await get_external_sources_client()
-            connections = await ext.list_connections()
-            shopify_connected = any(
-                (c.get("platform") if isinstance(c, dict) else getattr(c, "platform", None)) == "shopify"
-                and (c.get("status") if isinstance(c, dict) else getattr(c, "status", None)) == "connected"
-                for c in connections.get("connections", [])
-            )
-            if not shopify_connected:
-                result = await ext.connect_platform(
-                    platform="shopify",
-                    credentials={"access_token": shopify_token},
-                    store_url=shopify_domain,
-                )
-                shopify_connected = result.get("success", False)
-            if shopify_connected:
-                shop_result = await ext.get_shop_info("shopify")
-                if shop_result.get("success"):
-                    shop_info = shop_result.get("shop", {})
-                    if shop_info:
-                        logger.info("Using shipper from Shopify store: %s", shop_info.get("name"))
-                        return build_shipper(shop_info)
+        from src.services.gateway_provider import get_platform_registry
+        registry = get_platform_registry()
+        summaries = registry.get_platforms_summary()
+        for s in summaries:
+            if s.connection_status == "connected":
+                logger.info("Using env shipper for connected platform: %s", s.platform_id)
+                return build_shipper()
     except Exception as e:
-        logger.warning("Failed to get shop info from Shopify: %s", e)
+        logger.warning("Failed to check platform registry for shipper: %s", e)
 
     # Final fallback: env-based shipper
     logger.info("Using env shipper (no local source, no Shopify) for job %s", job.id)

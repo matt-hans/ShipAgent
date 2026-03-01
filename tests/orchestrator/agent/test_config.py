@@ -193,12 +193,12 @@ class TestUPSMCPConfig:
 class TestCreateMCPServersConfig:
     """Tests for the combined MCP servers configuration."""
 
-    def test_returns_dict_with_data_and_external(self):
-        """Should always return config for data and external servers."""
+    def test_returns_dict_with_data(self):
+        """Should always return config for data server (external removed in federated arch)."""
         config = create_mcp_servers_config()
         assert isinstance(config, dict)
         assert "data" in config
-        assert "external" in config
+        assert "external" not in config
 
     def test_includes_ups_when_credentials_available(self, monkeypatch):
         """Should include UPS config when credentials are set."""
@@ -222,23 +222,10 @@ class TestCreateMCPServersConfig:
         assert "args" in data_config
         assert "env" in data_config
 
-    def test_external_config_is_valid(self):
-        """External Sources config should have required keys."""
-        config = create_mcp_servers_config()
-        external_config = config["external"]
-        assert "command" in external_config
-        assert "args" in external_config
-        assert "env" in external_config
-
     def test_data_uses_preferred_python(self):
         """Data server should use the preferred Python command."""
         config = create_mcp_servers_config()
         assert config["data"]["command"] == _get_python_command()
-
-    def test_external_uses_preferred_python(self):
-        """External Sources server should use the preferred Python command."""
-        config = create_mcp_servers_config()
-        assert config["external"]["command"] == _get_python_command()
 
     def test_ups_uses_preferred_python(self, monkeypatch):
         """UPS server should use the preferred Python command."""

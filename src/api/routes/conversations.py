@@ -21,6 +21,7 @@ Endpoints:
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -77,6 +78,7 @@ if TYPE_CHECKING:
     from src.services.data_source_mcp_client import DataSourceInfo
 
 logger = logging.getLogger(__name__)
+PROMPT_CONTEXT_VERSION = "2026-02-28-platform-context-v2"
 
 
 def _resolve_agent_model() -> str | None:
@@ -217,7 +219,20 @@ async def _ensure_agent(
     from src.orchestrator.agent.system_prompt import build_system_prompt
 
     source_hash = _compute_source_hash(source_info)
-    combined_hash = f"{source_hash}|interactive={session.interactive_shipping}"
+    from src.services.conversation_handler import (
+        _get_active_platform_summaries,
+        _load_prior_conversation,
+    )
+
+    # Include platform context hash to force prompt rebuild when activation state changes.
+    platform_summaries = _get_active_platform_summaries()
+    platforms_hash = hashlib.sha256(
+        json.dumps(platform_summaries, sort_keys=True, default=str).encode(),
+    ).hexdigest()[:8]
+    combined_hash = (
+        f"v={PROMPT_CONTEXT_VERSION}|{source_hash}|interactive={session.interactive_shipping}"
+        f"|platforms={platforms_hash}"
+    )
 
     # Reuse existing agent if config hasn't changed
     if session.agent is not None and session.agent_source_hash == combined_hash:
@@ -250,7 +265,6 @@ async def _ensure_agent(
             logger.warning("Failed to fetch column samples: %s", e)
 
     # Load prior conversation for resumed sessions
-    from src.services.conversation_handler import _load_prior_conversation
     prior_conversation = _load_prior_conversation(session.session_id)
 
     system_prompt = build_system_prompt(
@@ -258,6 +272,7 @@ async def _ensure_agent(
         interactive_shipping=session.interactive_shipping,
         column_samples=column_samples,
         prior_conversation=prior_conversation,
+        platform_summaries=platform_summaries if platform_summaries else None,
     )
     agent = OrchestrationAgent(
         system_prompt=system_prompt,
@@ -289,7 +304,10 @@ async def _prewarm_session_agent(session_id: str) -> None:
     try:
         async with session.lock:
             gw = await get_data_gateway()
-            source_info = await gw.get_source_info_typed()
+            from src.services.conversation_handler import (
+                resolve_source_info_with_platform_bootstrap,
+            )
+            source_info = await resolve_source_info_with_platform_bootstrap(gw)
             if source_info is None:
                 return
             rebuilt = await _ensure_agent(session, source_info)
@@ -432,7 +450,10 @@ async def _process_agent_message(
             from src.services.gateway_provider import get_data_gateway
 
             gw = await get_data_gateway()
-            source_info = await gw.get_source_info_typed()
+            from src.services.conversation_handler import (
+                resolve_source_info_with_platform_bootstrap,
+            )
+            source_info = await resolve_source_info_with_platform_bootstrap(gw)
             DecisionAuditService.update_run_source_signature(
                 run_id,
                 _build_source_signature(source_info),
