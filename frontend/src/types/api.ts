@@ -448,7 +448,7 @@ export interface AuditLogEntry {
 // === External Platform Types ===
 
 /** Supported external platform identifiers. */
-export type PlatformType = 'shopify' | 'woocommerce' | 'sap' | 'oracle';
+export type PlatformType = 'shopify' | 'amazon' | 'woocommerce' | 'sap' | 'oracle';
 
 /** Platform connection status values. */
 export type ConnectionStatus = 'connected' | 'disconnected' | 'error' | 'authenticating';
@@ -713,6 +713,20 @@ export interface ShopifyEnvStatus {
   store_url: string | null;
   /** Shop name from Shopify API */
   store_name: string | null;
+  /** Error message if validation failed */
+  error: string | null;
+}
+
+/** Amazon environment status response. */
+export interface AmazonEnvStatus {
+  /** True if Amazon SP-API credentials are configured */
+  configured: boolean;
+  /** True if credentials validated against Amazon API */
+  valid: boolean;
+  /** Amazon marketplace ID */
+  marketplace_id: string | null;
+  /** Seller/marketplace name from Amazon */
+  seller_name: string | null;
   /** Error message if validation failed */
   error: string | null;
 }
