@@ -1086,7 +1086,7 @@ export interface CredentialStatus {
 
 // === Provider Connection Types ===
 
-export type ProviderType = 'ups' | 'shopify';
+export type ProviderType = 'ups' | 'shopify' | 'amazon';
 
 /**
  * Provider connection status.
@@ -1101,7 +1101,7 @@ export type ProviderConnectionStatus =
   | 'error'
   | 'needs_reconnect';
 
-export type ProviderAuthMode = 'client_credentials' | 'legacy_token' | 'client_credentials_shopify';
+export type ProviderAuthMode = 'client_credentials' | 'legacy_token' | 'client_credentials_shopify' | 'sp_api';
 
 export interface ProviderConnectionInfo {
   id: string;

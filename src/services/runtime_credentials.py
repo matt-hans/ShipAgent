@@ -16,6 +16,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from src.services.connection_types import (
+    AmazonSPAPICredentials,
     ShopifyClientCredentials,
     ShopifyLegacyCredentials,
     UPSCredentials,
@@ -32,6 +33,7 @@ _UPS_BASE_URLS = {
 _ups_fallback_warned: bool = False
 _shopify_fallback_warned: bool = False
 _ups_dual_env_warned: bool = False
+_amazon_fallback_warned: bool = False
 
 
 def _try_db_ups(db: Session, key_dir: str | None, environment: str) -> UPSCredentials | None:
@@ -326,4 +328,78 @@ def resolve_shopify_credentials(
     return ShopifyLegacyCredentials(
         access_token=env_token,
         store_domain=env_domain or (store_domain or ""),
+    )
+
+
+def _try_db_amazon(
+    db: Session, key_dir: str | None, marketplace_id: str | None,
+) -> AmazonSPAPICredentials | None:
+    """Attempt to resolve Amazon credentials from the DB."""
+    from src.services.connection_service import ConnectionService
+
+    service = ConnectionService(db=db, key_dir=key_dir)
+    if marketplace_id:
+        return service.get_amazon_credentials(marketplace_id)
+    return service.get_first_amazon_credentials()
+
+
+def resolve_amazon_credentials(
+    *,
+    marketplace_id: str | None = None,
+    db: Session | None = None,
+    key_dir: str | None = None,
+) -> AmazonSPAPICredentials | None:
+    """Resolve Amazon credentials with DB priority, env fallback."""
+    global _amazon_fallback_warned
+
+    # --- DB lookup (auto-acquire session when not provided) ---
+    if db is not None:
+        result = _try_db_amazon(db, key_dir, marketplace_id)
+        if result is not None:
+            return result
+    else:
+        try:
+            from src.db.connection import SessionLocal
+
+            auto_db = SessionLocal()
+            try:
+                result = _try_db_amazon(auto_db, key_dir, marketplace_id)
+                if result is not None:
+                    return result
+            finally:
+                auto_db.close()
+        except (ImportError, OperationalError) as exc:
+            logger.warning(
+                "Auto-acquire DB session failed (%s); proceeding to env fallback",
+                type(exc).__name__,
+            )
+        except Exception:
+            logger.warning(
+                "Unexpected error auto-acquiring DB session; proceeding to env fallback",
+                exc_info=True,
+            )
+
+    # --- Env fallback ---
+    client_id = os.environ.get("AMAZON_SP_API_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("AMAZON_SP_API_CLIENT_SECRET", "").strip()
+    refresh_token = os.environ.get("AMAZON_SP_API_REFRESH_TOKEN", "").strip()
+    marketplace = os.environ.get("AMAZON_SP_API_MARKETPLACE_ID", "").strip() or marketplace_id or "ATVPDKIKX0DER"
+    sandbox = os.environ.get("AMAZON_SP_API_SANDBOX", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    if not client_id or not client_secret or not refresh_token:
+        return None
+
+    if not _amazon_fallback_warned:
+        logger.warning(
+            "Amazon credentials resolved from env vars. "
+            "Configure in Settings for persistent storage.",
+        )
+        _amazon_fallback_warned = True
+
+    return AmazonSPAPICredentials(
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=refresh_token,
+        marketplace_id=str(marketplace).strip().upper() or "ATVPDKIKX0DER",
+        sandbox=sandbox,
     )

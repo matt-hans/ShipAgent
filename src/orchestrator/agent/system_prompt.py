@@ -434,16 +434,12 @@ def build_system_prompt(
     elif source_info is not None:
         data_section = _build_schema_section(source_info, column_samples=column_samples)
     else:
-        from src.services.runtime_credentials import resolve_shopify_credentials
-        shopify_configured = resolve_shopify_credentials() is not None
-        amazon_configured = all(
-            os.environ.get(key, "").strip()
-            for key in (
-                "AMAZON_SP_API_CLIENT_ID",
-                "AMAZON_SP_API_CLIENT_SECRET",
-                "AMAZON_SP_API_REFRESH_TOKEN",
-            )
+        from src.services.runtime_credentials import (
+            resolve_amazon_credentials,
+            resolve_shopify_credentials,
         )
+        shopify_configured = resolve_shopify_credentials() is not None
+        amazon_configured = resolve_amazon_credentials() is not None
         if shopify_configured and amazon_configured:
             data_section = (
                 "No data source imported yet, but Shopify and Amazon credentials are configured "

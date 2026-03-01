@@ -685,21 +685,6 @@ async def confirm_filter_interpretation_tool(
 
     return _ok(resolved_payload)
 
-
-
-
-def _amazon_env_configured() -> bool:
-    """Return True when required Amazon env vars are present."""
-    return all(
-        os.environ.get(key, "").strip()
-        for key in (
-            "AMAZON_SP_API_CLIENT_ID",
-            "AMAZON_SP_API_CLIENT_SECRET",
-            "AMAZON_SP_API_REFRESH_TOKEN",
-        )
-    )
-
-
 async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
     """Check which external platforms are configured/connected."""
     platforms: dict[str, Any] = {}
@@ -721,7 +706,10 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
         else:
             platforms["data_source"] = {"connected": False}
 
-        from src.services.runtime_credentials import resolve_shopify_credentials
+        from src.services.runtime_credentials import (
+            resolve_amazon_credentials,
+            resolve_shopify_credentials,
+        )
 
         shopify_creds = resolve_shopify_credentials()
         shopify_domain = shopify_creds.store_domain if shopify_creds else ""
@@ -731,11 +719,11 @@ async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
             "store_domain": shopify_domain or None,
         }
 
-        marketplace_id = os.environ.get("AMAZON_SP_API_MARKETPLACE_ID", "ATVPDKIKX0DER").strip() or "ATVPDKIKX0DER"
+        amazon_creds = resolve_amazon_credentials()
         platforms["amazon"] = {
             "connected": source_type == "amazon",
-            "configured": _amazon_env_configured(),
-            "marketplace_id": marketplace_id,
+            "configured": amazon_creds is not None,
+            "marketplace_id": amazon_creds.marketplace_id if amazon_creds else "ATVPDKIKX0DER",
         }
 
     except Exception:
