@@ -43,6 +43,7 @@ class OrderFilters(BaseModel):
     date_to: str | None = Field(None, description="End date (ISO format)")
     limit: int = Field(default=100, ge=1, le=1000, description="Max orders to fetch")
     offset: int = Field(default=0, ge=0, description="Pagination offset")
+    include_items: bool = Field(default=True, description="Fetch line items per order (set False to skip per-order API calls during activation)")
 
 
 class ExternalOrder(BaseModel):

@@ -34,14 +34,14 @@ import * as api from '@/lib/api';
 type WarningPreference = 'ask' | 'ship-all' | 'skip-warnings';
 
 /** Identifies which data source type is currently active for command routing. */
-type ActiveSourceType = 'local' | 'shopify' | null;
+type ActiveSourceType = 'local' | 'shopify' | 'amazon' | null;
 
 /** Descriptive info about the currently active data source. */
 interface ActiveSourceInfo {
   type: ActiveSourceType;
   label: string;
   detail: string;
-  sourceKind: 'file' | 'database' | 'shopify';
+  sourceKind: 'file' | 'database' | 'shopify' | 'amazon';
 }
 
 /** Cached local source config for one-click reconnect after switching to Shopify. */

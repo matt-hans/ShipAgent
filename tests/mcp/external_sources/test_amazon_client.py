@@ -244,6 +244,61 @@ class TestFetchOrdersWithItems:
         mock_fetch_items.assert_called_once_with("111-0000001-0000001")
 
 
+class TestFetchOrdersWithoutItems:
+    """Test fetch_orders with include_items=False skips per-order API calls."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_orders_skips_items_when_disabled(self):
+        """include_items=False skips _fetch_order_items and asyncio.sleep."""
+        client = AmazonClient()
+        client._authenticated = True
+        client._access_token = "test-token"
+        client._token_expires_at = 9999999999.0
+        client._marketplace_id = "ATVPDKIKX0DER"
+        client._sandbox = False
+
+        orders_response = MagicMock()
+        orders_response.status_code = 200
+        orders_response.json.return_value = {
+            "payload": {
+                "Orders": [
+                    {
+                        "AmazonOrderId": "333-0000001-0000001",
+                        "PurchaseDate": "2026-02-28T10:00:00Z",
+                        "OrderStatus": "Unshipped",
+                        "FulfillmentChannel": "MFN",
+                        "ShippingAddress": {
+                            "Name": "Fast User",
+                            "AddressLine1": "99 Speed St",
+                            "City": "LA",
+                            "StateOrRegion": "CA",
+                            "PostalCode": "90001",
+                            "CountryCode": "US",
+                        },
+                        "BuyerInfo": {},
+                        "NumberOfItemsUnshipped": 2,
+                    },
+                ],
+            }
+        }
+
+        with patch.object(
+            httpx.AsyncClient, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = orders_response
+            with patch.object(
+                client, "_fetch_order_items", new_callable=AsyncMock
+            ) as mock_fetch_items:
+                orders = await client.fetch_orders(
+                    OrderFilters(limit=10, include_items=False)
+                )
+
+        assert len(orders) == 1
+        assert orders[0].order_id == "333-0000001-0000001"
+        assert orders[0].items == []
+        mock_fetch_items.assert_not_called()
+
+
 class TestGetOrderWithItems:
     """Test that get_order calls _fetch_order_items."""
 
