@@ -17,12 +17,13 @@ import {
   reconnectSavedSource,
   getDataSourceStatus,
   activateShopify,
+  activateAmazon,
 } from '@/lib/api';
 import type { DataSourceInfo, DataSourceType } from '@/types/api';
 import { RecentSourcesModal } from '@/components/RecentSourcesModal';
 import { toDataSourceColumns } from '@/components/sidebar/dataSourceMappers';
 import { HardDriveIcon, InfoIcon } from '@/components/ui/icons';
-import { ShopifyIcon } from '@/components/ui/brand-icons';
+import { ShopifyIcon, AmazonIcon } from '@/components/ui/brand-icons';
 import { Switch } from '@/components/ui/switch';
 
 /** Extracts a display filename from a DataSourceInfo. */
@@ -67,6 +68,19 @@ export function DataSourceSection() {
   const shopifyStoreName = shopifyConnection?.display_name
     || shopifyEnvStatus?.store_name
     || shopifyEnvStatus?.store_url;
+
+  // Amazon availability derived from provider connections
+  const amazonConnection = providerConnections.find(
+    (c) => c.provider === 'amazon' && c.runtime_usable
+  );
+  const amazonAvailable = !!amazonConnection;
+
+  const amazonEnvStatus = externalState.amazonEnvStatus;
+  const isCheckingAmazonEnv = externalState.isCheckingAmazonEnv;
+  const amazonEnvConnected = amazonEnvStatus?.valid === true;
+  const amazonSellerName = amazonConnection?.display_name
+    || amazonEnvStatus?.seller_name
+    || (amazonEnvStatus?.marketplace_id ? `Marketplace ${amazonEnvStatus.marketplace_id}` : null);
 
   // Recent sources modal
   const [showRecentSources, setShowRecentSources] = React.useState(false);
@@ -136,6 +150,14 @@ export function DataSourceSection() {
         detail: shopifyStoreName || 'Connected',
         sourceKind: 'shopify',
       });
+    } else if (backendSourceType === 'amazon') {
+      setActiveSourceType('amazon');
+      setActiveSourceInfo({
+        type: 'amazon',
+        label: 'Amazon',
+        detail: amazonSellerName || 'Connected',
+        sourceKind: 'amazon',
+      });
     } else {
       setActiveSourceType(null);
       setActiveSourceInfo(null);
@@ -144,6 +166,7 @@ export function DataSourceSection() {
     dataSource,
     backendSourceType,
     shopifyStoreName,
+    amazonSellerName,
     setActiveSourceType,
     setActiveSourceInfo,
   ]);
@@ -171,6 +194,31 @@ export function DataSourceSection() {
       setBackendSourceType('shopify');
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Failed to activate Shopify');
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  /** Switch to Amazon: activate Amazon first, then clear local source on success. */
+  const handleSwitchToAmazon = async () => {
+    setImportError(null);
+    setIsConnecting(true);
+    try {
+      const result = await activateAmazon();
+      if (!result.success) {
+        setImportError(result.error || 'Failed to activate Amazon');
+        return;
+      }
+      if (dataSource) {
+        setCachedLocalConfig({
+          type: dataSource.type as 'csv' | 'excel' | 'database',
+          file_path: dataSource.csv_path || dataSource.excel_path,
+        });
+      }
+      setDataSource(null);
+      setBackendSourceType('amazon');
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Failed to activate Amazon');
     } finally {
       setIsConnecting(false);
     }
@@ -328,6 +376,7 @@ export function DataSourceSection() {
   // Derived state for card rendering
   const isLocalActive = activeSourceType === 'local';
   const isShopifyActive = activeSourceType === 'shopify';
+  const isAmazonActive = activeSourceType === 'amazon';
   const localFileName = dataSource ? (extractFileName(dataSource) || dataSource.type.toUpperCase()) : null;
 
   return (
@@ -412,6 +461,86 @@ export function DataSourceSection() {
               className="text-[10px] font-medium text-[#96BF48] hover:underline"
             >
               Connect Shopify in Settings →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* === AMAZON CARD === */}
+      {(amazonAvailable || amazonEnvConnected) ? (
+        <div className={cn(
+          'rounded-lg border overflow-hidden transition-colors',
+          isAmazonActive && interactiveShipping
+            ? 'border-l-4 border-l-slate-500 border-slate-600/30 bg-slate-800/20'
+            : isAmazonActive
+              ? 'border-l-4 border-l-[#FF9900] border-[#FF9900]/30 bg-[#FF9900]/5'
+              : 'border-slate-800'
+        )}>
+          <div className="flex items-center justify-between p-2.5 bg-slate-800/30">
+            <div className="flex items-center gap-2">
+              <AmazonIcon className="w-5 h-5 text-[#FF9900]" />
+              <span className="text-xs font-medium text-slate-200">Amazon</span>
+            </div>
+            <div className="flex items-center gap-2">
+              {isCheckingAmazonEnv ? (
+                <span className="text-[10px] font-mono text-slate-500">Checking...</span>
+              ) : isAmazonActive && interactiveShipping ? (
+                <span className="badge badge-neutral text-[9px]">STANDBY</span>
+              ) : isAmazonActive ? (
+                <span className="badge badge-success text-[9px]">ACTIVE</span>
+              ) : (
+                <span className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                  <span className="text-[10px] font-mono text-slate-500">Available</span>
+                </span>
+              )}
+            </div>
+          </div>
+
+          {isAmazonActive && (
+            <div className={cn('p-2.5 border-t', interactiveShipping ? 'border-slate-700' : 'border-[#FF9900]/20')}>
+              <p className="text-xs text-slate-300">
+                {amazonSellerName}
+              </p>
+              <p className="text-[10px] font-mono text-slate-500 mt-0.5">
+                {interactiveShipping ? 'Available in batch mode' : 'Connected'}
+              </p>
+            </div>
+          )}
+
+          {!isAmazonActive && (
+            <div className="p-2.5 border-t border-slate-800">
+              <p className="text-[10px] text-slate-500 mb-2">
+                {amazonSellerName}
+              </p>
+              <button
+                onClick={handleSwitchToAmazon}
+                disabled={isConnecting}
+                className="w-full py-1.5 text-xs font-medium rounded border border-[#FF9900]/40 text-[#FF9900] hover:bg-[#FF9900]/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isConnecting ? 'Activating...' : 'Use Amazon'}
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-slate-800 overflow-hidden">
+          <div className="flex items-center justify-between p-2.5 bg-slate-800/30">
+            <div className="flex items-center gap-2">
+              <AmazonIcon className="w-5 h-5 text-[#FF9900]/50" />
+              <span className="text-xs font-medium text-slate-400">Amazon</span>
+            </div>
+            <span className="flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+              <span className="text-[10px] font-mono text-slate-500">Not configured</span>
+            </span>
+          </div>
+          <div className="p-2.5 border-t border-slate-800">
+            <button
+              onClick={() => setSettingsFlyoutOpen(true)}
+              className="text-[10px] font-medium text-[#FF9900] hover:underline"
+            >
+              Connect Amazon in Settings →
             </button>
           </div>
         </div>
