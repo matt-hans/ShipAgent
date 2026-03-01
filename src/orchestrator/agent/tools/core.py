@@ -22,7 +22,10 @@ from src.services.column_mapping import (
     validate_mapping,
 )
 from src.services.decision_audit_service import DecisionAuditService
-from src.services.gateway_provider import get_data_gateway  # noqa: F401
+from src.services.gateway_provider import (  # noqa: F401
+    get_data_gateway,
+    get_external_sources_client,
+)
 from src.services.job_service import JobService
 from src.services.mapping_cache import (
     compute_mapping_hash,

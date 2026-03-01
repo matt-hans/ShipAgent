@@ -30,154 +30,6 @@ from src.services.decision_audit_service import DecisionAuditService
 logger = logging.getLogger(__name__)
 
 
-def _is_activatable_platform_profile(summary: Any) -> bool:
-    """Return True if a platform profile can be synced for source bootstrap."""
-    status = str(getattr(summary, "connection_status", "") or "")
-    has_credentials = bool(getattr(summary, "has_credentials", False))
-    return status != "disconnected" or has_credentials
-
-
-async def ensure_source_info_available(gw: Any) -> dict[str, Any] | None:
-    """Resolve current source info, bootstrapping from active platforms if needed.
-
-    Resolution order:
-    1. Current active data source from Data Source MCP
-    2. Best-effort refresh of active platform profiles
-    3. Re-check Data Source MCP for an activated source
-    """
-    info = await gw.get_source_info()
-    if info is not None:
-        return info
-
-    try:
-        from src.services.gateway_provider import (
-            get_activation_service,
-            get_platform_registry,
-        )
-
-        registry = get_platform_registry()
-        active_profiles = registry.get_active_platforms()
-        candidates = [p for p in active_profiles if _is_activatable_platform_profile(p)]
-        if not candidates:
-            return None
-
-        service = get_activation_service()
-        successful_syncs = 0
-        for profile in candidates:
-            try:
-                await service.activate_platform(
-                    platform_id=profile.platform_id,
-                    credential_ref=profile.credential_ref,
-                    mode="refresh",
-                )
-                successful_syncs += 1
-            except Exception as exc:
-                logger.warning(
-                    "Platform source bootstrap failed for %s/%s: %s",
-                    profile.platform_id,
-                    profile.credential_ref,
-                    exc,
-                )
-
-        if successful_syncs == 0:
-            return None
-
-        return await gw.get_source_info()
-    except Exception as exc:
-        logger.warning("Platform source bootstrap unavailable: %s", exc)
-        return None
-
-
-def _is_query_ready_platform_source(info: dict[str, Any] | None) -> bool:
-    """Return True when source info points to queryable platform order data."""
-    if info is None:
-        return False
-    source_type = str(info.get("source_type", "") or "").strip().lower()
-    if source_type == "external_orders":
-        return True
-    path = str(info.get("path", "") or "").strip().lower()
-    return "imported_data" in path
-
-
-def _activation_mode_from_state(state: Any) -> str:
-    """Choose activation mode based on persisted sync state."""
-    if state is None:
-        return "initial"
-    if getattr(state, "last_completed_watermark", None):
-        return "refresh"
-    if getattr(state, "last_sync_row_count", None):
-        return "refresh"
-    return "initial"
-
-
-async def _connect_platform_as_source(
-    platform_id: str,
-    credential_ref: str | None = None,
-) -> dict[str, Any]:
-    """Activate one platform profile and verify source became query-ready."""
-    from src.services.gateway_provider import (
-        get_activation_service,
-        get_platform_registry,
-    )
-
-    registry = get_platform_registry()
-    config = registry.get_config(platform_id)
-    if config is None:
-        return _err(f"[UNKNOWN_PLATFORM] Unknown platform: {platform_id}")
-
-    resolved_credential_ref = credential_ref or config.default_profile
-    state = registry.get_state(platform_id, resolved_credential_ref)
-    mode = _activation_mode_from_state(state)
-
-    service = get_activation_service()
-    try:
-        report = await service.activate_platform(
-            platform_id=platform_id,
-            credential_ref=resolved_credential_ref,
-            mode=mode,
-        )
-    except Exception as exc:
-        return _err(
-            f"[ACTIVATION_FAILED] Failed to activate {platform_id}: {exc}. "
-            "Verify credentials and retry."
-        )
-
-    gw = await get_data_gateway()
-    info = await gw.get_source_info()
-    if not _is_query_ready_platform_source(info):
-        return _err(
-            "[SOURCE_NOT_READY] Platform sync completed but source is not query-ready. "
-            "Retry activation or refresh and try again."
-        )
-
-    row_count = int((info or {}).get("row_count", 0))
-    source_type = str((info or {}).get("source_type", "external_orders"))
-    logger.info(
-        "tool_platform_connect_success platform_id=%s credential_ref=%s mode=%s imported=%s source_type=%s row_count=%s",
-        platform_id,
-        resolved_credential_ref,
-        report.mode,
-        report.total_imported,
-        source_type,
-        row_count,
-    )
-    return _ok(
-        {
-            "platform": platform_id,
-            "credential_ref": resolved_credential_ref,
-            "mode": report.mode,
-            "orders_imported": report.total_imported,
-            "pages_fetched": report.pages_fetched,
-            "source_type": source_type,
-            "row_count": row_count,
-            "message": (
-                f"Connected {platform_id} and activated queryable source "
-                f"with {row_count} rows."
-            ),
-        }
-    )
-
-
 def _determinism_mode() -> str:
     """Return determinism enforcement mode ('warn' or 'enforce')."""
     raw = os.environ.get("DETERMINISM_ENFORCEMENT_MODE", "warn").strip().lower()
@@ -290,12 +142,10 @@ async def get_source_info_tool(args: dict[str, Any]) -> dict[str, Any]:
         Tool response with source_type, file_path, row_count, column count.
     """
     gw = await get_data_gateway()
-    info = await ensure_source_info_available(gw)
+    info = await gw.get_source_info()
     if info is None:
         return _err(
-            "No queryable data source is active. Try syncing active platforms first "
-            "(refresh_all_platforms or activate_platform), then retry. If still empty, "
-            "connect a file/database source."
+            "No data source connected. Ask the user to connect a CSV, Excel, or database source."
         )
 
     return _ok(
@@ -318,9 +168,9 @@ async def get_schema_tool(args: dict[str, Any]) -> dict[str, Any]:
         Tool response with list of column definitions.
     """
     gw = await get_data_gateway()
-    info = await ensure_source_info_available(gw)
+    info = await gw.get_source_info()
     if info is None:
-        return _err("No queryable data source is active.")
+        return _err("No data source connected.")
 
     columns = [
         {"name": col["name"], "type": col["type"], "nullable": col.get("nullable", True)}
@@ -398,14 +248,13 @@ async def fetch_rows_tool(
     include_rows = bool(args.get("include_rows", False))
 
     gw = await get_data_gateway()
-    source_info = await ensure_source_info_available(gw)
-    if source_info is None:
-        return _err(
-            "No queryable data source is active. Sync active platforms first or connect a file/database source."
-        )
 
     if filter_spec_raw:
         # Compile FilterSpec → parameterized SQL
+        source_info = await gw.get_source_info()
+        if source_info is None:
+            return _err("No data source connected.")
+
         columns = source_info.get("columns", [])
         schema_columns = {col["name"] for col in columns}
         column_types = {col["name"]: col["type"] for col in columns}
@@ -528,11 +377,11 @@ async def resolve_filter_intent_tool(
 
     # Get schema from gateway
     gw = await get_data_gateway()
-    source_info = await ensure_source_info_available(gw)
+    source_info = await gw.get_source_info()
     if source_info is None:
         return _err(
-            "No queryable data source is active. Sync active platforms first "
-            "or connect a file/database source before resolving filters."
+            "No data source connected. Connect a CSV, Excel, or database "
+            "source before resolving filters."
         )
 
     # Extract schema columns and types
@@ -836,74 +685,100 @@ async def confirm_filter_interpretation_tool(
 
     return _ok(resolved_payload)
 
-
 async def get_platform_status_tool(args: dict[str, Any]) -> dict[str, Any]:
-    """Compatibility status tool for Shopify/Amazon + source visibility."""
-    unknown = _validate_allowed_args("get_platform_status", args, set())
-    if unknown is not None:
-        return unknown
+    """Check which external platforms are configured/connected."""
+    platforms: dict[str, Any] = {}
 
-    from src.services.gateway_provider import get_platform_registry
+    try:
+        gw = await get_data_gateway()
+        source_info = await gw.get_source_info()
 
-    gw = await get_data_gateway()
-    source_info = await gw.get_source_info()
-    registry = get_platform_registry()
-    summaries = registry.get_platforms_summary()
-
-    platforms: dict[str, Any] = {
-        "data_source": {
-            "connected": bool(source_info is not None),
-            "source_type": (source_info or {}).get("source_type"),
-            "row_count": int((source_info or {}).get("row_count", 0)),
-        },
-    }
-
-    for pid in ("shopify", "amazon"):
-        matching = [s for s in summaries if s.platform_id == pid]
-        if not matching:
-            platforms[pid] = {
-                "connected": False,
-                "configured": False,
-                "active": False,
-                "status": "unknown",
+        source_type = None
+        if source_info:
+            source_type = str(source_info.get("source_type") or "").lower()
+            platforms["data_source"] = {
+                "connected": True,
+                "source_type": source_info.get("source_type"),
+                "label": source_info.get("path"),
+                "row_count": source_info.get("row_count", 0),
+                "column_count": len(source_info.get("columns", [])),
             }
-            continue
-        best = matching[0]
-        status = str(best.connection_status or "unknown")
-        platforms[pid] = {
-            "connected": bool(best.is_active) or status in {"connected", "degraded"},
-            "configured": bool(best.has_credentials),
-            "active": bool(best.is_active),
-            "status": status,
-            "last_sync_row_count": best.last_sync_row_count,
+        else:
+            platforms["data_source"] = {"connected": False}
+
+        from src.services.runtime_credentials import (
+            resolve_amazon_credentials,
+            resolve_shopify_credentials,
+        )
+
+        shopify_creds = resolve_shopify_credentials()
+        shopify_domain = shopify_creds.store_domain if shopify_creds else ""
+        platforms["shopify"] = {
+            "connected": source_type == "shopify",
+            "configured": shopify_creds is not None,
+            "store_domain": shopify_domain or None,
         }
+
+        amazon_creds = resolve_amazon_credentials()
+        platforms["amazon"] = {
+            "connected": source_type == "amazon",
+            "configured": amazon_creds is not None,
+            "marketplace_id": amazon_creds.marketplace_id if amazon_creds else "ATVPDKIKX0DER",
+        }
+
+    except Exception:
+        platforms["data_source"] = {"connected": False}
+        platforms["shopify"] = {"connected": False, "configured": False}
+        platforms["amazon"] = {"connected": False, "configured": False}
 
     return _ok({"platforms": platforms})
 
 
 async def connect_shopify_tool(
     args: dict[str, Any],
-    bridge: EventEmitterBridge | None = None,
+    bridge: "EventEmitterBridge | None" = None,
 ) -> dict[str, Any]:
-    """Compatibility tool: explicit Shopify connect + import activation."""
-    unknown = _validate_allowed_args("connect_shopify", args, {"credential_ref"})
-    if unknown is not None:
-        return unknown
-    return await _connect_platform_as_source(
-        "shopify",
-        credential_ref=args.get("credential_ref"),
+    """Connect to Shopify and import orders as active data source."""
+    from src.services.shopify_activation_service import (
+        ShopifyActivationError,
+        activate_shopify_as_data_source,
     )
+
+    try:
+        result = await activate_shopify_as_data_source()
+    except ShopifyActivationError as exc:
+        return _err(str(exc))
+    except Exception as exc:
+        logger.error("connect_shopify_tool unexpected error: %s", exc)
+        return _err(f"Shopify activation failed: {exc}")
+
+    return _ok({
+        "message": result["message"],
+        "platform": "shopify",
+        "orders_imported": result["row_count"],
+    })
 
 
 async def connect_amazon_tool(
     args: dict[str, Any],
-    bridge: EventEmitterBridge | None = None,
+    bridge: "EventEmitterBridge | None" = None,
 ) -> dict[str, Any]:
-    """Compatibility tool: explicit Amazon connect + import activation."""
-    unknown = _validate_allowed_args("connect_amazon", args, {"credential_ref"})
-    if unknown is not None:
-        return unknown
-    return await _connect_platform_as_source(
-        "amazon",
-        credential_ref=args.get("credential_ref"),
+    """Connect to Amazon and import orders as active data source."""
+    from src.services.amazon_activation_service import (
+        AmazonActivationError,
+        activate_amazon_as_data_source,
     )
+
+    try:
+        result = await activate_amazon_as_data_source()
+    except AmazonActivationError as exc:
+        return _err(str(exc))
+    except Exception as exc:
+        logger.error("connect_amazon_tool unexpected error: %s", exc)
+        return _err(f"Amazon activation failed: {exc}")
+
+    return _ok({
+        "message": result["message"],
+        "platform": "amazon",
+        "orders_imported": result["row_count"],
+    })

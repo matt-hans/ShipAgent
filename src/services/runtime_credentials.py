@@ -33,6 +33,7 @@ _UPS_BASE_URLS = {
 _ups_fallback_warned: bool = False
 _shopify_fallback_warned: bool = False
 _ups_dual_env_warned: bool = False
+_amazon_fallback_warned: bool = False
 
 
 def _try_db_ups(db: Session, key_dir: str | None, environment: str) -> UPSCredentials | None:
@@ -330,11 +331,6 @@ def resolve_shopify_credentials(
     )
 
 
-# --- Amazon SP-API ---
-
-_amazon_fallback_warned: bool = False
-
-
 def _try_db_amazon(
     db: Session, key_dir: str | None, marketplace_id: str | None,
 ) -> AmazonSPAPICredentials | None:
@@ -353,16 +349,7 @@ def resolve_amazon_credentials(
     db: Session | None = None,
     key_dir: str | None = None,
 ) -> AmazonSPAPICredentials | None:
-    """Resolve Amazon SP-API credentials with DB priority, env fallback.
-
-    Args:
-        marketplace_id: Amazon marketplace ID (optional — uses first available if None).
-        db: SQLAlchemy session. When None a short-lived session is auto-acquired.
-        key_dir: Encryption key directory (optional).
-
-    Returns:
-        AmazonSPAPICredentials or None if unavailable.
-    """
+    """Resolve Amazon credentials with DB priority, env fallback."""
     global _amazon_fallback_warned
 
     # --- DB lookup (auto-acquire session when not provided) ---
@@ -393,11 +380,13 @@ def resolve_amazon_credentials(
             )
 
     # --- Env fallback ---
-    env_client_id = os.environ.get("AMAZON_SP_API_CLIENT_ID", "").strip()
-    env_client_secret = os.environ.get("AMAZON_SP_API_CLIENT_SECRET", "").strip()
-    env_refresh_token = os.environ.get("AMAZON_SP_API_REFRESH_TOKEN", "").strip()
-    env_marketplace = os.environ.get("AMAZON_MARKETPLACE_ID", "").strip()
-    if not env_client_id or not env_client_secret:
+    client_id = os.environ.get("AMAZON_SP_API_CLIENT_ID", "").strip()
+    client_secret = os.environ.get("AMAZON_SP_API_CLIENT_SECRET", "").strip()
+    refresh_token = os.environ.get("AMAZON_SP_API_REFRESH_TOKEN", "").strip()
+    marketplace = os.environ.get("AMAZON_SP_API_MARKETPLACE_ID", "").strip() or marketplace_id or "ATVPDKIKX0DER"
+    sandbox = os.environ.get("AMAZON_SP_API_SANDBOX", "").strip().lower() in {"1", "true", "yes", "on"}
+
+    if not client_id or not client_secret or not refresh_token:
         return None
 
     if not _amazon_fallback_warned:
@@ -408,8 +397,9 @@ def resolve_amazon_credentials(
         _amazon_fallback_warned = True
 
     return AmazonSPAPICredentials(
-        client_id=env_client_id,
-        client_secret=env_client_secret,
-        marketplace_id=env_marketplace or (marketplace_id or "ATVPDKIKX0DER"),
-        refresh_token=env_refresh_token,
+        client_id=client_id,
+        client_secret=client_secret,
+        refresh_token=refresh_token,
+        marketplace_id=str(marketplace).strip().upper() or "ATVPDKIKX0DER",
+        sandbox=sandbox,
     )

@@ -1,17 +1,13 @@
 /**
  * AmazonConnectForm - Credential form for Amazon Selling Partner API.
  *
- * Collects LWA credentials (client_id, client_secret) and marketplace_id.
- * Refresh token is optional — sandbox apps use only LWA client credentials,
- * while production apps obtain a refresh token via the seller OAuth flow.
- * All credentials are encrypted (AES-256-GCM) on the backend before storage.
+ * Collects SP-API credentials and persists them via /connections/amazon/save.
  */
 
 import * as React from 'react';
 import { saveProviderCredentials, validateProviderConnection } from '@/lib/api';
 import type { ProviderConnectionInfo } from '@/types/api';
 
-/** Common Amazon marketplace IDs for the dropdown. */
 const MARKETPLACE_OPTIONS = [
   { id: 'ATVPDKIKX0DER', label: 'United States (ATVPDKIKX0DER)' },
   { id: 'A2EUQ1WTGCTBG2', label: 'Canada (A2EUQ1WTGCTBG2)' },
@@ -30,12 +26,13 @@ export function AmazonConnectForm({ existingConnection, onSaved }: AmazonConnect
   const [clientSecret, setClientSecret] = React.useState('');
   const [refreshToken, setRefreshToken] = React.useState('');
   const [marketplaceId, setMarketplaceId] = React.useState<string>(MARKETPLACE_OPTIONS[0].id);
+  const [sandboxEnabled, setSandboxEnabled] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [success, setSuccess] = React.useState<string | null>(null);
   const [showForm, setShowForm] = React.useState(false);
 
-  const canSave = clientId.trim() && clientSecret.trim() && marketplaceId.trim();
+  const canSave = clientId.trim() && clientSecret.trim() && refreshToken.trim() && marketplaceId.trim();
 
   const handleSave = async () => {
     if (!canSave) return;
@@ -45,40 +42,37 @@ export function AmazonConnectForm({ existingConnection, onSaved }: AmazonConnect
     setSuccess(null);
 
     try {
-      const credentials: Record<string, string> = {
-        client_id: clientId.trim(),
-        client_secret: clientSecret.trim(),
-        marketplace_id: marketplaceId.trim(),
-      };
-      if (refreshToken.trim()) {
-        credentials.refresh_token = refreshToken.trim();
-      }
-
       const saveResult = await saveProviderCredentials('amazon', {
         auth_mode: 'sp_api',
-        credentials,
+        credentials: {
+          client_id: clientId.trim(),
+          client_secret: clientSecret.trim(),
+          refresh_token: refreshToken.trim(),
+          marketplace_id: marketplaceId.trim(),
+          sandbox: sandboxEnabled ? 'true' : 'false',
+        },
         metadata: {
           marketplace_id: marketplaceId.trim(),
         },
         display_name: `Amazon ${MARKETPLACE_OPTIONS.find((m) => m.id === marketplaceId)?.label.split(' (')[0] || marketplaceId}`,
       });
 
-      // Auto-validate if endpoint is wired up
+      // Validation may return unsupported for Amazon in this compatibility baseline.
       try {
         const validation = await validateProviderConnection(saveResult.connection_key);
         if (validation.valid) {
           setSuccess(validation.message);
         } else {
-          setSuccess('Credentials saved. Validation returned: ' + validation.message);
+          setSuccess(`Credentials saved. ${validation.message}`);
         }
       } catch {
-        // Validation endpoint may not exist yet for Amazon
         setSuccess('Credentials saved and encrypted.');
       }
 
       setClientId('');
       setClientSecret('');
       setRefreshToken('');
+      setSandboxEnabled(false);
       setShowForm(false);
       onSaved();
     } catch (err: unknown) {
@@ -119,7 +113,6 @@ export function AmazonConnectForm({ existingConnection, onSaved }: AmazonConnect
         </p>
       )}
 
-      {/* LWA Client ID */}
       <div className="space-y-1">
         <label className="text-[11px] font-medium text-muted-foreground">
           LWA Client ID
@@ -128,12 +121,11 @@ export function AmazonConnectForm({ existingConnection, onSaved }: AmazonConnect
           type="text"
           value={clientId}
           onChange={(e) => setClientId(e.target.value)}
-          placeholder="amzn1.application-oa2-client...."
+          placeholder="amzn1.application-oa2-client..."
           className="w-full text-xs px-2.5 py-1.5 rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
         />
       </div>
 
-      {/* LWA Client Secret */}
       <div className="space-y-1">
         <label className="text-[11px] font-medium text-muted-foreground">
           LWA Client Secret
@@ -142,12 +134,24 @@ export function AmazonConnectForm({ existingConnection, onSaved }: AmazonConnect
           type="password"
           value={clientSecret}
           onChange={(e) => setClientSecret(e.target.value)}
-          placeholder="amzn1.oa2-cs.v1...."
+          placeholder="amzn1.oa2-cs.v1..."
           className="w-full text-xs px-2.5 py-1.5 rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
         />
       </div>
 
-      {/* Marketplace */}
+      <div className="space-y-1">
+        <label className="text-[11px] font-medium text-muted-foreground">
+          Refresh Token
+        </label>
+        <input
+          type="password"
+          value={refreshToken}
+          onChange={(e) => setRefreshToken(e.target.value)}
+          placeholder="Atzr|..."
+          className="w-full text-xs px-2.5 py-1.5 rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
+        />
+      </div>
+
       <div className="space-y-1">
         <label className="text-[11px] font-medium text-muted-foreground">
           Marketplace
@@ -157,30 +161,23 @@ export function AmazonConnectForm({ existingConnection, onSaved }: AmazonConnect
           onChange={(e) => setMarketplaceId(e.target.value)}
           className="w-full text-xs px-2.5 py-1.5 rounded-md border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
         >
-          {MARKETPLACE_OPTIONS.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
+          {MARKETPLACE_OPTIONS.map((marketplace) => (
+            <option key={marketplace.id} value={marketplace.id}>
+              {marketplace.label}
             </option>
           ))}
         </select>
       </div>
 
-      {/* LWA Refresh Token (optional) */}
-      <div className="space-y-1">
-        <label className="text-[11px] font-medium text-muted-foreground">
-          Refresh Token <span className="text-muted-foreground/50">(optional)</span>
-        </label>
+      <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
         <input
-          type="password"
-          value={refreshToken}
-          onChange={(e) => setRefreshToken(e.target.value)}
-          placeholder="Atzr|..."
-          className="w-full text-xs px-2.5 py-1.5 rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
+          type="checkbox"
+          checked={sandboxEnabled}
+          onChange={(e) => setSandboxEnabled(e.target.checked)}
+          className="rounded border-border bg-background"
         />
-        <p className="text-[10px] text-muted-foreground">
-          Not needed for sandbox. For production, obtained via Seller Central &rarr; Authorize.
-        </p>
-      </div>
+        Use Amazon SP-API sandbox endpoints
+      </label>
 
       {error && (
         <p className="text-[11px] text-destructive bg-destructive/10 px-2.5 py-1.5 rounded-md">

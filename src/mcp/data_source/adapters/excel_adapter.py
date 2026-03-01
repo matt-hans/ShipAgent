@@ -154,10 +154,6 @@ class ExcelAdapter(BaseSourceAdapter):
         else:
             rows_data = self._read_xlsx_openpyxl(file_path, sheet)
 
-        # Drop any VIEW (from external_orders activation) before creating TABLE
-        from src.mcp.data_source.utils import drop_imported_data_view
-        drop_imported_data_view(conn)
-
         if not rows_data:
             # Empty sheet - create empty table
             conn.execute("CREATE OR REPLACE TABLE imported_data (empty_sheet BOOLEAN)")

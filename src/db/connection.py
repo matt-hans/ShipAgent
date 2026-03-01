@@ -591,30 +591,6 @@ def _ensure_columns_exist(conn: Any) -> None:
         {"now": _time_mod.time()},
     )
 
-    # --- platform_sync_state migration: add is_active column ---
-    pss_exists = conn.execute(
-        text(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='platform_sync_state' LIMIT 1"
-        )
-    ).fetchone()
-    if pss_exists:
-        pss_result = conn.execute(text("PRAGMA table_info(platform_sync_state)"))
-        pss_existing = {row[1] for row in pss_result.fetchall()}
-        if "is_active" not in pss_existing:
-            try:
-                conn.execute(
-                    text(
-                        "ALTER TABLE platform_sync_state "
-                        "ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT 0"
-                    )
-                )
-            except OperationalError as e:
-                if "duplicate column" in str(e).lower():
-                    log.debug("Column is_active already exists (concurrent add).")
-                else:
-                    log.error("Failed to add is_active column: %s", e)
-                    raise
-
     # --- provider_connections table migration ---
     _migrate_provider_connections(conn, log)
 

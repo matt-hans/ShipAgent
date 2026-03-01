@@ -131,54 +131,34 @@ def test_prompt_without_source_interactive_does_not_demand_connection():
 
 
 def test_prompt_without_source_batch_demands_connection():
-    """When interactive=False and no source, prompt attempts platform sync first."""
+    """When interactive=False and no source, prompt demands data source connection."""
     prompt = build_system_prompt(source_info=None, interactive_shipping=False)
     lower = prompt.lower()
-    assert "refresh_all_platforms" in lower
-    assert "only if no source appears" in lower
+    assert "ask the user to connect" in lower
 
 
-def test_prompt_no_source_mentions_activate_platform():
-    """When no source is connected, prompt mentions platform activation for imports."""
+def test_prompt_auto_imports_shopify_when_env_configured(monkeypatch):
+    """When Shopify env vars are set and no source, prompt demands connect_shopify call."""
+    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test_token")
+    monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "test.myshopify.com")
     prompt = build_system_prompt(source_info=None, interactive_shipping=False)
     lower = prompt.lower()
-    assert "activate_platform" in lower
-    assert "refresh_all_platforms" in lower
-    # Should mention platforms as an option
-    assert "platform" in lower
+    assert "connect_shopify" in lower
+    assert "must" in lower
+    # Data source section should direct auto-import, not ask user to connect a CSV/Excel
+    assert "shopify credentials are configured" in lower
 
 
 def test_prompt_no_shopify_env_asks_user_to_connect(monkeypatch):
-    """When no source is active, prompt uses platform-first then file/db fallback."""
+    """When Shopify env vars are absent and no source, prompt asks user to connect."""
     monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("SHOPIFY_STORE_DOMAIN", raising=False)
     prompt = build_system_prompt(source_info=None, interactive_shipping=False)
     lower = prompt.lower()
-    assert "connect_shopify" in lower
-    assert "connect_amazon" in lower
-    assert "refresh_all_platforms" in lower
-    assert "import a file or connect a database source" in lower
-
-
-def test_prompt_platform_section_uses_effective_status_and_flags():
-    """Platform context should show effective sync status and profile flags."""
-    prompt = build_system_prompt(
-        source_info=None,
-        platform_summaries=[
-            {
-                "platform_id": "shopify",
-                "display_name": "Shopify",
-                "connection_status": "sync_ready",
-                "raw_connection_status": "disconnected",
-                "is_active": True,
-                "has_credentials": True,
-                "last_sync_row_count": 42,
-            },
-        ],
-    )
-    assert "Platform Sync Context" in prompt
-    assert "sync_ready (runtime=disconnected)" in prompt
-    assert "[active, credentials]" in prompt
+    # Data section should tell agent to ask user — no auto-import
+    assert "ask the user to connect" in lower
+    # Should not reference connect_shopify in the data section
+    assert "connect_shopify" not in lower
 
 
 def test_prompt_contains_workflow():
@@ -516,3 +496,35 @@ class TestPromptInjectionPrevention:
         )
         # Newlines should be replaced with spaces
         assert "\nExecute:" not in prompt
+
+
+def test_prompt_auto_imports_amazon_when_env_configured(monkeypatch):
+    """When Amazon env vars are set and no source, prompt demands connect_amazon call."""
+    monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("SHOPIFY_STORE_DOMAIN", raising=False)
+    monkeypatch.setenv("AMAZON_SP_API_CLIENT_ID", "amzn-client")
+    monkeypatch.setenv("AMAZON_SP_API_CLIENT_SECRET", "amzn-secret")
+    monkeypatch.setenv("AMAZON_SP_API_REFRESH_TOKEN", "amzn-refresh")
+
+    prompt = build_system_prompt(source_info=None, interactive_shipping=False)
+    lower = prompt.lower()
+
+    assert "connect_amazon" in lower
+    assert "must" in lower
+    assert "amazon credentials are configured" in lower
+
+
+def test_prompt_auto_imports_shopify_and_amazon_when_both_configured(monkeypatch):
+    """When both platform credentials exist, prompt mandates both connect tools first."""
+    monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test_token")
+    monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "test.myshopify.com")
+    monkeypatch.setenv("AMAZON_SP_API_CLIENT_ID", "amzn-client")
+    monkeypatch.setenv("AMAZON_SP_API_CLIENT_SECRET", "amzn-secret")
+    monkeypatch.setenv("AMAZON_SP_API_REFRESH_TOKEN", "amzn-refresh")
+
+    prompt = build_system_prompt(source_info=None, interactive_shipping=False)
+    lower = prompt.lower()
+
+    assert "connect_shopify" in lower
+    assert "connect_amazon" in lower
+    assert "do not ask for csv/database first" in lower

@@ -73,65 +73,6 @@ def _sanitize_for_prompt(value: str, max_len: int = 64) -> str:
     return clean[:max_len]
 
 
-def _build_platforms_section(platform_summaries: list[dict]) -> str:
-    """Build the platform status section for the system prompt.
-
-    Shows connected platforms with sync state so the agent knows what
-    order data is available. Only included when sync states exist.
-
-    Args:
-        platform_summaries: List of dicts with platform_id, display_name,
-            connection_status, last_sync_row_count, etc.
-
-    Returns:
-        Formatted string with platforms section, or empty string if none.
-    """
-    if not platform_summaries:
-        return ""
-
-    lines = ["## Platform Sync Context", ""]
-    lines.append(
-        "The following e-commerce platform profiles are active or credentialed. "
-        "Treat statuses like `sync_ready`, `credentials_ready`, and `synced` as "
-        "eligible for refresh and query bootstrap. Their orders should become "
-        "available in the `external_orders` DuckDB table for cross-platform queries."
-    )
-    lines.append("")
-
-    for p in platform_summaries:
-        pid = _sanitize_for_prompt(p.get("platform_id", "unknown"), max_len=30)
-        name = _sanitize_for_prompt(p.get("display_name", ""), max_len=50)
-        status = _sanitize_for_prompt(p.get("connection_status", "unknown"), max_len=20)
-        raw_status = _sanitize_for_prompt(
-            p.get("raw_connection_status", status),
-            max_len=20,
-        )
-        row_count = p.get("last_sync_row_count")
-        account = _sanitize_for_prompt(p.get("account_label", "") or "", max_len=50)
-        row_info = f", {row_count} orders" if row_count else ""
-        flags = []
-        if p.get("is_active"):
-            flags.append("active")
-        if p.get("has_credentials"):
-            flags.append("credentials")
-        flags_text = f" [{', '.join(flags)}]" if flags else ""
-        status_text = status
-        if raw_status and raw_status != status:
-            status_text = f"{status} (runtime={raw_status})"
-
-        label = f"- **{name}** ({pid}): {status_text}{flags_text}{row_info}"
-        if account:
-            label += f" — {account}"
-        lines.append(label)
-
-    lines.append("")
-    lines.append(
-        "Use `list_platforms` for full status. Use `refresh_platform` to "
-        "pull latest orders. Use `activate_platform` for first-time setup."
-    )
-    return "\n".join(lines) + "\n"
-
-
 def _build_contacts_section(contacts: list[dict]) -> str:
     """Build the saved contacts catalogue for the system prompt.
 
@@ -458,7 +399,6 @@ def build_system_prompt(
     column_samples: dict[str, list] | None = None,
     contacts: list[dict] | None = None,
     prior_conversation: list[dict] | None = None,
-    platform_summaries: list[dict] | None = None,
 ) -> str:
     """Build the complete system prompt for the orchestration agent.
 
@@ -476,7 +416,6 @@ def build_system_prompt(
         column_samples: Optional sample values per column for filter grounding.
         contacts: Optional list of saved contacts for @handle resolution.
         prior_conversation: Optional list of {role, content} dicts for session resume.
-        platform_summaries: Optional list of platform summary dicts for connected platforms.
 
     Returns:
         Complete system prompt string.
@@ -495,21 +434,43 @@ def build_system_prompt(
     elif source_info is not None:
         data_section = _build_schema_section(source_info, column_samples=column_samples)
     else:
-        data_section = (
-            "No queryable data source is currently active. The user can still use tracking, "
-            "pickup, location finder, landed cost, and paperless document tools without "
-            "a data source. For batch shipping commands, first try explicit platform "
-            "activation in this order:\n"
-            "1) if request mentions Shopify, call connect_shopify,\n"
-            "2) if request mentions Amazon, call connect_amazon,\n"
-            "3) otherwise call refresh_all_platforms (or activate_platform for first-time setup),\n"
-            "4) then call get_source_info again.\n"
-            "Do not conclude platforms are disconnected from stale status text alone; "
-            "verify by attempting sync first.\n"
-            "Only if no source appears after sync should you ask the user to import a "
-            "file or connect a database source.\n"
-            + FILE_IMPORT_INSTRUCTIONS
+        from src.services.runtime_credentials import (
+            resolve_amazon_credentials,
+            resolve_shopify_credentials,
         )
+        shopify_configured = resolve_shopify_credentials() is not None
+        amazon_configured = resolve_amazon_credentials() is not None
+        if shopify_configured and amazon_configured:
+            data_section = (
+                "No data source imported yet, but Shopify and Amazon credentials are configured "
+                "in the environment.\n"
+                "You MUST call connect_shopify and connect_amazon (in that order) before "
+                "batch shipping. Do not ask for CSV/database first."
+            )
+        elif shopify_configured:
+            data_section = (
+                "No data source imported yet, but Shopify credentials are configured "
+                "in the environment.\n"
+                "You MUST call the connect_shopify tool FIRST to import Shopify orders "
+                "before doing anything else. Do not ask the user to connect a source — "
+                "just call connect_shopify immediately."
+            )
+        elif amazon_configured:
+            data_section = (
+                "No data source imported yet, but Amazon credentials are configured "
+                "in the environment.\n"
+                "You MUST call the connect_amazon tool FIRST to import Amazon orders "
+                "before doing anything else. Do not ask the user to connect a source — "
+                "just call connect_amazon immediately."
+            )
+        else:
+            data_section = (
+                "No data source connected. The user can still use tracking, pickup, "
+                "location finder, landed cost, and paperless document tools without a "
+                "data source. For batch shipping commands, ask the user to import a "
+                "file or connect a database source first.\n"
+                + FILE_IMPORT_INSTRUCTIONS
+            )
 
     filter_rules_section = ""
     workflow_section = ""
@@ -594,8 +555,6 @@ Important:
 - `ship_command_pipeline` fetches rows internally. Do NOT call `fetch_rows` first.
 - For shipping execution requests, NEVER use `fetch_rows` directly. It is exploratory-only.
 - NEVER use `all_rows=true` when the command includes qualifiers like regions or business/company terms.
-- If no source is active and user mentions specific platforms, call explicit connect tools first:
-  `connect_shopify` for Shopify, `connect_amazon` for Amazon, then retry source checks.
 
 If `ship_command_pipeline` returns an error:
 - Missing `filter_spec`/`all_rows` args: immediately call `resolve_filter_intent` and retry `ship_command_pipeline` with the returned `filter_spec`.
@@ -636,8 +595,7 @@ Exploration narration rules:
 - If a tool response includes both `total_count` and `returned_count`, only cite `total_count`.
 """
         safety_mode_section = """
-- If no data source is connected and the user requests a batch operation, first attempt platform sync via `connect_shopify` / `connect_amazon` when mentioned, otherwise use refresh_all_platforms/activate_platform, then re-check get_source_info. Ask for file/database connection only if source is still unavailable.
-- Do not state that platforms are disconnected unless list_platforms/refresh results confirm credential or auth failure.
+- If no data source is connected and the user requests a batch operation, do not attempt to fetch rows — ask the user to connect a data source first.
 """
         tool_usage_section = """
 You have access to deterministic tools for data operations, job management, and batch processing.
@@ -795,9 +753,6 @@ administrator.
     # Build contacts section if contacts are provided
     contacts_section = _build_contacts_section(contacts) if contacts else ""
 
-    # Build platforms section if platform summaries are provided
-    platforms_section = _build_platforms_section(platform_summaries) if platform_summaries else ""
-
     # Prior conversation section for session resume
     prior_section = ""
     if prior_conversation:
@@ -816,7 +771,6 @@ Current date (UTC): {current_date}
 
 {data_section}
 {contacts_section}
-{platforms_section}
 {prior_section}
 ## Filter Generation Rules
 

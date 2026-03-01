@@ -1,4 +1,4 @@
-Ship all Amazon and Shopify orders from customers in California, Texas, or New York where the total is over $50 and under $500, but only the unfulfilled ones using UPS Ground
+Ship all orders from customers in California, Texas, or New York where the total is over $50 and under $500, but only the unfulfilled ones using UPS Ground
 
 CSV
 Ship all orders going to companies in the Northeast.
