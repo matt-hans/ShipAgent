@@ -504,9 +504,19 @@ export interface OracleCredentialsString {
 /** Union type for Oracle credentials. */
 export type OracleCredentials = OracleCredentialsParams | OracleCredentialsString;
 
+/** Connect platform request - Amazon SP-API. */
+export interface AmazonCredentials {
+  client_id: string;
+  client_secret: string;
+  refresh_token: string;
+  marketplace_id?: string;
+  sandbox?: boolean;
+}
+
 /** All credential types union. */
 export type PlatformCredentials =
   | { platform: 'shopify'; credentials: ShopifyCredentials; store_url: string }
+  | { platform: 'amazon'; credentials: AmazonCredentials; store_url?: string }
   | { platform: 'woocommerce'; credentials: WooCommerceCredentials; store_url: string }
   | { platform: 'sap'; credentials: SAPCredentials; store_url?: string }
   | { platform: 'oracle'; credentials: OracleCredentials; store_url?: string };
