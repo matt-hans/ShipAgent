@@ -24,168 +24,6 @@ from src.services.decision_audit_service import DecisionAuditService
 from src.services.gateway_provider import get_data_gateway
 
 logger = logging.getLogger(__name__)
-PROMPT_CONTEXT_VERSION = "2026-02-28-platform-context-v2"
-
-
-def _effective_platform_connection_status(summary: Any) -> str:
-    """Normalize platform status for prompt context.
-
-    Raw connection_status can remain "disconnected" while a profile is
-    active and credentialed. For prompt grounding we surface an effective
-    sync-readiness state to avoid false "platform disconnected" responses.
-    """
-    raw_status = str(getattr(summary, "connection_status", "") or "unknown").strip().lower()
-    has_credentials = bool(getattr(summary, "has_credentials", False))
-    is_active = bool(getattr(summary, "is_active", False))
-    row_count = getattr(summary, "last_sync_row_count", None)
-
-    if raw_status in {"connected", "degraded", "auth_expired"}:
-        return raw_status
-    if raw_status != "disconnected" and raw_status:
-        return raw_status
-    if is_active and has_credentials:
-        if isinstance(row_count, int) and row_count > 0:
-            return "synced"
-        return "sync_ready"
-    if has_credentials:
-        return "credentials_ready"
-    if is_active:
-        return "active"
-    return raw_status or "unknown"
-
-
-def _is_activatable_platform_profile(summary: Any) -> bool:
-    """Return True if a platform profile is a viable source bootstrap candidate."""
-    status = str(getattr(summary, "connection_status", "") or "").strip().lower()
-    has_credentials = bool(getattr(summary, "has_credentials", False))
-    is_active = bool(getattr(summary, "is_active", False))
-    return status in {"connected", "degraded", "auth_expired"} or has_credentials or is_active
-
-
-def _platform_bootstrap_priority(platform_id: str, command_text: str | None) -> int:
-    """Score platform bootstrap priority from user command mentions."""
-    if not command_text:
-        return 100
-    text = command_text.lower()
-    pid = platform_id.lower()
-    if pid == "shopify":
-        return 0 if "shopify" in text else 10
-    if pid == "amazon":
-        return 1 if "amazon" in text or "seller central" in text else 11
-    return 20
-
-
-def _activation_mode_for_profile(registry: Any, profile: Any) -> str:
-    """Choose activation mode from persisted profile state."""
-    try:
-        state = registry.get_state(profile.platform_id, profile.credential_ref)
-    except Exception:
-        state = None
-    if state is None:
-        return "initial"
-    if getattr(state, "last_completed_watermark", None):
-        return "refresh"
-    if getattr(state, "last_sync_row_count", None):
-        return "refresh"
-    return "initial"
-
-
-def _get_active_platform_summaries() -> list[dict]:
-    """Fetch platform summaries for active+connected platforms.
-
-    Returns a list of dicts suitable for system prompt injection.
-    Fails silently to avoid blocking agent creation.
-    """
-    try:
-        from src.services.gateway_provider import get_platform_registry
-        registry = get_platform_registry()
-        summaries = registry.get_platforms_summary()
-        return [
-            {
-                "platform_id": s.platform_id,
-                "display_name": s.display_name,
-                "connection_status": _effective_platform_connection_status(s),
-                "raw_connection_status": s.connection_status,
-                "has_credentials": s.has_credentials,
-                "last_sync_row_count": s.last_sync_row_count,
-                "account_label": s.account_label,
-                "is_active": s.is_active,
-            }
-            for s in summaries
-            if s.is_active or s.has_credentials
-        ]
-    except Exception:
-        logger.debug("Could not fetch platform summaries for system prompt", exc_info=True)
-        return []
-
-
-async def resolve_source_info_with_platform_bootstrap(
-    gw: Any,
-    command_text: str | None = None,
-) -> Any:
-    """Resolve source info, refreshing sync-ready platform profiles if needed."""
-    source_info = await gw.get_source_info_typed()
-    if source_info is not None:
-        return source_info
-
-    try:
-        from src.services.gateway_provider import (
-            get_activation_service,
-            get_platform_registry,
-        )
-
-        registry = get_platform_registry()
-        candidates = [
-            p
-            for p in registry.get_platforms_summary()
-            if _is_activatable_platform_profile(p)
-        ]
-        candidates.sort(
-            key=lambda p: (
-                _platform_bootstrap_priority(p.platform_id, command_text),
-                0 if bool(getattr(p, "is_active", False)) else 1,
-            ),
-        )
-        if not candidates:
-            return None
-
-        service = get_activation_service()
-        refreshed = 0
-        for profile in candidates:
-            mode = _activation_mode_for_profile(registry, profile)
-            try:
-                logger.info(
-                    "conversation_platform_bootstrap_start platform_id=%s credential_ref=%s mode=%s",
-                    profile.platform_id,
-                    profile.credential_ref,
-                    mode,
-                )
-                await service.activate_platform(
-                    platform_id=profile.platform_id,
-                    credential_ref=profile.credential_ref,
-                    mode=mode,
-                )
-                refreshed += 1
-                logger.info(
-                    "conversation_platform_bootstrap_done platform_id=%s credential_ref=%s mode=%s",
-                    profile.platform_id,
-                    profile.credential_ref,
-                    mode,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Platform bootstrap refresh failed for %s/%s: %s",
-                    profile.platform_id,
-                    profile.credential_ref,
-                    exc,
-                )
-
-        if refreshed == 0:
-            return None
-        return await gw.get_source_info_typed()
-    except Exception:
-        logger.debug("Platform source bootstrap unavailable", exc_info=True)
-        return None
 
 # Max messages to load for system prompt injection on resume
 MAX_RESUME_MESSAGES = 30
@@ -301,14 +139,7 @@ async def ensure_agent(
     contacts = _get_mru_contacts_for_prompt()
     contacts_hash = hashlib.sha256(json.dumps(contacts, sort_keys=True, default=str).encode()).hexdigest()[:8]
 
-    # Fetch platform summaries so the agent knows what's connected
-    platform_summaries = _get_active_platform_summaries()
-    platforms_hash = hashlib.sha256(json.dumps(platform_summaries, sort_keys=True, default=str).encode()).hexdigest()[:8]
-
-    combined_hash = (
-        f"v={PROMPT_CONTEXT_VERSION}|{source_hash}|interactive={interactive_shipping}"
-        f"|contacts={contacts_hash}|platforms={platforms_hash}"
-    )
+    combined_hash = f"{source_hash}|interactive={interactive_shipping}|contacts={contacts_hash}"
 
     # Reuse existing agent if config hasn't changed
     if session.agent is not None and session.agent_source_hash == combined_hash:
@@ -339,7 +170,6 @@ async def ensure_agent(
         column_samples=column_samples,
         contacts=contacts,
         prior_conversation=prior_conversation,
-        platform_summaries=platform_summaries if platform_summaries else None,
     )
 
     agent = OrchestrationAgent(
@@ -403,10 +233,7 @@ async def process_message(
             # Get current data source
             try:
                 gw = await get_data_gateway()
-                source_info = await resolve_source_info_with_platform_bootstrap(
-                    gw,
-                    command_text=content,
-                )
+                source_info = await gw.get_source_info_typed()
             except Exception:
                 source_info = None
 

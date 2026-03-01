@@ -270,7 +270,7 @@ class TestSourceSchemaColumnModel:
 
 
 _GW_PATCH = "src.services.gateway_provider.get_data_gateway"
-_ACT_PATCH = "src.services.gateway_provider.get_activation_service"
+_EXT_PATCH = "src.services.gateway_provider.get_external_sources_client"
 
 
 class TestRunnerGetSourceStatus:
@@ -411,8 +411,8 @@ class TestRunnerConnectPlatform:
         monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "shpat_test123")
         monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "test-store.myshopify.com")
 
-        mock_activation_svc = AsyncMock()
-        mock_activation_svc.activate_platform = AsyncMock()
+        mock_ext_client = AsyncMock()
+        mock_ext_client.connect_platform.return_value = {"valid": True}
 
         mock_data_gw = AsyncMock()
         mock_data_gw.get_source_info.return_value = {
@@ -425,8 +425,8 @@ class TestRunnerConnectPlatform:
         runner = InProcessRunner()
         async with runner:
             with patch(
-                _ACT_PATCH,
-                return_value=mock_activation_svc,
+                _EXT_PATCH,
+                new=AsyncMock(return_value=mock_ext_client),
             ), patch(
                 _GW_PATCH,
                 new=AsyncMock(return_value=mock_data_gw),
@@ -434,10 +434,10 @@ class TestRunnerConnectPlatform:
                 status = await runner.connect_platform("shopify")
 
         assert status.connected is True
-        mock_activation_svc.activate_platform.assert_called_once_with(
-            platform_id="shopify",
-            credential_ref="primary",
-            mode="initial",
+        mock_ext_client.connect_platform.assert_called_once_with(
+            platform="shopify",
+            credentials={"access_token": "shpat_test123"},
+            store_url="test-store.myshopify.com",
         )
 
     @pytest.mark.asyncio
@@ -446,19 +446,20 @@ class TestRunnerConnectPlatform:
         monkeypatch.setenv("SHOPIFY_ACCESS_TOKEN", "bad-token")
         monkeypatch.setenv("SHOPIFY_STORE_DOMAIN", "test.myshopify.com")
 
-        mock_activation_svc = AsyncMock()
-        mock_activation_svc.activate_platform = AsyncMock(
-            side_effect=RuntimeError("Invalid access token"),
-        )
+        mock_ext_client = AsyncMock()
+        mock_ext_client.connect_platform.return_value = {
+            "valid": False,
+            "error": "Invalid access token",
+        }
 
         runner = InProcessRunner()
         async with runner:
             with patch(
-                _ACT_PATCH,
-                return_value=mock_activation_svc,
+                _EXT_PATCH,
+                new=AsyncMock(return_value=mock_ext_client),
             ):
                 with pytest.raises(
-                    ShipAgentClientError, match="Platform singletons not ready"
+                    ShipAgentClientError, match="Invalid access token"
                 ):
                     await runner.connect_platform("shopify")
 

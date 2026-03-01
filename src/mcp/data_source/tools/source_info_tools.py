@@ -3,102 +3,23 @@
 Provides tools for:
 - get_source_info: Retrieve metadata about the active data source
 - import_records: Import flat dicts as a new data source (for platform orders)
-- activate_external_orders_source: Activate external_orders as the queryable source
 - clear_source: Disconnect/clear the active data source
 """
 
 import hashlib
-import logging
 from typing import Any
 
 from fastmcp import Context
 
-from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN
-
-logger = logging.getLogger(__name__)
-
-
-def _activate_external_orders_view(db: Any) -> dict[str, Any] | None:
-    """Create an imported_data VIEW over external_orders and return source metadata.
-
-    Checks whether external_orders has rows. If so, drops any existing
-    imported_data TABLE or VIEW and creates a VIEW that maps external_orders
-    to the imported_data interface (with a synthetic _source_row_num column).
-
-    This allows all existing query tools (get_rows_by_filter, get_schema,
-    get_column_samples, etc.) to work against platform order data without
-    modification.
-
-    Args:
-        db: DuckDB connection from lifespan context.
-
-    Returns:
-        current_source dict if external_orders has data, None otherwise.
-    """
-    try:
-        result = db.execute(
-            "SELECT COUNT(*) FROM external_orders"
-        ).fetchone()
-        row_count = int(result[0]) if result else 0
-    except (Exception, TypeError, ValueError):
-        return None
-
-    if row_count <= 0:
-        return None
-
-    # Drop any prior imported_data object (TABLE or VIEW) to avoid conflicts
-    try:
-        db.execute("DROP VIEW IF EXISTS imported_data")
-    except Exception:
-        pass
-    try:
-        db.execute("DROP TABLE IF EXISTS imported_data")
-    except Exception:
-        pass
-
-    # Create VIEW with synthetic _source_row_num for row identity
-    db.execute(f"""
-        CREATE VIEW imported_data AS
-        SELECT
-            ROW_NUMBER() OVER (
-                ORDER BY platform, external_id, credential_ref
-            ) AS {SOURCE_ROW_NUM_COLUMN},
-            *
-        FROM external_orders
-    """)
-
-    logger.info(
-        "Activated external_orders as imported_data VIEW (%d rows)", row_count
-    )
-
-    return {
-        "type": "external_orders",
-        "row_count": row_count,
-        "deterministic_ready": True,
-        "row_key_strategy": "composite_pk",
-        "row_key_columns": ["platform", "external_id", "credential_ref"],
-    }
-
 
 async def get_source_info(ctx: Context) -> dict:
     """Get metadata about the currently active data source.
-
-    When no file-based source is active, auto-detects platform orders
-    in the external_orders table and activates them as the queryable source.
 
     Returns:
         Dictionary with active flag, source_type, path, row_count,
         columns with nullable info, and source_signature (schema fingerprint).
     """
     current_source = ctx.request_context.lifespan_context.get("current_source")
-
-    # Auto-detect: if no source is active, check external_orders for data
-    if current_source is None:
-        db = ctx.request_context.lifespan_context["db"]
-        ext_source = _activate_external_orders_view(db)
-        if ext_source is not None:
-            ctx.request_context.lifespan_context["current_source"] = ext_source
-            current_source = ext_source
 
     if current_source is None:
         return {"active": False}
@@ -144,41 +65,6 @@ async def get_source_info(ctx: Context) -> dict:
     }
 
 
-async def activate_external_orders_source(ctx: Context) -> dict:
-    """Activate the external_orders table as the queryable data source.
-
-    Creates a VIEW named imported_data over the external_orders table,
-    enabling all existing data tools (get_source_info, fetch_rows,
-    get_schema, etc.) to query platform order data.
-
-    Called by the PlatformActivationService after upserting orders.
-
-    Returns:
-        Dict with status, row_count, and source_type.
-    """
-    db = ctx.request_context.lifespan_context["db"]
-    ext_source = _activate_external_orders_view(db)
-
-    if ext_source is None:
-        return {
-            "status": "no_data",
-            "message": "external_orders table has no rows",
-        }
-
-    ctx.request_context.lifespan_context["current_source"] = ext_source
-    ctx.request_context.lifespan_context["type_overrides"] = {}
-
-    await ctx.info(
-        f"Activated external_orders as data source ({ext_source['row_count']} rows)"
-    )
-
-    return {
-        "status": "activated",
-        "row_count": ext_source["row_count"],
-        "source_type": "external_orders",
-    }
-
-
 async def import_records(
     records: list[dict[str, Any]],
     source_label: str,
@@ -204,8 +90,7 @@ async def import_records(
 
     await ctx.info(f"Importing {len(records)} records as '{source_label}' source")
 
-    # Drop existing VIEW (from external_orders activation) or TABLE
-    db.execute("DROP VIEW IF EXISTS imported_data")
+    # Drop existing table
     db.execute("DROP TABLE IF EXISTS imported_data")
 
     # Build CREATE TABLE from first record's keys
@@ -255,10 +140,6 @@ async def clear_source(ctx: Context) -> dict:
     """
     db = ctx.request_context.lifespan_context.get("db")
     if db is not None:
-        try:
-            db.execute("DROP VIEW IF EXISTS imported_data")
-        except Exception:
-            pass
         try:
             db.execute("DROP TABLE IF EXISTS imported_data")
         except Exception:

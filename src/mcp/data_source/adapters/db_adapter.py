@@ -497,10 +497,6 @@ class DatabaseAdapter(BaseSourceAdapter):
             else:
                 row_number_expr = "ROW_NUMBER() OVER ()"
 
-            # Drop any VIEW (from external_orders activation) before creating TABLE
-            from src.mcp.data_source.utils import drop_imported_data_view
-            drop_imported_data_view(conn)
-
             # Create snapshot table with identity tracking column
             conn.execute(
                 f"""

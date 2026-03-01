@@ -567,8 +567,9 @@ class InProcessRunner:
     async def connect_platform(self, platform: str) -> DataSourceStatus:
         """Connect an env-configured external platform (Shopify only).
 
-        Reads credentials from environment variables and activates
-        the platform via the ActivationService.
+        Reads credentials from environment variables and validates
+        them via the ExternalSourcesMCPClient, mirroring the HTTP path
+        through GET /api/v1/platforms/shopify/env-status.
 
         Args:
             platform: Platform name (only "shopify" supported).
@@ -592,18 +593,17 @@ class InProcessRunner:
                 "variables must be set for Shopify auto-connect."
             )
 
-        from src.services.gateway_provider import get_activation_service
+        from src.services.gateway_provider import get_external_sources_client
 
-        try:
-            service = get_activation_service()
-            await service.activate_platform(
-                platform_id="shopify",
-                credential_ref="primary",
-                mode="initial",
-            )
-        except RuntimeError as exc:
+        client = await get_external_sources_client()
+        result = await client.connect_platform(
+            platform="shopify",
+            credentials={"access_token": access_token},
+            store_url=store_domain,
+        )
+        if isinstance(result, dict) and not result.get("valid", True):
             raise ShipAgentClientError(
-                f"Platform singletons not ready: {exc}"
+                result.get("error", "Shopify credential validation failed")
             )
         return await self.get_source_status()
 

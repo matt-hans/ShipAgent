@@ -29,7 +29,7 @@ class TestOracleSQLInjection:
 
     def test_quote_identifier_valid(self):
         """Valid identifiers are accepted and double-quoted."""
-        from src.mcp.platforms.oracle.client import _quote_identifier
+        from src.mcp.external_sources.clients.oracle import _quote_identifier
 
         assert _quote_identifier("SALES_ORDERS") == '"SALES_ORDERS"'
         assert _quote_identifier("order_id") == '"order_id"'
@@ -37,7 +37,7 @@ class TestOracleSQLInjection:
 
     def test_quote_identifier_rejects_sql_injection(self):
         """Identifiers containing SQL injection payloads are rejected."""
-        from src.mcp.platforms.oracle.client import _quote_identifier
+        from src.mcp.external_sources.clients.oracle import _quote_identifier
 
         malicious_names = [
             "orders; DROP TABLE orders; --",
@@ -52,34 +52,52 @@ class TestOracleSQLInjection:
             with pytest.raises(ValueError, match="Invalid SQL identifier"):
                 _quote_identifier(name)
 
-    def test_oracle_client_init_validates_table_names(self):
-        """OracleClient rejects malicious table names at init."""
-        from src.mcp.platforms.oracle.client import OracleClient
-        from src.mcp.platforms.oracle.models import OracleCredentials
+    def test_oracle_client_init_validates_table_config(self):
+        """OracleClient rejects malicious table/column names at init."""
+        from src.mcp.external_sources.clients.oracle import OracleClient
 
         with pytest.raises(ValueError, match="Invalid SQL identifier"):
-            OracleClient(OracleCredentials(
-                host="localhost",
-                port=1521,
-                service_name="xe",
-                user="user",
-                password="pass",
-                orders_table="orders; DROP TABLE orders",
-            ))
+            OracleClient(table_config={
+                "orders_table": "orders; DROP TABLE orders",
+                "columns": {"order_id": "ID"},
+            })
 
-    def test_oracle_client_default_tables_pass_validation(self):
-        """Default table names pass identifier validation."""
-        from src.mcp.platforms.oracle.models import OracleCredentials
+    def test_oracle_client_init_validates_column_names(self):
+        """OracleClient rejects malicious column names at init."""
+        from src.mcp.external_sources.clients.oracle import OracleClient
 
-        creds = OracleCredentials(
-            host="localhost",
-            port=1521,
-            service_name="xe",
-            user="user",
-            password="pass",
-        )
-        assert creds.orders_table == "SALES_ORDERS"
-        assert creds.tracking_table == "SHIPMENT_TRACKING"
+        with pytest.raises(ValueError, match="Invalid SQL identifier"):
+            OracleClient(table_config={
+                "orders_table": "ORDERS",
+                "columns": {"order_id": "ID; DROP TABLE orders"},
+            })
+
+    def test_oracle_client_default_config_passes_validation(self):
+        """Default table config passes identifier validation."""
+        from src.mcp.external_sources.clients.oracle import OracleClient
+
+        client = OracleClient()
+        assert client._table_config["orders_table"] == "SALES_ORDERS"
+
+    def test_get_column_returns_quoted(self):
+        """_get_column returns double-quoted identifiers."""
+        from src.mcp.external_sources.clients.oracle import OracleClient
+
+        client = OracleClient()
+        col = client._get_column("order_id")
+        assert col == '"ORDER_ID"'
+
+    def test_build_select_columns_all_quoted(self):
+        """_build_select_columns quotes every column."""
+        from src.mcp.external_sources.clients.oracle import OracleClient
+
+        client = OracleClient()
+        cols = client._build_select_columns()
+        # Every column in the output should be double-quoted
+        for part in cols.split(", "):
+            assert part.startswith('"') and part.endswith('"'), (
+                f"Column not quoted: {part}"
+            )
 
 
 # ============================================================================
@@ -230,6 +248,69 @@ class TestDuckDBSchemaValidation:
 # ============================================================================
 # Finding 5: Oracle Pagination Integer Injection (CWE-20)
 # ============================================================================
+
+
+class TestOraclePaginationValidation:
+    """Verify pagination bounds are enforced."""
+
+    def test_valid_pagination(self):
+        """Valid offset/limit values produce valid SQL clause."""
+        from src.mcp.external_sources.clients.oracle import OracleClient
+        from src.mcp.external_sources.models import OrderFilters
+
+        client = OracleClient()
+        filters = OrderFilters(offset=0, limit=50)
+        clause = client._build_pagination_clause(filters)
+        assert "OFFSET 0 ROWS" in clause
+        assert "FETCH FIRST 50 ROWS ONLY" in clause
+
+    def test_negative_offset_rejected_by_model(self):
+        """Negative offset rejected at Pydantic model validation level."""
+        from pydantic import ValidationError
+
+        from src.mcp.external_sources.models import OrderFilters
+
+        with pytest.raises(ValidationError):
+            OrderFilters(offset=-1, limit=50)
+
+    def test_excessive_offset_rejected(self):
+        """Offset exceeding max is rejected by _build_pagination_clause."""
+        from src.mcp.external_sources.clients.oracle import OracleClient
+        from src.mcp.external_sources.models import OrderFilters
+
+        client = OracleClient()
+        filters = OrderFilters(offset=200_000, limit=50)
+        with pytest.raises(ValueError, match="offset must be between"):
+            client._build_pagination_clause(filters)
+
+    def test_zero_limit_rejected_by_model(self):
+        """Zero limit rejected at Pydantic model validation level."""
+        from pydantic import ValidationError
+
+        from src.mcp.external_sources.models import OrderFilters
+
+        with pytest.raises(ValidationError):
+            OrderFilters(offset=0, limit=0)
+
+    def test_excessive_limit_rejected_by_model(self):
+        """Limit exceeding max rejected at Pydantic model validation level."""
+        from pydantic import ValidationError
+
+        from src.mcp.external_sources.models import OrderFilters
+
+        with pytest.raises(ValidationError):
+            OrderFilters(offset=0, limit=5000)
+
+    def test_max_valid_pagination(self):
+        """Maximum valid offset and limit are accepted."""
+        from src.mcp.external_sources.clients.oracle import OracleClient
+        from src.mcp.external_sources.models import OrderFilters
+
+        client = OracleClient()
+        filters = OrderFilters(offset=100_000, limit=1000)
+        clause = client._build_pagination_clause(filters)
+        assert "OFFSET 100000 ROWS" in clause
+        assert "FETCH FIRST 1000 ROWS ONLY" in clause
 
 
 # ============================================================================

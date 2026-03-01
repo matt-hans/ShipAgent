@@ -3,13 +3,11 @@
 import asyncio
 import hashlib
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.services.conversation_handler import (
-    _get_active_platform_summaries,
     compute_source_hash,
     ensure_agent,
     process_message,
@@ -17,31 +15,20 @@ from src.services.conversation_handler import (
 
 # Precompute the expected hash for empty contacts list (matches JSON serialization)
 _EMPTY_CONTACTS_HASH = hashlib.sha256(json.dumps([], sort_keys=True, default=str).encode()).hexdigest()[:8]
-_EMPTY_PLATFORMS_HASH = hashlib.sha256(json.dumps([], sort_keys=True, default=str).encode()).hexdigest()[:8]
-_PROMPT_CONTEXT_VERSION = "2026-02-28-platform-context-v2"
+_NONE_HASH = f"none|interactive=False|contacts={_EMPTY_CONTACTS_HASH}"
 
 
-def _make_test_session_hash(
-    source_hash: str = "none",
-    interactive: bool = False,
-    platforms: list[dict] | None = None,
-) -> str:
+def _make_test_session_hash(source_hash: str = "none", interactive: bool = False) -> str:
     """Compute the combined hash that ensure_agent() will produce.
 
-    Mirrors the ensure_agent hash in conversation_handler.
+    Mirrors the 3-component hash in conversation_handler.ensure_agent():
+        f"{source_hash}|interactive={interactive}|contacts={contacts_hash}"
     """
     contacts_hash = hashlib.sha256(json.dumps([], sort_keys=True, default=str).encode()).hexdigest()[:8]
-    platforms_hash = hashlib.sha256(
-        json.dumps(platforms or [], sort_keys=True, default=str).encode(),
-    ).hexdigest()[:8]
-    return (
-        f"v={_PROMPT_CONTEXT_VERSION}|{source_hash}|interactive={interactive}"
-        f"|contacts={contacts_hash}|platforms={platforms_hash}"
-    )
+    return f"{source_hash}|interactive={interactive}|contacts={contacts_hash}"
 
 
 _CONTACTS_PATCH = "src.services.conversation_handler._get_mru_contacts_for_prompt"
-_PLATFORMS_PATCH = "src.services.conversation_handler._get_active_platform_summaries"
 
 
 class TestComputeSourceHash:
@@ -98,10 +85,7 @@ class TestEnsureAgent:
         session.agent = AsyncMock()
         session.agent_source_hash = _make_test_session_hash()
 
-        with (
-            patch(_CONTACTS_PATCH, return_value=[]),
-            patch(_PLATFORMS_PATCH, return_value=[]),
-        ):
+        with patch(_CONTACTS_PATCH, return_value=[]):
             result = await ensure_agent(session, source_info=None)
 
         assert result is False  # No new agent created
@@ -227,7 +211,6 @@ class TestProcessMessage:
                 new_callable=AsyncMock,
             ) as mock_gw,
             patch(_CONTACTS_PATCH, return_value=[]),
-            patch(_PLATFORMS_PATCH, return_value=[]),
         ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             events = []
@@ -259,7 +242,6 @@ class TestProcessMessage:
                 new_callable=AsyncMock,
             ) as mock_gw,
             patch(_CONTACTS_PATCH, return_value=[]),
-            patch(_PLATFORMS_PATCH, return_value=[]),
         ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             async for _ in process_message(session, "Hello"):
@@ -288,7 +270,6 @@ class TestProcessMessage:
                 new_callable=AsyncMock,
             ) as mock_gw,
             patch(_CONTACTS_PATCH, return_value=[]),
-            patch(_PLATFORMS_PATCH, return_value=[]),
         ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             async for _ in process_message(session, "User says hello"):
@@ -326,7 +307,6 @@ class TestProcessMessage:
                 new_callable=AsyncMock,
             ) as mock_gw,
             patch(_CONTACTS_PATCH, return_value=[]),
-            patch(_PLATFORMS_PATCH, return_value=[]),
         ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
             async for _ in process_message(
@@ -338,95 +318,3 @@ class TestProcessMessage:
         assert callback_was_set is True
         # Callback should be cleared in finally block
         assert bridge.callback is None
-
-    @pytest.mark.asyncio
-    async def test_bootstraps_source_from_platforms_when_missing(self):
-        """Missing source triggers refresh on sync-ready platforms before ensure_agent."""
-        session = MagicMock()
-        session.agent = MagicMock()
-        session.session_id = "sess-test-001"
-        session.agent_source_hash = _make_test_session_hash()
-        session.lock = asyncio.Lock()
-
-        async def fake_stream(content):
-            yield {"event": "agent_message", "data": {"text": "Ready"}}
-
-        session.agent.process_message_stream = fake_stream
-        session.agent.emitter_bridge = MagicMock()
-
-        mock_source = MagicMock()
-        mock_gw = AsyncMock()
-        mock_gw.get_source_info_typed = AsyncMock(side_effect=[None, mock_source])
-
-        mock_summary = SimpleNamespace(
-            platform_id="shopify",
-            display_name="Shopify",
-            credential_ref="primary",
-            connection_status="disconnected",
-            has_credentials=True,
-            last_sync_row_count=42,
-            account_label=None,
-            is_active=True,
-        )
-        mock_registry = MagicMock()
-        mock_registry.get_platforms_summary.return_value = [mock_summary]
-        mock_activation = MagicMock()
-        mock_activation.activate_platform = AsyncMock(return_value=MagicMock())
-
-        with (
-            patch(
-                "src.services.conversation_handler.get_data_gateway",
-                new_callable=AsyncMock,
-                return_value=mock_gw,
-            ),
-            patch(
-                "src.services.gateway_provider.get_platform_registry",
-                return_value=mock_registry,
-            ),
-            patch(
-                "src.services.gateway_provider.get_activation_service",
-                return_value=mock_activation,
-            ),
-            patch(
-                "src.services.conversation_handler.ensure_agent",
-                new=AsyncMock(return_value=False),
-            ) as mock_ensure_agent,
-        ):
-            async for _ in process_message(session, "Ship all orders"):
-                pass
-
-        mock_activation.activate_platform.assert_awaited_once_with(
-            platform_id="shopify",
-            credential_ref="primary",
-            mode="refresh",
-        )
-        assert mock_ensure_agent.await_count == 1
-        assert mock_ensure_agent.await_args.args[1] is mock_source
-
-
-class TestPlatformSummaryNormalization:
-    """Tests for prompt-facing platform summary normalization."""
-
-    def test_uses_effective_sync_ready_status_for_active_credentialed_profile(self):
-        """Disconnected runtime status is normalized when profile is sync-ready."""
-        mock_summary = SimpleNamespace(
-            platform_id="amazon",
-            display_name="Amazon Seller Central",
-            connection_status="disconnected",
-            has_credentials=True,
-            last_sync_row_count=None,
-            account_label="US Store",
-            is_active=True,
-        )
-        mock_registry = MagicMock()
-        mock_registry.get_platforms_summary.return_value = [mock_summary]
-
-        with patch(
-            "src.services.gateway_provider.get_platform_registry",
-            return_value=mock_registry,
-        ):
-            summaries = _get_active_platform_summaries()
-
-        assert len(summaries) == 1
-        assert summaries[0]["connection_status"] == "sync_ready"
-        assert summaries[0]["raw_connection_status"] == "disconnected"

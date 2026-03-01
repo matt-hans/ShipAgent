@@ -4,6 +4,7 @@ This module dispatches to the correct subsystem based on the first CLI argument:
   serve        — Start FastAPI server (default)
   mcp-data     — Data Source MCP server (stdio)
   mcp-ups      — UPS MCP server (stdio)
+  mcp-external — External Sources MCP server (stdio)
   cli          — Typer CLI (daemon, submit, interact, job)
 
 In PyInstaller bundles, MCP servers self-spawn this same binary with the
@@ -17,7 +18,7 @@ import traceback
 
 logger = logging.getLogger(__name__)
 
-VALID_COMMANDS = {'serve', 'mcp-data', 'mcp-ups', 'cli'}
+VALID_COMMANDS = {'serve', 'mcp-data', 'mcp-ups', 'mcp-external', 'cli'}
 
 
 def get_command() -> str:
@@ -91,6 +92,10 @@ def main() -> None:
     elif command == 'mcp-ups':
         from ups_mcp import main as ups_main
         ups_main()
+
+    elif command == 'mcp-external':
+        from src.mcp.external_sources.server import main as ext_main
+        ext_main()
 
     elif command == 'cli':
         sys.argv = ['shipagent'] + get_cli_args()

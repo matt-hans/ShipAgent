@@ -2,7 +2,7 @@
 
 All callers (API routes, agent tools, conversation processing) import
 gateway accessors from HERE. This module owns the singleton lifecycle.
-Never instantiate DataSourceMCPClient elsewhere.
+Never instantiate DataSourceMCPClient or ExternalSourcesMCPClient elsewhere.
 """
 
 import asyncio
@@ -10,6 +10,7 @@ import logging
 from typing import Any
 
 from src.services.data_source_mcp_client import DataSourceMCPClient
+from src.services.external_sources_mcp_client import ExternalSourcesMCPClient
 from src.services.mapping_cache import invalidate as invalidate_mapping_cache
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,29 @@ async def get_data_gateway() -> DataSourceMCPClient:
             logger.info("DataSourceMCPClient singleton initialized")
         return _data_gateway
 
+
+# -- ExternalSourcesMCPClient singleton ------------------------------------
+_ext_sources_client: ExternalSourcesMCPClient | None = None
+_ext_sources_lock = asyncio.Lock()
+
+
+async def get_external_sources_client() -> ExternalSourcesMCPClient:
+    """Get or create the process-global ExternalSourcesMCPClient.
+
+    Always acquires the lock to prevent returning a stale reference
+    that a concurrent task may be replacing (B-2, CWE-362).
+
+    Returns:
+        The shared ExternalSourcesMCPClient instance.
+    """
+    global _ext_sources_client
+    async with _ext_sources_lock:
+        if _ext_sources_client is None or not _ext_sources_client.is_connected:
+            client = ExternalSourcesMCPClient()
+            await client.connect()
+            _ext_sources_client = client
+            logger.info("ExternalSourcesMCPClient singleton initialized")
+        return _ext_sources_client
 
 
 def get_data_gateway_if_connected() -> DataSourceMCPClient | None:
@@ -111,211 +135,6 @@ async def get_ups_gateway() -> Any:
         return _ups_gateway
 
 
-# -- PlatformGateway + PlatformRegistry singletons ---------------------------
-_platform_registry: Any = None
-_platform_gateway: Any = None
-_activation_service: Any = None
-_platform_lock = asyncio.Lock()
-
-
-def get_platform_registry() -> Any:
-    """Get the PlatformRegistry singleton.
-
-    Must be initialized during FastAPI lifespan startup via
-    init_platform_singletons().
-
-    Returns:
-        The shared PlatformRegistry instance.
-
-    Raises:
-        RuntimeError: If not yet initialized.
-    """
-    if _platform_registry is None:
-        raise RuntimeError(
-            "PlatformRegistry not initialized. "
-            "Call init_platform_singletons() during app startup."
-        )
-    return _platform_registry
-
-
-def get_platform_gateway() -> Any:
-    """Get the PlatformGateway singleton.
-
-    Must be initialized during FastAPI lifespan startup via
-    init_platform_singletons().
-
-    Returns:
-        The shared PlatformGateway instance.
-
-    Raises:
-        RuntimeError: If not yet initialized.
-    """
-    if _platform_gateway is None:
-        raise RuntimeError(
-            "PlatformGateway not initialized. "
-            "Call init_platform_singletons() during app startup."
-        )
-    return _platform_gateway
-
-
-def get_activation_service() -> Any:
-    """Get the PlatformActivationService singleton.
-
-    Must be initialized during FastAPI lifespan startup via
-    init_platform_singletons().
-
-    Returns:
-        The shared PlatformActivationService instance.
-
-    Raises:
-        RuntimeError: If not yet initialized.
-    """
-    if _activation_service is None:
-        raise RuntimeError(
-            "PlatformActivationService not initialized. "
-            "Call init_platform_singletons() during app startup."
-        )
-    return _activation_service
-
-
-class PlatformSessionAdapter:
-    """Adapts MCPClient to SessionProtocol expected by PlatformGateway.
-
-    MCPClient requires connect() before call_tool and exposes disconnect(),
-    but PlatformGateway expects call_tool to work immediately and uses close().
-
-    This adapter performs lazy connect on first call_tool and maps
-    close() → disconnect().
-    """
-
-    def __init__(self, client: Any) -> None:
-        """Initialize with an unconnected MCPClient.
-
-        Args:
-            client: MCPClient instance (not yet connected).
-        """
-        self._client = client
-        self._connected = False
-
-    async def _ensure_connected(self) -> None:
-        """Connect to the MCP server if not already connected."""
-        if not self._connected:
-            await self._client.connect()
-            self._connected = True
-
-    async def call_tool(self, tool_name: str, args: dict) -> dict:
-        """Call a tool on the platform MCP server.
-
-        Lazily connects on first invocation.
-
-        Args:
-            tool_name: MCP tool name.
-            args: Tool arguments dict.
-
-        Returns:
-            Parsed JSON response dict.
-        """
-        await self._ensure_connected()
-        return await self._client.call_tool(tool_name, args)
-
-    async def close(self) -> None:
-        """Disconnect the underlying MCPClient."""
-        if self._connected:
-            await self._client.disconnect()
-            self._connected = False
-
-
-def _build_platform_session_factory() -> Any:
-    """Build a session factory that spawns platform MCP servers via stdio.
-
-    Returns a callable (PlatformConfig, credential_ref) -> PlatformSessionAdapter
-    that creates stdio connections to per-platform MCP servers.
-
-    Returns:
-        Session factory callable.
-    """
-    import os
-    import sys
-
-    from mcp import StdioServerParameters
-    from src.services.mcp_client import MCPClient
-
-    project_root = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    )
-    venv_python = os.path.join(project_root, ".venv", "bin", "python3")
-    python_cmd = os.environ.get("MCP_PYTHON_PATH", "").strip()
-    if not python_cmd:
-        python_cmd = venv_python if os.path.exists(venv_python) else sys.executable
-
-    def factory(config: Any, credential_ref: str) -> PlatformSessionAdapter:
-        """Spawn a platform MCP server as a stdio subprocess.
-
-        Args:
-            config: PlatformConfig with mcp_module path.
-            credential_ref: Credential profile reference.
-
-        Returns:
-            PlatformSessionAdapter wrapping an MCPClient.
-        """
-        params = StdioServerParameters(
-            command=python_cmd,
-            args=["-m", config.mcp_module],
-            env={
-                "PYTHONPATH": project_root,
-                "PATH": os.environ.get("PATH", ""),
-                "CREDENTIAL_REF": credential_ref,
-            },
-        )
-        client = MCPClient(params, max_retries=2, base_delay=1.0)
-        return PlatformSessionAdapter(client)
-
-    return factory
-
-
-async def init_platform_singletons() -> None:
-    """Initialize platform singletons during app startup.
-
-    Creates PlatformRegistry, PlatformGateway, and PlatformActivationService.
-    Must be called once during FastAPI lifespan.
-    """
-    global _platform_registry, _platform_gateway, _activation_service
-    async with _platform_lock:
-        if _platform_registry is not None:
-            return  # Already initialized
-
-        from src.db.connection import SessionLocal
-        from src.services.platform_registry import PlatformRegistry
-        from src.services.platform_gateway import PlatformGateway
-        from src.services.platform_activation_service import PlatformActivationService
-
-        _platform_registry = PlatformRegistry(session_factory=SessionLocal)
-        _platform_gateway = PlatformGateway(
-            _platform_registry,
-            session_factory=_build_platform_session_factory(),
-        )
-
-        _activation_service = PlatformActivationService(
-            registry=_platform_registry,
-            gateway=_platform_gateway,
-        )
-        logger.info("Platform singletons initialized (registry, gateway, activation)")
-
-
-async def shutdown_platform_singletons() -> None:
-    """Shutdown platform singletons. Call from FastAPI lifespan."""
-    global _platform_registry, _platform_gateway, _activation_service
-    async with _platform_lock:
-        if _platform_gateway is not None:
-            try:
-                await _platform_gateway.shutdown()
-            except Exception as e:
-                logger.warning("Failed to shutdown PlatformGateway: %s", e)
-            _platform_gateway = None
-        _platform_registry = None
-        _activation_service = None
-
-
 async def check_gateway_health() -> dict[str, dict[str, str]]:
     """Probe connected MCP gateways for liveness. Non-blocking, best-effort.
 
@@ -325,6 +144,7 @@ async def check_gateway_health() -> dict[str, dict[str, str]]:
     results: dict[str, dict[str, str]] = {}
     for name, client in [
         ("data_source", _data_gateway),
+        ("external_sources", _ext_sources_client),
         ("ups", _ups_gateway),
     ]:
         if client is None:
@@ -346,7 +166,7 @@ async def shutdown_gateways() -> None:
     Acquires each gateway lock before setting to None to prevent race
     conditions with concurrent get_*_gateway() calls (H-5, CWE-362).
     """
-    global _data_gateway, _ups_gateway
+    global _data_gateway, _ext_sources_client, _ups_gateway
     invalidate_mapping_cache()
 
     async with _data_gateway_lock:
@@ -356,6 +176,14 @@ async def shutdown_gateways() -> None:
             except Exception as e:
                 logger.warning("Failed to disconnect DataSourceMCPClient: %s", e)
             _data_gateway = None
+
+    async with _ext_sources_lock:
+        if _ext_sources_client is not None:
+            try:
+                await _ext_sources_client.disconnect()
+            except Exception as e:
+                logger.warning("Failed to disconnect ExternalSourcesMCPClient: %s", e)
+            _ext_sources_client = None
 
     async with _ups_gateway_lock:
         if _ups_gateway is not None:
