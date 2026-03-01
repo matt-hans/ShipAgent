@@ -279,3 +279,55 @@ class TestAmazonActivationRoute:
         payload = response.json()
         assert payload["success"] is False
         assert "amazon auth failed" in payload["error"].lower()
+
+
+class TestAmazonEnvStatus:
+    """Tests for GET /platforms/amazon/env-status."""
+
+    @patch("src.api.routes.platforms.resolve_amazon_credentials")
+    def test_env_status_not_configured(self, mock_resolve):
+        """Returns configured=False when no credentials found."""
+        from fastapi.testclient import TestClient
+        from src.api.main import app
+
+        mock_resolve.return_value = None
+
+        client = TestClient(app)
+        response = client.get("/api/v1/platforms/amazon/env-status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["configured"] is False
+        assert data["valid"] is False
+
+    @patch("src.api.routes.platforms.get_external_sources_client")
+    @patch("src.api.routes.platforms.resolve_amazon_credentials")
+    @pytest.mark.asyncio
+    async def test_env_status_configured_and_valid(self, mock_resolve, mock_get_ext):
+        """Returns configured=True, valid=True when credentials work."""
+        from fastapi.testclient import TestClient
+        from src.api.main import app
+        from src.services.connection_types import AmazonSPAPICredentials
+
+        mock_resolve.return_value = AmazonSPAPICredentials(
+            client_id="test-id",
+            client_secret="test-secret",
+            refresh_token="test-token",
+            marketplace_id="ATVPDKIKX0DER",
+            sandbox=False,
+        )
+
+        mock_ext = AsyncMock()
+        mock_ext.validate_credentials = AsyncMock(return_value={
+            "valid": True,
+            "platform": "amazon",
+            "shop": {"name": "Amazon.com", "marketplace_id": "ATVPDKIKX0DER"},
+        })
+        mock_get_ext.return_value = mock_ext
+
+        client = TestClient(app)
+        response = client.get("/api/v1/platforms/amazon/env-status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["configured"] is True
+        assert data["valid"] is True
+        assert data["seller_name"] == "Amazon.com"
