@@ -448,7 +448,7 @@ export interface AuditLogEntry {
 // === External Platform Types ===
 
 /** Supported external platform identifiers. */
-export type PlatformType = 'shopify' | 'woocommerce' | 'sap' | 'oracle';
+export type PlatformType = 'shopify' | 'amazon' | 'woocommerce' | 'sap' | 'oracle';
 
 /** Platform connection status values. */
 export type ConnectionStatus = 'connected' | 'disconnected' | 'error' | 'authenticating';
@@ -504,9 +504,19 @@ export interface OracleCredentialsString {
 /** Union type for Oracle credentials. */
 export type OracleCredentials = OracleCredentialsParams | OracleCredentialsString;
 
+/** Connect platform request - Amazon SP-API. */
+export interface AmazonCredentials {
+  client_id: string;
+  client_secret: string;
+  refresh_token: string;
+  marketplace_id?: string;
+  sandbox?: boolean;
+}
+
 /** All credential types union. */
 export type PlatformCredentials =
   | { platform: 'shopify'; credentials: ShopifyCredentials; store_url: string }
+  | { platform: 'amazon'; credentials: AmazonCredentials; store_url?: string }
   | { platform: 'woocommerce'; credentials: WooCommerceCredentials; store_url: string }
   | { platform: 'sap'; credentials: SAPCredentials; store_url?: string }
   | { platform: 'oracle'; credentials: OracleCredentials; store_url?: string };
@@ -713,6 +723,20 @@ export interface ShopifyEnvStatus {
   store_url: string | null;
   /** Shop name from Shopify API */
   store_name: string | null;
+  /** Error message if validation failed */
+  error: string | null;
+}
+
+/** Amazon environment status response. */
+export interface AmazonEnvStatus {
+  /** True if Amazon SP-API credentials are configured */
+  configured: boolean;
+  /** True if credentials validated against Amazon API */
+  valid: boolean;
+  /** Amazon marketplace ID */
+  marketplace_id: string | null;
+  /** Seller/marketplace name from Amazon */
+  seller_name: string | null;
   /** Error message if validation failed */
   error: string | null;
 }
@@ -1013,7 +1037,7 @@ export interface CommandListResponse {
 
 /** Data source context persisted with a session for restoration. */
 export interface DataSourceContext {
-  type: 'local' | 'shopify' | null;
+  type: 'local' | 'shopify' | 'amazon' | null;
   source_type: string | null;
   saved_source_id: string | null;
   file_path: string | null;

@@ -89,7 +89,7 @@ async def activate_amazon_as_data_source() -> dict[str, Any]:
             step="connect",
         )
 
-    orders_result = await ext.fetch_orders("amazon", limit=250)
+    orders_result = await ext.fetch_orders("amazon", limit=250, include_items=False)
     if not orders_result.get("success"):
         raise AmazonActivationError(
             f"Failed to fetch Amazon orders: {orders_result.get('error', 'Unknown error')}",

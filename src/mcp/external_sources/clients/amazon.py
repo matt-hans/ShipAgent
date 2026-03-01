@@ -6,7 +6,9 @@ Supports OAuth token refresh, order retrieval, and normalized order mapping.
 
 from __future__ import annotations
 
+import asyncio
 import time
+from collections import OrderedDict
 from typing import Any
 
 import httpx
@@ -20,6 +22,7 @@ class AmazonClient(PlatformClient):
 
     LWA_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
     DEFAULT_MARKETPLACE_ID = "ATVPDKIKX0DER"
+    MAX_ITEMS_CACHE_SIZE = 500
 
     BASE_URLS = {
         "na": "https://sellingpartnerapi-na.amazon.com",
@@ -42,10 +45,18 @@ class AmazonClient(PlatformClient):
 
         self._access_token: str | None = None
         self._token_expires_at: float = 0.0
+        self._order_items_cache: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
 
     @property
     def platform_name(self) -> str:
         return "amazon"
+
+    def _cache_items(self, order_id: str, items: list[dict[str, Any]]) -> None:
+        """Store order items in bounded LRU cache, evicting oldest entries."""
+        self._order_items_cache[order_id] = items
+        self._order_items_cache.move_to_end(order_id)
+        while len(self._order_items_cache) > self.MAX_ITEMS_CACHE_SIZE:
+            self._order_items_cache.popitem(last=False)
 
     @staticmethod
     def _to_bool(value: Any) -> bool:
@@ -105,6 +116,58 @@ class AmazonClient(PlatformClient):
             return self._access_token
         ok = await self._refresh_access_token()
         return self._access_token if ok else None
+
+    async def _fetch_order_items(self, order_id: str) -> list[dict[str, Any]]:
+        """Fetch order items from SP-API getOrderItems endpoint.
+
+        Args:
+            order_id: Amazon order ID.
+
+        Returns:
+            List of raw order item dicts from SP-API. Empty on failure.
+        """
+        if not self._authenticated:
+            return []
+
+        token = await self._get_access_token()
+        if not token:
+            return []
+
+        headers = {
+            "x-amz-access-token": token,
+            "content-type": "application/json",
+        }
+
+        all_items: list[dict[str, Any]] = []
+        next_token: str | None = None
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                while True:
+                    params: dict[str, str] = {}
+                    if next_token:
+                        params["NextToken"] = next_token
+
+                    response = await client.get(
+                        f"{self._base_url()}/orders/v0/orders/{order_id}/orderItems",
+                        headers=headers,
+                        params=params,
+                    )
+
+                    if response.status_code != 200:
+                        break
+
+                    payload = response.json().get("payload", {})
+                    items = payload.get("OrderItems", [])
+                    all_items.extend(items)
+
+                    next_token = payload.get("NextToken")
+                    if not next_token:
+                        break
+        except Exception:
+            return []
+
+        return all_items
 
     async def authenticate(self, credentials: dict) -> bool:
         self._client_id = str(credentials.get("client_id", "")).strip() or None
@@ -203,7 +266,15 @@ class AmazonClient(PlatformClient):
                     for order in orders:
                         if filters.status and str(order.get("OrderStatus", "")).lower() != str(filters.status).lower():
                             continue
-                        normalized_orders.append(self._normalize_order(order))
+                        order_id = str(order.get("AmazonOrderId", ""))
+                        items: list[dict[str, Any]] | None = None
+                        if filters.include_items:
+                            items = await self._fetch_order_items(order_id)
+                            if items:
+                                self._cache_items(order_id, items)
+                            # Rate limit: 1 req/sec for getOrderItems
+                            await asyncio.sleep(1.0)
+                        normalized_orders.append(self._normalize_order(order, items))
                         if len(normalized_orders) >= max_results:
                             break
 
@@ -241,15 +312,156 @@ class AmazonClient(PlatformClient):
             payload = response.json().get("payload")
             if not isinstance(payload, dict):
                 return None
-            return self._normalize_order(payload)
+            order_id = str(payload.get("AmazonOrderId", ""))
+            items = await self._fetch_order_items(order_id)
+            if items:
+                self._cache_items(order_id, items)
+            return self._normalize_order(payload, items)
+        except Exception:
+            return None
+
+    async def get_shop_info(self) -> dict[str, Any] | None:
+        """Fetch seller marketplace participation metadata.
+
+        Returns:
+            Dict with name, marketplace_id, country_code, or None on failure.
+        """
+        if not self._authenticated:
+            return None
+
+        token = await self._get_access_token()
+        if not token:
+            return None
+
+        headers = {
+            "x-amz-access-token": token,
+            "content-type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.get(
+                    f"{self._base_url()}/sellers/v1/marketplaceParticipations",
+                    headers=headers,
+                )
+
+            if response.status_code != 200:
+                return None
+
+            participations = response.json().get("payload", [])
+            if not participations:
+                return None
+
+            # Find matching marketplace or use first
+            for p in participations:
+                marketplace = p.get("marketplace", {})
+                if marketplace.get("id") == self._marketplace_id:
+                    return {
+                        "name": marketplace.get("name", "Amazon Seller"),
+                        "marketplace_id": marketplace.get("id", ""),
+                        "country_code": marketplace.get("countryCode", ""),
+                    }
+
+            # Fallback to first participation
+            first = participations[0].get("marketplace", {})
+            return {
+                "name": first.get("name", "Amazon Seller"),
+                "marketplace_id": first.get("id", ""),
+                "country_code": first.get("countryCode", ""),
+            }
         except Exception:
             return None
 
     async def update_tracking(self, update: TrackingUpdate) -> bool:
-        """Tracking write-back is not yet implemented in compatibility mode."""
-        return False
+        """Write tracking number back to Amazon via confirmShipment.
 
-    def _normalize_order(self, order: dict[str, Any]) -> ExternalOrder:
+        Uses cached order items when available, falls back to
+        _fetch_order_items for a just-in-time retrieval.
+
+        Args:
+            update: Tracking update with order_id, tracking_number, carrier.
+
+        Returns:
+            True if Amazon accepted the shipment confirmation.
+        """
+        if not self._authenticated:
+            return False
+
+        token = await self._get_access_token()
+        if not token:
+            return False
+
+        # Resolve order items — cache first, JIT fallback
+        raw_items = self._order_items_cache.get(update.order_id)
+        if not raw_items:
+            raw_items = await self._fetch_order_items(update.order_id)
+
+        if not raw_items:
+            return False
+
+        order_items = [
+            {
+                "orderItemId": str(item.get("OrderItemId", "")),
+                "quantity": int(item.get("QuantityOrdered") or 1),
+            }
+            for item in raw_items
+        ]
+
+        from datetime import UTC, datetime
+
+        payload = {
+            "marketplaceId": self._marketplace_id,
+            "packageDetail": {
+                "packageReferenceId": "1",
+                "carrierCode": update.carrier,
+                "carrierName": update.carrier,
+                "trackingNumber": update.tracking_number,
+                "shipDate": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "orderItems": order_items,
+            },
+        }
+
+        headers = {
+            "x-amz-access-token": token,
+            "content-type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.post(
+                    f"{self._base_url()}/orders/v0/orders/{update.order_id}/shipment",
+                    headers=headers,
+                    json=payload,
+                )
+            return response.status_code in (200, 204)
+        except Exception:
+            return False
+
+    # Weight unit conversion factors to grams
+    _WEIGHT_TO_GRAMS: dict[str, float] = {
+        "grams": 1.0,
+        "g": 1.0,
+        "kilograms": 1000.0,
+        "kg": 1000.0,
+        "ounces": 28.3495,
+        "oz": 28.3495,
+        "pounds": 453.592,
+        "lb": 453.592,
+        "lbs": 453.592,
+    }
+
+    def _normalize_order(
+        self, order: dict[str, Any], items: list[dict[str, Any]] | None = None
+    ) -> ExternalOrder:
+        """Normalize an Amazon order into ExternalOrder format.
+
+        Args:
+            order: Raw order dict from SP-API.
+            items: Optional list of order item dicts for enrichment.
+
+        Returns:
+            Normalized ExternalOrder.
+        """
         shipping = order.get("ShippingAddress") or {}
         buyer = order.get("BuyerInfo") or {}
         order_total = order.get("OrderTotal") or {}
@@ -259,6 +471,50 @@ class AmazonClient(PlatformClient):
 
         status = str(order.get("OrderStatus") or fulfillment_status)
         created_at = str(order.get("PurchaseDate") or "")
+
+        # Normalize line items when available
+        normalized_items: list[dict[str, Any]] = []
+        total_weight_grams: float | None = None
+        item_count: int | None = None
+
+        if items:
+            weight_sum = 0.0
+            has_weight = False
+            qty_sum = 0
+
+            for item in items:
+                qty = int(item.get("QuantityOrdered") or 1)
+                qty_sum += qty
+                price_info = item.get("ItemPrice") or {}
+
+                normalized_items.append({
+                    "id": str(item.get("OrderItemId", "")),
+                    "title": item.get("Title", ""),
+                    "quantity": qty,
+                    "price": str(price_info.get("Amount", "0.00")),
+                    "sku": item.get("SellerSKU", ""),
+                    "asin": item.get("ASIN", ""),
+                })
+
+                # Weight conversion
+                weight_info = item.get("ItemWeight") or {}
+                weight_val = weight_info.get("Value")
+                weight_unit = str(weight_info.get("Unit", "")).lower().strip()
+                if weight_val is not None and weight_unit:
+                    try:
+                        factor = self._WEIGHT_TO_GRAMS.get(weight_unit, 1.0)
+                        weight_sum += float(weight_val) * factor * qty
+                        has_weight = True
+                    except (ValueError, TypeError):
+                        pass
+
+            item_count = qty_sum if qty_sum > 0 else None
+            total_weight_grams = weight_sum if has_weight else None
+        else:
+            # Fallback: approximate item count from order-level fields
+            shipped = order.get("NumberOfItemsShipped") or 0
+            unshipped = order.get("NumberOfItemsUnshipped") or 0
+            item_count = (shipped + unshipped) or None
 
         return ExternalOrder(
             platform="amazon",
@@ -285,9 +541,9 @@ class AmazonClient(PlatformClient):
             financial_status=order.get("PaymentMethod"),
             fulfillment_status=fulfillment_status,
             tags=None,
-            total_weight_grams=None,
+            total_weight_grams=total_weight_grams,
             shipping_method=order.get("ShipmentServiceLevelCategory"),
-            item_count=(order.get("NumberOfItemsShipped") or 0) + (order.get("NumberOfItemsUnshipped") or 0),
+            item_count=item_count,
             customer_tags=None,
             customer_order_count=None,
             customer_total_spent=None,
@@ -303,6 +559,6 @@ class AmazonClient(PlatformClient):
                 "earliest_ship_date": order.get("EarliestShipDate"),
                 "latest_ship_date": order.get("LatestShipDate"),
             },
-            items=[],
+            items=normalized_items,
             raw_data=order,
         )

@@ -837,7 +837,7 @@ class BatchEngine:
 
                     # Route to external platform or local file write-back
                     if source_type in (
-                        "shopify", "woocommerce", "sap", "oracle",
+                        "shopify", "amazon", "woocommerce", "sap", "oracle",
                     ):
                         ext = await get_external_sources_client()
                         gw_result = await self._write_back_external(

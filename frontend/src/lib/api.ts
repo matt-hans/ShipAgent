@@ -602,6 +602,7 @@ import type {
   ListOrdersResponse,
   OrderFilters,
   ShopifyEnvStatus,
+  AmazonEnvStatus,
 } from '@/types/api';
 
 /**
@@ -656,6 +657,26 @@ export async function activateShopify(): Promise<{
   error: string | null;
 }> {
   const response = await fetch(`${getApiBase()}/platforms/shopify/activate`, {
+    method: 'POST',
+  });
+  return parseResponse(response);
+}
+
+/**
+ * Activate Amazon as the active data source.
+ *
+ * Performs backend connect + fetch + import in a single call.
+ *
+ * @returns Activation result with row count and column info.
+ */
+export async function activateAmazon(): Promise<{
+  success: boolean;
+  row_count: number;
+  source_type: string | null;
+  columns: Array<Record<string, unknown>>;
+  error: string | null;
+}> {
+  const response = await fetch(`${getApiBase()}/platforms/amazon/activate`, {
     method: 'POST',
   });
   return parseResponse(response);
@@ -726,6 +747,18 @@ export async function listPlatformOrders(
 export async function getShopifyEnvStatus(): Promise<ShopifyEnvStatus> {
   const response = await fetch(`${getApiBase()}/platforms/shopify/env-status`);
   return parseResponse<ShopifyEnvStatus>(response);
+}
+
+/**
+ * Check Amazon credentials from environment/DB.
+ *
+ * Validates SP-API credentials and returns configuration status.
+ *
+ * @returns Status indicating whether credentials are configured and valid.
+ */
+export async function getAmazonEnvStatus(): Promise<AmazonEnvStatus> {
+  const response = await fetch(`${getApiBase()}/platforms/amazon/env-status`);
+  return parseResponse<AmazonEnvStatus>(response);
 }
 
 // === Contact Book API ===
