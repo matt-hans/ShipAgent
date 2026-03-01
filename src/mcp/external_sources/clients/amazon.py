@@ -309,6 +309,58 @@ class AmazonClient(PlatformClient):
         except Exception:
             return None
 
+    async def get_shop_info(self) -> dict[str, Any] | None:
+        """Fetch seller marketplace participation metadata.
+
+        Returns:
+            Dict with name, marketplace_id, country_code, or None on failure.
+        """
+        if not self._authenticated:
+            return None
+
+        token = await self._get_access_token()
+        if not token:
+            return None
+
+        headers = {
+            "x-amz-access-token": token,
+            "content-type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.get(
+                    f"{self._base_url()}/sellers/v1/marketplaceParticipations",
+                    headers=headers,
+                )
+
+            if response.status_code != 200:
+                return None
+
+            participations = response.json().get("payload", [])
+            if not participations:
+                return None
+
+            # Find matching marketplace or use first
+            for p in participations:
+                marketplace = p.get("marketplace", {})
+                if marketplace.get("id") == self._marketplace_id:
+                    return {
+                        "name": marketplace.get("name", "Amazon Seller"),
+                        "marketplace_id": marketplace.get("id", ""),
+                        "country_code": marketplace.get("countryCode", ""),
+                    }
+
+            # Fallback to first participation
+            first = participations[0].get("marketplace", {})
+            return {
+                "name": first.get("name", "Amazon Seller"),
+                "marketplace_id": first.get("id", ""),
+                "country_code": first.get("countryCode", ""),
+            }
+        except Exception:
+            return None
+
     async def update_tracking(self, update: TrackingUpdate) -> bool:
         """Write tracking number back to Amazon via confirmShipment.
 

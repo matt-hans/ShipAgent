@@ -393,3 +393,52 @@ class TestUpdateTracking:
 
         result = await client.update_tracking(update)
         assert result is False
+
+
+class TestGetShopInfo:
+    """Test get_shop_info for seller metadata."""
+
+    @pytest.mark.asyncio
+    async def test_get_shop_info_returns_marketplace_data(self):
+        """Returns marketplace participation metadata."""
+        client = AmazonClient()
+        client._authenticated = True
+        client._access_token = "test-token"
+        client._token_expires_at = 9999999999.0
+        client._marketplace_id = "ATVPDKIKX0DER"
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "payload": [
+                {
+                    "marketplace": {
+                        "id": "ATVPDKIKX0DER",
+                        "name": "Amazon.com",
+                        "countryCode": "US",
+                    },
+                    "participation": {
+                        "isParticipating": True,
+                    },
+                },
+            ]
+        }
+
+        with patch.object(
+            httpx.AsyncClient, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = mock_response
+            result = await client.get_shop_info()
+
+        assert result is not None
+        assert result["name"] == "Amazon.com"
+        assert result["marketplace_id"] == "ATVPDKIKX0DER"
+
+    @pytest.mark.asyncio
+    async def test_get_shop_info_not_authenticated(self):
+        """Returns None when not authenticated."""
+        client = AmazonClient()
+        client._authenticated = False
+
+        result = await client.get_shop_info()
+        assert result is None
