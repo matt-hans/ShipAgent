@@ -23,6 +23,24 @@ export function ShopifyIcon({ className }: { className?: string }) {
   );
 }
 
+export function AmazonIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className={className}>
+      <text
+        x="12"
+        y="17"
+        textAnchor="middle"
+        fontFamily="system-ui, -apple-system, sans-serif"
+        fontSize="18"
+        fontWeight="700"
+        fill="currentColor"
+      >
+        A
+      </text>
+    </svg>
+  );
+}
+
 /** DataSourceIcon with optional connected indicator dot. */
 export function DataSourceIcon({ className, connected }: { className?: string; connected?: boolean }) {
   return (

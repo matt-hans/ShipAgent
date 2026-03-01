@@ -10,6 +10,7 @@ from sqlalchemy.orm import sessionmaker
 from src.db.models import Base, ProviderConnection
 from src.services.connection_service import ConnectionService
 from src.services.connection_types import (
+    AmazonSPAPICredentials,
     ConnectionValidationError,
     ShopifyClientCredentials,
     ShopifyLegacyCredentials,
@@ -708,3 +709,85 @@ class TestDecryptResilience:
         assert creds is not None
         # store_domain will be empty since metadata is corrupt
         assert creds.store_domain == ""
+
+
+class TestAmazonConnectionService:
+
+    def test_save_amazon_connection(self, service):
+        """Save an Amazon connection and verify deterministic key."""
+        result = service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials={
+                "client_id": "amzn-client",
+                "client_secret": "amzn-secret",
+                "refresh_token": "amzn-refresh",
+                "marketplace_id": "ATVPDKIKX0DER",
+            },
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US",
+        )
+        assert result["is_new"] is True
+        assert result["connection_key"] == "amazon:ATVPDKIKX0DER"
+
+    def test_save_amazon_missing_refresh_token(self, service):
+        """Amazon save requires refresh_token."""
+        with pytest.raises(ConnectionValidationError) as exc_info:
+            service.save_connection(
+                provider="amazon", auth_mode="sp_api",
+                credentials={
+                    "client_id": "amzn-client",
+                    "client_secret": "amzn-secret",
+                },
+                metadata={"marketplace_id": "ATVPDKIKX0DER"},
+                display_name="Amazon US",
+            )
+        assert exc_info.value.code == "MISSING_FIELD"
+
+    def test_get_amazon_credentials(self, service):
+        """Amazon credentials can be read by marketplace id."""
+        service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials={
+                "client_id": "amzn-client",
+                "client_secret": "amzn-secret",
+                "refresh_token": "amzn-refresh",
+                "marketplace_id": "ATVPDKIKX0DER",
+                "sandbox": "true",
+            },
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US",
+        )
+        creds = service.get_amazon_credentials("ATVPDKIKX0DER")
+        assert isinstance(creds, AmazonSPAPICredentials)
+        assert creds.client_id == "amzn-client"
+        assert creds.refresh_token == "amzn-refresh"
+        assert creds.sandbox is True
+
+    def test_get_first_amazon_credentials_deterministic(self, service):
+        """First available Amazon credentials are deterministic by key order."""
+        service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials={
+                "client_id": "ca-client",
+                "client_secret": "ca-secret",
+                "refresh_token": "ca-refresh",
+                "marketplace_id": "A2EUQ1WTGCTBG2",
+            },
+            metadata={"marketplace_id": "A2EUQ1WTGCTBG2"},
+            display_name="Amazon CA",
+        )
+        service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials={
+                "client_id": "us-client",
+                "client_secret": "us-secret",
+                "refresh_token": "us-refresh",
+                "marketplace_id": "ATVPDKIKX0DER",
+            },
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US",
+        )
+        creds = service.get_first_amazon_credentials()
+        assert isinstance(creds, AmazonSPAPICredentials)
+        assert creds.marketplace_id == "A2EUQ1WTGCTBG2"
+        assert creds.client_id == "ca-client"

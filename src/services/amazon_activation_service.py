@@ -8,10 +8,10 @@ use identical deterministic logic.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from src.services.gateway_provider import get_data_gateway, get_external_sources_client
+from src.services.runtime_credentials import resolve_amazon_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -22,26 +22,6 @@ class AmazonActivationError(Exception):
     def __init__(self, message: str, step: str = "unknown") -> None:
         self.step = step
         super().__init__(message)
-
-
-def _resolve_amazon_credentials_from_env() -> dict[str, Any] | None:
-    """Resolve Amazon SP-API credentials from environment variables."""
-    client_id = os.environ.get("AMAZON_SP_API_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("AMAZON_SP_API_CLIENT_SECRET", "").strip()
-    refresh_token = os.environ.get("AMAZON_SP_API_REFRESH_TOKEN", "").strip()
-    marketplace_id = os.environ.get("AMAZON_SP_API_MARKETPLACE_ID", "ATVPDKIKX0DER").strip() or "ATVPDKIKX0DER"
-    sandbox = os.environ.get("AMAZON_SP_API_SANDBOX", "").strip().lower() in {"1", "true", "yes", "on"}
-
-    if not client_id or not client_secret or not refresh_token:
-        return None
-
-    return {
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "refresh_token": refresh_token,
-        "marketplace_id": marketplace_id,
-        "sandbox": sandbox,
-    }
 
 
 def _prepare_amazon_import_rows(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -74,13 +54,21 @@ async def activate_amazon_as_data_source() -> dict[str, Any]:
 
     Flow: resolve credentials -> connect platform -> fetch orders -> normalize -> import.
     """
-    creds = _resolve_amazon_credentials_from_env()
-    if creds is None:
+    amazon_creds = resolve_amazon_credentials()
+    if amazon_creds is None:
         raise AmazonActivationError(
-            "Amazon credentials not configured. Set AMAZON_SP_API_CLIENT_ID, "
-            "AMAZON_SP_API_CLIENT_SECRET, and AMAZON_SP_API_REFRESH_TOKEN.",
+            "Amazon credentials not configured. Save Amazon credentials in Settings "
+            "or set AMAZON_SP_API_CLIENT_ID, AMAZON_SP_API_CLIENT_SECRET, and "
+            "AMAZON_SP_API_REFRESH_TOKEN.",
             step="credentials",
         )
+    creds = {
+        "client_id": amazon_creds.client_id,
+        "client_secret": amazon_creds.client_secret,
+        "refresh_token": amazon_creds.refresh_token,
+        "marketplace_id": amazon_creds.marketplace_id,
+        "sandbox": amazon_creds.sandbox,
+    }
 
     try:
         ext = await get_external_sources_client()
