@@ -2,12 +2,11 @@
  * Data source management panel for the sidebar.
  *
  * Handles local file import (CSV/Excel), database connections,
- * Shopify platform integration, and source switching.
+ * federated platform integration (Shopify, Amazon, etc.), and source switching.
  */
 
 import * as React from 'react';
 import { useAppState } from '@/hooks/useAppState';
-import { useExternalSources } from '@/hooks/useExternalSources';
 import { cn } from '@/lib/utils';
 import {
   disconnectDataSource,
@@ -16,13 +15,16 @@ import {
   getSavedDataSources,
   reconnectSavedSource,
   getDataSourceStatus,
-  activateShopify,
 } from '@/lib/api';
-import type { DataSourceInfo, DataSourceType } from '@/types/api';
+import type { DataSourceInfo, DataSourceType, FederatedPlatform } from '@/types/api';
 import { RecentSourcesModal } from '@/components/RecentSourcesModal';
 import { toDataSourceColumns } from '@/components/sidebar/dataSourceMappers';
 import { HardDriveIcon, InfoIcon } from '@/components/ui/icons';
-import { ShopifyIcon } from '@/components/ui/brand-icons';
+import {
+  ShopifyIcon,
+  AmazonIcon,
+  PlatformIcon,
+} from '@/components/ui/brand-icons';
 import { Switch } from '@/components/ui/switch';
 
 /** Extracts a display filename from a DataSourceInfo. */
@@ -33,7 +35,106 @@ export function extractFileName(ds: DataSourceInfo): string | null {
   return segments[segments.length - 1] || null;
 }
 
-// Data Source Section - Unified view with radio-card active/inactive pattern
+/** Icon component for each known platform. Falls back to generic. */
+function getPlatformIcon(platformId: string, className?: string) {
+  const icons: Record<string, React.FC<{ className?: string }>> = {
+    shopify: ShopifyIcon,
+    amazon: AmazonIcon,
+  };
+  const Icon = icons[platformId] || PlatformIcon;
+  return <Icon className={className} />;
+}
+
+/** Platforms visible in the sidebar. Add IDs here when new integrations are ready. */
+const VISIBLE_PLATFORM_IDS = new Set(['shopify', 'amazon']);
+
+/** Inline status text for a platform row. */
+function platformStatusText(
+  platform: FederatedPlatform,
+  interactiveShipping: boolean,
+): { text: string; className: string } {
+  if (platform.is_active && interactiveShipping) {
+    return { text: 'Standby', className: 'text-slate-500' };
+  }
+  const status = platform.connection_status.toLowerCase();
+  const orderCount = platform.last_sync_row_count || 0;
+
+  if (!platform.has_credentials) {
+    return { text: 'Not configured', className: 'text-slate-500' };
+  }
+
+  if (platform.is_active) {
+    if (orderCount > 0) {
+      return { text: `Synced (${orderCount.toLocaleString()})`, className: 'text-emerald-400' };
+    }
+    return { text: 'Syncing', className: 'text-amber-400' };
+  }
+
+  if (status === 'auth_expired') {
+    return { text: 'Needs attention', className: 'text-amber-400' };
+  }
+  if (status === 'connected' || status === 'degraded') {
+    return { text: 'Configured', className: 'text-slate-400' };
+  }
+  if (status === 'disconnected') {
+    return { text: 'Configured', className: 'text-slate-400' };
+  }
+  return { text: 'Needs attention', className: 'text-amber-400' };
+}
+
+/** Compact single-line platform row with inline status and toggle/link. */
+function PlatformRow({
+  platform,
+  interactiveShipping,
+  onToggle,
+  isToggling,
+}: {
+  platform: FederatedPlatform;
+  interactiveShipping: boolean;
+  onToggle: (platformId: string) => void;
+  isToggling: boolean;
+}) {
+  const { setSettingsFlyoutOpen } = useAppState();
+  const canToggle = (platform.is_active || platform.has_credentials) && !isToggling;
+  const status = platformStatusText(platform, interactiveShipping);
+
+  return (
+    <div className="flex items-center gap-2 py-1.5">
+      {getPlatformIcon(
+        platform.platform_id,
+        cn('w-4 h-4 shrink-0', platform.is_active ? undefined : 'opacity-50'),
+      )}
+      <span
+        className={cn(
+          'text-xs font-medium truncate',
+          platform.has_credentials ? 'text-slate-200' : 'text-slate-400',
+        )}
+      >
+        {platform.display_name}
+      </span>
+      <span className={cn('text-[10px] font-mono ml-auto shrink-0', status.className)}>
+        {isToggling ? (platform.is_active ? 'Updating...' : 'Syncing...') : status.text}
+      </span>
+      {canToggle || isToggling ? (
+        <Switch
+          checked={platform.is_active}
+          onCheckedChange={() => onToggle(platform.platform_id)}
+          disabled={isToggling}
+          className="scale-75 shrink-0"
+        />
+      ) : !platform.has_credentials ? (
+        <button
+          onClick={() => setSettingsFlyoutOpen(true)}
+          className="text-[10px] font-medium text-primary hover:underline shrink-0"
+        >
+          Connect
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+// Data Source Section - Unified view with platform cards + local source
 export function DataSourceSection() {
   const {
     dataSource, setDataSource,
@@ -43,30 +144,14 @@ export function DataSourceSection() {
     interactiveShipping,
     writeBackEnabled, setWriteBackEnabled,
     setPendingChatMessage,
-  } = useAppState();
-  const { state: externalState } = useExternalSources();
-  const {
-    providerConnections,
-    setSettingsFlyoutOpen,
+    federatedPlatforms,
+    federatedPlatformsLoading,
+    togglePlatformActive,
   } = useAppState();
   const [isConnecting, setIsConnecting] = React.useState(false);
+  const [togglingPlatformId, setTogglingPlatformId] = React.useState<string | null>(null);
   const [showDbForm, setShowDbForm] = React.useState(false);
   const [dbConnectionString, setDbConnectionString] = React.useState('');
-  const [backendSourceType, setBackendSourceType] = React.useState<string | null>(null);
-
-  // Shopify availability derived from provider connections (server-side runtime_usable)
-  const shopifyConnection = providerConnections.find(
-    (c) => c.provider === 'shopify' && c.runtime_usable
-  );
-  const shopifyAvailable = !!shopifyConnection;
-
-  // Also check env-based Shopify for backward compatibility during migration
-  const shopifyEnvStatus = externalState.shopifyEnvStatus;
-  const isCheckingShopifyEnv = externalState.isCheckingEnv;
-  const shopifyEnvConnected = shopifyEnvStatus?.valid === true;
-  const shopifyStoreName = shopifyConnection?.display_name
-    || shopifyEnvStatus?.store_name
-    || shopifyEnvStatus?.store_url;
 
   // Recent sources modal
   const [showRecentSources, setShowRecentSources] = React.useState(false);
@@ -74,6 +159,15 @@ export function DataSourceSection() {
   // File picker ref and state
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const [importError, setImportError] = React.useState<string | null>(null);
+
+  // Visible platforms: must be enabled AND in the visible set
+  const enabledPlatforms = React.useMemo(
+    () => federatedPlatforms.filter((p) => p.enabled && VISIBLE_PLATFORM_IDS.has(p.platform_id)),
+    [federatedPlatforms],
+  );
+
+  // Any platform is active?
+  const hasActivePlatform = enabledPlatforms.some((p) => p.is_active);
 
   React.useEffect(() => {
     let isCancelled = false;
@@ -84,12 +178,10 @@ export function DataSourceSection() {
         if (isCancelled) return;
 
         if (!status.connected) {
-          setBackendSourceType(null);
           return;
         }
 
         const sourceType = String(status.source_type || '').toLowerCase();
-        setBackendSourceType(sourceType || null);
 
         const KNOWN_TYPES = new Set<string>(['csv', 'excel', 'json', 'xml', 'fixed_width', 'edi', 'database']);
         if (KNOWN_TYPES.has(sourceType)) {
@@ -97,7 +189,7 @@ export function DataSourceSection() {
           const path = status.file_path || undefined;
           setDataSource({
             type: localType,
-            status: 'connected',
+            status: 'connected' as const,
             row_count: status.row_count,
             column_count: status.columns?.length,
             columns: status.columns ? toDataSourceColumns(status.columns) : undefined,
@@ -128,12 +220,14 @@ export function DataSourceSection() {
         detail: `${dataSource.row_count?.toLocaleString() ?? '?'} rows`,
         sourceKind: dataSource.type === 'database' ? 'database' : 'file',
       });
-    } else if (backendSourceType === 'shopify') {
-      setActiveSourceType('shopify');
+    } else if (hasActivePlatform) {
+      const activePlats = enabledPlatforms.filter((p) => p.is_active);
+      const label = activePlats.map((p) => p.display_name).join(', ');
+      setActiveSourceType('shopify'); // Keep existing type for compatibility
       setActiveSourceInfo({
         type: 'shopify',
-        label: 'Shopify',
-        detail: shopifyStoreName || 'Connected',
+        label,
+        detail: 'Connected',
         sourceKind: 'shopify',
       });
     } else {
@@ -142,37 +236,22 @@ export function DataSourceSection() {
     }
   }, [
     dataSource,
-    backendSourceType,
-    shopifyStoreName,
+    hasActivePlatform,
+    enabledPlatforms,
     setActiveSourceType,
     setActiveSourceInfo,
   ]);
 
-  // --- Source switching handlers ---
-
-  /** Switch to Shopify: activate Shopify first, then clear local source on success. */
-  const handleSwitchToShopify = async () => {
+  // --- Platform toggle handler ---
+  const handleTogglePlatform = async (platformId: string) => {
     setImportError(null);
-    setIsConnecting(true);
+    setTogglingPlatformId(platformId);
     try {
-      const result = await activateShopify();
-      if (!result.success) {
-        setImportError(result.error || 'Failed to activate Shopify');
-        return;
-      }
-      // Activation succeeded — now safe to clear local state
-      if (dataSource) {
-        setCachedLocalConfig({
-          type: dataSource.type as 'csv' | 'excel' | 'database',
-          file_path: dataSource.csv_path || dataSource.excel_path,
-        });
-      }
-      setDataSource(null);
-      setBackendSourceType('shopify');
+      await togglePlatformActive(platformId);
     } catch (err) {
-      setImportError(err instanceof Error ? err.message : 'Failed to activate Shopify');
+      setImportError(err instanceof Error ? err.message : 'Failed to toggle platform');
     } finally {
-      setIsConnecting(false);
+      setTogglingPlatformId(null);
     }
   };
 
@@ -193,7 +272,6 @@ export function DataSourceSection() {
 
     const ext = (file.name.split('.').pop() || '').toLowerCase();
     const EXCEL_EXTS = new Set(['xlsx', 'xls']);
-    // Map to a broad category for local state — backend handles format routing
     const fileType: 'csv' | 'excel' = EXCEL_EXTS.has(ext) ? 'excel' : 'csv';
 
     setIsConnecting(true);
@@ -226,7 +304,6 @@ export function DataSourceSection() {
         excel_path: fileType === 'excel' ? file.name : undefined,
       };
       setDataSource(source);
-      setBackendSourceType(result.source_type || fileType);
       setCachedLocalConfig({ type: fileType, file_path: file.name });
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Import failed');
@@ -242,14 +319,12 @@ export function DataSourceSection() {
     setIsConnecting(true);
     setImportError(null);
     try {
-      // Look up the saved source by matching file name
       const saved = await getSavedDataSources();
       const fileName = cachedLocalConfig.file_path.split('/').pop()?.toLowerCase();
       const match = saved.sources.find((s) =>
         s.name.toLowerCase() === fileName
       );
       if (!match) {
-        // Fallback: open file picker if saved source not found
         const accept = cachedLocalConfig.type === 'csv' ? '.csv' : '.xlsx,.xls';
         openFilePicker(accept);
         return;
@@ -267,7 +342,6 @@ export function DataSourceSection() {
         file_path: match.file_path ?? undefined,
       };
       setDataSource(source);
-      setBackendSourceType(match.source_type);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Reconnect failed');
     } finally {
@@ -275,7 +349,7 @@ export function DataSourceSection() {
     }
   };
 
-  // Database connection handler — calls backend import API
+  // Database connection handler
   const handleDbConnect = async () => {
     if (!dbConnectionString.trim()) return;
 
@@ -302,7 +376,6 @@ export function DataSourceSection() {
         connected_at: new Date().toISOString(),
       };
       setDataSource(source);
-      setBackendSourceType('database');
       setCachedLocalConfig({ type: 'database' });
       setDbConnectionString('');
       setShowDbForm(false);
@@ -320,102 +393,34 @@ export function DataSourceSection() {
       // Ignore errors - clear local state anyway
     }
     setDataSource(null);
-    setBackendSourceType(null);
     setCachedLocalConfig(null);
     setImportError(null);
   };
 
   // Derived state for card rendering
   const isLocalActive = activeSourceType === 'local';
-  const isShopifyActive = activeSourceType === 'shopify';
   const localFileName = dataSource ? (extractFileName(dataSource) || dataSource.type.toUpperCase()) : null;
 
   return (
     <div className="p-3 space-y-3">
       <span className="text-xs font-medium text-slate-300">Data Sources</span>
 
-      {/* === SHOPIFY CARD === */}
-      {(shopifyAvailable || shopifyEnvConnected) ? (
-        <div className={cn(
-          'rounded-lg border overflow-hidden transition-colors',
-          isShopifyActive && interactiveShipping
-            ? 'border-l-4 border-l-slate-500 border-slate-600/30 bg-slate-800/20'
-            : isShopifyActive
-              ? 'border-l-4 border-l-[#5BBF3D] border-[#5BBF3D]/30 bg-[#5BBF3D]/5'
-              : 'border-slate-800'
-        )}>
-          <div className="flex items-center justify-between p-2.5 bg-slate-800/30">
-            <div className="flex items-center gap-2">
-              <ShopifyIcon className="w-5 h-5 text-[#5BBF3D]" />
-              <span className="text-xs font-medium text-slate-200">Shopify</span>
-            </div>
-            <div className="flex items-center gap-2">
-              {isCheckingShopifyEnv ? (
-                <span className="text-[10px] font-mono text-slate-500">Checking...</span>
-              ) : isShopifyActive && interactiveShipping ? (
-                <span className="badge badge-neutral text-[9px]">STANDBY</span>
-              ) : isShopifyActive ? (
-                <span className="badge badge-success text-[9px]">ACTIVE</span>
-              ) : (
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
-                  <span className="text-[10px] font-mono text-slate-500">Available</span>
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Active Shopify info */}
-          {isShopifyActive && (
-            <div className={cn('p-2.5 border-t', interactiveShipping ? 'border-slate-700' : 'border-[#5BBF3D]/20')}>
-              <p className="text-xs text-slate-300">
-                {shopifyStoreName}
-              </p>
-              <p className="text-[10px] font-mono text-slate-500 mt-0.5">
-                {interactiveShipping ? 'Available in batch mode' : 'Connected'}
-              </p>
-            </div>
-          )}
-
-          {/* Shopify available but not active — show "Use Shopify" button */}
-          {!isShopifyActive && (
-            <div className="p-2.5 border-t border-slate-800">
-              <p className="text-[10px] text-slate-500 mb-2">
-                {shopifyStoreName}
-              </p>
-              <button
-                onClick={handleSwitchToShopify}
-                disabled={isConnecting}
-                className="w-full py-1.5 text-xs font-medium rounded border border-[#5BBF3D]/40 text-[#5BBF3D] hover:bg-[#5BBF3D]/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isConnecting ? 'Activating...' : 'Use Shopify'}
-              </button>
-            </div>
-          )}
+      {/* === PLATFORM ROWS === */}
+      {federatedPlatformsLoading ? (
+        <p className="text-[10px] font-mono text-slate-500 text-center py-2">Loading platforms...</p>
+      ) : enabledPlatforms.length > 0 ? (
+        <div className="space-y-0.5">
+          {enabledPlatforms.map((platform) => (
+            <PlatformRow
+              key={platform.platform_id}
+              platform={platform}
+              interactiveShipping={interactiveShipping}
+              onToggle={handleTogglePlatform}
+              isToggling={togglingPlatformId === platform.platform_id}
+            />
+          ))}
         </div>
-      ) : (
-        /* Not configured — direct to Settings */
-        <div className="rounded-lg border border-slate-800 overflow-hidden">
-          <div className="flex items-center justify-between p-2.5 bg-slate-800/30">
-            <div className="flex items-center gap-2">
-              <ShopifyIcon className="w-5 h-5 text-[#5BBF3D]/50" />
-              <span className="text-xs font-medium text-slate-400">Shopify</span>
-            </div>
-            <span className="flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
-              <span className="text-[10px] font-mono text-slate-500">Not configured</span>
-            </span>
-          </div>
-          <div className="p-2.5 border-t border-slate-800">
-            <button
-              onClick={() => setSettingsFlyoutOpen(true)}
-              className="text-[10px] font-medium text-[#96BF48] hover:underline"
-            >
-              Connect Shopify in Settings →
-            </button>
-          </div>
-        </div>
-      )}
+      ) : null}
 
       {/* === LOCAL DATA SOURCE CARD === */}
       {dataSource?.status === 'connected' && (
@@ -587,6 +592,11 @@ export function DataSourceSection() {
             <p className="text-[10px] font-mono text-slate-500 text-center">Importing...</p>
           )}
         </div>
+      )}
+
+      {/* Error display (when data source is connected but platform toggle fails) */}
+      {dataSource?.status === 'connected' && importError && (
+        <p className="text-[10px] font-mono text-error p-2 rounded bg-error/10">{importError}</p>
       )}
 
       {/* Recent Sources Modal */}

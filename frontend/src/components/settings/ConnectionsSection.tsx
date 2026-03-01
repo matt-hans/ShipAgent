@@ -1,7 +1,7 @@
 /**
  * ConnectionsSection - Settings accordion section for provider connections.
  *
- * Renders ProviderCards for UPS, Shopify, and Amazon with their credential forms.
+ * Renders ProviderCards for UPS and Shopify with their credential forms.
  * Consumes provider connection state from useAppState.
  */
 
@@ -15,7 +15,7 @@ import { UPSConnectForm } from './UPSConnectForm';
 import { ShopifyConnectForm } from './ShopifyConnectForm';
 import { AmazonConnectForm } from './AmazonConnectForm';
 import { AnthropicKeyForm } from './AnthropicKeyForm';
-import { AmazonIcon, ShopifyIcon } from '@/components/ui/brand-icons';
+import { ShopifyIcon, AmazonIcon } from '@/components/ui/brand-icons';
 
 /** Simple inline UPS shield icon. */
 function UPSIcon({ className }: { className?: string }) {
@@ -216,6 +216,7 @@ export function ConnectionsSection({ isOpen, onToggle }: ConnectionsSectionProps
             />
           </ProviderCard>
 
+          {/* Amazon Provider */}
           <ProviderCard
             providerName="Amazon"
             icon={<AmazonIcon className="h-4 w-4 text-[#FF9900]" />}

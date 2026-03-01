@@ -14,12 +14,12 @@ export async function initSidecar(): Promise<void> {
   if (!(window as any).__TAURI__) return;
 
   const { invoke } = await import(/* @vite-ignore */ TAURI_CORE);
-  const port = await invoke<number>('start_sidecar');
+  const port = Number(await invoke('start_sidecar'));
 
   // Validate the discovered port is in the IANA ephemeral range (CWE-693).
   // Prevents the frontend from connecting to well-known service ports
   // if the sidecar reports an unexpected value.
-  if (port < 1024 || port > 65535) {
+  if (!Number.isFinite(port) || port < 1024 || port > 65535) {
     throw new Error(`Sidecar reported invalid port: ${port}`);
   }
 

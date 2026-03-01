@@ -291,6 +291,23 @@ def flatten_record(
     return flat
 
 
+def drop_imported_data_view(conn: Any) -> None:
+    """Drop any imported_data VIEW to avoid conflicts with TABLE creation.
+
+    When external_orders is activated as a data source, a VIEW named
+    imported_data is created. DuckDB's CREATE OR REPLACE TABLE errors
+    if a VIEW with that name exists. This helper ensures safe TABLE
+    creation by dropping the VIEW first.
+
+    Args:
+        conn: DuckDB connection.
+    """
+    try:
+        conn.execute("DROP VIEW IF EXISTS imported_data")
+    except Exception:
+        pass  # Ignore errors (e.g., view doesn't exist)
+
+
 def load_flat_records_to_duckdb(
     conn: Any,
     records: list[dict[str, Any]],
@@ -321,6 +338,11 @@ def load_flat_records_to_duckdb(
         ImportResult,
         SchemaColumn,
     )
+
+    # Drop any existing VIEW (from external_orders activation) before
+    # creating the TABLE. DuckDB errors on CREATE OR REPLACE TABLE when
+    # a VIEW with that name exists.
+    drop_imported_data_view(conn)
 
     if not records:
         conn.execute(f"""

@@ -137,6 +137,9 @@ class DelimitedAdapter(BaseSourceAdapter):
         # are preserved — write-back depends on these matching the source file.
         null_checks = " AND ".join([f'"{col}" IS NULL' for col in col_names])
         select_cols = ", ".join([f'"{col}"' for col in col_names])
+        # Drop any VIEW (from external_orders activation) before creating TABLE
+        from src.mcp.data_source.utils import drop_imported_data_view
+        drop_imported_data_view(conn)
         conn.execute(f"""
             CREATE OR REPLACE TABLE imported_data AS
             SELECT {SOURCE_ROW_NUM_COLUMN}, {select_cols}

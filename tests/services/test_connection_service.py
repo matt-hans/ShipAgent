@@ -711,83 +711,232 @@ class TestDecryptResilience:
         assert creds.store_domain == ""
 
 
-class TestAmazonConnectionService:
+# ============================================================
+# Amazon SP-API Connection Tests
+# ============================================================
+
+
+AMAZON_CREDS = {
+    "client_id": "amzn1.application-oa2-client.test",
+    "client_secret": "amzn1.oa2-cs.v1.test_secret",
+    "marketplace_id": "ATVPDKIKX0DER",
+}
+
+
+class TestAmazonCRUD:
+    """Save, list, and update Amazon SP-API connections."""
 
     def test_save_amazon_connection(self, service):
-        """Save an Amazon connection and verify deterministic key."""
+        """Save an Amazon SP-API connection and verify result."""
         result = service.save_connection(
             provider="amazon", auth_mode="sp_api",
-            credentials={
-                "client_id": "amzn-client",
-                "client_secret": "amzn-secret",
-                "refresh_token": "amzn-refresh",
-                "marketplace_id": "ATVPDKIKX0DER",
-            },
+            credentials=AMAZON_CREDS,
             metadata={"marketplace_id": "ATVPDKIKX0DER"},
             display_name="Amazon US",
         )
         assert result["is_new"] is True
         assert result["connection_key"] == "amazon:ATVPDKIKX0DER"
+        assert result["auth_mode"] == "sp_api"
+        assert result["runtime_usable"] is True
 
-    def test_save_amazon_missing_refresh_token(self, service):
-        """Amazon save requires refresh_token."""
+    def test_overwrite_amazon_connection(self, service):
+        """Overwrite existing Amazon connection with new credentials."""
+        service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials=AMAZON_CREDS,
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US v1",
+        )
+        result = service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials={**AMAZON_CREDS, "refresh_token": "Atzr|new_token"},
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US v2",
+        )
+        assert result["is_new"] is False
+        assert result["connection_key"] == "amazon:ATVPDKIKX0DER"
+
+    def test_list_includes_amazon(self, service):
+        """list_connections includes Amazon connections."""
+        service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials=AMAZON_CREDS,
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US",
+        )
+        connections = service.list_connections()
+        assert len(connections) == 1
+        assert connections[0]["provider"] == "amazon"
+
+    def test_get_amazon_connection(self, service):
+        """get_connection retrieves Amazon by key."""
+        service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials=AMAZON_CREDS,
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US",
+        )
+        conn = service.get_connection("amazon:ATVPDKIKX0DER")
+        assert conn is not None
+        assert conn["provider"] == "amazon"
+        assert conn["status"] == "configured"
+
+    def test_disconnect_amazon(self, service):
+        """Disconnect preserves credentials but marks as disconnected."""
+        service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials=AMAZON_CREDS,
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US",
+        )
+        service.disconnect("amazon:ATVPDKIKX0DER")
+        conn = service.get_connection("amazon:ATVPDKIKX0DER")
+        assert conn["status"] == "disconnected"
+        assert conn["runtime_usable"] is False
+
+    def test_delete_amazon(self, service):
+        """Delete removes connection entirely."""
+        service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials=AMAZON_CREDS,
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US",
+        )
+        result = service.delete_connection("amazon:ATVPDKIKX0DER")
+        assert result is True
+        assert service.get_connection("amazon:ATVPDKIKX0DER") is None
+
+    def test_multiple_marketplaces(self, service):
+        """Different marketplace IDs create separate connections."""
+        service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials=AMAZON_CREDS,
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US",
+        )
+        service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials={**AMAZON_CREDS, "marketplace_id": "A2EUQ1WTGCTBG2"},
+            metadata={"marketplace_id": "A2EUQ1WTGCTBG2"},
+            display_name="Amazon CA",
+        )
+        connections = service.list_connections()
+        keys = {c["connection_key"] for c in connections}
+        assert keys == {"amazon:ATVPDKIKX0DER", "amazon:A2EUQ1WTGCTBG2"}
+
+
+class TestAmazonValidation:
+    """Validation rules for Amazon SP-API credentials."""
+
+    def test_refresh_token_optional(self, service):
+        """Saving without refresh_token succeeds (sandbox mode)."""
+        result = service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials=AMAZON_CREDS,  # no refresh_token
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US",
+        )
+        assert result["is_new"] is True
+
+    def test_refresh_token_accepted(self, service):
+        """Saving with refresh_token succeeds (production mode)."""
+        result = service.save_connection(
+            provider="amazon", auth_mode="sp_api",
+            credentials={**AMAZON_CREDS, "refresh_token": "Atzr|test_token"},
+            metadata={"marketplace_id": "ATVPDKIKX0DER"},
+            display_name="Amazon US",
+        )
+        assert result["is_new"] is True
+
+    def test_missing_client_id(self, service):
+        """Missing client_id raises MISSING_FIELD."""
+        creds = {k: v for k, v in AMAZON_CREDS.items() if k != "client_id"}
         with pytest.raises(ConnectionValidationError) as exc_info:
             service.save_connection(
                 provider="amazon", auth_mode="sp_api",
-                credentials={
-                    "client_id": "amzn-client",
-                    "client_secret": "amzn-secret",
-                },
+                credentials=creds,
                 metadata={"marketplace_id": "ATVPDKIKX0DER"},
                 display_name="Amazon US",
             )
         assert exc_info.value.code == "MISSING_FIELD"
+        assert "client_id" in exc_info.value.message
 
-    def test_get_amazon_credentials(self, service):
-        """Amazon credentials can be read by marketplace id."""
+    def test_missing_client_secret(self, service):
+        """Missing client_secret raises MISSING_FIELD."""
+        creds = {k: v for k, v in AMAZON_CREDS.items() if k != "client_secret"}
+        with pytest.raises(ConnectionValidationError) as exc_info:
+            service.save_connection(
+                provider="amazon", auth_mode="sp_api",
+                credentials=creds,
+                metadata={"marketplace_id": "ATVPDKIKX0DER"},
+                display_name="Amazon US",
+            )
+        assert exc_info.value.code == "MISSING_FIELD"
+        assert "client_secret" in exc_info.value.message
+
+    def test_missing_marketplace_id(self, service):
+        """Missing marketplace_id raises MISSING_FIELD."""
+        creds = {k: v for k, v in AMAZON_CREDS.items() if k != "marketplace_id"}
+        with pytest.raises(ConnectionValidationError) as exc_info:
+            service.save_connection(
+                provider="amazon", auth_mode="sp_api",
+                credentials=creds,
+                metadata={"marketplace_id": "ATVPDKIKX0DER"},
+                display_name="Amazon US",
+            )
+        assert exc_info.value.code == "MISSING_FIELD"
+        assert "marketplace_id" in exc_info.value.message
+
+    def test_invalid_auth_mode(self, service):
+        """Invalid auth_mode for Amazon raises INVALID_AUTH_MODE."""
+        with pytest.raises(ConnectionValidationError) as exc_info:
+            service.save_connection(
+                provider="amazon", auth_mode="legacy_token",
+                credentials=AMAZON_CREDS,
+                metadata={"marketplace_id": "ATVPDKIKX0DER"},
+                display_name="Amazon US",
+            )
+        assert exc_info.value.code == "INVALID_AUTH_MODE"
+
+    def test_unknown_credential_key_rejected(self, service):
+        """Extra credential keys not in schema are rejected."""
+        with pytest.raises(ConnectionValidationError) as exc_info:
+            service.save_connection(
+                provider="amazon", auth_mode="sp_api",
+                credentials={**AMAZON_CREDS, "extra_key": "val"},
+                metadata={"marketplace_id": "ATVPDKIKX0DER"},
+                display_name="Amazon US",
+            )
+        assert exc_info.value.code == "UNKNOWN_CREDENTIAL_KEY"
+
+
+class TestAmazonEncryption:
+    """Verify Amazon credentials are encrypted at rest and decryptable."""
+
+    def test_credentials_encrypted_at_rest(self, service, db_session):
+        """Stored encrypted_credentials is not plaintext."""
         service.save_connection(
             provider="amazon", auth_mode="sp_api",
-            credentials={
-                "client_id": "amzn-client",
-                "client_secret": "amzn-secret",
-                "refresh_token": "amzn-refresh",
-                "marketplace_id": "ATVPDKIKX0DER",
-                "sandbox": "true",
-            },
+            credentials=AMAZON_CREDS,
             metadata={"marketplace_id": "ATVPDKIKX0DER"},
             display_name="Amazon US",
         )
-        creds = service.get_amazon_credentials("ATVPDKIKX0DER")
-        assert isinstance(creds, AmazonSPAPICredentials)
-        assert creds.client_id == "amzn-client"
-        assert creds.refresh_token == "amzn-refresh"
-        assert creds.sandbox is True
+        row = db_session.query(ProviderConnection).filter_by(
+            connection_key="amazon:ATVPDKIKX0DER"
+        ).first()
+        assert row is not None
+        # Encrypted field should be a JSON envelope, not plaintext
+        assert "refresh_token" not in row.encrypted_credentials
+        assert "client_secret" not in row.encrypted_credentials
+        assert '"v":' in row.encrypted_credentials or '"v": ' in row.encrypted_credentials
 
-    def test_get_first_amazon_credentials_deterministic(self, service):
-        """First available Amazon credentials are deterministic by key order."""
+    def test_check_all_includes_amazon(self, service):
+        """check_all() returns 'ok' for valid Amazon connection."""
         service.save_connection(
             provider="amazon", auth_mode="sp_api",
-            credentials={
-                "client_id": "ca-client",
-                "client_secret": "ca-secret",
-                "refresh_token": "ca-refresh",
-                "marketplace_id": "A2EUQ1WTGCTBG2",
-            },
-            metadata={"marketplace_id": "A2EUQ1WTGCTBG2"},
-            display_name="Amazon CA",
-        )
-        service.save_connection(
-            provider="amazon", auth_mode="sp_api",
-            credentials={
-                "client_id": "us-client",
-                "client_secret": "us-secret",
-                "refresh_token": "us-refresh",
-                "marketplace_id": "ATVPDKIKX0DER",
-            },
+            credentials=AMAZON_CREDS,
             metadata={"marketplace_id": "ATVPDKIKX0DER"},
             display_name="Amazon US",
         )
-        creds = service.get_first_amazon_credentials()
-        assert isinstance(creds, AmazonSPAPICredentials)
-        assert creds.marketplace_id == "A2EUQ1WTGCTBG2"
-        assert creds.client_id == "ca-client"
+        results = service.check_all()
+        assert results.get("amazon:ATVPDKIKX0DER") == "ok"

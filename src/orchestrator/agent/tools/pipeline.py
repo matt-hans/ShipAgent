@@ -34,6 +34,7 @@ from src.orchestrator.filter_schema_inference import (
     resolve_fulfillment_status_column,
     resolve_total_column,
 )
+from src.orchestrator.agent.tools.data import ensure_source_info_available
 from src.services.column_mapping import NORMALIZER_VERSION
 from src.services.decision_audit_context import get_decision_run_id, set_decision_job_id
 from src.services.decision_audit_service import DecisionAuditService
@@ -860,9 +861,12 @@ async def ship_command_pipeline_tool(
     enforced_total_bounds: dict[str, Any] | None = None
     enforced_fulfillment_status: str | None = None
     gw = await get_data_gateway()
-    source_info = await gw.get_source_info()
+    source_info = await ensure_source_info_available(gw)
     if source_info is None:
-        return _err("No data source connected.")
+        return _err(
+            "No queryable data source is active. Sync active platforms first "
+            "(refresh_all_platforms or activate_platform), then retry."
+        )
     if not isinstance(source_info, dict):
         logger.warning(
             "ship_command_pipeline expected dict source_info, got %s; "

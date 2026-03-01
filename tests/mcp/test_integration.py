@@ -165,7 +165,7 @@ class TestAllToolsRegistered:
             return len(tools)
 
         count = asyncio.run(get_tool_count())
-        expected_count = 23 if _edi_available else 22
+        expected_count = 25 if _edi_available else 24
         assert count == expected_count, f"Expected {expected_count} tools, got {count}"
 
     def test_tool_names(self):
@@ -198,6 +198,7 @@ class TestAllToolsRegistered:
             "clear_source",
             "import_commodities",
             "get_commodities_bulk",
+            "activate_external_orders_source",
         ]
 
         if _edi_available:

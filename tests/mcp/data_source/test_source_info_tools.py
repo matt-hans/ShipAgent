@@ -29,7 +29,32 @@ def mock_ctx_with_source():
 
 @pytest.fixture
 def mock_ctx_no_source():
-    """Context with no active source."""
+    """Context with no active source and empty external_orders table.
+
+    Uses real DuckDB so external_orders auto-detect in get_source_info
+    correctly returns 0 rows instead of MagicMock truthy values.
+    """
+    import duckdb
+
+    ctx = MagicMock()
+    ctx.info = AsyncMock()
+    db = duckdb.connect(":memory:")
+    from src.mcp.data_source.tools.schema_migration import ensure_external_orders_table
+    ensure_external_orders_table(db)
+    ctx.request_context.lifespan_context = {
+        "db": db,
+        "current_source": None,
+        "type_overrides": {},
+    }
+    return ctx
+
+
+@pytest.fixture
+def mock_ctx_no_source_mock_db():
+    """Context with no active source using a MagicMock db.
+
+    For tests that override db.execute (e.g., import_records).
+    """
     ctx = MagicMock()
     ctx.info = AsyncMock()
     ctx.request_context.lifespan_context = {
@@ -63,11 +88,11 @@ async def test_get_source_info_no_source(mock_ctx_no_source):
 
 
 @pytest.mark.asyncio
-async def test_import_records_creates_table(mock_ctx_no_source):
+async def test_import_records_creates_table(mock_ctx_no_source_mock_db):
     """import_records should create table and return row count."""
     from src.mcp.data_source.tools.source_info_tools import import_records
 
-    db = mock_ctx_no_source.request_context.lifespan_context["db"]
+    db = mock_ctx_no_source_mock_db.request_context.lifespan_context["db"]
     db.execute = MagicMock()
     db.execute.return_value.fetchall = MagicMock(return_value=[(3,)])
     db.execute.return_value.fetchone = MagicMock(return_value=(3,))
@@ -79,25 +104,25 @@ async def test_import_records_creates_table(mock_ctx_no_source):
             {"order_id": "3", "name": "Charlie"},
         ],
         source_label="shopify",
-        ctx=mock_ctx_no_source,
+        ctx=mock_ctx_no_source_mock_db,
     )
     assert result["row_count"] == 3
     assert result["source_type"] == "shopify"
-    current_source = mock_ctx_no_source.request_context.lifespan_context["current_source"]
+    current_source = mock_ctx_no_source_mock_db.request_context.lifespan_context["current_source"]
     assert current_source["deterministic_ready"] is True
     assert current_source["row_key_strategy"] == "source_row_num"
     assert current_source["row_key_columns"] == ["_source_row_num"]
 
 
 @pytest.mark.asyncio
-async def test_import_records_empty_list(mock_ctx_no_source):
+async def test_import_records_empty_list(mock_ctx_no_source_mock_db):
     """import_records with empty list should return zero rows."""
     from src.mcp.data_source.tools.source_info_tools import import_records
 
     result = await import_records(
         records=[],
         source_label="shopify",
-        ctx=mock_ctx_no_source,
+        ctx=mock_ctx_no_source_mock_db,
     )
     assert result["row_count"] == 0
 
