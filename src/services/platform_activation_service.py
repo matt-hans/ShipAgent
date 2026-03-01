@@ -19,12 +19,14 @@ import importlib
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from src.services.platform_models import (
     ActivationReport,
     PlatformError,
     PlatformErrorCode,
+    compute_canonical_hash,
 )
 
 logger = logging.getLogger(__name__)
@@ -135,7 +137,10 @@ class PlatformActivationService:
                 for order in items:
                     try:
                         row = mapper.to_flat_row(order, credential_ref)
-                        row["sync_run_id"] = sync_run_id
+                        row = self._finalize_row_for_upsert(
+                            row,
+                            sync_run_id=sync_run_id,
+                        )
                         rows.append(row)
                     except Exception as e:
                         warnings.append(f"Mapper error for order {order.get('id')}: {e}")
@@ -229,6 +234,26 @@ class PlatformActivationService:
             logger.warning(
                 "Failed to activate external_orders view (non-critical): %s", e
             )
+
+    @staticmethod
+    def _finalize_row_for_upsert(
+        row: dict[str, Any],
+        *,
+        sync_run_id: str,
+    ) -> dict[str, Any]:
+        """Guarantee required metadata before writing to external_orders."""
+        normalized = dict(row)
+        normalized["sync_run_id"] = sync_run_id
+
+        # external_orders.ingested_at is NOT NULL and not all mappers set it.
+        if not normalized.get("ingested_at"):
+            normalized["ingested_at"] = datetime.now(timezone.utc).isoformat()
+
+        # Guard against mapper regressions where hash isn't produced.
+        if not normalized.get("canonical_hash"):
+            normalized["canonical_hash"] = compute_canonical_hash(normalized)
+
+        return normalized
 
     def _load_mapper(self, platform_id: str) -> Any:
         """Dynamically load the mapper for a platform.

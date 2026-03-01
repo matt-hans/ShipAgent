@@ -29,7 +29,7 @@ export function AmazonConnectForm({ existingConnection, onSaved }: AmazonConnect
   const [clientId, setClientId] = React.useState('');
   const [clientSecret, setClientSecret] = React.useState('');
   const [refreshToken, setRefreshToken] = React.useState('');
-  const [marketplaceId, setMarketplaceId] = React.useState(MARKETPLACE_OPTIONS[0].id);
+  const [marketplaceId, setMarketplaceId] = React.useState<string>(MARKETPLACE_OPTIONS[0].id);
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [success, setSuccess] = React.useState<string | null>(null);

@@ -89,12 +89,12 @@ def _build_platforms_section(platform_summaries: list[dict]) -> str:
     if not platform_summaries:
         return ""
 
-    lines = ["## Connected Platforms", ""]
+    lines = ["## Platform Sync Context", ""]
     lines.append(
-        "The following e-commerce platforms have been activated. Their orders "
-        "are available in the `external_orders` DuckDB table for cross-platform "
-        "queries using the existing filter and fetch tools. Use `platform` column "
-        "to filter by platform (e.g., WHERE platform = 'shopify')."
+        "The following e-commerce platform profiles are active or credentialed. "
+        "Treat statuses like `sync_ready`, `credentials_ready`, and `synced` as "
+        "eligible for refresh and query bootstrap. Their orders should become "
+        "available in the `external_orders` DuckDB table for cross-platform queries."
     )
     lines.append("")
 
@@ -102,11 +102,24 @@ def _build_platforms_section(platform_summaries: list[dict]) -> str:
         pid = _sanitize_for_prompt(p.get("platform_id", "unknown"), max_len=30)
         name = _sanitize_for_prompt(p.get("display_name", ""), max_len=50)
         status = _sanitize_for_prompt(p.get("connection_status", "unknown"), max_len=20)
+        raw_status = _sanitize_for_prompt(
+            p.get("raw_connection_status", status),
+            max_len=20,
+        )
         row_count = p.get("last_sync_row_count")
         account = _sanitize_for_prompt(p.get("account_label", "") or "", max_len=50)
         row_info = f", {row_count} orders" if row_count else ""
+        flags = []
+        if p.get("is_active"):
+            flags.append("active")
+        if p.get("has_credentials"):
+            flags.append("credentials")
+        flags_text = f" [{', '.join(flags)}]" if flags else ""
+        status_text = status
+        if raw_status and raw_status != status:
+            status_text = f"{status} (runtime={raw_status})"
 
-        label = f"- **{name}** ({pid}): {status}{row_info}"
+        label = f"- **{name}** ({pid}): {status_text}{flags_text}{row_info}"
         if account:
             label += f" — {account}"
         lines.append(label)
@@ -483,12 +496,18 @@ def build_system_prompt(
         data_section = _build_schema_section(source_info, column_samples=column_samples)
     else:
         data_section = (
-            "No data source connected. The user can still use tracking, pickup, "
-            "location finder, landed cost, and paperless document tools without a "
-            "data source. For batch shipping commands, ask the user to import a "
-            "file or connect a database source first.\n"
-            "If platform credentials are configured (Shopify, Amazon, etc.), "
-            "call the activate_platform tool to import orders from the platform.\n"
+            "No queryable data source is currently active. The user can still use tracking, "
+            "pickup, location finder, landed cost, and paperless document tools without "
+            "a data source. For batch shipping commands, first try explicit platform "
+            "activation in this order:\n"
+            "1) if request mentions Shopify, call connect_shopify,\n"
+            "2) if request mentions Amazon, call connect_amazon,\n"
+            "3) otherwise call refresh_all_platforms (or activate_platform for first-time setup),\n"
+            "4) then call get_source_info again.\n"
+            "Do not conclude platforms are disconnected from stale status text alone; "
+            "verify by attempting sync first.\n"
+            "Only if no source appears after sync should you ask the user to import a "
+            "file or connect a database source.\n"
             + FILE_IMPORT_INSTRUCTIONS
         )
 
@@ -575,6 +594,8 @@ Important:
 - `ship_command_pipeline` fetches rows internally. Do NOT call `fetch_rows` first.
 - For shipping execution requests, NEVER use `fetch_rows` directly. It is exploratory-only.
 - NEVER use `all_rows=true` when the command includes qualifiers like regions or business/company terms.
+- If no source is active and user mentions specific platforms, call explicit connect tools first:
+  `connect_shopify` for Shopify, `connect_amazon` for Amazon, then retry source checks.
 
 If `ship_command_pipeline` returns an error:
 - Missing `filter_spec`/`all_rows` args: immediately call `resolve_filter_intent` and retry `ship_command_pipeline` with the returned `filter_spec`.
@@ -615,7 +636,8 @@ Exploration narration rules:
 - If a tool response includes both `total_count` and `returned_count`, only cite `total_count`.
 """
         safety_mode_section = """
-- If no data source is connected and the user requests a batch operation, do not attempt to fetch rows — ask the user to connect a data source first.
+- If no data source is connected and the user requests a batch operation, first attempt platform sync via `connect_shopify` / `connect_amazon` when mentioned, otherwise use refresh_all_platforms/activate_platform, then re-check get_source_info. Ask for file/database connection only if source is still unavailable.
+- Do not state that platforms are disconnected unless list_platforms/refresh results confirm credential or auth failure.
 """
         tool_usage_section = """
 You have access to deterministic tools for data operations, job management, and batch processing.

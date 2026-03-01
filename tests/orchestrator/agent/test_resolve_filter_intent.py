@@ -1,7 +1,8 @@
 """Tests for the resolve_filter_intent tool handler."""
 
 import json
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -154,3 +155,54 @@ class TestResolveFilterIntentTool:
 
         is_error, _ = _parse_tool_result(result)
         assert is_error is True
+
+    @pytest.mark.asyncio
+    async def test_bootstraps_source_from_active_platforms(self):
+        """If source is missing, tool refreshes active platforms and retries."""
+        from src.orchestrator.agent.tools.data import resolve_filter_intent_tool
+
+        source_info = {
+            "source_type": "external_orders",
+            "row_count": 100,
+            "columns": [
+                {"name": "state", "type": "VARCHAR", "nullable": True},
+            ],
+            "signature": "test_schema_sig",
+        }
+        gw = AsyncMock()
+        gw.get_source_info.side_effect = [None, source_info]
+        intent_dict = {
+            "root": {
+                "logic": "AND",
+                "conditions": [
+                    {"column": "state", "operator": "eq", "operands": [{"type": "string", "value": "CA"}]},
+                ],
+            },
+            "schema_signature": "test_schema_sig",
+        }
+
+        with (
+            patch("src.orchestrator.agent.tools.data.get_data_gateway", return_value=gw),
+            patch("src.services.gateway_provider.get_platform_registry") as mock_registry_fn,
+            patch("src.services.gateway_provider.get_activation_service") as mock_activation_fn,
+        ):
+            mock_registry = MagicMock()
+            mock_registry.get_active_platforms.return_value = [
+                SimpleNamespace(
+                    platform_id="shopify",
+                    credential_ref="primary",
+                    connection_status="connected",
+                    has_credentials=True,
+                )
+            ]
+            mock_registry_fn.return_value = mock_registry
+
+            mock_activation = MagicMock()
+            mock_activation.activate_platform = AsyncMock(return_value=SimpleNamespace())
+            mock_activation_fn.return_value = mock_activation
+
+            result = await resolve_filter_intent_tool({"intent": intent_dict})
+
+        is_error, content = _parse_tool_result(result)
+        assert is_error is False
+        assert content["status"] == "RESOLVED"

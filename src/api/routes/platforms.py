@@ -7,12 +7,16 @@ All routes delegate to PlatformRegistry, PlatformGateway, and
 PlatformActivationService singletons via gateway_provider.
 """
 
+import logging
+import os
 from typing import Any
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
+from src.utils.redaction import sanitize_error_message
 
 router = APIRouter(prefix="/platforms", tags=["platforms"])
+logger = logging.getLogger(__name__)
 
 
 # === Request/Response Schemas ===
@@ -44,6 +48,9 @@ class PlatformActivateResponse(BaseModel):
     pages_fetched: int = 0
     watermark: str | None = None
     duration_seconds: float | None = None
+    row_count: int = 0
+    source_type: str | None = None
+    error_code: str | None = None
     error: str | None = None
 
 
@@ -79,10 +86,136 @@ class SetActivePlatformsResponse(BaseModel):
 
     success: bool
     active_platforms: list[dict[str, Any]] = Field(default_factory=list)
+    failed_platforms: list[dict[str, str]] = Field(default_factory=list)
     error: str | None = None
 
 
 # === Platform Routes (federated architecture) ===
+
+
+def _compat_mode_enabled() -> bool:
+    """Whether compatibility rollback mode is enabled for activation semantics."""
+    raw = os.environ.get("PLATFORM_ACTIVATION_COMPAT_MODE", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _source_is_query_ready(source_info: dict[str, Any] | None) -> bool:
+    """Return True when current source info points to query-ready platform data."""
+    if source_info is None:
+        return False
+    source_type = str(source_info.get("source_type", "") or "").strip().lower()
+    if source_type == "external_orders":
+        return True
+    path = str(source_info.get("path", "") or "").strip().lower()
+    if "imported_data" in path:
+        return True
+    return False
+
+
+async def _verify_queryable_source_after_activation() -> tuple[bool, dict[str, Any] | None]:
+    """Check that activation yielded a queryable platform source."""
+    from src.services.gateway_provider import get_data_gateway
+
+    try:
+        gw = await get_data_gateway()
+        source_info = await gw.get_source_info()
+    except Exception:
+        logger.warning("Platform activation source verification failed", exc_info=True)
+        return False, None
+    return _source_is_query_ready(source_info), source_info
+
+
+def _candidate_activation_mode(summary: Any) -> str:
+    """Choose activation mode based on prior sync state."""
+    if summary.last_sync_row_count:
+        return "refresh"
+    status = str(summary.connection_status or "").strip().lower()
+    if status in {"connected", "degraded", "auth_expired"}:
+        return "refresh"
+    return "initial"
+
+
+def _activation_error_response(
+    platform_id: str,
+    err: Exception,
+    *,
+    error_code: str = "ACTIVATION_FAILED",
+) -> PlatformActivateResponse:
+    """Build sanitized error response for activation failures."""
+    return PlatformActivateResponse(
+        success=False,
+        platform_id=platform_id,
+        error_code=error_code,
+        error=sanitize_error_message(f"Activation failed: {err}"),
+    )
+
+
+async def _activate_platform_and_verify(
+    platform_id: str,
+    credential_ref: str,
+    mode: str,
+) -> PlatformActivateResponse:
+    """Activate a platform profile and verify queryable source readiness."""
+    from src.services.gateway_provider import get_activation_service
+
+    service = get_activation_service()
+    logger.info(
+        "platform_activation_start platform_id=%s credential_ref=%s mode=%s",
+        platform_id,
+        credential_ref,
+        mode,
+    )
+    report = await service.activate_platform(
+        platform_id=platform_id,
+        credential_ref=credential_ref,
+        mode=mode,
+    )
+
+    source_ok, source_info = await _verify_queryable_source_after_activation()
+    source_type = (source_info or {}).get("source_type") if source_info else None
+    row_count = int((source_info or {}).get("row_count", 0)) if source_info else 0
+
+    logger.info(
+        "platform_activation_done platform_id=%s credential_ref=%s mode=%s pages=%s imported=%s source_ok=%s source_type=%s row_count=%s",
+        platform_id,
+        credential_ref,
+        report.mode,
+        report.pages_fetched,
+        report.total_imported,
+        source_ok,
+        source_type,
+        row_count,
+    )
+
+    if not source_ok:
+        return PlatformActivateResponse(
+            success=False,
+            platform_id=report.platform_id,
+            mode=report.mode,
+            total_imported=report.total_imported,
+            pages_fetched=report.pages_fetched,
+            watermark=report.watermark,
+            duration_seconds=report.duration_seconds,
+            row_count=row_count,
+            source_type=source_type,
+            error_code="SOURCE_NOT_READY",
+            error=(
+                "Platform synced but queryable source is not ready yet. "
+                "Retry activation or refresh and verify source status."
+            ),
+        )
+
+    return PlatformActivateResponse(
+        success=True,
+        platform_id=report.platform_id,
+        mode=report.mode,
+        total_imported=report.total_imported,
+        pages_fetched=report.pages_fetched,
+        watermark=report.watermark,
+        duration_seconds=report.duration_seconds,
+        row_count=row_count,
+        source_type=str(source_type or "external_orders"),
+    )
 
 
 @router.get("/", response_model=PlatformListResponse)
@@ -143,29 +276,29 @@ async def activate_platform(request: PlatformActivateRequest) -> PlatformActivat
         Activation report with import stats.
     """
     try:
-        from src.services.gateway_provider import get_activation_service
+        from src.services.gateway_provider import get_platform_registry
 
-        service = get_activation_service()
-        report = await service.activate_platform(
+        registry = get_platform_registry()
+        config = registry.get_config(request.platform_id)
+        if config is None:
+            return PlatformActivateResponse(
+                success=False,
+                platform_id=request.platform_id,
+                error_code="UNKNOWN_PLATFORM",
+                error=f"Unknown platform: {request.platform_id}",
+            )
+        credential_ref = request.credential_ref or config.default_profile
+        state = registry.get_state(request.platform_id, credential_ref)
+        mode = "refresh" if state and (
+            state.last_completed_watermark or state.last_sync_row_count
+        ) else "initial"
+        return await _activate_platform_and_verify(
             platform_id=request.platform_id,
-            credential_ref=request.credential_ref or "primary",
-            mode="initial",
-        )
-        return PlatformActivateResponse(
-            success=True,
-            platform_id=report.platform_id,
-            mode=report.mode,
-            total_imported=report.total_imported,
-            pages_fetched=report.pages_fetched,
-            watermark=report.watermark,
-            duration_seconds=report.duration_seconds,
+            credential_ref=credential_ref,
+            mode=mode,
         )
     except Exception as e:
-        return PlatformActivateResponse(
-            success=False,
-            platform_id=request.platform_id,
-            error=f"Activation failed: {e}",
-        )
+        return _activation_error_response(request.platform_id, e)
 
 
 @router.post("/refresh", response_model=PlatformActivateResponse)
@@ -179,29 +312,29 @@ async def refresh_platform(request: PlatformActivateRequest) -> PlatformActivate
         Refresh report with import stats.
     """
     try:
-        from src.services.gateway_provider import get_activation_service
-
-        service = get_activation_service()
-        report = await service.activate_platform(
+        return await _activate_platform_and_verify(
             platform_id=request.platform_id,
             credential_ref=request.credential_ref or "primary",
             mode="refresh",
         )
-        return PlatformActivateResponse(
-            success=True,
-            platform_id=report.platform_id,
-            mode=report.mode,
-            total_imported=report.total_imported,
-            pages_fetched=report.pages_fetched,
-            watermark=report.watermark,
-            duration_seconds=report.duration_seconds,
-        )
     except Exception as e:
-        return PlatformActivateResponse(
-            success=False,
-            platform_id=request.platform_id,
-            error=f"Refresh failed: {e}",
-        )
+        return _activation_error_response(request.platform_id, e, error_code="REFRESH_FAILED")
+
+
+@router.post("/shopify/activate", response_model=PlatformActivateResponse)
+async def activate_shopify_compat() -> PlatformActivateResponse:
+    """Compatibility endpoint for deterministic Shopify activation."""
+    return await activate_platform(
+        PlatformActivateRequest(platform_id="shopify"),
+    )
+
+
+@router.post("/amazon/activate", response_model=PlatformActivateResponse)
+async def activate_amazon_compat() -> PlatformActivateResponse:
+    """Compatibility endpoint for deterministic Amazon activation."""
+    return await activate_platform(
+        PlatformActivateRequest(platform_id="amazon"),
+    )
 
 
 @router.post("/disconnect-platform", response_model=dict)
@@ -287,10 +420,11 @@ async def set_active_platforms(
         Updated list of active platforms.
     """
     try:
-        from src.services.gateway_provider import get_platform_registry
+        from src.services.gateway_provider import get_activation_service, get_platform_registry
 
         registry = get_platform_registry()
         summaries = registry.get_platforms_summary()
+        activation_service = get_activation_service() if _compat_mode_enabled() else None
 
         # Build lookup: platform_id → list of summaries (multi-profile safe)
         summaries_by_pid: dict[str, list[Any]] = {}
@@ -336,6 +470,74 @@ async def set_active_platforms(
                 error=f"Cannot activate: {reasons}",
             )
 
+        # Compat mode guardrail: any newly activated platform must pass
+        # deterministic activation + source verification before toggling active.
+        failed_platforms: list[dict[str, str]] = []
+        if _compat_mode_enabled():
+            for pid in requested_ids:
+                profiles = summaries_by_pid.get(pid, [])
+                if not profiles:
+                    continue
+                already_active = any(bool(p.is_active) for p in profiles)
+                if already_active:
+                    continue
+
+                candidates = [p for p in profiles if _is_activatable(p)]
+                activated = False
+                for candidate in candidates:
+                    mode = _candidate_activation_mode(candidate)
+                    try:
+                        logger.info(
+                            "platform_toggle_activation_start platform_id=%s credential_ref=%s mode=%s",
+                            candidate.platform_id,
+                            candidate.credential_ref,
+                            mode,
+                        )
+                        report = await activation_service.activate_platform(
+                            platform_id=candidate.platform_id,
+                            credential_ref=candidate.credential_ref,
+                            mode=mode,
+                        )
+                        source_ok, source_info = await _verify_queryable_source_after_activation()
+                        logger.info(
+                            "platform_toggle_activation_done platform_id=%s credential_ref=%s mode=%s pages=%s imported=%s source_ok=%s source_type=%s",
+                            candidate.platform_id,
+                            candidate.credential_ref,
+                            report.mode,
+                            report.pages_fetched,
+                            report.total_imported,
+                            source_ok,
+                            (source_info or {}).get("source_type"),
+                        )
+                        if source_ok:
+                            activated = True
+                            break
+                    except Exception as exc:
+                        logger.warning(
+                            "platform_toggle_activation_failed platform_id=%s credential_ref=%s mode=%s error=%s",
+                            candidate.platform_id,
+                            candidate.credential_ref,
+                            mode,
+                            sanitize_error_message(str(exc)),
+                        )
+                        continue
+
+                if not activated:
+                    failed_platforms.append({
+                        "platform_id": pid,
+                        "reason": "activation failed or source not query-ready",
+                    })
+
+        if failed_platforms:
+            reasons = "; ".join(
+                f"{item['platform_id']}: {item['reason']}" for item in failed_platforms
+            )
+            return SetActivePlatformsResponse(
+                success=False,
+                failed_platforms=failed_platforms,
+                error=f"Cannot activate: {reasons}",
+            )
+
         # Activate/deactivate per-profile: only activate activatable profiles
         # for requested platforms; deactivate everything else.
         for summary in summaries:
@@ -356,6 +558,7 @@ async def set_active_platforms(
                 "connection_status": s.connection_status,
                 "credential_ref": s.credential_ref,
                 "is_active": s.is_active,
+                "last_sync_row_count": s.last_sync_row_count,
             }
             for s in active_summaries
         ]

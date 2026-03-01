@@ -131,31 +131,54 @@ def test_prompt_without_source_interactive_does_not_demand_connection():
 
 
 def test_prompt_without_source_batch_demands_connection():
-    """When interactive=False and no source, prompt demands data source connection."""
+    """When interactive=False and no source, prompt attempts platform sync first."""
     prompt = build_system_prompt(source_info=None, interactive_shipping=False)
     lower = prompt.lower()
-    assert "ask the user to connect" in lower
+    assert "refresh_all_platforms" in lower
+    assert "only if no source appears" in lower
 
 
 def test_prompt_no_source_mentions_activate_platform():
-    """When no source is connected, prompt mentions activate_platform for platform imports."""
+    """When no source is connected, prompt mentions platform activation for imports."""
     prompt = build_system_prompt(source_info=None, interactive_shipping=False)
     lower = prompt.lower()
     assert "activate_platform" in lower
+    assert "refresh_all_platforms" in lower
     # Should mention platforms as an option
     assert "platform" in lower
 
 
 def test_prompt_no_shopify_env_asks_user_to_connect(monkeypatch):
-    """When Shopify env vars are absent and no source, prompt asks user to connect."""
+    """When no source is active, prompt uses platform-first then file/db fallback."""
     monkeypatch.delenv("SHOPIFY_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("SHOPIFY_STORE_DOMAIN", raising=False)
     prompt = build_system_prompt(source_info=None, interactive_shipping=False)
     lower = prompt.lower()
-    # Data section should tell agent to ask user — no auto-import
-    assert "ask the user to connect" in lower
-    # Should not reference connect_shopify in the data section
-    assert "connect_shopify" not in lower
+    assert "connect_shopify" in lower
+    assert "connect_amazon" in lower
+    assert "refresh_all_platforms" in lower
+    assert "import a file or connect a database source" in lower
+
+
+def test_prompt_platform_section_uses_effective_status_and_flags():
+    """Platform context should show effective sync status and profile flags."""
+    prompt = build_system_prompt(
+        source_info=None,
+        platform_summaries=[
+            {
+                "platform_id": "shopify",
+                "display_name": "Shopify",
+                "connection_status": "sync_ready",
+                "raw_connection_status": "disconnected",
+                "is_active": True,
+                "has_credentials": True,
+                "last_sync_row_count": 42,
+            },
+        ],
+    )
+    assert "Platform Sync Context" in prompt
+    assert "sync_ready (runtime=disconnected)" in prompt
+    assert "[active, credentials]" in prompt
 
 
 def test_prompt_contains_workflow():

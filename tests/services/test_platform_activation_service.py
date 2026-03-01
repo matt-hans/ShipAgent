@@ -8,6 +8,8 @@ Upserts are verified via a mock DataSourceMCPClient that captures calls
 to upsert_records, matching production behavior where rows flow through
 the Data Source MCP server's shared DuckDB.
 """
+from datetime import datetime
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -106,6 +108,36 @@ def _make_order(order_id: str) -> dict:
         },
         "line_items": [{"quantity": 1, "grams": 500, "title": "Widget"}],
         "tags": "test",
+    }
+
+
+def _make_shopify_order(order_id: int) -> dict:
+    """Build a minimal Shopify order dict for mapper coverage tests."""
+    return {
+        "id": order_id,
+        "order_number": order_id,
+        "financial_status": "paid",
+        "fulfillment_status": None,
+        "created_at": "2026-02-20T10:00:00Z",
+        "updated_at": "2026-02-20T10:00:00Z",
+        "total_price": "25.00",
+        "currency": "USD",
+        "customer": {
+            "first_name": "Test",
+            "last_name": "Customer",
+            "email": "test@example.com",
+        },
+        "shipping_address": {
+            "name": "Test Customer",
+            "address1": "1 Main St",
+            "city": "Austin",
+            "province_code": "TX",
+            "zip": "78701",
+            "country_code": "US",
+            "phone": "555-555-5555",
+        },
+        "line_items": [{"quantity": 1, "grams": 500}],
+        "shipping_lines": [{"title": "UPS Ground", "code": "ups_ground"}],
     }
 
 
@@ -348,6 +380,59 @@ class TestSyncRunId:
 
         assert len(all_sync_ids) == 1
         assert None not in all_sync_ids
+
+        await gateway.shutdown()
+
+
+class TestActivationRowMetadata:
+    """Test activation metadata required by external_orders schema."""
+
+    @pytest.mark.asyncio
+    async def test_shopify_activation_sets_ingested_at_when_mapper_omits_it(
+        self, mock_ds_client,
+    ):
+        """Rows upserted from Shopify include non-null ingested_at."""
+        from src.services.platform_activation_service import PlatformActivationService
+        from src.services.platform_gateway import PlatformGateway
+
+        client, fake_gw = mock_ds_client
+        registry = _make_registry(config=_make_config("shopify"))
+
+        session = FakeSession()
+        session.program("platform.health", [{"ok": True, "contract_version": "1.0"}])
+        session.program("platform.capabilities", [{
+            "platform_id": "shopify",
+            "contract_version": "1.0",
+            "supports": ["orders.list"],
+            "limits": {"rate_limit_per_second": 100, "max_concurrency": 10},
+            "paging": {"default_page_size": 3, "max_page_size": 3, "overlap_seconds": 0},
+        }])
+        session.program("auth.connect", [{
+            "ok": True,
+            "account_id": "test-shop.myshopify.com",
+            "account_label": "Test Shop",
+        }])
+        session.program("orders.list", [{
+            "items": [_make_shopify_order(1001)],
+            "next_cursor": None,
+            "watermark": "2026-02-28T10:00:00Z",
+        }])
+
+        gateway = PlatformGateway(registry, session_factory=lambda cfg, ref: session)
+        service = PlatformActivationService(registry=registry, gateway=gateway)
+
+        with patch(_PATCH_TARGET, new=fake_gw):
+            report = await service.activate_platform("shopify", "test", mode="initial")
+
+        assert report.total_imported == 1
+        assert len(client.upsert_calls) == 1
+        assert len(client.upsert_calls[0]["records"]) == 1
+
+        row = client.upsert_calls[0]["records"][0]
+        assert row.get("ingested_at")
+        # Verify value is ISO-like and parseable.
+        assert datetime.fromisoformat(row["ingested_at"].replace("Z", "+00:00"))
+        assert row.get("sync_run_id")
 
         await gateway.shutdown()
 

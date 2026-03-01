@@ -430,25 +430,22 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    // Toggling ON — check if the platform needs initial sync first
-    // Backend uses 'connected' | 'disconnected' | 'degraded' | 'auth_expired' (never 'synced')
-    const needsSync = platform.connection_status === 'disconnected' || platform.connection_status === 'auth_expired';
-    if (needsSync && platform.has_credentials) {
-      // Trigger initial activation (connect + import), which also sets is_active
-      const result = await api.activatePlatform(platformId);
-      if (!result.success) {
-        throw new Error(result.error || 'Platform activation failed');
-      }
-      refreshFederatedPlatforms();
-      return;
+    // Toggling ON — deterministic compatibility flow:
+    // always activate/import first so active implies query-ready source.
+    const activation = await api.activatePlatformCompat(platformId);
+    if (!activation.success) {
+      const code = activation.error_code ? `[${activation.error_code}] ` : '';
+      throw new Error(`${code}${activation.error || 'Platform activation failed'}`);
     }
 
-    // Already connected/degraded or no credentials — just add to active set
     const newActiveIds = federatedPlatforms
       .filter((p) => p.is_active)
       .map((p) => p.platform_id)
       .concat(platformId);
-    await api.setActivePlatforms(newActiveIds);
+    const setActiveResult = await api.setActivePlatforms(newActiveIds);
+    if (!setActiveResult.success) {
+      throw new Error(setActiveResult.error || 'Failed to mark platform active');
+    }
     refreshFederatedPlatforms();
   }, [federatedPlatforms, refreshFederatedPlatforms]);
 

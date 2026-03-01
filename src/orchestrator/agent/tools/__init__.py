@@ -27,8 +27,11 @@ from src.orchestrator.agent.tools.core import (  # noqa: E402
     _bind_bridge,
 )
 from src.orchestrator.agent.tools.data import (  # noqa: E402
+    connect_amazon_tool,
+    connect_shopify_tool,
     confirm_filter_interpretation_tool,
     fetch_rows_tool,
+    get_platform_status_tool,
     get_schema_tool,
     get_source_info_tool,
     resolve_filter_intent_tool,
@@ -283,6 +286,52 @@ def get_all_tool_definitions(
                 "required": ["job_id", "approved"],
             },
             "handler": batch_execute_tool,
+        },
+        {
+            "name": "get_platform_status",
+            "description": (
+                "Compatibility status for Shopify/Amazon activation readiness and "
+                "current queryable source status."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {},
+            },
+            "handler": get_platform_status_tool,
+        },
+        {
+            "name": "connect_shopify",
+            "description": (
+                "Explicitly activate Shopify and import orders into the queryable "
+                "platform source."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "credential_ref": {
+                        "type": "string",
+                        "description": "Credential profile (optional, defaults to primary).",
+                    },
+                },
+            },
+            "handler": _bind_bridge(connect_shopify_tool, bridge),
+        },
+        {
+            "name": "connect_amazon",
+            "description": (
+                "Explicitly activate Amazon Seller Central and import orders into "
+                "the queryable platform source."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "credential_ref": {
+                        "type": "string",
+                        "description": "Credential profile (optional, defaults to primary).",
+                    },
+                },
+            },
+            "handler": _bind_bridge(connect_amazon_tool, bridge),
         },
         # ---------------------------------------------------------------
         # Federated platform tools (meta-platform operations)
@@ -856,7 +905,7 @@ def get_all_tool_definitions(
     # In interactive mode, expose status tools + interactive preview + v2 tools.
     # v2 tools work independently of data sources and are useful in both modes.
     interactive_allowed = {
-        "get_job_status", "list_platforms",
+        "get_job_status", "list_platforms", "get_platform_status",
         # v2 tools — work independently of data source
         "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
         "find_locations", "get_service_center_facilities",

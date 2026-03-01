@@ -5,6 +5,7 @@ No tool calls the LLM internally — all are deterministic.
 """
 
 import json
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,7 +21,10 @@ from src.orchestrator.agent.tools.core import (
     shutdown_cached_ups_client,
 )
 from src.orchestrator.agent.tools.data import (
+    connect_amazon_tool,
+    connect_shopify_tool,
     fetch_rows_tool,
+    get_platform_status_tool,
     get_schema_tool,
     get_source_info_tool,
 )
@@ -74,6 +78,170 @@ async def test_get_source_info_no_connection_returns_error():
         result = await get_source_info_tool({})
 
     assert result["isError"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_source_info_bootstraps_from_active_platforms():
+    """When source is missing, tool refreshes active platforms and retries."""
+    info_dict = {
+        "active": True,
+        "source_type": "external_orders",
+        "path": None,
+        "row_count": 12,
+        "columns": [],
+    }
+
+    with (
+        patch("src.orchestrator.agent.tools.data.get_data_gateway") as mock_gw_fn,
+        patch("src.services.gateway_provider.get_platform_registry") as mock_registry_fn,
+        patch("src.services.gateway_provider.get_activation_service") as mock_activation_fn,
+    ):
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info.side_effect = [None, info_dict]
+        mock_gw_fn.return_value = mock_gw
+
+        mock_registry = MagicMock()
+        mock_registry.get_active_platforms.return_value = [
+            SimpleNamespace(
+                platform_id="shopify",
+                credential_ref="primary",
+                connection_status="connected",
+                has_credentials=True,
+            )
+        ]
+        mock_registry_fn.return_value = mock_registry
+
+        mock_activation = MagicMock()
+        mock_activation.activate_platform = AsyncMock(return_value=MagicMock())
+        mock_activation_fn.return_value = mock_activation
+
+        result = await get_source_info_tool({})
+
+    assert result["isError"] is False
+    data = json.loads(result["content"][0]["text"])
+    assert data["source_type"] == "external_orders"
+    assert data["row_count"] == 12
+    mock_activation.activate_platform.assert_awaited_once_with(
+        platform_id="shopify",
+        credential_ref="primary",
+        mode="refresh",
+    )
+
+
+@pytest.mark.asyncio
+async def test_connect_shopify_tool_activates_and_verifies_source():
+    """connect_shopify uses deterministic activation and source verification."""
+    mock_report = SimpleNamespace(
+        mode="initial",
+        total_imported=11,
+        pages_fetched=1,
+    )
+    with (
+        patch("src.services.gateway_provider.get_platform_registry") as mock_registry_fn,
+        patch("src.services.gateway_provider.get_activation_service") as mock_activation_fn,
+        patch("src.orchestrator.agent.tools.data.get_data_gateway") as mock_gw_fn,
+    ):
+        mock_registry = MagicMock()
+        mock_registry.get_config.return_value = SimpleNamespace(default_profile="primary")
+        mock_registry.get_state.return_value = None
+        mock_registry_fn.return_value = mock_registry
+
+        mock_activation = MagicMock()
+        mock_activation.activate_platform = AsyncMock(return_value=mock_report)
+        mock_activation_fn.return_value = mock_activation
+
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info.return_value = {
+            "source_type": "external_orders",
+            "row_count": 11,
+            "path": "imported_data",
+        }
+        mock_gw_fn.return_value = mock_gw
+
+        result = await connect_shopify_tool({})
+
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["platform"] == "shopify"
+    assert payload["source_type"] == "external_orders"
+    mock_activation.activate_platform.assert_awaited_once_with(
+        platform_id="shopify",
+        credential_ref="primary",
+        mode="initial",
+    )
+
+
+@pytest.mark.asyncio
+async def test_connect_amazon_tool_returns_source_not_ready_error():
+    """connect_amazon returns machine-readable error when source isn't query-ready."""
+    mock_report = SimpleNamespace(
+        mode="initial",
+        total_imported=4,
+        pages_fetched=1,
+    )
+    with (
+        patch("src.services.gateway_provider.get_platform_registry") as mock_registry_fn,
+        patch("src.services.gateway_provider.get_activation_service") as mock_activation_fn,
+        patch("src.orchestrator.agent.tools.data.get_data_gateway") as mock_gw_fn,
+    ):
+        mock_registry = MagicMock()
+        mock_registry.get_config.return_value = SimpleNamespace(default_profile="primary")
+        mock_registry.get_state.return_value = None
+        mock_registry_fn.return_value = mock_registry
+
+        mock_activation = MagicMock()
+        mock_activation.activate_platform = AsyncMock(return_value=mock_report)
+        mock_activation_fn.return_value = mock_activation
+
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info.return_value = None
+        mock_gw_fn.return_value = mock_gw
+
+        result = await connect_amazon_tool({})
+
+    assert result["isError"] is True
+    assert "[SOURCE_NOT_READY]" in result["content"][0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_get_platform_status_tool_reports_platforms_and_source():
+    """Compatibility status tool reports data source + key platform states."""
+    with (
+        patch("src.services.gateway_provider.get_platform_registry") as mock_registry_fn,
+        patch("src.orchestrator.agent.tools.data.get_data_gateway") as mock_gw_fn,
+    ):
+        mock_registry = MagicMock()
+        mock_registry.get_platforms_summary.return_value = [
+            SimpleNamespace(
+                platform_id="shopify",
+                connection_status="connected",
+                has_credentials=True,
+                is_active=True,
+                last_sync_row_count=12,
+            ),
+            SimpleNamespace(
+                platform_id="amazon",
+                connection_status="disconnected",
+                has_credentials=True,
+                is_active=False,
+                last_sync_row_count=None,
+            ),
+        ]
+        mock_registry_fn.return_value = mock_registry
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info.return_value = {
+            "source_type": "external_orders",
+            "row_count": 12,
+        }
+        mock_gw_fn.return_value = mock_gw
+
+        result = await get_platform_status_tool({})
+
+    assert result["isError"] is False
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["platforms"]["data_source"]["connected"] is True
+    assert payload["platforms"]["shopify"]["connected"] is True
+    assert payload["platforms"]["amazon"]["configured"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +392,86 @@ async def test_ship_command_pipeline_success_with_all_rows():
     payload = json.loads(result["content"][0]["text"])
     assert payload["status"] == "preview_ready"
     assert payload["job_id"] == "job-1"
+
+
+@pytest.mark.asyncio
+async def test_ship_command_pipeline_bootstraps_platform_source_when_missing():
+    """Pipeline retries source resolution after refreshing active platforms."""
+    fetched_rows = [{"order_id": "1", "service_code": "03"}]
+    preview_result = {
+        "job_id": "job-sync",
+        "total_rows": 1,
+        "preview_rows": [{"row_number": 1, "estimated_cost_cents": 1000}],
+        "total_estimated_cost_cents": 1000,
+    }
+    source_info = {
+        "source_type": "external_orders",
+        "path": None,
+        "query": None,
+        "row_count": 10,
+        "columns": [],
+        "signature": "sig-1",
+        "deterministic_ready": True,
+    }
+
+    with (
+        patch("src.orchestrator.agent.tools.pipeline.get_data_gateway") as mock_gw_fn,
+        patch("src.services.gateway_provider.get_platform_registry") as mock_registry_fn,
+        patch("src.services.gateway_provider.get_activation_service") as mock_activation_fn,
+        patch(
+            "src.orchestrator.agent.tools.pipeline._get_ups_client",
+            new=AsyncMock(return_value=AsyncMock()),
+        ),
+        patch("src.orchestrator.agent.tools.pipeline.get_db_context") as mock_ctx,
+        patch("src.orchestrator.agent.tools.pipeline.JobService") as MockJS,
+        patch("src.services.batch_engine.BatchEngine") as MockEngine,
+        patch("src.services.ups_payload_builder.build_shipper", return_value={"name": "Store"}),
+        patch("src.orchestrator.agent.tools.pipeline._persist_job_source_signature", new=AsyncMock()),
+    ):
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info.side_effect = [None, source_info]
+        mock_gw.get_rows_by_filter.return_value = fetched_rows
+        mock_gw_fn.return_value = mock_gw
+
+        mock_registry = MagicMock()
+        mock_registry.get_active_platforms.return_value = [
+            SimpleNamespace(
+                platform_id="shopify",
+                credential_ref="primary",
+                connection_status="connected",
+                has_credentials=True,
+            )
+        ]
+        mock_registry_fn.return_value = mock_registry
+
+        mock_activation = MagicMock()
+        mock_activation.activate_platform = AsyncMock(return_value=MagicMock())
+        mock_activation_fn.return_value = mock_activation
+
+        mock_db = MagicMock()
+        mock_ctx.return_value.__enter__ = MagicMock(return_value=mock_db)
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_job = MagicMock()
+        mock_job.id = "job-sync"
+        MockJS.return_value.create_job.return_value = mock_job
+        MockJS.return_value.get_rows.return_value = [MagicMock()]
+
+        MockEngine.return_value.preview = AsyncMock(return_value=preview_result)
+
+        result = await ship_command_pipeline_tool(
+            {
+                "command": "Ship all orders",
+                "all_rows": True,
+            }
+        )
+
+    assert result["isError"] is False
+    mock_activation.activate_platform.assert_awaited_once_with(
+        platform_id="shopify",
+        credential_ref="primary",
+        mode="refresh",
+    )
 
 
 @pytest.mark.asyncio
@@ -813,7 +1061,7 @@ def test_tool_definitions_filtered_for_interactive_mode():
         "push_document_to_shipment", "delete_paperless_document",
         "get_landed_cost", "track_package",
         "resolve_contact", "save_contact", "list_contacts", "delete_contact",
-        "list_platforms",
+        "list_platforms", "get_platform_status",
     }
     assert names == expected
 
@@ -824,6 +1072,9 @@ def test_tool_definitions_unfiltered_when_interactive_disabled():
     names = {d["name"] for d in defs}
     assert "ship_command_pipeline" in names
     assert "fetch_rows" in names
+    assert "connect_shopify" in names
+    assert "connect_amazon" in names
+    assert "get_platform_status" in names
     assert "create_job" not in names
     assert "add_rows_to_job" not in names
     assert "batch_preview" not in names

@@ -1163,6 +1163,10 @@ export interface SetActivePlatformsResponse {
     connection_status: string;
     last_sync_row_count: number | null;
   }>;
+  failed_platforms?: Array<{
+    platform_id: string;
+    reason: string;
+  }>;
   error?: string;
 }
 
@@ -1171,5 +1175,10 @@ export interface ActivatePlatformResponse {
   success: boolean;
   platform_id?: string;
   total_imported?: number;
+  pages_fetched?: number;
+  mode?: string;
+  row_count?: number;
+  source_type?: string;
+  error_code?: string;
   error?: string;
 }

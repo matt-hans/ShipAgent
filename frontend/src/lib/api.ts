@@ -780,6 +780,26 @@ export async function activatePlatform(
   return parseResponse<ActivatePlatformResponse>(response);
 }
 
+/**
+ * Activate a platform through compatibility rollback endpoints when available.
+ *
+ * Shopify/Amazon use explicit deterministic activation routes to mirror the
+ * legacy working flow. Other platforms fall back to generic activation.
+ */
+export async function activatePlatformCompat(
+  platformId: string
+): Promise<ActivatePlatformResponse> {
+  const normalized = platformId.trim().toLowerCase();
+  if (normalized === 'shopify' || normalized === 'amazon') {
+    const response = await fetch(`${getApiBase()}/platforms/${normalized}/activate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    return parseResponse<ActivatePlatformResponse>(response);
+  }
+  return activatePlatform(platformId);
+}
+
 // === Contact Book API ===
 
 import type {

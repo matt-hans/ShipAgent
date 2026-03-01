@@ -56,18 +56,30 @@ function platformStatusText(
   if (platform.is_active && interactiveShipping) {
     return { text: 'Standby', className: 'text-slate-500' };
   }
-  if (platform.is_active) {
-    const orderCount = platform.last_sync_row_count;
-    const detail = orderCount ? `${orderCount.toLocaleString()} orders` : 'Connected';
-    return { text: detail, className: 'text-emerald-400' };
-  }
+  const status = platform.connection_status.toLowerCase();
+  const orderCount = platform.last_sync_row_count || 0;
+
   if (!platform.has_credentials) {
     return { text: 'Not configured', className: 'text-slate-500' };
   }
-  if (platform.connection_status === 'connected' || platform.connection_status === 'degraded') {
-    return { text: 'Available', className: 'text-slate-500' };
+
+  if (platform.is_active) {
+    if (orderCount > 0) {
+      return { text: `Synced (${orderCount.toLocaleString()})`, className: 'text-emerald-400' };
+    }
+    return { text: 'Syncing', className: 'text-amber-400' };
   }
-  return { text: 'Needs sync', className: 'text-amber-400' };
+
+  if (status === 'auth_expired') {
+    return { text: 'Needs attention', className: 'text-amber-400' };
+  }
+  if (status === 'connected' || status === 'degraded') {
+    return { text: 'Configured', className: 'text-slate-400' };
+  }
+  if (status === 'disconnected') {
+    return { text: 'Configured', className: 'text-slate-400' };
+  }
+  return { text: 'Needs attention', className: 'text-amber-400' };
 }
 
 /** Compact single-line platform row with inline status and toggle/link. */
@@ -140,7 +152,6 @@ export function DataSourceSection() {
   const [togglingPlatformId, setTogglingPlatformId] = React.useState<string | null>(null);
   const [showDbForm, setShowDbForm] = React.useState(false);
   const [dbConnectionString, setDbConnectionString] = React.useState('');
-  const [backendSourceType, setBackendSourceType] = React.useState<string | null>(null);
 
   // Recent sources modal
   const [showRecentSources, setShowRecentSources] = React.useState(false);
@@ -167,12 +178,10 @@ export function DataSourceSection() {
         if (isCancelled) return;
 
         if (!status.connected) {
-          setBackendSourceType(null);
           return;
         }
 
         const sourceType = String(status.source_type || '').toLowerCase();
-        setBackendSourceType(sourceType || null);
 
         const KNOWN_TYPES = new Set<string>(['csv', 'excel', 'json', 'xml', 'fixed_width', 'edi', 'database']);
         if (KNOWN_TYPES.has(sourceType)) {
@@ -295,7 +304,6 @@ export function DataSourceSection() {
         excel_path: fileType === 'excel' ? file.name : undefined,
       };
       setDataSource(source);
-      setBackendSourceType(result.source_type || fileType);
       setCachedLocalConfig({ type: fileType, file_path: file.name });
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Import failed');
@@ -334,7 +342,6 @@ export function DataSourceSection() {
         file_path: match.file_path ?? undefined,
       };
       setDataSource(source);
-      setBackendSourceType(match.source_type);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Reconnect failed');
     } finally {
@@ -369,7 +376,6 @@ export function DataSourceSection() {
         connected_at: new Date().toISOString(),
       };
       setDataSource(source);
-      setBackendSourceType('database');
       setCachedLocalConfig({ type: 'database' });
       setDbConnectionString('');
       setShowDbForm(false);
@@ -387,7 +393,6 @@ export function DataSourceSection() {
       // Ignore errors - clear local state anyway
     }
     setDataSource(null);
-    setBackendSourceType(null);
     setCachedLocalConfig(null);
     setImportError(null);
   };

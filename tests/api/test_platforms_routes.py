@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from fastapi.testclient import TestClient
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 
 @dataclass
@@ -96,10 +97,24 @@ class TestActivatePlatformRoute:
         """Successful activation returns import stats."""
         mock_service = AsyncMock()
         mock_service.activate_platform.return_value = FakeActivationReport()
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"source_type": "external_orders", "row_count": 50, "path": "imported_data"}
+        )
 
-        with patch(
-            "src.services.gateway_provider._activation_service",
-            mock_service,
+        with (
+            patch(
+                "src.services.gateway_provider._platform_registry",
+                MagicMock(get_config=MagicMock(return_value=SimpleNamespace(default_profile="primary")), get_state=MagicMock(return_value=None)),
+            ),
+            patch(
+                "src.services.gateway_provider._activation_service",
+                mock_service,
+            ),
+            patch(
+                "src.services.gateway_provider.get_data_gateway",
+                new=AsyncMock(return_value=mock_gw),
+            ),
         ):
             resp = client.post(
                 "/api/v1/platforms/activate",
@@ -109,16 +124,22 @@ class TestActivatePlatformRoute:
             data = resp.json()
             assert data["success"] is True
             assert data["total_imported"] == 50
-            assert data["mode"] == "initial"
+            assert data["source_type"] == "external_orders"
 
     def test_activate_returns_error_on_failure(self, client):
         """Failed activation returns error message."""
         mock_service = AsyncMock()
         mock_service.activate_platform.side_effect = ValueError("Bad platform")
 
-        with patch(
-            "src.services.gateway_provider._activation_service",
-            mock_service,
+        with (
+            patch(
+                "src.services.gateway_provider._platform_registry",
+                MagicMock(get_config=MagicMock(return_value=SimpleNamespace(default_profile="primary")), get_state=MagicMock(return_value=None)),
+            ),
+            patch(
+                "src.services.gateway_provider._activation_service",
+                mock_service,
+            ),
         ):
             resp = client.post(
                 "/api/v1/platforms/activate",
@@ -137,10 +158,24 @@ class TestRefreshPlatformRoute:
         """Successful refresh returns import stats."""
         mock_service = AsyncMock()
         mock_service.activate_platform.return_value = FakeActivationReport(mode="refresh")
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"source_type": "external_orders", "row_count": 25, "path": "imported_data"}
+        )
 
-        with patch(
-            "src.services.gateway_provider._activation_service",
-            mock_service,
+        with (
+            patch(
+                "src.services.gateway_provider._platform_registry",
+                MagicMock(get_config=MagicMock(return_value=SimpleNamespace(default_profile="primary")), get_state=MagicMock(return_value=SimpleNamespace(last_completed_watermark="w"))),
+            ),
+            patch(
+                "src.services.gateway_provider._activation_service",
+                mock_service,
+            ),
+            patch(
+                "src.services.gateway_provider.get_data_gateway",
+                new=AsyncMock(return_value=mock_gw),
+            ),
         ):
             resp = client.post(
                 "/api/v1/platforms/refresh",
@@ -150,6 +185,62 @@ class TestRefreshPlatformRoute:
             data = resp.json()
             assert data["success"] is True
             assert data["mode"] == "refresh"
+
+
+class TestCompatActivateRoutes:
+    """Test compatibility activation endpoints."""
+
+    def test_shopify_compat_activate(self, client):
+        """POST /platforms/shopify/activate should proxy generic activation."""
+        mock_service = AsyncMock()
+        mock_service.activate_platform.return_value = FakeActivationReport(platform_id="shopify")
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"source_type": "external_orders", "row_count": 10, "path": "imported_data"}
+        )
+
+        with (
+            patch(
+                "src.services.gateway_provider._platform_registry",
+                MagicMock(get_config=MagicMock(return_value=SimpleNamespace(default_profile="primary")), get_state=MagicMock(return_value=None)),
+            ),
+            patch("src.services.gateway_provider._activation_service", mock_service),
+            patch(
+                "src.services.gateway_provider.get_data_gateway",
+                new=AsyncMock(return_value=mock_gw),
+            ),
+        ):
+            resp = client.post("/api/v1/platforms/shopify/activate")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is True
+            assert data["platform_id"] == "shopify"
+
+    def test_amazon_compat_activate(self, client):
+        """POST /platforms/amazon/activate should proxy generic activation."""
+        mock_service = AsyncMock()
+        mock_service.activate_platform.return_value = FakeActivationReport(platform_id="amazon")
+        mock_gw = AsyncMock()
+        mock_gw.get_source_info = AsyncMock(
+            return_value={"source_type": "external_orders", "row_count": 10, "path": "imported_data"}
+        )
+
+        with (
+            patch(
+                "src.services.gateway_provider._platform_registry",
+                MagicMock(get_config=MagicMock(return_value=SimpleNamespace(default_profile="primary")), get_state=MagicMock(return_value=None)),
+            ),
+            patch("src.services.gateway_provider._activation_service", mock_service),
+            patch(
+                "src.services.gateway_provider.get_data_gateway",
+                new=AsyncMock(return_value=mock_gw),
+            ),
+        ):
+            resp = client.post("/api/v1/platforms/amazon/activate")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is True
+            assert data["platform_id"] == "amazon"
 
 
 class TestDisconnectPlatformRoute:

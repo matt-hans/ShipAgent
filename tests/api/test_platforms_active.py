@@ -41,6 +41,12 @@ def client():
     return TestClient(app, raise_server_exceptions=False)
 
 
+@pytest.fixture(autouse=True)
+def _disable_compat_mode(monkeypatch):
+    """Keep legacy active-route behavior for these baseline route tests."""
+    monkeypatch.setenv("PLATFORM_ACTIVATION_COMPAT_MODE", "false")
+
+
 class TestSetActivePlatformsRoute:
     """Tests for PATCH /api/v1/platforms/active."""
 
