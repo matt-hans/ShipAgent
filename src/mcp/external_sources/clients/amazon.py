@@ -6,6 +6,7 @@ Supports OAuth token refresh, order retrieval, and normalized order mapping.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -255,9 +256,13 @@ class AmazonClient(PlatformClient):
                     for order in orders:
                         if filters.status and str(order.get("OrderStatus", "")).lower() != str(filters.status).lower():
                             continue
-                        normalized_orders.append(self._normalize_order(order))
+                        order_id = str(order.get("AmazonOrderId", ""))
+                        items = await self._fetch_order_items(order_id)
+                        normalized_orders.append(self._normalize_order(order, items))
                         if len(normalized_orders) >= max_results:
                             break
+                        # Rate limit: 1 req/sec for getOrderItems
+                        await asyncio.sleep(1.0)
 
                     next_token = payload.get("NextToken")
                     if not next_token:
@@ -293,7 +298,9 @@ class AmazonClient(PlatformClient):
             payload = response.json().get("payload")
             if not isinstance(payload, dict):
                 return None
-            return self._normalize_order(payload)
+            order_id = str(payload.get("AmazonOrderId", ""))
+            items = await self._fetch_order_items(order_id)
+            return self._normalize_order(payload, items)
         except Exception:
             return None
 

@@ -182,3 +182,116 @@ class TestNormalizeOrderWithItems:
         result = client._normalize_order(order)
         assert result.items == []
         assert result.item_count == 2  # fallback to shipped + unshipped
+
+
+class TestFetchOrdersWithItems:
+    """Test that fetch_orders calls _fetch_order_items for each order."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_orders_populates_items(self):
+        """fetch_orders fetches items per-order and enriches ExternalOrder."""
+        client = AmazonClient()
+        client._authenticated = True
+        client._access_token = "test-token"
+        client._token_expires_at = 9999999999.0
+        client._marketplace_id = "ATVPDKIKX0DER"
+        client._sandbox = False
+
+        orders_response = MagicMock()
+        orders_response.status_code = 200
+        orders_response.json.return_value = {
+            "payload": {
+                "Orders": [
+                    {
+                        "AmazonOrderId": "111-0000001-0000001",
+                        "PurchaseDate": "2026-02-28T10:00:00Z",
+                        "OrderStatus": "Unshipped",
+                        "FulfillmentChannel": "MFN",
+                        "ShippingAddress": {
+                            "Name": "Test User",
+                            "AddressLine1": "1 Main St",
+                            "City": "NY",
+                            "StateOrRegion": "NY",
+                            "PostalCode": "10001",
+                            "CountryCode": "US",
+                        },
+                        "BuyerInfo": {},
+                    },
+                ],
+            }
+        }
+
+        mock_items = [
+            {"OrderItemId": "i-1", "Title": "Gadget", "QuantityOrdered": 1,
+             "SellerSKU": "G-001", "ASIN": "B001"},
+        ]
+
+        with patch.object(
+            httpx.AsyncClient, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = orders_response
+            with patch.object(
+                client, "_fetch_order_items", new_callable=AsyncMock
+            ) as mock_fetch_items:
+                mock_fetch_items.return_value = mock_items
+                # Patch asyncio.sleep to avoid real delay
+                with patch("src.mcp.external_sources.clients.amazon.asyncio.sleep", new_callable=AsyncMock):
+                    orders = await client.fetch_orders(OrderFilters(limit=10))
+
+        assert len(orders) == 1
+        assert orders[0].items[0]["id"] == "i-1"
+        assert orders[0].items[0]["sku"] == "G-001"
+        mock_fetch_items.assert_called_once_with("111-0000001-0000001")
+
+
+class TestGetOrderWithItems:
+    """Test that get_order calls _fetch_order_items."""
+
+    @pytest.mark.asyncio
+    async def test_get_order_populates_items(self):
+        """get_order fetches items and enriches the ExternalOrder."""
+        client = AmazonClient()
+        client._authenticated = True
+        client._access_token = "test-token"
+        client._token_expires_at = 9999999999.0
+        client._marketplace_id = "ATVPDKIKX0DER"
+
+        order_response = MagicMock()
+        order_response.status_code = 200
+        order_response.json.return_value = {
+            "payload": {
+                "AmazonOrderId": "222-0000001-0000001",
+                "PurchaseDate": "2026-02-28T10:00:00Z",
+                "OrderStatus": "Shipped",
+                "FulfillmentChannel": "MFN",
+                "ShippingAddress": {
+                    "Name": "Test",
+                    "AddressLine1": "2 Elm St",
+                    "City": "LA",
+                    "StateOrRegion": "CA",
+                    "PostalCode": "90001",
+                    "CountryCode": "US",
+                },
+                "BuyerInfo": {},
+            }
+        }
+
+        mock_items = [
+            {"OrderItemId": "i-99", "Title": "Thing", "QuantityOrdered": 3,
+             "SellerSKU": "T-001", "ASIN": "B099"},
+        ]
+
+        with patch.object(
+            httpx.AsyncClient, "get", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = order_response
+            with patch.object(
+                client, "_fetch_order_items", new_callable=AsyncMock
+            ) as mock_fetch_items:
+                mock_fetch_items.return_value = mock_items
+                order = await client.get_order("222-0000001-0000001")
+
+        assert order is not None
+        assert order.items[0]["id"] == "i-99"
+        assert order.item_count == 3
+        mock_fetch_items.assert_called_once_with("222-0000001-0000001")
