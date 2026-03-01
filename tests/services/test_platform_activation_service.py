@@ -67,7 +67,11 @@ def _make_gateway_session(pages: list[dict] | None = None):
         "limits": {"rate_limit_per_second": 100, "max_concurrency": 10},
         "paging": {"default_page_size": 3, "max_page_size": 3, "overlap_seconds": 0},
     }])
-    session.program("auth.connect", [{"ok": True, "account_label": "test-store"}])
+    session.program("auth.connect", [{
+        "ok": True,
+        "account_id": "test-store.myshopify.com",
+        "account_label": "Test Store",
+    }])
 
     if pages is None:
         pages = [
@@ -251,7 +255,7 @@ class TestRefreshWithWatermark:
             "limits": {"rate_limit_per_second": 100, "max_concurrency": 10},
             "paging": {"default_page_size": 3, "max_page_size": 3, "overlap_seconds": 0},
         }])
-        session.program("auth.connect", [{"ok": True, "account_label": "test-store"}])
+        session.program("auth.connect", [{"ok": True, "account_id": "test-store.myshopify.com", "account_label": "Test Store"}])
         session.program("orders.list", [{
             "items": [_make_order("D001")],
             "next_cursor": None,
@@ -296,7 +300,7 @@ class TestResumeFromCrash:
             "limits": {"rate_limit_per_second": 100, "max_concurrency": 10},
             "paging": {"default_page_size": 3, "max_page_size": 3, "overlap_seconds": 0},
         }])
-        session.program("auth.connect", [{"ok": True, "account_label": "test-store"}])
+        session.program("auth.connect", [{"ok": True, "account_id": "test-store.myshopify.com", "account_label": "Test Store"}])
         session.program("orders.list", [{
             "items": [_make_order("D004"), _make_order("D005"), _make_order("D006")],
             "next_cursor": None,
@@ -406,5 +410,88 @@ class TestUnknownPlatform:
         with pytest.raises(PlatformError) as exc_info:
             await service.activate_platform("nonexistent", "primary", mode="initial")
         assert exc_info.value.error_code == PlatformErrorCode.INVALID_ARGUMENT
+
+        await gateway.shutdown()
+
+
+class TestAccountIdentityPersistence:
+    """Test that auth.connect identity is persisted for credential binding."""
+
+    @pytest.mark.asyncio
+    async def test_account_id_persisted_from_auth_connect(self, mock_ds_client):
+        """account_id and account_label from auth.connect are saved to state."""
+        from src.services.platform_activation_service import PlatformActivationService
+        from src.services.platform_gateway import PlatformGateway
+
+        client, fake_gw = mock_ds_client
+        registry = _make_registry()
+        session = _make_gateway_session()
+        gateway = PlatformGateway(
+            registry, session_factory=lambda cfg, ref: session
+        )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
+
+        with patch(_PATCH_TARGET, new=fake_gw):
+            await service.activate_platform("dummy", "test", mode="initial")
+
+        # Verify update_state was called with account_id and account_label
+        update_calls = registry.update_state.call_args_list
+        identity_call = None
+        for call in update_calls:
+            kwargs = call.kwargs if call.kwargs else {}
+            if "account_id" in kwargs or "account_label" in kwargs:
+                identity_call = call
+                break
+
+        assert identity_call is not None, "update_state never called with account_id"
+        assert identity_call.kwargs["account_id"] == "test-store.myshopify.com"
+        assert identity_call.kwargs["account_label"] == "Test Store"
+
+        await gateway.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_no_identity_update_when_auth_connect_has_no_account_id(
+        self, mock_ds_client,
+    ):
+        """When auth.connect returns no account_id, no identity state is written."""
+        from src.services.platform_activation_service import PlatformActivationService
+        from src.services.platform_gateway import PlatformGateway
+
+        client, fake_gw = mock_ds_client
+        registry = _make_registry()
+
+        # Build session with auth.connect that returns no account_id
+        session = FakeSession()
+        session.program("platform.health", [{"ok": True, "contract_version": "1.0"}])
+        session.program("platform.capabilities", [{
+            "platform_id": "dummy",
+            "contract_version": "1.0",
+            "supports": ["orders.list"],
+            "limits": {"rate_limit_per_second": 100, "max_concurrency": 10},
+            "paging": {"default_page_size": 3, "max_page_size": 3, "overlap_seconds": 0},
+        }])
+        session.program("auth.connect", [{"ok": True}])  # no account_id or account_label
+        session.program("orders.list", [{
+            "items": [_make_order("D001")],
+            "next_cursor": None,
+            "watermark": "2026-02-28T10:00:00Z",
+        }])
+
+        gateway = PlatformGateway(
+            registry, session_factory=lambda cfg, ref: session
+        )
+        service = PlatformActivationService(registry=registry, gateway=gateway)
+
+        with patch(_PATCH_TARGET, new=fake_gw):
+            await service.activate_platform("dummy", "test", mode="initial")
+
+        # Verify update_state was NOT called with account_id
+        update_calls = registry.update_state.call_args_list
+        for call in update_calls:
+            kwargs = call.kwargs if call.kwargs else {}
+            assert "account_id" not in kwargs, (
+                f"update_state called with account_id={kwargs.get('account_id')} "
+                "but auth.connect returned no account_id"
+            )
 
         await gateway.shutdown()

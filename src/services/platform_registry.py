@@ -274,19 +274,23 @@ class PlatformRegistry:
     ) -> dict[str, str] | None:
         """Resolve Shopify credentials from ConnectionService encrypted DB.
 
-        Uses the account_label from PlatformSyncState (set during auth.connect)
-        as store_domain for targeted lookup. Falls back to first-available when
-        no state exists yet (initial connection).
+        Uses account_id from PlatformSyncState (persisted by
+        PlatformActivationService after auth.connect) as store_domain for
+        targeted lookup. account_id holds the stable store domain returned
+        by auth.connect, while account_label is the human-readable shop name.
+
+        Falls back to first-available when no state or account_id exists yet
+        (initial connection).
 
         Maps ShopifyLegacyCredentials/ShopifyClientCredentials fields to
         auth.connect parameter names.
         """
         try:
-            # Try to get store_domain from persisted state (set by auth.connect)
+            # Try to get store_domain from persisted state (set by activation service)
             store_domain: str | None = None
             state = self.get_state("shopify", credential_ref)
-            if state and state.account_label:
-                store_domain = state.account_label
+            if state and state.account_id:
+                store_domain = state.account_id
 
             creds = resolve_shopify_credentials(store_domain=store_domain)
             if creds is None:

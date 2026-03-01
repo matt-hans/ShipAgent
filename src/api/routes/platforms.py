@@ -277,7 +277,8 @@ async def set_active_platforms(
     """Set which platforms are active data sources.
 
     Platforms in the list are set active; all others are deactivated.
-    Only connected platforms can be activated.
+    Only profiles that are connected or have credentials can be activated.
+    A platform_id is rejected only if ALL its profiles fail validation.
 
     Args:
         request: Contains list of platform IDs to activate.
@@ -291,27 +292,33 @@ async def set_active_platforms(
         registry = get_platform_registry()
         summaries = registry.get_platforms_summary()
 
-        # Build lookup by platform_id
-        summary_by_id: dict[str, Any] = {}
+        # Build lookup: platform_id → list of summaries (multi-profile safe)
+        summaries_by_pid: dict[str, list[Any]] = {}
         for s in summaries:
-            summary_by_id[s.platform_id] = s
+            summaries_by_pid.setdefault(s.platform_id, []).append(s)
 
         requested_ids = set(request.active_platform_ids)
         rejected: list[dict[str, str]] = []
 
-        # Validate: only connected platforms with credentials can be activated
+        def _is_activatable(summary: Any) -> bool:
+            """A profile is activatable if connected or has credentials."""
+            if summary.connection_status != "disconnected":
+                return True
+            return summary.has_credentials
+
+        # Validate: each requested platform_id must have at least one
+        # activatable profile. Reject only if ALL profiles fail.
         for pid in requested_ids:
-            summary = summary_by_id.get(pid)
-            if summary is None:
+            profiles = summaries_by_pid.get(pid)
+            if profiles is None:
                 rejected.append({"platform_id": pid, "reason": "unknown platform"})
                 continue
-            if summary.connection_status == "disconnected" and not summary.has_credentials:
+            if not any(_is_activatable(p) for p in profiles):
                 rejected.append({
                     "platform_id": pid,
                     "reason": "not connected and no credentials available",
                 })
 
-        # If any requested platform was rejected, return error
         if rejected:
             reasons = "; ".join(
                 f"{r['platform_id']}: {r['reason']}" for r in rejected
@@ -321,9 +328,13 @@ async def set_active_platforms(
                 error=f"Cannot activate: {reasons}",
             )
 
-        # Activate requested platforms, deactivate everything else
+        # Activate/deactivate per-profile: only activate activatable profiles
+        # for requested platforms; deactivate everything else.
         for summary in summaries:
-            should_be_active = summary.platform_id in requested_ids
+            if summary.platform_id in requested_ids:
+                should_be_active = _is_activatable(summary)
+            else:
+                should_be_active = False
             registry.set_platform_active(
                 summary.platform_id, summary.credential_ref, should_be_active,
             )
@@ -335,6 +346,7 @@ async def set_active_platforms(
                 "platform_id": s.platform_id,
                 "display_name": s.display_name,
                 "connection_status": s.connection_status,
+                "credential_ref": s.credential_ref,
                 "is_active": s.is_active,
             }
             for s in active_summaries

@@ -88,9 +88,18 @@ class PlatformActivationService:
 
         # Step 3: Connect via auth.connect — resolve secrets from keyring
         auth_args = self._registry.resolve_auth_args(platform_id, credential_ref)
-        await self._gateway.call_tool(
+        auth_result = await self._gateway.call_tool(
             platform_id, credential_ref, "auth.connect", auth_args,
         )
+
+        # Persist account identity from auth.connect for credential binding
+        identity_fields: dict[str, Any] = {}
+        if auth_result.get("account_id"):
+            identity_fields["account_id"] = auth_result["account_id"]
+        if auth_result.get("account_label"):
+            identity_fields["account_label"] = auth_result["account_label"]
+        if identity_fields:
+            self._registry.update_state(platform_id, credential_ref, **identity_fields)
 
         # Step 4: Load the mapper for this platform
         mapper = self._load_mapper(platform_id)

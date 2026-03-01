@@ -370,21 +370,22 @@ class TestDBFallbackCredentials:
 
     @patch("src.services.platform_registry.resolve_shopify_credentials")
     @patch("src.services.platform_registry.KeyringStore")
-    def test_shopify_db_fallback_uses_store_domain_from_state(
+    def test_shopify_db_fallback_uses_account_id_from_state(
         self, mock_ks_cls, mock_resolve, registry,
     ):
-        """Multi-store: DB fallback passes account_label as store_domain."""
+        """Multi-store: DB fallback passes account_id (stable domain) as store_domain."""
         from src.services.connection_types import ShopifyLegacyCredentials
 
         mock_ks = MagicMock()
         mock_ks.get.return_value = None
         mock_ks_cls.return_value = mock_ks
 
-        # State has account_label set from a previous auth.connect
+        # State has account_id set by PlatformActivationService after auth.connect
         registry.update_state(
             "shopify", "secondary",
             connection_status="connected",
-            account_label="secondary-store.myshopify.com",
+            account_id="secondary-store.myshopify.com",
+            account_label="Secondary Store",  # display name, not used for lookup
         )
 
         mock_resolve.return_value = ShopifyLegacyCredentials(
@@ -396,10 +397,40 @@ class TestDBFallbackCredentials:
         assert args["store_domain"] == "secondary-store.myshopify.com"
         assert args["access_token"] == "shpat_secondary"
 
-        # Verify resolve_shopify_credentials was called with store_domain
+        # Verify resolve_shopify_credentials was called with account_id as store_domain
         mock_resolve.assert_called_once_with(
             store_domain="secondary-store.myshopify.com",
         )
+
+    @patch("src.services.platform_registry.resolve_shopify_credentials")
+    @patch("src.services.platform_registry.KeyringStore")
+    def test_shopify_db_fallback_ignores_account_label_for_lookup(
+        self, mock_ks_cls, mock_resolve, registry,
+    ):
+        """account_label alone is NOT used for credential lookup — only account_id."""
+        from src.services.connection_types import ShopifyLegacyCredentials
+
+        mock_ks = MagicMock()
+        mock_ks.get.return_value = None
+        mock_ks_cls.return_value = mock_ks
+
+        # State has account_label but NO account_id
+        registry.update_state(
+            "shopify", "secondary",
+            connection_status="connected",
+            account_label="My Cool Store",  # display name only
+        )
+
+        mock_resolve.return_value = ShopifyLegacyCredentials(
+            access_token="shpat_first",
+            store_domain="first-store.myshopify.com",
+        )
+
+        args = registry.resolve_auth_args("shopify", "secondary")
+        assert args["access_token"] == "shpat_first"
+
+        # Should call with store_domain=None (account_label NOT used)
+        mock_resolve.assert_called_once_with(store_domain=None)
 
     @patch("src.services.platform_registry.resolve_shopify_credentials")
     @patch("src.services.platform_registry.KeyringStore")
