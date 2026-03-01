@@ -232,3 +232,66 @@ class TestSetActivePlatformsGuardrails:
         call_map = {(c.args[0], c.args[1]): c.args[2] for c in calls}
         assert call_map[("shopify", "primary")] is False
         assert call_map[("shopify", "secondary")] is True
+
+    @pytest.mark.asyncio
+    @patch("src.services.gateway_provider.get_platform_registry")
+    async def test_degraded_status_is_activatable(self, mock_get_registry):
+        """Degraded connection status is directly activatable without credentials."""
+        mock_registry = MagicMock()
+        mock_registry.get_platforms_summary.return_value = [
+            _make_summary(
+                "shopify", connection_status="degraded", has_credentials=False,
+            ),
+        ]
+        mock_registry.get_active_platforms.return_value = [
+            _make_summary("shopify", connection_status="degraded", is_active=True),
+        ]
+        mock_get_registry.return_value = mock_registry
+
+        request = SetActivePlatformsRequest(active_platform_ids=["shopify"])
+        response = await set_active_platforms(request)
+
+        assert response.success is True
+
+    @pytest.mark.asyncio
+    @patch("src.services.gateway_provider.get_platform_registry")
+    async def test_auth_expired_with_credentials_is_activatable(
+        self, mock_get_registry,
+    ):
+        """auth_expired with credentials can be activated (will re-auth)."""
+        mock_registry = MagicMock()
+        mock_registry.get_platforms_summary.return_value = [
+            _make_summary(
+                "shopify", connection_status="auth_expired", has_credentials=True,
+            ),
+        ]
+        mock_registry.get_active_platforms.return_value = [
+            _make_summary("shopify", connection_status="auth_expired", is_active=True),
+        ]
+        mock_get_registry.return_value = mock_registry
+
+        request = SetActivePlatformsRequest(active_platform_ids=["shopify"])
+        response = await set_active_platforms(request)
+
+        assert response.success is True
+
+    @pytest.mark.asyncio
+    @patch("src.services.gateway_provider.get_platform_registry")
+    async def test_auth_expired_without_credentials_is_rejected(
+        self, mock_get_registry,
+    ):
+        """auth_expired without credentials cannot be activated."""
+        mock_registry = MagicMock()
+        mock_registry.get_platforms_summary.return_value = [
+            _make_summary(
+                "shopify", connection_status="auth_expired", has_credentials=False,
+            ),
+        ]
+        mock_get_registry.return_value = mock_registry
+
+        request = SetActivePlatformsRequest(active_platform_ids=["shopify"])
+        response = await set_active_platforms(request)
+
+        assert response.success is False
+        assert "shopify" in response.error
+        mock_registry.set_platform_active.assert_not_called()

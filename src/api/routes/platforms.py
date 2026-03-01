@@ -300,9 +300,17 @@ async def set_active_platforms(
         requested_ids = set(request.active_platform_ids)
         rejected: list[dict[str, str]] = []
 
+        # Statuses where the platform is already usable without credentials.
+        _CONNECTED_STATUSES = frozenset({"connected", "degraded"})
+
         def _is_activatable(summary: Any) -> bool:
-            """A profile is activatable if connected or has credentials."""
-            if summary.connection_status != "disconnected":
+            """A profile is activatable if in a connected status or has credentials.
+
+            Connected/degraded profiles are directly usable. Disconnected or
+            auth_expired profiles can still be activated if credentials are
+            available (the activation flow will re-connect automatically).
+            """
+            if summary.connection_status in _CONNECTED_STATUSES:
                 return True
             return summary.has_credentials
 
