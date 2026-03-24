@@ -90,6 +90,10 @@ libs/shared/state/
 - `writeBackEnabled` → `localStorage` key `shipagent_write_back`
 - Hydrated on store init, synced on change via SignalStore `withHooks({ onInit })` + Angular `effect()` functions. A custom `withLocalStorage()` SignalStore feature encapsulates the hydrate-on-init + sync-on-change pattern for reuse across stores.
 
+### Cross-Tab/Window Synchronization
+
+The `withLocalStorage()` feature must include a `window.addEventListener('storage', ...)` listener to sync state across tabs/windows. When a user changes a setting (e.g., `interactiveShipping`) in one Tauri window or browser tab, the `storage` event fires in all other windows. The listener parses the new value, compares against the current signal value, and updates the store if changed — keeping all instances in sync without polling. This is critical for the Tauri desktop app which may spawn multiple WebView windows, and for the dev workflow where multiple browser tabs are common.
+
 ### Cross-Remote Pattern
 
 Remote A dispatches to its store → store signals update → Remote B reads via `computed()` signals. No direct events between remotes, no event bus. The store IS the bus.
@@ -111,6 +115,10 @@ libs/shared/sse/
 - Handles reconnect with exponential backoff
 - Keepalive ping handling
 - Cleanup on `disconnect()` — no leaked EventSource connections
+
+### SSE Lifecycle & Remote Teardown
+
+In React, `useEffect` cleanup functions close SSE connections when a component unmounts. In Angular, this responsibility falls on `OnDestroy`. **Critical requirement:** `ConversationSseService` and `JobProgressSseService` must be provided at the Chat Remote's component level (not `providedIn: 'root'`), so their lifecycle is tied to the Chat Remote's component tree. When the Chat Remote is destroyed/unloaded via Module Federation, Angular destroys these services and triggers their `ngOnDestroy()` hooks, which must call `SseService.disconnect()`. Without this, "ghost" SSE connections would continue receiving events and dispatching to the shared store from an unmounted remote. The `SseService.disconnect()` method must explicitly call `eventSource.close()` and unsubscribe all active observables.
 
 ### Domain SSE Services (chat remote)
 
@@ -173,7 +181,7 @@ apps/chat-remote/src/services/
 | `command-center/PreviewCard.tsx` (1256 lines) | `batch-preview.component`, `interactive-preview.component`, `preview-actions.component` | Split batch vs interactive |
 | `command-center/ProgressDisplay.tsx` | `progress-display.component` | Direct port |
 | `command-center/CompletionArtifact.tsx` | `completion-artifact.component` | Direct port |
-| `chat/RichChatInput.tsx` | `rich-chat-input.component` | Mirror div + token highlighting + autocomplete |
+| `chat/RichChatInput.tsx` | `rich-chat-input.component` + `mirrorSync` directive | Mirror div via reusable directive (see below) |
 | `lib/expandTokens.ts` | `token-expansion.service` (shared lib or chat service) | /command + @handle expansion |
 | `hooks/useCommandAutocomplete.ts` | `command-autocomplete.service.ts` | Token autocomplete for /commands |
 | `hooks/useContactAutocomplete.ts` | `contact-autocomplete.service.ts` | Token autocomplete for @handles |
@@ -267,8 +275,23 @@ libs/shared/ui/
 │   ├── relative-time.pipe.ts   # "5m ago", "2h ago" (port of formatRelativeTime)
 │   └── time-ago.pipe.ts        # ISO string → relative time (port of formatTimeAgo)
 ├── directives/
+│   └── mirror-sync.directive.ts    # Textarea↔div scroll/text sync for rich input overlays
 └── index.ts
 ```
+
+### Mirror Sync Directive
+
+The `RichChatInput` uses a "mirror div" technique — a hidden `<div>` overlaid on a `<textarea>` to render token highlighting while the user types in the textarea. This requires perfect synchronization of scroll offsets and text wrapping between the two elements. Rather than embedding this logic in the component, extract it into a reusable `MirrorSyncDirective` in the shared UI library:
+
+```typescript
+@Directive({ selector: '[appMirrorSync]' })
+export class MirrorSyncDirective implements AfterViewInit, OnDestroy {
+  @Input() mirrorTarget!: HTMLElement; // The div to sync with
+  // Syncs scrollTop, scrollLeft, and dimensions on input/scroll/resize events
+}
+```
+
+This keeps `rich-chat-input.component` focused on its template and autocomplete logic, and makes the mirror technique reusable if a "Rich Command Editor" is needed in the Settings remote later.
 
 ### What Ports Directly
 
@@ -292,9 +315,18 @@ Two icon sources must be ported:
 1. **Custom SVG icons** (`ui/icons.tsx`) — 50+ inline SVG components. Port to Angular OnPush components in `libs/shared/ui/components/icons/`. Generate a manifest during Phase 1 to verify completeness.
 2. **Lucide icons** — used in `messages.tsx`, `Header.tsx`, `ContactForm.tsx`, `SettingsFlyout.tsx`, and others. Replace with `lucide-angular` package (same icon names, Angular bindings).
 
+### CSS Encapsulation Strategy
+
+Angular's default `ViewEncapsulation.Emulated` scopes CSS to individual components, which can break Tailwind's global utility class reach and the industrial design system classes (`card-premium`, `btn-primary`, `badge-*`, `card-domain-*`). The strategy:
+
+1. **Global styles stay global.** All files in `libs/shared/ui/styles/` (tokens.css, typography.css, components.css, animations.css) are imported at the shell level as global stylesheets. They are NOT component-scoped.
+2. **Spartan UI wrapper components** that are purely thin wrappers around primitives use `encapsulation: ViewEncapsulation.None` to ensure Tailwind utilities and global classes apply predictably to their internal DOM.
+3. **Business components** (chat container, preview cards, domain cards) keep the default `ViewEncapsulation.Emulated` for isolation — their styles are Tailwind utilities applied via `class` bindings, which work regardless of encapsulation mode.
+4. **Rule of thumb:** If a component's template uses `card-premium`, `badge-*`, or any global CSS class from `components.css`, that component must either use `ViewEncapsulation.None` or ensure the global styles are imported at the application level (which they are by default via the shell).
+
 ### Visual Parity Goal
 
-The Angular app must be pixel-identical to the React app. Same colors, fonts, spacing, animations. The CSS is the source of truth and transfers wholesale.
+The Angular app must be pixel-identical to the React app. Same colors, fonts, spacing, animations. The CSS is the source of truth and transfers wholesale. Do not "Angular-ize" the CSS — the React `index.css` with its `@theme` blocks is already well-structured and ports directly as global styles.
 
 ## 6. API Client & Error Handling
 
@@ -309,18 +341,37 @@ libs/shared/api/
 
 ### Base URL Resolution
 
-1. Shell bootstrap calls `initSidecar()` (Tauri) or reads environment
-2. Shell provides resolved base URL via `InjectionToken<string>` (`API_BASE_URL`)
-3. `ApiService` injects the token — all requests use it
+Global `window.__SHIPAGENT_PORT__` variables are un-Angular. Instead, the port is resolved in the shell and provided as a typed `Signal`-based `InjectionToken`:
+
+1. Shell `main.ts` calls `initSidecar()` (Tauri) or reads environment, resolves port
+2. Shell provides the resolved base URL via `InjectionToken<Signal<string>>` (`API_BASE_URL`)
+3. `ApiService` injects the signal — reads `apiBaseUrl()` on each request
 4. Module Federation shares the token across remotes (provided in shell, consumed everywhere)
 
 ```typescript
-// Shell provides:
-{ provide: API_BASE_URL, useFactory: () => {
-    const port = (window as any).__SHIPAGENT_PORT__;
-    return port ? `http://127.0.0.1:${port}/api/v1` : '/api/v1';
-}}
+// libs/shared/api/api-url.token.ts
+export const API_BASE_URL = new InjectionToken<Signal<string>>('API_BASE_URL');
+
+// Shell main.ts bootstrap:
+const port = await resolveSidecarPort(); // Tauri invoke or env fallback
+const baseUrl = signal(port ? `http://127.0.0.1:${port}/api/v1` : '/api/v1');
+
+bootstrapApplication(AppComponent, {
+  providers: [
+    { provide: API_BASE_URL, useValue: baseUrl },
+    // ...
+  ]
+});
+
+// ApiService consumes:
+@Injectable({ providedIn: 'root' })
+export class ApiService {
+  private baseUrl = inject(API_BASE_URL);
+  // All requests use: `${this.baseUrl()}/conversations/...`
+}
 ```
+
+This eliminates global window variables and makes the base URL reactive — if the port were to change (unlikely but possible in future multi-sidecar scenarios), all API calls update automatically.
 
 ### Error Handling
 
@@ -402,6 +453,22 @@ export class DomainCardRegistryService {
 Chat remote uses: `<ng-container *ngComponentOutlet="domainRegistry.resolve(message.metadata.action)" />`
 
 This keeps the chat remote decoupled from domain card implementations.
+
+### Domain Card Component-Level Providers
+
+Domain cards that require card-specific logic (e.g., Landed Cost calculation formatting, Tracking timeline parsing, Paperless file upload state) must use **component-level `providers: [...]`** rather than module-level or root-level providers. This ensures:
+
+1. **Memory isolation** — The Landed Cost card's formatting service is instantiated only when a `landed_cost_result` event renders the card, and destroyed when the card leaves the DOM. It doesn't bloat the Chat Remote's memory footprint when not in use.
+2. **Instance scoping** — Multiple instances of the same card type (e.g., two tracking cards in one conversation) each get their own service instance, preventing state leakage between cards.
+
+```typescript
+@Component({
+  selector: 'app-landed-cost-card',
+  providers: [LandedCostFormatterService], // Scoped to this card instance
+  template: `...`
+})
+export class LandedCostCardComponent { ... }
+```
 
 ### Remote Dependency Injection Context
 
@@ -513,7 +580,7 @@ Built in parallel against shared contracts:
 ### Angular Packages
 - `@angular/core` ^19.x, `@angular/cli` ^19.x
 - `@nx/angular`, `@nx/js`, `@nx/workspace`
-- `@angular-architects/native-federation` (ES module-based federation, works with Angular CLI's esbuild builder — NOT the older webpack-based `@angular-architects/module-federation`)
+- `@angular-architects/native-federation` (ES module-based federation, works with Angular CLI's esbuild builder — NOT the older webpack-based `@angular-architects/module-federation`). See [Shared Dependency Pinning](#shared-dependency-pinning-native-federation--tauri) for critical Tauri compatibility notes.
 - `@ngrx/signals` (SignalStore)
 
 ### UI & Styling
@@ -539,6 +606,29 @@ Built in parallel against shared contracts:
 - **Same backend API** — no backend changes required. All `/api/v1/*` endpoints unchanged.
 - **Same Tauri integration** — swap `dist/` folder, no Rust changes needed.
 - **No hybrid state** — pure Angular. React app stays as-is until switchover.
+
+## Shared Dependency Pinning (Native Federation + Tauri)
+
+Native Federation relies on the browser's native Import Maps to share dependencies between the shell and remotes. Since Tauri uses a custom protocol (`tauri://` or `https://tauri.localhost`), the `federation.config.js` must explicitly pin shared dependencies to ensure version alignment:
+
+```javascript
+// federation.config.js (shell)
+const { withNativeFederation, share } = require('@angular-architects/native-federation/config');
+
+module.exports = withNativeFederation({
+  shared: share({
+    '@angular/core': { singleton: true, strictVersion: true, requiredVersion: '19.x.x' },
+    '@angular/common': { singleton: true, strictVersion: true, requiredVersion: '19.x.x' },
+    '@angular/common/http': { singleton: true, strictVersion: true },
+    '@ngrx/signals': { singleton: true, strictVersion: true },
+    'rxjs': { singleton: true, strictVersion: true },
+  })
+});
+```
+
+**Why this matters:** If the shell loads `@angular/core@19.1.0` and a remote bundles `@angular/core@19.2.0`, Angular throws a "Multiple instances of Angular detected" runtime error. With `strictVersion: true` + `singleton: true`, Native Federation will reject the remote at load time with a clear error rather than producing cryptic runtime failures. The unified build approach (all remotes built together) mitigates this in practice, but the config must enforce it for when independent builds are eventually enabled.
+
+**Tauri protocol note:** Verify during Phase 1 that Native Federation's import map resolution works correctly under `tauri://localhost` or `https://tauri.localhost`. If import map URLs are relative, they resolve against the Tauri protocol origin. If absolute (e.g., `http://localhost:4200`), they will fail in production. The shell's federation config must use **relative paths** for all remote entries.
 
 ## Rollback Strategy
 
