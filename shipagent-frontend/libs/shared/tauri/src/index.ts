@@ -1,3 +1,10 @@
-// @shipagent/shared-tauri — Tauri detection + port signal (shell-only consumer)
-// Placeholder: Tauri integration will be implemented in Phase 9 Plan 02 (shared infrastructure)
-export {};
+/**
+ * @shipagent/shared-tauri
+ *
+ * Tauri desktop integration utilities.
+ * Provides sidecar port resolution and Tauri environment detection.
+ * Only imported by the shell app — remotes should not depend on this library.
+ */
+
+export { TauriDetectionService } from './tauri-detection.service';
+export { resolveSidecarPort, computeApiBaseUrl } from './port-resolver';
