@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 9 of 9 (Angular Module Federation Frontend Rebuild) - IN PROGRESS
-**Plan:** 2 of 6 complete (09-02)
+**Plan:** 3 of 6 complete (09-03)
 **Status:** In progress
-**Last activity:** 2026-03-24 - Completed 09-02-PLAN.md (Shared Infrastructure — Types, API, Tauri, Testing)
+**Last activity:** 2026-03-24 - Completed 09-03-PLAN.md (Shared Reactive Layer — SSE, SignalStores, UI Library)
 
 ```
-Progress: [####################] 100% phases 1-8 | [######--------------] 33% Phase 9
-Phase 9 of 9 IN PROGRESS | Plan 2 of 6 complete | 43/48+ total plans
+Progress: [####################] 100% phases 1-8 | [#########-----------] 50% Phase 9
+Phase 9 of 9 IN PROGRESS | Plan 3 of 6 complete | 44/48+ total plans
 ```
 
 ---
@@ -28,11 +28,11 @@ Phase 9 of 9 IN PROGRESS | Plan 2 of 6 complete | 43/48+ total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 43 |
+| Plans Completed | 44 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 8 / 9 |
-| Last Plan Duration | 505s (09-02) |
+| Last Plan Duration | 900s (09-03) |
 
 ---
 
@@ -151,6 +151,10 @@ Phase 9 of 9 IN PROGRESS | Plan 2 of 6 complete | 43/48+ total plans
 | Domain-organized type files for shared-types | Split monolithic api.ts into 10 focused files for maintainability and tree-shaking; exact field names preserved from React | 09-02 |
 | Jasmine spy factories for test mocks | createMockApiService() returns pre-built spy objects; prevents boilerplate jasmine.createSpyObj in every test | 09-02 |
 | Fixture factories as functions not constants | Factory functions return fresh objects per call, preventing accidental state sharing between tests | 09-02 |
+| SseService is component-scoped (not root) | EventSource lifecycle must be tied to the consuming remote; root injection prevents cleanup on remote unmount | 09-03 |
+| chatSessionsVersion excluded from withStorageSync select | It is a volatile counter (not persisted state); including it would flush localStorage on every message | 09-03 |
+| 70 SVG icon components created (exceeds 50 minimum) | Complete parity with React icons.tsx; all 32 original icons plus 38 additional domain icons | 09-03 |
+| Spartan helm generation deferred to per-remote on-demand | @spartan-ng/cli requires interactive prompts; @spartan-ng/brain installed for direct import; helm wrappers generated per remote as needed | 09-03 |
 
 ### Roadmap Evolution
 
@@ -326,12 +330,12 @@ Phase 6 delivered the Batch Execution Engine:
 ### Last Session
 
 **Date:** 2026-03-24
-**Action:** Completed 09-02-PLAN.md (Shared Infrastructure — Types, API, Tauri, Testing)
-**Outcome:** Ported all React TypeScript types to 10 domain-organized files in shared-types. Created ApiService with 62 endpoints including connections group, Signal-based API_BASE_URL InjectionToken, HTTP interceptors, and testing library with jasmine mocks, fixture factories, and test host utilities. All TypeScript compiles cleanly.
+**Action:** Completed 09-03-PLAN.md (Shared Reactive Layer — SSE, SignalStores, UI Library)
+**Outcome:** Created Observable-based SseService (component-scoped), all 8 NgRx SignalStores with selective withStorageSync persistence, and complete shared UI library with 70 icon components, OKLCH design tokens across 4 CSS files, cn() utility, 3 pure pipes, and MirrorSyncDirective. TypeScript compiles cleanly, shell app builds.
 
 ### Next Session
 
-**Resume with:** 09-03-PLAN.md (NgRx SignalStore, SseService, and shared state)
+**Resume with:** 09-04-PLAN.md (Shell Application)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -347,4 +351,4 @@ Phase 6 delivered the Batch Execution Engine:
 
 ---
 
-*Last updated: 2026-02-12 (Phase 8 added to roadmap)*
+*Last updated: 2026-03-24 (09-03 complete — shared reactive layer)*
