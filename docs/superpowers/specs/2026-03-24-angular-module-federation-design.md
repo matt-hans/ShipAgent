@@ -13,7 +13,7 @@ ShipAgent is moving to a multi-team development model. The current React fronten
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Framework | Angular 19 | Target framework for multi-team model |
-| Monorepo | Nx with Module Federation | Built-in MF generators, affected builds, dependency graph, caching |
+| Monorepo | Nx with Native Federation (`@angular-architects/native-federation`) | ES module-based (esbuild-compatible), affected builds, dependency graph, caching |
 | Module boundaries | Natural React splits: Chat, Sidebar, Settings, Domain + Shared | Maps to existing feature verticals |
 | State management | NgRx SignalStore | Cross-team contracts with signal simplicity; feature stores per remote |
 | SSE streaming | Hybrid — generic shared service + domain mapping in remotes | Reusable plumbing in shared, domain logic in owning remote |
@@ -88,7 +88,7 @@ libs/shared/state/
 - `warningPreference` → `localStorage` key `shipagent_warning_preference`
 - `interactiveShipping` → `localStorage` key `shipagent_interactive_shipping`
 - `writeBackEnabled` → `localStorage` key `shipagent_write_back`
-- Hydrated on store init, synced on change via NgRx effects.
+- Hydrated on store init, synced on change via SignalStore `withHooks({ onInit })` + Angular `effect()` functions. A custom `withLocalStorage()` SignalStore feature encapsulates the hydrate-on-init + sync-on-change pattern for reuse across stores.
 
 ### Cross-Remote Pattern
 
@@ -116,8 +116,12 @@ libs/shared/sse/
 
 ```
 apps/chat-remote/src/services/
-├── conversation-sse.service.ts   # Maps raw SSE → conversation store updates
-└── job-progress-sse.service.ts   # Maps raw SSE → job progress signals
+├── conversation-sse.service.ts     # Maps raw SSE → conversation store updates
+├── conversation-session.service.ts # Session lifecycle: mutex, generation guard, mode tracking
+├── job-progress-sse.service.ts     # Maps raw SSE → job progress signals
+├── command-autocomplete.service.ts # /command token autocomplete (port of useCommandAutocomplete)
+├── contact-autocomplete.service.ts # @handle token autocomplete (port of useContactAutocomplete)
+└── token-highlighter.service.ts    # Text segment parsing for mirror-div highlighting (port of useTokenHighlighter)
 ```
 
 **ConversationSseService** consumes `/conversations/{id}/stream`:
@@ -127,9 +131,14 @@ apps/chat-remote/src/services/
 - Domain events (`pickup_preview`, `location_result`, `landed_cost_result`, `tracking_result`, `paperless_result`, `paperless_upload_prompt`, `contact_saved`) → domain card messages in `conversation.store`
 - `error` → error message in `conversation.store`
 - `done` → clear streaming flag, increment `chatSessionsVersion`
-- **Mutex pattern** for session creation (prevents concurrent `createConversation` calls)
-- **Generation guard** (rejects stale events after session reset)
-- **Mode tracking** (detects interactive↔batch mismatch, tears down + recreates session)
+
+**ConversationSessionService** (chat remote) manages session lifecycle — the most complex piece of frontend logic, ported from `useConversation.ts` (349 lines):
+- `ensureSession()` — creates a conversation session if none exists, with a **mutex** (Promise-based lock) to prevent concurrent `createConversation` API calls from race conditions
+- **Generation guard** — an epoch counter that increments on session reset; stale SSE events from a previous session generation are rejected before they reach the store
+- **Mode tracking** — detects mismatch between current `interactiveShipping` flag and the mode the session was created with; on mismatch, tears down the old session (close SSE, delete session) and creates a new one with the correct mode
+- `loadSession(sessionId, mode)` — restores a persisted session: sets session ID, loads message history from API, reconnects SSE stream
+- `startNewChat()` — closes SSE stream for current session without deleting it (preserves history), clears local state
+- `reset()` — full teardown: close SSE, delete session via API, clear all conversation state
 
 **JobProgressSseService** consumes `/jobs/{id}/progress/stream`:
 - Maps: `batch_started`, `row_started`, `row_completed`, `row_failed`, `batch_completed`, `batch_failed`
@@ -149,7 +158,8 @@ apps/chat-remote/src/services/
 | React | Angular | Notes |
 |-------|---------|-------|
 | `App.tsx` | `app.component.ts` | Root — OnboardingWizard gate, layout scaffold |
-| `layout/Header.tsx` | `header.component.ts` | Logo + interactive shipping toggle |
+| `layout/Header.tsx` | `header.component.ts` | Logo (ShipAgentLogo) + interactive shipping toggle |
+| `ui/ShipAgentLogo.tsx` | `shipagent-logo.component` (shared UI) | Branded SVG logo |
 | `layout/Sidebar.tsx` | `sidebar-shell.component.ts` | Collapsible container — loads sidebar-remote |
 | UpdateChecker (in App) | `update-checker.component.ts` | Tauri updater plugin |
 
@@ -158,23 +168,28 @@ apps/chat-remote/src/services/
 | React | Angular | Notes |
 |-------|---------|-------|
 | `CommandCenter.tsx` (1000 lines) | `chat-container`, `message-list`, `event-processor.service`, `chat-actions.service` | Decomposed from monolith |
-| `command-center/messages.tsx` | `system-message.component`, `user-message.component`, `typing-indicator.component` | Direct port |
+| `command-center/messages.tsx` | `system-message.component`, `user-message.component`, `typing-indicator.component`, `active-source-banner.component`, `interactive-mode-banner.component`, `welcome-message.component` | All 6 sub-components from messages.tsx |
+| `command-center/ToolCallChip.tsx` | `tool-call-chip.component` | Animated chip for active tool calls |
 | `command-center/PreviewCard.tsx` (1256 lines) | `batch-preview.component`, `interactive-preview.component`, `preview-actions.component` | Split batch vs interactive |
 | `command-center/ProgressDisplay.tsx` | `progress-display.component` | Direct port |
 | `command-center/CompletionArtifact.tsx` | `completion-artifact.component` | Direct port |
-| `chat/RichChatInput.tsx` | `rich-chat-input.component` | Mirror div + token highlighting |
-| `chat/ChatTimeline.tsx` | `chat-timeline.component` | IntersectionObserver minimap |
+| `chat/RichChatInput.tsx` | `rich-chat-input.component` | Mirror div + token highlighting + autocomplete |
 | `lib/expandTokens.ts` | `token-expansion.service` (shared lib or chat service) | /command + @handle expansion |
+| `hooks/useCommandAutocomplete.ts` | `command-autocomplete.service.ts` | Token autocomplete for /commands |
+| `hooks/useContactAutocomplete.ts` | `contact-autocomplete.service.ts` | Token autocomplete for @handles |
+| `hooks/useTokenHighlighter.ts` | `token-highlighter.service.ts` | Mirror-div text segment parsing |
 
 ### Sidebar Remote
 
 | React | Angular | Notes |
 |-------|---------|-------|
 | `sidebar/DataSourcePanel.tsx` (732 lines) | `data-source-panel`, `local-source.component`, `platform-source.component` | Split by source type |
+| `sidebar/dataSourceMappers.ts` | `data-source-mappers.service.ts` | Column → ColumnMetadata conversion utility |
 | `sidebar/JobHistoryPanel.tsx` | `job-history-panel.component` | Direct port |
 | `sidebar/ChatSessionsPanel.tsx` | `chat-sessions-panel.component` | Direct port |
 | `RecentSourcesModal.tsx` | `recent-sources-modal.component` | Dialog via Spartan UI |
 | `ChatHistoryFlyout.tsx` | `chat-history-flyout.component` | Direct port |
+| `hooks/useExternalSources.ts` (475 lines) | `platforms.service.ts` in settings remote | Complex behavioral logic: connect, disconnect, test, fetchOrders, checkShopifyEnv, checkAmazonEnv |
 
 ### Settings Remote
 
@@ -183,8 +198,13 @@ apps/chat-remote/src/services/
 | `settings/OnboardingWizard.tsx` | `onboarding-wizard.component` + step components | 3-step flow |
 | `settings/SettingsFlyout.tsx` | `settings-flyout.component` | Accordion layout |
 | `settings/ConnectionsSection.tsx` | `connections-section.component` | Provider cards |
-| `settings/ProviderCard.tsx` | `provider-card.component` + per-platform form components | Generic + forms |
+| `settings/ProviderCard.tsx` | `provider-card.component` | Generic platform card |
+| `settings/AnthropicKeyForm.tsx` | `anthropic-key-form.component` | API key input (onboarding + connections) |
+| `settings/ShopifyConnectForm.tsx` | `shopify-connect-form.component` | Shopify credential form |
+| `settings/AmazonConnectForm.tsx` | `amazon-connect-form.component` | Amazon SP-API credential form |
+| `settings/UPSConnectForm.tsx` | `ups-connect-form.component` | UPS credential form |
 | `settings/AddressBookSection.tsx` | `address-book-section.component` | Contact CRUD |
+| `settings/ContactForm.tsx` | `contact-form.component` | Contact add/edit modal form |
 | `settings/CustomCommandsSection.tsx` | `custom-commands-section.component` | Command CRUD |
 | `settings/ShipmentBehaviourSection.tsx` | `shipment-behaviour-section.component` | Model, concurrency, defaults |
 
@@ -208,6 +228,8 @@ apps/chat-remote/src/services/
 - **`CommandCenter.tsx`** (1000 lines) → container + message list + event processor service + actions service
 - **`PreviewCard.tsx`** (1256 lines) → batch preview + interactive preview + shared actions
 - **`DataSourcePanel.tsx`** (732 lines) → panel container + local source + platform source
+- **`messages.tsx`** → 6 separate components; `CopyButton` (currently inline) extracted to `libs/shared/ui/components/copy-button/`
+- **`useExternalSources.ts`** (475 lines) → `platforms.service.ts` (behavioral logic) + `platforms.store.ts` (state)
 
 ## 5. Shared UI Library & Design System
 
@@ -235,15 +257,16 @@ libs/shared/ui/
 │   ├── components.css          # card-premium, btn-primary, badge-*, card-domain-*
 │   └── animations.css          # typing-indicator, scan-line, progress-bar
 ├── components/
-│   ├── icons/                  # SVG icon components (50+ icons, OnPush)
-│   ├── brand-icons/            # Platform logos (Shopify, Amazon, etc.)
-│   ├── copy-button/            # Hover-reveal clipboard button
+│   ├── icons/                  # Custom SVG icon components (50+ from icons.tsx, OnPush)
+│   ├── brand-icons/            # Platform logos: Shopify, Amazon, WooCommerce, DataSource, ShipAgent
+│   ├── shipagent-logo/         # ShipAgentLogo branded SVG (used in Header)
+│   ├── copy-button/            # Hover-reveal clipboard button (extracted from messages.tsx)
 │   └── status-badge/           # Reusable status badge (success/warning/error/info/neutral)
 ├── pipes/
-│   ├── format-currency.pipe.ts # Intl.NumberFormat USD from cents
-│   └── relative-time.pipe.ts   # "5m ago", "2h ago"
+│   ├── format-currency.pipe.ts # Intl.NumberFormat USD from cents (port of formatCurrency)
+│   ├── relative-time.pipe.ts   # "5m ago", "2h ago" (port of formatRelativeTime)
+│   └── time-ago.pipe.ts        # ISO string → relative time (port of formatTimeAgo)
 ├── directives/
-│   └── intersection-observer.directive.ts  # For ChatTimeline minimap
 └── index.ts
 ```
 
@@ -258,9 +281,16 @@ libs/shared/ui/
 ### What Changes
 
 - `cn()` utility (clsx + tailwind-merge) → same function, Angular import
-- React inline SVG components → Angular SVG components with `ChangeDetectionStrategy.OnPush`
+- React inline SVG components (`icons.tsx`, `brand-icons.tsx`) → Angular SVG components with `ChangeDetectionStrategy.OnPush`
+- `lucide-react` icons (Package, X, Plus, ChevronDown, etc.) → `lucide-angular` (same icon set, Angular bindings)
 - `react-pdf` → `ng2-pdf-viewer` (same pdfjs-dist under the hood)
 - `react-markdown` → `ngx-markdown` (same remark-gfm plugin)
+
+### Icon Inventory
+
+Two icon sources must be ported:
+1. **Custom SVG icons** (`ui/icons.tsx`) — 50+ inline SVG components. Port to Angular OnPush components in `libs/shared/ui/components/icons/`. Generate a manifest during Phase 1 to verify completeness.
+2. **Lucide icons** — used in `messages.tsx`, `Header.tsx`, `ContactForm.tsx`, `SettingsFlyout.tsx`, and others. Replace with `lucide-angular` package (same icon names, Angular bindings).
 
 ### Visual Parity Goal
 
@@ -302,14 +332,15 @@ libs/shared/api/
 
 ### Endpoint Grouping
 
-Single `ApiService` class with methods organized by domain:
-- `conversations.*` — create, send, stream, delete, list, history, rename, export
-- `jobs.*` — list, get, confirm, cancel, delete, skipRows, progress, labels (merged, zip)
+Single `ApiService` class with methods organized by domain (~55 endpoints total):
+- `conversations.*` — create, send, stream, delete, list, history, rename, export, saveArtifact
+- `jobs.*` — list, get, confirm, cancel, delete, skipRows, progress, labels (merged URL, zip)
 - `dataSources.*` — import, upload, disconnect, status
 - `savedSources.*` — list, reconnect, delete, bulkDelete
-- `platforms.*` — connect, disconnect, envStatus, orders, connections
+- `platforms.*` — connect, disconnect, envStatus, orders, connections, activateShopify, activateAmazon, testConnection
+- `connections.*` — list, get, save, delete, validate, disconnect (provider connection CRUD)
 - `settings.*` — get, patch, putCredential, credentialStatus, completeOnboarding
-- `contacts.*` — list, create, update, delete, search
+- `contacts.*` — list, create, update, delete, search, getByHandle
 - `commands.*` — list, create, update, delete
 
 ## 7. Routing & Module Federation Wiring
@@ -371,6 +402,29 @@ export class DomainCardRegistryService {
 Chat remote uses: `<ng-container *ngComponentOutlet="domainRegistry.resolve(message.metadata.action)" />`
 
 This keeps the chat remote decoupled from domain card implementations.
+
+### Remote Dependency Injection Context
+
+With Native Federation, dynamically loaded remote components need proper DI context. The approach:
+
+1. **All shared services are provided in shared libs** (`providedIn: 'root'`). Since the unified build shares a single Angular platform, all remotes share the shell's injector tree. Shared stores, `ApiService`, and `SseService` are singletons across the entire app.
+2. **Remote-scoped services** (e.g., `ConversationSseService`, `JobProgressSseService`) are provided in the remote's root component using `providers: [...]`. This creates a child injector scoped to that remote's component tree.
+3. **Domain card components** loaded via `ngComponentOutlet` inherit the chat remote's injector (since they're rendered inside the chat container's template). They can inject shared services directly.
+4. **Each remote exposes a bootstrap function** that returns both the component and any required providers, so the shell can create the proper injector context:
+
+```typescript
+// Remote entry exposes:
+export const remoteEntry = {
+  component: ChatContainerComponent,
+  providers: [ConversationSseService, ConversationSessionService, JobProgressSseService]
+};
+
+// Shell loads and renders with providers:
+const entry = await loadRemoteModule(...);
+// Use createNgModule() or Injector.create() to scope remote providers
+```
+
+This ensures remote-scoped services don't leak into other remotes while shared services remain globally available.
 
 ## 8. Testing Strategy
 
@@ -441,9 +495,9 @@ npx nx affected -t test              # Only changed projects
 ### Phase 2: Parallel Remotes
 
 Built in parallel against shared contracts:
-- **Chat remote** — ChatContainer, message components, ConversationSseService, JobProgressSseService, batch/interactive previews, ProgressDisplay, CompletionArtifact, RichChatInput, ChatTimeline
-- **Sidebar remote** — DataSourcePanel (local + platform), JobHistoryPanel, ChatSessionsPanel, RecentSourcesModal, ChatHistoryFlyout
-- **Settings remote** — OnboardingWizard, SettingsFlyout, ConnectionsSection, ProviderCards, AddressBookSection, CustomCommandsSection, ShipmentBehaviourSection
+- **Chat remote** — ChatContainer, message components (6), ToolCallChip, ConversationSseService, ConversationSessionService, JobProgressSseService, batch/interactive previews, ProgressDisplay, CompletionArtifact, RichChatInput, autocomplete services (command + contact), token highlighter service
+- **Sidebar remote** — DataSourcePanel (local + platform), dataSourceMappers, JobHistoryPanel, ChatSessionsPanel, RecentSourcesModal, ChatHistoryFlyout
+- **Settings remote** — OnboardingWizard, SettingsFlyout, ConnectionsSection, ProviderCard, platform form components (Anthropic, Shopify, Amazon, UPS), AddressBookSection, ContactForm, CustomCommandsSection, ShipmentBehaviourSection, PlatformsService
 - **Domain remote** — All 8 domain card components + DomainCardRegistryService + JobDetailPanel + LabelPreview
 
 ### Phase 3: Integration
@@ -459,12 +513,13 @@ Built in parallel against shared contracts:
 ### Angular Packages
 - `@angular/core` ^19.x, `@angular/cli` ^19.x
 - `@nx/angular`, `@nx/js`, `@nx/workspace`
-- `@angular-architects/native-federation` (Nx MF plugin)
+- `@angular-architects/native-federation` (ES module-based federation, works with Angular CLI's esbuild builder — NOT the older webpack-based `@angular-architects/module-federation`)
 - `@ngrx/signals` (SignalStore)
 
 ### UI & Styling
 - `@spartan-ng/ui-*-helm` (button, input, switch, dialog, scroll-area, progress, tooltip)
 - `@spartan-ng/brain` (headless primitives under Spartan)
+- `lucide-angular` (replaces `lucide-react` — same icon set, Angular bindings for Package, X, Plus, etc.)
 - `tailwindcss` ^4.x, `tailwind-merge`, `clsx`
 
 ### Content Rendering
@@ -484,3 +539,24 @@ Built in parallel against shared contracts:
 - **Same backend API** — no backend changes required. All `/api/v1/*` endpoints unchanged.
 - **Same Tauri integration** — swap `dist/` folder, no Rust changes needed.
 - **No hybrid state** — pure Angular. React app stays as-is until switchover.
+
+## Rollback Strategy
+
+The React frontend is preserved intact on its current branch. If the Angular app has critical bugs post-switchover:
+
+1. Tauri config and Docker build reference a `FRONTEND_DIST` path — revert to the React `dist/` folder in one CI run.
+2. The React `frontend/` directory is not deleted until the Angular app has been stable in production for a defined period.
+3. A git tag (`pre-angular-switchover`) is created immediately before the switchover commit for fast revert.
+
+## Accessibility
+
+- Spartan UI's built-in ARIA attributes and keyboard navigation are the baseline for primitive components (dialogs, tooltips, switches, etc.).
+- Custom components must preserve the same accessibility characteristics as their React counterparts: semantic HTML elements (`<button>`, `<input>`, `<label>`), `:focus-visible` ring styling, keyboard navigation for `RichChatInput` autocomplete (arrow keys, Enter, Escape).
+- Domain cards and preview cards must be navigable via keyboard (confirm/cancel/refine actions reachable via Tab + Enter).
+- Verification: each remote's test suite includes at minimum one keyboard-navigation test per interactive component.
+
+## Performance
+
+- **No explicit bundle size target** — but the Angular shell's initial load must not regress beyond the current React app's load time on desktop.
+- Phase 3 integration includes a bundle size comparison (React vs Angular) using `source-map-explorer` or `nx build --stats-json`.
+- Lazy loading: domain remote and settings remote are loaded on demand (settings on flyout open, domain cards on first SSE domain event). Chat and sidebar load eagerly since they're always visible.
