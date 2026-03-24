@@ -5,6 +5,7 @@ implementations directly. The --standalone flag selects the backend.
 """
 
 from src.cli.config import ShipAgentConfig
+from src.utils.runtime import get_default_port
 
 
 def get_client(
@@ -17,7 +18,7 @@ def get_client(
     Args:
         standalone: If True, returns InProcessRunner (runs agent stack in-process).
                     If False, returns HttpClient (talks to daemon over HTTP).
-        base_url: Custom daemon URL for HTTP mode. Defaults to http://127.0.0.1:8000.
+        base_url: Custom daemon URL for HTTP mode. Defaults to SHIPAGENT_PORT env var.
         config: Loaded config for resolving daemon URL and other settings.
 
     Returns:
@@ -31,6 +32,6 @@ def get_client(
             if config and config.daemon:
                 base_url = f"http://{config.daemon.host}:{config.daemon.port}"
             else:
-                base_url = "http://127.0.0.1:8000"
+                base_url = f"http://127.0.0.1:{get_default_port()}"
         from src.cli.http_client import HttpClient
         return HttpClient(base_url=base_url)

@@ -22,7 +22,7 @@ import type {
  * before the app renders. Evaluated per-call (not module-static) so it
  * picks up the port even if set after module load.
  *
- * In dev mode (Vite): relative URL is proxied to localhost:8000 by vite.config.ts.
+ * In dev mode (Vite): relative URL is proxied to localhost:8080 by vite.config.ts.
  */
 function getApiBase(): string {
   const port = (window as any).__SHIPAGENT_PORT__;

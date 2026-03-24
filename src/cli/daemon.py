@@ -10,6 +10,8 @@ import signal
 import sys
 from pathlib import Path
 
+from src.utils.runtime import get_default_port
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,7 +90,7 @@ def is_pid_alive(pid: int) -> bool:
 
 def start_daemon(
     host: str = "127.0.0.1",
-    port: int = 8000,
+    port: int | None = None,
     pid_file: str = "~/.shipagent/daemon.pid",
     log_level: str = "info",
 ) -> None:
@@ -100,6 +102,8 @@ def start_daemon(
         pid_file: Path to write PID file.
         log_level: Logging level for uvicorn.
     """
+    if port is None:
+        port = get_default_port()
     import uvicorn
 
     # Check for stale PID
@@ -169,7 +173,7 @@ def stop_daemon(pid_file: str = "~/.shipagent/daemon.pid") -> bool:
 
 def daemon_status(
     pid_file: str = "~/.shipagent/daemon.pid",
-    base_url: str = "http://127.0.0.1:8000",
+    base_url: str | None = None,
 ) -> dict:
     """Check daemon status.
 
@@ -180,6 +184,8 @@ def daemon_status(
     Returns:
         Dict with pid, alive, healthy keys.
     """
+    if base_url is None:
+        base_url = f"http://127.0.0.1:{get_default_port()}"
     pid = read_pid_file(pid_file)
     alive = pid is not None and is_pid_alive(pid)
 

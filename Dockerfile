@@ -58,12 +58,13 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     DATABASE_URL=sqlite:////app/data/shipagent.db \
     UPS_LABELS_OUTPUT_DIR=/app/labels \
-    SHIPAGENT_ALLOW_MULTI_WORKER=false
+    SHIPAGENT_ALLOW_MULTI_WORKER=false \
+    SHIPAGENT_PORT=8080
 
-EXPOSE 8000
+EXPOSE ${SHIPAGENT_PORT}
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
+    CMD curl -fsS http://127.0.0.1:${SHIPAGENT_PORT}/health || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["sh", "-c", "uvicorn src.api.main:app --host 0.0.0.0 --port ${SHIPAGENT_PORT} --workers 1"]

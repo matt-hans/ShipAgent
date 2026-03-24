@@ -18,6 +18,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, model_validator
 
+from src.utils.runtime import get_default_port
+
 logger = logging.getLogger(__name__)
 
 _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
@@ -61,7 +63,15 @@ class DaemonConfig(BaseModel):
     """Configuration for the ShipAgent daemon process."""
 
     host: str = "127.0.0.1"
-    port: int = 8000
+    port: int = 8080  # overridden by SHIPAGENT_PORT env var via model_validator
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_port_default(cls, data: Any) -> Any:
+        """Use SHIPAGENT_PORT env var as default when port is not explicitly set."""
+        if isinstance(data, dict) and "port" not in data:
+            data["port"] = get_default_port()
+        return data
     workers: int = 1
     pid_file: str = "~/.shipagent/daemon.pid"
     log_level: str = "info"
