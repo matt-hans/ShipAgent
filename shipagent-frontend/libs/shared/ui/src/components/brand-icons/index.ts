@@ -11,7 +11,6 @@ import {
   Input,
   ViewEncapsulation,
 } from '@angular/core';
-import { NgClass } from '@angular/common';
 
 /**
  * ShopifyIconComponent — Shopify platform brand icon.
@@ -140,7 +139,6 @@ export class OracleIconComponent {
 @Component({
   selector: 'sa-brand-datasource',
   standalone: true,
-  imports: [NgClass],
   changeDetection: ChangeDetectionStrategy.OnPush,
   encapsulation: ViewEncapsulation.None,
   template: `
