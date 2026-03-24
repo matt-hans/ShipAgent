@@ -1,3 +1,3 @@
-// @shipagent/shared-sse — Generic SseService (EventSource lifecycle, reconnect, parse)
-// Placeholder: SseService will be implemented in Phase 9 Plan 02 (shared infrastructure)
-export {};
+// @shipagent/shared-sse — Generic EventSource wrapper with Observable-based API
+export { SseService } from './sse.service';
+export type { RawSseEvent, SseConnectionState, SseConfig } from './sse.models';
