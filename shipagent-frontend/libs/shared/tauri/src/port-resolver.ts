@@ -26,8 +26,8 @@ export async function resolveSidecarPort(): Promise<number | null> {
 
   // Dynamically import to avoid Vite static analysis errors when
   // @tauri-apps/api is not installed.
-  const { invoke } = await import(/* @vite-ignore */ TAURI_CORE);
-  const port = await invoke<number>('start_sidecar');
+  const tauriCore = await import(/* @vite-ignore */ TAURI_CORE) as { invoke: (cmd: string) => Promise<unknown> };
+  const port = (await tauriCore.invoke('start_sidecar')) as number;
 
   // Validate the port is in the IANA ephemeral range.
   if (port < 1024 || port > 65535) {
