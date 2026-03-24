@@ -271,6 +271,23 @@ Plans:
 
 ---
 
+### Phase 9: Angular Module Federation Frontend Rebuild
+
+**Goal:** Replace the React monolith frontend with an Angular 19 + Nx + Native Federation architecture (shell + 4 remotes), NgRx SignalStore shared state, Spartan UI component library, achieving full feature parity with the existing React UI.
+
+**Dependencies:** Phase 7 (Web Interface — defines all frontend features to achieve parity with)
+
+**Requirements:**
+- TBD (to be defined during planning)
+
+**Success Criteria:**
+- TBD (to be defined during planning)
+
+Plans:
+- (not yet planned)
+
+---
+
 ## Progress
 
 | Phase | Status | Requirements | Completion |
@@ -283,8 +300,9 @@ Plans:
 | 6 - Batch Execution | Complete | 7 | 100% |
 | 7 - Web Interface | Planned | 5 | 0% |
 | 8 - Interactive Shipping | Planned | 7 | 0% |
+| 9 - Angular MF Frontend Rebuild | Planned | TBD | 0% |
 
-**Total:** 44 requirements across 8 phases (32 complete)
+**Total:** 44+ requirements across 9 phases (32 complete)
 
 ---
 
@@ -311,6 +329,9 @@ Phase 1: Foundation
                    |
                    v
             Phase 8: Interactive Shipping
+                   |
+                   v
+            Phase 9: Angular MF Frontend Rebuild
 ```
 
 ---
@@ -327,7 +348,8 @@ Phase 1: Foundation
 | 6 | Medium | Crash recovery and idempotency critical |
 | 7 | Low | Standard React/FastAPI patterns |
 | 8 | Medium | MCP elicitation spec compliance, token-efficient schema generation |
+| 9 | High | Full framework migration (React→Angular), Module Federation complexity, feature parity risk |
 
 ---
 
-*Last updated: 2026-02-13*
+*Last updated: 2026-03-24*
