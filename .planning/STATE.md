@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 9 of 9 (Angular Module Federation Frontend Rebuild) - IN PROGRESS
-**Plan:** 1 of 6 complete (09-01)
+**Plan:** 2 of 6 complete (09-02)
 **Status:** In progress
-**Last activity:** 2026-03-24 - Completed 09-01-PLAN.md (Nx Workspace & Federation Scaffold)
+**Last activity:** 2026-03-24 - Completed 09-02-PLAN.md (Shared Infrastructure — Types, API, Tauri, Testing)
 
 ```
-Progress: [####################] 100% phases 1-8 | [###-----------------] 17% Phase 9
-Phase 9 of 9 IN PROGRESS | Plan 1 of 6 complete | 42/48+ total plans
+Progress: [####################] 100% phases 1-8 | [######--------------] 33% Phase 9
+Phase 9 of 9 IN PROGRESS | Plan 2 of 6 complete | 43/48+ total plans
 ```
 
 ---
@@ -28,10 +28,11 @@ Phase 9 of 9 IN PROGRESS | Plan 1 of 6 complete | 42/48+ total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 42 |
+| Plans Completed | 43 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 8 / 9 |
+| Last Plan Duration | 505s (09-02) |
 
 ---
 
@@ -146,6 +147,10 @@ Phase 9 of 9 IN PROGRESS | Plan 1 of 6 complete | 42/48+ total plans
 | Relative manifest paths for federation | All remoteEntry.json paths use ./remote-name/remoteEntry.json format; required for Tauri tauri://localhost protocol compatibility | 09-01 |
 | mappingVersion: true in all federation configs | Required for Nx mapped path (@shipagent/*) support per native-federation documentation | 09-01 |
 | Tailwind v4 CSS-first configuration | No tailwind.config.ts needed; all design tokens in @theme blocks; @source directives control scanning scope in Nx monorepo | 09-01 |
+| Signal-based InjectionToken for API base URL | InjectionToken<Signal<string>> allows reactive URL updates when Tauri sidecar port is discovered at runtime | 09-02 |
+| Domain-organized type files for shared-types | Split monolithic api.ts into 10 focused files for maintainability and tree-shaking; exact field names preserved from React | 09-02 |
+| Jasmine spy factories for test mocks | createMockApiService() returns pre-built spy objects; prevents boilerplate jasmine.createSpyObj in every test | 09-02 |
+| Fixture factories as functions not constants | Factory functions return fresh objects per call, preventing accidental state sharing between tests | 09-02 |
 
 ### Roadmap Evolution
 
@@ -321,12 +326,12 @@ Phase 6 delivered the Batch Execution Engine:
 ### Last Session
 
 **Date:** 2026-03-24
-**Action:** Completed 09-01-PLAN.md (Nx Workspace & Federation Scaffold)
-**Outcome:** Created Nx monorepo at shipagent-frontend/ with Angular 21, Native Federation for all 5 apps, Tailwind v4 OKLCH design system, and module boundary ESLint rules. Shell builds and lints successfully.
+**Action:** Completed 09-02-PLAN.md (Shared Infrastructure — Types, API, Tauri, Testing)
+**Outcome:** Ported all React TypeScript types to 10 domain-organized files in shared-types. Created ApiService with 62 endpoints including connections group, Signal-based API_BASE_URL InjectionToken, HTTP interceptors, and testing library with jasmine mocks, fixture factories, and test host utilities. All TypeScript compiles cleanly.
 
 ### Next Session
 
-**Resume with:** 09-02-PLAN.md (Shared Infrastructure — NgRx SignalStore, ApiService, SseService, shared libs)
+**Resume with:** 09-03-PLAN.md (NgRx SignalStore, SseService, and shared state)
 **Context needed:** None - STATE.md contains full context
 
 ---
