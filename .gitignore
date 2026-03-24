@@ -101,3 +101,6 @@ src-tauri/target/
 src-tauri/gen/
 # Exception: Tauri icons are intentionally tracked
 !src-tauri/icons/*.png
+
+frontend-repomix.md
+frontend-repomix.xml
