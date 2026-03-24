@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 9 of 9 (Angular Module Federation Frontend Rebuild) - IN PROGRESS
-**Plan:** 3 of 6 complete (09-03)
+**Plan:** 4 of 6 complete (09-04)
 **Status:** In progress
-**Last activity:** 2026-03-24 - Completed 09-03-PLAN.md (Shared Reactive Layer — SSE, SignalStores, UI Library)
+**Last activity:** 2026-03-24 - Completed 09-04-PLAN.md (Shell Application — layout, remote loader, bootstrap)
 
 ```
-Progress: [####################] 100% phases 1-8 | [#########-----------] 50% Phase 9
-Phase 9 of 9 IN PROGRESS | Plan 3 of 6 complete | 44/48+ total plans
+Progress: [####################] 100% phases 1-8 | [###########---------] 67% Phase 9
+Phase 9 of 9 IN PROGRESS | Plan 4 of 6 complete | 45/48+ total plans
 ```
 
 ---
@@ -28,11 +28,11 @@ Phase 9 of 9 IN PROGRESS | Plan 3 of 6 complete | 44/48+ total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 44 |
+| Plans Completed | 45 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
 | Phases Completed | 8 / 9 |
-| Last Plan Duration | 900s (09-03) |
+| Last Plan Duration | 389s (09-04) |
 
 ---
 
@@ -155,6 +155,10 @@ Phase 9 of 9 IN PROGRESS | Plan 3 of 6 complete | 44/48+ total plans
 | chatSessionsVersion excluded from withStorageSync select | It is a volatile counter (not persisted state); including it would flush localStorage on every message | 09-03 |
 | 70 SVG icon components created (exceeds 50 minimum) | Complete parity with React icons.tsx; all 32 original icons plus 38 additional domain icons | 09-03 |
 | Spartan helm generation deferred to per-remote on-demand | @spartan-ng/cli requires interactive prompts; @spartan-ng/brain installed for direct import; helm wrappers generated per remote as needed | 09-03 |
+| Zone.js with eventCoalescing for shell (not zoneless) | provideZoneChangeDetection({ eventCoalescing: true }) per research recommendation for shell stability | 09-04 |
+| requestAnimationFrame poll for lazy settings flyout load | Avoids effect() injection context requirement; settings opened rarely so polling overhead is negligible | 09-04 |
+| Function() constructor for @tauri-apps/plugin-updater dynamic import | Package not installed in dev; bypasses TS static analysis without requiring the package at compile time | 09-04 |
+| RemoteEntry interface with optional providers[] | Allows remotes to scope their services to a child Injector while remaining backwards compatible | 09-04 |
 
 ### Roadmap Evolution
 
@@ -330,12 +334,12 @@ Phase 6 delivered the Batch Execution Engine:
 ### Last Session
 
 **Date:** 2026-03-24
-**Action:** Completed 09-03-PLAN.md (Shared Reactive Layer — SSE, SignalStores, UI Library)
-**Outcome:** Created Observable-based SseService (component-scoped), all 8 NgRx SignalStores with selective withStorageSync persistence, and complete shared UI library with 70 icon components, OKLCH design tokens across 4 CSS files, cn() utility, 3 pure pipes, and MirrorSyncDirective. TypeScript compiles cleanly, shell app builds.
+**Action:** Completed 09-04-PLAN.md (Shell Application — layout, remote loader, bootstrap)
+**Outcome:** Shell app fully functional — Tauri-aware bootstrap resolves sidecar port and provides API_BASE_URL, RemoteLoaderService wraps loadRemoteModule for all 4 remotes, AppComponent renders header+sidebar+main+flyout layout, HeaderComponent has interactive shipping toggle bound to ConversationStore, SidebarShellComponent has ng-content projection for sidebar-remote, OnboardingGateComponent reads SettingsStore, UpdateCheckerComponent integrates Tauri updater. Shell builds cleanly (nx build shell passes).
 
 ### Next Session
 
-**Resume with:** 09-04-PLAN.md (Shell Application)
+**Resume with:** 09-05-PLAN.md (Chat Remote)
 **Context needed:** None - STATE.md contains full context
 
 ---
@@ -351,4 +355,4 @@ Phase 6 delivered the Batch Execution Engine:
 
 ---
 
-*Last updated: 2026-03-24 (09-03 complete — shared reactive layer)*
+*Last updated: 2026-03-24 (09-04 complete — shell application)*
