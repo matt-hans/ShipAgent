@@ -271,6 +271,27 @@ Plans:
 
 ---
 
+### Phase 9: Angular Module Federation Frontend Rebuild
+
+**Goal:** Replace the React monolith frontend with an Angular 19 + Nx + Native Federation architecture (shell + 4 remotes), NgRx SignalStore, Spartan UI, achieving 100% feature parity with pixel-identical visual output while enabling team-ownership boundaries and independent development workflows.
+
+**Depends on:** Phase 8
+
+**Plans:** 9 plans
+
+Plans:
+- [ ] 09-01-PLAN.md — Nx workspace scaffold, Native Federation configs, Tailwind v4, module boundary rules
+- [ ] 09-02-PLAN.md — Shared types, API service (55+ endpoints), Tauri utilities, testing library
+- [ ] 09-03-PLAN.md — SSE service, 8 NgRx SignalStores, shared UI library (icons, pipes, directives, Spartan UI)
+- [ ] 09-04-PLAN.md — Shell app (layout, header, sidebar container, remote loading, onboarding gate)
+- [ ] 09-05-PLAN.md — Chat remote (SSE services, session management, messages, previews, progress, rich input)
+- [ ] 09-06-PLAN.md — Sidebar remote (data source panel, job history, chat sessions)
+- [ ] 09-07-PLAN.md — Settings remote (onboarding wizard, settings flyout, credentials, address book, commands)
+- [ ] 09-08-PLAN.md — Domain remote (8 domain cards, registry service, job detail panel, label preview)
+- [ ] 09-09-PLAN.md — Integration testing, Tauri/Docker switchover, visual parity verification
+
+---
+
 ## Progress
 
 | Phase | Status | Requirements | Completion |
@@ -283,8 +304,9 @@ Plans:
 | 6 - Batch Execution | Complete | 7 | 100% |
 | 7 - Web Interface | Planned | 5 | 0% |
 | 8 - Interactive Shipping | Planned | 7 | 0% |
+| 9 - Angular MF Rebuild | Planned | 5 | 0% |
 
-**Total:** 44 requirements across 8 phases (32 complete)
+**Total:** 49 requirements across 9 phases (32 complete)
 
 ---
 
@@ -311,6 +333,9 @@ Phase 1: Foundation
                    |
                    v
             Phase 8: Interactive Shipping
+                   |
+                   v
+            Phase 9: Angular MF Frontend Rebuild
 ```
 
 ---
@@ -327,16 +352,8 @@ Phase 1: Foundation
 | 6 | Medium | Crash recovery and idempotency critical |
 | 7 | Low | Standard React/FastAPI patterns |
 | 8 | Medium | MCP elicitation spec compliance, token-efficient schema generation |
-
-### Phase 9: Angular Module Federation Frontend Rebuild
-
-**Goal:** [To be planned]
-**Depends on:** Phase 8
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (run /gsd:plan-phase 9 to break down)
+| 9 | Medium-High | Native Federation + Tauri protocol compatibility, 50-component port parity, cross-version Angular pinning |
 
 ---
 
-*Last updated: 2026-02-13*
+*Last updated: 2026-03-24*
