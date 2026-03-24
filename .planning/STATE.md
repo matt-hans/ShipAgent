@@ -6,20 +6,20 @@
 
 **Architecture:** LLM as Configuration Engine - generates templates, deterministic code executes on data.
 
-**Current Focus:** Phase 7 - Web Interface (In Progress)
+**Current Focus:** Phase 9 - Angular Module Federation Frontend Rebuild (In Progress)
 
 ---
 
 ## Current Position
 
-**Phase:** 7 of 8 (Web Interface) - IN PROGRESS
-**Plan:** 4 of 6 complete (07-04)
+**Phase:** 9 of 9 (Angular Module Federation Frontend Rebuild) - IN PROGRESS
+**Plan:** 1 of 6 complete (09-01)
 **Status:** In progress
-**Last activity:** 2026-01-25 - Completed 07-04-PLAN.md (Real-Time Progress Display)
+**Last activity:** 2026-03-24 - Completed 09-01-PLAN.md (Nx Workspace & Federation Scaffold)
 
 ```
-Progress: [#################---] 88% phases | [#############-------] 67% Phase 7
-Phase 7 of 8 IN PROGRESS | Plan 4 of 6 complete | 41/43+ total plans
+Progress: [####################] 100% phases 1-8 | [###-----------------] 17% Phase 9
+Phase 9 of 9 IN PROGRESS | Plan 1 of 6 complete | 42/48+ total plans
 ```
 
 ---
@@ -28,10 +28,10 @@ Phase 7 of 8 IN PROGRESS | Plan 4 of 6 complete | 41/43+ total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 41 |
+| Plans Completed | 42 |
 | Plans Failed | 0 |
 | Success Rate | 100% |
-| Phases Completed | 6 / 8 |
+| Phases Completed | 8 / 9 |
 
 ---
 
@@ -141,6 +141,11 @@ Phase 7 of 8 IN PROGRESS | Plan 4 of 6 complete | 41/43+ total plans
 | Sticky confirmation footer | Per CONTEXT.md Decision 3 - always accessible during scroll | 07-03 |
 | Four-phase workflow state | input/preview/executing/complete for clear workflow separation | 07-03 |
 | Inline SVG icons | Avoid external dependency like lucide-react, keep bundle small | 07-04 |
+| Angular 21.2 used instead of Angular 19 | Nx 22.6 scaffolds Angular 21 by default; native-federation v21 is matching version; unified build removes cross-version concerns | 09-01 |
+| Nx flat ESLint config used instead of .eslintrc.json | Nx 22 generates flat config format; @nx/enforce-module-boundaries works identically in both formats | 09-01 |
+| Relative manifest paths for federation | All remoteEntry.json paths use ./remote-name/remoteEntry.json format; required for Tauri tauri://localhost protocol compatibility | 09-01 |
+| mappingVersion: true in all federation configs | Required for Nx mapped path (@shipagent/*) support per native-federation documentation | 09-01 |
+| Tailwind v4 CSS-first configuration | No tailwind.config.ts needed; all design tokens in @theme blocks; @source directives control scanning scope in Nx monorepo | 09-01 |
 
 ### Roadmap Evolution
 
@@ -315,13 +320,13 @@ Phase 6 delivered the Batch Execution Engine:
 
 ### Last Session
 
-**Date:** 2026-01-25
-**Action:** Completed 07-04-PLAN.md (Real-Time Progress Display)
-**Outcome:** Created ProgressDisplay, RowStatusTable, ErrorAlert components and integrated into Dashboard with SSE-driven real-time updates.
+**Date:** 2026-03-24
+**Action:** Completed 09-01-PLAN.md (Nx Workspace & Federation Scaffold)
+**Outcome:** Created Nx monorepo at shipagent-frontend/ with Angular 21, Native Federation for all 5 apps, Tailwind v4 OKLCH design system, and module boundary ESLint rules. Shell builds and lints successfully.
 
 ### Next Session
 
-**Resume with:** 07-05-PLAN.md (Preview Display)
+**Resume with:** 09-02-PLAN.md (Shared Infrastructure — NgRx SignalStore, ApiService, SseService, shared libs)
 **Context needed:** None - STATE.md contains full context
 
 ---
