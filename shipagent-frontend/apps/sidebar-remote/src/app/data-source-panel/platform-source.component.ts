@@ -232,14 +232,17 @@ export class PlatformSourceComponent implements OnInit {
     return conn?.display_name ?? 'Amazon Seller';
   }
 
-  /** Switch the active data source to Shopify. */
+  /**
+   * Activate Shopify as the data source.
+   * Calls POST /platforms/shopify/activate — connects, fetches orders,
+   * and imports them as a data source in one call.
+   * Matches React: activateShopify() in api.ts.
+   */
   async handleSwitchToShopify(): Promise<void> {
     this.connectError.set(null);
     this.isConnecting.set(true);
     try {
-      const result = await firstValueFrom(
-        this.apiService.connectPlatform('shopify', {}),
-      );
+      const result = await firstValueFrom(this.apiService.activateShopify());
       if (!result.success) {
         this.connectError.set(result.error ?? 'Failed to activate Shopify');
         return;
@@ -254,7 +257,9 @@ export class PlatformSourceComponent implements OnInit {
       }
       this.dataSourceStore.setDataSource(null);
       this.dataSourceStore.setActiveSourceType('shopify');
-      this.dataSourceStore.setActiveSourceInfo('Shopify');
+      this.dataSourceStore.setActiveSourceInfo(
+        this.shopifyDisplayName() || 'Shopify',
+      );
     } catch (err) {
       this.connectError.set(err instanceof Error ? err.message : 'Failed to activate Shopify');
     } finally {
@@ -267,9 +272,7 @@ export class PlatformSourceComponent implements OnInit {
     this.connectError.set(null);
     this.isConnecting.set(true);
     try {
-      const result = await firstValueFrom(
-        this.apiService.connectPlatform('amazon', {}),
-      );
+      const result = await firstValueFrom(this.apiService.activateAmazon());
       if (!result.success) {
         this.connectError.set(result.error ?? 'Failed to activate Amazon');
         return;
