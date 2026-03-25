@@ -15,7 +15,11 @@ import { resolveSidecarPort } from '@shipagent/shared-tauri';
 
 async function bootstrap(): Promise<void> {
   const port = await resolveSidecarPort();
-  const baseUrl = signal(port ? `http://127.0.0.1:${port}/api/v1` : '/api/v1');
+  // In Tauri: use sidecar port. In dev: use localhost:8000 directly
+  // (NF dev server doesn't support proxy passthrough).
+  // In production: relative /api/v1 works since FastAPI serves the SPA.
+  const devFallback = location.port === '4200' ? 'http://localhost:8000/api/v1' : '/api/v1';
+  const baseUrl = signal(port ? `http://127.0.0.1:${port}/api/v1` : devFallback);
 
   await bootstrapApplication(AppComponent, {
     ...appConfig,

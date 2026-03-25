@@ -19,7 +19,8 @@ import {
   signal,
 } from '@angular/core';
 import { NgComponentOutlet } from '@angular/common';
-import { AppStore } from '@shipagent/shared-state';
+import { AppStore, SettingsStore } from '@shipagent/shared-state';
+import { ApiService } from '@shipagent/shared-api';
 import { RemoteLoaderService } from './remote-loader.service';
 import { HeaderComponent } from './header/header.component';
 import { SidebarShellComponent } from './sidebar-shell/sidebar-shell.component';
@@ -88,6 +89,8 @@ import { UpdateCheckerComponent } from './update-checker/update-checker.componen
 })
 export class AppComponent implements OnInit {
   protected readonly appStore = inject(AppStore);
+  private readonly settingsStore = inject(SettingsStore);
+  private readonly apiService = inject(ApiService);
   private readonly remoteLoader = inject(RemoteLoaderService);
   private readonly injector = inject(Injector);
   private readonly ngZone = inject(NgZone);
@@ -103,6 +106,12 @@ export class AppComponent implements OnInit {
   protected readonly settingsInjector = signal<Injector>(this.injector);
 
   ngOnInit(): void {
+    // Fetch settings from backend to populate store (onboarding status, etc.)
+    this.apiService.getSettings().subscribe({
+      next: (settings) => this.settingsStore.setAppSettings(settings),
+      error: (err) => console.warn('[shell] Could not load settings:', err),
+    });
+
     // Eagerly load chat and sidebar (always visible)
     this.loadChatRemote();
     this.loadSidebarRemote();
