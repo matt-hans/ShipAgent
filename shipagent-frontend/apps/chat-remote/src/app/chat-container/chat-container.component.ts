@@ -43,6 +43,7 @@ import { MessageListComponent } from '../message-list/message-list.component';
 import { ToolCallChipComponent } from '../tool-call-chip/tool-call-chip.component';
 import { ActiveSourceBannerComponent } from '../messages/active-source-banner.component';
 import { InteractiveModeBannerComponent } from '../messages/interactive-mode-banner.component';
+import { RichChatInputComponent } from '../rich-chat-input/rich-chat-input.component';
 // BatchPreviewComponent, ProgressDisplayComponent, CompletionArtifactComponent
 // are imported by MessageListComponent — not needed here.
 import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview-modal.component';
@@ -70,6 +71,7 @@ import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview
     ActiveSourceBannerComponent,
     InteractiveModeBannerComponent,
     LabelPreviewModalComponent,
+    RichChatInputComponent,
   ],
   template: `
     <div class="flex flex-col h-full bg-background overflow-hidden">
@@ -124,16 +126,14 @@ import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview
       <div class="border-t border-slate-800 px-4 py-3 bg-card/30 backdrop-blur">
         <div class="max-w-3xl mx-auto">
           <div class="flex items-end gap-2">
-            <textarea
-              #inputTextarea
-              class="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none outline-none min-h-[40px] max-h-[200px] py-2 px-3 rounded-lg border border-border/50 focus:border-primary/50 transition-colors"
+            <app-rich-chat-input
+              class="flex-1"
+              [value]="inputValue()"
               [placeholder]="inputPlaceholder()"
               [disabled]="conversationStore.isStreaming()"
-              [value]="inputValue()"
-              (input)="inputValue.set($any($event.target).value)"
-              (keydown)="handleKeyDown($event)"
-              rows="1"
-            ></textarea>
+              (valueChange)="inputValue.set($event)"
+              (messageSent)="handleRichInputSubmit($event)"
+            />
 
             <button
               class="btn-primary p-2.5 flex-shrink-0 rounded-lg"
@@ -524,6 +524,13 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
 
     this.inputValue.set('');
     await this.chatActions.sendMessage(text);
+  }
+
+  /** Called by RichChatInput when Enter is pressed — text is already expanded. */
+  async handleRichInputSubmit(text: string): Promise<void> {
+    if (!text.trim() || this.conversationStore.isStreaming()) return;
+    this.inputValue.set('');
+    await this.chatActions.sendMessage(text.trim());
   }
 
   handleExampleClick(text: string): void {
