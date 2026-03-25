@@ -1,13 +1,9 @@
 /**
  * LabelPreviewModalComponent — Full-screen modal for viewing shipping label PDFs.
  *
- * Displays a merged PDF in an iframe with print and download actions.
- * Matches the React LabelPreview dialog pattern:
- *   - Full-screen backdrop overlay (fixed inset-0 z-50)
- *   - Centered modal card with header, iframe body, and footer buttons
- *   - Close on backdrop click or X button
- *   - Print opens the PDF in a new window and triggers browser print
- *   - Download creates a temporary anchor element for file save
+ * Fetches the merged PDF via fetch(), creates a blob URL, and renders it
+ * using an <object> tag. This avoids X-Frame-Options: DENY and CSP issues
+ * that block <iframe> same-origin embedding.
  */
 
 import {
@@ -15,22 +11,23 @@ import {
   Component,
   EventEmitter,
   Input,
+  OnChanges,
+  OnDestroy,
   Output,
-  inject,
+  SimpleChanges,
+  signal,
 } from '@angular/core';
-import { CommonModule } from '@angular/common';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 
 @Component({
   selector: 'app-label-preview-modal',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [CommonModule],
   template: `
     @if (isOpen && pdfUrl) {
       <!-- Backdrop -->
       <div
-        class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
+        class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm animate-fade-in"
         (click)="close.emit()"
       ></div>
 
@@ -40,7 +37,7 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
         (click)="close.emit()"
       >
         <div
-          class="bg-card border border-border rounded-xl shadow-2xl w-full max-w-[700px] max-h-[90vh] flex flex-col"
+          class="bg-card border border-border rounded-xl shadow-2xl w-full max-w-[750px] max-h-[90vh] flex flex-col"
           (click)="$event.stopPropagation()"
         >
           <!-- Header -->
@@ -58,14 +55,34 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
             </button>
           </div>
 
-          <!-- PDF iframe -->
-          <div class="flex-1 overflow-hidden min-h-[400px] bg-muted/30">
-            <iframe
-              [src]="safePdfUrl"
-              class="w-full h-full border-0"
-              style="min-height: 400px"
-              title="Shipping labels"
-            ></iframe>
+          <!-- PDF content -->
+          <div class="flex-1 overflow-hidden bg-white" style="min-height: 500px;">
+            @if (isLoading()) {
+              <div class="flex flex-col items-center justify-center h-full py-16 text-slate-500">
+                <div class="w-8 h-8 border-2 border-slate-300 border-t-primary rounded-full animate-spin mb-4"></div>
+                <p class="text-sm">Loading labels...</p>
+              </div>
+            } @else if (errorMsg()) {
+              <div class="flex flex-col items-center justify-center h-full py-16 text-red-400">
+                <svg class="w-8 h-8 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                <p class="text-sm font-medium mb-1">Failed to load labels</p>
+                <p class="text-xs text-slate-500">{{ errorMsg() }}</p>
+              </div>
+            } @else if (blobUrl()) {
+              <object
+                [data]="safeBlobUrl()"
+                type="application/pdf"
+                class="w-full h-full"
+                style="min-height: 500px;"
+              >
+                <p class="p-8 text-center text-slate-500">
+                  Your browser cannot display PDFs.
+                  <a [href]="pdfUrl" target="_blank" class="text-primary underline">Open in new tab</a>
+                </p>
+              </object>
+            }
           </div>
 
           <!-- Footer -->
@@ -78,7 +95,8 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
             </button>
             <button
               (click)="handlePrint()"
-              class="px-4 py-2 text-sm font-medium rounded-lg border border-border text-slate-300 hover:bg-muted transition-colors flex items-center gap-2"
+              [disabled]="!blobUrl()"
+              class="px-4 py-2 text-sm font-medium rounded-lg border border-border text-slate-300 hover:bg-muted transition-colors flex items-center gap-2 disabled:opacity-50"
             >
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <polyline points="6 9 6 2 18 2 18 9" />
@@ -89,7 +107,8 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
             </button>
             <button
               (click)="handleDownload()"
-              class="btn-primary px-4 py-2 text-sm font-medium rounded-lg flex items-center gap-2"
+              [disabled]="!blobUrl()"
+              class="btn-primary px-4 py-2 text-sm font-medium rounded-lg flex items-center gap-2 disabled:opacity-50"
             >
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
@@ -104,38 +123,75 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
     }
   `,
 })
-export class LabelPreviewModalComponent {
-  /** URL pointing to the merged labels PDF endpoint. */
+export class LabelPreviewModalComponent implements OnChanges, OnDestroy {
   @Input() pdfUrl = '';
-
-  /** Whether the modal is visible. */
   @Input() isOpen = false;
-
-  /** Emitted when the user closes the modal (backdrop, X, or Close button). */
   @Output() close = new EventEmitter<void>();
 
-  private readonly sanitizer = inject(DomSanitizer);
+  readonly isLoading = signal(true);
+  readonly errorMsg = signal<string | null>(null);
+  readonly blobUrl = signal<string | null>(null);
 
-  /** Sanitized URL safe for iframe [src] binding. */
-  get safePdfUrl(): SafeResourceUrl {
-    return this.sanitizer.bypassSecurityTrustResourceUrl(this.pdfUrl);
+  private sanitizer: DomSanitizer;
+
+  constructor(sanitizer: DomSanitizer) {
+    this.sanitizer = sanitizer;
   }
 
-  /** Open the PDF in a new window and trigger the browser print dialog. */
-  handlePrint(): void {
-    const w = window.open(this.pdfUrl, '_blank');
-    if (w) {
-      w.addEventListener('load', () => w.print());
+  ngOnChanges(changes: SimpleChanges): void {
+    if ((changes['isOpen'] || changes['pdfUrl']) && this.isOpen && this.pdfUrl) {
+      this.loadPdf();
     }
   }
 
-  /** Trigger a file download via a temporary anchor element. */
+  ngOnDestroy(): void {
+    this.revokeBlobUrl();
+  }
+
+  safeBlobUrl(): SafeResourceUrl {
+    return this.sanitizer.bypassSecurityTrustResourceUrl(this.blobUrl()!);
+  }
+
+  handlePrint(): void {
+    const url = this.blobUrl();
+    if (!url) return;
+    const w = window.open(url, '_blank');
+    if (w) w.addEventListener('load', () => w.print());
+  }
+
   handleDownload(): void {
+    const url = this.blobUrl() || this.pdfUrl;
     const a = document.createElement('a');
-    a.href = this.pdfUrl;
+    a.href = url;
     a.download = 'labels.pdf';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+  }
+
+  private async loadPdf(): Promise<void> {
+    this.revokeBlobUrl();
+    this.isLoading.set(true);
+    this.errorMsg.set(null);
+
+    try {
+      const resp = await fetch(this.pdfUrl);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      this.blobUrl.set(url);
+    } catch (err) {
+      this.errorMsg.set(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      this.isLoading.set(false);
+    }
+  }
+
+  private revokeBlobUrl(): void {
+    const url = this.blobUrl();
+    if (url) {
+      URL.revokeObjectURL(url);
+      this.blobUrl.set(null);
+    }
   }
 }
