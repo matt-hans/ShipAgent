@@ -45,6 +45,7 @@ import { ActiveSourceBannerComponent } from '../messages/active-source-banner.co
 import { InteractiveModeBannerComponent } from '../messages/interactive-mode-banner.component';
 // BatchPreviewComponent, ProgressDisplayComponent, CompletionArtifactComponent
 // are imported by MessageListComponent — not needed here.
+import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview-modal.component';
 
 @Component({
   selector: 'app-chat-container',
@@ -68,6 +69,7 @@ import { InteractiveModeBannerComponent } from '../messages/interactive-mode-ban
     ToolCallChipComponent,
     ActiveSourceBannerComponent,
     InteractiveModeBannerComponent,
+    LabelPreviewModalComponent,
   ],
   template: `
     <div class="flex flex-col h-full bg-background overflow-hidden">
@@ -91,6 +93,7 @@ import { InteractiveModeBannerComponent } from '../messages/interactive-mode-ban
           (previewRefine)="handleRefine($event)"
           (progressComplete)="handleProgressComplete()"
           (progressFailed)="handleProgressFailed()"
+          (viewLabels)="openLabelPreview($event)"
         />
 
         <!-- Right edge: action icons -->
@@ -153,6 +156,13 @@ import { InteractiveModeBannerComponent } from '../messages/interactive-mode-ban
           </p>
         </div>
       </div>
+
+      <!-- Label preview modal (rendered outside flow, uses fixed positioning) -->
+      <app-label-preview-modal
+        [pdfUrl]="labelPreviewUrl()"
+        [isOpen]="showLabelPreview()"
+        (close)="closeLabelPreview()"
+      />
     </div>
   `,
 })
@@ -177,6 +187,12 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
    * When non-null, the ProgressDisplayComponent is shown in the message list.
    */
   readonly executingJobId = signal<string | null>(null);
+
+  /** Whether the label preview modal is visible. */
+  readonly showLabelPreview = signal(false);
+
+  /** URL for the label PDF currently being previewed. */
+  readonly labelPreviewUrl = signal('');
 
   /** Stored job name for the completion artifact (captured on confirm). */
   private lastJobName = '';
@@ -243,6 +259,22 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
 
   openSettings(): void {
     this.appStore.openSettings();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Label preview
+  // ---------------------------------------------------------------------------
+
+  /** Open the label preview modal for the given job's merged PDF. */
+  openLabelPreview(jobId: string): void {
+    this.labelPreviewUrl.set(this.apiService.getMergedLabelsUrl(jobId));
+    this.showLabelPreview.set(true);
+  }
+
+  /** Close the label preview modal and clear the URL. */
+  closeLabelPreview(): void {
+    this.showLabelPreview.set(false);
+    this.labelPreviewUrl.set('');
   }
 
   // ---------------------------------------------------------------------------
@@ -353,6 +385,11 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
           rowFailures: p.rowFailures.length > 0 ? p.rowFailures : undefined,
         },
       }).subscribe({ error: (e) => console.warn('Failed to save artifact:', e) });
+    }
+
+    // Auto-open label preview after successful batch.
+    if (p.successful > 0 && jobId) {
+      this.openLabelPreview(jobId);
     }
 
     this.executingJobId.set(null);

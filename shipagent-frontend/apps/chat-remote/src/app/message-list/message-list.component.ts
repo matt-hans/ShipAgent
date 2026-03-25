@@ -96,7 +96,7 @@ interface DomainCardEntry {
         } @else if (isCompletionMessage(message)) {
           <!-- Render completion artifact inline -->
           <div class="max-w-3xl mx-auto animate-fade-in">
-            <app-completion-artifact [message]="message" />
+            <app-completion-artifact [message]="message" (viewLabels)="viewLabels.emit($event)" />
           </div>
         } @else if (isDomainCardMessage(message)) {
           @if (resolveDomainCard(message); as entry) {
@@ -116,6 +116,7 @@ interface DomainCardEntry {
             [jobId]="executingJobId"
             (complete)="progressComplete.emit()"
             (failed)="progressFailed.emit()"
+            (viewLabels)="viewLabels.emit($event)"
           />
         </div>
       }
@@ -141,6 +142,7 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
   @Output() previewRefine = new EventEmitter<string>();
   @Output() progressComplete = new EventEmitter<void>();
   @Output() progressFailed = new EventEmitter<void>();
+  @Output() viewLabels = new EventEmitter<string>();
 
   private readonly domainCardBridge = inject(DomainCardBridgeService);
   readonly conversationStore = inject(ConversationStore);
