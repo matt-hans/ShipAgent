@@ -82,17 +82,7 @@ function groupByDate(sessions: ChatSessionSummary[]): Record<DateGroup, ChatSess
           <!-- Clear all button (only shown when sessions exist) -->
           @if (sessions().length > 0) {
             <button
-              class="flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded transition-colors"
-              [class.bg-red-500]="confirmClearAll()"
-              [class.bg-opacity-20]="confirmClearAll()"
-              [class.text-red-400]="confirmClearAll()"
-              [class.hover:bg-red-500]="confirmClearAll()"
-              [class.hover:bg-opacity-30]="confirmClearAll()"
-              [class.bg-slate-700]="!confirmClearAll()"
-              [class.bg-opacity-50]="!confirmClearAll()"
-              [class.text-slate-400]="!confirmClearAll()"
-              [class.hover:bg-slate-700]="!confirmClearAll()"
-              [class.hover:text-slate-300]="!confirmClearAll()"
+              [class]="clearAllBtnClass()"
               [disabled]="isClearingAll()"
               [title]="confirmClearAll() ? 'Click again to confirm' : 'Clear all chats'"
               (click)="handleClearAll()"
@@ -144,14 +134,7 @@ function groupByDate(sessions: ChatSessionSummary[]): Record<DateGroup, ChatSess
                 <div class="space-y-1">
                   @for (session of getGroup(group); track session.id) {
                     <div
-                      class="group relative w-full text-left p-2 rounded-md transition-colors cursor-pointer border"
-                      [class.bg-primary]="conversationStore.sessionId() === session.id"
-                      [class.bg-opacity-10]="conversationStore.sessionId() === session.id"
-                      [class.border-primary]="conversationStore.sessionId() === session.id"
-                      [class.border-opacity-30]="conversationStore.sessionId() === session.id"
-                      [class.border-transparent]="conversationStore.sessionId() !== session.id"
-                      [class.hover:bg-slate-800]="conversationStore.sessionId() !== session.id"
-                      [class.hover:bg-opacity-50]="conversationStore.sessionId() !== session.id"
+                      [class]="sessionCardClass(session)"
                       (click)="handleSelectSession(session)"
                     >
                       <div class="flex items-start justify-between gap-2">
@@ -179,15 +162,7 @@ function groupByDate(sessions: ChatSessionSummary[]): Record<DateGroup, ChatSess
                           <div class="flex items-center gap-1.5 mt-1">
                             <!-- Mode badge -->
                             <span
-                              class="text-[9px] font-mono px-1.5 py-0.5 rounded border"
-                              [class.bg-amber-500]="session.mode === 'interactive'"
-                              [class.bg-opacity-10]="session.mode === 'interactive'"
-                              [class.text-amber-400]="session.mode === 'interactive'"
-                              [class.border-amber-500]="session.mode === 'interactive'"
-                              [class.border-opacity-20]="session.mode === 'interactive'"
-                              [class.bg-primary]="session.mode !== 'interactive'"
-                              [class.text-primary]="session.mode !== 'interactive'"
-                              [class.border-primary]="session.mode !== 'interactive'"
+                              [class]="modeBadgeClass(session)"
                             >
                               {{ session.mode === 'interactive' ? 'Single Shipment' : 'Batch' }}
                             </span>
@@ -241,6 +216,33 @@ export class ChatSessionsPanelComponent implements OnInit {
   readonly editingTitle = signal('');
 
   readonly GROUP_ORDER = GROUP_ORDER;
+
+  /** Build class string for Clear All button (Tailwind v4 opacity syntax). */
+  clearAllBtnClass(): string {
+    const base = 'flex items-center gap-1 px-2 py-1 text-[10px] font-medium rounded transition-colors';
+    if (this.confirmClearAll()) {
+      return `${base} bg-red-500/20 text-red-400 hover:bg-red-500/30`;
+    }
+    return `${base} bg-slate-700/50 text-slate-400 hover:bg-slate-700 hover:text-slate-300`;
+  }
+
+  /** Build class string for session card (Tailwind v4 opacity syntax). */
+  sessionCardClass(session: any): string {
+    const base = 'group relative w-full text-left p-2 rounded-md transition-colors cursor-pointer border';
+    if (this.conversationStore.sessionId() === session.id) {
+      return `${base} bg-primary/10 border-primary/30`;
+    }
+    return `${base} border-transparent hover:bg-slate-800/50`;
+  }
+
+  /** Build class string for mode badge (Tailwind v4 opacity syntax). */
+  modeBadgeClass(session: any): string {
+    const base = 'text-[9px] font-mono px-1.5 py-0.5 rounded border';
+    if (session.mode === 'interactive') {
+      return `${base} bg-amber-500/10 text-amber-400 border-amber-500/20`;
+    }
+    return `${base} bg-primary/10 text-primary border-primary/20`;
+  }
 
   private confirmClearTimer: ReturnType<typeof setTimeout> | null = null;
   private groupedCache = signal<Record<DateGroup, ChatSessionSummary[]>>({

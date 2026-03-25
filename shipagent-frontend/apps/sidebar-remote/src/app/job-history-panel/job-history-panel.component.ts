@@ -114,20 +114,13 @@ const STATUS_FILTERS: string[] = ['all', 'completed', 'partial', 'failed'];
 
       <!-- Job list -->
       @if (!isLoading()) {
-        <div class="space-y-1.5 max-h-[300px] overflow-y-auto">
+        <div class="space-y-1.5">
           @if (filteredJobs().length === 0) {
             <p class="text-xs text-slate-500 text-center py-4">No jobs found</p>
           }
           @for (job of filteredJobs(); track job.id) {
             <div
-              class="group relative w-full text-left p-2.5 rounded-md transition-colors cursor-pointer border"
-              [class.bg-primary]="jobStore.activeJob()?.id === job.id"
-              [class.bg-opacity-10]="jobStore.activeJob()?.id === job.id"
-              [class.border-primary]="jobStore.activeJob()?.id === job.id"
-              [class.border-opacity-30]="jobStore.activeJob()?.id === job.id"
-              [class.border-transparent]="jobStore.activeJob()?.id !== job.id"
-              [class.hover:bg-slate-800]="jobStore.activeJob()?.id !== job.id"
-              [class.hover:bg-opacity-50]="jobStore.activeJob()?.id !== job.id"
+              [class]="jobCardClass(job)"
               (click)="handleSelectJob(job)"
             >
               <div class="flex items-start justify-between gap-2">
@@ -197,6 +190,15 @@ export class JobHistoryPanelComponent implements OnInit {
   /** Expose helpers as properties for template. */
   readonly effectiveStatus = effectiveStatus;
   readonly statusToBadge = statusToBadge;
+
+  /** Build class string for job card (Tailwind v4 opacity syntax). */
+  jobCardClass(job: JobSummary): string {
+    const base = 'group relative w-full text-left p-2.5 rounded-md transition-colors cursor-pointer border';
+    if (this.jobStore.activeJob()?.id === job.id) {
+      return `${base} bg-primary/10 border-primary/30`;
+    }
+    return `${base} border-transparent hover:bg-slate-800/50`;
+  }
 
   constructor() {
     // Re-fetch jobs whenever jobListVersion changes.
