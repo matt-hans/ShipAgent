@@ -16,7 +16,7 @@ import {
 } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from '@shipagent/shared-api';
-import { DataSourceStore, PlatformsStore } from '@shipagent/shared-state';
+import { DataSourceStore, PlatformsStore, ConversationStore } from '@shipagent/shared-state';
 import { ShopifyIconComponent, AmazonIconComponent } from '@shipagent/shared-ui';
 
 @Component({
@@ -29,21 +29,16 @@ import { ShopifyIconComponent, AmazonIconComponent } from '@shipagent/shared-ui'
 
       <!-- === SHOPIFY CARD === -->
       @if (shopifyAvailable()) {
-        <div
-          class="rounded-lg border overflow-hidden transition-colors"
-          [class.border-l-4]="isShopifyActive()"
-          [class.border-l-green-500]="isShopifyActive()"
-          [class.border-green-500]="isShopifyActive()"
-          [class.border-opacity-30]="isShopifyActive()"
-          [class.border-slate-800]="!isShopifyActive()"
-        >
+        <div [class]="shopifyCardClass()">
           <div class="flex items-center justify-between p-2.5 bg-slate-800/30">
             <div class="flex items-center gap-2">
               <sa-brand-shopify class="w-5 h-5 text-[#5BBF3D]" />
               <span class="text-xs font-medium text-slate-200">Shopify</span>
             </div>
             <div>
-              @if (isShopifyActive()) {
+              @if (isShopifyActive() && isInteractive()) {
+                <span class="badge badge-neutral text-[9px]">STANDBY</span>
+              } @else if (isShopifyActive()) {
                 <span class="badge badge-success text-[9px]">ACTIVE</span>
               } @else {
                 <span class="flex items-center gap-1.5">
@@ -54,7 +49,12 @@ import { ShopifyIconComponent, AmazonIconComponent } from '@shipagent/shared-ui'
             </div>
           </div>
 
-          @if (isShopifyActive()) {
+          @if (isShopifyActive() && isInteractive()) {
+            <div class="p-2.5 border-t border-slate-700">
+              <p class="text-xs text-slate-300">{{ shopifyDisplayName() }}</p>
+              <p class="text-[10px] font-mono text-slate-500 mt-0.5">Available in batch mode</p>
+            </div>
+          } @else if (isShopifyActive()) {
             <div class="p-2.5 border-t border-green-500/20">
               <p class="text-xs text-slate-300">{{ shopifyDisplayName() }}</p>
               <p class="text-[10px] font-mono text-slate-500 mt-0.5">Connected</p>
@@ -93,21 +93,16 @@ import { ShopifyIconComponent, AmazonIconComponent } from '@shipagent/shared-ui'
 
       <!-- === AMAZON CARD === -->
       @if (amazonAvailable()) {
-        <div
-          class="rounded-lg border overflow-hidden transition-colors"
-          [class.border-l-4]="isAmazonActive()"
-          [class.border-l-amber-500]="isAmazonActive()"
-          [class.border-amber-500]="isAmazonActive()"
-          [class.border-opacity-30]="isAmazonActive()"
-          [class.border-slate-800]="!isAmazonActive()"
-        >
+        <div [class]="amazonCardClass()">
           <div class="flex items-center justify-between p-2.5 bg-slate-800/30">
             <div class="flex items-center gap-2">
               <sa-brand-amazon class="w-5 h-5 text-[#FF9900]" />
               <span class="text-xs font-medium text-slate-200">Amazon</span>
             </div>
             <div>
-              @if (isAmazonActive()) {
+              @if (isAmazonActive() && isInteractive()) {
+                <span class="badge badge-neutral text-[9px]">STANDBY</span>
+              } @else if (isAmazonActive()) {
                 <span class="badge badge-success text-[9px]">ACTIVE</span>
               } @else {
                 <span class="flex items-center gap-1.5">
@@ -118,7 +113,12 @@ import { ShopifyIconComponent, AmazonIconComponent } from '@shipagent/shared-ui'
             </div>
           </div>
 
-          @if (isAmazonActive()) {
+          @if (isAmazonActive() && isInteractive()) {
+            <div class="p-2.5 border-t border-slate-700">
+              <p class="text-xs text-slate-300">{{ amazonDisplayName() }}</p>
+              <p class="text-[10px] font-mono text-slate-500 mt-0.5">Available in batch mode</p>
+            </div>
+          } @else if (isAmazonActive()) {
             <div class="p-2.5 border-t border-amber-500/20">
               <p class="text-xs text-slate-300">{{ amazonDisplayName() }}</p>
               <p class="text-[10px] font-mono text-slate-500 mt-0.5">Connected</p>
@@ -166,6 +166,7 @@ export class PlatformSourceComponent implements OnInit {
   private readonly apiService = inject(ApiService);
   private readonly dataSourceStore = inject(DataSourceStore);
   private readonly platformsStore = inject(PlatformsStore);
+  private readonly conversationStore = inject(ConversationStore);
 
   readonly isConnecting = signal(false);
   readonly connectError = signal<string | null>(null);
@@ -196,6 +197,35 @@ export class PlatformSourceComponent implements OnInit {
       },
       error: (err) => console.warn('[PlatformSource] Failed to fetch connections:', err),
     });
+  }
+
+  /** Whether interactive (single-shipment) mode is active. */
+  isInteractive(): boolean {
+    return this.conversationStore.interactiveShipping();
+  }
+
+  /** CSS class string for the Shopify card — varies by interactive mode. */
+  shopifyCardClass(): string {
+    const base = 'rounded-lg border overflow-hidden transition-colors';
+    if (this.isShopifyActive() && this.isInteractive()) {
+      return `${base} border-l-4 border-l-slate-500 border-slate-600/30 bg-slate-800/20`;
+    }
+    if (this.isShopifyActive()) {
+      return `${base} border-l-4 border-l-[#5BBF3D] border-[#5BBF3D]/30 bg-[#5BBF3D]/5`;
+    }
+    return `${base} border-slate-800`;
+  }
+
+  /** CSS class string for the Amazon card — varies by interactive mode. */
+  amazonCardClass(): string {
+    const base = 'rounded-lg border overflow-hidden transition-colors';
+    if (this.isAmazonActive() && this.isInteractive()) {
+      return `${base} border-l-4 border-l-slate-500 border-slate-600/30 bg-slate-800/20`;
+    }
+    if (this.isAmazonActive()) {
+      return `${base} border-l-4 border-l-[#FF9900] border-[#FF9900]/30 bg-[#FF9900]/5`;
+    }
+    return `${base} border-slate-800`;
   }
 
   /** Whether Shopify is configured and runtime-usable. */
