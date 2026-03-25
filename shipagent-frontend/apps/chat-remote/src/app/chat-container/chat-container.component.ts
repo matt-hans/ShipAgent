@@ -25,11 +25,12 @@ import {
   inject,
   effect,
   signal,
+  computed,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { provideMarkdown } from 'ngx-markdown';
-import { ConversationStore, DataSourceStore } from '@shipagent/shared-state';
+import { AppStore, ConversationStore, DataSourceStore } from '@shipagent/shared-state';
 import { ConversationSseService } from '../../services/conversation-sse.service';
 import { ConversationSessionService } from '../../services/conversation-session.service';
 import { JobProgressSseService } from '../../services/job-progress-sse.service';
@@ -73,13 +74,28 @@ import { InteractiveModeBannerComponent } from '../messages/interactive-mode-ban
         <app-active-source-banner />
       }
 
-      <!-- Message list -->
-      <app-message-list
-        #messageList
-        class="flex-1 overflow-hidden flex flex-col"
-        [interactiveShipping]="conversationStore.interactiveShipping()"
-        (exampleClick)="handleExampleClick($event)"
-      />
+      <!-- Message list + right-side action icons -->
+      <div class="flex flex-1 overflow-hidden">
+        <app-message-list
+          #messageList
+          class="flex-1 overflow-hidden flex flex-col"
+          [interactiveShipping]="conversationStore.interactiveShipping()"
+          (exampleClick)="handleExampleClick($event)"
+        />
+
+        <!-- Right edge: action icons -->
+        <div class="flex flex-col items-center pt-3 pr-1 gap-2">
+          <button (click)="handleNewChat()" [disabled]="conversationStore.isStreaming()" class="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-primary hover:bg-primary/10 transition-colors disabled:opacity-50" title="New chat">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          </button>
+          <button (click)="openSettings()" class="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors" title="Settings">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+          <button class="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors" title="Chat history">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          </button>
+        </div>
+      </div>
 
       <!-- Active tool call chip -->
       @if (eventProcessorService.isToolActive()) {
@@ -92,26 +108,39 @@ import { InteractiveModeBannerComponent } from '../messages/interactive-mode-ban
       }
 
       <!-- Chat input area -->
-      <div class="border-t border-border/50 bg-card/30 p-3">
-        <div class="flex items-end gap-2">
-          <textarea
-            #inputTextarea
-            class="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none outline-none min-h-[40px] max-h-[200px] py-2 px-3 rounded-lg border border-border/50 focus:border-primary/50 transition-colors"
-            placeholder="Enter a command..."
-            [disabled]="conversationStore.isStreaming()"
-            [value]="inputValue()"
-            (input)="inputValue.set($any($event.target).value)"
-            (keydown)="handleKeyDown($event)"
-            rows="1"
-          ></textarea>
+      <div class="border-t border-slate-800 px-4 py-3 bg-card/30 backdrop-blur">
+        <div class="max-w-3xl mx-auto">
+          <div class="flex items-end gap-2">
+            <textarea
+              #inputTextarea
+              class="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground resize-none outline-none min-h-[40px] max-h-[200px] py-2 px-3 rounded-lg border border-border/50 focus:border-primary/50 transition-colors"
+              [placeholder]="inputPlaceholder()"
+              [disabled]="conversationStore.isStreaming()"
+              [value]="inputValue()"
+              (input)="inputValue.set($any($event.target).value)"
+              (keydown)="handleKeyDown($event)"
+              rows="1"
+            ></textarea>
 
-          <button
-            class="btn-primary px-4 py-2 flex-shrink-0"
-            [disabled]="!inputValue().trim() || conversationStore.isStreaming()"
-            (click)="handleSubmit()"
-          >
-            Send
-          </button>
+            <button
+              class="btn-primary p-2.5 flex-shrink-0 rounded-lg"
+              [disabled]="!inputValue().trim() || conversationStore.isStreaming()"
+              (click)="handleSubmit()"
+            >
+              @if (conversationStore.isStreaming()) {
+                <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                </svg>
+              } @else {
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                </svg>
+              }
+            </button>
+          </div>
+          <p class="text-[10px] font-mono text-slate-500 mt-1.5">
+            Use /commands and &#64;contacts for shortcuts · Press Enter to send
+          </p>
         </div>
       </div>
     </div>
@@ -124,10 +153,23 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
   readonly dataSourceStore = inject(DataSourceStore);
   readonly eventProcessorService = inject(EventProcessorService);
   private readonly chatActions = inject(ChatActionsService);
+  private readonly sessionService = inject(ConversationSessionService);
+  private readonly appStore = inject(AppStore);
   private readonly domainCardBridge = inject(DomainCardBridgeService);
   private readonly injector = inject(Injector);
 
   readonly inputValue = signal('');
+
+  /** Context-aware placeholder driven by current mode and data source state. */
+  protected readonly inputPlaceholder = computed(() => {
+    if (this.conversationStore.interactiveShipping()) {
+      return 'Describe one shipment from scratch...';
+    }
+    if (!this.dataSourceStore.activeSourceType()) {
+      return 'Track a package, find locations, or connect a data source...';
+    }
+    return 'Enter a shipping command...';
+  });
 
   // Track messages length to trigger scroll
   private lastMessageCount = 0;
@@ -151,6 +193,18 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     // Services are provided at component level — their ngOnDestroy handles cleanup.
+  }
+
+  // ---------------------------------------------------------------------------
+  // Action icon handlers
+  // ---------------------------------------------------------------------------
+
+  handleNewChat(): void {
+    this.sessionService.startNewChat();
+  }
+
+  openSettings(): void {
+    this.appStore.openSettings();
   }
 
   // ---------------------------------------------------------------------------
