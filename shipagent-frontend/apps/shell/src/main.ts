@@ -1,3 +1,4 @@
+import 'zone.js';
 import { initFederation } from '@angular-architects/native-federation';
 
 initFederation('/federation.manifest.json')

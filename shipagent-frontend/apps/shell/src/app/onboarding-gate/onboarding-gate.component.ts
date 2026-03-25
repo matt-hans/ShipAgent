@@ -40,8 +40,17 @@ import { RemoteLoaderService } from '../remote-loader.service';
             [ngComponentOutlet]="wizardComponent()!"
             [ngComponentOutletInjector]="wizardInjector()"
           />
+        } @else if (loadFailed()) {
+          <div class="flex flex-col items-center gap-4">
+            <p class="text-sm text-muted-foreground">Onboarding wizard unavailable (remote not loaded).</p>
+            <button
+              class="btn-primary px-6 py-2 rounded-lg"
+              (click)="skipOnboarding()"
+            >
+              Skip and Continue
+            </button>
+          </div>
         } @else {
-          <!-- Loading state while wizard remote fetches -->
           <div class="flex flex-col items-center gap-4">
             <div class="w-12 h-12 rounded-full border-4 border-primary border-t-transparent animate-spin"></div>
             <p class="text-sm text-muted-foreground">Setting up ShipAgent...</p>
@@ -59,12 +68,16 @@ export class OnboardingGateComponent implements OnInit {
 
   protected readonly wizardComponent = signal<Type<unknown> | null>(null);
   protected readonly wizardInjector = signal<Injector>(this.injector);
+  protected readonly loadFailed = signal(false);
 
   ngOnInit(): void {
-    // Only load wizard if onboarding is not yet complete
     if (!this.settingsStore.onboardingCompleted()) {
       this.loadWizard();
     }
+  }
+
+  protected skipOnboarding(): void {
+    this.settingsStore.setOnboardingCompleted(true);
   }
 
   private async loadWizard(): Promise<void> {
@@ -81,9 +94,8 @@ export class OnboardingGateComponent implements OnInit {
         this.wizardComponent.set(entry.component);
       });
     } catch (err) {
-      // settings-remote not yet built — onboarding gate will show loading spinner
-      // The user can still skip onboarding by configuring the backend directly.
       console.warn('[shell] settings-remote (OnboardingWizard) not available:', err);
+      this.ngZone.run(() => this.loadFailed.set(true));
     }
   }
 }
