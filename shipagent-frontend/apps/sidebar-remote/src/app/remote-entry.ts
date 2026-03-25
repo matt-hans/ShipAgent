@@ -1,18 +1,13 @@
-import { Component } from '@angular/core';
-import { CommonModule } from '@angular/common';
-
 /**
- * Placeholder remote entry component for sidebar-remote.
- * This will be replaced with SidebarContentComponent in Phase 9 Plan 03.
+ * Remote entry point for sidebar-remote.
+ * Exposes SidebarContentComponent via Native Federation as './SidebarContent'.
  */
-@Component({
-  selector: 'app-sidebar-remote-entry',
-  standalone: true,
-  imports: [CommonModule],
-  template: `
-    <div class="card-premium p-4">
-      <p class="text-muted-foreground">Sidebar Remote — placeholder (Plan 03 will implement SidebarContentComponent)</p>
-    </div>
-  `,
-})
-export class RemoteEntryComponent {}
+
+import { SidebarContentComponent } from './sidebar-content/sidebar-content.component';
+
+export const remoteEntry = {
+  component: SidebarContentComponent,
+  providers: [],
+};
+
+export { SidebarContentComponent };
