@@ -172,7 +172,10 @@ export class PlatformsService {
       );
       // Reset and re-populate store
       for (const conn of response) {
-        this.platformsStore.setConnection(conn.connection_key, conn);
+        // Key by provider name ('shopify', 'amazon'), not connection_key
+        // ('shopify:store.myshopify.com') — sidebar looks up by provider.
+        const key = (conn as any).provider ?? conn.connection_key;
+        this.platformsStore.setConnection(key, conn);
       }
       this.platformsStore.incrementProviderConnectionsVersion();
     } catch {
