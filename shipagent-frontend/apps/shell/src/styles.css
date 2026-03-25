@@ -2,6 +2,11 @@
 @import 'tailwindcss' source('./app');
 @source "../../../libs/shared/ui/src";
 @source "../../../libs/shared/state/src";
+@source "../../../libs/shared/sse/src";
+@source "../../chat-remote/src";
+@source "../../sidebar-remote/src";
+@source "../../settings-remote/src";
+@source "../../domain-remote/src";
 
 /*
  * ShipAgent Design System — Angular Module Federation Shell
