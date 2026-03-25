@@ -25,7 +25,7 @@ import { ChevronLeftIconComponent, ChevronRightIconComponent } from '@shipagent/
   imports: [ChevronLeftIconComponent, ChevronRightIconComponent],
   template: `
     <aside
-      class="app-sidebar flex flex-col transition-all duration-300 ease-out"
+      class="app-sidebar flex flex-col h-full transition-all duration-300 ease-out"
       [class.w-16]="collapsed"
       [class.w-80]="!collapsed"
     >
@@ -51,7 +51,7 @@ import { ChevronLeftIconComponent, ChevronRightIconComponent } from '@shipagent/
       }
 
       <!-- Collapse/expand toggle at bottom -->
-      <div class="mt-auto p-3 border-t border-slate-800">
+      <div class="mt-auto p-3">
         <button
           (click)="onToggle()"
           class="w-full flex items-center justify-center gap-2 py-2 rounded-md

@@ -12,13 +12,17 @@ import {
   Output,
   EventEmitter,
   ChangeDetectionStrategy,
+  inject,
   signal,
 } from '@angular/core';
+import { firstValueFrom } from 'rxjs';
 import {
   CheckIconComponent,
   MapPinIconComponent,
   UserIconComponent,
 } from '@shipagent/shared-ui';
+import { ApiService } from '@shipagent/shared-api';
+import { ConversationStore } from '@shipagent/shared-state';
 import type { PickupPreview } from '@shipagent/shared-types';
 
 /** Format YYYYMMDD to "Feb 17, 2026" style display. */
@@ -150,13 +154,52 @@ export class PickupPreviewComponent {
   @Output() onConfirm = new EventEmitter<void>();
   @Output() onCancel = new EventEmitter<void>();
 
+  private readonly apiService = inject(ApiService);
+  private readonly conversationStore = inject(ConversationStore);
+
   readonly isConfirming = signal(false);
+  readonly isDone = signal(false);
 
   protected formatDate = formatPickupDate;
   protected formatTime = formatTime;
 
-  handleConfirm(): void {
+  /**
+   * Confirm pickup by sending a message to the agent — matches React logic.
+   * React: conv.sendMessage("Confirmed. Schedule the pickup with confirmed=true. confirmation_token=XXX")
+   */
+  async handleConfirm(): Promise<void> {
     this.isConfirming.set(true);
-    this.onConfirm.emit();
+    try {
+      const sid = this.conversationStore.sessionId();
+      if (!sid) throw new Error('No active session');
+
+      const tokenClause = (this.data as any).confirmation_token
+        ? ` confirmation_token=${(this.data as any).confirmation_token}`
+        : '';
+      const msg = `Confirmed. Schedule the pickup with confirmed=true.${tokenClause}`;
+
+      // Append user message optimistically
+      this.conversationStore.appendMessage({
+        id: `user-pickup-${Date.now()}`,
+        role: 'user',
+        content: msg,
+        timestamp: new Date().toISOString(),
+      });
+      this.conversationStore.setStreaming(true);
+
+      await firstValueFrom(this.apiService.sendMessage(sid, msg));
+      this.isDone.set(true);
+    } catch (err) {
+      console.error('[PickupPreview] Confirm failed:', err);
+      this.conversationStore.appendMessage({
+        id: `err-pickup-${Date.now()}`,
+        role: 'system',
+        content: `Pickup scheduling failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        timestamp: new Date().toISOString(),
+        metadata: { type: 'error' },
+      });
+    } finally {
+      this.isConfirming.set(false);
+    }
   }
 }
