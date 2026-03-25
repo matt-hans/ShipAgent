@@ -89,6 +89,11 @@
           "optimization": false,
           "extractLicenses": false,
           "sourceMap": true
+        },
+        "test": {
+          "polyfills": ["zone.js", "zone.js/testing"],
+          "optimization": false,
+          "extractLicenses": false
         }
       },
       "defaultConfiguration": "production"
