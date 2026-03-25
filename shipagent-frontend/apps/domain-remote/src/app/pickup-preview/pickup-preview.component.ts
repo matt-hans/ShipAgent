@@ -181,15 +181,8 @@ export class PickupPreviewComponent {
         : '';
       const msg = `Confirmed. Schedule the pickup with confirmed=true.${tokenClause}`;
 
-      // Append user message optimistically
-      this.conversationStore.appendMessage({
-        id: `user-pickup-${Date.now()}`,
-        role: 'user',
-        content: msg,
-        timestamp: new Date().toISOString(),
-      });
+      // Send to agent silently — don't show the confirmation_token string in chat.
       this.conversationStore.setStreaming(true);
-
       await firstValueFrom(this.apiService.sendMessage(sid, msg));
       this.isDone.set(true);
     } catch (err) {
