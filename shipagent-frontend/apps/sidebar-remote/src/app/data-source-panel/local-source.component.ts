@@ -46,16 +46,7 @@ import type { DataSourceInfo } from '@shipagent/shared-types';
           Import File
         </button>
         <button
-          class="flex-1 py-2 px-3 rounded-lg border transition-colors text-xs font-medium disabled:opacity-50"
-          [class.border-primary]="showDbForm()"
-          [class.border-opacity-50]="showDbForm()"
-          [class.bg-primary]="showDbForm()"
-          [class.bg-opacity-10]="showDbForm()"
-          [class.text-primary]="showDbForm()"
-          [class.border-slate-700]="!showDbForm()"
-          [class.bg-slate-800]="!showDbForm()"
-          [class.bg-opacity-50]="!showDbForm()"
-          [class.text-slate-300]="!showDbForm()"
+          [class]="dbButtonClass()"
           [disabled]="isConnecting()"
           (click)="toggleDbForm()"
         >
@@ -137,6 +128,17 @@ export class LocalSourceComponent {
     const el = this.fileInput().nativeElement;
     el.value = '';
     el.click();
+  }
+
+  /** CSS class for the Database button — active state uses primary accent. */
+  dbButtonClass(): string {
+    const base = 'flex-1 py-2 px-3 rounded-lg border transition-colors text-xs font-medium disabled:opacity-50';
+    if (this.showDbForm()) {
+      // Active: primary border + tinted background + primary text
+      return `${base} border-primary/50 bg-primary/10 text-primary`;
+    }
+    // Inactive: neutral
+    return `${base} border-slate-700 bg-slate-800/50 text-slate-300 hover:bg-slate-800 hover:border-slate-600`;
   }
 
   /** Toggle database connection form visibility. */
