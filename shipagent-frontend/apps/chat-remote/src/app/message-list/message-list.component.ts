@@ -26,11 +26,14 @@ import { CommonModule, NgComponentOutlet } from '@angular/common';
 import { ConversationStore } from '@shipagent/shared-state';
 import type { ConversationMessage } from '@shipagent/shared-types';
 import { DomainCardBridgeService } from '../../services/domain-card-bridge.service';
+import { JobProgressSseService } from '../../services/job-progress-sse.service';
 import { SystemMessageComponent } from '../messages/system-message.component';
 import { UserMessageComponent } from '../messages/user-message.component';
 import { TypingIndicatorComponent } from '../messages/typing-indicator.component';
 import { WelcomeMessageComponent } from '../messages/welcome-message.component';
 import { BatchPreviewComponent } from '../batch-preview/batch-preview.component';
+import { ProgressDisplayComponent } from '../progress-display/progress-display.component';
+import { CompletionArtifactComponent } from '../completion-artifact/completion-artifact.component';
 
 /** Resolved domain card for NgComponentOutlet. */
 interface DomainCardEntry {
@@ -50,6 +53,8 @@ interface DomainCardEntry {
     TypingIndicatorComponent,
     WelcomeMessageComponent,
     BatchPreviewComponent,
+    ProgressDisplayComponent,
+    CompletionArtifactComponent,
   ],
   styles: [`
     .message-list-scroll {
@@ -88,6 +93,11 @@ interface DomainCardEntry {
               (refine)="previewRefine.emit($event)"
             />
           </div>
+        } @else if (isCompletionMessage(message)) {
+          <!-- Render completion artifact inline -->
+          <div class="max-w-3xl mx-auto animate-fade-in">
+            <app-completion-artifact [message]="message" />
+          </div>
         } @else if (isDomainCardMessage(message)) {
           @if (resolveDomainCard(message); as entry) {
             <ng-container *ngComponentOutlet="entry.component; inputs: entry.inputs" />
@@ -97,6 +107,17 @@ interface DomainCardEntry {
             {{ message.content }}
           </div>
         }
+      }
+
+      <!-- Progress display during batch execution -->
+      @if (executingJobId) {
+        <div class="max-w-3xl mx-auto animate-fade-in">
+          <app-progress-display
+            [jobId]="executingJobId"
+            (complete)="progressComplete.emit()"
+            (failed)="progressFailed.emit()"
+          />
+        </div>
       }
 
       <!-- Typing indicator while streaming -->
@@ -113,13 +134,19 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
   @ViewChild('scrollAnchor') private scrollAnchor!: ElementRef<HTMLDivElement>;
 
   @Input() interactiveShipping = false;
+  @Input() executingJobId: string | null = null;
   @Output() exampleClick = new EventEmitter<string>();
   @Output() previewConfirm = new EventEmitter<any>();
   @Output() previewCancel = new EventEmitter<any>();
   @Output() previewRefine = new EventEmitter<string>();
+  @Output() progressComplete = new EventEmitter<void>();
+  @Output() progressFailed = new EventEmitter<void>();
 
   private readonly domainCardBridge = inject(DomainCardBridgeService);
   readonly conversationStore = inject(ConversationStore);
+
+  /** Expose progress service so parent can read final progress snapshot. */
+  readonly progressService = inject(JobProgressSseService);
 
   private shouldScrollToBottom = false;
 
@@ -162,11 +189,21 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
   }
 
   isSystemMessage(msg: ConversationMessage): boolean {
-    return msg.role === 'assistant' || (msg.role === 'system' && !msg.metadata?.['type']);
+    if (msg.role === 'assistant') return true;
+    if (msg.role === 'system') {
+      const metaType = msg.metadata?.['type'];
+      // Messages with no metadata type, or with 'status' type, render as system messages.
+      return !metaType || metaType === 'status';
+    }
+    return false;
   }
 
   isPreviewMessage(msg: ConversationMessage): boolean {
     return msg.metadata?.['type'] === 'preview_ready';
+  }
+
+  isCompletionMessage(msg: ConversationMessage): boolean {
+    return msg.metadata?.['type'] === 'completion';
   }
 
   isDomainCardMessage(msg: ConversationMessage): boolean {

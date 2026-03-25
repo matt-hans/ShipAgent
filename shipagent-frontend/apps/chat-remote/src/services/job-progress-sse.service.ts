@@ -4,12 +4,14 @@
  * Consumes the /jobs/{id}/progress/stream endpoint and maintains
  * real-time progress signals for the ProgressDisplay component.
  *
+ * Uses its own EventSource instance (not the shared SseService) to avoid
+ * conflicts with ConversationSseService which also uses SseService.
+ *
  * Provided at component level (not root) for proper lifecycle management.
  */
 
 import { Injectable, OnDestroy, inject, signal, computed } from '@angular/core';
-import { Subscription, firstValueFrom } from 'rxjs';
-import { SseService } from '@shipagent/shared-sse';
+import { firstValueFrom } from 'rxjs';
 import { ApiService } from '@shipagent/shared-api';
 import { JobStore } from '@shipagent/shared-state';
 import type { JobStatus } from '@shipagent/shared-types';
@@ -54,11 +56,11 @@ const INITIAL_PROGRESS: JobProgressSnapshot = {
 
 @Injectable()
 export class JobProgressSseService implements OnDestroy {
-  private readonly sseService = inject(SseService);
   private readonly apiService = inject(ApiService);
   private readonly jobStore = inject(JobStore);
 
-  private sseSubscription: Subscription | null = null;
+  /** Own EventSource instance — separate from the conversation SSE. */
+  private eventSource: EventSource | null = null;
 
   /** Current progress snapshot. */
   readonly progress = signal<JobProgressSnapshot>({ ...INITIAL_PROGRESS });
@@ -112,19 +114,46 @@ export class JobProgressSseService implements OnDestroy {
     }
 
     const url = this.apiService.getJobProgressUrl(jobId);
-    this.sseSubscription = this.sseService.connect(url).subscribe({
-      next: (event) => this.handleEvent(event.data),
-      error: (err: unknown) => {
-        console.error('[JobProgressSseService] SSE error:', err);
-      },
-    });
+    const es = new EventSource(url);
+    this.eventSource = es;
+
+    es.onmessage = (event: MessageEvent) => {
+      try {
+        const rawData = event.data as string;
+        if (!rawData || rawData.trim() === '') return;
+
+        const parsed = JSON.parse(rawData) as unknown;
+        if (!parsed || typeof parsed !== 'object') return;
+
+        // The progress endpoint sends { event, data } envelope.
+        // Extract inner data the same way as SseService does.
+        const envelope = parsed as Record<string, unknown>;
+        const eventType = envelope['event'] as string | undefined;
+
+        // Skip pings.
+        if (eventType === 'ping') return;
+
+        // Extract the inner 'data' field if present.
+        const innerData = 'data' in envelope ? envelope['data'] : parsed;
+        this.handleEvent(innerData);
+      } catch {
+        // Ignore parse errors.
+      }
+    };
+
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) {
+        console.error('[JobProgressSseService] SSE connection closed');
+      }
+    };
   }
 
   /** Disconnect the progress stream. */
   disconnect(): void {
-    this.sseSubscription?.unsubscribe();
-    this.sseSubscription = null;
-    this.sseService.disconnect();
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
   }
 
   // ---------------------------------------------------------------------------
