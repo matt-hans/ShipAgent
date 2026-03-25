@@ -47,6 +47,7 @@ import { InteractiveModeBannerComponent } from '../messages/interactive-mode-ban
   selector: 'app-chat-container',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { class: 'flex flex-col flex-1 h-full overflow-hidden' },
   providers: [
     ConversationSseService,
     ConversationSessionService,

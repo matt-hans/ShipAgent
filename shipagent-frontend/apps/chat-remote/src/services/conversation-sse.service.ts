@@ -122,7 +122,13 @@ export class ConversationSseService implements OnDestroy {
   }
 
   private handleAgentMessage(data: Record<string, unknown>): void {
-    const content = (data['content'] as string | undefined) ?? (data['message'] as string | undefined) ?? '';
+    // Backend sends agent text in 'text' field (see conversations.py:577).
+    // Also check 'content' and 'message' for compatibility.
+    const content =
+      (data['text'] as string | undefined) ??
+      (data['content'] as string | undefined) ??
+      (data['message'] as string | undefined) ??
+      '';
     if (!content) return;
 
     const msg: ConversationMessage = {
