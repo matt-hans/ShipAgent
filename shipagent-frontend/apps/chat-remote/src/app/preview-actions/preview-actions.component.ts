@@ -128,6 +128,15 @@ export class PreviewActionsComponent {
     this.refineText.set('');
   }
 
+  /**
+   * Open the refinement input with pre-populated text.
+   * Used by InteractivePreviewComponent for the click-to-refine UX.
+   */
+  openWithSuggestion(text: string): void {
+    this.refineText.set(text);
+    this.isRefining.set(true);
+  }
+
   handleRefineKeyDown(event: KeyboardEvent): void {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();

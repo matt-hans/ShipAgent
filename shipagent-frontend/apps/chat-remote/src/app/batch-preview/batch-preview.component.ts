@@ -5,7 +5,10 @@
  * Defaults to collapsed state showing COLLAPSED_ROW_COUNT rows, with a
  * "Show all X rows" toggle button to expand. Includes confirm/cancel/refine
  * actions via PreviewActionsComponent.
- * Matches React's PreviewCard component (batch mode).
+ *
+ * Each row is expandable (chevron click) to reveal ShipmentDetails —
+ * customer, recipient address, order reference — matching the React
+ * PreviewCard's ShipmentDetails component.
  */
 
 import {
@@ -17,7 +20,13 @@ import {
   signal,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormatCurrencyPipe, ChevronDownIconComponent } from '@shipagent/shared-ui';
+import {
+  FormatCurrencyPipe,
+  ChevronDownIconComponent,
+  ShoppingCartIconComponent,
+  UserIconComponent,
+  MapPinIconComponent,
+} from '@shipagent/shared-ui';
 import { PreviewActionsComponent } from '../preview-actions/preview-actions.component';
 import type { BatchPreview, PreviewRow } from '@shipagent/shared-types';
 
@@ -28,7 +37,15 @@ const COLLAPSED_ROW_COUNT = 4;
   selector: 'app-batch-preview',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [CommonModule, FormatCurrencyPipe, ChevronDownIconComponent, PreviewActionsComponent],
+  imports: [
+    CommonModule,
+    FormatCurrencyPipe,
+    ChevronDownIconComponent,
+    ShoppingCartIconComponent,
+    UserIconComponent,
+    MapPinIconComponent,
+    PreviewActionsComponent,
+  ],
   styles: [`
     .chevron-rotated {
       transform: rotate(180deg);
@@ -38,6 +55,19 @@ const COLLAPSED_ROW_COUNT = 4;
     }
     .row-list-expanded {
       max-height: 52vh;
+    }
+    .row-chevron {
+      transition: transform 150ms ease;
+    }
+    .row-chevron-open {
+      transform: rotate(180deg);
+    }
+    .detail-enter {
+      animation: detailFadeIn 200ms ease-out;
+    }
+    @keyframes detailFadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
     }
   `],
   template: `
@@ -100,30 +130,148 @@ const COLLAPSED_ROW_COUNT = 4;
           </thead>
           <tbody>
             @for (row of visibleRows(); track row.row_number) {
-              <tr class="border-b border-border/10 hover:bg-card/30">
-                <td class="px-4 py-2 font-mono text-slate-500">{{ row.row_number }}</td>
+              <!-- Main row -->
+              <tr
+                class="border-b border-border/10 transition-colors"
+                [class.hover:bg-card/30]="hasOrderData(row)"
+                [class.cursor-pointer]="hasOrderData(row)"
+                [class.bg-slate-800/20]="isRowExpanded(row.row_number)"
+                (click)="hasOrderData(row) && toggleRow(row.row_number)"
+              >
+                <td class="px-4 py-2 font-mono text-slate-500">
+                  <div class="flex items-center gap-1.5">
+                    @if (hasOrderData(row)) {
+                      <sa-icon-chevron-down
+                        class="w-3.5 h-3.5 text-slate-500 row-chevron flex-shrink-0"
+                        [class.row-chevron-open]="isRowExpanded(row.row_number)"
+                      />
+                    }
+                    {{ row.row_number }}
+                  </div>
+                </td>
                 <td class="px-4 py-2">
-                  <p class="text-slate-200">{{ row.recipient_name }}</p>
-                  @if (row.city_state) {
-                    <p class="text-slate-500">{{ row.city_state }}</p>
+                  @if (isDifferentRecipient(row)) {
+                    <div class="flex items-center gap-2">
+                      <span class="text-slate-400 text-[10px]">Customer:</span>
+                      <span class="text-slate-300 font-medium truncate">{{ row.order_data?.customer_name }}</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      <span class="text-slate-500 text-[10px]">Ship to:</span>
+                      <span class="text-slate-200 font-medium truncate">{{ row.recipient_name }}</span>
+                      <span class="px-1 py-0.5 rounded bg-primary/20 text-primary text-[8px] font-medium">GIFT</span>
+                      @if (row.destination_country && row.destination_country !== 'US') {
+                        <span class="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-[8px] font-bold">{{ row.destination_country }}</span>
+                      }
+                    </div>
+                    @if (row.city_state) {
+                      <span class="text-slate-500 text-[10px]">{{ row.city_state }}</span>
+                    }
+                  } @else {
+                    <div class="flex items-center gap-2">
+                      <span class="text-slate-200 font-medium truncate">{{ row.recipient_name }}</span>
+                      @if (row.destination_country && row.destination_country !== 'US') {
+                        <span class="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-[8px] font-bold">{{ row.destination_country }}</span>
+                      }
+                    </div>
+                    @if (row.city_state) {
+                      <p class="text-slate-500">{{ row.city_state }}</p>
+                    }
                   }
                   @if (row.warnings.length > 0) {
                     <div class="mt-0.5 space-y-0.5">
                       @for (warning of row.warnings; track $index) {
-                        <p class="text-[10px] text-warning/80">{{ warning }}</p>
+                        <div class="flex items-start gap-2 text-[10px] text-amber-400/90 bg-amber-400/5 rounded px-2 py-1">
+                          <span class="flex-shrink-0 mt-px">&#9888;</span>
+                          <span>{{ warning }}</span>
+                        </div>
                       }
                     </div>
                   }
                 </td>
-                <td class="px-4 py-2 text-slate-300">{{ row.service || 'UPS Ground' }}</td>
+                <td class="px-4 py-2 text-slate-300 font-mono text-[10px]">{{ row.service || 'UPS Ground' }}</td>
                 <td class="px-4 py-2 text-right font-mono">
-                  @if (row.estimated_cost_cents > 0) {
-                    <span class="text-primary">{{ row.estimated_cost_cents | formatCurrency }}</span>
+                  @if (row.warnings.length > 0) {
+                    <span class="text-amber-400 font-medium">$0.00</span>
+                  } @else if (row.estimated_cost_cents > 0) {
+                    <span class="text-primary font-medium">{{ row.estimated_cost_cents | formatCurrency }}</span>
                   } @else {
                     <span class="text-slate-500">&mdash;</span>
                   }
                 </td>
               </tr>
+
+              <!-- Expanded details row (ShipmentDetails) -->
+              @if (isRowExpanded(row.row_number) && row.order_data) {
+                <tr class="detail-enter">
+                  <td colspan="4" class="px-4 py-3 bg-slate-800/30 border-t border-slate-800">
+                    <div class="grid grid-cols-2 gap-4">
+                      <!-- Customer Info (Order Placer) -->
+                      <div class="space-y-2">
+                        <div class="flex items-center gap-1.5 text-[10px] font-mono text-slate-500 uppercase tracking-wider">
+                          <sa-icon-shopping-cart class="w-3 h-3" />
+                          <span>Customer (Ordered By)</span>
+                        </div>
+                        <div class="space-y-0.5">
+                          <p class="text-sm text-slate-200">{{ row.order_data.customer_name }}</p>
+                          @if (row.order_data.customer_email) {
+                            <p class="text-[10px] font-mono text-slate-500">{{ row.order_data.customer_email }}</p>
+                          }
+                        </div>
+                      </div>
+
+                      <!-- Recipient Info (Ship To) -->
+                      <div class="space-y-2">
+                        <div class="flex items-center gap-1.5 text-[10px] font-mono text-slate-500 uppercase tracking-wider">
+                          <sa-icon-user class="w-3 h-3" />
+                          <span>Recipient (Ship To)</span>
+                          @if (isDifferentRecipient(row)) {
+                            <span class="ml-1 px-1.5 py-0.5 rounded bg-primary/20 text-primary text-[8px] font-medium">GIFT</span>
+                          }
+                        </div>
+                        <div class="space-y-0.5">
+                          <p class="text-sm text-slate-200">{{ row.order_data.ship_to_name }}</p>
+                          @if (row.order_data.ship_to_company) {
+                            <p class="text-xs text-slate-400">{{ row.order_data.ship_to_company }}</p>
+                          }
+                          @if (row.order_data.ship_to_phone) {
+                            <p class="text-[10px] font-mono text-slate-500">{{ row.order_data.ship_to_phone }}</p>
+                          }
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Address Info -->
+                    <div class="mt-3 pt-3 border-t border-slate-800/50">
+                      <div class="flex items-center gap-1.5 text-[10px] font-mono text-slate-500 uppercase tracking-wider mb-2">
+                        <sa-icon-map-pin class="w-3 h-3" />
+                        <span>Shipping Address</span>
+                      </div>
+                      <div class="space-y-0.5">
+                        <p class="text-sm text-slate-200">{{ row.order_data.ship_to_address1 }}</p>
+                        @if (row.order_data.ship_to_address2) {
+                          <p class="text-sm text-slate-300">{{ row.order_data.ship_to_address2 }}</p>
+                        }
+                        <p class="text-sm text-slate-300">
+                          {{ row.order_data.ship_to_city }}, {{ row.order_data.ship_to_state }} {{ row.order_data.ship_to_postal_code }}
+                        </p>
+                        <p class="text-[10px] font-mono text-slate-500">{{ row.order_data.ship_to_country }}</p>
+                      </div>
+                    </div>
+
+                    <!-- Order Reference -->
+                    <div class="mt-3 pt-3 border-t border-slate-800/50 flex items-center gap-4">
+                      @if (row.order_data.order_number) {
+                        <span class="text-[10px] font-mono text-slate-500">
+                          Order #<span class="text-slate-400">{{ row.order_data.order_number }}</span>
+                        </span>
+                      }
+                      <span class="text-[10px] font-mono text-slate-500">
+                        ID: <span class="text-slate-400">{{ row.order_data.order_id }}</span>
+                      </span>
+                    </div>
+                  </td>
+                </tr>
+              }
             }
           </tbody>
         </table>
@@ -174,6 +322,9 @@ export class BatchPreviewComponent {
   /** Whether the row list is expanded (shows all rows). */
   readonly isExpanded = signal(false);
 
+  /** Set of row numbers whose detail section is expanded. */
+  readonly expandedRows = signal<Set<number>>(new Set());
+
   /** Whether there are enough rows to show the expand/collapse toggle. */
   get canExpand(): boolean {
     return this.preview.preview_rows.length > COLLAPSED_ROW_COUNT;
@@ -190,5 +341,39 @@ export class BatchPreviewComponent {
   /** Toggle between collapsed and expanded states. */
   toggleExpanded(): void {
     this.isExpanded.set(!this.isExpanded());
+  }
+
+  /** Toggle a row's expanded detail section. */
+  toggleRow(rowNumber: number): void {
+    this.expandedRows.update(prev => {
+      const next = new Set(prev);
+      if (next.has(rowNumber)) {
+        next.delete(rowNumber);
+      } else {
+        next.add(rowNumber);
+      }
+      return next;
+    });
+  }
+
+  /** Check whether a row's detail section is expanded. */
+  isRowExpanded(rowNumber: number): boolean {
+    return this.expandedRows().has(rowNumber);
+  }
+
+  /** Check whether a row has order_data available for expansion. */
+  hasOrderData(row: PreviewRow): boolean {
+    return !!row.order_data;
+  }
+
+  /**
+   * Check whether the customer and recipient are different people (gift order).
+   * Matches React's isDifferentRecipient logic.
+   */
+  isDifferentRecipient(row: PreviewRow): boolean {
+    if (!row.order_data) return false;
+    const customerName = row.order_data.customer_name;
+    const recipientName = row.recipient_name;
+    return !!customerName && customerName !== recipientName;
   }
 }
