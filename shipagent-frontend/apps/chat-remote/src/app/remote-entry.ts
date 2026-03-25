@@ -1,18 +1,8 @@
-import { Component } from '@angular/core';
-import { CommonModule } from '@angular/common';
-
 /**
- * Placeholder remote entry component for chat-remote.
- * This will be replaced with ChatContainerComponent in Phase 9 Plan 02.
+ * remote-entry.ts — Chat Remote entry point for Native Federation.
+ *
+ * Exposed as './ChatContainer' in federation.config.js.
+ * The shell loads this module and uses the ChatContainerComponent.
  */
-@Component({
-  selector: 'app-chat-remote-entry',
-  standalone: true,
-  imports: [CommonModule],
-  template: `
-    <div class="card-premium p-4">
-      <p class="text-muted-foreground">Chat Remote — placeholder (Plan 02 will implement ChatContainerComponent)</p>
-    </div>
-  `,
-})
-export class RemoteEntryComponent {}
+
+export { ChatContainerComponent } from './chat-container/chat-container.component';
