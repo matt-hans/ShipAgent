@@ -1,9 +1,12 @@
 /**
- * LabelPreviewModalComponent — Full-screen modal for viewing shipping label PDFs.
+ * LabelPreviewModalComponent — Modal for viewing shipping label PDFs.
  *
- * Fetches the merged PDF via fetch(), creates a blob URL, and renders it
- * using an <object> tag. This avoids X-Frame-Options: DENY and CSP issues
- * that block <iframe> same-origin embedding.
+ * Fetches the merged PDF via fetch(), creates a blob URL, and embeds it
+ * in an iframe. Blob URLs bypass X-Frame-Options: DENY since they are
+ * local resources, not HTTP responses.
+ *
+ * Uses NgZone.run() to ensure signal updates from the async fetch
+ * trigger Angular's OnPush change detection.
  */
 
 import {
@@ -11,10 +14,12 @@ import {
   Component,
   EventEmitter,
   Input,
+  NgZone,
   OnChanges,
   OnDestroy,
   Output,
   SimpleChanges,
+  inject,
   signal,
 } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
@@ -27,7 +32,7 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
     @if (isOpen && pdfUrl) {
       <!-- Backdrop -->
       <div
-        class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm animate-fade-in"
+        class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
         (click)="close.emit()"
       ></div>
 
@@ -37,11 +42,12 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
         (click)="close.emit()"
       >
         <div
-          class="bg-card border border-border rounded-xl shadow-2xl w-full max-w-[750px] max-h-[90vh] flex flex-col"
+          class="bg-card border border-border rounded-xl shadow-2xl w-full max-w-[750px] flex flex-col"
+          style="height: 85vh;"
           (click)="$event.stopPropagation()"
         >
           <!-- Header -->
-          <div class="flex items-center justify-between p-4 border-b border-border">
+          <div class="flex items-center justify-between p-4 border-b border-border flex-shrink-0">
             <h2 class="text-sm font-semibold text-foreground">Label Preview</h2>
             <button
               (click)="close.emit()"
@@ -56,7 +62,7 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
           </div>
 
           <!-- PDF content -->
-          <div class="flex-1 overflow-hidden bg-white" style="min-height: 500px;">
+          <div class="flex-1 overflow-hidden min-h-0">
             @if (isLoading()) {
               <div class="flex flex-col items-center justify-center h-full py-16 text-slate-500">
                 <div class="w-8 h-8 border-2 border-slate-300 border-t-primary rounded-full animate-spin mb-4"></div>
@@ -69,24 +75,24 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
                 </svg>
                 <p class="text-sm font-medium mb-1">Failed to load labels</p>
                 <p class="text-xs text-slate-500">{{ errorMsg() }}</p>
+                <button
+                  (click)="handleOpenInTab()"
+                  class="mt-3 px-4 py-2 text-xs font-medium rounded-lg border border-border text-primary hover:bg-muted transition-colors"
+                >
+                  Open in new tab instead
+                </button>
               </div>
-            } @else if (blobUrl()) {
-              <object
-                [data]="safeBlobUrl()"
-                type="application/pdf"
-                class="w-full h-full"
-                style="min-height: 500px;"
-              >
-                <p class="p-8 text-center text-slate-500">
-                  Your browser cannot display PDFs.
-                  <a [href]="pdfUrl" target="_blank" class="text-primary underline">Open in new tab</a>
-                </p>
-              </object>
+            } @else if (safeBlobUrl) {
+              <iframe
+                [src]="safeBlobUrl"
+                class="w-full h-full border-0"
+                title="Shipping labels"
+              ></iframe>
             }
           </div>
 
           <!-- Footer -->
-          <div class="flex items-center justify-end gap-2 p-4 border-t border-border">
+          <div class="flex items-center justify-end gap-2 p-4 border-t border-border flex-shrink-0">
             <button
               (click)="close.emit()"
               class="px-4 py-2 text-sm font-medium rounded-lg border border-border text-slate-300 hover:bg-muted transition-colors"
@@ -95,7 +101,7 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
             </button>
             <button
               (click)="handlePrint()"
-              [disabled]="!blobUrl()"
+              [disabled]="!safeBlobUrl"
               class="px-4 py-2 text-sm font-medium rounded-lg border border-border text-slate-300 hover:bg-muted transition-colors flex items-center gap-2 disabled:opacity-50"
             >
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -107,7 +113,7 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
             </button>
             <button
               (click)="handleDownload()"
-              [disabled]="!blobUrl()"
+              [disabled]="!safeBlobUrl"
               class="btn-primary px-4 py-2 text-sm font-medium rounded-lg flex items-center gap-2 disabled:opacity-50"
             >
               <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -128,15 +134,17 @@ export class LabelPreviewModalComponent implements OnChanges, OnDestroy {
   @Input() isOpen = false;
   @Output() close = new EventEmitter<void>();
 
+  private readonly sanitizer = inject(DomSanitizer);
+  private readonly ngZone = inject(NgZone);
+
   readonly isLoading = signal(true);
   readonly errorMsg = signal<string | null>(null);
-  readonly blobUrl = signal<string | null>(null);
 
-  private sanitizer: DomSanitizer;
+  /** Sanitized blob URL safe for iframe [src] binding. */
+  safeBlobUrl: SafeResourceUrl | null = null;
 
-  constructor(sanitizer: DomSanitizer) {
-    this.sanitizer = sanitizer;
-  }
+  /** Raw blob URL for download/print operations. */
+  private rawBlobUrl: string | null = null;
 
   ngOnChanges(changes: SimpleChanges): void {
     if ((changes['isOpen'] || changes['pdfUrl']) && this.isOpen && this.pdfUrl) {
@@ -148,19 +156,14 @@ export class LabelPreviewModalComponent implements OnChanges, OnDestroy {
     this.revokeBlobUrl();
   }
 
-  safeBlobUrl(): SafeResourceUrl {
-    return this.sanitizer.bypassSecurityTrustResourceUrl(this.blobUrl()!);
-  }
-
   handlePrint(): void {
-    const url = this.blobUrl();
-    if (!url) return;
-    const w = window.open(url, '_blank');
+    if (!this.rawBlobUrl) return;
+    const w = window.open(this.rawBlobUrl, '_blank');
     if (w) w.addEventListener('load', () => w.print());
   }
 
   handleDownload(): void {
-    const url = this.blobUrl() || this.pdfUrl;
+    const url = this.rawBlobUrl || this.pdfUrl;
     const a = document.createElement('a');
     a.href = url;
     a.download = 'labels.pdf';
@@ -169,29 +172,49 @@ export class LabelPreviewModalComponent implements OnChanges, OnDestroy {
     document.body.removeChild(a);
   }
 
+  handleOpenInTab(): void {
+    window.open(this.pdfUrl, '_blank');
+  }
+
   private async loadPdf(): Promise<void> {
     this.revokeBlobUrl();
-    this.isLoading.set(true);
-    this.errorMsg.set(null);
+    // Use NgZone.run for ALL signal updates to ensure OnPush detects changes
+    this.ngZone.run(() => {
+      this.isLoading.set(true);
+      this.errorMsg.set(null);
+      this.safeBlobUrl = null;
+    });
 
     try {
       const resp = await fetch(this.pdfUrl);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+
+      const contentType = resp.headers.get('content-type') || '';
+      if (!contentType.includes('pdf')) {
+        throw new Error(`Expected PDF but got ${contentType}`);
+      }
+
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
-      this.blobUrl.set(url);
+      this.rawBlobUrl = url;
+
+      this.ngZone.run(() => {
+        this.safeBlobUrl = this.sanitizer.bypassSecurityTrustResourceUrl(url);
+        this.isLoading.set(false);
+      });
     } catch (err) {
-      this.errorMsg.set(err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      this.isLoading.set(false);
+      this.ngZone.run(() => {
+        this.errorMsg.set(err instanceof Error ? err.message : 'Unknown error');
+        this.isLoading.set(false);
+      });
     }
   }
 
   private revokeBlobUrl(): void {
-    const url = this.blobUrl();
-    if (url) {
-      URL.revokeObjectURL(url);
-      this.blobUrl.set(null);
+    if (this.rawBlobUrl) {
+      URL.revokeObjectURL(this.rawBlobUrl);
+      this.rawBlobUrl = null;
+      this.safeBlobUrl = null;
     }
   }
 }
