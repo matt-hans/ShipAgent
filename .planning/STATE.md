@@ -349,8 +349,8 @@ Phase 6 delivered the Batch Execution Engine:
 ### Last Session
 
 **Date:** 2026-03-25
-**Action:** Completed 09-05-PLAN.md (Chat Remote — SSE streaming, session management, preview/progress/completion, rich chat input)
-**Outcome:** Chat remote fully built — ConversationSseService (SSE event dispatch, incrementChatSessionsVersion on done), ConversationSessionService (mutex + generation guard + mode tracking), JobProgressSseService, EventProcessorService, ChatActionsService, DomainCardBridgeService (cross-remote via loadRemoteModule). All message components built. ChatContainerComponent with component-scoped providers. MessageListComponent with NgComponentOutlet domain cards. RichChatInputComponent with mirror-div, token highlighting, @handle/@command autocomplete. BatchPreviewComponent, InteractivePreviewComponent, PreviewActionsComponent, ProgressDisplayComponent, CompletionArtifactComponent. nx build chat-remote passes.
+**Action:** Completed 09-08-PLAN.md (Domain Remote — Registry, Cards, Job Detail, Label Preview)
+**Outcome:** domain-remote fully built — DomainCardRegistryService maps 8 SSE card type strings to Angular component Types for ngComponentOutlet; 8 domain card components ported from React (PickupPreview, PickupCompletion, LocationCard, LandedCostCard, PaperlessCard, PaperlessUpload, TrackingCard, ContactCard); JobDetailPanelComponent reads from JobStore.activeJob() signal with per-row expand/collapse and confirm/cancel; LabelPreviewComponent uses ng2-pdf-viewer PdfViewerModule with loading/error states. nx build domain-remote passes, nx test domain-remote passes (1 test).
 
 ### Next Session
 
