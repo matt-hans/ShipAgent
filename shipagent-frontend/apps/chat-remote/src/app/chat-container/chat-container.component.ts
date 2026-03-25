@@ -85,6 +85,9 @@ import { BatchPreviewComponent } from '../batch-preview/batch-preview.component'
           class="flex-1 overflow-hidden flex flex-col"
           [interactiveShipping]="conversationStore.interactiveShipping()"
           (exampleClick)="handleExampleClick($event)"
+          (previewConfirm)="handleConfirmFromPreview($event)"
+          (previewCancel)="handleCancelFromPreview($event)"
+          (previewRefine)="handleRefine($event)"
         />
 
         <!-- Right edge: action icons -->
@@ -108,21 +111,6 @@ import { BatchPreviewComponent } from '../batch-preview/batch-preview.component'
             [toolName]="formatToolName(eventProcessorService.activeToolCall()?.toolName ?? '')"
             [isActive]="true"
           />
-        </div>
-      }
-
-      <!-- Preview card (batch mode) -->
-      @if (activePreview(); as preview) {
-        <div class="px-4 py-2 border-t border-border/30">
-          <div class="max-w-3xl mx-auto">
-            <app-batch-preview
-              [preview]="preview"
-              [isConfirming]="chatActions.isConfirming()"
-              (confirm)="handleConfirm()"
-              (cancel)="handleCancel()"
-              (refine)="handleRefine($event)"
-            />
-          </div>
         </div>
       }
 
@@ -248,19 +236,15 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
   // Preview actions (confirm / cancel / refine)
   // ---------------------------------------------------------------------------
 
-  async handleConfirm(): Promise<void> {
-    const preview = this.activePreview();
-    if (!preview) return;
-    const jobId = preview['job_id'] as string | undefined;
+  async handleConfirmFromPreview(previewData: any): Promise<void> {
+    const jobId = previewData?.job_id as string | undefined;
     if (!jobId) return;
     const writeBack = this.dataSourceStore.writeBackEnabled();
     await this.chatActions.confirmJob(jobId, writeBack);
   }
 
-  async handleCancel(): Promise<void> {
-    const preview = this.activePreview();
-    if (!preview) return;
-    const jobId = preview['job_id'] as string | undefined;
+  async handleCancelFromPreview(previewData: any): Promise<void> {
+    const jobId = previewData?.job_id as string | undefined;
     if (!jobId) return;
     await this.chatActions.cancelJob(jobId);
   }
