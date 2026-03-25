@@ -91,7 +91,7 @@ interface DomainCardEntry {
               <app-interactive-preview
                 [preview]="$any(message.metadata?.['preview'])"
                 [isConfirming]="false"
-                (confirm)="previewConfirm.emit(message.metadata?.['preview'])"
+                (confirm)="handleInteractiveConfirm(message, $event)"
                 (cancel)="previewCancel.emit(message.metadata?.['preview'])"
                 (refine)="previewRefine.emit($event)"
               />
@@ -226,6 +226,12 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
 
   isErrorMessage(msg: ConversationMessage): boolean {
     return msg.metadata?.['type'] === 'error';
+  }
+
+  /** Handle interactive preview confirm — merges selected service code into preview data. */
+  handleInteractiveConfirm(message: ConversationMessage, event: { selectedServiceCode?: string }): void {
+    const preview = message.metadata?.['preview'] ?? {};
+    this.previewConfirm.emit({ ...preview, selected_service_code: event.selectedServiceCode });
   }
 
   /** Resolve a domain card component and its inputs for NgComponentOutlet. */

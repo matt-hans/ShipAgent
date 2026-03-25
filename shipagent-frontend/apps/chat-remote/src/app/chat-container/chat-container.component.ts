@@ -355,7 +355,8 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
     const writeBack = this.dataSourceStore.writeBackEnabled();
 
     try {
-      await this.chatActions.confirmJob(jobId, writeBack);
+      const selectedServiceCode = previewData?.selected_service_code as string | undefined;
+      await this.chatActions.confirmJob(jobId, writeBack, selectedServiceCode);
 
       // Add confirmation message to chat.
       this.conversationStore.appendMessage({
