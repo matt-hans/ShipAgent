@@ -123,36 +123,32 @@ function formatTime(raw: string): string {
         <p class="text-2xl font-bold text-purple-400">\${{ data.grand_total }}</p>
       </div>
 
-      <!-- Actions (hidden after confirm) -->
-      @if (isDone()) {
-        <div class="flex items-center gap-2 bg-success/10 border border-success/30 rounded-lg px-3 py-2">
-          <sa-icon-check class="w-4 h-4 text-success" />
-          <span class="text-sm text-success">Pickup scheduling requested — see response below.</span>
-        </div>
-      } @else {
-        <div class="flex gap-3">
-          <button
-            (click)="onCancel.emit()"
-            [disabled]="isConfirming()"
-            class="btn-secondary flex-1 h-9 text-sm"
-          >
-            Cancel
-          </button>
-          <button
-            (click)="handleConfirm()"
-            [disabled]="isConfirming()"
-            class="btn-primary flex-1 h-9 text-sm flex items-center justify-center gap-2"
-          >
-            @if (isConfirming()) {
-              <span class="animate-spin h-3.5 w-3.5 border-2 border-white/20 border-t-white rounded-full"></span>
-              <span>Scheduling...</span>
-            } @else {
-              <sa-icon-check class="w-3.5 h-3.5" />
-              <span>Confirm &amp; Schedule</span>
-            }
-          </button>
-        </div>
-      }
+      <!-- Actions -->
+      <div class="flex gap-3">
+        <button
+          (click)="onCancel.emit()"
+          [disabled]="isConfirming()"
+          class="btn-secondary flex-1 h-9 text-sm"
+        >
+          Cancel
+        </button>
+        <button
+          (click)="handleConfirm()"
+          [disabled]="isConfirming() || isDone()"
+          class="btn-primary flex-1 h-9 text-sm flex items-center justify-center gap-2"
+        >
+          @if (isConfirming()) {
+            <span class="animate-spin h-3.5 w-3.5 border-2 border-white/20 border-t-white rounded-full"></span>
+            <span>Scheduling...</span>
+          } @else if (isDone()) {
+            <sa-icon-check class="w-3.5 h-3.5" />
+            <span>Request Sent</span>
+          } @else {
+            <sa-icon-check class="w-3.5 h-3.5" />
+            <span>Confirm &amp; Schedule</span>
+          }
+        </button>
+      </div>
     </div>
   `,
 })
