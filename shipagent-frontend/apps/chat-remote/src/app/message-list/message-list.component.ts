@@ -32,6 +32,7 @@ import { UserMessageComponent } from '../messages/user-message.component';
 import { TypingIndicatorComponent } from '../messages/typing-indicator.component';
 import { WelcomeMessageComponent } from '../messages/welcome-message.component';
 import { BatchPreviewComponent } from '../batch-preview/batch-preview.component';
+import { InteractivePreviewComponent } from '../interactive-preview/interactive-preview.component';
 import { ProgressDisplayComponent } from '../progress-display/progress-display.component';
 import { CompletionArtifactComponent } from '../completion-artifact/completion-artifact.component';
 
@@ -53,6 +54,7 @@ interface DomainCardEntry {
     TypingIndicatorComponent,
     WelcomeMessageComponent,
     BatchPreviewComponent,
+    InteractivePreviewComponent,
     ProgressDisplayComponent,
     CompletionArtifactComponent,
   ],
@@ -83,15 +85,25 @@ interface DomainCardEntry {
         } @else if (isSystemMessage(message)) {
           <app-system-message [message]="message" />
         } @else if (isPreviewMessage(message)) {
-          <!-- Render preview card inline in the conversation flow -->
+          <!-- Render preview card inline — pick interactive or batch variant -->
           <div class="max-w-3xl mx-auto animate-fade-in">
-            <app-batch-preview
-              [preview]="$any(message.metadata?.['preview'])"
-              [isConfirming]="false"
-              (confirm)="previewConfirm.emit(message.metadata?.['preview'])"
-              (cancel)="previewCancel.emit(message.metadata?.['preview'])"
-              (refine)="previewRefine.emit($event)"
-            />
+            @if ($any(message.metadata?.['preview'])?.interactive) {
+              <app-interactive-preview
+                [preview]="$any(message.metadata?.['preview'])"
+                [isConfirming]="false"
+                (confirm)="previewConfirm.emit(message.metadata?.['preview'])"
+                (cancel)="previewCancel.emit(message.metadata?.['preview'])"
+                (refine)="previewRefine.emit($event)"
+              />
+            } @else {
+              <app-batch-preview
+                [preview]="$any(message.metadata?.['preview'])"
+                [isConfirming]="false"
+                (confirm)="previewConfirm.emit(message.metadata?.['preview'])"
+                (cancel)="previewCancel.emit(message.metadata?.['preview'])"
+                (refine)="previewRefine.emit($event)"
+              />
+            }
           </div>
         } @else if (isCompletionMessage(message)) {
           <!-- Render completion artifact inline -->
