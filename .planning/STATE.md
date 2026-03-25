@@ -13,13 +13,13 @@
 ## Current Position
 
 **Phase:** 9 of 9 (Angular Module Federation Frontend Rebuild) - IN PROGRESS
-**Plan:** 8 of 9 complete (09-08)
-**Status:** In progress
-**Last activity:** 2026-03-25 - Completed 09-07-PLAN.md summary (Settings Remote — OnboardingWizard, SettingsFlyout, PlatformsService)
+**Plan:** 9 of 9 (Tasks 1-2 complete; Task 3 at checkpoint:human-verify)
+**Status:** Awaiting human verification (Task 3 checkpoint)
+**Last activity:** 2026-03-25 - Completed 09-09-PLAN.md Tasks 1-2; at checkpoint:human-verify
 
 ```
-Progress: [####################] 100% phases 1-8 | [################----] 89% Phase 9
-Phase 9 of 9 IN PROGRESS | Plan 8 of 9 complete | 49/52+ total plans
+Progress: [####################] 100% phases 1-8 | [##################--] 95% Phase 9
+Phase 9 of 9 IN PROGRESS | Plan 9 tasks 1-2 complete | at human-verify checkpoint
 ```
 
 ---
@@ -28,11 +28,11 @@ Phase 9 of 9 IN PROGRESS | Plan 8 of 9 complete | 49/52+ total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 49 |
+| Plans Completed | 50 (09-09 Tasks 1-2; awaiting Task 3 human-verify) |
 | Plans Failed | 0 |
 | Success Rate | 100% |
-| Phases Completed | 8 / 9 |
-| Last Plan Duration | 11m (09-08) |
+| Phases Completed | 8 / 9 (Phase 9 at final checkpoint) |
+| Last Plan Duration | ~135m (09-09, across two sessions) |
 
 ---
 
@@ -174,6 +174,11 @@ Phase 9 of 9 IN PROGRESS | Plan 8 of 9 complete | 49/52+ total plans
 | ContactCardComponent handles delete by fetching contacts and finding by handle | Mirrors React implementation; @handle is user-visible key but server uses UUID | 09-08 |
 | Boolean() global not accessible in Angular templates | Replaced .filter(Boolean) with protected formatAlert() method in PaperlessCardComponent | 09-08 |
 | JobDetailPanelComponent uses displayCostCents() as plain function (not computed signal) | activeJob is already a signal from NgRx SignalStore | 09-08 |
+| LocalStorageShim installed per-spec-file in beforeAll() not via setupFiles | tinyglobby cwd resolution prevents cross-project setup file discovery; Node 25 localStorage stub requires --localstorage-file to be functional | 09-09 |
+| libs/shared/state given own project.json with buildTarget: shell:esbuild:development | @angular/build:unit-test globs relative to projectSourceRoot; state lib specs invisible to shell test target without own Nx project | 09-09 |
+| Dockerfile copies Angular dist/apps/shell/browser to frontend/dist | Preserves existing FastAPI FRONTEND_DIR without requiring Python code path changes in Docker | 09-09 |
+| FastAPI FRONTEND_DIR prefers Angular dist with React fallback using .exists() guard | Zero-downtime rollback path; both dev scenarios supported | 09-09 |
+| pre-angular-switchover git tag created before any config changes | Enables instant rollback if Angular app has critical bugs during human verification | 09-09 |
 
 ### Roadmap Evolution
 
@@ -349,13 +354,14 @@ Phase 6 delivered the Batch Execution Engine:
 ### Last Session
 
 **Date:** 2026-03-25
-**Action:** Completed 09-08-PLAN.md (Domain Remote — Registry, Cards, Job Detail, Label Preview)
-**Outcome:** domain-remote fully built — DomainCardRegistryService maps 8 SSE card type strings to Angular component Types for ngComponentOutlet; 8 domain card components ported from React (PickupPreview, PickupCompletion, LocationCard, LandedCostCard, PaperlessCard, PaperlessUpload, TrackingCard, ContactCard); JobDetailPanelComponent reads from JobStore.activeJob() signal with per-row expand/collapse and confirm/cancel; LabelPreviewComponent uses ng2-pdf-viewer PdfViewerModule with loading/error states. nx build domain-remote passes, nx test domain-remote passes (1 test).
+**Action:** Completed 09-09-PLAN.md Tasks 1-2; paused at Task 3 checkpoint:human-verify
+**Outcome:** 109 Vitest tests across 6 Angular projects pass (shell, chat-remote, shared-state, sidebar-remote, settings-remote, domain-remote). LocalStorageShim (Map-backed Storage) polyfills Node 25 broken localStorage in each spec file's beforeAll(). libs/shared/state given own Nx project.json with buildTarget: shell:esbuild:development. Tauri frontendDist→Angular dist, devUrl→:4200. Dockerfile builds Angular via npx nx build shell --configuration=production. FastAPI FRONTEND_DIR prefers Angular dist with React fallback. pre-angular-switchover tag created for rollback.
 
 ### Next Session
 
-**Resume with:** 09-09-PLAN.md (Integration Tests)
-**Context needed:** None - STATE.md contains full context
+**Resume with:** Task 3 of 09-09-PLAN.md (human-verify checkpoint)
+**What human needs to do:** Start backend (./scripts/start-backend.sh), serve Angular app (cd shipagent-frontend && npx nx serve shell), open http://localhost:4200, verify visual and feature parity
+**After approval:** Phase 9 is complete
 
 ---
 
@@ -370,4 +376,4 @@ Phase 6 delivered the Batch Execution Engine:
 
 ---
 
-*Last updated: 2026-03-24 (09-04 complete — shell application)*
+*Last updated: 2026-03-25 (09-09 Tasks 1-2 complete — integration tests + switchover; Task 3 at human-verify checkpoint)*
