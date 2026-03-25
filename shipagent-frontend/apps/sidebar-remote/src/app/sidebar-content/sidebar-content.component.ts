@@ -23,6 +23,7 @@ type ActiveTab = 'data' | 'jobs' | 'chats';
   selector: 'sa-sidebar-content',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { class: 'flex flex-col h-full overflow-hidden' },
   imports: [
     DataSourcePanelComponent,
     JobHistoryPanelComponent,

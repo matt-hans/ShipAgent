@@ -76,7 +76,16 @@ export class SseService implements OnDestroy {
             return;
           }
 
-          observer.next({ type, data: parsed });
+          // Extract the inner 'data' field — backend sends { event, data } shape.
+          // React useConversation.ts does `parsed.data || {}` (line 118).
+          const innerData =
+            parsed !== null &&
+            typeof parsed === 'object' &&
+            'data' in (parsed as Record<string, unknown>)
+              ? (parsed as Record<string, unknown>)['data']
+              : parsed;
+
+          observer.next({ type, data: innerData });
         } catch {
           // Ignore parse errors for malformed frames.
         }
