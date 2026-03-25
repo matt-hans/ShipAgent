@@ -15,7 +15,7 @@
 **Phase:** 9 of 9 (Angular Module Federation Frontend Rebuild) - IN PROGRESS
 **Plan:** 8 of 9 complete (09-08)
 **Status:** In progress
-**Last activity:** 2026-03-25 - Completed 09-08-PLAN.md (Domain Remote — Registry, Cards, Job Detail, Label Preview)
+**Last activity:** 2026-03-25 - Completed 09-07-PLAN.md summary (Settings Remote — OnboardingWizard, SettingsFlyout, PlatformsService)
 
 ```
 Progress: [####################] 100% phases 1-8 | [################----] 89% Phase 9
@@ -159,6 +159,21 @@ Phase 9 of 9 IN PROGRESS | Plan 8 of 9 complete | 49/52+ total plans
 | requestAnimationFrame poll for lazy settings flyout load | Avoids effect() injection context requirement; settings opened rarely so polling overhead is negligible | 09-04 |
 | Function() constructor for @tauri-apps/plugin-updater dynamic import | Package not installed in dev; bypasses TS static analysis without requiring the package at compile time | 09-04 |
 | RemoteEntry interface with optional providers[] | Allows remotes to scope their services to a child Injector while remaining backwards compatible | 09-04 |
+| Component-scoped SseService and conversation services prevent SSE leaks on remote unload | Root injection would keep SSE connections alive after remote unmount, causing ghost events | 09-05 |
+| Promise-based mutex in ConversationSessionService prevents concurrent createConversation races | Parallel ensureSession() calls could double-create sessions without mutex serialization | 09-05 |
+| Generation guard epoch counter invalidates stale SSE events from prior sessions | SSE events in-flight when session resets would corrupt new session state without epoch invalidation | 09-05 |
+| DomainCardBridgeService uses loadRemoteModule directly (no RemoteLoaderService dep) for cross-remote isolation | RemoteLoaderService is shell-only; cross-remote bridge must use native-federation API directly | 09-05 |
+| CompletionMeta interface defined locally for typed access to completion metadata | noPropertyAccessFromIndexSignature strict mode causes TS4111 errors on Record<string,unknown> field access | 09-05 |
+| PlatformsService is component-scoped (not root) | Platform connection lifecycle tied to settings-remote; root injection would leak connections across remotes | 09-07 |
+| Connection state uses PlatformsStore for cross-remote visibility | Platform status must be visible shell-wide; component-local state would break OnboardingGate checks | 09-07 |
+| Shipper address saved on demand (dirty flag) not auto-save | Reduce API calls; dirty-flag-gated save button gives user explicit control | 09-07 |
+| Onboarding completes via completeOnboarding() then SettingsStore.setOnboardingCompleted(true) | API call persists flag to DB; store update dismisses shell overlay immediately without round-trip | 09-07 |
+| DomainCardRegistryService is @Injectable() (not root-scoped) | Provided by consuming remote's Injector so each remote gets its own instance; avoids cross-remote DI pollution | 09-08 |
+| TrackingCardComponent uses computed() signal for visibleActivities | Avoids recalculating on every CD cycle; collapses to 3 activities by default | 09-08 |
+| LabelPreviewComponent uses ng2-pdf-viewer PdfViewerModule | Supports Angular 21, no pdfjs worker config needed unlike react-pdf | 09-08 |
+| ContactCardComponent handles delete by fetching contacts and finding by handle | Mirrors React implementation; @handle is user-visible key but server uses UUID | 09-08 |
+| Boolean() global not accessible in Angular templates | Replaced .filter(Boolean) with protected formatAlert() method in PaperlessCardComponent | 09-08 |
+| JobDetailPanelComponent uses displayCostCents() as plain function (not computed signal) | activeJob is already a signal from NgRx SignalStore | 09-08 |
 
 ### Roadmap Evolution
 
@@ -333,13 +348,13 @@ Phase 6 delivered the Batch Execution Engine:
 
 ### Last Session
 
-**Date:** 2026-03-24
-**Action:** Completed 09-04-PLAN.md (Shell Application — layout, remote loader, bootstrap)
-**Outcome:** Shell app fully functional — Tauri-aware bootstrap resolves sidecar port and provides API_BASE_URL, RemoteLoaderService wraps loadRemoteModule for all 4 remotes, AppComponent renders header+sidebar+main+flyout layout, HeaderComponent has interactive shipping toggle bound to ConversationStore, SidebarShellComponent has ng-content projection for sidebar-remote, OnboardingGateComponent reads SettingsStore, UpdateCheckerComponent integrates Tauri updater. Shell builds cleanly (nx build shell passes).
+**Date:** 2026-03-25
+**Action:** Completed 09-05-PLAN.md (Chat Remote — SSE streaming, session management, preview/progress/completion, rich chat input)
+**Outcome:** Chat remote fully built — ConversationSseService (SSE event dispatch, incrementChatSessionsVersion on done), ConversationSessionService (mutex + generation guard + mode tracking), JobProgressSseService, EventProcessorService, ChatActionsService, DomainCardBridgeService (cross-remote via loadRemoteModule). All message components built. ChatContainerComponent with component-scoped providers. MessageListComponent with NgComponentOutlet domain cards. RichChatInputComponent with mirror-div, token highlighting, @handle/@command autocomplete. BatchPreviewComponent, InteractivePreviewComponent, PreviewActionsComponent, ProgressDisplayComponent, CompletionArtifactComponent. nx build chat-remote passes.
 
 ### Next Session
 
-**Resume with:** 09-05-PLAN.md (Chat Remote)
+**Resume with:** 09-09-PLAN.md (Integration Tests)
 **Context needed:** None - STATE.md contains full context
 
 ---
