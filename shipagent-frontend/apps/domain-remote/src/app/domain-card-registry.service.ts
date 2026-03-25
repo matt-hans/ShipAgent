@@ -27,6 +27,7 @@ export class DomainCardRegistryService {
   resolve(cardType: string): Type<unknown> | null {
     const registry: Record<string, Type<unknown>> = {
       pickup_preview: PickupPreviewComponent,
+      pickup_result: PickupCompletionComponent,
       pickup_completion: PickupCompletionComponent,
       location_result: LocationCardComponent,
       landed_cost_result: LandedCostCardComponent,
