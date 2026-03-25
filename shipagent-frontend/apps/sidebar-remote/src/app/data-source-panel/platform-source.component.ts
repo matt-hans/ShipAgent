@@ -9,6 +9,8 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  OnInit,
+  effect,
   inject,
   signal,
 } from '@angular/core';
@@ -160,13 +162,40 @@ import { ShopifyIconComponent, AmazonIconComponent } from '@shipagent/shared-ui'
     </div>
   `,
 })
-export class PlatformSourceComponent {
+export class PlatformSourceComponent implements OnInit {
   private readonly apiService = inject(ApiService);
   private readonly dataSourceStore = inject(DataSourceStore);
   private readonly platformsStore = inject(PlatformsStore);
 
   readonly isConnecting = signal(false);
   readonly connectError = signal<string | null>(null);
+
+  /**
+   * Fetch provider connections on init — mirrors React's useAppState which
+   * calls listProviderConnections() on mount and when version changes.
+   */
+  ngOnInit(): void {
+    this.fetchConnections();
+
+    // Re-fetch when providerConnectionsVersion changes (settings flyout saved creds)
+    effect(() => {
+      // Read the version signal to establish dependency
+      this.platformsStore.providerConnectionsVersion();
+      // Re-fetch on every version change
+      this.fetchConnections();
+    });
+  }
+
+  private fetchConnections(): void {
+    this.apiService.listProviderConnections().subscribe({
+      next: (connections) => {
+        for (const conn of connections) {
+          this.platformsStore.setConnection(conn.connection_key ?? conn.provider, conn);
+        }
+      },
+      error: (err) => console.warn('[PlatformSource] Failed to fetch connections:', err),
+    });
+  }
 
   /** Whether Shopify is configured and runtime-usable. */
   shopifyAvailable(): boolean {
