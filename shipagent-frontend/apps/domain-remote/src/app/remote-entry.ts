@@ -1,18 +1,11 @@
-import { Component } from '@angular/core';
-import { CommonModule } from '@angular/common';
-
 /**
- * Placeholder remote entry component for domain-remote.
- * This will be replaced with DomainCardRegistryComponent in Phase 9 Plan 05.
+ * Domain Remote entry point.
+ *
+ * Exports DomainCardRegistryService so the chat remote can dynamically
+ * resolve domain card type strings to Angular component classes via
+ * ngComponentOutlet — without importing domain card components directly.
  */
-@Component({
-  selector: 'app-domain-remote-entry',
-  standalone: true,
-  imports: [CommonModule],
-  template: `
-    <div class="card-premium p-4">
-      <p class="text-muted-foreground">Domain Remote — placeholder (Plan 05 will implement DomainCardRegistryComponent)</p>
-    </div>
-  `,
-})
-export class RemoteEntryComponent {}
+
+import { DomainCardRegistryService } from './domain-card-registry.service';
+
+export { DomainCardRegistryService };
