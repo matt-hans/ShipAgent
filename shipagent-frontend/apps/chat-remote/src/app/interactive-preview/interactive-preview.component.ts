@@ -319,12 +319,15 @@ function extractInvoiceData(payload: Record<string, unknown>): InvoiceData | nul
             </p>
             <div class="space-y-0.5 max-h-24 overflow-y-auto pr-1">
               @for (svc of availableServices; track svc.code) {
-                <div
-                  class="w-full rounded-md border px-2 py-1 text-left transition-colors"
+                <button
+                  type="button"
+                  class="w-full rounded-md border px-2 py-1 text-left transition-colors cursor-pointer"
                   [class.border-primary/40]="svc.code === effectiveServiceCode"
                   [class.bg-primary/10]="svc.code === effectiveServiceCode"
                   [class.border-slate-700/70]="svc.code !== effectiveServiceCode"
                   [class.bg-slate-800/40]="svc.code !== effectiveServiceCode"
+                  [class.hover:bg-slate-800/60]="svc.code !== effectiveServiceCode"
+                  (click)="selectService(svc.code)"
                 >
                   <div class="flex items-center justify-between gap-2">
                     <span class="text-xs text-slate-200">{{ svc.name }} ({{ svc.code }})</span>
@@ -340,7 +343,7 @@ function extractInvoiceData(payload: Record<string, unknown>): InvoiceData | nul
                       Est. transit: {{ svc.delivery_days }} day{{ svc.delivery_days === '1' ? '' : 's' }}
                     </p>
                   }
-                </div>
+                </button>
               }
             </div>
             @if (preview.service_selection_notice) {
@@ -521,7 +524,7 @@ function extractInvoiceData(payload: Record<string, unknown>): InvoiceData | nul
       <!-- Actions -->
       <app-preview-actions
         [isConfirming]="isConfirming"
-        (confirm)="confirm.emit()"
+        (confirm)="handleConfirmWithService()"
         (cancel)="cancel.emit()"
         (refine)="refine.emit($event)"
       />
@@ -532,7 +535,7 @@ export class InteractivePreviewComponent {
   @Input({ required: true }) preview!: BatchPreview;
   @Input() isConfirming = false;
 
-  @Output() confirm = new EventEmitter<void>();
+  @Output() confirm = new EventEmitter<{ selectedServiceCode?: string }>();
   @Output() cancel = new EventEmitter<void>();
   @Output() refine = new EventEmitter<string>();
 
@@ -544,14 +547,33 @@ export class InteractivePreviewComponent {
   /** Whether the commercial invoice section is expanded. */
   readonly showInvoice = signal(false);
 
-  /** Computed: displayed service name. */
+  /** Computed: displayed service name — reflects user selection. */
   get displayedServiceName(): string {
+    const code = this.effectiveServiceCode;
+    if (code) {
+      const svc = this.availableServices.find(s => s.code === code);
+      if (svc) return svc.name;
+    }
     return this.preview.service_name || this.preview.service_code || 'UPS Ground';
   }
 
-  /** Computed: effective service code for selection highlighting. */
+  /** User-selected service code (overrides preview default). */
+  readonly selectedServiceCode = signal<string | null>(null);
+
+  /** Computed: effective service code — user selection overrides preview default. */
   get effectiveServiceCode(): string | null {
-    return this.preview.service_code || null;
+    return this.selectedServiceCode() || this.preview.service_code || null;
+  }
+
+  /** Select a different service level — updates cost display immediately. */
+  selectService(code: string): void {
+    this.selectedServiceCode.set(code);
+  }
+
+  /** Emit confirm with the selected service code for the execution. */
+  handleConfirmWithService(): void {
+    const code = this.effectiveServiceCode;
+    this.confirm.emit({ selectedServiceCode: code || undefined });
   }
 
   /** Computed: available services list. */
