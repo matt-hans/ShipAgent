@@ -30,6 +30,7 @@ import { SystemMessageComponent } from '../messages/system-message.component';
 import { UserMessageComponent } from '../messages/user-message.component';
 import { TypingIndicatorComponent } from '../messages/typing-indicator.component';
 import { WelcomeMessageComponent } from '../messages/welcome-message.component';
+import { BatchPreviewComponent } from '../batch-preview/batch-preview.component';
 
 /** Resolved domain card for NgComponentOutlet. */
 interface DomainCardEntry {
@@ -48,6 +49,7 @@ interface DomainCardEntry {
     UserMessageComponent,
     TypingIndicatorComponent,
     WelcomeMessageComponent,
+    BatchPreviewComponent,
   ],
   styles: [`
     .message-list-scroll {
@@ -76,7 +78,16 @@ interface DomainCardEntry {
         } @else if (isSystemMessage(message)) {
           <app-system-message [message]="message" />
         } @else if (isPreviewMessage(message)) {
-          <!-- Preview messages are handled by chat-container overlay, skip here -->
+          <!-- Render preview card inline in the conversation flow -->
+          <div class="max-w-3xl mx-auto animate-fade-in">
+            <app-batch-preview
+              [preview]="$any(message.metadata?.['preview'])"
+              [isConfirming]="false"
+              (confirm)="previewConfirm.emit(message.metadata?.['preview'])"
+              (cancel)="previewCancel.emit(message.metadata?.['preview'])"
+              (refine)="previewRefine.emit($event)"
+            />
+          </div>
         } @else if (isDomainCardMessage(message)) {
           @if (resolveDomainCard(message); as entry) {
             <ng-container *ngComponentOutlet="entry.component; inputs: entry.inputs" />
@@ -103,6 +114,9 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
 
   @Input() interactiveShipping = false;
   @Output() exampleClick = new EventEmitter<string>();
+  @Output() previewConfirm = new EventEmitter<any>();
+  @Output() previewCancel = new EventEmitter<any>();
+  @Output() previewRefine = new EventEmitter<string>();
 
   private readonly domainCardBridge = inject(DomainCardBridgeService);
   readonly conversationStore = inject(ConversationStore);
