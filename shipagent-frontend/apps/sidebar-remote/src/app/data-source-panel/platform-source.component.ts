@@ -170,27 +170,28 @@ export class PlatformSourceComponent implements OnInit {
   readonly isConnecting = signal(false);
   readonly connectError = signal<string | null>(null);
 
-  /**
-   * Fetch provider connections on init — mirrors React's useAppState which
-   * calls listProviderConnections() on mount and when version changes.
-   */
-  ngOnInit(): void {
-    this.fetchConnections();
-
-    // Re-fetch when providerConnectionsVersion changes (settings flyout saved creds)
+  constructor() {
+    // Re-fetch when providerConnectionsVersion changes (settings flyout saved creds).
+    // effect() must be in constructor (injection context), not ngOnInit.
     effect(() => {
-      // Read the version signal to establish dependency
       this.platformsStore.providerConnectionsVersion();
-      // Re-fetch on every version change
       this.fetchConnections();
     });
+  }
+
+  ngOnInit(): void {
+    this.fetchConnections();
   }
 
   private fetchConnections(): void {
     this.apiService.listProviderConnections().subscribe({
       next: (connections) => {
         for (const conn of connections) {
-          this.platformsStore.setConnection(conn.connection_key ?? conn.provider, conn);
+          // Key by provider (e.g. 'shopify'), NOT connection_key
+          // (e.g. 'shopify:matthansdev.myshopify.com') — components
+          // look up connections()['shopify'], not the full key.
+          const key = (conn as any).provider ?? conn.connection_key;
+          this.platformsStore.setConnection(key, conn);
         }
       },
       error: (err) => console.warn('[PlatformSource] Failed to fetch connections:', err),
