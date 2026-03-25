@@ -22,7 +22,6 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormatCurrencyPipe, DownloadIconComponent } from '@shipagent/shared-ui';
-import { ApiService } from '@shipagent/shared-api';
 import { JobProgressSseService } from '../../services/job-progress-sse.service';
 
 @Component({
@@ -154,9 +153,9 @@ export class ProgressDisplayComponent implements OnInit, OnChanges, OnDestroy {
   @Input({ required: true }) jobId!: string;
   @Output() complete = new EventEmitter<void>();
   @Output() failed = new EventEmitter<void>();
+  @Output() viewLabels = new EventEmitter<string>();
 
   readonly progressService = inject(JobProgressSseService);
-  private readonly apiService = inject(ApiService);
   private readonly injector = inject(Injector);
 
   private completeFired = false;
@@ -181,7 +180,7 @@ export class ProgressDisplayComponent implements OnInit, OnChanges, OnDestroy {
 
   downloadLabels(): void {
     if (this.jobId) {
-      window.open(this.apiService.getMergedLabelsUrl(this.jobId), '_blank');
+      this.viewLabels.emit(this.jobId);
     }
   }
 

@@ -12,11 +12,9 @@ import {
   EventEmitter,
   Input,
   Output,
-  inject,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormatCurrencyPipe, DownloadIconComponent } from '@shipagent/shared-ui';
-import { ApiService } from '@shipagent/shared-api';
 import type { ConversationMessage } from '@shipagent/shared-types';
 
 const MAX_VISIBLE_REFINEMENTS = 3;
@@ -149,8 +147,7 @@ function parseRefinedName(name: string | undefined): {
 export class CompletionArtifactComponent {
   @Input({ required: true }) message!: ConversationMessage;
   @Output() schedulePickup = new EventEmitter<void>();
-
-  private readonly apiService = inject(ApiService);
+  @Output() viewLabels = new EventEmitter<string>();
 
   get meta(): CompletionMeta | null {
     return (this.message.metadata?.['completion'] as CompletionMeta) ?? null;
@@ -191,7 +188,7 @@ export class CompletionArtifactComponent {
   downloadLabels(): void {
     const id = this.jobId;
     if (id) {
-      window.open(this.apiService.getMergedLabelsUrl(id), '_blank');
+      this.viewLabels.emit(id);
     }
   }
 }
