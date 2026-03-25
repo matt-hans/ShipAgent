@@ -126,16 +126,14 @@ export class JobProgressSseService implements OnDestroy {
         if (!parsed || typeof parsed !== 'object') return;
 
         // The progress endpoint sends { event, data } envelope.
-        // Extract inner data the same way as SseService does.
+        // Pass the FULL envelope to handleEvent — it extracts event type and data.
         const envelope = parsed as Record<string, unknown>;
         const eventType = envelope['event'] as string | undefined;
 
         // Skip pings.
         if (eventType === 'ping') return;
 
-        // Extract the inner 'data' field if present.
-        const innerData = 'data' in envelope ? envelope['data'] : parsed;
-        this.handleEvent(innerData);
+        this.handleEvent(envelope);
       } catch {
         // Ignore parse errors.
       }
