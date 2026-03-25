@@ -1,18 +1,20 @@
-import { Component } from '@angular/core';
-import { CommonModule } from '@angular/common';
-
 /**
- * Placeholder remote entry component for settings-remote.
- * This will be replaced with SettingsFlyoutComponent + OnboardingWizardComponent in Phase 9 Plan 04.
+ * settings-remote remote entry point.
+ *
+ * Exposes SettingsFlyoutComponent and OnboardingWizardComponent
+ * via Native Federation for the shell to load dynamically.
+ *
+ * PlatformsService is scoped to this remote's providers array
+ * so the shell can inject it in a child Injector.
  */
-@Component({
-  selector: 'app-settings-remote-entry',
-  standalone: true,
-  imports: [CommonModule],
-  template: `
-    <div class="card-premium p-4">
-      <p class="text-muted-foreground">Settings Remote — placeholder (Plan 04 will implement SettingsFlyoutComponent)</p>
-    </div>
-  `,
-})
-export class RemoteEntryComponent {}
+
+import { SettingsFlyoutComponent } from './settings-flyout/settings-flyout.component';
+import { OnboardingWizardComponent } from './onboarding-wizard/onboarding-wizard.component';
+import { PlatformsService } from '../services/platforms.service';
+
+export const remoteEntry = {
+  component: SettingsFlyoutComponent,
+  providers: [PlatformsService],
+};
+
+export { SettingsFlyoutComponent, OnboardingWizardComponent, PlatformsService };
