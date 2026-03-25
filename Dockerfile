@@ -2,11 +2,11 @@
 
 FROM node:20-alpine AS frontend-builder
 
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json ./
+WORKDIR /app/shipagent-frontend
+COPY shipagent-frontend/package.json shipagent-frontend/package-lock.json ./
 RUN npm ci --prefer-offline --no-audit
-COPY frontend/ ./
-RUN npm run build
+COPY shipagent-frontend/ ./
+RUN npx nx build shell --configuration=production
 
 
 FROM python:3.12-slim AS python-builder
@@ -47,7 +47,7 @@ COPY --chown=shipagent:shipagent src ./src
 COPY --chown=shipagent:shipagent pyproject.toml ./
 COPY --chown=shipagent:shipagent scripts ./scripts
 COPY --chown=shipagent:shipagent docs ./docs
-COPY --from=frontend-builder --chown=shipagent:shipagent /app/frontend/dist ./frontend/dist
+COPY --from=frontend-builder --chown=shipagent:shipagent /app/shipagent-frontend/dist/apps/shell/browser ./frontend/dist
 
 RUN mkdir -p /app/data /app/labels && \
     chown -R shipagent:shipagent /app
