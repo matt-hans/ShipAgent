@@ -3,8 +3,8 @@
   "identifier": "com.shipagent.app",
   "version": "0.1.0",
   "build": {
-    "frontendDist": "../frontend/dist",
-    "devUrl": "http://localhost:5173"
+    "frontendDist": "../shipagent-frontend/dist/apps/shell/browser",
+    "devUrl": "http://localhost:4200"
   },
   "app": {
     "windows": [

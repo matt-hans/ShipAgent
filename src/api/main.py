@@ -63,8 +63,12 @@ from src.services.batch_engine import BatchEngine  # noqa: E402
 from src.services.ups_mcp_client import UPSMCPClient  # noqa: E402
 from src.utils.redaction import sanitize_error_message  # noqa: E402
 
-# Frontend build directory
-FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
+# Frontend build directory — Angular Module Federation build (Phase 9 switchover)
+# In Docker: Dockerfile copies dist/apps/shell/browser to ./frontend/dist
+# In dev: Angular build outputs to shipagent-frontend/dist/apps/shell/browser
+_ANGULAR_DIST = Path(__file__).parent.parent.parent / "shipagent-frontend" / "dist" / "apps" / "shell" / "browser"
+_REACT_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
+FRONTEND_DIR = _ANGULAR_DIST if _ANGULAR_DIST.exists() else _REACT_DIST
 logger = logging.getLogger(__name__)
 
 # Module-level state for health endpoint and watchdog
