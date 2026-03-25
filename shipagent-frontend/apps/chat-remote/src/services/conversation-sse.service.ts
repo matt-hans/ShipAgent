@@ -42,19 +42,42 @@ export class ConversationSseService implements OnDestroy {
    * Connect to the conversation SSE stream for the given session.
    * Closes any existing connection before opening a new one.
    */
+  private currentSessionId: string | null = null;
+  private reconnectAttempts = 0;
+  private readonly MAX_RECONNECT_ATTEMPTS = 5;
+
   connectToStream(sessionId: string): void {
     this.disconnect();
+    this.currentSessionId = sessionId;
+    this.reconnectAttempts = 0;
+    this.doConnect(sessionId);
+  }
+
+  private doConnect(sessionId: string): void {
     const url = this.apiService.getStreamUrl(sessionId);
     this.sseSubscription = this.sseService.connect(url).subscribe({
-      next: (event) => this.handleEvent(event.type, event.data),
+      next: (event) => {
+        this.reconnectAttempts = 0; // Reset on successful event
+        this.handleEvent(event.type, event.data);
+      },
       error: (err: unknown) => {
-        console.error('[ConversationSseService] SSE error:', err);
+        console.warn('[ConversationSseService] SSE error, attempting reconnect:', err);
+        if (this.currentSessionId === sessionId && this.reconnectAttempts < this.MAX_RECONNECT_ATTEMPTS) {
+          this.reconnectAttempts++;
+          const delay = Math.min(1000 * this.reconnectAttempts, 5000);
+          setTimeout(() => {
+            if (this.currentSessionId === sessionId) {
+              this.doConnect(sessionId);
+            }
+          }, delay);
+        }
       },
     });
   }
 
   /** Disconnect the current SSE stream. */
   disconnect(): void {
+    this.currentSessionId = null;
     this.sseSubscription?.unsubscribe();
     this.sseSubscription = null;
     this.sseService.disconnect();
