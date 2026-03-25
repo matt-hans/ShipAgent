@@ -155,6 +155,22 @@ export class ConversationSessionService implements OnDestroy {
   }
 
   /**
+   * Switch interactive shipping mode — delete old session, clear messages,
+   * reset SSE, and update the store. The next sendMessage will create a
+   * session with the new mode.
+   *
+   * Mirrors React's mode-switch effect in CommandCenter.tsx:
+   *   1. Confirm if in-progress work exists
+   *   2. reset() (deletes session + clears SSE)
+   *   3. Clear conversation messages
+   *   4. Update interactiveShipping in store
+   */
+  async switchMode(newMode: boolean): Promise<void> {
+    await this.reset();
+    this.conversationStore.setInteractiveShipping(newMode);
+  }
+
+  /**
    * Full teardown — close SSE, delete current session via API, clear state.
    *
    * If a createConversation call is in-flight, the generation increment

@@ -48,12 +48,7 @@ import type { DataSourceInfo } from '@shipagent/shared-types';
       <!-- === ACTIVE LOCAL SOURCE CARD === -->
       @if (dataSourceStore.dataSource()?.status === 'connected') {
         <div
-          class="rounded-lg border overflow-hidden transition-colors"
-          [class.border-l-4]="isLocalActive()"
-          [class.border-l-primary]="isLocalActive()"
-          [class.border-primary]="isLocalActive()"
-          [class.border-opacity-30]="isLocalActive()"
-          [class.border-slate-800]="!isLocalActive()"
+          [class]="localSourceCardClass()"
         >
           <div class="flex items-center justify-between p-2.5">
             <div class="flex items-center gap-2">
@@ -61,7 +56,9 @@ import type { DataSourceInfo } from '@shipagent/shared-types';
               <span class="text-xs font-medium text-slate-200">{{ localFileName() }}</span>
             </div>
             <div>
-              @if (isLocalActive()) {
+              @if (isLocalActive() && conversationStore.interactiveShipping()) {
+                <span class="badge badge-neutral text-[9px]">STANDBY</span>
+              } @else if (isLocalActive()) {
                 <span class="badge badge-success text-[9px]">ACTIVE</span>
               } @else {
                 <span class="text-[10px] font-mono text-slate-500">Available</span>
@@ -71,7 +68,7 @@ import type { DataSourceInfo } from '@shipagent/shared-types';
           <div class="px-2.5 pb-2.5 flex items-center justify-between">
             <div class="flex gap-4 text-[10px] font-mono">
               <span class="text-slate-500">
-                Rows: <span class="text-slate-400">{{ dataSourceStore.dataSource()?.row_count?.toLocaleString() || '...' }}</span>
+                Rows: <span [class.text-green-400]="isLocalActive() && !conversationStore.interactiveShipping()" [class.text-slate-400]="!isLocalActive() || conversationStore.interactiveShipping()">{{ dataSourceStore.dataSource()?.row_count?.toLocaleString() || '...' }}</span>
               </span>
               <span class="text-slate-500">
                 Cols: <span class="text-slate-300">{{ dataSourceStore.dataSource()?.column_count }}</span>
@@ -84,6 +81,11 @@ import type { DataSourceInfo } from '@shipagent/shared-types';
               Disconnect
             </button>
           </div>
+          @if (isLocalActive() && conversationStore.interactiveShipping()) {
+            <div class="px-2.5 pb-2 -mt-1">
+              <p class="text-[10px] font-mono text-slate-500">Available in batch mode</p>
+            </div>
+          }
         </div>
       }
 
@@ -177,6 +179,18 @@ export class DataSourcePanelComponent implements OnInit {
   /** Whether local source is currently active. */
   isLocalActive(): boolean {
     return this.dataSourceStore.activeSourceType() === 'local';
+  }
+
+  /** CSS class string for the local source card — varies by interactive mode. */
+  localSourceCardClass(): string {
+    const base = 'rounded-lg border overflow-hidden transition-colors';
+    if (this.isLocalActive() && this.conversationStore.interactiveShipping()) {
+      return `${base} border-l-4 border-l-slate-500 border-slate-600/30 bg-slate-800/20`;
+    }
+    if (this.isLocalActive()) {
+      return `${base} border-l-4 border-l-primary border-primary/30 bg-primary/5`;
+    }
+    return `${base} border-slate-800`;
   }
 
   /** Display filename for the connected local source. */

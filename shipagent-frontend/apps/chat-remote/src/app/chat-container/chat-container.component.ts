@@ -228,6 +228,15 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
   // Track messages length to trigger scroll
   private lastMessageCount = 0;
 
+  /**
+   * Previous interactiveShipping value — used to detect mode changes.
+   * Mirrors React's prevInteractiveRef.
+   */
+  private prevInteractiveMode: boolean | null = null;
+
+  /** Whether a session reset triggered by mode switch is in-flight. */
+  private isResettingSession = false;
+
   constructor() {
     // Auto-scroll on new messages using effect
     effect(() => {
@@ -235,6 +244,65 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
       if (count !== this.lastMessageCount) {
         this.lastMessageCount = count;
         this.messageList?.markNeedsScroll();
+      }
+    });
+
+    // Watch interactiveShipping changes and reset session.
+    // Mirrors React's useEffect on interactiveShipping in CommandCenter.tsx.
+    effect(() => {
+      const current = this.conversationStore.interactiveShipping();
+
+      // First run — initialise tracking variable.
+      if (this.prevInteractiveMode === null) {
+        this.prevInteractiveMode = current;
+        return;
+      }
+
+      // No change — skip.
+      if (this.prevInteractiveMode === current) return;
+      this.prevInteractiveMode = current;
+
+      // Only reset if there is an active or in-flight session.
+      const hasSession = this.conversationStore.sessionId()
+        || this.sessionService.isCreatingSession();
+      if (!hasSession) return;
+
+      // Confirm if there is in-progress work.
+      if (this.activePreview() || this.conversationStore.isStreaming()) {
+        const confirmed = window.confirm(
+          'Switching mode resets your current session. Continue?',
+        );
+        if (!confirmed) {
+          // Revert toggle — schedule to avoid recursive effect.
+          queueMicrotask(() => {
+            this.conversationStore.setInteractiveShipping(!current);
+            this.prevInteractiveMode = !current;
+          });
+          return;
+        }
+      }
+
+      // Perform the session reset.
+      this.isResettingSession = true;
+      this.appStore.setToggleLocked(true);
+      this.sessionService.reset().then(() => {
+        this.executingJobId.set(null);
+        this.showLabelPreview.set(false);
+        this.labelPreviewUrl.set('');
+        this.lastJobName = '';
+        this.isResettingSession = false;
+        this.appStore.setToggleLocked(false);
+      });
+    });
+
+    // Lock toggle while session creation is in-flight or agent is streaming.
+    effect(() => {
+      const creating = this.sessionService.isCreatingSession();
+      const streaming = this.conversationStore.isStreaming();
+      if (creating || streaming) {
+        this.appStore.setToggleLocked(true);
+      } else if (!this.isResettingSession) {
+        this.appStore.setToggleLocked(false);
       }
     });
   }
