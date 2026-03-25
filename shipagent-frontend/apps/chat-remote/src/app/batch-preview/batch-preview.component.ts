@@ -1,8 +1,10 @@
 /**
  * BatchPreviewComponent — Batch preview card with row table and cost summary.
  *
- * Shows up to 10 preview rows with recipient, service, and cost details.
- * Includes confirm/cancel/refine actions via PreviewActionsComponent.
+ * Shows preview rows with recipient, service, and cost details.
+ * Defaults to collapsed state showing COLLAPSED_ROW_COUNT rows, with a
+ * "Show all X rows" toggle button to expand. Includes confirm/cancel/refine
+ * actions via PreviewActionsComponent.
  * Matches React's PreviewCard component (batch mode).
  */
 
@@ -12,19 +14,32 @@ import {
   EventEmitter,
   Input,
   Output,
+  signal,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormatCurrencyPipe } from '@shipagent/shared-ui';
+import { FormatCurrencyPipe, ChevronDownIconComponent } from '@shipagent/shared-ui';
 import { PreviewActionsComponent } from '../preview-actions/preview-actions.component';
-import type { BatchPreview } from '@shipagent/shared-types';
+import type { BatchPreview, PreviewRow } from '@shipagent/shared-types';
 
-const MAX_PREVIEW_ROWS = 10;
+/** Number of rows shown in collapsed state (matches React COLLAPSED_ROW_COUNT). */
+const COLLAPSED_ROW_COUNT = 4;
 
 @Component({
   selector: 'app-batch-preview',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [CommonModule, FormatCurrencyPipe, PreviewActionsComponent],
+  imports: [CommonModule, FormatCurrencyPipe, ChevronDownIconComponent, PreviewActionsComponent],
+  styles: [`
+    .chevron-rotated {
+      transform: rotate(180deg);
+    }
+    .row-list-collapsed {
+      max-height: 15rem;
+    }
+    .row-list-expanded {
+      max-height: 52vh;
+    }
+  `],
   template: `
     <div class="card-premium overflow-hidden">
       <!-- Header -->
@@ -70,7 +85,10 @@ const MAX_PREVIEW_ROWS = 10;
       </div>
 
       <!-- Preview rows table -->
-      <div class="overflow-x-auto">
+      <div class="overflow-x-auto overflow-y-auto rounded-md"
+        [class.row-list-collapsed]="!isExpanded()"
+        [class.row-list-expanded]="isExpanded()"
+      >
         <table class="w-full text-xs">
           <thead>
             <tr class="border-b border-border/20">
@@ -81,7 +99,7 @@ const MAX_PREVIEW_ROWS = 10;
             </tr>
           </thead>
           <tbody>
-            @for (row of preview.preview_rows.slice(0, maxRows); track row.row_number) {
+            @for (row of visibleRows(); track row.row_number) {
               <tr class="border-b border-border/10 hover:bg-card/30">
                 <td class="px-4 py-2 font-mono text-slate-500">{{ row.row_number }}</td>
                 <td class="px-4 py-2">
@@ -92,7 +110,7 @@ const MAX_PREVIEW_ROWS = 10;
                   @if (row.warnings.length > 0) {
                     <div class="mt-0.5 space-y-0.5">
                       @for (warning of row.warnings; track $index) {
-                        <p class="text-[10px] text-warning/80">⚠ {{ warning }}</p>
+                        <p class="text-[10px] text-warning/80">{{ warning }}</p>
                       }
                     </div>
                   }
@@ -102,21 +120,38 @@ const MAX_PREVIEW_ROWS = 10;
                   @if (row.estimated_cost_cents > 0) {
                     <span class="text-primary">{{ row.estimated_cost_cents | formatCurrency }}</span>
                   } @else {
-                    <span class="text-slate-500">—</span>
+                    <span class="text-slate-500">&mdash;</span>
                   }
                 </td>
               </tr>
             }
           </tbody>
         </table>
-
-        <!-- More rows indicator -->
-        @if (preview.additional_rows > 0) {
-          <div class="px-4 py-2 text-center text-[11px] text-slate-500 border-t border-border/10">
-            + {{ preview.additional_rows }} more row{{ preview.additional_rows !== 1 ? 's' : '' }} (not shown in preview)
-          </div>
-        }
       </div>
+
+      <!-- Expand/collapse toggle -->
+      @if (canExpand) {
+        <button
+          type="button"
+          class="w-full py-2 text-[11px] font-medium text-slate-400 hover:text-primary transition-colors flex items-center justify-center gap-1.5 border-t border-border/10"
+          (click)="toggleExpanded()"
+        >
+          <sa-icon-chevron-down
+            class="w-3.5 h-3.5 transition-transform"
+            [class.chevron-rotated]="isExpanded()"
+          />
+          <span>
+            {{ isExpanded() ? 'Show less' : 'Show all ' + preview.preview_rows.length + ' shipments' }}
+          </span>
+        </button>
+      }
+
+      <!-- More rows indicator (rows beyond what the backend returned) -->
+      @if (preview.additional_rows > 0) {
+        <div class="px-4 py-2 text-center text-[11px] text-slate-500 border-t border-border/10">
+          + {{ preview.additional_rows }} more row{{ preview.additional_rows !== 1 ? 's' : '' }} (not shown in preview)
+        </div>
+      }
 
       <!-- Actions -->
       <app-preview-actions
@@ -136,5 +171,24 @@ export class BatchPreviewComponent {
   @Output() cancel = new EventEmitter<void>();
   @Output() refine = new EventEmitter<string>();
 
-  readonly maxRows = MAX_PREVIEW_ROWS;
+  /** Whether the row list is expanded (shows all rows). */
+  readonly isExpanded = signal(false);
+
+  /** Whether there are enough rows to show the expand/collapse toggle. */
+  get canExpand(): boolean {
+    return this.preview.preview_rows.length > COLLAPSED_ROW_COUNT;
+  }
+
+  /** Compute visible rows based on expanded state. */
+  visibleRows(): PreviewRow[] {
+    if (this.isExpanded()) {
+      return this.preview.preview_rows;
+    }
+    return this.preview.preview_rows.slice(0, COLLAPSED_ROW_COUNT);
+  }
+
+  /** Toggle between collapsed and expanded states. */
+  toggleExpanded(): void {
+    this.isExpanded.set(!this.isExpanded());
+  }
 }

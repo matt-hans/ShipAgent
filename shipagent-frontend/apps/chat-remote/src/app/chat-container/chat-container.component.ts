@@ -30,7 +30,8 @@ import {
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { provideMarkdown } from 'ngx-markdown';
-import { AppStore, ConversationStore, DataSourceStore } from '@shipagent/shared-state';
+import { AppStore, ConversationStore, DataSourceStore, JobStore } from '@shipagent/shared-state';
+import { ApiService } from '@shipagent/shared-api';
 import { ConversationSseService } from '../../services/conversation-sse.service';
 import { ConversationSessionService } from '../../services/conversation-session.service';
 import { JobProgressSseService } from '../../services/job-progress-sse.service';
@@ -38,12 +39,12 @@ import { EventProcessorService } from '../../services/event-processor.service';
 import { ChatActionsService } from '../../services/chat-actions.service';
 import { DomainCardBridgeService } from '../../services/domain-card-bridge.service';
 import { SseService } from '@shipagent/shared-sse';
-// ApiService and JobStore available via root providers when needed.
 import { MessageListComponent } from '../message-list/message-list.component';
 import { ToolCallChipComponent } from '../tool-call-chip/tool-call-chip.component';
 import { ActiveSourceBannerComponent } from '../messages/active-source-banner.component';
 import { InteractiveModeBannerComponent } from '../messages/interactive-mode-banner.component';
-import { BatchPreviewComponent } from '../batch-preview/batch-preview.component';
+// BatchPreviewComponent, ProgressDisplayComponent, CompletionArtifactComponent
+// are imported by MessageListComponent — not needed here.
 
 @Component({
   selector: 'app-chat-container',
@@ -67,7 +68,6 @@ import { BatchPreviewComponent } from '../batch-preview/batch-preview.component'
     ToolCallChipComponent,
     ActiveSourceBannerComponent,
     InteractiveModeBannerComponent,
-    BatchPreviewComponent,
   ],
   template: `
     <div class="flex flex-col h-full bg-background overflow-hidden">
@@ -84,10 +84,13 @@ import { BatchPreviewComponent } from '../batch-preview/batch-preview.component'
           #messageList
           class="flex-1 overflow-hidden flex flex-col"
           [interactiveShipping]="conversationStore.interactiveShipping()"
+          [executingJobId]="executingJobId()"
           (exampleClick)="handleExampleClick($event)"
           (previewConfirm)="handleConfirmFromPreview($event)"
           (previewCancel)="handleCancelFromPreview($event)"
           (previewRefine)="handleRefine($event)"
+          (progressComplete)="handleProgressComplete()"
+          (progressFailed)="handleProgressFailed()"
         />
 
         <!-- Right edge: action icons -->
@@ -162,11 +165,21 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
   readonly chatActions = inject(ChatActionsService);
   private readonly sessionService = inject(ConversationSessionService);
   private readonly appStore = inject(AppStore);
-  // JobStore and ApiService available via root DI for future use.
+  private readonly jobStore = inject(JobStore);
+  private readonly apiService = inject(ApiService);
   private readonly domainCardBridge = inject(DomainCardBridgeService);
   private readonly injector = inject(Injector);
 
   readonly inputValue = signal('');
+
+  /**
+   * Job ID currently being executed (set after confirm, cleared on complete/fail).
+   * When non-null, the ProgressDisplayComponent is shown in the message list.
+   */
+  readonly executingJobId = signal<string | null>(null);
+
+  /** Stored job name for the completion artifact (captured on confirm). */
+  private lastJobName = '';
 
   /**
    * Active preview — computed from the last preview_ready message in the store.
@@ -240,13 +253,149 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
     const jobId = previewData?.job_id as string | undefined;
     if (!jobId) return;
     const writeBack = this.dataSourceStore.writeBackEnabled();
-    await this.chatActions.confirmJob(jobId, writeBack);
+
+    try {
+      await this.chatActions.confirmJob(jobId, writeBack);
+
+      // Add confirmation message to chat.
+      this.conversationStore.appendMessage({
+        id: `sys-confirm-${Date.now()}`,
+        role: 'system',
+        content: 'Batch confirmed. Processing shipments...',
+        timestamp: new Date().toISOString(),
+        metadata: { type: 'status', jobId, action: 'execute' },
+      });
+
+      // Fetch job name for completion artifact display.
+      this.apiService.getJob(jobId).subscribe({
+        next: (job) => { this.lastJobName = job.name || ''; },
+        error: () => { this.lastJobName = ''; },
+      });
+
+      // Activate progress display.
+      this.executingJobId.set(jobId);
+    } catch (err) {
+      this.conversationStore.appendMessage({
+        id: `err-confirm-${Date.now()}`,
+        role: 'system',
+        content: `Error: ${err instanceof Error ? err.message : 'Failed to confirm batch'}`,
+        timestamp: new Date().toISOString(),
+        metadata: { type: 'error' },
+      });
+    }
   }
 
   async handleCancelFromPreview(previewData: any): Promise<void> {
     const jobId = previewData?.job_id as string | undefined;
     if (!jobId) return;
-    await this.chatActions.cancelJob(jobId);
+
+    try {
+      await this.chatActions.cancelJob(jobId);
+      this.conversationStore.appendMessage({
+        id: `sys-cancel-${Date.now()}`,
+        role: 'system',
+        content: 'Batch cancelled. You can enter a new command.',
+        timestamp: new Date().toISOString(),
+      });
+      this.jobStore.incrementJobListVersion();
+    } catch (err) {
+      console.error('Failed to cancel:', err);
+    }
+  }
+
+  /**
+   * Handle batch execution completion — add completion artifact message.
+   * Called by the ProgressDisplayComponent's (complete) output.
+   */
+  handleProgressComplete(): void {
+    const jobId = this.executingJobId();
+    if (!jobId) return;
+
+    const progressService = this.messageList?.progressService;
+    if (!progressService) return;
+
+    const p = progressService.progress();
+    this.conversationStore.appendMessage({
+      id: `completion-${Date.now()}`,
+      role: 'system',
+      content: '',
+      timestamp: new Date().toISOString(),
+      metadata: {
+        type: 'completion',
+        jobId,
+        action: 'complete',
+        completion: {
+          jobName: this.lastJobName || undefined,
+          successful: p.successful,
+          failed: p.failed,
+          totalCostCents: p.totalCostCents,
+          dutiesTaxesCents: p.dutiesTaxesCents,
+          internationalCount: p.internationalCount,
+          rowFailures: p.rowFailures.length > 0 ? p.rowFailures : undefined,
+        },
+      },
+    });
+
+    // Persist the artifact to the conversation DB.
+    const sid = this.conversationStore.sessionId();
+    if (sid) {
+      this.apiService.saveArtifact(sid, '', {
+        type: 'completion',
+        jobId,
+        action: 'complete',
+        completion: {
+          jobName: this.lastJobName || undefined,
+          successful: p.successful,
+          failed: p.failed,
+          totalCostCents: p.totalCostCents,
+          dutiesTaxesCents: p.dutiesTaxesCents,
+          internationalCount: p.internationalCount,
+          rowFailures: p.rowFailures.length > 0 ? p.rowFailures : undefined,
+        },
+      }).subscribe({ error: (e) => console.warn('Failed to save artifact:', e) });
+    }
+
+    this.executingJobId.set(null);
+    this.lastJobName = '';
+    this.jobStore.incrementJobListVersion();
+  }
+
+  /**
+   * Handle batch execution failure — add completion artifact with failure data.
+   * Called by the ProgressDisplayComponent's (failed) output.
+   */
+  handleProgressFailed(): void {
+    const jobId = this.executingJobId();
+    if (!jobId) return;
+
+    const progressService = this.messageList?.progressService;
+    if (!progressService) return;
+
+    const p = progressService.progress();
+    this.conversationStore.appendMessage({
+      id: `completion-fail-${Date.now()}`,
+      role: 'system',
+      content: '',
+      timestamp: new Date().toISOString(),
+      metadata: {
+        type: 'completion',
+        jobId,
+        action: 'complete',
+        completion: {
+          jobName: this.lastJobName || undefined,
+          successful: p.successful,
+          failed: p.failed,
+          totalCostCents: p.totalCostCents,
+          dutiesTaxesCents: p.dutiesTaxesCents,
+          internationalCount: p.internationalCount,
+          rowFailures: p.rowFailures.length > 0 ? p.rowFailures : undefined,
+        },
+      },
+    });
+
+    this.executingJobId.set(null);
+    this.lastJobName = '';
+    this.jobStore.incrementJobListVersion();
   }
 
   async handleRefine(text: string): Promise<void> {
