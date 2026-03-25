@@ -38,10 +38,12 @@ import { EventProcessorService } from '../../services/event-processor.service';
 import { ChatActionsService } from '../../services/chat-actions.service';
 import { DomainCardBridgeService } from '../../services/domain-card-bridge.service';
 import { SseService } from '@shipagent/shared-sse';
+// ApiService and JobStore available via root providers when needed.
 import { MessageListComponent } from '../message-list/message-list.component';
 import { ToolCallChipComponent } from '../tool-call-chip/tool-call-chip.component';
 import { ActiveSourceBannerComponent } from '../messages/active-source-banner.component';
 import { InteractiveModeBannerComponent } from '../messages/interactive-mode-banner.component';
+import { BatchPreviewComponent } from '../batch-preview/batch-preview.component';
 
 @Component({
   selector: 'app-chat-container',
@@ -65,6 +67,7 @@ import { InteractiveModeBannerComponent } from '../messages/interactive-mode-ban
     ToolCallChipComponent,
     ActiveSourceBannerComponent,
     InteractiveModeBannerComponent,
+    BatchPreviewComponent,
   ],
   template: `
     <div class="flex flex-col h-full bg-background overflow-hidden">
@@ -105,6 +108,21 @@ import { InteractiveModeBannerComponent } from '../messages/interactive-mode-ban
             [toolName]="formatToolName(eventProcessorService.activeToolCall()?.toolName ?? '')"
             [isActive]="true"
           />
+        </div>
+      }
+
+      <!-- Preview card (batch mode) -->
+      @if (activePreview(); as preview) {
+        <div class="px-4 py-2 border-t border-border/30">
+          <div class="max-w-3xl mx-auto">
+            <app-batch-preview
+              [preview]="preview"
+              [isConfirming]="chatActions.isConfirming()"
+              (confirm)="handleConfirm()"
+              (cancel)="handleCancel()"
+              (refine)="handleRefine($event)"
+            />
+          </div>
         </div>
       }
 
@@ -153,13 +171,31 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
   readonly conversationStore = inject(ConversationStore);
   readonly dataSourceStore = inject(DataSourceStore);
   readonly eventProcessorService = inject(EventProcessorService);
-  private readonly chatActions = inject(ChatActionsService);
+  readonly chatActions = inject(ChatActionsService);
   private readonly sessionService = inject(ConversationSessionService);
   private readonly appStore = inject(AppStore);
+  // JobStore and ApiService available via root DI for future use.
   private readonly domainCardBridge = inject(DomainCardBridgeService);
   private readonly injector = inject(Injector);
 
   readonly inputValue = signal('');
+
+  /**
+   * Active preview — computed from the last preview_ready message in the store.
+   * Mirrors React's `preview` state in CommandCenter.tsx.
+   * Returns null when no preview is pending (cleared after confirm/cancel).
+   */
+  readonly activePreview = computed(() => {
+    const messages = this.conversationStore.messages();
+    // Find the last preview_ready message
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.metadata?.['type'] === 'preview_ready') {
+        return msg.metadata['preview'] as any;
+      }
+    }
+    return null;
+  });
 
   /** Context-aware placeholder driven by current mode and data source state. */
   protected readonly inputPlaceholder = computed(() => {
@@ -206,6 +242,31 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
 
   openSettings(): void {
     this.appStore.openSettings();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Preview actions (confirm / cancel / refine)
+  // ---------------------------------------------------------------------------
+
+  async handleConfirm(): Promise<void> {
+    const preview = this.activePreview();
+    if (!preview) return;
+    const jobId = preview['job_id'] as string | undefined;
+    if (!jobId) return;
+    const writeBack = this.dataSourceStore.writeBackEnabled();
+    await this.chatActions.confirmJob(jobId, writeBack);
+  }
+
+  async handleCancel(): Promise<void> {
+    const preview = this.activePreview();
+    if (!preview) return;
+    const jobId = preview['job_id'] as string | undefined;
+    if (!jobId) return;
+    await this.chatActions.cancelJob(jobId);
+  }
+
+  async handleRefine(text: string): Promise<void> {
+    await this.chatActions.refineMessage(text);
   }
 
   // ---------------------------------------------------------------------------
