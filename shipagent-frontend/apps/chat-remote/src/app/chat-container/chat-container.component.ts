@@ -47,7 +47,7 @@ import { RichChatInputComponent } from '../rich-chat-input/rich-chat-input.compo
 // BatchPreviewComponent, ProgressDisplayComponent, CompletionArtifactComponent
 // are imported by MessageListComponent — not needed here.
 import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview-modal.component';
-import { ChatHistoryFlyoutComponent } from '../chat-history-flyout/chat-history-flyout.component';
+// ChatHistoryFlyoutComponent removed — clock icon now opens sidebar Chats tab via AppStore.
 
 @Component({
   selector: 'app-chat-container',
@@ -73,7 +73,6 @@ import { ChatHistoryFlyoutComponent } from '../chat-history-flyout/chat-history-
     InteractiveModeBannerComponent,
     LabelPreviewModalComponent,
     RichChatInputComponent,
-    ChatHistoryFlyoutComponent,
   ],
   template: `
     <div class="flex flex-col h-full bg-background overflow-hidden">
@@ -108,7 +107,7 @@ import { ChatHistoryFlyoutComponent } from '../chat-history-flyout/chat-history-
           <button (click)="openSettings()" class="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors" title="Settings">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
-          <button (click)="chatHistoryFlyoutOpen.set(!chatHistoryFlyoutOpen())" class="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors" title="Chat history">
+          <button (click)="openChatHistory()" class="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors" title="Chat history">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           </button>
         </div>
@@ -166,12 +165,6 @@ import { ChatHistoryFlyoutComponent } from '../chat-history-flyout/chat-history-
         (close)="closeLabelPreview()"
       />
 
-      <!-- Chat history flyout (triggered by clock icon) -->
-      <app-chat-history-flyout
-        [open]="chatHistoryFlyoutOpen()"
-        [sessionId]="conversationStore.sessionId()"
-        (closed)="chatHistoryFlyoutOpen.set(false)"
-      />
     </div>
   `,
 })
@@ -199,9 +192,6 @@ export class ChatContainerComponent implements OnInit {
 
   /** Whether the label preview modal is visible. */
   readonly showLabelPreview = signal(false);
-
-  /** Whether the chat history flyout is visible. */
-  readonly chatHistoryFlyoutOpen = signal(false);
 
   /** URL for the label PDF currently being previewed. */
   readonly labelPreviewUrl = signal('');
@@ -330,6 +320,20 @@ export class ChatContainerComponent implements OnInit {
       // Clear immediately to prevent re-processing.
       this.conversationStore.clearPendingSessionRestore();
 
+      // Clear execution UI state from previous session.
+      this.executingJobId.set(null);
+      this.showLabelPreview.set(false);
+      this.labelPreviewUrl.set('');
+      this.lastJobName = '';
+
+      // Restore data source context from the session if available.
+      if (pending.contextData?.data_source) {
+        const ds = pending.contextData.data_source;
+        const sourceType = ds.source_type || ds.type || null;
+        this.dataSourceStore.setActiveSourceType(sourceType as any);
+        this.dataSourceStore.setActiveSourceInfo(ds.label || ds.file_path || '');
+      }
+
       // Load the session via the service (handles SSE disconnect/reconnect + mode).
       this.sessionService.loadSession(
         pending.sessionId,
@@ -359,6 +363,14 @@ export class ChatContainerComponent implements OnInit {
 
   openSettings(): void {
     this.appStore.openSettings();
+  }
+
+  /** Open the sidebar Chats tab (replaces the old chat history flyout). */
+  openChatHistory(): void {
+    this.appStore.setSidebarActiveTab('chats');
+    if (this.appStore.sidebarCollapsed()) {
+      this.appStore.toggleSidebar();
+    }
   }
 
   // ---------------------------------------------------------------------------

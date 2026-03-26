@@ -288,6 +288,7 @@ export class ChatSessionsPanelComponent implements OnInit {
         sessionId: session.id,
         mode: session.mode === 'interactive' ? 'interactive' : 'batch',
         messages: detail.messages,
+        contextData: session.context_data ?? null,
       });
     } catch (err) {
       console.error('Failed to load session:', err);

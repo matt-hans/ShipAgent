@@ -28,6 +28,16 @@ export interface PendingSessionRestore {
   sessionId: string;
   mode: 'batch' | 'interactive';
   messages: PersistedMessage[];
+  /** Session context data for restoring data source state on session switch. */
+  contextData?: {
+    data_source?: {
+      type: string | null;
+      source_type: string | null;
+      file_path?: string | null;
+      label?: string | null;
+      row_count?: number | null;
+    } | null;
+  } | null;
 }
 
 export interface ConversationState {

@@ -16,6 +16,12 @@ export interface AppState {
   isProcessing: boolean;
   /** Prevents interactive-shipping toggle changes while a session reset is in-flight. */
   isToggleLocked: boolean;
+  /**
+   * Cross-remote signal to switch the sidebar to a specific tab.
+   * Set by chat-remote (e.g. clock icon), consumed by sidebar-remote.
+   * Cleared after consumption (null = no pending switch).
+   */
+  sidebarActiveTab: 'data' | 'jobs' | 'chats' | null;
 }
 
 const initialState: AppState = {
@@ -23,6 +29,7 @@ const initialState: AppState = {
   settingsFlyoutOpen: false,
   isProcessing: false,
   isToggleLocked: false,
+  sidebarActiveTab: null,
 };
 
 export const AppStore = signalStore(
@@ -52,6 +59,11 @@ export const AppStore = signalStore(
     /** Set the toggle lock state to prevent race conditions during session resets. */
     setToggleLocked(value: boolean): void {
       patchState(store, { isToggleLocked: value });
+    },
+
+    /** Request the sidebar to switch to a specific tab. Consumed by sidebar-remote. */
+    setSidebarActiveTab(tab: 'data' | 'jobs' | 'chats' | null): void {
+      patchState(store, { sidebarActiveTab: tab });
     },
   })),
 );

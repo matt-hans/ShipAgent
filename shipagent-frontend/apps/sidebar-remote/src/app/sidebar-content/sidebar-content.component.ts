@@ -9,10 +9,11 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  effect,
   inject,
   signal,
 } from '@angular/core';
-import { ConversationStore } from '@shipagent/shared-state';
+import { AppStore, ConversationStore } from '@shipagent/shared-state';
 import { DataSourcePanelComponent } from '../data-source-panel/data-source-panel.component';
 import { JobHistoryPanelComponent } from '../job-history-panel/job-history-panel.component';
 import { ChatSessionsPanelComponent } from '../chat-sessions-panel/chat-sessions-panel.component';
@@ -85,9 +86,22 @@ type ActiveTab = 'data' | 'jobs' | 'chats';
 })
 export class SidebarContentComponent {
   readonly conversationStore = inject(ConversationStore);
+  private readonly appStore = inject(AppStore);
 
   /** Active tab signal. */
   readonly activeTab = signal<ActiveTab>('data');
+
+  constructor() {
+    // Watch for cross-remote tab switch requests (e.g. clock icon in chat-remote).
+    effect(() => {
+      const tab = this.appStore.sidebarActiveTab();
+      if (tab) {
+        this.activeTab.set(tab);
+        // Clear after consuming to prevent repeated switches.
+        this.appStore.setSidebarActiveTab(null);
+      }
+    });
+  }
 
   setTab(tab: ActiveTab): void {
     this.activeTab.set(tab);
