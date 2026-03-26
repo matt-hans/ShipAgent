@@ -29,6 +29,7 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { firstValueFrom } from 'rxjs';
 import { provideMarkdown } from 'ngx-markdown';
 import { AppStore, ConversationStore, DataSourceStore, JobStore } from '@shipagent/shared-state';
 import { ApiService } from '@shipagent/shared-api';
@@ -464,6 +465,17 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
     this.executingJobId.set(null);
     this.lastJobName = '';
     this.jobStore.incrementJobListVersion();
+
+    // Notify the agent that execution completed so it doesn't keep asking
+    // "would you like to confirm?" — this is a silent context update.
+    const currentSid = this.conversationStore.sessionId();
+    if (currentSid && p.successful > 0) {
+      firstValueFrom(
+        this.apiService.sendMessage(currentSid,
+          `[System: Batch execution completed. ${p.successful} shipment(s) processed, labels generated. Job ${jobId} is done.]`
+        )
+      ).catch(() => { /* best-effort */ });
+    }
   }
 
   /**
