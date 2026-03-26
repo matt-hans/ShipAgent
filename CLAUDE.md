@@ -36,7 +36,8 @@ These rules are non-negotiable. Violating them creates architectural debt that u
 ## Project Status
 
 **Phases 1-7:** COMPLETE (State DB, Data Source MCP, Error Handling, NL Engine, Agent SDK, Batch Execution, Web Interface)
-**Phase 8:** Production Packaging — Tauri v2 desktop wrapper, PyInstaller bundling, secure credential management, settings DB, onboarding wizard, CI/CD with code signing, auto-updater.
+**Phase 8:** COMPLETE — Production Packaging: Tauri v2 desktop wrapper, PyInstaller bundling, secure credential management, settings DB, onboarding wizard, CI/CD with code signing, auto-updater.
+**Phase 9:** COMPLETE — Angular Module Federation frontend rebuild: Angular 21 + Nx + Native Federation (5 remote apps), NgRx SignalStores, Spartan UI, full parity with prior React frontend.
 **Key Features:** International (CA/MX), Headless CLI, API Key Auth, Decision Auditing, Chat Persistence, Universal Data Ingestion, Address Book, Custom Commands, Settings UI.
 **Production Packaging:** Tauri v2 desktop app with PyInstaller sidecar (one-folder build), keyring-based credential storage (macOS Keychain), `AppSettings` DB singleton, first-run onboarding wizard, Ed25519-signed auto-updater via GitHub Releases, CI/CD with Apple code signing.
 **Test Count:** ~2660 across 170+ files (as of 2026-02-22)
@@ -326,15 +327,17 @@ Unified PyInstaller entry point dispatching to `serve` (FastAPI+uvicorn with dyn
 
 ## Frontend Architecture
 
-Agent-driven chat interface. `useConversation` manages session lifecycle + SSE streaming. `useAppState` context holds all global state (persisted to localStorage where appropriate).
+Angular 21 + Nx + Native Federation. Five remotes: `shell` (host, layout), `chat-remote` (chat UI), `sidebar-remote` (data sources, job history, sessions), `settings-remote` (onboarding, settings flyout), `domain-remote` (pickup, tracking, paperless domain cards).
 
-**Chat flow**: User types → SSE events stream → PreviewCard (Confirm/Cancel/Refine) → ProgressDisplay → CompletionArtifact with labels.
+**State**: 8 NgRx SignalStores in `libs/shared/state/` — `AppStore`, `ConversationStore`, `JobStore`, `DataSourceStore`, `SettingsStore`, `ContactsStore`, `CommandsStore`, `PlatformsStore`. Stores persist to `localStorage` via `withStorageSync` where appropriate.
 
-**Chat persistence**: DB-backed sessions. `ChatSessionsPanel` groups by date. `chatSessionsVersion` counter triggers re-fetch. Preview cards persisted as `system_artifact` messages, render read-only in history.
+**Chat flow**: User types → SSE events stream via `ConversationSseService` → `BatchPreviewComponent` (Confirm/Cancel/Refine) → `ProgressDisplayComponent` → `CompletionArtifactComponent` with labels. Main coordination in `ChatContainerComponent` (`chat-remote`).
 
-**Onboarding**: `OnboardingWizard` renders as full-screen overlay on first launch (when `appSettings.onboarding_completed` is false). 3 steps: Anthropic API key → UPS credentials → shipper address. Saves to keyring + settings DB.
+**Chat persistence**: DB-backed sessions. Sidebar `ChatSessionsPanelComponent` groups sessions by date. `chatSessionsVersion` (volatile counter in `ConversationStore`) triggers sidebar re-fetches via `incrementChatSessionsVersion()` — same pattern as `jobListVersion` in `JobStore`. Preview cards persisted as `system_artifact` messages, render read-only in history.
 
-**Settings UI**: `SettingsFlyout` with tabs: Connections (provider status), Address Book (contact CRUD), Commands (custom slash commands), Preferences (agent model, batch concurrency).
+**Onboarding**: `OnboardingWizardComponent` (settings-remote) renders as full-screen overlay on first launch (when `appSettings.onboarding_completed` is false). 3 steps: Anthropic API key → UPS credentials → shipper address. Saves to keyring + settings DB.
+
+**Settings UI**: `SettingsFlyoutComponent` (settings-remote) with sections: Connections (provider status), Address Book (contact CRUD), Custom Commands, Shipment Behaviour (agent model, batch concurrency).
 
 ## API Endpoints
 
@@ -513,11 +516,10 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 - Design system in `index.css`: OKLCH colors, DM Sans / Instrument Serif / JetBrains Mono typography
 - CSS classes: `card-premium`, `btn-primary`, `btn-secondary`, `badge-*`, `card-domain-*`
 - Domain colors (OKLCH): shipping/green(145), pickup/purple(300), locator/teal(185), paperless/amber(85), landed-cost/indigo(265), tracking/blue(230)
-- Icons: `ui/icons.tsx` (general), `ui/brand-icons.tsx` (platform logos)
-- shadcn/ui primitives in `components/ui/`
+- Icons: `libs/shared/ui/src/components/icons/` (general), `libs/shared/ui/src/components/brand-icons/` (platform logos) — Angular components, no TSX
+- Spartan UI primitives in `libs/shared/ui/src/components/spartan/`
 - Labels stored on disk, paths in `JobRow.label_path`; `order_data` as JSON text in `JobRow.order_data`
-- Chat sessions: `chatSessionsVersion` counter + `refreshChatSessions()` in AppState (same pattern as `jobListVersion`)
-- Timeline dots: grey(user), cyan(assistant), amber(artifact) — `ChatTimeline.tsx` with `IntersectionObserver`
+- Chat sessions: `chatSessionsVersion` counter in `ConversationStore` (volatile, not persisted); increment via `incrementChatSessionsVersion()`. Same pattern as `jobListVersion` in `JobStore`
 - Copy button: hover-reveal on all message bubbles, visual error/success states
 
 ## Known Issues
@@ -525,7 +527,7 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 - SSE/streaming tests may hang — use `pytest -k "not stream and not sse and not progress"`
 - After backend restart, Shopify connection lost (in-memory) — call `GET /api/v1/platforms/shopify/env-status`
 - EDI adapter test collection errors (10 tests, unrelated to core features)
-- **Claude Agent SDK bug [#265](https://github.com/anthropics/claude-agent-sdk-python/issues/265)**: PreToolUse hook denials generate a synthetic "API Error: 400 due to tool use concurrency issues" message. Hooks remain active; the misleading error is suppressed in the chat UI (`CommandCenter.tsx:161`). Remove the filter when the SDK fix ships.
+- **Claude Agent SDK bug [#265](https://github.com/anthropics/claude-agent-sdk-python/issues/265)**: PreToolUse hook denials generate a synthetic "API Error: 400 due to tool use concurrency issues" message. Hooks remain active; the misleading error is suppressed in the chat UI (`chat-container.component.ts`). Remove the filter when the SDK fix ships.
 
 ## UPS API Lessons
 
