@@ -48,6 +48,7 @@ import { RichChatInputComponent } from '../rich-chat-input/rich-chat-input.compo
 // BatchPreviewComponent, ProgressDisplayComponent, CompletionArtifactComponent
 // are imported by MessageListComponent — not needed here.
 import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview-modal.component';
+import { JobDetailOverlayComponent } from '../job-detail-overlay/job-detail-overlay.component';
 // ChatHistoryFlyoutComponent removed — clock icon now opens sidebar Chats tab via AppStore.
 
 @Component({
@@ -74,9 +75,17 @@ import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview
     InteractiveModeBannerComponent,
     LabelPreviewModalComponent,
     RichChatInputComponent,
+    JobDetailOverlayComponent,
   ],
   template: `
-    <div class="flex flex-col h-full bg-background overflow-hidden">
+    <div class="flex flex-col h-full bg-background overflow-hidden relative">
+      <!-- Job detail overlay (shown when a job is selected in sidebar) -->
+      @if (jobStore.activeJob()) {
+        <app-job-detail-overlay
+          (viewLabels)="openLabelPreview($event)"
+        />
+      }
+
       <!-- Data source or interactive mode banner -->
       @if (conversationStore.interactiveShipping()) {
         <app-interactive-mode-banner />
@@ -178,7 +187,7 @@ export class ChatContainerComponent implements OnInit {
   readonly chatActions = inject(ChatActionsService);
   private readonly sessionService = inject(ConversationSessionService);
   private readonly appStore = inject(AppStore);
-  private readonly jobStore = inject(JobStore);
+  protected readonly jobStore = inject(JobStore);
   private readonly apiService = inject(ApiService);
   private readonly domainCardBridge = inject(DomainCardBridgeService);
   private readonly injector = inject(Injector);
