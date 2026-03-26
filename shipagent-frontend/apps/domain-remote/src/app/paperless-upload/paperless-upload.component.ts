@@ -10,6 +10,7 @@
 import {
   Component,
   Input,
+  OnInit,
   Output,
   EventEmitter,
   ChangeDetectionStrategy,
@@ -173,7 +174,7 @@ function formatFileSize(bytes: number): string {
     </div>
   `,
 })
-export class PaperlessUploadComponent {
+export class PaperlessUploadComponent implements OnInit {
   @Input({ required: true }) data!: PaperlessUploadPrompt;
   @Input() sessionId = '';
   @Output() onUploadComplete = new EventEmitter<void>();

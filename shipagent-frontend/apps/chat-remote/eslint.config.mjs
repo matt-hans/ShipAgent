@@ -24,11 +24,16 @@ export default [
           style: 'kebab-case',
         },
       ],
+      // Allow native event names for outputs (close, change, etc.) in component wrappers.
+      '@angular-eslint/no-output-native': 'warn',
     },
   },
   {
     files: ['**/*.html'],
-    // Override or add rules here
-    rules: {},
+    rules: {
+      // Accessibility: downgrade to warning for overlays/backdrops.
+      '@angular-eslint/template/click-events-have-key-events': 'warn',
+      '@angular-eslint/template/interactive-supports-focus': 'warn',
+    },
   },
 ];

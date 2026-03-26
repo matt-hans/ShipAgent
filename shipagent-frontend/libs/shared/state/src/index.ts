@@ -6,7 +6,7 @@ export type { AppState } from './app.store';
 
 // Active conversation session
 export { ConversationStore } from './conversation.store';
-export type { ConversationState } from './conversation.store';
+export type { ConversationState, PendingSessionRestore } from './conversation.store';
 
 // Batch job tracking
 export { JobStore } from './job.store';

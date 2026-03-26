@@ -21,7 +21,14 @@ import {
   patchState,
 } from '@ngrx/signals';
 import { withStorageSync } from '@angular-architects/ngrx-toolkit';
-import type { ConversationMessage, WarningPreference } from '@shipagent/shared-types';
+import type { ConversationMessage, PersistedMessage, WarningPreference } from '@shipagent/shared-types';
+
+/** Payload set by sidebar-remote when user selects a saved session. */
+export interface PendingSessionRestore {
+  sessionId: string;
+  mode: 'batch' | 'interactive';
+  messages: PersistedMessage[];
+}
 
 export interface ConversationState {
   /** The active agent session ID (null when no session exists). */
@@ -41,6 +48,12 @@ export interface ConversationState {
    * Used to trigger sidebar re-fetches. NOT persisted to localStorage.
    */
   chatSessionsVersion: number;
+  /**
+   * Cross-remote session restore request. Set by sidebar-remote when user
+   * clicks a saved session. Consumed by chat-remote's ChatContainerComponent
+   * which calls ConversationSessionService.loadSession() and then clears it.
+   */
+  pendingSessionRestore: PendingSessionRestore | null;
 }
 
 const initialState: ConversationState = {
@@ -51,6 +64,7 @@ const initialState: ConversationState = {
   interactiveShipping: false,
   warningPreference: 'ask',
   chatSessionsVersion: 0,
+  pendingSessionRestore: null,
 };
 
 export const ConversationStore = signalStore(
@@ -120,6 +134,19 @@ export const ConversationStore = signalStore(
       }));
     },
 
+    /**
+     * Request session restore from another remote (cross-boundary signal).
+     * chat-remote watches this and calls ConversationSessionService.loadSession().
+     */
+    setPendingSessionRestore(data: PendingSessionRestore): void {
+      patchState(store, { pendingSessionRestore: data });
+    },
+
+    /** Clear the pending session restore after chat-remote has consumed it. */
+    clearPendingSessionRestore(): void {
+      patchState(store, { pendingSessionRestore: null });
+    },
+
     /** Reset session-scoped state (messages, streaming, sessionId). */
     reset(): void {
       patchState(store, {
@@ -127,6 +154,7 @@ export const ConversationStore = signalStore(
         messages: [],
         isStreaming: false,
         pendingMessage: '',
+        pendingSessionRestore: null,
       });
     },
   })),

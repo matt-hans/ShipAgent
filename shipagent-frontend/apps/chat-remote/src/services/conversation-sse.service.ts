@@ -20,6 +20,7 @@ import { Subscription } from 'rxjs';
 import { SseService } from '@shipagent/shared-sse';
 import { ApiService } from '@shipagent/shared-api';
 import { ConversationStore, JobStore } from '@shipagent/shared-state';
+import { EventProcessorService } from './event-processor.service';
 import type { ConversationMessage } from '@shipagent/shared-types';
 
 let msgCounter = 0;
@@ -35,6 +36,7 @@ export class ConversationSseService implements OnDestroy {
   private readonly apiService = inject(ApiService);
   private readonly conversationStore = inject(ConversationStore);
   private readonly jobStore = inject(JobStore);
+  private readonly eventProcessor = inject(EventProcessorService);
 
   private sseSubscription: Subscription | null = null;
 
@@ -104,8 +106,13 @@ export class ConversationSseService implements OnDestroy {
         break;
 
       case 'tool_call':
+        this.eventProcessor.setActiveToolCall(
+          (d['tool_name'] as string | undefined) ?? (d['name'] as string | undefined) ?? 'unknown',
+          (d['tool_use_id'] as string | undefined) ?? (d['id'] as string | undefined) ?? '',
+        );
+        break;
       case 'agent_thinking':
-        // Handled by EventProcessorService for ToolCallChip display.
+        // Thinking events are informational — no action needed.
         break;
 
       case 'preview_ready':
@@ -135,6 +142,8 @@ export class ConversationSseService implements OnDestroy {
         // Reset streaming delta state.
         this.streamingMsgId = null;
         this.streamingText = '';
+        // Clear any active tool call.
+        this.eventProcessor.clearActiveToolCall();
         // CRITICAL: Increment chatSessionsVersion to trigger sidebar refresh.
         this.conversationStore.setStreaming(false);
         this.conversationStore.incrementChatSessionsVersion();

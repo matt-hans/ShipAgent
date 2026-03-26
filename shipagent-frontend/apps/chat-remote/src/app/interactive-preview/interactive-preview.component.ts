@@ -619,7 +619,7 @@ export class InteractivePreviewComponent {
    * field value opens the refine input with a partially filled suggestion
    * so the user can type the new value directly.
    */
-  suggestRefine(fieldName: string, currentValue: string): void {
+  suggestRefine(fieldName: string, _currentValue: string): void {
     if (this.previewActions) {
       this.previewActions.openWithSuggestion(`Change the ${fieldName} to `);
     }

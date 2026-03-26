@@ -96,12 +96,12 @@ const COLLAPSED_ROW_COUNT = 4;
               {{ preview.total_estimated_cost_cents | formatCurrency }}
             </span>
           </span>
-          @if (preview.total_duties_taxes_cents != null && preview.total_duties_taxes_cents > 0) {
+          @if ((preview.total_duties_taxes_cents ?? 0) > 0) {
             <span>
               + <span class="text-amber-400">{{ preview.total_duties_taxes_cents | formatCurrency }}</span> duties
             </span>
           }
-          @if (preview.international_row_count != null && preview.international_row_count > 0) {
+          @if ((preview.international_row_count ?? 0) > 0) {
             <span class="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-[10px] font-medium">
               {{ preview.international_row_count }} INTL
             </span>

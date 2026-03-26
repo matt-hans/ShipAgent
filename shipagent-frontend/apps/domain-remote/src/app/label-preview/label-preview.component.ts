@@ -144,7 +144,7 @@ export class LabelPreviewComponent implements OnChanges {
     }
   }
 
-  onLoadComplete(pdf: { numPages: number }): void {
+  onLoadComplete(_pdf: { numPages: number }): void {
     this.isLoading.set(false);
     this.loadError.set(null);
   }

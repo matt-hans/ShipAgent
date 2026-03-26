@@ -304,8 +304,8 @@ interface RowViewModel {
                           @if (vm.row.tracking_number) {
                             <span class="font-mono text-cyan-400 text-[10px]">{{ vm.row.tracking_number }}</span>
                           }
-                          @if (vm.row.cost_cents != null && vm.row.cost_cents > 0) {
-                            <span class="font-mono text-amber-400 text-[10px]">{{ formatCost(vm.row.cost_cents) }}</span>
+                          @if ((vm.row.cost_cents ?? 0) > 0) {
+                            <span class="font-mono text-amber-400 text-[10px]">{{ formatCost(vm.row.cost_cents!) }}</span>
                           }
                           @if (vm.row.status === 'failed' && vm.row.error_message) {
                             <span

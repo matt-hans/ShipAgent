@@ -27,7 +27,7 @@ import {
   DownloadIconComponent,
   TimeAgoPipe,
 } from '@shipagent/shared-ui';
-import type { ChatSessionSummary, ConversationMessage, PersistedMessage } from '@shipagent/shared-types';
+import type { ChatSessionSummary } from '@shipagent/shared-types';
 
 const MS_PER_DAY = 86_400_000;
 const GROUP_ORDER = ['Today', 'Yesterday', 'Previous 7 Days', 'Older'] as const;
@@ -270,22 +270,25 @@ export class ChatSessionsPanelComponent implements OnInit {
     return this.groupedCache()[group];
   }
 
-  /** Select a session: load message history and update conversation store. */
+  /**
+   * Select a session: fetch message history and request restore via the store.
+   *
+   * Instead of directly writing sessionId/messages to the store (which bypasses
+   * ConversationSessionService's SSE reconnection and mode tracking), we set
+   * pendingSessionRestore. chat-remote's ChatContainerComponent watches this
+   * signal and calls sessionService.loadSession() to properly tear down the
+   * old SSE, set sessionMode, and reconnect.
+   */
   async handleSelectSession(session: ChatSessionSummary): Promise<void> {
     if (this.conversationStore.sessionId() === session.id) return;
     this.error.set(null);
     try {
       const detail = await firstValueFrom(this.apiService.getConversationMessages(session.id));
-      const messages: ConversationMessage[] = detail.messages.map((m: PersistedMessage) => ({
-        id: m.id,
-        role: m.role === 'assistant' ? 'assistant' : (m.role as 'user' | 'system'),
-        content: m.content,
-        timestamp: m.created_at,
-        metadata: m.metadata ?? undefined,
-      }));
-      this.conversationStore.setSessionId(session.id);
-      this.conversationStore.setMessages(messages);
-      this.conversationStore.setInteractiveShipping(session.mode === 'interactive');
+      this.conversationStore.setPendingSessionRestore({
+        sessionId: session.id,
+        mode: session.mode === 'interactive' ? 'interactive' : 'batch',
+        messages: detail.messages,
+      });
     } catch (err) {
       console.error('Failed to load session:', err);
       this.error.set('Failed to load session');
