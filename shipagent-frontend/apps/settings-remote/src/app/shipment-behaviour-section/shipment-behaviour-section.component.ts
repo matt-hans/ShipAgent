@@ -25,6 +25,7 @@ import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from '@shipagent/shared-api';
 import { SettingsStore } from '@shipagent/shared-state';
+import type { AppSettings } from '@shipagent/shared-types';
 
 @Component({
   selector: 'app-shipment-behaviour-section',
@@ -36,7 +37,7 @@ import { SettingsStore } from '@shipagent/shared-state';
       <!-- Section header -->
       <button
         class="settings-section-header"
-        (click)="onToggle.emit()"
+        (click)="toggled.emit()"
         [attr.aria-expanded]="isOpen"
       >
         <div class="flex items-center gap-2">
@@ -231,7 +232,7 @@ export class ShipmentBehaviourSectionComponent implements OnInit, OnDestroy {
   private readonly settingsStore = inject(SettingsStore);
 
   @Input() isOpen = false;
-  @Output() onToggle = new EventEmitter<void>();
+  @Output() toggled = new EventEmitter<void>();
 
   concurrency = signal(5);
   agentModel = 'claude-haiku-4-5-20251001';
@@ -262,7 +263,7 @@ export class ShipmentBehaviourSectionComponent implements OnInit, OnDestroy {
     if (this.debounceTimer) clearTimeout(this.debounceTimer);
   }
 
-  private syncFromSettings(settings: any): void {
+  private syncFromSettings(settings: AppSettings): void {
     this.concurrency.set(settings.batch_concurrency ?? 5);
     this.agentModel = settings.agent_model ?? 'claude-haiku-4-5-20251001';
     this.shipperName = settings.shipper_name ?? '';
@@ -327,7 +328,7 @@ export class ShipmentBehaviourSectionComponent implements OnInit, OnDestroy {
           shipper_state: this.shipperState || null,
           shipper_zip: this.shipperZip || null,
           shipper_country: this.shipperCountry || null,
-        } as any),
+        }),
       );
       this.settingsStore.setAppSettings(updated);
       this.shipperDirty.set(false);

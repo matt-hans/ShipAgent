@@ -230,7 +230,7 @@ export class ChatSessionsPanelComponent implements OnInit {
   }
 
   /** Build class string for session card (Tailwind v4 opacity syntax). */
-  sessionCardClass(session: any): string {
+  sessionCardClass(session: ChatSessionSummary): string {
     const base = 'group relative w-full text-left p-2 rounded-md transition-colors cursor-pointer border';
     if (this.conversationStore.sessionId() === session.id) {
       return `${base} bg-primary/10 border-primary/30`;
@@ -239,7 +239,7 @@ export class ChatSessionsPanelComponent implements OnInit {
   }
 
   /** Build class string for mode badge (Tailwind v4 opacity syntax). */
-  modeBadgeClass(session: any): string {
+  modeBadgeClass(session: ChatSessionSummary): string {
     const base = 'text-[9px] font-mono px-1.5 py-0.5 rounded border';
     if (session.mode === 'interactive') {
       return `${base} bg-amber-500/10 text-amber-400 border-amber-500/20`;

@@ -147,7 +147,7 @@ function formatFileSize(bytes: number): string {
         <!-- Action buttons -->
         <div class="flex justify-end gap-2 pt-1">
           <button
-            (click)="onCancel.emit()"
+            (click)="cancelled.emit()"
             [disabled]="isLocked()"
             class="btn-secondary text-xs px-3 py-1.5"
           >
@@ -177,8 +177,8 @@ function formatFileSize(bytes: number): string {
 export class PaperlessUploadComponent implements OnInit {
   @Input({ required: true }) data!: PaperlessUploadPrompt;
   @Input() sessionId = '';
-  @Output() onUploadComplete = new EventEmitter<void>();
-  @Output() onCancel = new EventEmitter<void>();
+  @Output() uploadComplete = new EventEmitter<void>();
+  @Output() cancelled = new EventEmitter<void>();
   @Input() disabled = false;
 
   @ViewChild('fileInput') fileInputRef!: ElementRef<HTMLInputElement>;
@@ -291,7 +291,7 @@ export class PaperlessUploadComponent implements OnInit {
         ),
       );
       this.uploadState.set('completed');
-      this.onUploadComplete.emit();
+      this.uploadComplete.emit();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Upload failed';
       this.errorMessage.set(msg);

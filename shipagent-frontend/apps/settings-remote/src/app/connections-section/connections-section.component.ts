@@ -44,7 +44,7 @@ import type { ProviderConnectionInfo } from '@shipagent/shared-types';
       <!-- Section header -->
       <button
         class="settings-section-header"
-        (click)="onToggle.emit()"
+        (click)="toggled.emit()"
         [attr.aria-expanded]="isOpen"
       >
         <div class="flex items-center gap-2">
@@ -122,10 +122,10 @@ import type { ProviderConnectionInfo } from '@shipagent/shared-types';
             [connections]="upsConnections()"
             [isOpen]="openProvider() === 'ups'"
             [activeEnvironment]="activeUpsEnv()"
-            (onToggle)="toggleProvider('ups')"
-            (onDelete)="handleDelete($event)"
-            (onDisconnect)="handleDisconnect($event)"
-            (onValidated)="refreshConnections()"
+            (toggled)="toggleProvider('ups')"
+            (deleteRequest)="handleDelete($event)"
+            (disconnectRequest)="handleDisconnect($event)"
+            (validated)="refreshConnections()"
           >
             <ng-container slot="icon">
               <!-- UPS shield icon -->
@@ -173,10 +173,10 @@ import type { ProviderConnectionInfo } from '@shipagent/shared-types';
             providerName="Shopify"
             [connections]="shopifyConnections()"
             [isOpen]="openProvider() === 'shopify'"
-            (onToggle)="toggleProvider('shopify')"
-            (onDelete)="handleDelete($event)"
-            (onDisconnect)="handleDisconnect($event)"
-            (onValidated)="refreshConnections()"
+            (toggled)="toggleProvider('shopify')"
+            (deleteRequest)="handleDelete($event)"
+            (disconnectRequest)="handleDisconnect($event)"
+            (validated)="refreshConnections()"
           >
             <ng-container slot="icon">
               <!-- Shopify icon (green S) -->
@@ -195,10 +195,10 @@ import type { ProviderConnectionInfo } from '@shipagent/shared-types';
             providerName="Amazon"
             [connections]="amazonConnections()"
             [isOpen]="openProvider() === 'amazon'"
-            (onToggle)="toggleProvider('amazon')"
-            (onDelete)="handleDelete($event)"
-            (onDisconnect)="handleDisconnect($event)"
-            (onValidated)="refreshConnections()"
+            (toggled)="toggleProvider('amazon')"
+            (deleteRequest)="handleDelete($event)"
+            (disconnectRequest)="handleDisconnect($event)"
+            (validated)="refreshConnections()"
           >
             <ng-container slot="icon">
               <!-- Amazon icon -->
@@ -226,7 +226,7 @@ export class ConnectionsSectionComponent implements OnInit {
   private readonly platformsService = inject(PlatformsService);
 
   @Input() isOpen = false;
-  @Output() onToggle = new EventEmitter<void>();
+  @Output() toggled = new EventEmitter<void>();
 
   openProvider = signal<string | null>(null);
   connectionsLoading = signal(false);
@@ -253,7 +253,7 @@ export class ConnectionsSectionComponent implements OnInit {
 
   activeUpsEnv = computed(() => {
     const settings = this.settingsStore.appSettings();
-    return (settings as any)?.ups_environment as 'test' | 'production' | null ?? null;
+    return (settings?.ups_environment as 'test' | 'production' | null) ?? null;
   });
 
   totalConfigured = computed(() => {
@@ -314,7 +314,7 @@ export class ConnectionsSectionComponent implements OnInit {
     if (env === currentEnv || this.envSwitching()) return;
     this.envSwitching.set(true);
     try {
-      await firstValueFrom(this.apiService.patchSettings({ ups_environment: env as any }));
+      await firstValueFrom(this.apiService.patchSettings({ ups_environment: env }));
       const settings = await firstValueFrom(this.apiService.getSettings());
       this.settingsStore.setAppSettings(settings);
     } finally {

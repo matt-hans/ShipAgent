@@ -21,7 +21,7 @@ import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from '@shipagent/shared-api';
 import { CommandsStore } from '@shipagent/shared-state';
-import type { CustomCommand } from '@shipagent/shared-types';
+import type { CustomCommand, CommandUpdate } from '@shipagent/shared-types';
 
 /** Command name validation: lowercase, numbers, hyphens only. */
 const COMMAND_NAME_REGEX = /^[a-z][a-z0-9-]*$/;
@@ -36,7 +36,7 @@ const COMMAND_NAME_REGEX = /^[a-z][a-z0-9-]*$/;
       <!-- Section header -->
       <button
         class="settings-section-header"
-        (click)="onToggle.emit()"
+        (click)="toggled.emit()"
         [attr.aria-expanded]="isOpen"
       >
         <div class="flex items-center gap-2">
@@ -259,7 +259,7 @@ export class CustomCommandsSectionComponent implements OnInit {
   private readonly commandsStore = inject(CommandsStore);
 
   @Input() isOpen = false;
-  @Output() onToggle = new EventEmitter<void>();
+  @Output() toggled = new EventEmitter<void>();
 
   customCommands = this.commandsStore.customCommands;
 
@@ -376,15 +376,15 @@ export class CustomCommandsSectionComponent implements OnInit {
     }
     this.isLoading.set(true);
     try {
-      const updatePayload: Record<string, string | undefined> = {};
-      if (this.formName !== cmd.name) updatePayload['name'] = this.formName;
+      const updatePayload: CommandUpdate = {};
+      if (this.formName !== cmd.name) updatePayload.name = this.formName;
       if (this.formDescription !== (cmd.description || '')) {
-        updatePayload['description'] = this.formDescription || undefined;
+        updatePayload.description = this.formDescription || undefined;
       }
-      if (this.formBody !== cmd.body) updatePayload['body'] = this.formBody;
+      if (this.formBody !== cmd.body) updatePayload.body = this.formBody;
 
       const updated = await firstValueFrom(
-        this.apiService.updateCommand(cmd.id, updatePayload as any),
+        this.apiService.updateCommand(cmd.id, updatePayload),
       );
       this.commandsStore.updateCommand(cmd.id, updated);
       this.resetForm();

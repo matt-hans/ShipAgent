@@ -191,7 +191,7 @@ export class PlatformSourceComponent implements OnInit {
           // Key by provider (e.g. 'shopify'), NOT connection_key
           // (e.g. 'shopify:matthansdev.myshopify.com') — components
           // look up connections()['shopify'], not the full key.
-          const key = (conn as any).provider ?? conn.connection_key;
+          const key = conn.provider ?? conn.connection_key;
           this.platformsStore.setConnection(key, conn);
         }
       },
