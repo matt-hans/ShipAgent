@@ -34,7 +34,7 @@ import type { Contact, ContactCreate, ContactUpdate } from '@shipagent/shared-ty
       <!-- Section header -->
       <button
         class="settings-section-header"
-        (click)="onToggle.emit()"
+        (click)="toggled.emit()"
         [attr.aria-expanded]="isOpen"
       >
         <div class="flex items-center gap-2">
@@ -240,7 +240,7 @@ export class AddressBookSectionComponent implements OnInit {
   private readonly contactsStore = inject(ContactsStore);
 
   @Input() isOpen = false;
-  @Output() onToggle = new EventEmitter<void>();
+  @Output() toggled = new EventEmitter<void>();
 
   contacts = this.contactsStore.contacts;
   searchQuery = '';

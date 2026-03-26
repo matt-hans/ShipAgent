@@ -15,6 +15,7 @@ import { PlatformsStore } from '@shipagent/shared-state';
 import type {
   PlatformType,
   ProviderConnectionInfo,
+  SaveProviderRequest,
   ShopifyEnvStatus,
   AmazonEnvStatus,
 } from '@shipagent/shared-types';
@@ -174,7 +175,7 @@ export class PlatformsService {
       for (const conn of response) {
         // Key by provider name ('shopify', 'amazon'), not connection_key
         // ('shopify:store.myshopify.com') — sidebar looks up by provider.
-        const key = (conn as any).provider ?? conn.connection_key;
+        const key = conn.provider ?? conn.connection_key;
         this.platformsStore.setConnection(key, conn);
       }
       this.platformsStore.incrementProviderConnectionsVersion();
@@ -189,17 +190,11 @@ export class PlatformsService {
    */
   async saveProviderCredentials(
     provider: string,
-    payload: {
-      auth_mode: string;
-      credentials: Record<string, string>;
-      metadata: Record<string, unknown>;
-      display_name: string;
-      environment?: string;
-    },
+    payload: SaveProviderRequest,
   ): Promise<{ connection_key: string; is_new: boolean } | null> {
     try {
       const result = await firstValueFrom(
-        this.apiService.saveProviderCredentials(provider, payload as any),
+        this.apiService.saveProviderCredentials(provider, payload),
       );
       await this.refreshConnections();
       return result;

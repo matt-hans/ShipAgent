@@ -126,7 +126,7 @@ function formatTime(raw: string): string {
       <!-- Actions -->
       <div class="flex gap-3">
         <button
-          (click)="onCancel.emit()"
+          (click)="cancelled.emit()"
           [disabled]="isConfirming()"
           class="btn-secondary flex-1 h-9 text-sm"
         >
@@ -154,8 +154,8 @@ function formatTime(raw: string): string {
 })
 export class PickupPreviewComponent {
   @Input({ required: true }) data!: PickupPreview;
-  @Output() onConfirm = new EventEmitter<void>();
-  @Output() onCancel = new EventEmitter<void>();
+  @Output() confirmed = new EventEmitter<void>();
+  @Output() cancelled = new EventEmitter<void>();
 
   private readonly apiService = inject(ApiService);
   private readonly conversationStore = inject(ConversationStore);
@@ -176,8 +176,8 @@ export class PickupPreviewComponent {
       const sid = this.conversationStore.sessionId();
       if (!sid) throw new Error('No active session');
 
-      const tokenClause = (this.data as any).confirmation_token
-        ? ` confirmation_token=${(this.data as any).confirmation_token}`
+      const tokenClause = this.data.confirmation_token
+        ? ` confirmation_token=${this.data.confirmation_token}`
         : '';
       const msg = `Confirmed. Schedule the pickup with confirmed=true.${tokenClause}`;
 

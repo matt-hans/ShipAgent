@@ -46,7 +46,7 @@ const STATUS_COLORS: Record<ProviderConnectionStatus, string> = {
       <!-- Header -->
       <button
         class="w-full flex items-center justify-between px-3 py-2.5 hover:bg-muted/30 transition-colors"
-        (click)="onToggle.emit()"
+        (click)="toggled.emit()"
         [attr.aria-expanded]="isOpen"
       >
         <div class="flex items-center gap-2">
@@ -209,10 +209,10 @@ export class ProviderCardComponent {
   @Input() isOpen = false;
   @Input() activeEnvironment: string | null = null;
 
-  @Output() onToggle = new EventEmitter<void>();
-  @Output() onDelete = new EventEmitter<string>();
-  @Output() onDisconnect = new EventEmitter<string>();
-  @Output() onValidated = new EventEmitter<void>();
+  @Output() toggled = new EventEmitter<void>();
+  @Output() deleteRequest = new EventEmitter<string>();
+  @Output() disconnectRequest = new EventEmitter<string>();
+  @Output() validated = new EventEmitter<void>();
 
   pendingAction = signal<string | null>(null);
   confirmDeleteKey = signal<string | null>(null);
@@ -242,7 +242,7 @@ export class ProviderCardComponent {
         this.apiService.validateProviderConnection(key),
       );
       this.validationResult.set({ key, valid: result.valid, message: result.message });
-      this.onValidated.emit();
+      this.validated.emit();
     } catch {
       this.validationResult.set({ key, valid: false, message: 'Validation request failed.' });
     } finally {
@@ -253,7 +253,7 @@ export class ProviderCardComponent {
   async handleDisconnect(key: string): Promise<void> {
     this.pendingAction.set(`disconnect:${key}`);
     try {
-      this.onDisconnect.emit(key);
+      this.disconnectRequest.emit(key);
     } finally {
       this.pendingAction.set(null);
     }
@@ -262,7 +262,7 @@ export class ProviderCardComponent {
   async handleDelete(key: string): Promise<void> {
     this.pendingAction.set(`delete:${key}`);
     try {
-      this.onDelete.emit(key);
+      this.deleteRequest.emit(key);
     } finally {
       this.pendingAction.set(null);
       this.confirmDeleteKey.set(null);

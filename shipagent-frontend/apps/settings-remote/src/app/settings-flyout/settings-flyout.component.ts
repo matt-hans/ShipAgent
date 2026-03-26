@@ -67,25 +67,25 @@ import { CustomCommandsSectionComponent } from '../custom-commands-section/custo
         <!-- Connections -->
         <app-connections-section
           [isOpen]="openSection() === 'connections'"
-          (onToggle)="toggleSection('connections')"
+          (toggled)="toggleSection('connections')"
         />
 
         <!-- Shipment Behaviour -->
         <app-shipment-behaviour-section
           [isOpen]="openSection() === 'shipment'"
-          (onToggle)="toggleSection('shipment')"
+          (toggled)="toggleSection('shipment')"
         />
 
         <!-- Address Book -->
         <app-address-book-section
           [isOpen]="openSection() === 'address'"
-          (onToggle)="toggleSection('address')"
+          (toggled)="toggleSection('address')"
         />
 
         <!-- Custom Commands -->
         <app-custom-commands-section
           [isOpen]="openSection() === 'commands'"
-          (onToggle)="toggleSection('commands')"
+          (toggled)="toggleSection('commands')"
         />
       </div>
     </aside>

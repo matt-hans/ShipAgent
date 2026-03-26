@@ -30,7 +30,8 @@ import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { provideMarkdown } from 'ngx-markdown';
-import { AppStore, ConversationStore, DataSourceStore, JobStore } from '@shipagent/shared-state';
+import { AppStore, ConversationStore, DataSourceStore, JobStore, type SourceType } from '@shipagent/shared-state';
+import type { ColumnDataType, DataSourceType } from '@shipagent/shared-types';
 import { ApiService } from '@shipagent/shared-api';
 import { ConversationSseService } from '../../services/conversation-sse.service';
 import { ConversationSessionService } from '../../services/conversation-session.service';
@@ -210,7 +211,7 @@ export class ChatContainerComponent implements OnInit {
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
       if (msg.metadata?.['type'] === 'preview_ready') {
-        return msg.metadata['preview'] as any;
+        return msg.metadata['preview'] as Record<string, unknown>;
       }
     }
     return null;
@@ -329,27 +330,56 @@ export class ChatContainerComponent implements OnInit {
       // Restore data source context from the session if available.
       if (pending.contextData?.data_source) {
         const ds = pending.contextData.data_source;
-        const sourceType = ds.source_type || ds.type || null;
-        this.dataSourceStore.setActiveSourceType(sourceType as any);
-        this.dataSourceStore.setActiveSourceInfo(ds.label || ds.file_path || '');
-
-        // Reconnect saved source if available (matches React's restore behavior).
         const savedSourceId = ds.saved_source_id;
+
         if (savedSourceId) {
+          // Show reconnecting state while attempting reconnection.
+          this.dataSourceStore.setActiveSourceType((ds.source_type || ds.type || null) as SourceType | null);
+          this.dataSourceStore.setActiveSourceInfo('Reconnecting...');
+
           this.apiService.reconnectSavedSource(savedSourceId).subscribe({
             next: (result) => {
               if (result.status === 'connected') {
+                this.dataSourceStore.setActiveSourceInfo(ds.label || ds.file_path || '');
+                const mappedColumns = result.columns?.map((c) => ({
+                  name: c.name,
+                  type: c.type as ColumnDataType,
+                  nullable: c.nullable,
+                  warnings: [] as string[],
+                }));
                 this.dataSourceStore.setDataSource({
-                  type: (ds.type as any) ?? 'csv',
+                  type: (ds.type as DataSourceType) ?? 'csv',
                   status: 'connected',
                   row_count: result.row_count ?? ds.row_count ?? undefined,
-                  column_count: result.column_count ?? 0,
+                  column_count: mappedColumns?.length ?? result.column_count ?? 0,
+                  columns: mappedColumns,
                   connected_at: new Date().toISOString(),
                 });
+              } else {
+                // Reconnection returned non-connected status — clear source.
+                this.dataSourceStore.setActiveSourceType(null);
+                this.dataSourceStore.setActiveSourceInfo('');
+                this.dataSourceStore.setDataSource(null);
               }
             },
-            error: () => { /* best-effort — source may no longer exist */ },
+            error: () => {
+              // Source no longer available — clear state and inform user.
+              this.dataSourceStore.setActiveSourceType(null);
+              this.dataSourceStore.setActiveSourceInfo('');
+              this.dataSourceStore.setDataSource(null);
+              this.conversationStore.appendMessage({
+                id: `sys-restore-err-${Date.now()}`,
+                role: 'system',
+                content: 'Previous data source is no longer available. Connect a new source from the sidebar.',
+                timestamp: new Date().toISOString(),
+                metadata: { type: 'status' },
+              });
+            },
           });
+        } else {
+          // No saved source ID — just set the visual indicators.
+          this.dataSourceStore.setActiveSourceType((ds.source_type || ds.type || null) as SourceType | null);
+          this.dataSourceStore.setActiveSourceInfo(ds.label || ds.file_path || '');
         }
       }
 
@@ -412,13 +442,13 @@ export class ChatContainerComponent implements OnInit {
   // Preview actions (confirm / cancel / refine)
   // ---------------------------------------------------------------------------
 
-  async handleConfirmFromPreview(previewData: any): Promise<void> {
-    const jobId = previewData?.job_id as string | undefined;
+  async handleConfirmFromPreview(previewData: Record<string, unknown>): Promise<void> {
+    const jobId = previewData?.['job_id'] as string | undefined;
     if (!jobId) return;
     const writeBack = this.dataSourceStore.writeBackEnabled();
 
     try {
-      const selectedServiceCode = previewData?.selected_service_code as string | undefined;
+      const selectedServiceCode = previewData?.['selected_service_code'] as string | undefined;
       await this.chatActions.confirmJob(jobId, writeBack, selectedServiceCode);
 
       // Add confirmation message to chat.
@@ -449,8 +479,8 @@ export class ChatContainerComponent implements OnInit {
     }
   }
 
-  async handleCancelFromPreview(previewData: any): Promise<void> {
-    const jobId = previewData?.job_id as string | undefined;
+  async handleCancelFromPreview(previewData: Record<string, unknown>): Promise<void> {
+    const jobId = previewData?.['job_id'] as string | undefined;
     if (!jobId) return;
 
     try {

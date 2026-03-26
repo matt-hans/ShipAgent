@@ -394,10 +394,10 @@ export class ApiService {
   reconnectSavedSource(
     sourceId: string,
     connectionString?: string,
-  ): Observable<{ status: string; source_type: string; row_count: number; column_count: number }> {
+  ): Observable<{ status: string; source_type: string; row_count: number; column_count: number; columns?: { name: string; type: string; nullable: boolean }[] }> {
     const body: Record<string, unknown> = { source_id: sourceId };
     if (connectionString) body['connection_string'] = connectionString;
-    return this.http.post<{ status: string; source_type: string; row_count: number; column_count: number }>(
+    return this.http.post<{ status: string; source_type: string; row_count: number; column_count: number; columns?: { name: string; type: string; nullable: boolean }[] }>(
       `${this.baseUrl}/saved-sources/reconnect`,
       body,
     );
