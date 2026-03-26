@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "importHelpers": true,
+    "isolatedModules": true,
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "target": "es2022",
+    "baseUrl": ".",
+    "paths": {
+      "@shipagent/shared-state": ["libs/shared/state/src/index.ts"],
+      "@shipagent/shared-api": ["libs/shared/api/src/index.ts"],
+      "@shipagent/shared-sse": ["libs/shared/sse/src/index.ts"],
+      "@shipagent/shared-types": ["libs/shared/types/src/index.ts"],
+      "@shipagent/shared-ui": ["libs/shared/ui/src/index.ts"],
+      "@shipagent/shared-tauri": ["libs/shared/tauri/src/index.ts"],
+      "@shipagent/testing": ["libs/testing/src/index.ts"]
+    }
+  }
+}

@@ -1,0 +1,589 @@
+/**
+ * ShipAgent Component Styles
+ *
+ * All reusable component classes. These are the CSS counterparts to the
+ * design system primitives — badge variants, button styles, card variants,
+ * message styles, platform cards, data grids, and sidebar layout.
+ */
+
+@layer components {
+  /* ============================================================
+   * App Layout
+   * ============================================================ */
+
+  .app-header {
+    @apply flex-shrink-0 border-b border-border bg-card/80 backdrop-blur-sm;
+  }
+
+  .app-sidebar {
+    @apply flex-shrink-0 border-r border-border bg-card/50;
+  }
+
+  .command-center--interactive {
+    @apply bg-amber-500/[0.03];
+  }
+
+  .command-center--interactive .command-messages-shell {
+    @apply bg-amber-500/[0.02];
+  }
+
+  .command-center--interactive .command-input-shell {
+    @apply border-amber-500/20 bg-amber-500/[0.04];
+  }
+
+  .container-wide {
+    @apply px-4;
+  }
+
+  /* ============================================================
+   * Platform Cards
+   * ============================================================ */
+
+  .platform-card {
+    @apply relative overflow-hidden rounded-lg border bg-card transition-all duration-300;
+    @apply hover:shadow-lg hover:-translate-y-0.5;
+  }
+
+  .platform-card::before {
+    content: '';
+    @apply absolute inset-x-0 top-0 h-1 transition-opacity duration-300;
+  }
+
+  .platform-card:hover::before {
+    @apply opacity-100;
+  }
+
+  .platform-card--shopify::before {
+    background: oklch(0.62 0.2 145);
+  }
+
+  .platform-card--woocommerce::before {
+    background: oklch(0.55 0.18 310);
+  }
+
+  .platform-card--sap::before {
+    background: oklch(0.5 0.16 220);
+  }
+
+  .platform-card--oracle::before {
+    background: oklch(0.55 0.2 25);
+  }
+
+  /* ============================================================
+   * Status Indicators
+   * ============================================================ */
+
+  .status-dot {
+    @apply w-2.5 h-2.5 rounded-full;
+  }
+
+  .status-dot--connected {
+    @apply bg-success;
+    animation: pulse-success 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  .status-dot--disconnected {
+    @apply bg-muted-foreground/40;
+  }
+
+  .status-dot--error {
+    @apply bg-destructive;
+    animation: pulse-error 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  .status-dot--authenticating {
+    @apply bg-warning;
+    animation: pulse-warning 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  /* ============================================================
+   * Form Elements
+   * ============================================================ */
+
+  .credential-input {
+    @apply font-mono text-sm tracking-wide;
+  }
+
+  .section-divider {
+    @apply h-px bg-gradient-to-r from-transparent via-border to-transparent;
+  }
+
+  .input-command {
+    @apply w-full px-4 py-2.5 text-sm font-mono rounded-lg;
+    @apply bg-card border border-border text-foreground;
+    @apply placeholder:text-muted-foreground;
+    @apply focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent;
+    @apply transition-colors duration-200;
+  }
+
+  /* ============================================================
+   * Buttons
+   * ============================================================ */
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center;
+    @apply px-4 py-2.5 rounded-lg font-medium text-sm;
+    @apply bg-primary text-primary-foreground;
+    @apply hover:bg-primary/90 active:bg-primary/80;
+    @apply transition-all duration-200;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center;
+    @apply px-4 py-2.5 rounded-lg font-medium text-sm;
+    @apply bg-secondary text-secondary-foreground;
+    @apply hover:bg-secondary/80 active:bg-secondary/70;
+    @apply border border-border;
+    @apply transition-all duration-200;
+    @apply disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  /* ============================================================
+   * Badges
+   * ============================================================ */
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-mono uppercase tracking-wider;
+  }
+
+  .badge-success {
+    @apply bg-success/20 text-success border border-success/30;
+  }
+
+  .badge-error {
+    @apply bg-destructive/20 text-destructive border border-destructive/30;
+  }
+
+  .badge-warning {
+    @apply bg-warning/20 text-warning border border-warning/30;
+  }
+
+  .badge-info {
+    @apply bg-info/20 text-info border border-info/30;
+  }
+
+  .badge-neutral {
+    @apply bg-muted text-muted-foreground border border-border;
+  }
+
+  /* ============================================================
+   * Cards
+   * ============================================================ */
+
+  .card-premium {
+    @apply rounded-lg bg-card border border-border p-4;
+    @apply shadow-sm;
+  }
+
+  /* Domain card borders (UPS MCP v2) */
+  .card-domain-shipping {
+    border-color: var(--color-domain-shipping);
+  }
+
+  .card-domain-pickup {
+    border-color: var(--color-domain-pickup);
+  }
+
+  .card-domain-locator {
+    border-color: var(--color-domain-locator);
+  }
+
+  .card-domain-paperless {
+    border-color: var(--color-domain-paperless);
+  }
+
+  .card-domain-landed-cost {
+    border-color: var(--color-domain-landed-cost);
+  }
+
+  .card-domain-tracking {
+    border-color: var(--color-domain-tracking);
+  }
+
+  .card-domain-contacts {
+    border-color: var(--color-domain-contacts);
+  }
+
+  /* ============================================================
+   * Messages
+   * ============================================================ */
+
+  .message-system {
+    @apply bg-muted/50 rounded-lg px-4 py-3 border border-border/50;
+  }
+
+  .message-user {
+    @apply bg-accent/10 rounded-lg px-4 py-3 border border-accent/20;
+  }
+
+  /* ============================================================
+   * Progress
+   * ============================================================ */
+
+  .progress-bar {
+    @apply h-2 rounded-full bg-muted overflow-hidden;
+  }
+
+  .progress-bar-fill {
+    @apply h-full bg-accent rounded-full transition-all duration-300;
+  }
+
+  .progress-bar-fill.animated {
+    background: linear-gradient(
+      90deg,
+      var(--color-accent) 0%,
+      oklch(0.8 0.2 45) 50%,
+      var(--color-accent) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+
+  /* ============================================================
+   * Typing Indicator
+   * ============================================================ */
+
+  .typing-indicator {
+    @apply flex gap-1;
+  }
+
+  .typing-indicator span {
+    @apply w-2 h-2 rounded-full bg-muted-foreground/50;
+    animation: typing-bounce 1.4s ease-in-out infinite;
+  }
+
+  .typing-indicator span:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+
+  .typing-indicator span:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+
+  /* ============================================================
+   * Scroll Areas
+   * ============================================================ */
+
+  .scrollable {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-border) transparent;
+  }
+
+  /* ============================================================
+   * Loading Effects
+   * ============================================================ */
+
+  .shimmer {
+    background: linear-gradient(
+      90deg,
+      var(--color-muted) 0%,
+      var(--color-border) 50%,
+      var(--color-muted) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+  }
+
+  .pulse-glow {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  /* ============================================================
+   * Data Grid
+   * ============================================================ */
+
+  .data-grid {
+    @apply font-mono text-xs;
+  }
+
+  .data-grid th {
+    @apply px-4 py-3 text-left font-semibold uppercase tracking-wider text-muted-foreground bg-muted/50;
+  }
+
+  .data-grid td {
+    @apply px-4 py-3 border-t border-border;
+  }
+
+  .data-grid tr:hover td {
+    @apply bg-muted/30;
+  }
+
+  /* ============================================================
+   * Navigation
+   * ============================================================ */
+
+  .nav-tab {
+    @apply relative px-4 py-2 text-sm font-medium transition-colors;
+    @apply text-muted-foreground hover:text-foreground;
+  }
+
+  .nav-tab--active {
+    @apply text-foreground;
+  }
+
+  .nav-tab--active::after {
+    content: '';
+    @apply absolute bottom-0 inset-x-0 h-0.5 bg-accent;
+  }
+
+  .page-header {
+    @apply border-b border-border bg-card/80 backdrop-blur-sm sticky top-0 z-40;
+  }
+
+  /* ============================================================
+   * Gradient
+   * ============================================================ */
+
+  .gradient-mesh {
+    background:
+      radial-gradient(at 40% 20%, oklch(0.72 0.18 45 / 0.1) 0px, transparent 50%),
+      radial-gradient(at 80% 0%, oklch(0.62 0.2 145 / 0.08) 0px, transparent 50%),
+      radial-gradient(at 0% 50%, oklch(0.55 0.18 310 / 0.06) 0px, transparent 50%);
+  }
+
+  /* ============================================================
+   * Settings Flyout
+   * ============================================================ */
+
+  .settings-backdrop {
+    @apply fixed inset-0 bg-black/50 z-40;
+    animation: fade-in 0.2s ease-out;
+  }
+
+  .settings-flyout {
+    @apply fixed top-0 right-0 h-full w-[360px] bg-card border-l border-border z-50;
+    @apply flex flex-col;
+    animation: slide-in-right 0.3s ease-out;
+  }
+
+  @media (min-width: 1024px) {
+    .settings-flyout {
+      @apply top-12;
+      @apply h-[calc(100vh-3rem)];
+    }
+  }
+
+  .settings-flyout-content {
+    @apply flex-1 overflow-y-auto p-4 space-y-2;
+  }
+
+  .settings-section {
+    @apply rounded-lg border border-border overflow-hidden;
+  }
+
+  .settings-section-header {
+    @apply w-full flex items-center justify-between p-3 bg-muted/30 hover:bg-muted/50 transition-colors;
+  }
+
+  .settings-section-content {
+    @apply p-3 border-t border-border bg-card;
+  }
+
+  /* ============================================================
+   * Chat History Flyout
+   * ============================================================ */
+
+  .chat-history-backdrop {
+    @apply fixed inset-0 bg-black/50 z-40;
+    animation: fade-in 0.2s ease-out;
+  }
+
+  .chat-history-flyout {
+    @apply fixed top-0 right-0 h-full w-[360px] bg-card border-l border-border z-50;
+    @apply flex flex-col;
+    animation: slide-in-right 0.3s ease-out;
+  }
+
+  @media (min-width: 1024px) {
+    .chat-history-flyout {
+      @apply top-12;
+      @apply h-[calc(100vh-3rem)];
+    }
+  }
+
+  .chat-history-flyout-content {
+    @apply flex-1 overflow-y-auto;
+  }
+
+  /* ============================================================
+   * Rich Input (Mirror Div Technique)
+   * ============================================================ */
+
+  .rich-input-mirror {
+    @apply absolute inset-0 p-4 font-mono text-sm whitespace-pre-wrap break-words pointer-events-none overflow-hidden;
+    @apply bg-card border border-border rounded-lg;
+    color: var(--color-foreground);
+  }
+
+  .rich-input-textarea {
+    @apply w-full p-4 font-mono text-sm rounded-lg resize-none;
+    @apply bg-transparent border border-border;
+    @apply placeholder:text-muted-foreground;
+    @apply focus:outline-none focus:ring-2 focus:ring-ring focus:border-transparent;
+    @apply transition-colors duration-200;
+    position: relative;
+    z-index: 1;
+    background-color: transparent;
+    color: transparent;
+    caret-color: var(--color-foreground);
+  }
+
+  .rich-input-textarea::placeholder {
+    color: var(--color-muted-foreground);
+  }
+
+  .rich-input-textarea::selection {
+    background: oklch(0.72 0.18 45 / 0.3);
+    color: transparent;
+  }
+
+  /* ============================================================
+   * Autocomplete Popover
+   * ============================================================ */
+
+  .autocomplete-popover {
+    @apply absolute left-0 right-0 bottom-full mb-1 z-50;
+    @apply bg-popover border border-border rounded-lg shadow-lg;
+    @apply max-h-48 overflow-y-auto;
+    animation: slide-up 0.15s ease-out;
+  }
+
+  .autocomplete-item {
+    @apply w-full flex items-center px-3 py-2 text-left text-sm;
+    @apply hover:bg-muted transition-colors;
+  }
+
+  .autocomplete-item--selected {
+    @apply bg-primary/10;
+  }
+
+  /* ============================================================
+   * Token Highlight (Rich Input)
+   * ============================================================ */
+
+  .token-handle {
+    color: var(--color-domain-locator);
+  }
+
+  .token-handle--unknown {
+    color: var(--color-warning);
+  }
+
+  .token-handle--incomplete {
+    color: var(--color-muted-foreground);
+    font-style: italic;
+  }
+
+  .token-command {
+    color: var(--color-domain-paperless);
+  }
+
+  .token-command--unknown {
+    color: var(--color-warning);
+  }
+
+  .token-command--incomplete {
+    color: var(--color-muted-foreground);
+    font-style: italic;
+  }
+
+  /* ============================================================
+   * Platform Background Colors
+   * ============================================================ */
+
+  .bg-shopify {
+    background-color: var(--color-shopify);
+  }
+
+  .bg-woocommerce {
+    background-color: var(--color-woocommerce);
+  }
+
+  .bg-sap {
+    background-color: var(--color-sap);
+  }
+
+  .bg-oracle {
+    background-color: var(--color-oracle);
+  }
+
+  .bg-success {
+    background-color: var(--color-success);
+  }
+
+  .bg-warning {
+    background-color: var(--color-warning);
+  }
+
+  .bg-info {
+    background-color: var(--color-info);
+  }
+
+  .bg-error {
+    background-color: var(--color-destructive);
+  }
+
+  .border-error {
+    border-color: var(--color-destructive);
+  }
+
+  /* ============================================================
+   * Stagger Animation Delays
+   * ============================================================ */
+
+  .stagger-1 { animation-delay: 50ms; }
+  .stagger-2 { animation-delay: 100ms; }
+  .stagger-3 { animation-delay: 150ms; }
+  .stagger-4 { animation-delay: 200ms; }
+  .stagger-5 { animation-delay: 250ms; }
+
+  /* ============================================================
+   * Animation Utility Classes
+   * ============================================================ */
+
+  .animate-reveal {
+    animation: reveal 0.5s ease-out forwards;
+  }
+
+  .animate-slide-up {
+    animation: slide-up 0.4s ease-out forwards;
+  }
+
+  .animate-scale-in {
+    animation: scale-in 0.3s ease-out forwards;
+  }
+
+  .animate-fade-in {
+    animation: fade-in 0.3s ease-out forwards;
+  }
+
+  .animate-fade-in-up {
+    animation: fade-in-up 0.3s ease-out forwards;
+  }
+
+  /* ============================================================
+   * Scrollbar Styling
+   * ============================================================ */
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/40;
+  }
+
+  ::selection {
+    @apply bg-accent/30 text-foreground;
+  }
+}

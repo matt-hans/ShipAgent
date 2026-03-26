@@ -6,20 +6,20 @@
 
 **Architecture:** LLM as Configuration Engine - generates templates, deterministic code executes on data.
 
-**Current Focus:** Phase 7 - Web Interface (In Progress)
+**Current Focus:** Phase 9 - Angular Module Federation Frontend Rebuild (In Progress)
 
 ---
 
 ## Current Position
 
-**Phase:** 7 of 8 (Web Interface) - IN PROGRESS
-**Plan:** 4 of 6 complete (07-04)
-**Status:** In progress
-**Last activity:** 2026-01-25 - Completed 07-04-PLAN.md (Real-Time Progress Display)
+**Phase:** 9 of 9 (Angular Module Federation Frontend Rebuild) - IN PROGRESS
+**Plan:** 9 of 9 (Tasks 1-2 complete; Task 3 at checkpoint:human-verify)
+**Status:** Awaiting human verification (Task 3 checkpoint)
+**Last activity:** 2026-03-25 - Completed 09-09-PLAN.md Tasks 1-2; at checkpoint:human-verify
 
 ```
-Progress: [#################---] 88% phases | [#############-------] 67% Phase 7
-Phase 7 of 8 IN PROGRESS | Plan 4 of 6 complete | 41/43+ total plans
+Progress: [####################] 100% phases 1-8 | [##################--] 95% Phase 9
+Phase 9 of 9 IN PROGRESS | Plan 9 tasks 1-2 complete | at human-verify checkpoint
 ```
 
 ---
@@ -28,10 +28,11 @@ Phase 7 of 8 IN PROGRESS | Plan 4 of 6 complete | 41/43+ total plans
 
 | Metric | Value |
 |--------|-------|
-| Plans Completed | 41 |
+| Plans Completed | 50 (09-09 Tasks 1-2; awaiting Task 3 human-verify) |
 | Plans Failed | 0 |
 | Success Rate | 100% |
-| Phases Completed | 6 / 8 |
+| Phases Completed | 8 / 9 (Phase 9 at final checkpoint) |
+| Last Plan Duration | ~135m (09-09, across two sessions) |
 
 ---
 
@@ -141,6 +142,43 @@ Phase 7 of 8 IN PROGRESS | Plan 4 of 6 complete | 41/43+ total plans
 | Sticky confirmation footer | Per CONTEXT.md Decision 3 - always accessible during scroll | 07-03 |
 | Four-phase workflow state | input/preview/executing/complete for clear workflow separation | 07-03 |
 | Inline SVG icons | Avoid external dependency like lucide-react, keep bundle small | 07-04 |
+| Angular 21.2 used instead of Angular 19 | Nx 22.6 scaffolds Angular 21 by default; native-federation v21 is matching version; unified build removes cross-version concerns | 09-01 |
+| Nx flat ESLint config used instead of .eslintrc.json | Nx 22 generates flat config format; @nx/enforce-module-boundaries works identically in both formats | 09-01 |
+| Relative manifest paths for federation | All remoteEntry.json paths use ./remote-name/remoteEntry.json format; required for Tauri tauri://localhost protocol compatibility | 09-01 |
+| mappingVersion: true in all federation configs | Required for Nx mapped path (@shipagent/*) support per native-federation documentation | 09-01 |
+| Tailwind v4 CSS-first configuration | No tailwind.config.ts needed; all design tokens in @theme blocks; @source directives control scanning scope in Nx monorepo | 09-01 |
+| Signal-based InjectionToken for API base URL | InjectionToken<Signal<string>> allows reactive URL updates when Tauri sidecar port is discovered at runtime | 09-02 |
+| Domain-organized type files for shared-types | Split monolithic api.ts into 10 focused files for maintainability and tree-shaking; exact field names preserved from React | 09-02 |
+| Jasmine spy factories for test mocks | createMockApiService() returns pre-built spy objects; prevents boilerplate jasmine.createSpyObj in every test | 09-02 |
+| Fixture factories as functions not constants | Factory functions return fresh objects per call, preventing accidental state sharing between tests | 09-02 |
+| SseService is component-scoped (not root) | EventSource lifecycle must be tied to the consuming remote; root injection prevents cleanup on remote unmount | 09-03 |
+| chatSessionsVersion excluded from withStorageSync select | It is a volatile counter (not persisted state); including it would flush localStorage on every message | 09-03 |
+| 70 SVG icon components created (exceeds 50 minimum) | Complete parity with React icons.tsx; all 32 original icons plus 38 additional domain icons | 09-03 |
+| Spartan helm generation deferred to per-remote on-demand | @spartan-ng/cli requires interactive prompts; @spartan-ng/brain installed for direct import; helm wrappers generated per remote as needed | 09-03 |
+| Zone.js with eventCoalescing for shell (not zoneless) | provideZoneChangeDetection({ eventCoalescing: true }) per research recommendation for shell stability | 09-04 |
+| requestAnimationFrame poll for lazy settings flyout load | Avoids effect() injection context requirement; settings opened rarely so polling overhead is negligible | 09-04 |
+| Function() constructor for @tauri-apps/plugin-updater dynamic import | Package not installed in dev; bypasses TS static analysis without requiring the package at compile time | 09-04 |
+| RemoteEntry interface with optional providers[] | Allows remotes to scope their services to a child Injector while remaining backwards compatible | 09-04 |
+| Component-scoped SseService and conversation services prevent SSE leaks on remote unload | Root injection would keep SSE connections alive after remote unmount, causing ghost events | 09-05 |
+| Promise-based mutex in ConversationSessionService prevents concurrent createConversation races | Parallel ensureSession() calls could double-create sessions without mutex serialization | 09-05 |
+| Generation guard epoch counter invalidates stale SSE events from prior sessions | SSE events in-flight when session resets would corrupt new session state without epoch invalidation | 09-05 |
+| DomainCardBridgeService uses loadRemoteModule directly (no RemoteLoaderService dep) for cross-remote isolation | RemoteLoaderService is shell-only; cross-remote bridge must use native-federation API directly | 09-05 |
+| CompletionMeta interface defined locally for typed access to completion metadata | noPropertyAccessFromIndexSignature strict mode causes TS4111 errors on Record<string,unknown> field access | 09-05 |
+| PlatformsService is component-scoped (not root) | Platform connection lifecycle tied to settings-remote; root injection would leak connections across remotes | 09-07 |
+| Connection state uses PlatformsStore for cross-remote visibility | Platform status must be visible shell-wide; component-local state would break OnboardingGate checks | 09-07 |
+| Shipper address saved on demand (dirty flag) not auto-save | Reduce API calls; dirty-flag-gated save button gives user explicit control | 09-07 |
+| Onboarding completes via completeOnboarding() then SettingsStore.setOnboardingCompleted(true) | API call persists flag to DB; store update dismisses shell overlay immediately without round-trip | 09-07 |
+| DomainCardRegistryService is @Injectable() (not root-scoped) | Provided by consuming remote's Injector so each remote gets its own instance; avoids cross-remote DI pollution | 09-08 |
+| TrackingCardComponent uses computed() signal for visibleActivities | Avoids recalculating on every CD cycle; collapses to 3 activities by default | 09-08 |
+| LabelPreviewComponent uses ng2-pdf-viewer PdfViewerModule | Supports Angular 21, no pdfjs worker config needed unlike react-pdf | 09-08 |
+| ContactCardComponent handles delete by fetching contacts and finding by handle | Mirrors React implementation; @handle is user-visible key but server uses UUID | 09-08 |
+| Boolean() global not accessible in Angular templates | Replaced .filter(Boolean) with protected formatAlert() method in PaperlessCardComponent | 09-08 |
+| JobDetailPanelComponent uses displayCostCents() as plain function (not computed signal) | activeJob is already a signal from NgRx SignalStore | 09-08 |
+| LocalStorageShim installed per-spec-file in beforeAll() not via setupFiles | tinyglobby cwd resolution prevents cross-project setup file discovery; Node 25 localStorage stub requires --localstorage-file to be functional | 09-09 |
+| libs/shared/state given own project.json with buildTarget: shell:esbuild:development | @angular/build:unit-test globs relative to projectSourceRoot; state lib specs invisible to shell test target without own Nx project | 09-09 |
+| Dockerfile copies Angular dist/apps/shell/browser to frontend/dist | Preserves existing FastAPI FRONTEND_DIR without requiring Python code path changes in Docker | 09-09 |
+| FastAPI FRONTEND_DIR prefers Angular dist with React fallback using .exists() guard | Zero-downtime rollback path; both dev scenarios supported | 09-09 |
+| pre-angular-switchover git tag created before any config changes | Enables instant rollback if Angular app has critical bugs during human verification | 09-09 |
 
 ### Roadmap Evolution
 
@@ -315,14 +353,15 @@ Phase 6 delivered the Batch Execution Engine:
 
 ### Last Session
 
-**Date:** 2026-01-25
-**Action:** Completed 07-04-PLAN.md (Real-Time Progress Display)
-**Outcome:** Created ProgressDisplay, RowStatusTable, ErrorAlert components and integrated into Dashboard with SSE-driven real-time updates.
+**Date:** 2026-03-25
+**Action:** Completed 09-09-PLAN.md Tasks 1-2; paused at Task 3 checkpoint:human-verify
+**Outcome:** 109 Vitest tests across 6 Angular projects pass (shell, chat-remote, shared-state, sidebar-remote, settings-remote, domain-remote). LocalStorageShim (Map-backed Storage) polyfills Node 25 broken localStorage in each spec file's beforeAll(). libs/shared/state given own Nx project.json with buildTarget: shell:esbuild:development. Tauri frontendDist→Angular dist, devUrl→:4200. Dockerfile builds Angular via npx nx build shell --configuration=production. FastAPI FRONTEND_DIR prefers Angular dist with React fallback. pre-angular-switchover tag created for rollback.
 
 ### Next Session
 
-**Resume with:** 07-05-PLAN.md (Preview Display)
-**Context needed:** None - STATE.md contains full context
+**Resume with:** Task 3 of 09-09-PLAN.md (human-verify checkpoint)
+**What human needs to do:** Start backend (./scripts/start-backend.sh), serve Angular app (cd shipagent-frontend && npx nx serve shell), open http://localhost:4200, verify visual and feature parity
+**After approval:** Phase 9 is complete
 
 ---
 
@@ -337,4 +376,4 @@ Phase 6 delivered the Batch Execution Engine:
 
 ---
 
-*Last updated: 2026-02-12 (Phase 8 added to roadmap)*
+*Last updated: 2026-03-25 (09-09 Tasks 1-2 complete — integration tests + switchover; Task 3 at human-verify checkpoint)*

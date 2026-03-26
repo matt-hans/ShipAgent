@@ -1,0 +1,8 @@
+@import 'tailwindcss' source('./app');
+@source "../../../libs/shared/ui/src";
+
+/*
+ * chat-remote styles
+ * Design tokens are loaded from shell's global styles.css at runtime.
+ * Only add chat-remote-specific overrides here.
+ */

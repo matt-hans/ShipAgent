@@ -55,7 +55,7 @@ The architecture follows a strict hierarchy:
 Nothing bypasses this chain. The frontend talks to the agent through SSE conversations. The agent talks to the world through tools and MCP.
 
 ```
-User → Browser UI (React) → FastAPI REST API → Conversation SSE Route
+User → Browser UI (Angular) → FastAPI REST API → Conversation SSE Route
                                                        ↓
                                               AgentSessionManager
                                                        ↓
@@ -80,11 +80,11 @@ User → Browser UI (React) → FastAPI REST API → Conversation SSE Route
 
 **Execution Layer:** `BatchEngine` (concurrent preview+execute), `UPSMCPClient` (programmatic batch), `ConversationPersistenceService` (session/message DB).
 
-**Presentation:** FastAPI backend (REST+SSE), React+Vite+TypeScript frontend, Typer+Rich headless CLI. SQLite+SQLAlchemy for persistence.
+**Presentation:** FastAPI backend (REST+SSE), Angular 21+Nx+Native Federation frontend (Module Federation), Typer+Rich headless CLI. SQLite+SQLAlchemy for persistence.
 
-**Desktop Packaging:** Tauri v2 (Rust) hosts the React frontend in a native WebView. Python backend bundled via PyInstaller as a one-folder sidecar, spawned by Tauri at launch with OS-assigned port (`--port 0`). `src/bundle_entry.py` dispatches subcommands (`serve`, `mcp-data`, `mcp-ups`, `mcp-external`, `cli`). In bundled mode, MCP servers self-spawn this same binary with subcommand args (see `orchestrator/agent/config.py`).
+**Desktop Packaging:** Tauri v2 (Rust) hosts the Angular frontend in a native WebView. Python backend bundled via PyInstaller as a one-folder sidecar, spawned by Tauri at launch with OS-assigned port (`--port 0`). `src/bundle_entry.py` dispatches subcommands (`serve`, `mcp-data`, `mcp-ups`, `mcp-external`, `cli`). In bundled mode, MCP servers self-spawn this same binary with subcommand args (see `orchestrator/agent/config.py`).
 
-**Credential & Settings Layer:** `KeyringStore` wraps system keychain (macOS Keychain / Linux Secret Service) with env var fallback for CI. `SettingsService` manages the `AppSettings` DB singleton (agent model, batch concurrency, shipper defaults, UPS account config, onboarding flag). `OnboardingWizard` (React) guides first-run credential + config setup.
+**Credential & Settings Layer:** `KeyringStore` wraps system keychain (macOS Keychain / Linux Secret Service) with env var fallback for CI. `SettingsService` manages the `AppSettings` DB singleton (agent model, batch concurrency, shipper defaults, UPS account config, onboarding flag). `OnboardingWizard` (Angular settings-remote) guides first-run credential + config setup.
 
 ### Agent Tool Architecture
 
@@ -248,23 +248,22 @@ src/
         ├── recovery.py         # Crash recovery logic
         └── sse_observer.py     # SSE streaming observer
 
-frontend/src/
-├── App.tsx, main.tsx, index.css    # Entry point + design system (OKLCH, DM Sans, Instrument Serif)
-├── components/
-│   ├── CommandCenter.tsx           # Main chat UI — SSE event orchestration, preview/progress/completion
-│   ├── command-center/             # PreviewCard, ProgressDisplay, CompletionArtifact, ToolCallChip, messages, domain cards
-│   ├── chat/                       # ChatTimeline (visual minimap), RichChatInput
-│   ├── sidebar/                    # DataSourcePanel, JobHistoryPanel, ChatSessionsPanel
-│   ├── ui/                         # shadcn/ui primitives + icons.tsx + brand-icons.tsx
-│   └── layout/                     # Sidebar, Header (with interactive shipping toggle)
-├── hooks/
-│   ├── useAppState.tsx             # Global state context (conversation, jobs, data source, mode, chat sessions)
-│   ├── useConversation.ts          # Agent SSE lifecycle (session + events + mode switching)
-│   └── useJobProgress.ts, useSSE.ts, useExternalSources.ts
-├── lib/
-│   ├── api.ts                      # REST client (all /api/v1 endpoints)
-│   └── tauri-init.ts               # Sidecar bootstrap — discovers dynamic port, sets window.__SHIPAGENT_PORT__
-└── types/api.ts                    # TypeScript types mirroring Pydantic schemas
+shipagent-frontend/                     # Angular 21 + Nx + Native Federation
+├── apps/
+│   ├── shell/                      # Host app — layout, remote loading, DI bootstrap
+│   ├── chat-remote/                # Chat UI — SSE streaming, previews, progress, input
+│   ├── sidebar-remote/             # Data sources, job history, chat sessions
+│   ├── settings-remote/            # Onboarding, settings flyout, credentials
+│   └── domain-remote/              # Domain cards (pickup, tracking, paperless, etc.)
+├── libs/
+│   ├── shared/types/               # TypeScript interfaces (ported from React)
+│   ├── shared/api/                 # HttpClient-based API service (55+ endpoints)
+│   ├── shared/sse/                 # EventSource wrapper with NgZone integration
+│   ├── shared/state/               # 8 NgRx SignalStores with localStorage persistence
+│   ├── shared/ui/                  # Icons, pipes, directives, design tokens
+│   └── shared/tauri/               # Tauri detection and port resolution
+├── federation.manifest.json        # Remote entry URLs (relative for Tauri)
+└── scripts/link-remotes.sh         # Post-build remote linking for unified serving
 
 src-tauri/                          # Tauri v2 desktop wrapper (Rust)
 ├── src/main.rs                     # Sidecar lifecycle — spawn, port discovery, timeout handling
@@ -375,9 +374,9 @@ All endpoints use `/api/v1/` prefix. See route files in `src/api/routes/` for fu
 | UPS Integration | `ups-mcp` local fork (pinned commit, editable install via pip) |
 | NL Processing | sqlglot (SQL generation/validation), Jinja2 (logistics filters) |
 | Real-time | SSE via `sse-starlette` |
-| PDF | `pypdf` (merging), `react-pdf` + `pdfjs-dist` (browser rendering) |
+| PDF | `pypdf` (merging), `ng2-pdf-viewer` (browser rendering) |
 | Headless CLI | Typer, Rich, httpx, watchdog, PyYAML |
-| Frontend | React, Vite, TypeScript, Tailwind CSS v4, shadcn/ui |
+| Frontend | Angular 21, Nx, Native Federation, TypeScript, Tailwind CSS v4, NgRx SignalStore, Spartan UI |
 | CI/CD | GitHub Actions, Apple code signing, `gh release` |
 
 ## Common Commands
@@ -445,11 +444,13 @@ pytest tests/cli/ -v                                              # CLI tests
 ### Frontend
 
 ```bash
-cd frontend
+cd shipagent-frontend
 npm install
-npm run dev          # Development server (port 5173)
-npm run build        # Production build
-npx tsc --noEmit     # Type check
+npx nx serve shell                          # Dev server (port 4200)
+npx nx run-many -t build --configuration=production  # Production build (all 5 apps)
+./scripts/link-remotes.sh                   # Link remotes into shell dist
+npx nx run-many -t lint                     # Lint all projects
+npx nx run-many -t test                     # Test all projects
 ```
 
 ### Build & Packaging
