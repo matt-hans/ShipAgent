@@ -58,12 +58,13 @@ export class RemoteLoaderService {
   /**
    * Load the OnboardingWizard component from the settings-remote.
    * Exposes: './OnboardingWizard'
+   *
+   * Note: We access OnboardingWizardComponent directly instead of using
+   * m.remoteEntry because remoteEntry always points to SettingsFlyoutComponent.
    */
   async loadOnboardingWizard(): Promise<RemoteEntry> {
     const m = await loadRemoteModule('settings-remote', './OnboardingWizard');
-    return (m['remoteEntry'] as RemoteEntry | undefined) ?? {
-      component: m['OnboardingWizardComponent'] as Type<unknown>,
-    };
+    return { component: m['OnboardingWizardComponent'] as Type<unknown> };
   }
 
   /**

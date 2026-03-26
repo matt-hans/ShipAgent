@@ -70,7 +70,6 @@ export class UpdateCheckerComponent implements OnInit {
       // Dynamic import to avoid errors outside Tauri.
       // @tauri-apps/plugin-updater is only available in the bundled Tauri app.
       // We use Function() constructor to bypass TypeScript's static module analysis.
-      // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
       const dynamicImport = new Function('modulePath', 'return import(modulePath)') as (p: string) => Promise<Record<string, unknown>>;
       const updaterModule = await dynamicImport('@tauri-apps/plugin-updater');
       const check = updaterModule['check'] as () => Promise<{ available: boolean; version?: string } | null>;

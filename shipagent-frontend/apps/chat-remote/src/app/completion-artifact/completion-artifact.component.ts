@@ -86,7 +86,7 @@ function parseRefinedName(name: string | undefined): {
           <span>{{ meta.successful }} shipment{{ meta.successful !== 1 ? 's' : '' }}</span>
           <span class="text-slate-600">&middot;</span>
           <span class="text-primary">{{ meta.totalCostCents | formatCurrency }}</span>
-          @if (meta.dutiesTaxesCents != null && meta.dutiesTaxesCents > 0) {
+          @if ((meta.dutiesTaxesCents ?? 0) > 0) {
             <span class="text-slate-600">&middot;</span>
             <span class="text-amber-400">{{ meta.dutiesTaxesCents | formatCurrency }} duties</span>
           }
@@ -94,7 +94,7 @@ function parseRefinedName(name: string | undefined): {
             <span class="text-slate-600">&middot;</span>
             <span class="text-error">{{ meta.failed }} failed</span>
           }
-          @if (meta.internationalCount != null && meta.internationalCount > 0) {
+          @if ((meta.internationalCount ?? 0) > 0) {
             <span class="text-slate-600">&middot;</span>
             <span class="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400 text-[8px] font-medium">
               {{ meta.internationalCount }} INTL

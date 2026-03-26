@@ -19,7 +19,6 @@ import {
   ChangeDetectionStrategy,
   Component,
   Injector,
-  OnDestroy,
   OnInit,
   ViewChild,
   inject,
@@ -48,6 +47,7 @@ import { RichChatInputComponent } from '../rich-chat-input/rich-chat-input.compo
 // BatchPreviewComponent, ProgressDisplayComponent, CompletionArtifactComponent
 // are imported by MessageListComponent — not needed here.
 import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview-modal.component';
+import { ChatHistoryFlyoutComponent } from '../chat-history-flyout/chat-history-flyout.component';
 
 @Component({
   selector: 'app-chat-container',
@@ -73,6 +73,7 @@ import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview
     InteractiveModeBannerComponent,
     LabelPreviewModalComponent,
     RichChatInputComponent,
+    ChatHistoryFlyoutComponent,
   ],
   template: `
     <div class="flex flex-col h-full bg-background overflow-hidden">
@@ -107,7 +108,7 @@ import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview
           <button (click)="openSettings()" class="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors" title="Settings">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
-          <button class="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors" title="Chat history">
+          <button (click)="chatHistoryFlyoutOpen.set(!chatHistoryFlyoutOpen())" class="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-300 hover:bg-slate-800 transition-colors" title="Chat history">
             <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           </button>
         </div>
@@ -164,10 +165,17 @@ import { LabelPreviewModalComponent } from '../label-preview-modal/label-preview
         [isOpen]="showLabelPreview()"
         (close)="closeLabelPreview()"
       />
+
+      <!-- Chat history flyout (triggered by clock icon) -->
+      <app-chat-history-flyout
+        [open]="chatHistoryFlyoutOpen()"
+        [sessionId]="conversationStore.sessionId()"
+        (closed)="chatHistoryFlyoutOpen.set(false)"
+      />
     </div>
   `,
 })
-export class ChatContainerComponent implements OnInit, OnDestroy {
+export class ChatContainerComponent implements OnInit {
   @ViewChild('messageList') private messageList?: MessageListComponent;
 
   readonly conversationStore = inject(ConversationStore);
@@ -191,6 +199,9 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
 
   /** Whether the label preview modal is visible. */
   readonly showLabelPreview = signal(false);
+
+  /** Whether the chat history flyout is visible. */
+  readonly chatHistoryFlyoutOpen = signal(false);
 
   /** URL for the label PDF currently being previewed. */
   readonly labelPreviewUrl = signal('');
@@ -306,16 +317,36 @@ export class ChatContainerComponent implements OnInit, OnDestroy {
         this.appStore.setToggleLocked(false);
       }
     });
+
+    // Watch for cross-remote session restore requests from sidebar-remote.
+    // When the user clicks a saved session in the sidebar, it sets
+    // pendingSessionRestore in the ConversationStore. We consume it here
+    // by calling sessionService.loadSession() which properly handles SSE
+    // teardown, mode tracking, and reconnection.
+    effect(() => {
+      const pending = this.conversationStore.pendingSessionRestore();
+      if (!pending) return;
+
+      // Clear immediately to prevent re-processing.
+      this.conversationStore.clearPendingSessionRestore();
+
+      // Load the session via the service (handles SSE disconnect/reconnect + mode).
+      this.sessionService.loadSession(
+        pending.sessionId,
+        pending.mode,
+        pending.messages,
+      );
+
+      // Update the interactive shipping toggle to match the restored session.
+      this.prevInteractiveMode = pending.mode === 'interactive';
+      this.conversationStore.setInteractiveShipping(pending.mode === 'interactive');
+    });
   }
 
   ngOnInit(): void {
     // Asynchronously load the domain card registry from domain-remote.
     // This is fire-and-forget — domain cards simply won't render if not loaded.
     this.domainCardBridge.initialize(this.injector);
-  }
-
-  ngOnDestroy(): void {
-    // Services are provided at component level — their ngOnDestroy handles cleanup.
   }
 
   // ---------------------------------------------------------------------------

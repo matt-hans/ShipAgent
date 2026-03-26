@@ -95,7 +95,7 @@ import { JobProgressSseService } from '../../services/job-progress-sse.service';
           </p>
           <p class="text-[10px] font-mono text-slate-500">Cost</p>
         </div>
-        @if (progressService.progress().dutiesTaxesCents != null && progressService.progress().dutiesTaxesCents! > 0) {
+        @if ((progressService.progress().dutiesTaxesCents ?? 0) > 0) {
           <div class="p-2 rounded bg-amber-500/10 border border-amber-500/20 text-center">
             <p class="text-lg font-semibold text-amber-400">
               {{ progressService.progress().dutiesTaxesCents! | formatCurrency }}

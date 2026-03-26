@@ -24,11 +24,12 @@ export default [
           style: 'kebab-case',
         },
       ],
+      // Allow "on" prefix for output bindings (e.g., onConfirm, onCancel).
+      '@angular-eslint/no-output-on-prefix': 'warn',
     },
   },
   {
     files: ['**/*.html'],
-    // Override or add rules here
     rules: {},
   },
 ];
