@@ -29,7 +29,7 @@ jobs:
       - name: Start container
         run: |
           docker run -d --name shipagent-smoke \
-            -p 18000:8000 \
+            -p 18000:8080 \
             -e ANTHROPIC_API_KEY=test-key \
             -e UPS_CLIENT_ID=test-id \
             -e UPS_CLIENT_SECRET=test-secret \

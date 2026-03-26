@@ -1,7 +1,13 @@
 """Runtime environment detection for dev vs PyInstaller bundled mode."""
 
+import os
 import sys
 from pathlib import Path
+
+
+def get_default_port() -> int:
+    """Return the default backend port from SHIPAGENT_PORT env var, or 8080."""
+    return int(os.environ.get("SHIPAGENT_PORT", "8080"))
 
 
 def is_bundled() -> bool:

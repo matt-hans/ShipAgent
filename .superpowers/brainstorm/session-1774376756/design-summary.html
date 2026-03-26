@@ -1,0 +1,125 @@
+<h2>Angular Module Federation — Full Design Summary</h2>
+<p class="subtitle">All 8 sections approved. Review the complete architecture before we write the spec.</p>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px;">
+  <!-- Nx Workspace -->
+  <div style="background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.2); border-radius: 8px; padding: 16px;">
+    <h3 style="color: #8b5cf6; margin: 0 0 8px 0; font-size: 14px;">1. Nx Workspace</h3>
+    <div style="font-size: 12px; line-height: 1.7;">
+      <div><strong>Shell</strong> — Host app, layout, Tauri bootstrap</div>
+      <div><strong>4 Remotes</strong> — Chat, Sidebar, Settings, Domain</div>
+      <div><strong>6 Shared Libs</strong> — State, API, SSE, Types, UI, Testing</div>
+      <div style="opacity: 0.6; margin-top: 4px;">Unified build, team ownership boundaries</div>
+    </div>
+  </div>
+
+  <!-- State Management -->
+  <div style="background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.2); border-radius: 8px; padding: 16px;">
+    <h3 style="color: #3b82f6; margin: 0 0 8px 0; font-size: 14px;">2. NgRx SignalStore</h3>
+    <div style="font-size: 12px; line-height: 1.7;">
+      <div><strong>8 Feature Stores</strong> — app, conversation, job, data-source, settings, contacts, commands, platforms</div>
+      <div><strong>Cross-remote</strong> — Store signals are the bus</div>
+      <div style="opacity: 0.6; margin-top: 4px;">localStorage persistence via effects</div>
+    </div>
+  </div>
+
+  <!-- SSE Streaming -->
+  <div style="background: rgba(16,185,129,0.08); border: 1px solid rgba(16,185,129,0.2); border-radius: 8px; padding: 16px;">
+    <h3 style="color: #10b981; margin: 0 0 8px 0; font-size: 14px;">3. Hybrid SSE</h3>
+    <div style="font-size: 12px; line-height: 1.7;">
+      <div><strong>Shared</strong> — Generic SseService (lifecycle, reconnect, parse)</div>
+      <div><strong>Chat Remote</strong> — ConversationSse + JobProgressSse</div>
+      <div style="opacity: 0.6; margin-top: 4px;">Cross-remote via store signals</div>
+    </div>
+  </div>
+
+  <!-- Component Mapping -->
+  <div style="background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2); border-radius: 8px; padding: 16px;">
+    <h3 style="color: #f59e0b; margin: 0 0 8px 0; font-size: 14px;">4. Component Mapping</h3>
+    <div style="font-size: 12px; line-height: 1.7;">
+      <div><strong>50 React → ~60 Angular</strong> (decomposed monoliths)</div>
+      <div><strong>Key splits</strong> — CommandCenter→4, PreviewCard→3, DataSourcePanel→3</div>
+      <div style="opacity: 0.6; margin-top: 4px;">Direct port where possible, decompose where beneficial</div>
+    </div>
+  </div>
+
+  <!-- UI / Design System -->
+  <div style="background: rgba(236,72,153,0.08); border: 1px solid rgba(236,72,153,0.2); border-radius: 8px; padding: 16px;">
+    <h3 style="color: #ec4899; margin: 0 0 8px 0; font-size: 14px;">5. Spartan UI + OKLCH</h3>
+    <div style="font-size: 12px; line-height: 1.7;">
+      <div><strong>Spartan</strong> — Headless primitives (Button, Dialog, Switch, etc.)</div>
+      <div><strong>Direct port</strong> — OKLCH tokens, custom CSS classes, Tailwind v4</div>
+      <div style="opacity: 0.6; margin-top: 4px;">Pixel-identical goal, ng2-pdf-viewer, ngx-markdown</div>
+    </div>
+  </div>
+
+  <!-- API Client -->
+  <div style="background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.2); border-radius: 8px; padding: 16px;">
+    <h3 style="color: #06b6d4; margin: 0 0 8px 0; font-size: 14px;">6. API Client</h3>
+    <div style="font-size: 12px; line-height: 1.7;">
+      <div><strong>ApiService</strong> — 40+ endpoints, HttpClient-based</div>
+      <div><strong>InjectionToken</strong> — Shell provides base URL, remotes consume</div>
+      <div style="opacity: 0.6; margin-top: 4px;">Error interceptor, auth header, domain-grouped methods</div>
+    </div>
+  </div>
+
+  <!-- Routing / Wiring -->
+  <div style="background: rgba(168,85,247,0.08); border: 1px solid rgba(168,85,247,0.2); border-radius: 8px; padding: 16px;">
+    <h3 style="color: #a855f7; margin: 0 0 8px 0; font-size: 14px;">7. Component-Based Loading</h3>
+    <div style="font-size: 12px; line-height: 1.7;">
+      <div><strong>No traditional routing</strong> — Shell is layout manager</div>
+      <div><strong>Remotes expose components</strong>, not routes</div>
+      <div><strong>DomainCardRegistry</strong> — dynamic card resolution by event type</div>
+      <div style="opacity: 0.6; margin-top: 4px;">Matches current React architecture exactly</div>
+    </div>
+  </div>
+
+  <!-- Testing -->
+  <div style="background: rgba(100,116,139,0.08); border: 1px solid rgba(100,116,139,0.2); border-radius: 8px; padding: 16px;">
+    <h3 style="color: #64748b; margin: 0 0 8px 0; font-size: 14px;">8. Testing</h3>
+    <div style="font-size: 12px; line-height: 1.7;">
+      <div><strong>Jest + Angular Testing Library</strong> per project</div>
+      <div><strong>Shared testing lib</strong> — mocks, fixtures, test hosts</div>
+      <div><strong>nx affected</strong> — only test what changed (CI optimization)</div>
+      <div style="opacity: 0.6; margin-top: 4px;">Behavior parity verification against React</div>
+    </div>
+  </div>
+</div>
+
+<!-- Execution Phases -->
+<div style="background: rgba(16,185,129,0.06); border: 1px solid rgba(16,185,129,0.2); border-radius: 8px; padding: 16px;">
+  <h3 style="margin: 0 0 12px 0; color: #10b981;">Execution: Foundation First, Remotes in Waves</h3>
+  <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; font-size: 13px;">
+    <div style="background: rgba(0,0,0,0.15); border-radius: 6px; padding: 12px;">
+      <div style="font-weight: 600; margin-bottom: 6px;">Phase 1: Foundation</div>
+      <div style="font-size: 12px; line-height: 1.6; opacity: 0.8;">
+        Nx workspace scaffold<br>
+        Shell app (layout, Tauri)<br>
+        All 6 shared libs<br>
+        NgRx SignalStores<br>
+        SseService + ApiService<br>
+        Spartan UI + design tokens
+      </div>
+    </div>
+    <div style="background: rgba(0,0,0,0.15); border-radius: 6px; padding: 12px;">
+      <div style="font-weight: 600; margin-bottom: 6px;">Phase 2: Parallel Remotes</div>
+      <div style="font-size: 12px; line-height: 1.6; opacity: 0.8;">
+        Chat remote (SSE, previews)<br>
+        Sidebar remote (data, jobs, sessions)<br>
+        Settings remote (onboarding, CRUD)<br>
+        Domain remote (all cards + registry)<br>
+        <em>All 4 built in parallel</em>
+      </div>
+    </div>
+    <div style="background: rgba(0,0,0,0.15); border-radius: 6px; padding: 12px;">
+      <div style="font-weight: 600; margin-bottom: 6px;">Phase 3: Integration</div>
+      <div style="font-size: 12px; line-height: 1.6; opacity: 0.8;">
+        Cross-remote integration tests<br>
+        Tauri desktop packaging<br>
+        Docker build update<br>
+        Parity verification vs React<br>
+        Switchover
+      </div>
+    </div>
+  </div>
+</div>
