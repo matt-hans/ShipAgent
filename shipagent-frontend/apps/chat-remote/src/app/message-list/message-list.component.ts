@@ -251,10 +251,14 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
   }
 
   isSystemMessage(msg: ConversationMessage): boolean {
+    // Exclude messages with artifact metadata — they have their own renderers.
+    const metaType = msg.metadata?.['type'];
+    if (metaType === 'preview_ready' || metaType === 'completion' ||
+        metaType === 'domain_card' || metaType === 'error') {
+      return false;
+    }
     if (msg.role === 'assistant') return true;
     if (msg.role === 'system') {
-      const metaType = msg.metadata?.['type'];
-      // Messages with no metadata type, or with 'status' type, render as system messages.
       return !metaType || metaType === 'status';
     }
     return false;
