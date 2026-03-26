@@ -244,7 +244,11 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
 
     return {
       component,
-      inputs: { data: msg.metadata?.['data'] ?? {}, cardType },
+      inputs: {
+        data: msg.metadata?.['data'] ?? {},
+        cardType,
+        sessionId: this.conversationStore.sessionId() ?? '',
+      },
     };
   }
 }
