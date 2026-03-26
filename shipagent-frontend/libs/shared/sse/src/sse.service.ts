@@ -13,12 +13,13 @@
  *   this.sse.connect(url).subscribe(event => { ... })
  */
 
-import { Injectable, OnDestroy, signal } from '@angular/core';
+import { Injectable, NgZone, OnDestroy, inject, signal } from '@angular/core';
 import { Observable } from 'rxjs';
 import type { RawSseEvent, SseConfig, SseConnectionState } from './sse.models';
 
 @Injectable()
 export class SseService implements OnDestroy {
+  private readonly ngZone = inject(NgZone);
   /** Current connection state as a signal. */
   readonly connectionState = signal<SseConnectionState>('disconnected');
 
@@ -85,20 +86,23 @@ export class SseService implements OnDestroy {
               ? (parsed as Record<string, unknown>)['data']
               : parsed;
 
-          observer.next({ type, data: innerData });
+          // Run inside NgZone so signal updates from event handlers
+          // trigger Angular's change detection (OnPush + signals).
+          this.ngZone.run(() => observer.next({ type, data: innerData }));
         } catch {
           // Ignore parse errors for malformed frames.
         }
       };
 
       eventSource.onerror = () => {
-        if (eventSource.readyState === EventSource.CLOSED) {
-          this.connectionState.set('error');
-          observer.error(new Error('SSE connection closed'));
-        } else if (eventSource.readyState === EventSource.CONNECTING) {
-          // Native reconnecting — not a fatal error.
-          this.connectionState.set('connecting');
-        }
+        this.ngZone.run(() => {
+          if (eventSource.readyState === EventSource.CLOSED) {
+            this.connectionState.set('error');
+            observer.error(new Error('SSE connection closed'));
+          } else if (eventSource.readyState === EventSource.CONNECTING) {
+            this.connectionState.set('connecting');
+          }
+        });
       };
 
       // Teardown: called when the Observable is unsubscribed.
