@@ -34,6 +34,7 @@ export class DomainCardRegistryService {
       tracking_result: TrackingCardComponent,
       paperless_result: PaperlessCardComponent,
       paperless_upload: PaperlessUploadComponent,
+      paperless_upload_prompt: PaperlessUploadComponent,
       contact_saved: ContactCardComponent,
     };
     return registry[cardType] ?? null;

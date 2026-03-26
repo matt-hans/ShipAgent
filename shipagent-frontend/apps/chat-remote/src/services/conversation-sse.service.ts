@@ -100,8 +100,7 @@ export class ConversationSseService implements OnDestroy {
         break;
 
       case 'agent_message_delta':
-        // Delta streaming — currently accumulate as separate message for simplicity.
-        // TODO: In a future iteration, append to the last message in-place.
+        this.handleAgentDelta(d);
         break;
 
       case 'tool_call':
@@ -133,6 +132,9 @@ export class ConversationSseService implements OnDestroy {
         break;
 
       case 'done':
+        // Reset streaming delta state.
+        this.streamingMsgId = null;
+        this.streamingText = '';
         // CRITICAL: Increment chatSessionsVersion to trigger sidebar refresh.
         this.conversationStore.setStreaming(false);
         this.conversationStore.incrementChatSessionsVersion();
@@ -144,15 +146,26 @@ export class ConversationSseService implements OnDestroy {
     }
   }
 
+  /** ID of the current streaming message being accumulated from deltas. */
+  private streamingMsgId: string | null = null;
+  private streamingText = '';
+
   private handleAgentMessage(data: Record<string, unknown>): void {
     // Backend sends agent text in 'text' field (see conversations.py:577).
-    // Also check 'content' and 'message' for compatibility.
     const content =
       (data['text'] as string | undefined) ??
       (data['content'] as string | undefined) ??
       (data['message'] as string | undefined) ??
       '';
     if (!content) return;
+
+    // If we were streaming deltas, finalize that message with the complete text.
+    if (this.streamingMsgId) {
+      this.updateStreamingMessage(content);
+      this.streamingMsgId = null;
+      this.streamingText = '';
+      return;
+    }
 
     const msg: ConversationMessage = {
       id: nextMsgId(),
@@ -161,6 +174,42 @@ export class ConversationSseService implements OnDestroy {
       timestamp: new Date().toISOString(),
     };
     this.conversationStore.appendMessage(msg);
+  }
+
+  /**
+   * Handle streaming text deltas — accumulate into a single assistant message.
+   * Creates the message on first delta, updates in-place on subsequent deltas.
+   */
+  private handleAgentDelta(data: Record<string, unknown>): void {
+    const text = (data['text'] as string | undefined) ?? '';
+    if (!text) return;
+
+    this.streamingText += text;
+
+    if (!this.streamingMsgId) {
+      // First delta — create the message
+      this.streamingMsgId = nextMsgId();
+      const msg: ConversationMessage = {
+        id: this.streamingMsgId,
+        role: 'assistant',
+        content: this.streamingText,
+        timestamp: new Date().toISOString(),
+      };
+      this.conversationStore.appendMessage(msg);
+    } else {
+      // Subsequent deltas — update the existing message in-place
+      this.updateStreamingMessage(this.streamingText);
+    }
+  }
+
+  /** Update the content of the current streaming message. */
+  private updateStreamingMessage(content: string): void {
+    if (!this.streamingMsgId) return;
+    const messages = this.conversationStore.messages();
+    const updated = messages.map(m =>
+      m.id === this.streamingMsgId ? { ...m, content } : m
+    );
+    this.conversationStore.setMessages(updated);
   }
 
   private handlePreviewReady(data: Record<string, unknown>): void {
