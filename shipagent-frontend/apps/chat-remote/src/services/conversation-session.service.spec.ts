@@ -264,6 +264,123 @@ describe('ConversationSessionService', () => {
   });
 
   // -------------------------------------------------------------------------
+  // loadSession() — metadata normalization
+  // -------------------------------------------------------------------------
+
+  describe('loadSession() metadata normalization', () => {
+    it('should normalize preview_ready artifacts from backend format', async () => {
+      const previewData = { job_id: 'job-123', total_rows: 5, preview_rows: [] };
+      const persistedMessages = [
+        {
+          id: 'art-1',
+          role: 'assistant' as const,
+          content: '',
+          created_at: '2026-01-01T00:00:00Z',
+          metadata: { action: 'preview_ready', batchPreview: previewData },
+          message_type: 'system_artifact' as const,
+          sequence: 1,
+        },
+      ];
+
+      await service.loadSession('session-norm', 'batch', persistedMessages);
+
+      const messages = conversationStore.messages();
+      expect(messages.length).toBe(1);
+      expect(messages[0].metadata?.['type']).toBe('preview_ready');
+      expect(messages[0].metadata?.['preview']).toEqual(previewData);
+    });
+
+    it('should normalize domain card artifacts from backend format', async () => {
+      const trackingData = { trackingNumber: '1Z999', status: 'Delivered' };
+      const persistedMessages = [
+        {
+          id: 'art-2',
+          role: 'assistant' as const,
+          content: '',
+          created_at: '2026-01-01T00:00:00Z',
+          metadata: { action: 'tracking_result', tracking: trackingData },
+          message_type: 'system_artifact' as const,
+          sequence: 1,
+        },
+      ];
+
+      await service.loadSession('session-dom', 'batch', persistedMessages);
+
+      const messages = conversationStore.messages();
+      expect(messages[0].metadata?.['type']).toBe('domain_card');
+      expect(messages[0].metadata?.['cardType']).toBe('tracking_result');
+      expect(messages[0].metadata?.['data']).toEqual(trackingData);
+    });
+
+    it('should pass through completion artifacts that already have type', async () => {
+      const completionMeta = {
+        type: 'completion',
+        jobId: 'job-456',
+        action: 'complete',
+        completion: { successful: 3, failed: 0, totalCostCents: 1500 },
+      };
+      const persistedMessages = [
+        {
+          id: 'art-3',
+          role: 'assistant' as const,
+          content: '',
+          created_at: '2026-01-01T00:00:00Z',
+          metadata: completionMeta,
+          message_type: 'system_artifact' as const,
+          sequence: 1,
+        },
+      ];
+
+      await service.loadSession('session-comp', 'batch', persistedMessages);
+
+      const messages = conversationStore.messages();
+      expect(messages[0].metadata?.['type']).toBe('completion');
+      expect(messages[0].metadata?.['jobId']).toBe('job-456');
+    });
+
+    it('should handle null metadata gracefully', async () => {
+      const persistedMessages = [
+        {
+          id: 'msg-null',
+          role: 'user' as const,
+          content: 'Hello',
+          created_at: '2026-01-01T00:00:00Z',
+          metadata: null,
+          message_type: 'text' as const,
+          sequence: 1,
+        },
+      ];
+
+      await service.loadSession('session-null', 'batch', persistedMessages);
+
+      const messages = conversationStore.messages();
+      expect(messages[0].metadata).toBeUndefined();
+    });
+
+    it('should normalize pickup_result domain card', async () => {
+      const pickupData = { confirmationNumber: 'PU123' };
+      const persistedMessages = [
+        {
+          id: 'art-pu',
+          role: 'assistant' as const,
+          content: '',
+          created_at: '2026-01-01T00:00:00Z',
+          metadata: { action: 'pickup_result', pickup: pickupData },
+          message_type: 'system_artifact' as const,
+          sequence: 1,
+        },
+      ];
+
+      await service.loadSession('session-pu', 'batch', persistedMessages);
+
+      const messages = conversationStore.messages();
+      expect(messages[0].metadata?.['type']).toBe('domain_card');
+      expect(messages[0].metadata?.['cardType']).toBe('pickup_result');
+      expect(messages[0].metadata?.['data']).toEqual(pickupData);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // startNewChat()
   // -------------------------------------------------------------------------
 

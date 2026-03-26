@@ -16,7 +16,74 @@ import { firstValueFrom } from 'rxjs';
 import { ApiService } from '@shipagent/shared-api';
 import { ConversationStore } from '@shipagent/shared-state';
 import { ConversationSseService } from './conversation-sse.service';
-import type { PersistedMessage } from '@shipagent/shared-types';
+import type { PersistedMessage, ConversationMessage } from '@shipagent/shared-types';
+
+/**
+ * Backend metadata key map — mirrors _ARTIFACT_METADATA_KEY in conversations.py.
+ * Maps SSE event type → the metadata key where the payload is stored.
+ */
+const ARTIFACT_META_KEY: Record<string, string> = {
+  preview_ready: 'batchPreview',
+  pickup_result: 'pickup',
+  location_result: 'location',
+  landed_cost_result: 'landedCost',
+  paperless_result: 'paperless',
+  tracking_result: 'tracking',
+  contact_saved: 'contactSaved',
+};
+
+/** Domain card event types that should be rendered as domain_card messages. */
+const DOMAIN_CARD_ACTIONS = new Set([
+  'pickup_result',
+  'location_result',
+  'landed_cost_result',
+  'paperless_result',
+  'tracking_result',
+  'contact_saved',
+]);
+
+/**
+ * Normalize persisted message metadata to match the live SSE format.
+ *
+ * Backend _persist_artifact_message stores artifacts with:
+ *   { action: "preview_ready", batchPreview: {...} }
+ * But the frontend SSE handler creates live messages with:
+ *   { type: "preview_ready", preview: {...} }  (for previews)
+ *   { type: "domain_card", cardType: "...", data: {...} }  (for domain cards)
+ *   { type: "completion", ... }  (for completions — already correct)
+ *
+ * This function bridges that gap so historical messages render correctly.
+ */
+function normalizePersistedMetadata(
+  meta: Record<string, unknown> | null,
+): Record<string, unknown> | undefined {
+  if (!meta) return undefined;
+
+  // Already has 'type' key — frontend-saved artifacts (completions, status, etc).
+  if (meta['type']) return meta;
+
+  const action = meta['action'] as string | undefined;
+  if (!action) return meta;
+
+  // Preview artifacts: { action: "preview_ready", batchPreview: {...} }
+  // → { type: "preview_ready", preview: {...} }
+  if (action === 'preview_ready') {
+    const metaKey = ARTIFACT_META_KEY[action] ?? action;
+    const previewData = meta[metaKey] ?? {};
+    return { type: 'preview_ready', preview: previewData };
+  }
+
+  // Domain card artifacts: { action: "tracking_result", tracking: {...} }
+  // → { type: "domain_card", cardType: "tracking_result", data: {...} }
+  if (DOMAIN_CARD_ACTIONS.has(action)) {
+    const metaKey = ARTIFACT_META_KEY[action] ?? action;
+    const cardData = meta[metaKey] ?? {};
+    return { type: 'domain_card', cardType: action, data: cardData };
+  }
+
+  // Unknown action — pass through as-is.
+  return meta;
+}
 
 @Injectable()
 export class ConversationSessionService implements OnDestroy {
@@ -126,12 +193,15 @@ export class ConversationSessionService implements OnDestroy {
     this.generation.update((g) => g + 1);
 
     // Map persisted messages to ConversationMessages.
-    const mapped = messages.map((m) => ({
+    // Normalize metadata so backend-persisted artifacts render correctly
+    // (backend uses {action: "preview_ready", batchPreview: {...}} format
+    // but frontend expects {type: "preview_ready", preview: {...}}).
+    const mapped: ConversationMessage[] = messages.map((m) => ({
       id: m.id,
       role: m.role,
       content: m.content,
       timestamp: m.created_at,
-      metadata: m.metadata ?? undefined,
+      metadata: normalizePersistedMetadata(m.metadata),
     }));
 
     this.conversationStore.setMessages(mapped);
