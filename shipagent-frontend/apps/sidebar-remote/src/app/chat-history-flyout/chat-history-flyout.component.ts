@@ -40,7 +40,10 @@ import type { PersistedMessage } from '@shipagent/shared-types';
       <!-- Backdrop -->
       <div
         class="fixed inset-0 z-40 bg-black/40"
+        role="button"
+        tabindex="0"
         (click)="closed.emit()"
+        (keydown.enter)="closed.emit()"
       ></div>
 
       <!-- Flyout panel -->

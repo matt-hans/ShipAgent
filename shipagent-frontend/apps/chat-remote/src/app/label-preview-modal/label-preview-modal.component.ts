@@ -33,18 +33,26 @@ import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
       <!-- Backdrop -->
       <div
         class="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm"
+        role="button"
+        tabindex="0"
         (click)="close.emit()"
+        (keydown.enter)="close.emit()"
       ></div>
 
       <!-- Modal -->
       <div
         class="fixed inset-0 z-50 flex items-center justify-center p-4"
+        role="button"
+        tabindex="0"
         (click)="close.emit()"
+        (keydown.enter)="close.emit()"
       >
         <div
           class="bg-card border border-border rounded-xl shadow-2xl w-full max-w-[750px] flex flex-col"
           style="height: 85vh;"
+          role="dialog"
           (click)="$event.stopPropagation()"
+          (keydown.enter)="$event.stopPropagation()"
         >
           <!-- Header -->
           <div class="flex items-center justify-between p-4 border-b border-border flex-shrink-0">

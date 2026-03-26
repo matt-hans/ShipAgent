@@ -121,7 +121,10 @@ const STATUS_FILTERS: string[] = ['all', 'completed', 'partial', 'failed'];
           @for (job of filteredJobs(); track job.id) {
             <div
               [class]="jobCardClass(job)"
+              role="button"
+              tabindex="0"
               (click)="handleSelectJob(job)"
+              (keydown.enter)="handleSelectJob(job)"
             >
               <div class="flex items-start justify-between gap-2">
                 <div class="flex-1 min-w-0">

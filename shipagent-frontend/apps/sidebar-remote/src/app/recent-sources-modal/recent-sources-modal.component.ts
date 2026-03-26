@@ -53,7 +53,7 @@ function typeLabel(type: string): string {
       <!-- Modal overlay -->
       <div class="fixed inset-0 z-50 flex items-center justify-center">
         <!-- Backdrop -->
-        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" (click)="closed.emit()"></div>
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" role="button" tabindex="0" (click)="closed.emit()" (keydown.enter)="closed.emit()"></div>
 
         <!-- Modal panel -->
         <div class="relative w-full max-w-lg mx-4 rounded-xl border border-slate-700 bg-slate-950 shadow-2xl flex flex-col max-h-[80vh]">

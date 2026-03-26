@@ -332,6 +332,25 @@ export class ChatContainerComponent implements OnInit {
         const sourceType = ds.source_type || ds.type || null;
         this.dataSourceStore.setActiveSourceType(sourceType as any);
         this.dataSourceStore.setActiveSourceInfo(ds.label || ds.file_path || '');
+
+        // Reconnect saved source if available (matches React's restore behavior).
+        const savedSourceId = ds.saved_source_id;
+        if (savedSourceId) {
+          this.apiService.reconnectSavedSource(savedSourceId).subscribe({
+            next: (result) => {
+              if (result.status === 'connected') {
+                this.dataSourceStore.setDataSource({
+                  type: (ds.type as any) ?? 'csv',
+                  status: 'connected',
+                  row_count: result.row_count ?? ds.row_count ?? undefined,
+                  column_count: result.column_count ?? 0,
+                  connected_at: new Date().toISOString(),
+                });
+              }
+            },
+            error: () => { /* best-effort — source may no longer exist */ },
+          });
+        }
       }
 
       // Load the session via the service (handles SSE disconnect/reconnect + mode).
