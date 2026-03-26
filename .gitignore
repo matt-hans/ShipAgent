@@ -104,3 +104,7 @@ src-tauri/gen/
 
 frontend-repomix.md
 frontend-repomix.xml
+
+.planning/*
+.superpowers/*
+architecture-diagram/*
