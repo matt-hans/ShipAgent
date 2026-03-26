@@ -301,19 +301,27 @@ const COLLAPSED_ROW_COUNT = 4;
         </div>
       }
 
-      <!-- Actions -->
-      <app-preview-actions
-        [isConfirming]="isConfirming"
-        (confirm)="confirm.emit()"
-        (cancel)="cancel.emit()"
-        (refine)="refine.emit($event)"
-      />
+      <!-- Actions (hidden for historical previews) -->
+      @if (readOnly) {
+        <div class="px-4 py-2 border-t border-border/20 flex items-center justify-center">
+          <span class="badge badge-success text-[10px] font-medium">Completed</span>
+        </div>
+      } @else {
+        <app-preview-actions
+          [isConfirming]="isConfirming"
+          (confirm)="confirm.emit()"
+          (cancel)="cancel.emit()"
+          (refine)="refine.emit($event)"
+        />
+      }
     </div>
   `,
 })
 export class BatchPreviewComponent {
   @Input({ required: true }) preview!: BatchPreview;
   @Input() isConfirming = false;
+  /** When true, hide action buttons and show a read-only status badge (historical preview). */
+  @Input() readOnly = false;
 
   @Output() confirm = new EventEmitter<void>();
   @Output() cancel = new EventEmitter<void>();

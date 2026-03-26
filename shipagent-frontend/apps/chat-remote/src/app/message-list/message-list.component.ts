@@ -91,6 +91,7 @@ interface DomainCardEntry {
               <app-interactive-preview
                 [preview]="$any(message.metadata?.['preview'])"
                 [isConfirming]="false"
+                [readOnly]="isHistoricalPreview(message)"
                 (confirm)="handleInteractiveConfirm(message, $event)"
                 (cancel)="previewCancel.emit(message.metadata?.['preview'])"
                 (refine)="previewRefine.emit($event)"
@@ -99,6 +100,7 @@ interface DomainCardEntry {
               <app-batch-preview
                 [preview]="$any(message.metadata?.['preview'])"
                 [isConfirming]="false"
+                [readOnly]="isHistoricalPreview(message)"
                 (confirm)="previewConfirm.emit(message.metadata?.['preview'])"
                 (cancel)="previewCancel.emit(message.metadata?.['preview'])"
                 (refine)="previewRefine.emit($event)"
@@ -226,6 +228,27 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
 
   isErrorMessage(msg: ConversationMessage): boolean {
     return msg.metadata?.['type'] === 'error';
+  }
+
+  /**
+   * Determine whether a preview message is historical (already confirmed/completed).
+   *
+   * Checks if any subsequent message indicates the job was confirmed or completed.
+   * When true, the preview renders in read-only mode without action buttons.
+   */
+  isHistoricalPreview(message: ConversationMessage): boolean {
+    const msgs = this.messages();
+    const idx = msgs.indexOf(message);
+    const jobId = (message.metadata?.['preview'] as Record<string, unknown> | undefined)?.['job_id'];
+    if (!jobId) return false;
+
+    for (let i = idx + 1; i < msgs.length; i++) {
+      const meta = msgs[i].metadata;
+      if (!meta) continue;
+      if (meta['type'] === 'completion' && meta['jobId'] === jobId) return true;
+      if (meta['type'] === 'status' && meta['action'] === 'execute' && meta['jobId'] === jobId) return true;
+    }
+    return false;
   }
 
   /** Handle interactive preview confirm — merges selected service code into preview data. */
