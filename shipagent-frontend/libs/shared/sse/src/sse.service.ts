@@ -13,13 +13,17 @@
  *   this.sse.connect(url).subscribe(event => { ... })
  */
 
-import { Injectable, NgZone, OnDestroy, inject, signal } from '@angular/core';
+import { Injectable, NgZone, OnDestroy, signal } from '@angular/core';
 import { Observable } from 'rxjs';
 import type { RawSseEvent, SseConfig, SseConnectionState } from './sse.models';
 
 @Injectable()
 export class SseService implements OnDestroy {
-  private readonly ngZone = inject(NgZone);
+  private readonly ngZone: NgZone;
+
+  constructor(ngZone: NgZone) {
+    this.ngZone = ngZone;
+  }
   /** Current connection state as a signal. */
   readonly connectionState = signal<SseConnectionState>('disconnected');
 
