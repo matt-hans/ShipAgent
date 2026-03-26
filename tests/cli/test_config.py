@@ -19,7 +19,7 @@ class TestDaemonConfig:
         """All defaults are sensible for single-worker SQLite."""
         cfg = DaemonConfig()
         assert cfg.host == "127.0.0.1"
-        assert cfg.port == 8000
+        assert cfg.port == 8080
         assert cfg.workers == 1
         assert cfg.log_level == "info"
         assert cfg.log_format == "text"

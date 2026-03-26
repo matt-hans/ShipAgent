@@ -11,6 +11,8 @@ import logging
 import os
 from collections.abc import AsyncIterator
 
+from src.utils.runtime import get_default_port
+
 from src.cli.protocol import (
     AgentEvent,
     DataSourceStatus,
@@ -58,12 +60,14 @@ def _reject_insecure_credential_transport(base_url: str) -> None:
 class HttpClient:
     """ShipAgentClient implementation that talks to the daemon over HTTP."""
 
-    def __init__(self, base_url: str = "http://127.0.0.1:8000"):
+    def __init__(self, base_url: str | None = None):
         """Initialize with daemon base URL.
 
         Args:
-            base_url: The daemon's HTTP base URL.
+            base_url: The daemon's HTTP base URL. Defaults to SHIPAGENT_PORT env var.
         """
+        if base_url is None:
+            base_url = f"http://127.0.0.1:{get_default_port()}"
         self._base_url = base_url
         self._client = None
         self._api_key = os.environ.get("SHIPAGENT_API_KEY", "").strip()

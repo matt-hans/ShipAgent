@@ -5,7 +5,7 @@
 #
 # This script:
 # 1. Loads all variables from .env
-# 2. Starts uvicorn with hot-reload on port 8000
+# 2. Starts uvicorn with hot-reload on SHIPAGENT_PORT (default 8080)
 
 set -e
 
@@ -38,11 +38,15 @@ if ! .venv/bin/python -c "import uvicorn, claude_agent_sdk" >/dev/null 2>&1; the
     exit 1
 fi
 
+SHIPAGENT_PORT="${SHIPAGENT_PORT:-8080}"
+export SHIPAGENT_PORT
+
 echo "Starting ShipAgent backend..."
+echo "  Port: ${SHIPAGENT_PORT}"
 echo "  Model: ${AGENT_MODEL:-claude-haiku-4-5-20251001}"
 echo "  Shopify: ${SHOPIFY_STORE_DOMAIN:-not configured}"
 echo ""
 
 # Always use project .venv Python so backend and MCP subprocesses share deps.
 # ShipAgent currently supports single-worker operation only.
-exec .venv/bin/python -m uvicorn src.api.main:app --reload --reload-dir src --workers 1 --port 8000
+exec .venv/bin/python -m uvicorn src.api.main:app --reload --reload-dir src --workers 1 --port "${SHIPAGENT_PORT}"
