@@ -1,0 +1,94 @@
+/**
+ * ShipAgent Typography Styles
+ *
+ * Font family utility classes and text treatment helpers.
+ * Fonts are loaded via Google Fonts import in tokens.css.
+ */
+
+/* Font family utilities */
+.font-sans {
+  font-family: var(--font-sans);
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+/* Display heading class (mirrors h1 base style) */
+.display-heading {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.02em;
+}
+
+/* Text gradient utility */
+.text-gradient {
+  @apply bg-clip-text text-transparent bg-gradient-to-r from-foreground to-muted-foreground;
+}
+
+/* Platform-specific text colors */
+.text-shopify {
+  color: var(--color-shopify);
+}
+
+.text-woocommerce {
+  color: var(--color-woocommerce);
+}
+
+.text-sap {
+  color: var(--color-sap);
+}
+
+.text-oracle {
+  color: var(--color-oracle);
+}
+
+/* Status text colors */
+.text-success {
+  color: var(--color-success);
+}
+
+.text-warning {
+  color: var(--color-warning);
+}
+
+.text-info {
+  color: var(--color-info);
+}
+
+.text-error {
+  color: var(--color-destructive);
+}
+
+/* Domain text colors (UPS MCP v2) */
+.text-domain-shipping {
+  color: var(--color-domain-shipping);
+}
+
+.text-domain-pickup {
+  color: var(--color-domain-pickup);
+}
+
+.text-domain-locator {
+  color: var(--color-domain-locator);
+}
+
+.text-domain-paperless {
+  color: var(--color-domain-paperless);
+}
+
+.text-domain-landed-cost {
+  color: var(--color-domain-landed-cost);
+}
+
+.text-domain-tracking {
+  color: var(--color-domain-tracking);
+}
+
+.text-domain-contacts {
+  color: var(--color-domain-contacts);
+}

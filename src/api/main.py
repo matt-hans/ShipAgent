@@ -63,8 +63,10 @@ from src.services.batch_engine import BatchEngine  # noqa: E402
 from src.services.ups_mcp_client import UPSMCPClient  # noqa: E402
 from src.utils.redaction import sanitize_error_message  # noqa: E402
 
-# Frontend build directory
-FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
+# Frontend build directory — Angular Module Federation (Phase 9)
+# In Docker: Dockerfile copies dist/apps/shell/browser to ./shipagent-frontend/dist/apps/shell/browser
+# In dev: Angular build outputs to shipagent-frontend/dist/apps/shell/browser
+FRONTEND_DIR = Path(__file__).parent.parent.parent / "shipagent-frontend" / "dist" / "apps" / "shell" / "browser"
 logger = logging.getLogger(__name__)
 
 # Module-level state for health endpoint and watchdog
@@ -857,14 +859,15 @@ async def add_security_headers(request: Request, call_next):
     """
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
-        "script-src 'self'; "
-        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline' blob: 'wasm-unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
         "img-src 'self' data:; "
-        "font-src 'self'; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "frame-src 'self' blob:; "
         "connect-src 'self'"
     )
     response.headers["Strict-Transport-Security"] = (

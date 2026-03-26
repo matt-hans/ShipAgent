@@ -1,0 +1,6 @@
+{
+  "chat-remote": "./chat-remote/remoteEntry.json",
+  "sidebar-remote": "./sidebar-remote/remoteEntry.json",
+  "settings-remote": "./settings-remote/remoteEntry.json",
+  "domain-remote": "./domain-remote/remoteEntry.json"
+}

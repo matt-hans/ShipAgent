@@ -1,0 +1,170 @@
+/**
+ * ShipAgent Design Tokens
+ *
+ * All CSS custom properties from the design system.
+ * These match the React frontend pixel-for-pixel.
+ *
+ * Aesthetic: Industrial Logistics Command Center
+ * - Clean geometric lines with purposeful hierarchy
+ * - Dark mode primary with sharp accent colors
+ * - Platform-specific brand colors for integrations
+ * - Utility-driven typography with character
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+
+@theme {
+  /* Core palette - Industrial warmth */
+  --color-background: oklch(0.985 0.005 80);
+  --color-foreground: oklch(0.18 0.02 260);
+  --color-card: oklch(1 0 0);
+  --color-card-foreground: oklch(0.18 0.02 260);
+  --color-popover: oklch(1 0 0);
+  --color-popover-foreground: oklch(0.18 0.02 260);
+
+  /* Primary - Deep navy with presence */
+  --color-primary: oklch(0.28 0.06 260);
+  --color-primary-foreground: oklch(0.98 0 0);
+
+  /* Secondary - Warm concrete */
+  --color-secondary: oklch(0.95 0.01 80);
+  --color-secondary-foreground: oklch(0.25 0.02 260);
+
+  /* Muted - Soft industrial */
+  --color-muted: oklch(0.96 0.008 80);
+  --color-muted-foreground: oklch(0.45 0.02 260);
+
+  /* Accent - Signal orange for CTAs */
+  --color-accent: oklch(0.72 0.18 45);
+  --color-accent-foreground: oklch(0.18 0 0);
+
+  /* Destructive - Alert red */
+  --color-destructive: oklch(0.55 0.22 25);
+  --color-destructive-foreground: oklch(0.98 0 0);
+
+  /* Borders and inputs */
+  --color-border: oklch(0.88 0.01 80);
+  --color-input: oklch(0.92 0.008 80);
+  --color-ring: oklch(0.55 0.15 260);
+
+  /* Platform brand colors */
+  --color-shopify: oklch(0.62 0.2 145);
+  --color-woocommerce: oklch(0.55 0.18 310);
+  --color-sap: oklch(0.5 0.16 220);
+  --color-oracle: oklch(0.55 0.2 25);
+
+  /* Domain colors (UPS MCP v2) */
+  --color-domain-shipping: oklch(0.75 0.18 145);
+  --color-domain-pickup: oklch(0.70 0.18 300);
+  --color-domain-locator: oklch(0.75 0.15 185);
+  --color-domain-paperless: oklch(0.78 0.15 85);
+  --color-domain-landed-cost: oklch(0.65 0.18 265);
+  --color-domain-tracking: oklch(0.70 0.15 230);
+  --color-domain-contacts: oklch(0.72 0.16 345);
+
+  /* Status colors */
+  --color-success: oklch(0.65 0.2 150);
+  --color-warning: oklch(0.75 0.18 85);
+  --color-info: oklch(0.6 0.15 240);
+
+  /* Chart colors */
+  --color-chart-1: oklch(0.65 0.2 150);
+  --color-chart-2: oklch(0.6 0.15 240);
+  --color-chart-3: oklch(0.72 0.18 45);
+  --color-chart-4: oklch(0.55 0.18 310);
+  --color-chart-5: oklch(0.55 0.2 25);
+
+  /* Radii - Sharp but not harsh */
+  --radius-lg: 0.75rem;
+  --radius-md: 0.5rem;
+  --radius-sm: 0.25rem;
+  --radius-xs: 0.125rem;
+
+  /* Typography */
+  --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Instrument Serif', 'Times New Roman', serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+}
+
+/* Dark mode - Industrial night shift */
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-background: oklch(0.14 0.015 260);
+    --color-foreground: oklch(0.95 0.01 80);
+    --color-card: oklch(0.18 0.02 260);
+    --color-card-foreground: oklch(0.95 0.01 80);
+    --color-popover: oklch(0.16 0.018 260);
+    --color-popover-foreground: oklch(0.95 0.01 80);
+
+    --color-primary: oklch(0.85 0.08 80);
+    --color-primary-foreground: oklch(0.14 0.015 260);
+
+    --color-secondary: oklch(0.22 0.025 260);
+    --color-secondary-foreground: oklch(0.9 0.01 80);
+
+    --color-muted: oklch(0.22 0.02 260);
+    --color-muted-foreground: oklch(0.65 0.02 80);
+
+    --color-accent: oklch(0.75 0.2 45);
+    --color-accent-foreground: oklch(0.14 0 0);
+
+    --color-destructive: oklch(0.45 0.18 25);
+    --color-destructive-foreground: oklch(0.95 0.05 25);
+
+    --color-border: oklch(0.28 0.02 260);
+    --color-input: oklch(0.22 0.02 260);
+    --color-ring: oklch(0.7 0.12 80);
+
+    /* Platform colors - slightly adjusted for dark */
+    --color-shopify: oklch(0.68 0.22 145);
+    --color-woocommerce: oklch(0.62 0.2 310);
+    --color-sap: oklch(0.55 0.18 220);
+    --color-oracle: oklch(0.6 0.22 25);
+
+    /* Status colors - dark mode */
+    --color-success: oklch(0.7 0.22 150);
+    --color-warning: oklch(0.8 0.2 85);
+    --color-info: oklch(0.65 0.17 240);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "ss02", "cv01";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Display headings use serif */
+  h1,
+  .display-heading {
+    font-family: var(--font-display);
+    font-weight: 400;
+    letter-spacing: -0.02em;
+  }
+
+  /* Monospace elements */
+  code,
+  pre,
+  kbd,
+  .font-mono {
+    font-family: var(--font-mono);
+    font-feature-settings: "liga", "calt";
+  }
+
+  /* Focus states */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}

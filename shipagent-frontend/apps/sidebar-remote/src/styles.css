@@ -1,0 +1,8 @@
+@import 'tailwindcss' source('./app');
+@source "../../../libs/shared/ui/src";
+
+/*
+ * sidebar-remote styles
+ * Design tokens are loaded from shell's global styles.css at runtime.
+ * Only add sidebar-remote-specific overrides here.
+ */

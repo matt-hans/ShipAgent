@@ -1,0 +1,8 @@
+@import 'tailwindcss' source('./app');
+@source "../../../libs/shared/ui/src";
+
+/*
+ * settings-remote styles
+ * Design tokens are loaded from shell's global styles.css at runtime.
+ * Only add settings-remote-specific overrides here.
+ */
