@@ -21,11 +21,13 @@
  */
 
 import { TestBed } from '@angular/core/testing';
-import { Component } from '@angular/core';
+import { Component, signal } from '@angular/core';
+import { provideHttpClient } from '@angular/common/http';
 import { vi, beforeAll } from 'vitest';
 import { AppComponent } from './app.component';
 import { RemoteLoaderService } from './remote-loader.service';
 import { AppStore, SettingsStore, ConversationStore } from '@shipagent/shared-state';
+import { API_BASE_URL } from '@shipagent/shared-api';
 import type { RemoteEntry } from './remote-loader.service';
 
 // ---------------------------------------------------------------------------
@@ -93,6 +95,8 @@ describe('AppComponent — shell integration', () => {
     await TestBed.configureTestingModule({
       imports: [AppComponent],
       providers: [
+        provideHttpClient(),
+        { provide: API_BASE_URL, useValue: signal('/api/v1') },
         { provide: RemoteLoaderService, useValue: mockLoader },
       ],
     }).compileComponents();

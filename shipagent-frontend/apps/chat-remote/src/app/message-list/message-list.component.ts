@@ -21,8 +21,10 @@ import {
   Type,
   ViewChild,
   inject,
+  signal,
 } from '@angular/core';
 import { CommonModule, NgComponentOutlet } from '@angular/common';
+import { ApiService } from '@shipagent/shared-api';
 import { ConversationStore } from '@shipagent/shared-state';
 import type { ConversationMessage } from '@shipagent/shared-types';
 import { DomainCardBridgeService } from '../../services/domain-card-bridge.service';
@@ -93,7 +95,7 @@ interface DomainCardEntry {
                 [isConfirming]="false"
                 [readOnly]="isHistoricalPreview(message)"
                 (confirm)="handleInteractiveConfirm(message, $event)"
-                (cancel)="previewCancel.emit(message.metadata?.['preview'])"
+                (cancel)="previewCancel.emit($any(message.metadata?.['preview']))"
                 (refine)="previewRefine.emit($event)"
               />
             } @else {
@@ -101,8 +103,8 @@ interface DomainCardEntry {
                 [preview]="$any(message.metadata?.['preview'])"
                 [isConfirming]="false"
                 [readOnly]="isHistoricalPreview(message)"
-                (confirm)="previewConfirm.emit(message.metadata?.['preview'])"
-                (cancel)="previewCancel.emit(message.metadata?.['preview'])"
+                (confirm)="previewConfirm.emit($any(message.metadata?.['preview']))"
+                (cancel)="previewCancel.emit($any(message.metadata?.['preview']))"
                 (refine)="previewRefine.emit($event)"
               />
             }
@@ -151,18 +153,22 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
   @Input() interactiveShipping = false;
   @Input() executingJobId: string | null = null;
   @Output() exampleClick = new EventEmitter<string>();
-  @Output() previewConfirm = new EventEmitter<any>();
-  @Output() previewCancel = new EventEmitter<any>();
+  @Output() previewConfirm = new EventEmitter<Record<string, unknown>>();
+  @Output() previewCancel = new EventEmitter<Record<string, unknown>>();
   @Output() previewRefine = new EventEmitter<string>();
   @Output() progressComplete = new EventEmitter<void>();
   @Output() progressFailed = new EventEmitter<void>();
   @Output() viewLabels = new EventEmitter<string>();
 
   private readonly domainCardBridge = inject(DomainCardBridgeService);
+  private readonly apiService = inject(ApiService);
   readonly conversationStore = inject(ConversationStore);
 
   /** Expose progress service so parent can read final progress snapshot. */
   readonly progressService = inject(JobProgressSseService);
+
+  /** Job IDs confirmed as non-pending by the backend (for historical preview detection). */
+  private readonly completedJobIds = signal<Set<string>>(new Set());
 
   private shouldScrollToBottom = false;
 
@@ -170,8 +176,48 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
   readonly messages = this.conversationStore.messages;
   readonly isStreaming = this.conversationStore.isStreaming;
 
+  /** Track which job IDs we have already checked to avoid redundant API calls. */
+  private checkedJobIds = new Set<string>();
+
   ngOnChanges(_changes: SimpleChanges): void {
     this.shouldScrollToBottom = true;
+    this.checkPreviewJobStatuses();
+  }
+
+  /**
+   * For each preview message, check the backend job status.
+   * If the job is no longer pending, mark it as completed so the preview
+   * renders in read-only mode even when no subsequent messages exist.
+   */
+  private checkPreviewJobStatuses(): void {
+    const msgs = this.messages();
+    const previewJobIds = msgs
+      .filter(m => m.metadata?.['type'] === 'preview_ready')
+      .map(m => (m.metadata?.['preview'] as Record<string, unknown> | undefined)?.['job_id'] as string | undefined)
+      .filter((id): id is string => !!id && !this.checkedJobIds.has(id));
+
+    for (const jobId of previewJobIds) {
+      this.checkedJobIds.add(jobId);
+      this.apiService.getJob(jobId).subscribe({
+        next: (job) => {
+          if (job.status !== 'pending') {
+            this.completedJobIds.update(s => {
+              const next = new Set(s);
+              next.add(jobId);
+              return next;
+            });
+          }
+        },
+        error: () => {
+          // Job not found — treat as completed (stale preview).
+          this.completedJobIds.update(s => {
+            const next = new Set(s);
+            next.add(jobId);
+            return next;
+          });
+        },
+      });
+    }
   }
 
   ngAfterViewChecked(): void {
@@ -237,11 +283,15 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
    * When true, the preview renders in read-only mode without action buttons.
    */
   isHistoricalPreview(message: ConversationMessage): boolean {
-    const msgs = this.messages();
-    const idx = msgs.indexOf(message);
     const jobId = (message.metadata?.['preview'] as Record<string, unknown> | undefined)?.['job_id'];
     if (!jobId) return false;
 
+    // Check backend-verified completed jobs first.
+    if (this.completedJobIds().has(jobId as string)) return true;
+
+    // Fall back to checking subsequent messages for confirmation evidence.
+    const msgs = this.messages();
+    const idx = msgs.indexOf(message);
     for (let i = idx + 1; i < msgs.length; i++) {
       const meta = msgs[i].metadata;
       if (!meta) continue;

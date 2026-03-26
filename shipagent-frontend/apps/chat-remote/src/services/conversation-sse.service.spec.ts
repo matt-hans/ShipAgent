@@ -17,6 +17,7 @@ import { TestBed } from '@angular/core/testing';
 import { Subject, Observable } from 'rxjs';
 import { vi, beforeAll } from 'vitest';
 import { ConversationSseService } from './conversation-sse.service';
+import { EventProcessorService } from './event-processor.service';
 import { ConversationStore, JobStore } from '@shipagent/shared-state';
 import { SseService } from '@shipagent/shared-sse';
 import { ApiService } from '@shipagent/shared-api';
@@ -89,6 +90,7 @@ describe('ConversationSseService — SSE → store mapping', () => {
     TestBed.configureTestingModule({
       providers: [
         ConversationSseService,
+        EventProcessorService,
         { provide: SseService, useValue: sseMock },
         { provide: ApiService, useValue: apiMock },
       ],

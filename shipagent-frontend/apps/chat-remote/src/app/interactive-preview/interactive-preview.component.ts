@@ -256,20 +256,20 @@ function extractInvoiceData(payload: Record<string, unknown>): InvoiceData | nul
             </div>
             @if (preview.ship_to) {
               <div class="text-xs text-slate-200 leading-snug">
-                <p class="font-medium truncate field-clickable px-1 -mx-1" (click)="suggestRefine('recipient name', preview.ship_to!.name)">
+                <p class="font-medium truncate field-clickable px-1 -mx-1" tabindex="0" role="button" (click)="suggestRefine('recipient name', preview.ship_to!.name)" (keydown.enter)="suggestRefine('recipient name', preview.ship_to!.name)">
                   {{ preview.ship_to.name }}
                 </p>
                 @if (preview.ship_to.attention_name) {
                   <p class="text-slate-400">Attn: {{ preview.ship_to.attention_name }}</p>
                 }
-                <p class="text-slate-400 truncate field-clickable px-1 -mx-1" (click)="suggestRefine('address', preview.ship_to!.address1)">
+                <p class="text-slate-400 truncate field-clickable px-1 -mx-1" tabindex="0" role="button" (click)="suggestRefine('address', preview.ship_to!.address1)" (keydown.enter)="suggestRefine('address', preview.ship_to!.address1)">
                   {{ preview.ship_to.address1 }}{{ preview.ship_to.address2 ? ', ' + preview.ship_to.address2 : '' }}
                 </p>
-                <p class="text-slate-400 field-clickable px-1 -mx-1" (click)="suggestRefine('city/state/zip', preview.ship_to!.city + ', ' + preview.ship_to!.state + ' ' + preview.ship_to!.postal_code)">
+                <p class="text-slate-400 field-clickable px-1 -mx-1" tabindex="0" role="button" (click)="suggestRefine('city/state/zip', preview.ship_to!.city + ', ' + preview.ship_to!.state + ' ' + preview.ship_to!.postal_code)" (keydown.enter)="suggestRefine('city/state/zip', preview.ship_to!.city + ', ' + preview.ship_to!.state + ' ' + preview.ship_to!.postal_code)">
                   {{ preview.ship_to.city }}, {{ preview.ship_to.state }} {{ preview.ship_to.postal_code }}
                 </p>
                 @if (preview.ship_to.phone) {
-                  <p class="text-slate-400 text-[10px] font-mono field-clickable px-1 -mx-1" (click)="suggestRefine('phone', preview.ship_to!.phone!)">
+                  <p class="text-slate-400 text-[10px] font-mono field-clickable px-1 -mx-1" tabindex="0" role="button" (click)="suggestRefine('phone', preview.ship_to!.phone!)" (keydown.enter)="suggestRefine('phone', preview.ship_to!.phone!)">
                     {{ preview.ship_to.phone }}
                   </p>
                 }
@@ -284,13 +284,13 @@ function extractInvoiceData(payload: Record<string, unknown>): InvoiceData | nul
         <div class="flex items-center justify-between bg-slate-800/50 rounded-lg px-3 py-1.5 text-xs">
           <div class="flex items-center gap-1">
             <span class="text-slate-500">Service:</span>
-            <span class="font-medium text-white field-clickable px-1 -mx-1" (click)="suggestRefine('service', displayedServiceName)">
+            <span class="font-medium text-white field-clickable px-1 -mx-1" tabindex="0" role="button" (click)="suggestRefine('service', displayedServiceName)" (keydown.enter)="suggestRefine('service', displayedServiceName)">
               {{ displayedServiceName }}
             </span>
           </div>
           <div class="flex items-center gap-1">
             <span class="text-slate-500">Wt:</span>
-            <span class="font-medium text-white field-clickable px-1 -mx-1" (click)="suggestRefine('weight', (preview.weight_lbs ?? 1) + ' lbs')">
+            <span class="font-medium text-white field-clickable px-1 -mx-1" tabindex="0" role="button" (click)="suggestRefine('weight', (preview.weight_lbs ?? 1) + ' lbs')" (keydown.enter)="suggestRefine('weight', (preview.weight_lbs ?? 1) + ' lbs')">
               {{ preview.weight_lbs ?? 1.0 }} lbs
             </span>
           </div>

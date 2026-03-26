@@ -135,7 +135,10 @@ function groupByDate(sessions: ChatSessionSummary[]): Record<DateGroup, ChatSess
                   @for (session of getGroup(group); track session.id) {
                     <div
                       [class]="sessionCardClass(session)"
+                      role="button"
+                      tabindex="0"
                       (click)="handleSelectSession(session)"
+                      (keydown.enter)="handleSelectSession(session)"
                     >
                       <div class="flex items-start justify-between gap-2">
                         <div class="flex-1 min-w-0">

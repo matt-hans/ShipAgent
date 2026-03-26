@@ -38,7 +38,10 @@ import { CustomCommandsSectionComponent } from '../custom-commands-section/custo
     <!-- Backdrop -->
     <div
       class="settings-backdrop"
+      role="button"
+      tabindex="0"
       (click)="close()"
+      (keydown.enter)="close()"
     ></div>
 
     <!-- Flyout panel -->

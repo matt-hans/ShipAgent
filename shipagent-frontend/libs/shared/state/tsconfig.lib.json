@@ -2,14 +2,16 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "outDir": "../../../dist/out-tsc",
-    "declaration": true,
-    "composite": true,
     "rootDir": "../../..",
-    "types": ["vitest/globals"]
+    "declaration": true,
+    "composite": true
   },
   "include": [
     "src/**/*.ts",
     "src/**/*.d.ts",
     "../types/src/**/*.ts"
+  ],
+  "exclude": [
+    "src/**/*.spec.ts"
   ]
 }

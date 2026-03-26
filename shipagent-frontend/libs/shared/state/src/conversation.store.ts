@@ -33,6 +33,7 @@ export interface PendingSessionRestore {
     data_source?: {
       type: string | null;
       source_type: string | null;
+      saved_source_id?: string | null;
       file_path?: string | null;
       label?: string | null;
       row_count?: number | null;
