@@ -226,6 +226,14 @@ export class ChatContainerComponent implements OnInit {
     return null;
   });
 
+  /** Reset execution-related UI state (job tracking, label preview, name). */
+  private resetExecutionState(): void {
+    this.executingJobId.set(null);
+    this.showLabelPreview.set(false);
+    this.labelPreviewUrl.set('');
+    this.lastJobName = '';
+  }
+
   /** Context-aware placeholder driven by current mode and data source state. */
   protected readonly inputPlaceholder = computed(() => {
     if (this.conversationStore.interactiveShipping()) {
@@ -298,10 +306,7 @@ export class ChatContainerComponent implements OnInit {
       this.isResettingSession = true;
       this.appStore.setToggleLocked(true);
       this.sessionService.reset().then(() => {
-        this.executingJobId.set(null);
-        this.showLabelPreview.set(false);
-        this.labelPreviewUrl.set('');
-        this.lastJobName = '';
+        this.resetExecutionState();
         this.isResettingSession = false;
         this.appStore.setToggleLocked(false);
       });
@@ -331,10 +336,7 @@ export class ChatContainerComponent implements OnInit {
       this.conversationStore.clearPendingSessionRestore();
 
       // Clear execution UI state from previous session.
-      this.executingJobId.set(null);
-      this.showLabelPreview.set(false);
-      this.labelPreviewUrl.set('');
-      this.lastJobName = '';
+      this.resetExecutionState();
 
       // Restore data source context from the session if available.
       if (pending.contextData?.data_source) {
@@ -518,44 +520,21 @@ export class ChatContainerComponent implements OnInit {
     if (!progressService) return;
 
     const p = progressService.progress();
+    const metadata = this.buildCompletionMetadata(jobId, p);
+
     this.conversationStore.appendMessage({
       id: `completion-${Date.now()}`,
       role: 'system',
       content: '',
       timestamp: new Date().toISOString(),
-      metadata: {
-        type: 'completion',
-        jobId,
-        action: 'complete',
-        completion: {
-          jobName: this.lastJobName || undefined,
-          successful: p.successful,
-          failed: p.failed,
-          totalCostCents: p.totalCostCents,
-          dutiesTaxesCents: p.dutiesTaxesCents,
-          internationalCount: p.internationalCount,
-          rowFailures: p.rowFailures.length > 0 ? p.rowFailures : undefined,
-        },
-      },
+      metadata,
     });
 
     // Persist the artifact to the conversation DB.
     const sid = this.conversationStore.sessionId();
     if (sid) {
-      this.apiService.saveArtifact(sid, '', {
-        type: 'completion',
-        jobId,
-        action: 'complete',
-        completion: {
-          jobName: this.lastJobName || undefined,
-          successful: p.successful,
-          failed: p.failed,
-          totalCostCents: p.totalCostCents,
-          dutiesTaxesCents: p.dutiesTaxesCents,
-          internationalCount: p.internationalCount,
-          rowFailures: p.rowFailures.length > 0 ? p.rowFailures : undefined,
-        },
-      }).subscribe({ error: (e) => console.warn('Failed to save artifact:', e) });
+      this.apiService.saveArtifact(sid, '', metadata)
+        .subscribe({ error: (e) => console.warn('Failed to save artifact:', e) });
     }
 
     // Auto-open label preview after successful batch.
@@ -596,20 +575,7 @@ export class ChatContainerComponent implements OnInit {
       role: 'system',
       content: '',
       timestamp: new Date().toISOString(),
-      metadata: {
-        type: 'completion',
-        jobId,
-        action: 'complete',
-        completion: {
-          jobName: this.lastJobName || undefined,
-          successful: p.successful,
-          failed: p.failed,
-          totalCostCents: p.totalCostCents,
-          dutiesTaxesCents: p.dutiesTaxesCents,
-          internationalCount: p.internationalCount,
-          rowFailures: p.rowFailures.length > 0 ? p.rowFailures : undefined,
-        },
-      },
+      metadata: this.buildCompletionMetadata(jobId, p),
     });
 
     this.executingJobId.set(null);
@@ -663,5 +629,33 @@ export class ChatContainerComponent implements OnInit {
       .replace(/_tool$/, '')
       .replace(/_/g, ' ')
       .replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  /**
+   * Build the completion metadata object from current progress state.
+   * Shared by handleProgressComplete() and handleProgressFailed().
+   */
+  private buildCompletionMetadata(jobId: string, progress: {
+    successful: number;
+    failed: number;
+    totalCostCents: number;
+    dutiesTaxesCents?: number;
+    internationalCount?: number;
+    rowFailures: unknown[];
+  }): Record<string, unknown> {
+    return {
+      type: 'completion',
+      jobId,
+      action: 'complete',
+      completion: {
+        jobName: this.lastJobName || undefined,
+        successful: progress.successful,
+        failed: progress.failed,
+        totalCostCents: progress.totalCostCents,
+        dutiesTaxesCents: progress.dutiesTaxesCents,
+        internationalCount: progress.internationalCount,
+        rowFailures: progress.rowFailures.length > 0 ? progress.rowFailures : undefined,
+      },
+    };
   }
 }

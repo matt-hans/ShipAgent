@@ -27,6 +27,25 @@ from src.services.gateway_provider import get_data_gateway
 
 logger = logging.getLogger(__name__)
 
+
+def _columns_from_dicts(raw_columns: list[dict]) -> list[DataSourceColumnInfo]:
+    """Convert raw column dicts from MCP responses to DataSourceColumnInfo objects.
+
+    Args:
+        raw_columns: List of column dicts with 'name', 'type', and optional 'nullable'.
+
+    Returns:
+        List of DataSourceColumnInfo instances.
+    """
+    return [
+        DataSourceColumnInfo(
+            name=col["name"],
+            type=col["type"],
+            nullable=col.get("nullable", True),
+        )
+        for col in raw_columns
+    ]
+
 # Maximum upload file size: 50 MB (CWE-400 protection).
 _MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024
 
@@ -108,20 +127,11 @@ async def import_data_source(
             )
 
         # result is a dict from MCP tool (model_dump() of ImportResult)
-        columns = [
-            DataSourceColumnInfo(
-                name=col["name"],
-                type=col["type"],
-                nullable=col.get("nullable", True),
-            )
-            for col in result.get("columns", [])
-        ]
-
         return DataSourceImportResponse(
             status="connected",
             source_type=result.get("source_type", payload.type),
             row_count=result.get("row_count", 0),
-            columns=columns,
+            columns=_columns_from_dicts(result.get("columns", [])),
         )
 
     except FileNotFoundError as e:
@@ -250,20 +260,11 @@ async def upload_data_source(
             format_hint=source_type,
         )
 
-        columns = [
-            DataSourceColumnInfo(
-                name=col["name"],
-                type=col["type"],
-                nullable=col.get("nullable", True),
-            )
-            for col in result.get("columns", [])
-        ]
-
         return DataSourceImportResponse(
             status="connected",
             source_type=result.get("source_type", source_type),
             row_count=result.get("row_count", 0),
-            columns=columns,
+            columns=_columns_from_dicts(result.get("columns", [])),
         )
     except ValueError as e:
         # Fixed-width files may fail auto-detection (e.g., legacy mainframe
@@ -321,21 +322,12 @@ async def get_data_source_status() -> DataSourceStatusResponse:
     if info is None:
         return DataSourceStatusResponse(connected=False)
 
-    columns = [
-        DataSourceColumnInfo(
-            name=col["name"],
-            type=col["type"],
-            nullable=col.get("nullable", True),
-        )
-        for col in info.get("columns", [])
-    ]
-
     return DataSourceStatusResponse(
         connected=True,
         source_type=info.get("source_type"),
         file_path=info.get("path"),
         row_count=info.get("row_count", 0),
-        columns=columns,
+        columns=_columns_from_dicts(info.get("columns", [])),
     )
 
 
@@ -372,12 +364,8 @@ async def get_data_source_schema() -> dict:
 
     return {
         "columns": [
-            {
-                "name": col["name"],
-                "type": col["type"],
-                "nullable": col.get("nullable", True),
-            }
-            for col in info.get("columns", [])
+            {"name": c.name, "type": c.type, "nullable": c.nullable}
+            for c in _columns_from_dicts(info.get("columns", []))
         ],
         "row_count": info.get("row_count", 0),
         "source_type": info.get("source_type"),

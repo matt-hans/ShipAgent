@@ -1154,6 +1154,26 @@ async def get_history(session_id: str) -> ConversationHistoryResponse:
     return ConversationHistoryResponse(session_id=session_id, messages=messages)
 
 
+async def _teardown_session(session_id: str) -> None:
+    """Stop agent, cancel tasks, and remove in-memory state for a session.
+
+    Shared cleanup logic used by delete, bulk-delete, and shutdown paths.
+    Marks the session as terminating, cancels background tasks, stops the
+    agent, and removes the event queue.
+
+    Args:
+        session_id: Conversation session ID to tear down.
+    """
+    session = _session_manager.get_session(session_id)
+    if session is not None:
+        session.terminating = True
+    await _session_manager.cancel_session_prewarm_task(session_id)
+    await _session_manager.cancel_session_message_tasks(session_id)
+    await _session_manager.stop_session_agent(session_id)
+    _session_manager.remove_session(session_id)
+    _event_queues.pop(session_id, None)
+
+
 @router.delete("/{session_id}", status_code=204)
 async def delete_conversation(session_id: str) -> Response:
     """End a conversation session and free resources.
@@ -1168,11 +1188,6 @@ async def delete_conversation(session_id: str) -> Response:
     Returns:
         204 No Content.
     """
-    # Mark session as terminating to prevent concurrent message processing
-    session = _session_manager.get_session(session_id)
-    if session is not None:
-        session.terminating = True
-
     # Soft-delete from database (keep for history)
     try:
         from src.db.connection import get_db_context
@@ -1182,12 +1197,7 @@ async def delete_conversation(session_id: str) -> Response:
     except Exception as e:
         logger.error("Failed to soft-delete session %s from DB: %s", session_id, e)
 
-    # Stop prewarm and agent before removing session
-    await _session_manager.cancel_session_prewarm_task(session_id)
-    await _session_manager.cancel_session_message_tasks(session_id)
-    await _session_manager.stop_session_agent(session_id)
-    _session_manager.remove_session(session_id)
-    _event_queues.pop(session_id, None)
+    await _teardown_session(session_id)
     logger.info("Deleted conversation session: %s", session_id)
     return Response(status_code=204)
 
@@ -1214,16 +1224,8 @@ async def bulk_delete_conversations() -> dict[str, int]:
         raise HTTPException(status_code=500, detail="Bulk delete failed") from None
 
     # Stop all in-memory sessions
-    session_ids = list(_session_manager.list_sessions())
-    for sid in session_ids:
-        session = _session_manager.get_session(sid)
-        if session is not None:
-            session.terminating = True
-        await _session_manager.cancel_session_prewarm_task(sid)
-        await _session_manager.cancel_session_message_tasks(sid)
-        await _session_manager.stop_session_agent(sid)
-        _session_manager.remove_session(sid)
-        _event_queues.pop(sid, None)
+    for sid in list(_session_manager.list_sessions()):
+        await _teardown_session(sid)
 
     logger.info("Bulk-deleted %d conversation sessions", count)
     return {"deleted": count}
@@ -1389,11 +1391,4 @@ async def save_artifact(
 async def shutdown_conversation_runtime() -> None:
     """Shutdown hook to stop all session-scoped async work."""
     for session_id in list(_session_manager.list_sessions()):
-        session = _session_manager.get_session(session_id)
-        if session is not None:
-            session.terminating = True
-        await _session_manager.cancel_session_prewarm_task(session_id)
-        await _session_manager.cancel_session_message_tasks(session_id)
-        await _session_manager.stop_session_agent(session_id)
-        _session_manager.remove_session(session_id)
-        _event_queues.pop(session_id, None)
+        await _teardown_session(session_id)

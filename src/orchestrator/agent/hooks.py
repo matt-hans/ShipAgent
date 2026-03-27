@@ -22,9 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
-import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -67,12 +65,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-
-def _determinism_mode() -> str:
-    """Return determinism enforcement mode ('warn' or 'enforce')."""
-    raw = os.environ.get("DETERMINISM_ENFORCEMENT_MODE", "warn").strip().lower()
-    return "enforce" if raw == "enforce" else "warn"
 
 
 # =============================================================================

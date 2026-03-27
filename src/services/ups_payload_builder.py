@@ -1037,83 +1037,13 @@ def build_ups_api_payload(
     packages = simplified.get("packages", [])
     service_code = simplified.get("serviceCode", ServiceCode.GROUND.value)
 
-    # Build Shipper
-    ups_shipper: dict[str, Any] = {
-        "Name": shipper.get("name", ""),
-        "ShipperNumber": account_number,
-        "Address": {
-            "AddressLine": _build_address_lines(shipper),
-            "City": shipper.get("city", ""),
-            "StateProvinceCode": shipper.get("stateProvinceCode", ""),
-            "PostalCode": shipper.get("postalCode", ""),
-            "CountryCode": shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
-        },
-    }
-    if shipper.get("attentionName"):
-        ups_shipper["AttentionName"] = shipper["attentionName"]
-    if shipper.get("phone"):
-        ups_shipper["Phone"] = {"Number": shipper["phone"]}
-
-    # Build ShipTo
-    ups_ship_to_addr: dict[str, Any] = {
-        "AddressLine": _build_address_lines(ship_to),
-        "City": ship_to.get("city", ""),
-        "PostalCode": ship_to.get("postalCode", ""),
-        "CountryCode": ship_to.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
-    }
-    # Omit StateProvinceCode when empty — UPS rejects empty strings for
-    # countries that don't use province codes (e.g. DE, FR, NL).
-    if ship_to.get("stateProvinceCode"):
-        ups_ship_to_addr["StateProvinceCode"] = ship_to["stateProvinceCode"]
-    ups_ship_to: dict[str, Any] = {
-        "Name": ship_to.get("name", ""),
-        "Address": ups_ship_to_addr,
-    }
-    if ship_to.get("attentionName"):
-        ups_ship_to["AttentionName"] = ship_to["attentionName"]
-    if ship_to.get("phone"):
-        ups_ship_to["Phone"] = {"Number": ship_to["phone"]}
-
-    # Build Packages
-    ups_packages = []
-    for pkg in packages:
-        ups_pkg: dict[str, Any] = {
-            "Packaging": {
-                "Code": pkg.get("packagingType", DEFAULT_PACKAGING_CODE.value),
-            },
-            "PackageWeight": {
-                "UnitOfMeasurement": {"Code": UPS_WEIGHT_UNIT},
-                "Weight": str(float(pkg.get("weight", DEFAULT_PACKAGE_WEIGHT_LBS))),
-            },
-        }
-        # Dimensions (all three required if any present)
-        if all(pkg.get(d) for d in ("length", "width", "height")):
-            ups_pkg["Dimensions"] = {
-                "UnitOfMeasurement": {"Code": UPS_DIMENSION_UNIT},
-                "Length": str(pkg["length"]),
-                "Width": str(pkg["width"]),
-                "Height": str(pkg["height"]),
-            }
-        if pkg.get("description"):
-            ups_pkg["Description"] = pkg["description"]
-        # Declared value (insurance)
-        if pkg.get("declaredValue"):
-            ups_pkg.setdefault("PackageServiceOptions", {})[
-                "DeclaredValue"
-            ] = {
-                "Type": {"Code": "01"},  # EVS (Enhanced Value Shipment)
-                "CurrencyCode": DEFAULT_CURRENCY_CODE,
-                "MonetaryValue": str(pkg["declaredValue"]),
-            }
-        ups_packages.append(ups_pkg)
-
-    # MerchandiseDescription — required by UPS for certain international
-    # destinations (e.g., Mexico). Populate from shipment description on
-    # every package so the payload is universally valid.
-    merch_desc = simplified.get("description", "")
-    if merch_desc and service_code in SUPPORTED_INTERNATIONAL_SERVICES:
-        for ups_pkg in ups_packages:
-            ups_pkg["Description"] = str(merch_desc)[:UPS_ADDRESS_MAX_LEN]
+    ups_shipper = _build_ups_shipper(shipper, account_number)
+    ups_ship_to, ups_ship_to_addr = _build_ups_ship_to(
+        ship_to, residential=bool(simplified.get("residential")),
+    )
+    ups_packages = _build_ups_packages(
+        packages, service_code, simplified.get("description", ""),
+    )
 
     # Build Shipment
     shipment: dict[str, Any] = {
@@ -1153,10 +1083,6 @@ def build_ups_api_payload(
                 "Value": str(ref2)[:UPS_REFERENCE_MAX_LEN],
             })
         ups_packages[0]["ReferenceNumber"] = refs
-
-    # Residential indicator on ShipTo address
-    if simplified.get("residential"):
-        ups_ship_to["Address"]["ResidentialAddressIndicator"] = ""
 
     # --- Shipment-level and service option fields ---
 
@@ -1327,75 +1253,13 @@ def build_ups_rate_payload(
     packages = simplified.get("packages", [])
     service_code = simplified.get("serviceCode", ServiceCode.GROUND.value)
 
-    ups_shipper: dict[str, Any] = {
-        "Name": shipper.get("name", ""),
-        "ShipperNumber": account_number,
-        "Address": {
-            "AddressLine": _build_address_lines(shipper),
-            "City": shipper.get("city", ""),
-            "StateProvinceCode": shipper.get("stateProvinceCode", ""),
-            "PostalCode": shipper.get("postalCode", ""),
-            "CountryCode": shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
-        },
-    }
-    if shipper.get("attentionName"):
-        ups_shipper["AttentionName"] = shipper["attentionName"]
-    if shipper.get("phone"):
-        ups_shipper["Phone"] = {"Number": shipper["phone"]}
-
-    ups_ship_to_addr: dict[str, Any] = {
-        "AddressLine": _build_address_lines(ship_to),
-        "City": ship_to.get("city", ""),
-        "PostalCode": ship_to.get("postalCode", ""),
-        "CountryCode": ship_to.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
-    }
-    if ship_to.get("stateProvinceCode"):
-        ups_ship_to_addr["StateProvinceCode"] = ship_to["stateProvinceCode"]
-    # Residential indicator affects rate (residential surcharge)
-    if simplified.get("residential"):
-        ups_ship_to_addr["ResidentialAddressIndicator"] = ""
-
-    ups_ship_to: dict[str, Any] = {
-        "Name": ship_to.get("name", ""),
-        "Address": ups_ship_to_addr,
-    }
-    if ship_to.get("attentionName"):
-        ups_ship_to["AttentionName"] = ship_to["attentionName"]
-    if ship_to.get("phone"):
-        ups_ship_to["Phone"] = {"Number": ship_to["phone"]}
-
-    ups_packages = []
-    for pkg in packages:
-        ups_pkg: dict[str, Any] = {
-            "Packaging": {"Code": pkg.get("packagingType", DEFAULT_PACKAGING_CODE.value)},
-            "PackageWeight": {
-                "UnitOfMeasurement": {"Code": UPS_WEIGHT_UNIT},
-                "Weight": str(float(pkg.get("weight", DEFAULT_PACKAGE_WEIGHT_LBS))),
-            },
-        }
-        if all(pkg.get(d) for d in ("length", "width", "height")):
-            ups_pkg["Dimensions"] = {
-                "UnitOfMeasurement": {"Code": UPS_DIMENSION_UNIT},
-                "Length": str(pkg["length"]),
-                "Width": str(pkg["width"]),
-                "Height": str(pkg["height"]),
-            }
-        # Declared value affects insurance cost in rate quote
-        if pkg.get("declaredValue"):
-            ups_pkg.setdefault("PackageServiceOptions", {})[
-                "DeclaredValue"
-            ] = {
-                "Type": {"Code": "01"},
-                "CurrencyCode": DEFAULT_CURRENCY_CODE,
-                "MonetaryValue": str(pkg["declaredValue"]),
-            }
-        ups_packages.append(ups_pkg)
-
-    # Package-level description for international (required by some destinations)
-    merch_desc = simplified.get("description", "")
-    if merch_desc and service_code in SUPPORTED_INTERNATIONAL_SERVICES:
-        for ups_pkg in ups_packages:
-            ups_pkg["Description"] = str(merch_desc)[:UPS_ADDRESS_MAX_LEN]
+    ups_shipper = _build_ups_shipper(shipper, account_number)
+    ups_ship_to, ups_ship_to_addr = _build_ups_ship_to(
+        ship_to, residential=bool(simplified.get("residential")),
+    )
+    ups_packages = _build_ups_packages(
+        packages, service_code, simplified.get("description", ""),
+    )
 
     shipment: dict[str, Any] = {
         "Shipper": ups_shipper,
@@ -1520,3 +1384,124 @@ def _build_address_lines(addr: dict[str, str]) -> list[str]:
         if value:
             lines.append(value)
     return lines or [""]
+
+
+def _build_ups_shipper(
+    shipper: dict[str, str],
+    account_number: str,
+) -> dict[str, Any]:
+    """Build the UPS Shipper block shared by create and rate payloads.
+
+    Args:
+        shipper: Simplified shipper dict from build_shipment_request.
+        account_number: UPS account number.
+
+    Returns:
+        UPS Shipper dict.
+    """
+    ups_shipper: dict[str, Any] = {
+        "Name": shipper.get("name", ""),
+        "ShipperNumber": account_number,
+        "Address": {
+            "AddressLine": _build_address_lines(shipper),
+            "City": shipper.get("city", ""),
+            "StateProvinceCode": shipper.get("stateProvinceCode", ""),
+            "PostalCode": shipper.get("postalCode", ""),
+            "CountryCode": shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
+        },
+    }
+    if shipper.get("attentionName"):
+        ups_shipper["AttentionName"] = shipper["attentionName"]
+    if shipper.get("phone"):
+        ups_shipper["Phone"] = {"Number": shipper["phone"]}
+    return ups_shipper
+
+
+def _build_ups_ship_to(
+    ship_to: dict[str, str],
+    residential: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the UPS ShipTo block shared by create and rate payloads.
+
+    Args:
+        ship_to: Simplified shipTo dict from build_shipment_request.
+        residential: Whether to set ResidentialAddressIndicator.
+
+    Returns:
+        Tuple of (ups_ship_to dict, ups_ship_to_addr dict).
+        The address dict is returned separately so callers can
+        mutate it (e.g., adding ResidentialAddressIndicator later).
+    """
+    ups_ship_to_addr: dict[str, Any] = {
+        "AddressLine": _build_address_lines(ship_to),
+        "City": ship_to.get("city", ""),
+        "PostalCode": ship_to.get("postalCode", ""),
+        "CountryCode": ship_to.get("countryCode", DEFAULT_ORIGIN_COUNTRY),
+    }
+    if ship_to.get("stateProvinceCode"):
+        ups_ship_to_addr["StateProvinceCode"] = ship_to["stateProvinceCode"]
+    if residential:
+        ups_ship_to_addr["ResidentialAddressIndicator"] = ""
+    ups_ship_to: dict[str, Any] = {
+        "Name": ship_to.get("name", ""),
+        "Address": ups_ship_to_addr,
+    }
+    if ship_to.get("attentionName"):
+        ups_ship_to["AttentionName"] = ship_to["attentionName"]
+    if ship_to.get("phone"):
+        ups_ship_to["Phone"] = {"Number": ship_to["phone"]}
+    return ups_ship_to, ups_ship_to_addr
+
+
+def _build_ups_packages(
+    packages: list[dict[str, Any]],
+    service_code: str,
+    description: str = "",
+) -> list[dict[str, Any]]:
+    """Build the UPS Package list shared by create and rate payloads.
+
+    Args:
+        packages: Simplified package list from build_shipment_request.
+        service_code: UPS service code (for international description).
+        description: Shipment description (applied to all packages for
+            international services).
+
+    Returns:
+        List of UPS Package dicts.
+    """
+    ups_packages: list[dict[str, Any]] = []
+    for pkg in packages:
+        ups_pkg: dict[str, Any] = {
+            "Packaging": {
+                "Code": pkg.get("packagingType", DEFAULT_PACKAGING_CODE.value),
+            },
+            "PackageWeight": {
+                "UnitOfMeasurement": {"Code": UPS_WEIGHT_UNIT},
+                "Weight": str(float(pkg.get("weight", DEFAULT_PACKAGE_WEIGHT_LBS))),
+            },
+        }
+        if all(pkg.get(d) for d in ("length", "width", "height")):
+            ups_pkg["Dimensions"] = {
+                "UnitOfMeasurement": {"Code": UPS_DIMENSION_UNIT},
+                "Length": str(pkg["length"]),
+                "Width": str(pkg["width"]),
+                "Height": str(pkg["height"]),
+            }
+        if pkg.get("description"):
+            ups_pkg["Description"] = pkg["description"]
+        if pkg.get("declaredValue"):
+            ups_pkg.setdefault("PackageServiceOptions", {})[
+                "DeclaredValue"
+            ] = {
+                "Type": {"Code": "01"},
+                "CurrencyCode": DEFAULT_CURRENCY_CODE,
+                "MonetaryValue": str(pkg["declaredValue"]),
+            }
+        ups_packages.append(ups_pkg)
+
+    # MerchandiseDescription for international destinations
+    if description and service_code in SUPPORTED_INTERNATIONAL_SERVICES:
+        for ups_pkg in ups_packages:
+            ups_pkg["Description"] = str(description)[:UPS_ADDRESS_MAX_LEN]
+
+    return ups_packages

@@ -22,6 +22,26 @@ from src.db.models import (  # noqa: E402
 )
 
 
+def _safe_json_loads(raw: str | None, label: str, entity_id: str) -> Any | None:
+    """Parse JSON with graceful error handling for corrupted data.
+
+    Args:
+        raw: Raw JSON string, or None.
+        label: Human-readable field label for log messages.
+        entity_id: ID of the owning entity (session or message).
+
+    Returns:
+        Parsed object, or None if raw is None or corrupt.
+    """
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("Corrupted %s for %s %s", label, label.split("_")[0], entity_id)
+        return None
+
+
 class ConversationPersistenceService:
     """CRUD operations for persistent conversation sessions and messages.
 
@@ -150,17 +170,11 @@ class ConversationPersistenceService:
 
         results = []
         for row in query.all():
-            context = None
-            if row[3]:
-                try:
-                    context = json.loads(row[3])
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning("Corrupted context_data for session %s", row[0])
             results.append({
                 "id": row[0],
                 "title": row[1],
                 "mode": row[2],
-                "context_data": context,
+                "context_data": _safe_json_loads(row[3], "context_data", row[0]),
                 "created_at": row[4],
                 "updated_at": row[5],
                 "message_count": row[6],
@@ -198,28 +212,17 @@ class ConversationPersistenceService:
 
         messages = []
         for m in query.all():
-            metadata = None
-            if m.metadata_json:
-                try:
-                    metadata = json.loads(m.metadata_json)
-                except (json.JSONDecodeError, TypeError):
-                    logger.warning("Corrupted metadata_json for message %s", m.id)
             messages.append({
                 "id": m.id,
                 "role": m.role,
                 "message_type": m.message_type,
                 "content": m.content,
-                "metadata": metadata,
+                "metadata": _safe_json_loads(m.metadata_json, "metadata_json", m.id),
                 "sequence": m.sequence,
                 "created_at": m.created_at,
             })
 
-        context = None
-        if session.context_data:
-            try:
-                context = json.loads(session.context_data)
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("Corrupted context_data for session %s", session.id)
+        context = _safe_json_loads(session.context_data, "context_data", session.id)
 
         return {
             "session": {

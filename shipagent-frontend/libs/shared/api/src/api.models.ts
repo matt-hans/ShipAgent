@@ -32,3 +32,12 @@ export interface ApiErrorBody {
   remediation?: string | null;
   details?: Record<string, unknown> | null;
 }
+
+/** Response from platform activation endpoints (Shopify, Amazon). */
+export interface PlatformActivationResponse {
+  success: boolean;
+  row_count: number;
+  source_type: string | null;
+  columns: Array<Record<string, unknown>>;
+  error: string | null;
+}

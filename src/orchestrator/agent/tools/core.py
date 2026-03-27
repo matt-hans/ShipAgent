@@ -159,6 +159,54 @@ def _err(message: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Determinism Enforcement (shared across tool modules)
+# ---------------------------------------------------------------------------
+
+
+def _determinism_mode() -> str:
+    """Return determinism enforcement mode ('warn' or 'enforce').
+
+    Controlled by the DETERMINISM_ENFORCEMENT_MODE environment variable.
+    """
+    import os
+    raw = os.environ.get("DETERMINISM_ENFORCEMENT_MODE", "warn").strip().lower()
+    return "enforce" if raw == "enforce" else "warn"
+
+
+def _validate_allowed_args(
+    tool_name: str,
+    args: dict[str, Any],
+    allowed: set[str],
+) -> dict[str, Any] | None:
+    """Warn or deny unknown args based on DETERMINISM_ENFORCEMENT_MODE.
+
+    Args:
+        tool_name: Name of the tool being called.
+        args: Arguments passed to the tool.
+        allowed: Set of allowed argument names.
+
+    Returns:
+        Error response dict if enforcement mode denies, else None.
+    """
+    unknown = sorted(k for k in args.keys() if k not in allowed)
+    if not unknown:
+        return None
+    mode = _determinism_mode()
+    logger.warning(
+        "metric=tool_unknown_args_total tool=%s unknown_keys=%s mode=%s",
+        tool_name,
+        unknown,
+        mode,
+    )
+    if mode == "enforce":
+        return _err(
+            f"Unexpected argument(s) for {tool_name}: {', '.join(unknown)}. "
+            "Remove unknown keys and retry."
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Bridge Binding
 # ---------------------------------------------------------------------------
 
@@ -173,6 +221,40 @@ def _bind_bridge(
         return await handler(args, bridge=bridge)
 
     return _wrapped
+
+
+# ---------------------------------------------------------------------------
+# Decision Audit Helper (shared across tool modules)
+# ---------------------------------------------------------------------------
+
+
+def _audit_event(
+    phase: str,
+    event_name: str,
+    payload: dict[str, Any],
+    *,
+    actor: str = "tool",
+    tool_name: str | None = None,
+    latency_ms: int | None = None,
+) -> None:
+    """Emit best-effort decision audit event in current run context.
+
+    Args:
+        phase: Audit phase (e.g. 'intent', 'resolution', 'pipeline').
+        event_name: Dot-delimited event name.
+        payload: Structured event data.
+        actor: Actor identifier (default 'tool').
+        tool_name: Optional tool name for context.
+        latency_ms: Optional operation latency.
+    """
+    DecisionAuditService.log_event_from_context(
+        phase=phase,
+        event_name=event_name,
+        actor=actor,
+        tool_name=tool_name,
+        payload=payload,
+        latency_ms=latency_ms,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +295,42 @@ async def _persist_job_source_signature(
         )
 
 
+def _serialize_rows_to_job_data(
+    normalized_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Serialize normalized rows into JobRow create payloads with checksums.
+
+    Extracts source row identity, strips MCP metadata, and computes
+    per-row checksums for TOCTOU protection.
+
+    Args:
+        normalized_rows: Rows already mapped to canonical order_data keys.
+
+    Returns:
+        List of dicts with row_number, row_checksum, and order_data JSON.
+    """
+    row_data = []
+    for idx, row in enumerate(normalized_rows, start=1):
+        # Extract source row identity set by _normalize_rows() from MCP response.
+        # Fallback to 1-based index if neither key exists — guarantees non-None.
+        source_row = (
+            row.pop("_row_number", None)
+            or row.pop(SOURCE_ROW_NUM_COLUMN, None)
+            or idx
+        )
+        row.pop("_checksum", None)  # Clean MCP metadata before serialization
+        row_json = json.dumps(row, sort_keys=True, default=str)
+        checksum = hashlib.md5(row_json.encode()).hexdigest()
+        row_data.append(
+            {
+                "row_number": source_row,
+                "row_checksum": checksum,
+                "order_data": row_json,
+            }
+        )
+    return row_data
+
+
 def _build_job_row_data(
     rows: list[dict[str, Any]],
     service_code_override: str | None = None,
@@ -234,26 +352,7 @@ def _build_job_row_data(
             if isinstance(row, dict):
                 row["service_code"] = service_code_override
 
-    row_data = []
-    for idx, row in enumerate(normalized_rows, start=1):
-        # Extract source row identity set by _normalize_rows() from MCP response.
-        # Fallback to 1-based index if neither key exists — guarantees non-None.
-        source_row = (
-            row.pop("_row_number", None)
-            or row.pop(SOURCE_ROW_NUM_COLUMN, None)
-            or idx
-        )
-        row.pop("_checksum", None)  # Clean MCP metadata before serialization
-        row_json = json.dumps(row, sort_keys=True, default=str)
-        checksum = hashlib.md5(row_json.encode()).hexdigest()
-        row_data.append(
-            {
-                "row_number": source_row,
-                "row_checksum": checksum,
-                "order_data": row_json,
-            }
-        )
-    return row_data
+    return _serialize_rows_to_job_data(normalized_rows)
 
 
 def _build_job_row_data_with_metadata(
@@ -318,24 +417,7 @@ def _build_job_row_data_with_metadata(
                     f"[VALIDATION] {i.message}" for i in hard_errors
                 ]
 
-    row_data = []
-    for idx, row in enumerate(normalized_rows, start=1):
-        source_row = (
-            row.pop("_row_number", None)
-            or row.pop(SOURCE_ROW_NUM_COLUMN, None)
-            or idx
-        )
-        row.pop("_checksum", None)
-        row_json = json.dumps(row, sort_keys=True, default=str)
-        checksum = hashlib.md5(row_json.encode()).hexdigest()
-        row_data.append(
-            {
-                "row_number": source_row,
-                "row_checksum": checksum,
-                "order_data": row_json,
-            }
-        )
-    return row_data, mapping_hash
+    return _serialize_rows_to_job_data(normalized_rows), mapping_hash
 
 
 def _normalize_rows_for_shipping(
