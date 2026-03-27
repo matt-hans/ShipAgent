@@ -13,6 +13,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { API_BASE_URL } from './api-url.token';
+import type { PlatformActivationResponse } from './api.models';
 
 // Types
 import type {
@@ -500,39 +501,25 @@ export class ApiService {
   /**
    * Activate Shopify as the active data source (connect + fetch + import).
    */
-  activateShopify(): Observable<{
-    success: boolean;
-    row_count: number;
-    source_type: string | null;
-    columns: Array<Record<string, unknown>>;
-    error: string | null;
-  }> {
-    return this.http.post<{
-      success: boolean;
-      row_count: number;
-      source_type: string | null;
-      columns: Array<Record<string, unknown>>;
-      error: string | null;
-    }>(`${this.baseUrl}/platforms/shopify/activate`, {});
+  activateShopify(): Observable<PlatformActivationResponse> {
+    return this.activatePlatform('shopify');
   }
 
   /**
    * Activate Amazon as the active data source (connect + fetch + import).
    */
-  activateAmazon(): Observable<{
-    success: boolean;
-    row_count: number;
-    source_type: string | null;
-    columns: Array<Record<string, unknown>>;
-    error: string | null;
-  }> {
-    return this.http.post<{
-      success: boolean;
-      row_count: number;
-      source_type: string | null;
-      columns: Array<Record<string, unknown>>;
-      error: string | null;
-    }>(`${this.baseUrl}/platforms/amazon/activate`, {});
+  activateAmazon(): Observable<PlatformActivationResponse> {
+    return this.activatePlatform('amazon');
+  }
+
+  /**
+   * Activate a platform as the active data source.
+   */
+  private activatePlatform(platform: string): Observable<PlatformActivationResponse> {
+    return this.http.post<PlatformActivationResponse>(
+      `${this.baseUrl}/platforms/${platform}/activate`,
+      {},
+    );
   }
 
   /**

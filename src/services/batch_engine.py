@@ -192,49 +192,9 @@ class BatchEngine:
         total_cost_cents = 0
         row_durations: list[float] = []
 
-        # Pre-hydrate commodities for international rows that need them.
-        # Collect order IDs, bulk-fetch from MCP, then inject into order data.
-        commodity_cache: dict[str, list[dict]] = {}
-        if rows:
-            order_ids = []
-            for r in rows:
-                try:
-                    od = self._parse_order_data(r)
-                    dest_country = od.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
-                    eff_service = service_code or od.get(
-                        "service_code", ServiceCode.GROUND.value,
-                    )
-                    origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
-                    eff_service = upgrade_to_international(
-                        eff_service, origin_country, dest_country,
-                    )
-                    requirements = get_requirements(
-                        origin_country, dest_country, eff_service,
-                    )
-                    if requirements.requires_commodities and not od.get("commodities"):
-                        oid = od.get("order_id") or od.get("order_number")
-                        if oid:
-                            order_ids.append(str(oid))
-                except Exception as e:
-                    logger.warning(
-                        "Skipping commodity lookup for row %s (parse error): %s",
-                        getattr(r, "row_number", "?"),
-                        e,
-                    )
-            if order_ids:
-                try:
-                    raw = await asyncio.wait_for(
-                        self._get_commodities_bulk(order_ids),
-                        timeout=commodity_timeout_s,
-                    )
-                    commodity_cache = {str(k): v for k, v in raw.items()}
-                except TimeoutError:
-                    logger.warning(
-                        "Commodity bulk fetch timed out after %.1fs (non-critical)",
-                        commodity_timeout_s,
-                    )
-                except Exception as e:
-                    logger.warning("Commodity bulk fetch failed (non-critical): %s", e)
+        commodity_cache = await self._prefetch_commodities(
+            rows, shipper, service_code, commodity_timeout_s,
+        )
 
         async def _rate_row(row: Any) -> tuple[dict[str, Any], int, float]:
             """Rate a single row with concurrency control."""
@@ -463,48 +423,9 @@ class BatchEngine:
 
         pending_rows = [r for r in rows if r.status == "pending"]
 
-        # Pre-hydrate commodities for international rows that need them.
-        exec_commodity_cache: dict[str, list[dict]] = {}
-        if pending_rows:
-            order_ids = []
-            for r in pending_rows:
-                try:
-                    od = self._parse_order_data(r)
-                    dest_country = od.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
-                    eff_service = service_code or od.get(
-                        "service_code", ServiceCode.GROUND.value,
-                    )
-                    origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
-                    eff_service = upgrade_to_international(
-                        eff_service, origin_country, dest_country,
-                    )
-                    requirements = get_requirements(
-                        origin_country, dest_country, eff_service,
-                    )
-                    if requirements.requires_commodities and not od.get("commodities"):
-                        oid = od.get("order_id") or od.get("order_number")
-                        if oid:
-                            order_ids.append(str(oid))
-                except Exception as e:
-                    logger.warning(
-                        "Skipping commodity lookup for row %s (parse error): %s",
-                        getattr(r, "row_number", "?"),
-                        e,
-                    )
-            if order_ids:
-                try:
-                    raw = await asyncio.wait_for(
-                        self._get_commodities_bulk(order_ids),
-                        timeout=commodity_timeout_s,
-                    )
-                    exec_commodity_cache = {str(k): v for k, v in raw.items()}
-                except TimeoutError:
-                    logger.warning(
-                        "Commodity bulk fetch timed out after %.1fs (non-critical)",
-                        commodity_timeout_s,
-                    )
-                except Exception as e:
-                    logger.warning("Commodity bulk fetch failed (non-critical): %s", e)
+        exec_commodity_cache = await self._prefetch_commodities(
+            pending_rows, shipper, service_code, commodity_timeout_s,
+        )
 
         async def _process_row(row: Any) -> None:
             """Process a single row with two-phase commit state machine.
@@ -1031,6 +952,70 @@ class BatchEngine:
             return json.loads(row.order_data)
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid order_data JSON on row {row.row_number}: {e}") from e
+
+    async def _prefetch_commodities(
+        self,
+        rows: list[Any],
+        shipper: dict[str, str],
+        service_code: str | None,
+        timeout_seconds: float,
+    ) -> dict[str, list[dict]]:
+        """Pre-hydrate commodity data for international rows that need them.
+
+        Scans rows for international destinations requiring commodities,
+        bulk-fetches from the data source MCP, and returns a cache dict
+        keyed by order ID.
+
+        Args:
+            rows: List of JobRow objects to scan.
+            shipper: Shipper address info (for origin country).
+            service_code: Optional service code override.
+            timeout_seconds: Timeout for the bulk fetch call.
+
+        Returns:
+            Dict mapping order_id string to list of commodity dicts.
+        """
+        order_ids: list[str] = []
+        for r in rows:
+            try:
+                od = self._parse_order_data(r)
+                dest_country = od.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
+                eff_service = service_code or od.get(
+                    "service_code", ServiceCode.GROUND.value,
+                )
+                origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
+                eff_service = upgrade_to_international(
+                    eff_service, origin_country, dest_country,
+                )
+                requirements = get_requirements(
+                    origin_country, dest_country, eff_service,
+                )
+                if requirements.requires_commodities and not od.get("commodities"):
+                    oid = od.get("order_id") or od.get("order_number")
+                    if oid:
+                        order_ids.append(str(oid))
+            except Exception as e:
+                logger.warning(
+                    "Skipping commodity lookup for row %s (parse error): %s",
+                    getattr(r, "row_number", "?"),
+                    e,
+                )
+        if not order_ids:
+            return {}
+        try:
+            raw = await asyncio.wait_for(
+                self._get_commodities_bulk(order_ids),
+                timeout=timeout_seconds,
+            )
+            return {str(k): v for k, v in raw.items()}
+        except TimeoutError:
+            logger.warning(
+                "Commodity bulk fetch timed out after %.1fs (non-critical)",
+                timeout_seconds,
+            )
+        except Exception as e:
+            logger.warning("Commodity bulk fetch failed (non-critical): %s", e)
+        return {}
 
     async def _get_commodities_bulk(
         self, order_ids: list[int | str],

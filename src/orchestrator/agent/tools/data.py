@@ -7,7 +7,6 @@ resolution, platform status, and Shopify connection.
 import hashlib
 import json
 import logging
-import os
 from typing import Any
 
 from src.orchestrator.agent.intent_detection import (
@@ -16,48 +15,19 @@ from src.orchestrator.agent.intent_detection import (
 )
 from src.orchestrator.agent.tools.core import (
     EventEmitterBridge,
+    _audit_event,
     _err,
     _ok,
     _store_fetched_rows,
+    _validate_allowed_args,
     get_data_gateway,
 )
 from src.orchestrator.models.filter_spec import (
     FilterCompilationError,
     FilterIntent,
 )
-from src.services.decision_audit_service import DecisionAuditService
 
 logger = logging.getLogger(__name__)
-
-
-def _determinism_mode() -> str:
-    """Return determinism enforcement mode ('warn' or 'enforce')."""
-    raw = os.environ.get("DETERMINISM_ENFORCEMENT_MODE", "warn").strip().lower()
-    return "enforce" if raw == "enforce" else "warn"
-
-
-def _validate_allowed_args(
-    tool_name: str,
-    args: dict[str, Any],
-    allowed: set[str],
-) -> dict[str, Any] | None:
-    """Warn or deny unknown args based on DETERMINISM_ENFORCEMENT_MODE."""
-    unknown = sorted(k for k in args.keys() if k not in allowed)
-    if not unknown:
-        return None
-    mode = _determinism_mode()
-    logger.warning(
-        "metric=tool_unknown_args_total tool=%s unknown_keys=%s mode=%s",
-        tool_name,
-        unknown,
-        mode,
-    )
-    if mode == "enforce":
-        return _err(
-            f"Unexpected argument(s) for {tool_name}: {', '.join(unknown)}. "
-            "Remove unknown keys and retry."
-        )
-    return None
 
 
 def _build_source_signature(
@@ -72,24 +42,6 @@ def _build_source_signature(
     }
 
 
-def _audit_event(
-    phase: str,
-    event_name: str,
-    payload: dict[str, Any],
-    *,
-    actor: str = "tool",
-    tool_name: str | None = None,
-) -> None:
-    """Emit best-effort decision audit event in current run context."""
-    DecisionAuditService.log_event_from_context(
-        phase=phase,
-        event_name=event_name,
-        actor=actor,
-        tool_name=tool_name,
-        payload=payload,
-    )
-
-
 def _determinism_guard_error(source_info: dict[str, Any]) -> str | None:
     """Return a deterministic guard error for shipping if source isn't stable."""
     deterministic_ready = bool(source_info.get("deterministic_ready", True))
@@ -102,34 +54,31 @@ def _determinism_guard_error(source_info: dict[str, Any]) -> str | None:
         "source with PRIMARY KEY/UNIQUE constraints."
     )
 
+def _nonempty_str(value: Any) -> str | None:
+    """Return stripped string if non-empty, else None."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            return stripped
+    return None
+
+
 def _command_for_filter_cache(bridge: EventEmitterBridge) -> str | None:
     """Select a stable command string to bind with cached resolved specs.
 
     Confirmation turns ("yes", "proceed") should not overwrite command context
-    with non-semantic text.
+    with non-semantic text. Falls back through shipping command and prior
+    filter command when the current message is a confirmation.
     """
-    last_msg = bridge.last_user_message
-    if isinstance(last_msg, str):
-        trimmed = last_msg.strip()
-        if trimmed:
-            if is_confirmation_response(trimmed):
-                if (
-                    isinstance(bridge.last_shipping_command, str)
-                    and bridge.last_shipping_command.strip()
-                ):
-                    return bridge.last_shipping_command.strip()
-                if (
-                    isinstance(bridge.last_resolved_filter_command, str)
-                    and bridge.last_resolved_filter_command.strip()
-                ):
-                    return bridge.last_resolved_filter_command.strip()
-            return trimmed
-    if (
-        isinstance(bridge.last_resolved_filter_command, str)
-        and bridge.last_resolved_filter_command.strip()
-    ):
-        return bridge.last_resolved_filter_command.strip()
-    return None
+    trimmed = _nonempty_str(bridge.last_user_message)
+    if trimmed:
+        if is_confirmation_response(trimmed):
+            return (
+                _nonempty_str(bridge.last_shipping_command)
+                or _nonempty_str(bridge.last_resolved_filter_command)
+            )
+        return trimmed
+    return _nonempty_str(bridge.last_resolved_filter_command)
 
 
 async def get_source_info_tool(args: dict[str, Any]) -> dict[str, Any]:

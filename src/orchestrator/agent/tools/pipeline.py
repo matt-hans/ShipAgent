@@ -17,6 +17,7 @@ from typing import Any
 from src.db.connection import get_db_context
 from src.orchestrator.agent.tools.core import (
     EventEmitterBridge,
+    _audit_event,
     _build_job_row_data_with_metadata,
     _command_explicitly_requests_service,
     _emit_event,
@@ -26,6 +27,7 @@ from src.orchestrator.agent.tools.core import (
     _get_ups_client,
     _ok,
     _persist_job_source_signature,
+    _validate_allowed_args,
     get_data_gateway,
 )
 from src.orchestrator.binding_hash import build_binding_fingerprint
@@ -50,26 +52,6 @@ from src.services.mapping_cache import MAPPING_VERSION
 from src.services.ups_service_codes import translate_service_name
 
 logger = logging.getLogger(__name__)
-
-
-def _audit_event(
-    phase: str,
-    event_name: str,
-    payload: dict[str, Any],
-    *,
-    actor: str = "tool",
-    tool_name: str | None = None,
-    latency_ms: int | None = None,
-) -> None:
-    """Emit best-effort decision audit event in current run context."""
-    DecisionAuditService.log_event_from_context(
-        phase=phase,
-        event_name=event_name,
-        actor=actor,
-        tool_name=tool_name,
-        payload=payload,
-        latency_ms=latency_ms,
-    )
 
 _FILTER_QUALIFIER_TERMS = frozenset(
     set(REGION_ALIASES.keys())
@@ -102,34 +84,6 @@ _STATE_NAME_PATTERN = re.compile(
     r"\b(" + "|".join(sorted(map(re.escape, STATE_ABBREVIATIONS.keys()), key=len, reverse=True)) + r")\b"
 )
 _STATE_CODE_UPPER_PATTERN = re.compile(r"\b[A-Z]{2}\b")
-
-
-def _determinism_mode() -> str:
-    raw = os.environ.get("DETERMINISM_ENFORCEMENT_MODE", "warn").strip().lower()
-    return "enforce" if raw == "enforce" else "warn"
-
-
-def _validate_allowed_args(
-    tool_name: str,
-    args: dict[str, Any],
-    allowed: set[str],
-) -> dict[str, Any] | None:
-    unknown = sorted(k for k in args.keys() if k not in allowed)
-    if not unknown:
-        return None
-    mode = _determinism_mode()
-    logger.warning(
-        "metric=tool_unknown_args_total tool=%s unknown_keys=%s mode=%s",
-        tool_name,
-        unknown,
-        mode,
-    )
-    if mode == "enforce":
-        return _err(
-            f"Unexpected argument(s) for {tool_name}: {', '.join(unknown)}. "
-            "Remove unknown keys and retry."
-        )
-    return None
 
 
 def _command_implies_filter(command: str) -> bool:

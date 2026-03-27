@@ -97,22 +97,13 @@ export class OnboardingWizardComponent implements OnInit {
   appSettings = this.settingsStore.appSettings;
 
   ngOnInit(): void {
-    // Refresh credential status on mount so step 1 shows current state
-    firstValueFrom(this.apiService.getCredentialStatus())
-      .then((status) => this.settingsStore.setCredentialStatus(status))
-      .catch(() => {
-        /* non-critical */
-      });
+    // Refresh credential status on mount so step 1 shows current state.
+    this.refreshCredentialStatus();
   }
 
   onStep1Saved(): void {
     this.step.set(2);
-    // Refresh status to show updated state
-    firstValueFrom(this.apiService.getCredentialStatus())
-      .then((status) => this.settingsStore.setCredentialStatus(status))
-      .catch(() => {
-        /* non-critical */
-      });
+    this.refreshCredentialStatus();
   }
 
   onStep2Saved(): void {
@@ -141,11 +132,13 @@ export class OnboardingWizardComponent implements OnInit {
     // Mark onboarding complete in store to dismiss the overlay
     this.settingsStore.setOnboardingCompleted(true);
 
-    try {
-      const status = await firstValueFrom(this.apiService.getCredentialStatus());
-      this.settingsStore.setCredentialStatus(status);
-    } catch {
-      /* non-critical */
-    }
+    this.refreshCredentialStatus();
+  }
+
+  /** Best-effort refresh of credential status from the backend. */
+  private refreshCredentialStatus(): void {
+    firstValueFrom(this.apiService.getCredentialStatus())
+      .then((status) => this.settingsStore.setCredentialStatus(status))
+      .catch(() => { /* non-critical */ });
   }
 }
