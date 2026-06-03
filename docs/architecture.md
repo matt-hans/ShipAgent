@@ -14,7 +14,11 @@ The Automated Shipment Creation Agent is a natural language interface for batch 
 - Self-correction when validation fails (LLM fixes mapping templates automatically)
 - Extensible architecture for future carriers and integrations
 
-**Architecture Style:** The system uses the Model Context Protocol (MCP) to separate concerns into independent servers—one for data access, one for UPS integration—orchestrated by a Claude Agent SDK-powered coordinator.
+**Architecture Style:** The system uses the Model Context Protocol (MCP) to separate concerns into independent servers—one for data access, one for UPS integration—exposed through a canonical workflow/tool layer with provider runtimes as adapters.
+
+### Provider-Neutral Portability Layer
+
+The canonical workflow/tool layer is the product backbone. Provider runtimes are adapters that translate the same registry and workflow services into MCP, OpenAPI, function declarations, manifests, and UI resources. Claude Agent SDK remains supported as one runtime adapter, not as a hard dependency for hosted provider app-store workflows.
 
 ---
 
@@ -81,8 +85,8 @@ C4Container
     Person(user, "User", "Ships packages using natural language commands")
 
     Container_Boundary(system, "Shipment Agent System") {
-        Container(ui, "Browser UI", "React/HTML", "Web interface for user interaction (Future - Design TBD)")
-        Container(agent, "Orchestration Agent", "Python + Claude Agent SDK", "Interprets intent, coordinates MCPs, executes deterministic batch logic. Contains embedded Template Engine (Jinja2) and Batch Executor.")
+        Container(ui, "Browser UI", "Angular 21 + Nx", "Native Federation web interface for user interaction")
+        Container(agent, "Orchestration Agent", "Python workflow services + runtime adapters", "Interprets intent, coordinates MCPs, executes deterministic batch logic. Contains embedded Template Engine (Jinja2) and Batch Executor.")
         Container(data_mcp, "Data Source MCP", "Python + DuckDB/Pandas", "Reads files and external sources, executes SQL queries, computes row checksums, writes results back to source")
         Container(ups_mcp, "UPS Shipping MCP", "TypeScript + Zod", "Validates payloads against UPS OpenAPI schema, manages auth, calls UPS endpoints, returns label data to Agent")
         ContainerDb(state_db, "State Database", "SQLite", "Stores job state, transaction journal, audit logs for crash recovery")
@@ -94,7 +98,7 @@ C4Container
     System_Ext(filesystem, "Local Filesystem", "CSV/Excel files (input/output) and shipping labels (output)")
 
     Rel(user, ui, "Interacts via", "HTTPS")
-    Rel(ui, agent, "Sends commands", "WebSocket/HTTP")
+    Rel(ui, agent, "Sends commands and receives events", "HTTP + SSE/EventSource")
     Rel(agent, anthropic, "Sends prompts, receives responses", "HTTPS")
     Rel(agent, data_mcp, "Queries data, triggers write-back", "stdio")
     Rel(agent, ups_mcp, "Validates and creates shipments", "stdio")
@@ -109,8 +113,8 @@ C4Container
 
 | Container | Technology | Responsibility |
 |-----------|------------|----------------|
-| **Browser UI** | React or vanilla HTML/JS | User-facing interface for entering commands, viewing results, approving batches. *Design deferred—will be separate design sessions.* |
-| **Orchestration Agent** | Python with Claude Agent SDK, FastAPI | The brain of the system. Receives user input, calls Anthropic API to interpret intent, generates mapping templates, coordinates MCP calls, runs the deterministic batch execution loop. Embeds the Template Engine (Jinja2) and Batch Executor as in-process components. Receives label data from UPS MCP and saves to filesystem. Python chosen to share data structures efficiently with Data MCP and leverage Jinja2's robust templating. |
+| **Browser UI** | Angular 21, Nx, Native Federation | User-facing interface for entering commands, viewing results, approving batches, and managing settings across the shell and remote apps. |
+| **Orchestration Agent** | Python workflow services with runtime adapters, FastAPI | Coordinates user intent, mapping templates, MCP calls, and deterministic batch execution through canonical workflow services. Claude Agent SDK is one supported runtime adapter. Python chosen to share data structures efficiently with Data MCP and leverage Jinja2's robust templating. |
 | **Data Source MCP** | Python with DuckDB, Pandas, openpyxl | "The Librarian." Abstracts heterogeneous data sources behind a SQL interface. Handles file parsing, schema discovery, query execution, row-level checksum computation, and **writing results back to source files** (tracking numbers, status). Owns the integrity of source data. Crashes here don't affect shipping logic. |
 | **UPS Shipping MCP** | TypeScript with Zod validators | "The Gatekeeper." Wraps the UPS API with strict schema validation. Every payload is validated against the UPS OpenAPI spec before submission. Manages OAuth token refresh and API error handling. **Returns label data (Base64/URL) to the Agent**—does not write to filesystem directly. TypeScript chosen for superior OpenAPI/Zod type safety ecosystem. |
 | **State Database** | SQLite (prototype) → PostgreSQL (production) | Stores job metadata, per-row transaction state (Pending → Sent → Confirmed), checksums, and audit logs. Enables crash recovery and "resume failed batch" capability. |
@@ -127,13 +131,13 @@ C4Container
 ### 3.4 Communication Patterns
 
 - **Agent ↔ MCPs**: stdio transport (standard MCP pattern). Each MCP runs as a child process spawned by the Agent. Simple, no network config needed for local dev.
-- **Agent ↔ Anthropic**: HTTPS to `api.anthropic.com`. Handled by Claude Agent SDK.
+- **Runtime Adapter ↔ Provider Model**: HTTPS to provider APIs such as `api.anthropic.com`. Handled by the active runtime adapter.
 - **Agent ↔ State DB**: Direct SQLite access via `aiosqlite` or `SQLAlchemy`. Upgrades to PostgreSQL connection string for production.
 - **Agent ↔ Filesystem**: Agent saves label images received from UPS MCP. Controls output location based on user context.
 - **Data MCP ↔ Filesystem**: Bidirectional. Reads source CSV/Excel, writes tracking numbers and status back to source rows after batch completion.
 - **Data MCP ↔ Google Sheets**: Bidirectional via Sheets API. Same read/write-back pattern as local files.
 - **UPS MCP ↔ UPS API**: HTTPS with OAuth 2.0 bearer tokens. Token refresh handled internally by the MCP. Returns label data (Base64) to Agent—never touches disk.
-- **UI ↔ Agent**: WebSocket for streaming responses, HTTP for commands. *Protocol details TBD in UI design sessions.*
+- **UI ↔ Agent**: HTTP plus SSE for commands, streaming conversation responses, and batch progress.
 
 ### 3.5 Future Enhancements (Not in Prototype)
 
@@ -296,7 +300,7 @@ C4Component
     title Component Diagram: Orchestration Agent
 
     Container_Boundary(agent, "Orchestration Agent") {
-        Component(sdk_runtime, "Claude Agent SDK Runtime", "Python", "Manages conversation, tool dispatch, streaming responses")
+        Component(sdk_runtime, "Runtime Adapter (Claude Agent SDK)", "Python", "Manages conversation, tool dispatch, streaming responses")
         Component(intent_parser, "Intent Parser", "LLM-powered", "Interprets natural language into structured commands: filters, mappings, service selection")
         Component(mapping_generator, "Mapping Generator", "LLM-powered", "Creates Jinja2 templates that transform source rows into UPS payloads")
         
@@ -343,7 +347,7 @@ C4Component
 
 | Component | Responsibility |
 |-----------|----------------|
-| **Claude Agent SDK Runtime** | Core SDK loop. Manages conversation state, streams responses, dispatches tool calls. Entry point for all user interaction. |
+| **Runtime Adapter (Claude Agent SDK)** | Supported provider runtime adapter. Manages conversation state, streams responses, and dispatches canonical workflow tools for Claude-backed conversations. |
 | **Intent Parser** | LLM-powered component that converts natural language ("Ship all California orders via Ground") into structured intent: filter SQL, service code, special handling flags. |
 | **Mapping Generator** | LLM-powered component that creates Jinja2 templates mapping source columns to UPS payload fields. Validated against UPS schema before use. |
 | **Batch Executor** | The deterministic heart. Iterates over filtered data rows, applies template, calls UPS MCP. Implements Observer pattern—emits `onRowStart`, `onRowSuccess(tracking_number)`, `onRowFailure(error)` events. On specific schema validation errors (e.g., "String too long", "Invalid state code"), can pause batch and request updated template from Mapping Generator via self-correction loop. Never contains business logic beyond the loop. |
@@ -551,9 +555,9 @@ Quick reference for all technology choices. Each decision was made to optimize f
 
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
-| **Orchestration Agent** | Python 3.11+ | Shares ecosystem with Data MCP (Pandas/DuckDB). Enables efficient data structure passing. Claude Agent SDK has full Python support. |
-| **Agent Framework** | Claude Agent SDK | Provides agent loop, tool dispatch, streaming, hooks. Same foundation as Claude Code. |
-| **Web Framework** | FastAPI | Async-native, WebSocket support for UI, automatic OpenAPI docs. Pairs well with Agent SDK. |
+| **Orchestration Agent** | Python 3.11+ | Shares ecosystem with Data MCP (Pandas/DuckDB). Enables efficient data structure passing and canonical workflow services. |
+| **Runtime Adapter** | Claude Agent SDK adapter, extensible provider adapters | Provides provider-specific planning, dispatch, streaming, packaging, and manifest translation over the canonical workflow/tool layer. |
+| **Web Framework** | FastAPI | Async-native HTTP and SSE/EventSource support for the Angular UI, automatic OpenAPI docs. Pairs well with runtime adapters. |
 | **Data Source MCP** | Python 3.11+ | Required for Pandas, DuckDB, openpyxl. Data science ecosystem is Python-native. |
 | **UPS Shipping MCP** | TypeScript 5.x | Superior type safety with Zod. OpenAPI tooling (`openapi-zod-client`) is more mature in TS ecosystem. |
 | **Template Engine** | Jinja2 | Industry standard for Python. Rich filter system. Embedded in Agent process. |
@@ -589,13 +593,13 @@ Quick reference for all technology choices. Each decision was made to optimize f
 | **Configuration** | Environment variables + .env | Simple for prototype. Upgrade to secrets manager (Vault, AWS Secrets) for production. |
 | **Logging** | Python logging → structured JSON | Text logs for dev, JSON for production (log aggregation compatible). |
 
-### 6.5 Browser UI (Future)
+### 6.5 Browser UI
 
 | Component | Technology | Rationale |
 |-----------|------------|-----------|
-| **Framework** | React or vanilla HTML/JS | TBD in separate design sessions. React if complex state needed, vanilla if simple. |
-| **Agent Communication** | WebSocket | Streaming responses from Agent. Real-time batch progress updates. |
-| **Label Rendering** | Native browser (PNG/PDF) or ZPL preview library | Most labels are PNG/PDF (browser-native). ZPL needs specialized renderer. |
+| **Framework** | Angular 21, Nx, Native Federation | Current frontend workspace with shell plus chat, sidebar, settings, and domain remotes. |
+| **Agent Communication** | HTTP + SSE | Streaming responses from Agent. Real-time batch progress updates. |
+| **Label Rendering** | Native browser PDF/image rendering and Angular PDF viewer | Most labels are PNG/PDF (browser-native). ZPL needs specialized renderer. |
 
 ### 6.6 Development & Build Tools
 
@@ -750,15 +754,15 @@ class BaseSourceAdapter(ABC):
 
 ### 7.6 UI Integration
 
-**Extension Point:** Agent's WebSocket/HTTP interface
+**Extension Point:** Agent's HTTP + SSE/EventSource interface
 
-**Current:** CLI/programmatic access. Browser UI marked as "Future."
+**Current:** Angular 21 + Nx + Native Federation browser UI, plus CLI/programmatic access.
 
-**UI Requirements When Implemented:**
+**UI Capabilities:**
 
 | Feature | Agent Support Needed | Status |
 |---------|---------------------|--------|
-| Real-time batch progress | WebSocket streaming of row events | Ready (events exist) |
+| Real-time batch progress | SSE/EventSource streaming of row events | Current |
 | Interactive approval | HTTP endpoint for approve/reject | Ready (Approval Gate supports) |
 | Label preview | Base64 label data in response | Ready (Label Handler provides) |
 | Job history | Query State DB for past jobs | Ready (State DB schema supports) |

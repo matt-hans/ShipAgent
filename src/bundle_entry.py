@@ -12,19 +12,20 @@ appropriate subcommand. See src/orchestrator/agent/config.py for dispatch.
 """
 
 import argparse
+import importlib
 import logging
 import sys
 import traceback
 
 logger = logging.getLogger(__name__)
 
-VALID_COMMANDS = {'serve', 'mcp-data', 'mcp-ups', 'mcp-external', 'cli'}
+VALID_COMMANDS = {"serve", "mcp-data", "mcp-ups", "mcp-external", "cli"}
 
 
 def get_command() -> str:
     """Extract the subcommand from sys.argv, defaulting to 'serve'."""
     if len(sys.argv) < 2:
-        return 'serve'
+        return "serve"
     return sys.argv[1]
 
 
@@ -33,7 +34,7 @@ def get_cli_args() -> list[str]:
 
     Only valid when get_command() returned 'cli'.
     """
-    assert len(sys.argv) >= 2 and sys.argv[1] == 'cli', (
+    assert len(sys.argv) >= 2 and sys.argv[1] == "cli", (
         "get_cli_args() called without 'cli' subcommand"
     )
     return sys.argv[2:]
@@ -41,10 +42,14 @@ def get_cli_args() -> list[str]:
 
 def parse_serve_args(args: list[str] | None = None) -> argparse.Namespace:
     """Parse serve-mode arguments (host, port)."""
-    parser = argparse.ArgumentParser(description='ShipAgent server')
-    parser.add_argument('--host', default='127.0.0.1', help='Bind address')
-    parser.add_argument('--port', type=int, default=0,
-                        help='Listen port (0 = OS-assigned to avoid TOCTOU race)')
+    parser = argparse.ArgumentParser(description="ShipAgent server")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind address")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=0,
+        help="Listen port (0 = OS-assigned to avoid TOCTOU race)",
+    )
     return parser.parse_args(args)
 
 
@@ -52,7 +57,7 @@ def main() -> None:
     """Dispatch to the correct subsystem based on the subcommand."""
     command = get_command()
 
-    if command == 'serve':
+    if command == "serve":
         serve_args = parse_serve_args(sys.argv[2:])
         import uvicorn
 
@@ -80,26 +85,39 @@ def main() -> None:
             host=serve_args.host,
             port=serve_args.port,
             workers=1,
-            log_level='info',
+            log_level="info",
         )
         server = PortReportingServer(config)
         server.run()
 
-    elif command == 'mcp-data':
+    elif command == "mcp-data":
         from src.mcp.data_source.server import main as mcp_main
+
         mcp_main()
 
-    elif command == 'mcp-ups':
-        from ups_mcp import main as ups_main
+    elif command == "mcp-ups":
+        try:
+            server_module = importlib.import_module("ups_mcp.server")
+        except ModuleNotFoundError as exc:
+            if (
+                getattr(exc, "name", None) != "ups_mcp.server"
+                or getattr(exc, "path", None) is not None
+            ):
+                raise
+            from ups_mcp import main as ups_main
+        else:
+            ups_main = server_module.main
         ups_main()
 
-    elif command == 'mcp-external':
+    elif command == "mcp-external":
         from src.mcp.external_sources.server import main as ext_main
+
         ext_main()
 
-    elif command == 'cli':
-        sys.argv = ['shipagent'] + get_cli_args()
+    elif command == "cli":
+        sys.argv = ["shipagent"] + get_cli_args()
         from src.cli.main import app as cli_app
+
         cli_app()
 
     else:
@@ -108,7 +126,7 @@ def main() -> None:
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:

@@ -26,9 +26,9 @@ fi
 
 # 1. Build frontend first (bundled into the binary)
 echo "--- Building frontend ---"
-cd "$PROJECT_ROOT/frontend"
+cd "$PROJECT_ROOT/shipagent-frontend"
 npm ci --prefer-offline --no-audit
-npm run build
+npx nx run-many -t build --all --configuration=production
 cd "$PROJECT_ROOT"
 
 # 2. Run PyInstaller

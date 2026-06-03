@@ -853,9 +853,7 @@ class AppSettings(Base):
     # Fixed ID enforces the singleton invariant — only one row can ever exist.
     SINGLETON_ID = "app-settings-singleton"
 
-    id: Mapped[str] = mapped_column(
-        String(36), primary_key=True, default=SINGLETON_ID
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=SINGLETON_ID)
 
     # Agent config
     agent_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -863,7 +861,9 @@ class AppSettings(Base):
 
     # Shipper defaults
     shipper_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
-    shipper_attention_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    shipper_attention_name: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )
     shipper_address1: Mapped[str | None] = mapped_column(String(255), nullable=True)
     shipper_address2: Mapped[str | None] = mapped_column(String(255), nullable=True)
     shipper_city: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -918,3 +918,141 @@ class FilterTokenConsumed(Base):
 
     def __repr__(self) -> str:
         return f"<FilterTokenConsumed(hash={self.token_hash[:12]}...)>"
+
+
+class HostedTenant(Base):
+    """Hosted tenant mapped from a model-provider host identity."""
+
+    __tablename__ = "hosted_tenants"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    provider_host: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+
+    connected_accounts: Mapped[list["ConnectedAccount"]] = relationship(
+        "ConnectedAccount",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+    )
+    uploaded_artifacts: Mapped[list["UploadedArtifact"]] = relationship(
+        "UploadedArtifact",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+    )
+    confirmation_records: Mapped[list["ConfirmationRecord"]] = relationship(
+        "ConfirmationRecord",
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_host",
+            "provider_subject",
+            name="uq_hosted_tenant_provider_subject",
+        ),
+    )
+
+
+class ConnectedAccount(Base):
+    """Hosted OAuth/account-linking record scoped to a tenant."""
+
+    __tablename__ = "connected_accounts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("hosted_tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    account_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    scopes_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    encrypted_token_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", server_default="pending"
+    )
+    created_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+    updated_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso, onupdate=utc_now_iso
+    )
+
+    tenant: Mapped["HostedTenant"] = relationship(
+        "HostedTenant", back_populates="connected_accounts"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "provider",
+            "account_key",
+            name="uq_connected_account_tenant_provider_key",
+        ),
+        Index("idx_connected_accounts_tenant", "tenant_id"),
+    )
+
+
+class UploadedArtifact(Base):
+    """Hosted uploaded artifact such as order files or generated labels."""
+
+    __tablename__ = "uploaded_artifacts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("hosted_tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    artifact_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+    expires_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    tenant: Mapped["HostedTenant"] = relationship(
+        "HostedTenant", back_populates="uploaded_artifacts"
+    )
+
+    __table_args__ = (Index("idx_uploaded_artifacts_tenant", "tenant_id"),)
+
+
+class ConfirmationRecord(Base):
+    """Persisted one-time confirmation record for hosted side effects."""
+
+    __tablename__ = "confirmation_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    tenant_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("hosted_tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    operation: Mapped[str] = mapped_column(String(128), nullable=False)
+    preview_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(
+        String(50), nullable=False, default=utc_now_iso
+    )
+    expires_at: Mapped[str] = mapped_column(String(50), nullable=False)
+    used_at: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    tenant: Mapped["HostedTenant"] = relationship(
+        "HostedTenant", back_populates="confirmation_records"
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "idempotency_key", name="uq_confirmation_tenant_idempotency"
+        ),
+        Index("idx_confirmation_records_tenant", "tenant_id"),
+        Index("idx_confirmation_records_token_hash", "token_hash", unique=True),
+    )
