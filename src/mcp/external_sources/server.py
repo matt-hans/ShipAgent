@@ -59,6 +59,10 @@ mcp.tool()(get_shop_info)
 mcp.tool()(update_tracking)
 
 
-if __name__ == "__main__":
-    # Run server with stdio transport for MCP communication
+def main() -> None:
+    """Run External Sources MCP server over stdio."""
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

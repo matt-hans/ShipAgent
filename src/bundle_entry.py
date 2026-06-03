@@ -12,6 +12,7 @@ appropriate subcommand. See src/orchestrator/agent/config.py for dispatch.
 """
 
 import argparse
+import importlib
 import logging
 import sys
 import traceback
@@ -90,7 +91,17 @@ def main() -> None:
         mcp_main()
 
     elif command == 'mcp-ups':
-        from ups_mcp import main as ups_main
+        try:
+            server_module = importlib.import_module("ups_mcp.server")
+        except ModuleNotFoundError as exc:
+            if (
+                getattr(exc, "name", None) != "ups_mcp.server"
+                or getattr(exc, "path", None) is not None
+            ):
+                raise
+            from ups_mcp import main as ups_main
+        else:
+            ups_main = server_module.main
         ups_main()
 
     elif command == 'mcp-external':

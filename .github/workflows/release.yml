@@ -67,9 +67,9 @@ jobs:
 
       - name: Build frontend
         run: |
-          cd frontend
+          cd shipagent-frontend
           npm ci
-          npm run build
+          npx nx run-many -t build --all --configuration=production
 
       - name: Build Python sidecar
         run: |
