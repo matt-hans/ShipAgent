@@ -23,13 +23,13 @@ def test_public_catalog_has_expected_tools():
     assert {tool.name for tool in public_tools()} == EXPECTED_PUBLIC
 
 
-def test_public_tools_are_tenant_safe_but_not_provider_exported_without_bindings():
+def test_public_tools_are_tenant_safe_and_provider_exportable():
     for tool in public_tools():
         assert tool.visibility == ToolVisibility.public
         assert tool.tenant_safe is True
-        assert tool.implementation_status == "planned"
-        assert tool.hosted_readiness == "not_ready"
-        assert tool.provider_export_enabled is False
+        assert tool.implementation_status == "implemented"
+        assert tool.hosted_readiness == "ready"
+        assert tool.provider_export_enabled is True
         assert ProviderExport.openai in tool.provider_exports
         assert ProviderExport.generic_mcp in tool.provider_exports
         assert ProviderExport.anthropic not in tool.provider_exports

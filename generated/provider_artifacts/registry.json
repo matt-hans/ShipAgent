@@ -13,8 +13,8 @@
       "confirmation_policy": "standard_side_effect",
       "contract_version": "1.0.0",
       "description": "Start or check carrier account linking for shipment creation.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -48,7 +48,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -75,8 +75,8 @@
       "confirmation_policy": "standard_side_effect",
       "contract_version": "1.0.0",
       "description": "Start or check commerce store account linking for order import and tracking write-back.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -107,7 +107,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -134,8 +134,8 @@
       "confirmation_policy": "standard_side_effect",
       "contract_version": "1.0.0",
       "description": "Import order data from an uploaded file or connected cloud store into a hosted order batch.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -171,7 +171,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -199,8 +199,8 @@
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Preview shipment destinations, service choices, costs, and write-back effects before purchase.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -254,7 +254,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -281,8 +281,8 @@
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Compare available rates for one shipment or a shipment batch preview.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -313,7 +313,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -340,8 +340,8 @@
       "confirmation_policy": "standard_side_effect",
       "contract_version": "1.0.0",
       "description": "Create shipping labels after a confirmed preview and return job status.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -373,7 +373,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -400,8 +400,8 @@
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Track a package by tracking number.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -435,7 +435,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -462,8 +462,8 @@
       "confirmation_policy": "standard_side_effect",
       "contract_version": "1.0.0",
       "description": "Schedule a carrier pickup after confirmed pickup details.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -495,7 +495,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -522,8 +522,8 @@
       "confirmation_policy": "standard_side_effect",
       "contract_version": "1.0.0",
       "description": "Void a created shipment after confirmation.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -555,7 +555,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -582,8 +582,8 @@
       "confirmation_policy": "standard_side_effect",
       "contract_version": "1.0.0",
       "description": "Write tracking numbers back to a connected cloud system after confirmation.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -615,7 +615,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -642,8 +642,8 @@
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Get the status and progress summary for a ShipAgent job.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -675,7 +675,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -702,8 +702,8 @@
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Return tenant-scoped expiring links or opaque handles for generated labels.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -734,7 +734,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",
@@ -761,8 +761,8 @@
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Return a provider-safe summary of ShipAgent decisions and side effects for a job.",
-      "hosted_readiness": "not_ready",
-      "implementation_status": "planned",
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
@@ -790,7 +790,7 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai",
         "microsoft",

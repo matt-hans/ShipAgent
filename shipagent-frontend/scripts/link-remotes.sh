@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Link remote build outputs into shell dist for unified serving.
 # Run after: npx nx build shell --configuration=production
 set -e
