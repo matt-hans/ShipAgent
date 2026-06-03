@@ -133,6 +133,10 @@ if _edi_available:
     mcp.tool()(import_edi)
 
 
-if __name__ == "__main__":
-    # Run server with stdio transport for MCP communication
+def main() -> None:
+    """Run Data Source MCP server over stdio."""
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()
