@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS confirmation_records (
     operation TEXT NOT NULL,
     preview_id TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
-    token_hash TEXT,
+    token_hash TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
     used_at TEXT,
@@ -130,3 +130,6 @@ CREATE TABLE IF NOT EXISTS confirmation_records (
 
 CREATE INDEX IF NOT EXISTS idx_confirmation_records_tenant
     ON confirmation_records(tenant_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_confirmation_records_token_hash
+    ON confirmation_records(token_hash);

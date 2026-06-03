@@ -79,27 +79,39 @@ def test_side_effect_safety_metadata(
 
 def test_exportable_tools_filters_by_provider_and_export_safety_gates():
     base_tool = tool("track_package")
+    exportable_update = {
+        "implementation_status": "implemented",
+        "hosted_readiness": "ready",
+        "provider_export_enabled": True,
+    }
     included = base_tool.model_copy(
-        update={"name": "included", "provider_exports": [ProviderExport.gemini]}
+        update={
+            **exportable_update,
+            "name": "included",
+            "provider_exports": [ProviderExport.gemini],
+        }
     )
     provider_excluded = base_tool.model_copy(
         update={
+            **exportable_update,
             "name": "provider_excluded",
             "provider_exports": [ProviderExport.openai],
         }
     )
     disabled = base_tool.model_copy(
-        update={"name": "disabled", "provider_export_enabled": False}
+        update={**exportable_update, "name": "disabled", "provider_export_enabled": False}
     )
     planned = base_tool.model_copy(
-        update={"name": "planned", "implementation_status": "planned"}
+        update={**exportable_update, "name": "planned", "implementation_status": "planned"}
     )
     not_ready = base_tool.model_copy(
-        update={"name": "not_ready", "hosted_readiness": "not_ready"}
+        update={**exportable_update, "name": "not_ready", "hosted_readiness": "not_ready"}
     )
-    unsafe = base_tool.model_copy(update={"name": "unsafe", "tenant_safe": False})
+    unsafe = base_tool.model_copy(
+        update={**exportable_update, "name": "unsafe", "tenant_safe": False}
+    )
     private = base_tool.model_copy(
-        update={"name": "private", "visibility": ToolVisibility.private}
+        update={**exportable_update, "name": "private", "visibility": ToolVisibility.private}
     )
 
     exported = exportable_tools(
@@ -108,6 +120,11 @@ def test_exportable_tools_filters_by_provider_and_export_safety_gates():
     )
 
     assert [contract.name for contract in exported] == ["included"]
+
+
+def test_public_tools_do_not_claim_anthropic_export_without_artifact_path():
+    for contract in public_tools():
+        assert ProviderExport.anthropic not in contract.provider_exports
 
 
 def schema_at(payload: dict, path: tuple[str, ...]) -> dict:
