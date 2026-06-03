@@ -66,6 +66,28 @@ jobs:
           print("ups-spec-cache-ok")
           PY
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install pydantic jsonschema
+          .venv/bin/pip install --no-deps -e .
+
+      - name: Verify provider artifacts
+        run: |
+          rm -rf generated/provider_artifacts
+          .venv/bin/python scripts/generate_provider_artifacts.py
+          git diff --exit-code -- generated/provider_artifacts
+          status="$(git status --porcelain -- generated/provider_artifacts)"
+          if [ -n "$status" ]; then
+            echo "$status"
+            exit 1
+          fi
+
       - name: Cleanup
         if: always()
         run: docker rm -f shipagent-smoke || true
