@@ -10,45 +10,51 @@ import pytest
 def test_serve_command_parses_port():
     """'serve' command should parse --port argument."""
     from src.bundle_entry import parse_serve_args
-    args = parse_serve_args(['--port', '9000'])
+
+    args = parse_serve_args(["--port", "9000"])
     assert args.port == 9000
-    assert args.host == '127.0.0.1'
+    assert args.host == "127.0.0.1"
 
 
 def test_serve_default_port_zero():
     """Default port is 0 (OS-assigned) to avoid TOCTOU race."""
     from src.bundle_entry import parse_serve_args
+
     args = parse_serve_args([])
     assert args.port == 0
 
 
 def test_default_command_is_serve():
     """No subcommand defaults to 'serve'."""
-    with patch('sys.argv', ['shipagent-core']):
+    with patch("sys.argv", ["shipagent-core"]):
         from src.bundle_entry import get_command
-        assert get_command() == 'serve'
+
+        assert get_command() == "serve"
 
 
 def test_mcp_data_command():
     """'mcp-data' is recognized as a valid subcommand."""
-    with patch('sys.argv', ['shipagent-core', 'mcp-data']):
+    with patch("sys.argv", ["shipagent-core", "mcp-data"]):
         from src.bundle_entry import get_command
-        assert get_command() == 'mcp-data'
+
+        assert get_command() == "mcp-data"
 
 
 def test_cli_command_passes_remaining_args():
     """'cli' passes remaining args to the Typer CLI."""
-    with patch('sys.argv', ['shipagent-core', 'cli', 'submit', 'orders.csv']):
+    with patch("sys.argv", ["shipagent-core", "cli", "submit", "orders.csv"]):
         from src.bundle_entry import get_cli_args, get_command
-        assert get_command() == 'cli'
-        assert get_cli_args() == ['submit', 'orders.csv']
+
+        assert get_command() == "cli"
+        assert get_cli_args() == ["submit", "orders.csv"]
 
 
 def test_unknown_command_exits():
     """Unknown subcommand exits with code 1."""
-    with patch('sys.argv', ['shipagent-core', 'unknown']):
+    with patch("sys.argv", ["shipagent-core", "unknown"]):
         from src.bundle_entry import get_command
-        assert get_command() == 'unknown'
+
+        assert get_command() == "unknown"
         # main() should sys.exit(1) for unknown
 
 
@@ -159,22 +165,14 @@ def test_bundle_entry_dispatches_mcp_ups_legacy_fallback(monkeypatch):
     assert calls == ["legacy"]
 
 
-def test_bundle_entry_reraises_unrelated_mcp_ups_import_error(
-    monkeypatch, tmp_path
-):
+def test_bundle_entry_reraises_unrelated_mcp_ups_import_error(monkeypatch, tmp_path):
     import src.bundle_entry as bundle_entry
 
     package_dir = tmp_path / "ups_mcp"
     package_dir.mkdir()
-    (package_dir / "__init__.py").write_text(
-        "def main():\n"
-        "    pass\n"
-    )
+    (package_dir / "__init__.py").write_text("def main():\n    pass\n")
     (package_dir / "server.py").write_text(
-        "import missing_ups_dependency\n"
-        "\n"
-        "def main():\n"
-        "    pass\n"
+        "import missing_ups_dependency\n\ndef main():\n    pass\n"
     )
 
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -196,10 +194,7 @@ def test_bundle_entry_reraises_existing_mcp_ups_server_import_error(
     package_dir = tmp_path / "ups_mcp"
     server_file = package_dir / "server.py"
     package_dir.mkdir()
-    (package_dir / "__init__.py").write_text(
-        "def main():\n"
-        "    pass\n"
-    )
+    (package_dir / "__init__.py").write_text("def main():\n    pass\n")
     server_file.write_text(
         "raise ImportError(\n"
         "    'broken primary server import',\n"
