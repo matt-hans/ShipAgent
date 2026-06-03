@@ -1,8 +1,8 @@
 """Tests for the unified bundle entry point."""
 
+import sys
 import types
 from unittest.mock import patch
-import sys
 
 import pytest
 
@@ -39,7 +39,7 @@ def test_mcp_data_command():
 def test_cli_command_passes_remaining_args():
     """'cli' passes remaining args to the Typer CLI."""
     with patch('sys.argv', ['shipagent-core', 'cli', 'submit', 'orders.csv']):
-        from src.bundle_entry import get_command, get_cli_args
+        from src.bundle_entry import get_cli_args, get_command
         assert get_command() == 'cli'
         assert get_cli_args() == ['submit', 'orders.csv']
 
