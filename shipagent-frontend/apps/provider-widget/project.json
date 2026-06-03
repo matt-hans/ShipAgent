@@ -1,0 +1,27 @@
+{
+  "name": "provider-widget",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "projectType": "application",
+  "sourceRoot": "apps/provider-widget/src",
+  "targets": {
+    "build": {
+      "executor": "@angular/build:application",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "dist/apps/provider-widget",
+        "browser": "apps/provider-widget/src/main.ts",
+        "index": false,
+        "tsConfig": "apps/provider-widget/tsconfig.app.json",
+        "styles": ["apps/provider-widget/src/styles.css"]
+      },
+      "configurations": {
+        "production": {
+          "optimization": true,
+          "extractLicenses": true,
+          "sourceMap": false
+        }
+      },
+      "defaultConfiguration": "production"
+    }
+  }
+}
