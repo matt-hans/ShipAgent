@@ -1,0 +1,510 @@
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "description": "Start or check carrier account linking for shipment creation.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "carrier": {
+          "description": "Carrier account to connect.",
+          "enum": [
+            "ups"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "carrier"
+      ],
+      "type": "object"
+    },
+    "name": "connect_carrier_account",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "link_url": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Connect carrier account"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "description": "Start or check commerce store account linking for order import and tracking write-back.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "platform": {
+          "description": "Commerce platform to connect.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "platform"
+      ],
+      "type": "object"
+    },
+    "name": "connect_store",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "link_url": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Connect store"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "description": "Import order data from an uploaded file or connected cloud store into a hosted order batch.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "description": "Order source type, such as uploaded file or connected store.",
+          "type": "string"
+        },
+        "source_ref": {
+          "description": "Opaque reference for the uploaded file or import source.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "type": "object"
+    },
+    "name": "upload_or_import_orders",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "order_batch_id": {
+          "type": "string"
+        },
+        "row_count": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "order_batch_id",
+        "row_count"
+      ],
+      "type": "object"
+    },
+    "title": "Upload or import orders"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Preview shipment destinations, service choices, costs, and write-back effects before purchase.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "order_batch_id": {
+          "description": "Hosted order batch to preview.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "order_batch_id"
+      ],
+      "type": "object"
+    },
+    "name": "preview_shipments",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "preview_id": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "preview_id",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "title": "Preview shipments"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Compare available rates for one shipment or a shipment batch preview.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "preview_id": {
+          "description": "Shipment preview to rate.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "preview_id"
+      ],
+      "type": "object"
+    },
+    "name": "compare_rates",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "rates": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "rates"
+      ],
+      "type": "object"
+    },
+    "title": "Compare rates"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "description": "Create shipping labels after a confirmed preview and return job status.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation_token": {
+          "description": "Confirmation token for the approved shipment preview.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirmation_token"
+      ],
+      "type": "object"
+    },
+    "name": "create_shipments",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Create shipments"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Track a package by tracking number.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "tracking_number": {
+          "description": "Carrier tracking number to look up.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tracking_number"
+      ],
+      "type": "object"
+    },
+    "name": "track_package",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Track package"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "description": "Schedule a carrier pickup after confirmed pickup details.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation_token": {
+          "description": "Confirmation token for the approved pickup request.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirmation_token"
+      ],
+      "type": "object"
+    },
+    "name": "schedule_pickup",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "pickup_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pickup_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Schedule pickup"
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "description": "Void a created shipment after confirmation.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation_token": {
+          "description": "Confirmation token for the shipment void request.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirmation_token"
+      ],
+      "type": "object"
+    },
+    "name": "void_shipment",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "shipment_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "shipment_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Void shipment"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "description": "Write tracking numbers back to a connected cloud system after confirmation.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation_token": {
+          "description": "Confirmation token for the tracking write-back job.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "confirmation_token"
+      ],
+      "type": "object"
+    },
+    "name": "write_back_tracking",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Write back tracking"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Get the status and progress summary for a ShipAgent job.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "description": "ShipAgent job identifier.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_job_status",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Get job status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Return tenant-scoped expiring links or opaque handles for generated labels.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "description": "ShipAgent label creation job identifier.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_label_links",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "links": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "links"
+      ],
+      "type": "object"
+    },
+    "title": "Get label links"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Return a provider-safe summary of ShipAgent decisions and side effects for a job.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "description": "ShipAgent job identifier to summarize.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_audit_summary",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "summary": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "type": "object"
+    },
+    "title": "Get audit summary"
+  }
+]
