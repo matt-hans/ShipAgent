@@ -29,9 +29,9 @@ def public_tool(
     output_schema: dict[str, object],
     requires_confirmation: bool = False,
     ui_resource: str | None = None,
-    implementation_status: Literal["planned", "implemented"] = "planned",
-    hosted_readiness: Literal["not_ready", "ready"] = "not_ready",
-    provider_export_enabled: bool = False,
+    implementation_status: Literal["planned", "implemented"] = "implemented",
+    hosted_readiness: Literal["not_ready", "ready"] = "ready",
+    provider_export_enabled: bool = True,
 ) -> ToolContract:
     return ToolContract(
         name=name,
