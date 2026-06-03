@@ -43,26 +43,32 @@ def ups_client(mock_mcp_client):
 class TestUPSIsRetryable:
     """Test _ups_is_retryable error classification."""
 
-    @pytest.mark.parametrize("text", [
-        "429 Too Many Requests",
-        "503 Service Unavailable",
-        "502 Bad Gateway",
-        "rate limit exceeded",
-        "connection refused",
-        "timeout after 30s",
-        '{"code": "190001", "message": "System unavailable"}',
-        '{"code": "190002", "message": "Service temporarily unavailable"}',
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "429 Too Many Requests",
+            "503 Service Unavailable",
+            "502 Bad Gateway",
+            "rate limit exceeded",
+            "connection refused",
+            "timeout after 30s",
+            '{"code": "190001", "message": "System unavailable"}',
+            '{"code": "190002", "message": "Service temporarily unavailable"}',
+        ],
+    )
     def test_retryable_patterns(self, text: str):
         """Transient errors are classified as retryable."""
         assert _ups_is_retryable(text) is True
 
-    @pytest.mark.parametrize("text", [
-        '{"code": "120100", "message": "Invalid address"}',
-        "Missing required field: weight",
-        "Authentication failed: invalid credentials",
-        "400 Bad Request: invalid payload",
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '{"code": "120100", "message": "Invalid address"}',
+            "Missing required field: weight",
+            "Authentication failed: invalid credentials",
+            "400 Bad Request: invalid payload",
+        ],
+    )
     def test_non_retryable_patterns(self, text: str):
         """Validation and auth errors are not retryable."""
         assert _ups_is_retryable(text) is False
@@ -81,12 +87,14 @@ class TestGetRate:
         """Normalizes published rate when no negotiated rate exists."""
         mock_mcp_client.call_tool.return_value = {
             "RateResponse": {
-                "RatedShipment": [{
-                    "TotalCharges": {
-                        "MonetaryValue": "15.50",
-                        "CurrencyCode": "USD",
-                    },
-                }],
+                "RatedShipment": [
+                    {
+                        "TotalCharges": {
+                            "MonetaryValue": "15.50",
+                            "CurrencyCode": "USD",
+                        },
+                    }
+                ],
             },
         }
 
@@ -109,18 +117,20 @@ class TestGetRate:
         """Prefers negotiated rate over published rate."""
         mock_mcp_client.call_tool.return_value = {
             "RateResponse": {
-                "RatedShipment": [{
-                    "TotalCharges": {
-                        "MonetaryValue": "20.00",
-                        "CurrencyCode": "USD",
-                    },
-                    "NegotiatedRateCharges": {
-                        "TotalCharge": {
-                            "MonetaryValue": "12.50",
+                "RatedShipment": [
+                    {
+                        "TotalCharges": {
+                            "MonetaryValue": "20.00",
                             "CurrencyCode": "USD",
                         },
-                    },
-                }],
+                        "NegotiatedRateCharges": {
+                            "TotalCharge": {
+                                "MonetaryValue": "12.50",
+                                "CurrencyCode": "USD",
+                            },
+                        },
+                    }
+                ],
             },
         }
 
@@ -129,14 +139,61 @@ class TestGetRate:
         assert result["totalCharges"]["monetaryValue"] == "12.50"
 
     @pytest.mark.asyncio
+    async def test_missing_rate_monetary_value_is_not_defaulted_to_zero(
+        self,
+        ups_client,
+        mock_mcp_client,
+    ):
+        """Missing rate monetary values stay missing instead of becoming zero."""
+        mock_mcp_client.call_tool.return_value = {
+            "RateResponse": {
+                "RatedShipment": [
+                    {
+                        "TotalCharges": {
+                            "CurrencyCode": "USD",
+                        },
+                    }
+                ],
+            },
+        }
+
+        result = await ups_client.get_rate(request_body={})
+
+        assert result["totalCharges"]["monetaryValue"] is None
+        assert result["totalCharges"]["amount"] is None
+
+    @pytest.mark.asyncio
+    async def test_explicit_zero_rate_is_preserved(self, ups_client, mock_mcp_client):
+        """Explicit zero rates remain valid zero values."""
+        mock_mcp_client.call_tool.return_value = {
+            "RateResponse": {
+                "RatedShipment": [
+                    {
+                        "TotalCharges": {
+                            "MonetaryValue": "0",
+                            "CurrencyCode": "USD",
+                        },
+                    }
+                ],
+            },
+        }
+
+        result = await ups_client.get_rate(request_body={})
+
+        assert result["totalCharges"]["monetaryValue"] == "0"
+        assert result["totalCharges"]["amount"] == "0"
+
+    @pytest.mark.asyncio
     async def test_translates_tool_error(self, ups_client, mock_mcp_client):
         """MCPToolError is translated to UPSServiceError."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="rate_shipment",
-            error_text=json.dumps({
-                "code": "120100",
-                "message": "Address validation failed",
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "120100",
+                    "message": "Address validation failed",
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -145,18 +202,29 @@ class TestGetRate:
         assert exc_info.value.code == "E-3003"
 
     @pytest.mark.asyncio
-    async def test_shop_request_option_returns_available_services(self, ups_client, mock_mcp_client):
+    async def test_shop_request_option_returns_available_services(
+        self, ups_client, mock_mcp_client
+    ):
         """Shop mode returns normalized available service list."""
         mock_mcp_client.call_tool.return_value = {
             "RateResponse": {
                 "RatedShipment": [
                     {
                         "Service": {"Code": "65", "Description": "UPS Worldwide Saver"},
-                        "TotalCharges": {"MonetaryValue": "45.10", "CurrencyCode": "USD"},
+                        "TotalCharges": {
+                            "MonetaryValue": "45.10",
+                            "CurrencyCode": "USD",
+                        },
                     },
                     {
-                        "Service": {"Code": "07", "Description": "UPS Worldwide Express"},
-                        "TotalCharges": {"MonetaryValue": "58.30", "CurrencyCode": "USD"},
+                        "Service": {
+                            "Code": "07",
+                            "Description": "UPS Worldwide Express",
+                        },
+                        "TotalCharges": {
+                            "MonetaryValue": "58.30",
+                            "CurrencyCode": "USD",
+                        },
                     },
                 ]
             }
@@ -187,11 +255,17 @@ class TestGetRate:
                 "RatedShipment": [
                     {
                         "Service": {"Code": "07"},
-                        "TotalCharges": {"MonetaryValue": "88.00", "CurrencyCode": "USD"},
+                        "TotalCharges": {
+                            "MonetaryValue": "88.00",
+                            "CurrencyCode": "USD",
+                        },
                     },
                     {
                         "Service": {"Code": "65"},
-                        "TotalCharges": {"MonetaryValue": "49.00", "CurrencyCode": "USD"},
+                        "TotalCharges": {
+                            "MonetaryValue": "49.00",
+                            "CurrencyCode": "USD",
+                        },
                     },
                 ]
             }
@@ -283,11 +357,20 @@ class TestCreateShipment:
                 "ShipmentResults": {
                     "ShipmentIdentificationNumber": "1Z",
                     "PackageResults": [
-                        {"TrackingNumber": "PKG1", "ShippingLabel": {"GraphicImage": "lbl1"}},
-                        {"TrackingNumber": "PKG2", "ShippingLabel": {"GraphicImage": "lbl2"}},
+                        {
+                            "TrackingNumber": "PKG1",
+                            "ShippingLabel": {"GraphicImage": "lbl1"},
+                        },
+                        {
+                            "TrackingNumber": "PKG2",
+                            "ShippingLabel": {"GraphicImage": "lbl2"},
+                        },
                     ],
                     "ShipmentCharges": {
-                        "TotalCharges": {"MonetaryValue": "30.00", "CurrencyCode": "USD"},
+                        "TotalCharges": {
+                            "MonetaryValue": "30.00",
+                            "CurrencyCode": "USD",
+                        },
                     },
                 },
             },
@@ -384,18 +467,22 @@ class TestErrorTranslation:
         """Extracts error code from nested details."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "unknown",
-                "message": "Generic error",
-                "details": {
-                    "response": {
-                        "errors": [{
-                            "code": "120500",
-                            "message": "Invalid weight value",
-                        }],
+            error_text=json.dumps(
+                {
+                    "code": "unknown",
+                    "message": "Generic error",
+                    "details": {
+                        "response": {
+                            "errors": [
+                                {
+                                    "code": "120500",
+                                    "message": "Invalid weight value",
+                                }
+                            ],
+                        },
                     },
-                },
-            }),
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -427,20 +514,36 @@ class TestTranslateErrorMCPPreflight:
     """
 
     @pytest.mark.asyncio
-    async def test_elicitation_unsupported_with_missing(self, ups_client, mock_mcp_client):
+    async def test_elicitation_unsupported_with_missing(
+        self, ups_client, mock_mcp_client
+    ):
         """ELICITATION_UNSUPPORTED with missing[] -> E-2010 with prompt-based fields."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "ELICITATION_UNSUPPORTED",
-                "message": "Missing 3 required field(s)",
-                "reason": "unsupported",
-                "missing": [
-                    {"dot_path": "ShipmentRequest.Shipment.Shipper.Name", "flat_key": "shipper_name", "prompt": "Shipper name"},
-                    {"dot_path": "ShipmentRequest.Shipment.ShipTo.Address.City", "flat_key": "ship_to_city", "prompt": "Recipient city"},
-                    {"dot_path": "ShipmentRequest.Shipment.Package.PackageWeight.Weight", "flat_key": "package_1_weight", "prompt": "Package weight"},
-                ],
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "ELICITATION_UNSUPPORTED",
+                    "message": "Missing 3 required field(s)",
+                    "reason": "unsupported",
+                    "missing": [
+                        {
+                            "dot_path": "ShipmentRequest.Shipment.Shipper.Name",
+                            "flat_key": "shipper_name",
+                            "prompt": "Shipper name",
+                        },
+                        {
+                            "dot_path": "ShipmentRequest.Shipment.ShipTo.Address.City",
+                            "flat_key": "ship_to_city",
+                            "prompt": "Recipient city",
+                        },
+                        {
+                            "dot_path": "ShipmentRequest.Shipment.Package.PackageWeight.Weight",
+                            "flat_key": "package_1_weight",
+                            "prompt": "Package weight",
+                        },
+                    ],
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -454,19 +557,22 @@ class TestTranslateErrorMCPPreflight:
         assert "Package weight" in err.message
 
     @pytest.mark.asyncio
-    async def test_elicitation_unsupported_many_fields_truncated(self, ups_client, mock_mcp_client):
+    async def test_elicitation_unsupported_many_fields_truncated(
+        self, ups_client, mock_mcp_client
+    ):
         """ELICITATION_UNSUPPORTED with 12 missing fields shows first 8 + count."""
         missing = [
-            {"flat_key": f"field_{i}", "prompt": f"Field {i}"}
-            for i in range(12)
+            {"flat_key": f"field_{i}", "prompt": f"Field {i}"} for i in range(12)
         ]
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "ELICITATION_UNSUPPORTED",
-                "message": "Missing 12 required field(s)",
-                "missing": missing,
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "ELICITATION_UNSUPPORTED",
+                    "message": "Missing 12 required field(s)",
+                    "missing": missing,
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -483,13 +589,19 @@ class TestTranslateErrorMCPPreflight:
         """When prompt is None, falls back to flat_key for display."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "ELICITATION_UNSUPPORTED",
-                "message": "Missing 1 required field(s)",
-                "missing": [
-                    {"dot_path": "ShipmentRequest.Shipment.Shipper.Name", "flat_key": "shipper_name", "prompt": None},
-                ],
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "ELICITATION_UNSUPPORTED",
+                    "message": "Missing 1 required field(s)",
+                    "missing": [
+                        {
+                            "dot_path": "ShipmentRequest.Shipment.Shipper.Name",
+                            "flat_key": "shipper_name",
+                            "prompt": None,
+                        },
+                    ],
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -504,11 +616,13 @@ class TestTranslateErrorMCPPreflight:
         """E-2010 with absent/empty missing[] uses fallback context (no raw placeholders)."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "ELICITATION_UNSUPPORTED",
-                "message": "Something about missing fields",
-                "missing": [],
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "ELICITATION_UNSUPPORTED",
+                    "message": "Something about missing fields",
+                    "missing": [],
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -525,11 +639,13 @@ class TestTranslateErrorMCPPreflight:
         """MALFORMED_REQUEST with empty missing[] -> E-2011."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "MALFORMED_REQUEST",
-                "message": "Ambiguous payer configuration",
-                "missing": [],
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "MALFORMED_REQUEST",
+                    "message": "Ambiguous payer configuration",
+                    "missing": [],
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -539,15 +655,19 @@ class TestTranslateErrorMCPPreflight:
         assert "Ambiguous payer" in exc_info.value.message
 
     @pytest.mark.asyncio
-    async def test_elicitation_cancelled_maps_to_e4012(self, ups_client, mock_mcp_client):
+    async def test_elicitation_cancelled_maps_to_e4012(
+        self, ups_client, mock_mcp_client
+    ):
         """ELICITATION_CANCELLED -> E-4012."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "ELICITATION_CANCELLED",
-                "message": "User cancelled the form",
-                "missing": [],
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "ELICITATION_CANCELLED",
+                    "message": "User cancelled the form",
+                    "missing": [],
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -556,15 +676,19 @@ class TestTranslateErrorMCPPreflight:
         assert exc_info.value.code == "E-4012"
 
     @pytest.mark.asyncio
-    async def test_elicitation_invalid_response_maps_to_e4010(self, ups_client, mock_mcp_client):
+    async def test_elicitation_invalid_response_maps_to_e4010(
+        self, ups_client, mock_mcp_client
+    ):
         """ELICITATION_INVALID_RESPONSE -> E-4010."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "ELICITATION_INVALID_RESPONSE",
-                "message": "Rehydration error: field conflict",
-                "missing": [],
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "ELICITATION_INVALID_RESPONSE",
+                    "message": "Rehydration error: field conflict",
+                    "missing": [],
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -577,15 +701,17 @@ class TestTranslateErrorMCPPreflight:
         """Field order from missing[] is preserved in the message."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "ELICITATION_UNSUPPORTED",
-                "message": "Missing fields",
-                "missing": [
-                    {"flat_key": "a", "prompt": "Alpha"},
-                    {"flat_key": "b", "prompt": "Bravo"},
-                    {"flat_key": "c", "prompt": "Charlie"},
-                ],
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "ELICITATION_UNSUPPORTED",
+                    "message": "Missing fields",
+                    "missing": [
+                        {"flat_key": "a", "prompt": "Alpha"},
+                        {"flat_key": "b", "prompt": "Bravo"},
+                        {"flat_key": "c", "prompt": "Charlie"},
+                    ],
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -600,16 +726,20 @@ class TestMalformedRequestReasonPreservation:
     """Tests for MALFORMED_REQUEST reason field preservation."""
 
     @pytest.mark.asyncio
-    async def test_malformed_request_preserves_reason_in_details(self, ups_client, mock_mcp_client):
+    async def test_malformed_request_preserves_reason_in_details(
+        self, ups_client, mock_mcp_client
+    ):
         """MALFORMED_REQUEST preserves reason variant in details and message."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "MALFORMED_REQUEST",
-                "message": "Ambiguous payer configuration",
-                "reason": "ambiguous_payer",
-                "missing": [],
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "MALFORMED_REQUEST",
+                    "message": "Ambiguous payer configuration",
+                    "reason": "ambiguous_payer",
+                    "missing": [],
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -623,16 +753,20 @@ class TestMalformedRequestReasonPreservation:
         assert "billing" in err.message.lower() or "payer" in err.message.lower()
 
     @pytest.mark.asyncio
-    async def test_malformed_request_reason_malformed_structure(self, ups_client, mock_mcp_client):
+    async def test_malformed_request_reason_malformed_structure(
+        self, ups_client, mock_mcp_client
+    ):
         """MALFORMED_REQUEST with malformed_structure reason routes to E-2021."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "MALFORMED_REQUEST",
-                "message": "Invalid payload structure",
-                "reason": "malformed_structure",
-                "missing": [],
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "MALFORMED_REQUEST",
+                    "message": "Invalid payload structure",
+                    "reason": "malformed_structure",
+                    "missing": [],
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -648,11 +782,13 @@ class TestMalformedRequestReasonPreservation:
         """Missing reason field does not crash _translate_error."""
         mock_mcp_client.call_tool.side_effect = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "code": "MALFORMED_REQUEST",
-                "message": "Some error",
-                "missing": [],
-            }),
+            error_text=json.dumps(
+                {
+                    "code": "MALFORMED_REQUEST",
+                    "message": "Some error",
+                    "missing": [],
+                }
+            ),
         )
 
         with pytest.raises(UPSServiceError) as exc_info:
@@ -671,14 +807,17 @@ class TestRetryableRegressionMCPPreflight:
     because create_shipment may have side effects.
     """
 
-    @pytest.mark.parametrize("code", [
-        "ELICITATION_UNSUPPORTED",
-        "INCOMPLETE_SHIPMENT",
-        "MALFORMED_REQUEST",
-        "ELICITATION_DECLINED",
-        "ELICITATION_CANCELLED",
-        "ELICITATION_INVALID_RESPONSE",
-    ])
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "ELICITATION_UNSUPPORTED",
+            "INCOMPLETE_SHIPMENT",
+            "MALFORMED_REQUEST",
+            "ELICITATION_DECLINED",
+            "ELICITATION_CANCELLED",
+            "ELICITATION_INVALID_RESPONSE",
+        ],
+    )
     def test_not_retryable(self, code: str):
         """MCP preflight codes are never auto-retried."""
         error_text = json.dumps({"code": code, "message": "test"})
@@ -693,10 +832,12 @@ class TestRetryableRegressionMCPPreflight:
         the user they can manually retry, not that the system should
         auto-retry.
         """
-        error_text = json.dumps({
-            "code": "ELICITATION_INVALID_RESPONSE",
-            "message": "Rehydration error",
-        })
+        error_text = json.dumps(
+            {
+                "code": "ELICITATION_INVALID_RESPONSE",
+                "message": "Rehydration error",
+            }
+        )
         assert _ups_is_retryable(error_text) is False
 
 
@@ -755,13 +896,17 @@ class TestUPSMCPReconnectBehavior:
     """Transport reconnect behavior in _call()."""
 
     @pytest.mark.asyncio
-    async def test_rate_call_reconnects_and_replays_once(self, ups_client, mock_mcp_client):
+    async def test_rate_call_reconnects_and_replays_once(
+        self, ups_client, mock_mcp_client
+    ):
         """Non-mutating rate calls are replayed once after reconnect."""
         mock_mcp_client._session = object()
-        mock_mcp_client.call_tool = AsyncMock(side_effect=[
-            MCPConnectionError(command="test", reason="transport down"),
-            {"ok": True},
-        ])
+        mock_mcp_client.call_tool = AsyncMock(
+            side_effect=[
+                MCPConnectionError(command="test", reason="transport down"),
+                {"ok": True},
+            ]
+        )
         mock_mcp_client.disconnect = AsyncMock(return_value=None)
         mock_mcp_client.connect = AsyncMock(return_value=None)
 
@@ -778,11 +923,13 @@ class TestUPSMCPReconnectBehavior:
     ):
         """Non-mutating replay gets one bounded extra transport recovery."""
         mock_mcp_client._session = object()
-        mock_mcp_client.call_tool = AsyncMock(side_effect=[
-            MCPConnectionError(command="test", reason="transport down"),
-            MCPConnectionError(command="test", reason="session not initialized"),
-            {"ok": True},
-        ])
+        mock_mcp_client.call_tool = AsyncMock(
+            side_effect=[
+                MCPConnectionError(command="test", reason="transport down"),
+                MCPConnectionError(command="test", reason="session not initialized"),
+                {"ok": True},
+            ]
+        )
         mock_mcp_client.disconnect = AsyncMock(return_value=None)
         mock_mcp_client.connect = AsyncMock(return_value=None)
 
@@ -794,12 +941,16 @@ class TestUPSMCPReconnectBehavior:
         assert mock_mcp_client.connect.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_create_shipment_reconnects_without_replay(self, ups_client, mock_mcp_client):
+    async def test_create_shipment_reconnects_without_replay(
+        self, ups_client, mock_mcp_client
+    ):
         """Mutating create_shipment calls reconnect but do not auto-replay."""
         mock_mcp_client._session = object()
-        mock_mcp_client.call_tool = AsyncMock(side_effect=[
-            MCPConnectionError(command="test", reason="transport down"),
-        ])
+        mock_mcp_client.call_tool = AsyncMock(
+            side_effect=[
+                MCPConnectionError(command="test", reason="transport down"),
+            ]
+        )
         mock_mcp_client.disconnect = AsyncMock(return_value=None)
         mock_mcp_client.connect = AsyncMock(return_value=None)
 
@@ -811,21 +962,27 @@ class TestUPSMCPReconnectBehavior:
         mock_mcp_client.connect.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_create_shipment_retries_once_for_no_healthy_upstream(self, ups_client, mock_mcp_client):
+    async def test_create_shipment_retries_once_for_no_healthy_upstream(
+        self, ups_client, mock_mcp_client
+    ):
         """Mutating call retries once only for strict upstream 503 signatures."""
         mock_mcp_client._session = object()
-        mock_mcp_client.call_tool = AsyncMock(side_effect=[
-            MCPToolError(
-                tool_name="create_shipment",
-                error_text=json.dumps({
-                    "status_code": 503,
-                    "code": "503",
-                    "message": "UPS API returned HTTP 503",
-                    "details": {"raw": "no healthy upstream"},
-                }),
-            ),
-            {"ok": True},
-        ])
+        mock_mcp_client.call_tool = AsyncMock(
+            side_effect=[
+                MCPToolError(
+                    tool_name="create_shipment",
+                    error_text=json.dumps(
+                        {
+                            "status_code": 503,
+                            "code": "503",
+                            "message": "UPS API returned HTTP 503",
+                            "details": {"raw": "no healthy upstream"},
+                        }
+                    ),
+                ),
+                {"ok": True},
+            ]
+        )
 
         result = await ups_client._call("create_shipment", {"request_body": {"x": 1}})
 
@@ -839,16 +996,20 @@ class TestUPSMCPReconnectBehavior:
         )
 
     @pytest.mark.asyncio
-    async def test_create_shipment_does_not_retry_generic_503(self, ups_client, mock_mcp_client):
+    async def test_create_shipment_does_not_retry_generic_503(
+        self, ups_client, mock_mcp_client
+    ):
         """Generic 503 without upstream signature remains non-retry for safety."""
         mock_mcp_client._session = object()
         err = MCPToolError(
             tool_name="create_shipment",
-            error_text=json.dumps({
-                "status_code": 503,
-                "code": "503",
-                "message": "Service temporarily unavailable",
-            }),
+            error_text=json.dumps(
+                {
+                    "status_code": 503,
+                    "code": "503",
+                    "message": "Service temporarily unavailable",
+                }
+            ),
         )
         mock_mcp_client.call_tool = AsyncMock(side_effect=[err])
 
@@ -904,16 +1065,24 @@ class TestSchedulePickup:
     """Test schedule_pickup() method and normalization."""
 
     @pytest.mark.asyncio
-    async def test_schedule_pickup_calls_correct_tool(self, ups_client, mock_mcp_client):
+    async def test_schedule_pickup_calls_correct_tool(
+        self, ups_client, mock_mcp_client
+    ):
         """schedule_pickup must call MCP tool 'schedule_pickup'."""
         mock_mcp_client.call_tool.return_value = {
             "PickupCreationResponse": {"PRN": "2929602E9CP"}
         }
         result = await ups_client.schedule_pickup(
-            pickup_date="20260220", ready_time="0900", close_time="1700",
-            address_line="123 Main St", city="Austin", state="TX",
-            postal_code="78701", country_code="US",
-            contact_name="John Smith", phone_number="5125551234",
+            pickup_date="20260220",
+            ready_time="0900",
+            close_time="1700",
+            address_line="123 Main St",
+            city="Austin",
+            state="TX",
+            postal_code="78701",
+            country_code="US",
+            contact_name="John Smith",
+            phone_number="5125551234",
         )
         assert result["success"] is True
         assert result["prn"] == "2929602E9CP"
@@ -921,24 +1090,38 @@ class TestSchedulePickup:
         assert call_args[0][0] == "schedule_pickup"
 
     @pytest.mark.asyncio
-    async def test_schedule_pickup_uses_mutating_retry(self, ups_client, mock_mcp_client):
+    async def test_schedule_pickup_uses_mutating_retry(
+        self, ups_client, mock_mcp_client
+    ):
         """schedule_pickup must NOT retry (mutating operation)."""
         mock_mcp_client.call_tool.return_value = {
             "PickupCreationResponse": {"PRN": "X"}
         }
         await ups_client.schedule_pickup(
-            pickup_date="20260220", ready_time="0900", close_time="1700",
-            address_line="123 Main St", city="Austin", state="TX",
-            postal_code="78701", country_code="US",
-            contact_name="John", phone_number="512555",
+            pickup_date="20260220",
+            ready_time="0900",
+            close_time="1700",
+            address_line="123 Main St",
+            city="Austin",
+            state="TX",
+            postal_code="78701",
+            country_code="US",
+            contact_name="John",
+            phone_number="512555",
         )
         mock_mcp_client.call_tool.assert_awaited_once_with(
             "schedule_pickup",
             {
-                "pickup_date": "20260220", "ready_time": "0900", "close_time": "1700",
-                "address_line": "123 Main St", "city": "Austin", "state": "TX",
-                "postal_code": "78701", "country_code": "US",
-                "contact_name": "John", "phone_number": "512555",
+                "pickup_date": "20260220",
+                "ready_time": "0900",
+                "close_time": "1700",
+                "address_line": "123 Main St",
+                "city": "Austin",
+                "state": "TX",
+                "postal_code": "78701",
+                "country_code": "US",
+                "contact_name": "John",
+                "phone_number": "512555",
             },
             max_retries=0,
             base_delay=1.0,
@@ -1006,9 +1189,15 @@ class TestRatePickup:
             }
         }
         result = await ups_client.rate_pickup(
-            pickup_type="oncall", address_line="123 Main", city="Austin",
-            state="TX", postal_code="78701", country_code="US",
-            pickup_date="20260220", ready_time="0900", close_time="1700",
+            pickup_type="oncall",
+            address_line="123 Main",
+            city="Austin",
+            state="TX",
+            postal_code="78701",
+            country_code="US",
+            pickup_date="20260220",
+            ready_time="0900",
+            close_time="1700",
         )
         assert result["success"] is True
         assert "charges" in result
@@ -1022,9 +1211,15 @@ class TestRatePickup:
             "PickupRateResponse": {"RateResult": {"GrandTotalOfAllCharge": "0"}}
         }
         await ups_client.rate_pickup(
-            pickup_type="oncall", address_line="x", city="x",
-            state="TX", postal_code="78701", country_code="US",
-            pickup_date="20260220", ready_time="0900", close_time="1700",
+            pickup_type="oncall",
+            address_line="x",
+            city="x",
+            state="TX",
+            postal_code="78701",
+            country_code="US",
+            pickup_date="20260220",
+            ready_time="0900",
+            close_time="1700",
         )
         mock_mcp_client.call_tool.assert_awaited_once()
         call_kwargs = mock_mcp_client.call_tool.call_args
@@ -1113,10 +1308,15 @@ class TestGetLandedCost:
             },
             "alversion": 1,
             "transID": "test-123",
-            "perfStats": {"absLayerTime": "12", "fulfillTime": "35", "receiptTime": "3"},
+            "perfStats": {
+                "absLayerTime": "12",
+                "fulfillTime": "35",
+                "receiptTime": "3",
+            },
         }
         result = await ups_client.get_landed_cost(
-            currency_code="USD", export_country_code="US",
+            currency_code="USD",
+            export_country_code="US",
             import_country_code="GB",
             commodities=[{"price": 25.00, "quantity": 2}],
         )
@@ -1147,20 +1347,26 @@ class TestGetLandedCost:
         assert result["items"][0]["hsCode"] == "4009320020"
 
     @pytest.mark.asyncio
-    async def test_get_landed_cost_uses_read_only_retry(self, ups_client, mock_mcp_client):
+    async def test_get_landed_cost_uses_read_only_retry(
+        self, ups_client, mock_mcp_client
+    ):
         """get_landed_cost uses read-only retry policy."""
         mock_mcp_client.call_tool.return_value = {
             "shipment": {"grandTotal": 0, "shipmentItems": []},
         }
         await ups_client.get_landed_cost(
-            currency_code="USD", export_country_code="US",
-            import_country_code="GB", commodities=[],
+            currency_code="USD",
+            export_country_code="US",
+            import_country_code="GB",
+            commodities=[],
         )
         call_kwargs = mock_mcp_client.call_tool.call_args
         assert call_kwargs[1]["max_retries"] == 2
 
     @pytest.mark.asyncio
-    async def test_get_landed_cost_cie_infrastructure_error(self, ups_client, mock_mcp_client):
+    async def test_get_landed_cost_cie_infrastructure_error(
+        self, ups_client, mock_mcp_client
+    ):
         """get_landed_cost raises E-3010 for CIE infrastructure failures."""
         from src.services.errors import UPSServiceError
 
@@ -1170,14 +1376,15 @@ class TestGetLandedCost:
                 'ToolError: {"status_code": 500, "code": "500", '
                 '"message": "UPS API returned HTTP 500", '
                 '"details": {"raw": "org.apache.camel.http.common.'
-                'HttpOperationFailedException: HTTP operation failed invoking '
-                'https://login.microsoftonline.com/e7520e4d/oauth2/v2.0/token '
+                "HttpOperationFailedException: HTTP operation failed invoking "
+                "https://login.microsoftonline.com/e7520e4d/oauth2/v2.0/token "
                 'with statusCode: 401"}}'
             ),
         )
         with pytest.raises(UPSServiceError) as exc_info:
             await ups_client.get_landed_cost(
-                currency_code="GBP", export_country_code="US",
+                currency_code="GBP",
+                export_country_code="US",
                 import_country_code="GB",
                 commodities=[{"price": 125, "quantity": 24}],
             )
@@ -1202,8 +1409,10 @@ class TestUploadDocument:
             }
         }
         result = await ups_client.upload_document(
-            file_content_base64="dGVzdA==", file_name="invoice.pdf",
-            file_format="pdf", document_type="002",
+            file_content_base64="dGVzdA==",
+            file_name="invoice.pdf",
+            file_format="pdf",
+            document_type="002",
         )
         assert result["success"] is True
         assert result["documentId"] == "2013-12-04-00.15.33.207814"
@@ -1264,7 +1473,8 @@ class TestPushDocument:
             },
         }
         result = await ups_client.push_document(
-            document_id="TEST", shipment_identifier="1Z123",
+            document_id="TEST",
+            shipment_identifier="1Z123",
         )
         assert result["success"] is True
         assert result["formsGroupId"] == "GROUP-123"
@@ -1326,8 +1536,12 @@ class TestFindLocations:
             }
         }
         result = await ups_client.find_locations(
-            location_type="retail", address_line="123 Main",
-            city="Austin", state="TX", postal_code="78701", country_code="US",
+            location_type="retail",
+            address_line="123 Main",
+            city="Austin",
+            state="TX",
+            postal_code="78701",
+            country_code="US",
         )
         assert result["success"] is True
         assert len(result["locations"]) == 1
@@ -1342,7 +1556,9 @@ class TestFindLocations:
         assert "AddressKeyFormat" in loc["details"]
 
     @pytest.mark.asyncio
-    async def test_find_locations_uses_read_only_retry(self, ups_client, mock_mcp_client):
+    async def test_find_locations_uses_read_only_retry(
+        self, ups_client, mock_mcp_client
+    ):
         """find_locations uses read-only retry policy."""
         assert "find_locations" in UPSMCPClient._READ_ONLY_TOOLS
 
@@ -1372,7 +1588,11 @@ class TestGetServiceCenterFacilities:
                         "Type": "FRT",
                         "FacilityTime": {
                             "DayOfWeek": [
-                                {"Day": "Monday", "OpenHours": "0600", "CloseHours": "2100"}
+                                {
+                                    "Day": "Monday",
+                                    "OpenHours": "0600",
+                                    "CloseHours": "2100",
+                                }
                             ]
                         },
                     }
@@ -1380,7 +1600,10 @@ class TestGetServiceCenterFacilities:
             }
         }
         result = await ups_client.get_service_center_facilities(
-            city="Atlanta", state="GA", postal_code="30301", country_code="US",
+            city="Atlanta",
+            state="GA",
+            postal_code="30301",
+            country_code="US",
         )
         assert result["success"] is True
         assert len(result["facilities"]) == 1
@@ -1404,12 +1627,19 @@ class TestTrackPackage:
         """track_package calls MCP with correct tool name and args."""
         mock_mcp_client.call_tool.return_value = {
             "trackResponse": {
-                "shipment": [{
-                    "package": [{
-                        "trackingNumber": "1Z999AA10123456784",
-                        "currentStatus": {"code": "D", "description": "Delivered"},
-                    }],
-                }],
+                "shipment": [
+                    {
+                        "package": [
+                            {
+                                "trackingNumber": "1Z999AA10123456784",
+                                "currentStatus": {
+                                    "code": "D",
+                                    "description": "Delivered",
+                                },
+                            }
+                        ],
+                    }
+                ],
             },
         }
         result = await ups_client.track_package(tracking_number="1Z999AA10123456784")

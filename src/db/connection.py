@@ -591,6 +591,46 @@ def _ensure_columns_exist(conn: Any) -> None:
         {"now": _time_mod.time()},
     )
 
+    # --- confirmation_records hardening for one-time confirmation tokens ---
+    confirmation_records_exists = conn.execute(
+        text(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type='table' AND name='confirmation_records' LIMIT 1"
+        )
+    ).fetchone()
+    if confirmation_records_exists:
+        conn.execute(
+            text(
+                """
+                UPDATE confirmation_records
+                SET token_hash = 'legacy-null-' || id
+                WHERE token_hash IS NULL
+                """
+            )
+        )
+        duplicate_token_hashes = conn.execute(
+            text(
+                """
+                SELECT token_hash, COUNT(*) c
+                FROM confirmation_records
+                GROUP BY token_hash
+                HAVING c > 1
+                """
+            )
+        ).fetchall()
+        if duplicate_token_hashes:
+            raise RuntimeError(
+                "Duplicate confirmation token hashes exist; "
+                "resolve before enabling one-time confirmation enforcement"
+            )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "idx_confirmation_records_token_hash "
+                "ON confirmation_records (token_hash)"
+            )
+        )
+
     # --- provider_connections table migration ---
     _migrate_provider_connections(conn, log)
 

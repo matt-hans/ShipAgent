@@ -26,6 +26,17 @@ jobs:
       - name: Test
         run: .venv/bin/pytest -k "not stream and not sse and not progress" --timeout=60
 
+      - name: Verify provider artifacts
+        run: |
+          rm -rf generated/provider_artifacts
+          .venv/bin/python scripts/generate_provider_artifacts.py
+          git diff --exit-code -- generated/provider_artifacts
+          status="$(git status --porcelain -- generated/provider_artifacts)"
+          if [ -n "$status" ]; then
+            echo "$status"
+            exit 1
+          fi
+
       - name: Block placeholder secrets in release config
         run: |
           if grep -rq "REPLACE_WITH" src-tauri/tauri.conf.json; then
@@ -67,9 +78,9 @@ jobs:
 
       - name: Build frontend
         run: |
-          cd frontend
+          cd shipagent-frontend
           npm ci
-          npm run build
+          npx nx run-many -t build --all --configuration=production
 
       - name: Build Python sidecar
         run: |

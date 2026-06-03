@@ -7,7 +7,7 @@ ShipAgent is an AI-powered shipping platform that lets you describe shipments in
 Available as a native desktop app (macOS/Windows/Linux) or Docker deployment.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![React 19](https://img.shields.io/badge/react-19-blue.svg)](https://react.dev/)
+[![Angular 21](https://img.shields.io/badge/angular-21-red.svg)](https://angular.dev/)
 [![Tauri v2](https://img.shields.io/badge/tauri-v2-blue.svg)](https://v2.tauri.app/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
@@ -86,12 +86,12 @@ Available as a native desktop app (macOS/Windows/Linux) or Docker deployment.
 
 ## Architecture
 
-ShipAgent uses the **Model Context Protocol (MCP)** to separate concerns into independent servers orchestrated by a Claude Agent SDK-powered coordinator.
+ShipAgent uses the **Model Context Protocol (MCP)** to separate concerns into independent servers exposed through a canonical workflow/tool backbone and provider runtime adapters.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         Desktop App (Tauri v2)                              │
-│                    OR Browser UI (React + Vite + Tailwind CSS 4)            │
+│                    OR Browser UI (Angular 21 + Nx + Native Federation)      │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼
@@ -104,7 +104,7 @@ ShipAgent uses the **Model Context Protocol (MCP)** to separate concerns into in
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                       Orchestration Agent                                   │
-│                 (Python + Claude Agent SDK + 30+ Tools)                     │
+│         (Python workflow services + Claude SDK adapter + canonical tools)   │
 │  ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐    │
 │  │ Pipeline  │ │Interactive│ │  Pickup   │ │  Docs /   │ │ Tracking  │    │
 │  │ (Batch)   │ │ (Single)  │ │ Schedule  │ │ Paperless │ │           │    │
@@ -140,6 +140,10 @@ ShipAgent uses the **Model Context Protocol (MCP)** to separate concerns into in
 
 The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets user intent and generates transformation rules (SQL filters, column mappings), but deterministic code executes those rules on actual shipping data. The LLM never touches row data directly.
 
+### Provider Portability Direction
+
+ShipAgent is moving toward a canonical workflow/tool registry. Public app-store surfaces such as OpenAI Apps SDK, Anthropic Connectors/MCPB, Microsoft Copilot plugins, Gemini function declarations, and generic MCP clients should be generated from that registry. Desktop/Tauri remains a local/private deployment path, but most hosted app-store users should not need to install the desktop app.
+
 ---
 
 ## Technology Stack
@@ -149,16 +153,16 @@ The LLM acts as a **Configuration Engine**, not a **Data Pipe**. It interprets u
 | **Desktop App** | Tauri v2 (Rust), tauri-plugin-shell, tauri-plugin-updater (Ed25519) |
 | **Backend** | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
 | **Bundling** | PyInstaller (one-folder), `bundle_entry.py` subcommand dispatch |
-| **Agent Framework** | Claude Agent SDK, Anthropic API |
+| **Runtime Adapter** | Claude Agent SDK adapter, Anthropic API, extensible provider adapters |
 | **MCP Protocol** | FastMCP v2 (servers), `mcp` (stdio clients) |
 | **Credentials** | `keyring` (macOS Keychain / Linux Secret Service), `cryptography` (AES-256-GCM) |
 | **Data Processing** | DuckDB, openpyxl, xmltodict, defusedxml, pydifact (EDI) |
 | **UPS Integration** | ups-mcp v2 (18 tools: shipping, tracking, pickup, locator, paperless, landed cost) |
 | **Template Engine** | Jinja2 with custom logistics filters |
-| **Frontend** | React 19, Vite, Tailwind CSS 4, shadcn/ui, react-pdf |
+| **Frontend** | Angular 21, Nx, Native Federation, NgRx SignalStores |
 | **CLI** | Typer + Rich + HTTPX |
 | **Filter Engine** | sqlglot (SQL transpilation and validation) |
-| **PDF** | pypdf (merging), react-pdf + pdfjs-dist (browser rendering) |
+| **PDF** | pypdf (merging), ng2-pdf-viewer (browser rendering) |
 
 ---
 
@@ -260,7 +264,7 @@ AGENT_AUDIT_MAX_PAYLOAD_BYTES=16384
 # Optional — API Hardening
 # =============================================================================
 # SHIPAGENT_API_KEY=your_api_key              # Protect /api/* with X-API-Key (min 32 chars)
-# ALLOWED_ORIGINS=http://localhost:5173        # CORS allowlist
+# ALLOWED_ORIGINS=http://localhost:4200        # CORS allowlist
 # SHIPAGENT_TRUST_PROXY=true                  # Trust X-Forwarded-For header
 
 # =============================================================================
@@ -280,7 +284,7 @@ AGENT_AUDIT_MAX_PAYLOAD_BYTES=16384
 
 2. **Install frontend dependencies**
    ```bash
-   cd frontend
+   cd shipagent-frontend
    npm install
    cd ..
    ```
@@ -288,9 +292,9 @@ AGENT_AUDIT_MAX_PAYLOAD_BYTES=16384
 3. **Start backend + frontend**
    ```bash
    ./scripts/start-backend.sh
-   cd frontend && npm run dev
+   cd shipagent-frontend && npx nx serve shell
    ```
-   Open [http://localhost:5173](http://localhost:5173)
+   Open [http://localhost:4200](http://localhost:4200)
 
 ### Runtime Policy
 
@@ -552,16 +556,16 @@ ruff format src/ tests/
 ### Frontend Development
 
 ```bash
-cd frontend
+cd shipagent-frontend
 
 # Development server with HMR
-npm run dev
+npx nx serve shell
 
 # Production build
-npm run build
+npx nx run-many -t build --all --configuration=production
 
 # Type check
-npx tsc --noEmit
+npx nx run-many -t typecheck --all
 ```
 
 ### Build & Packaging
@@ -701,23 +705,22 @@ shipagent/
 │       ├── models/                 # Domain models
 │       ├── batch/                  # Batch orchestration (events, recovery, SSE)
 │       └── filters/                # Jinja2 logistics filters
-├── frontend/                       # React web interface
-│   └── src/
-│       ├── App.tsx                 # Root component
-│       ├── components/
-│       │   ├── CommandCenter.tsx    # Main chat + command interface
-│       │   ├── command-center/     # PreviewCard, ProgressDisplay, CompletionArtifact,
-│       │   │                       #   ContactCard, TrackingCard, PickupCard, etc.
-│       │   ├── chat/               # ChatTimeline (minimap), RichChatInput
-│       │   ├── sidebar/            # DataSourcePanel, JobHistoryPanel, ChatSessionsPanel
-│       │   ├── settings/           # SettingsFlyout, OnboardingWizard, ConnectionsSection,
-│       │   │                       #   AddressBookSection, CustomCommandsSection, UpdateChecker
-│       │   ├── layout/             # Sidebar, Header (with interactive shipping toggle)
-│       │   └── ui/                 # shadcn/ui primitives + icons
-│       ├── hooks/                  # useAppState, useConversation, useContactAutocomplete,
-│       │                           #   useCommandAutocomplete, useJobProgress, useSSE
-│       ├── lib/                    # api.ts (REST client), tauri-init.ts (sidecar bootstrap)
-│       └── types/                  # TypeScript types
+├── shipagent-frontend/             # Angular 21 + Nx + Native Federation workspace
+│   ├── apps/
+│   │   ├── shell/                  # Host app, layout, header, Tauri update checks
+│   │   ├── chat-remote/            # Chat UI, previews, progress, completion artifacts
+│   │   ├── sidebar-remote/         # Data sources, job history, chat sessions
+│   │   ├── settings-remote/        # Onboarding, settings, connections, address book
+│   │   └── domain-remote/          # Pickup, tracking, paperless, landed cost cards
+│   ├── libs/
+│   │   ├── shared/api/             # HttpClient API service
+│   │   ├── shared/sse/             # EventSource wrapper with NgZone integration
+│   │   ├── shared/state/           # NgRx SignalStores
+│   │   ├── shared/types/           # TypeScript interfaces
+│   │   └── shared/ui/              # Angular UI components, icons, pipes, directives
+│   ├── federation.manifest.json    # Native Federation remote URLs
+│   ├── nx.json                     # Nx workspace config
+│   └── package.json                # Frontend scripts and dependencies
 ├── src-tauri/                      # Tauri v2 desktop wrapper (Rust)
 │   ├── src/main.rs                 # Sidecar lifecycle (spawn, port discovery, timeout)
 │   ├── tauri.conf.json             # Bundle config, CSP, auto-updater (Ed25519)
@@ -826,7 +829,7 @@ Follow the UPSMCPClient pattern:
 - [x] Phase 4: NL Engine (Intent Parsing, Filter Compilation, Column Mapping)
 - [x] Phase 5: Agent Orchestration (Claude Agent SDK, 25+ Tools)
 - [x] Phase 6: Batch Execution Engine (Preview, Confirm, Recovery)
-- [x] Phase 7: Web Interface (React, SSE Streaming, Label Preview)
+- [x] Phase 7: Web Interface (SSE Streaming, Label Preview)
 - [x] Phase 8: CLI Suite (Daemon, Job Control, REPL, Watchdog)
 - [x] Phase 9: External Platforms (Shopify, WooCommerce, SAP, Oracle)
 - [x] Phase 10: International Shipping (Rules Engine, Commodities, Paperless)

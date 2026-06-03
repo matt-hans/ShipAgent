@@ -4,29 +4,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Vision
 
-**ShipAgent** is an AI-native shipping automation platform. The goal is to build the most robust shipping agent ever — a system where a conversational AI agent is the **sole orchestrator** of all operations, with MCP servers as the connectivity layer and deterministic tools as the execution layer.
+**ShipAgent** is an AI-native shipping automation platform. The goal is to build the most robust shipping workflow platform ever — a system where provider runtimes expose the same canonical workflow/tool backbone, with internal connectivity modules for external systems and deterministic services for execution.
 
-**The Claude Agent SDK is the backbone of the entire system.** The `OrchestrationAgent` is not a feature — it is the operating model. Every user interaction is an agent-driven conversation. Every capability is an agent tool. Every external system is accessed through MCP. There is no "dumb API" path, no standalone service logic, no orchestration outside the agent loop. If the agent can't do it, it doesn't belong in the system.
+**Provider-Neutral Backbone:** ShipAgent's backbone is the canonical workflow/tool layer. Claude Agent SDK, OpenAI Apps SDK, Anthropic connectors, Microsoft Copilot, Gemini function calling, generic MCP clients, CLI, API routes, and desktop/Tauri are runtime or distribution adapters over that backbone.
+
+**Runtime Adapter Rule:** Provider runtimes may plan, render, stream, or package workflows, but shipping business logic lives in workflow services and canonical registry definitions. Do not add new provider-specific shipping logic directly inside model SDK handlers.
+
+**MCP Connectivity:** External systems are accessed through internal connectivity modules. UPS remains an internal dependency via the UPS MCP package; public app-store surfaces expose ShipAgent workflow tools, not raw carrier primitives.
 
 ### Development Philosophy
 
-**Agent-First Architecture:** The `OrchestrationAgent` (Claude Agent SDK) is the core. Features MUST integrate via tools; never bypass the agent loop. The SDK handles state, dispatch, and streaming—do not reimplement these.
-
-**MCP Connectivity:** External systems are accessed exclusively via MCP (stdio). Integrations MUST be MCP servers or clients, never direct imports.
+**Backbone-First Architecture:** Workflow services and canonical registry definitions are the core. Features MUST integrate through registry-backed workflow tools; runtime adapters package and expose those tools without owning shipping business logic.
 
 **Deterministic Execution:** The LLM generates transformation rules; deterministic code executes them. The LLM never touches row data directly. Tools enforce rules and ensure auditability.
 
 **Canonical Data Models:** All integration constants, defaults, and domain enums live in dedicated canonical modules — never scattered as magic numbers across the codebase. When adding a new carrier, platform, or data source, define its constants in a single canonical module and import everywhere. This makes the system maintainable, testable, and auditable. See [Canonical Data Models](#canonical-data-models) for the current inventory.
 
-**No Work Outside the Agentic Process:** Every capability — data import, filtering, preview, execution, tracking, label recovery — is an agent tool. If it can't be expressed as a tool the agent calls, it doesn't belong in the system. This discipline ensures the agent remains the single source of truth for all operations.
+**No Work Outside the Workflow Process:** Every capability — data import, filtering, preview, execution, tracking, label recovery — is a workflow tool surfaced through the canonical registry. If it can't be expressed as a workflow tool, it doesn't belong in the system. This discipline keeps workflow behavior portable across runtime adapters.
 
 ### Agent Design Invariants
 
 These rules are non-negotiable. Violating them creates architectural debt that undermines the agent:
 
-1. **No business logic in API routes.** Routes are thin adapters. Decision-making stays in the agent loop or tools.
+1. **No business logic in API routes.** Routes are thin adapters. Decision-making stays in workflow services and registry-backed tools.
 2. **No direct UPS calls outside MCP.** All UPS operations use MCP (stdio). Never import UPS libraries directly.
-3. **No LLM calls outside the agent.** The `OrchestrationAgent` is the sole LLM consumer.
+3. **No provider-specific shipping logic in model SDK handlers.** Runtime adapters may call provider models; shipping behavior stays in workflow services and canonical tools.
 4. **No tool skips approval.** Paths creating shipments or spending money REQUIRE a preview/confirmation step.
 5. **No global mutable state for MCP clients.** Use `gateway_provider.py` singletons with async locking.
 6. **No mode leakage.** Tool sets are strictly isolated between batch and interactive agents.
@@ -44,23 +46,23 @@ These rules are non-negotiable. Violating them creates architectural debt that u
 
 ## Architecture
 
-### Core Principle: Agent → Tools → MCP → Services
+### Core Principle: Runtime Adapters → Workflow Tools → Connectivity → Services
 
 The architecture follows a strict hierarchy:
 
-1. **Agent (OrchestrationAgent)** — The brain. Interprets user intent, plans operations, calls tools.
-2. **Tools (orchestrator/agent/tools/)** — Deterministic handlers. Execute specific operations, emit events, enforce business rules.
-3. **MCP Servers** — Connectivity. Abstract external systems behind a uniform protocol.
+1. **Runtime Adapters** — Provider SDKs, API routes, CLI, and desktop surfaces. Interpret user/provider intent and expose workflow tools.
+2. **Workflow Tools (orchestrator/agent/tools/)** — Deterministic handlers. Execute specific operations, emit events, enforce business rules.
+3. **Connectivity Modules / MCP Servers** — Connectivity. Abstract external systems behind internal modules and uniform protocols.
 4. **Services** — Business logic. State management, payload building, batch processing.
 
-Nothing bypasses this chain. The frontend talks to the agent through SSE conversations. The agent talks to the world through tools and MCP.
+No runtime bypasses this chain. The frontend talks to the current runtime adapter through SSE conversations. Runtime adapters talk to the world through workflow tools, connectivity modules, and services.
 
 ```
 User → Browser UI (Angular) → FastAPI REST API → Conversation SSE Route
                                                        ↓
                                               AgentSessionManager
                                                        ↓
-                                              OrchestrationAgent (Claude SDK)
+                                              OrchestrationAgent (Claude SDK adapter)
                                                ↓              ↓
                                     Orchestrator Tools    UPS MCP (stdio)
                                          ↓
@@ -217,7 +219,7 @@ src/
 │   ├── paths.py                # Production file path resolver (platformdirs, dev fallback)
 │   └── runtime.py              # Runtime detector: is_bundled(), get_resource_dir()
 ├── bundle_entry.py             # PyInstaller entry point — subcommand dispatch (serve/mcp-*/cli)
-└── orchestrator/               # Orchestration layer (AGENT IS PRIMARY)
+└── orchestrator/               # Orchestration layer (runtime adapters + workflow tools)
     ├── filters/                # Jinja2 logistics filter library
     │   └── logistics.py        # truncate_address, format_us_zip, convert_weight, etc.
     ├── models/                 # Data models
@@ -226,7 +228,7 @@ src/
     │   ├── mapping.py          # Column mapping models
     │   ├── elicitation.py      # Elicitation models
     │   └── correction.py       # Self-correction loop tracking (max 3 attempts)
-    ├── agent/                  # Claude Agent SDK integration (PRIMARY ORCHESTRATION PATH)
+    ├── agent/                  # Claude Agent SDK runtime adapter
     │   ├── client.py           # OrchestrationAgent — SDK agent with streaming + MCP coordination
     │   ├── system_prompt.py    # Dynamic system prompt builder (domain knowledge + data schema)
     │   ├── tools/              # Deterministic SDK tools (split by concern — 9 modules)
@@ -283,7 +285,7 @@ scripts/
 
 ### OrchestrationAgent (`src/orchestrator/agent/client.py`)
 
-**The system backbone.** Claude Agent SDK manages conversation state, tool dispatch, MCP servers, hooks, streaming, and error recovery. `process_message_stream()` yields SSE events, `interrupt()` cancels in-progress responses. MCP servers: `orchestrator` (in-process) + `ups` (stdio). Default model: `AGENT_MODEL` → `ANTHROPIC_MODEL` → Claude Haiku 4.5.
+**Claude runtime adapter.** `OrchestrationAgent` is the current Claude Agent SDK adapter over canonical workflow tools. It manages conversation state, tool dispatch, MCP servers, hooks, streaming, and error recovery. `process_message_stream()` yields SSE events, `interrupt()` cancels in-progress responses. MCP servers: `orchestrator` (in-process) + `ups` (stdio). Default model: `AGENT_MODEL` → `ANTHROPIC_MODEL` → Claude Haiku 4.5.
 
 ### UPS MCP Server (local fork: `matt-hans/ups-mcp`)
 
@@ -370,7 +372,7 @@ All endpoints use `/api/v1/` prefix. See route files in `src/api/routes/` for fu
 | Desktop App | Tauri v2 (Rust), tauri-plugin-shell, tauri-plugin-updater (Ed25519) |
 | Backend | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
 | Bundling | PyInstaller (one-folder), `bundle_entry.py` subcommand dispatch |
-| Agent Framework | Claude Agent SDK (`claude-agent-sdk>=0.1.22`), Anthropic API |
+| Runtime Adapter | Claude Agent SDK adapter (`claude-agent-sdk>=0.1.22`), Anthropic API, extensible provider adapters |
 | MCP Protocol | FastMCP v2 (servers), `mcp` (stdio clients) |
 | Credentials | `keyring` (macOS Keychain / Linux Secret Service), `platformdirs` |
 | Data Processing | DuckDB (in-memory analytics), openpyxl (Excel), `defusedxml` (XXE prevention) |

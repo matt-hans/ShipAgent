@@ -13,7 +13,7 @@ a = Analysis(
     pathex=[str(project_root)],
     binaries=[],
     datas=[
-        (str(project_root / 'frontend' / 'dist'), 'frontend/dist'),
+        (str(project_root / 'shipagent-frontend' / 'dist'), 'shipagent-frontend/dist'),
     ],
     hiddenimports=[
         # FastAPI + Uvicorn
