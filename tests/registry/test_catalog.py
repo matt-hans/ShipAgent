@@ -1,5 +1,6 @@
 from src.registry.catalog import load_registry, public_tools
 from src.registry.models import ProviderExport, SideEffectClass, ToolVisibility
+from src.workflows.models import PreviewShipmentsRequest, PreviewShipmentsResult
 
 EXPECTED_PUBLIC = {
     "connect_carrier_account",
@@ -22,13 +23,16 @@ def test_public_catalog_has_expected_tools():
     assert {tool.name for tool in public_tools()} == EXPECTED_PUBLIC
 
 
-def test_public_tools_are_tenant_safe_and_exportable():
+def test_public_tools_are_tenant_safe_but_not_provider_exported_without_bindings():
     for tool in public_tools():
         assert tool.visibility == ToolVisibility.public
         assert tool.tenant_safe is True
-        assert tool.hosted_readiness == "ready"
+        assert tool.implementation_status == "planned"
+        assert tool.hosted_readiness == "not_ready"
+        assert tool.provider_export_enabled is False
         assert ProviderExport.openai in tool.provider_exports
         assert ProviderExport.generic_mcp in tool.provider_exports
+        assert ProviderExport.anthropic not in tool.provider_exports
 
 
 def test_side_effecting_public_tools_require_confirmation():
@@ -62,6 +66,20 @@ def test_track_package_schema_matches_description():
 
     assert set(tool.input_schema["properties"]) == {"tracking_number"}
     assert "shipment id" not in tool.description.lower()
+
+
+def test_preview_shipments_schema_matches_workflow_request_contract():
+    tool = next(tool for tool in public_tools() if tool.name == "preview_shipments")
+    workflow_schema = PreviewShipmentsRequest.model_json_schema()
+    workflow_result_schema = PreviewShipmentsResult.model_json_schema()
+
+    assert set(tool.input_schema["required"]) == set(workflow_schema["required"])
+    assert set(tool.input_schema["properties"]) == set(workflow_schema["properties"])
+    assert tool.input_schema["properties"]["shipments"]["minItems"] == 1
+    assert set(tool.output_schema["required"]) == set(workflow_result_schema["required"])
+    assert set(tool.output_schema["properties"]) == set(
+        workflow_result_schema["properties"]
+    )
 
 
 def test_registry_loads_all_tools():

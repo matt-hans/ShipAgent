@@ -104,6 +104,8 @@ class ToolContract(BaseModel):
     @model_validator(mode="after")
     def _validate_public_export(self) -> "ToolContract":
         if self.visibility == ToolVisibility.public and self.provider_export_enabled:
+            if self.implementation_status != "implemented":
+                raise ValueError("public exported tools must be implemented")
             if not self.tenant_safe:
                 raise ValueError("public exported tools must be tenant_safe")
             if self.hosted_readiness != "ready":

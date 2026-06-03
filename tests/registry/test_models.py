@@ -51,6 +51,11 @@ def test_public_export_requires_tenant_safety():
         minimal_tool(tenant_safe=False)
 
 
+def test_public_export_requires_implemented_status():
+    with pytest.raises(ValidationError):
+        minimal_tool(implementation_status="planned")
+
+
 def test_public_export_requires_hosted_readiness():
     with pytest.raises(ValidationError):
         minimal_tool(hosted_readiness="not_ready")

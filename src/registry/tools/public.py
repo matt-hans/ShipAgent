@@ -1,3 +1,5 @@
+from typing import Literal
+
 from src.registry.models import (
     AuditLevel,
     Availability,
@@ -11,7 +13,6 @@ from src.registry.tools.schema import object_schema
 
 ALL_PROVIDERS = [
     ProviderExport.openai,
-    ProviderExport.anthropic,
     ProviderExport.microsoft,
     ProviderExport.gemini,
     ProviderExport.generic_mcp,
@@ -28,6 +29,9 @@ def public_tool(
     output_schema: dict[str, object],
     requires_confirmation: bool = False,
     ui_resource: str | None = None,
+    implementation_status: Literal["planned", "implemented"] = "planned",
+    hosted_readiness: Literal["not_ready", "ready"] = "not_ready",
+    provider_export_enabled: bool = False,
 ) -> ToolContract:
     return ToolContract(
         name=name,
@@ -36,10 +40,10 @@ def public_tool(
         contract_version="1.0.0",
         visibility=ToolVisibility.public,
         availability=[Availability.hosted, Availability.local],
-        implementation_status="implemented",
-        hosted_readiness="ready",
+        implementation_status=implementation_status,
+        hosted_readiness=hosted_readiness,
         tenant_safe=True,
-        provider_export_enabled=True,
+        provider_export_enabled=provider_export_enabled,
         side_effect=side_effect,
         requires_confirmation=requires_confirmation,
         auth_scopes=auth_scopes,
@@ -130,16 +134,31 @@ PUBLIC_TOOLS = [
         ["orders:read", "shipments:preview"],
         object_schema(
             {
+                "tenant_id": {
+                    "type": "string",
+                    "description": "Hosted tenant whose shipments are being previewed.",
+                },
                 "order_batch_id": {
                     "type": "string",
                     "description": "Hosted order batch to preview.",
-                }
+                },
+                "shipments": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "minItems": 1,
+                    "description": "Shipment payloads to rate for the preview.",
+                },
             },
-            ["order_batch_id"],
+            ["tenant_id", "order_batch_id", "shipments"],
         ),
         object_schema(
-            {"preview_id": {"type": "string"}, "summary": {"type": "object"}},
-            ["preview_id", "summary"],
+            {
+                "preview_id": {"type": "string"},
+                "total_cost_cents": {"type": "integer"},
+                "requires_confirmation": {"type": "boolean"},
+                "summary": {"type": "object"},
+            },
+            ["preview_id", "total_cost_cents", "requires_confirmation", "summary"],
         ),
         ui_resource="ui://shipagent/preview.html",
     ),

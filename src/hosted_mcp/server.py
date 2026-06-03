@@ -1,5 +1,8 @@
 """Hosted public MCP surface generated from the canonical registry."""
 
+import inspect
+import json
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any
 
 from fastmcp import FastMCP
@@ -7,59 +10,53 @@ from fastmcp.tools import Tool
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent, ToolAnnotations
 
+from src.provider_adapters.export_filter import exportable_tools
 from src.provider_adapters.mcp_projection import to_mcp_tool_descriptor
-from src.registry.catalog import public_tools
+from src.registry.models import ProviderExport, ToolContract
+
+ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]] | dict[str, Any]]
 
 
-def _placeholder_value(schema: dict[str, Any]) -> Any:
-    schema_type = schema.get("type")
-    if schema_type == "object":
-        return {
-            name: _placeholder_value(property_schema)
-            for name, property_schema in schema.get("properties", {}).items()
-            if name in schema.get("required", [])
-        }
-    if schema_type == "array":
-        return []
-    if schema_type == "integer":
-        return 0
-    if schema_type == "number":
-        return 0.0
-    if schema_type == "boolean":
-        return False
-    if "enum" in schema and schema["enum"]:
-        return schema["enum"][0]
-    return "pending_workflow_binding"
+class BoundRegistryTool(Tool):
+    def __init__(self, *args: Any, handler: ToolHandler, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        object.__setattr__(self, "_handler", handler)
 
-
-class RegistryBackedTool(Tool):
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
+        result = self._handler(arguments)
+        if inspect.isawaitable(result):
+            result = await result
         return ToolResult(
             content=[
                 TextContent(
                     type="text",
-                    text=(
-                        f"{self.name} is registered from the canonical registry "
-                        "and is pending workflow binding."
-                    ),
+                    text=json.dumps(result, sort_keys=True),
                 )
             ],
-            structured_content=_placeholder_value(self.output_schema or {}),
+            structured_content=result,
         )
 
 
-def build_server() -> FastMCP:
+def build_server(
+    tool_handlers: Mapping[str, ToolHandler] | None = None,
+    tools: Iterable[ToolContract] | None = None,
+) -> FastMCP:
     server = FastMCP("ShipAgentHosted")
-    for tool in public_tools():
+    handlers = tool_handlers or {}
+    for tool in exportable_tools(ProviderExport.generic_mcp, tools):
+        handler = handlers.get(tool.name)
+        if handler is None:
+            continue
         descriptor = to_mcp_tool_descriptor(tool)
         server.add_tool(
-            RegistryBackedTool(
+            BoundRegistryTool(
                 name=tool.name,
                 title=tool.title,
                 description=tool.description,
                 parameters=descriptor["inputSchema"],
                 output_schema=descriptor["outputSchema"],
                 annotations=ToolAnnotations(**descriptor["annotations"]),
+                handler=handler,
             )
         )
     return server

@@ -33,6 +33,10 @@ def count_rows(db_session, model):
     return db_session.scalar(select(func.count()).select_from(model))
 
 
+def token_hash(value: str) -> str:
+    return value * 64
+
+
 def test_hosted_tenant_defaults():
     tenant = HostedTenant(provider_host="openai", provider_subject="user-1")
 
@@ -58,6 +62,7 @@ def test_confirmation_record_tracks_one_time_use():
         operation="create_shipments",
         preview_id="preview-1",
         idempotency_key="idem-1",
+        token_hash=token_hash("a"),
         expires_at="2026-06-02T00:00:00Z",
     )
 
@@ -92,6 +97,7 @@ def test_hosted_tenant_commits_child_records_via_relationships(db_session):
                 operation="create_shipments",
                 preview_id="preview-1",
                 idempotency_key="idem-1",
+                token_hash=token_hash("b"),
                 expires_at="2026-06-02T00:00:00Z",
             ),
         ],
@@ -124,6 +130,7 @@ def test_deleting_hosted_tenant_cascades_child_records(db_session):
                 operation="create_shipments",
                 preview_id="preview-1",
                 idempotency_key="idem-1",
+                token_hash=token_hash("c"),
                 expires_at="2026-06-02T00:00:00Z",
             ),
         ],
@@ -208,6 +215,7 @@ def test_confirmation_idempotency_key_is_unique_per_tenant(db_session):
                 operation="create_shipments",
                 preview_id="preview-1",
                 idempotency_key="idem-1",
+                token_hash=token_hash("d"),
                 expires_at="2026-06-02T00:00:00Z",
             ),
             ConfirmationRecord(
@@ -215,6 +223,37 @@ def test_confirmation_idempotency_key_is_unique_per_tenant(db_session):
                 operation="create_shipments",
                 preview_id="preview-2",
                 idempotency_key="idem-1",
+                token_hash=token_hash("e"),
+                expires_at="2026-06-02T00:00:00Z",
+            ),
+        ]
+    )
+
+    with pytest.raises(IntegrityError):
+        db_session.commit()
+
+
+def test_confirmation_token_hash_is_unique(db_session):
+    tenant = HostedTenant(provider_host="openai", provider_subject="user-token-hash")
+    db_session.add(tenant)
+    db_session.commit()
+
+    db_session.add_all(
+        [
+            ConfirmationRecord(
+                tenant_id=tenant.id,
+                operation="create_shipments",
+                preview_id="preview-1",
+                idempotency_key="idem-1",
+                token_hash=token_hash("f"),
+                expires_at="2026-06-02T00:00:00Z",
+            ),
+            ConfirmationRecord(
+                tenant_id=tenant.id,
+                operation="create_shipments",
+                preview_id="preview-2",
+                idempotency_key="idem-2",
+                token_hash=token_hash("f"),
                 expires_at="2026-06-02T00:00:00Z",
             ),
         ]

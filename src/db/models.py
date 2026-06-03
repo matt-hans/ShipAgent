@@ -1038,7 +1038,7 @@ class ConfirmationRecord(Base):
     operation: Mapped[str] = mapped_column(String(128), nullable=False)
     preview_id: Mapped[str] = mapped_column(String(128), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
-    token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[str] = mapped_column(
         String(50), nullable=False, default=utc_now_iso
     )
@@ -1054,4 +1054,5 @@ class ConfirmationRecord(Base):
             "tenant_id", "idempotency_key", name="uq_confirmation_tenant_idempotency"
         ),
         Index("idx_confirmation_records_tenant", "tenant_id"),
+        Index("idx_confirmation_records_token_hash", "token_hash", unique=True),
     )
