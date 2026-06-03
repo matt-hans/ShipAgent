@@ -42,7 +42,9 @@ PICKUP_CHARGE_LABELS: dict[str, str] = {
 
 # Resolve the venv Python binary for spawning UPS MCP as a subprocess.
 # The local fork of ups-mcp is installed as an editable package in the venv.
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 _VENV_PYTHON = os.path.join(_PROJECT_ROOT, ".venv", "bin", "python3")
 
 
@@ -78,9 +80,14 @@ def _ups_is_retryable(error_text: str) -> bool:
         True if the error is transient and should be retried.
     """
     patterns = [
-        "rate limit", "429", "503", "502",
-        "timeout", "connection",
-        "190001", "190002",  # UPS system unavailable codes
+        "rate limit",
+        "429",
+        "503",
+        "502",
+        "timeout",
+        "connection",
+        "190001",
+        "190002",  # UPS system unavailable codes
     ]
     lower = error_text.lower()
     return any(p in lower for p in patterns)
@@ -103,17 +110,31 @@ class UPSMCPClient:
 
     # Retry classification: read-only tools get fast retries;
     # mutating tools get zero retries to prevent side effects.
-    _READ_ONLY_TOOLS: frozenset[str] = frozenset({
-        "rate_shipment", "validate_address", "track_package",
-        "rate_pickup", "get_pickup_status", "get_landed_cost_quote",
-        "find_locations", "get_political_divisions", "get_service_center_facilities",
-    })
+    _READ_ONLY_TOOLS: frozenset[str] = frozenset(
+        {
+            "rate_shipment",
+            "validate_address",
+            "track_package",
+            "rate_pickup",
+            "get_pickup_status",
+            "get_landed_cost_quote",
+            "find_locations",
+            "get_political_divisions",
+            "get_service_center_facilities",
+        }
+    )
 
-    _MUTATING_TOOLS: frozenset[str] = frozenset({
-        "create_shipment", "void_shipment", "schedule_pickup", "cancel_pickup",
-        "upload_paperless_document", "push_document_to_shipment",
-        "delete_paperless_document",
-    })
+    _MUTATING_TOOLS: frozenset[str] = frozenset(
+        {
+            "create_shipment",
+            "void_shipment",
+            "schedule_pickup",
+            "cancel_pickup",
+            "upload_paperless_document",
+            "push_document_to_shipment",
+            "delete_paperless_document",
+        }
+    )
 
     def __init__(
         self,
@@ -249,10 +270,13 @@ class UPSMCPClient:
             normalized_option = "Rate"
 
         try:
-            raw = await self._call("rate_shipment", {
-                "requestoption": normalized_option,
-                "request_body": request_body,
-            })
+            raw = await self._call(
+                "rate_shipment",
+                {
+                    "requestoption": normalized_option,
+                    "request_body": request_body,
+                },
+            )
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
@@ -274,9 +298,12 @@ class UPSMCPClient:
             UPSServiceError: On UPS API or validation error.
         """
         try:
-            raw = await self._call("create_shipment", {
-                "request_body": request_body,
-            })
+            raw = await self._call(
+                "create_shipment",
+                {
+                    "request_body": request_body,
+                },
+            )
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
@@ -295,9 +322,12 @@ class UPSMCPClient:
             UPSServiceError: On UPS API error.
         """
         try:
-            raw = await self._call("void_shipment", {
-                "shipmentidentificationnumber": shipment_id,
-            })
+            raw = await self._call(
+                "void_shipment",
+                {
+                    "shipmentidentificationnumber": shipment_id,
+                },
+            )
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
@@ -329,16 +359,19 @@ class UPSMCPClient:
             UPSServiceError: On UPS API error.
         """
         try:
-            raw = await self._call("validate_address", {
-                "addressLine1": addressLine1,
-                "addressLine2": addressLine2,
-                "politicalDivision1": stateProvinceCode,
-                "politicalDivision2": city,
-                "zipPrimary": postalCode,
-                "zipExtended": "",
-                "urbanization": "",
-                "countryCode": countryCode,
-            })
+            raw = await self._call(
+                "validate_address",
+                {
+                    "addressLine1": addressLine1,
+                    "addressLine2": addressLine2,
+                    "politicalDivision1": stateProvinceCode,
+                    "politicalDivision2": city,
+                    "zipPrimary": postalCode,
+                    "zipExtended": "",
+                    "urbanization": "",
+                    "countryCode": countryCode,
+                },
+            )
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
@@ -357,9 +390,12 @@ class UPSMCPClient:
             UPSServiceError: On UPS API error.
         """
         try:
-            raw = await self._call("track_package", {
-                "inquiryNumber": tracking_number,
-            })
+            raw = await self._call(
+                "track_package",
+                {
+                    "inquiryNumber": tracking_number,
+                },
+            )
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
@@ -739,17 +775,20 @@ class UPSMCPClient:
             UPSServiceError: On UPS API error.
         """
         try:
-            raw = await self._call("find_locations", {
-                "location_type": location_type,
-                "address_line": address_line,
-                "city": city,
-                "state": state,
-                "postal_code": postal_code,
-                "country_code": country_code,
-                "radius": radius,
-                "unit_of_measure": unit_of_measure,
-                "max_results": max_results,
-            })
+            raw = await self._call(
+                "find_locations",
+                {
+                    "location_type": location_type,
+                    "address_line": address_line,
+                    "city": city,
+                    "state": state,
+                    "postal_code": postal_code,
+                    "country_code": country_code,
+                    "radius": radius,
+                    "unit_of_measure": unit_of_measure,
+                    "max_results": max_results,
+                },
+            )
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
@@ -781,14 +820,17 @@ class UPSMCPClient:
             UPSServiceError: On UPS API error.
         """
         try:
-            raw = await self._call("get_service_center_facilities", {
-                "city": city,
-                "state": state,
-                "postal_code": postal_code,
-                "country_code": country_code,
-                "pickup_pieces": pickup_pieces,
-                "container_code": container_code,
-            })
+            raw = await self._call(
+                "get_service_center_facilities",
+                {
+                    "city": city,
+                    "state": state,
+                    "postal_code": postal_code,
+                    "country_code": country_code,
+                    "pickup_pieces": pickup_pieces,
+                    "container_code": container_code,
+                },
+            )
         except MCPToolError as e:
             raise self._translate_error(e) from e
 
@@ -829,9 +871,8 @@ class UPSMCPClient:
             # Keep mutating operations conservative, but allow one bounded
             # retry for known upstream gateway outages where UPS never
             # actually processed the request (e.g., "no healthy upstream").
-            if (
-                tool_name in self._MUTATING_TOOLS
-                and self._is_safe_mutating_retry_error(e.error_text)
+            if tool_name in self._MUTATING_TOOLS and self._is_safe_mutating_retry_error(
+                e.error_text
             ):
                 logger.warning(
                     "UPS upstream transient failure during '%s'; retrying once: %s",
@@ -855,7 +896,9 @@ class UPSMCPClient:
             # Replay only non-mutating operations after reconnect.
             if is_non_mutating:
                 try:
-                    return await self._mcp.call_tool(tool_name, arguments, **retry_kwargs)
+                    return await self._mcp.call_tool(
+                        tool_name, arguments, **retry_kwargs
+                    )
                 except Exception as replay_error:
                     # One more bounded transport recovery for race windows where
                     # another coroutine disconnects/reconnects between recovery
@@ -946,8 +989,7 @@ class UPSMCPClient:
             or "503" in combined
         )
         has_gateway_signature = (
-            "no healthy upstream" in combined
-            or "upstream connect error" in combined
+            "no healthy upstream" in combined or "upstream connect error" in combined
         )
         return has_503 and has_gateway_signature
 
@@ -995,10 +1037,7 @@ class UPSMCPClient:
         Returns:
             Normalised response dict.
         """
-        results = (
-            raw.get("ShipmentResponse", {})
-            .get("ShipmentResults", {})
-        )
+        results = raw.get("ShipmentResponse", {}).get("ShipmentResults", {})
 
         ship_id = results.get("ShipmentIdentificationNumber", "")
 
@@ -1006,23 +1045,14 @@ class UPSMCPClient:
         if isinstance(pkg_results, dict):
             pkg_results = [pkg_results]
 
-        tracking_numbers = [
-            p.get("TrackingNumber", "") for p in pkg_results
-        ]
+        tracking_numbers = [p.get("TrackingNumber", "") for p in pkg_results]
 
         label_data = [
-            p.get("ShippingLabel", {}).get("GraphicImage", "")
-            for p in pkg_results
+            p.get("ShippingLabel", {}).get("GraphicImage", "") for p in pkg_results
         ]
 
-        negotiated = (
-            results.get("NegotiatedRateCharges", {})
-            .get("TotalCharge", {})
-        )
-        published = (
-            results.get("ShipmentCharges", {})
-            .get("TotalCharges", {})
-        )
+        negotiated = results.get("NegotiatedRateCharges", {}).get("TotalCharge", {})
+        published = results.get("ShipmentCharges", {}).get("TotalCharges", {})
         charges = negotiated if negotiated.get("MonetaryValue") else published
 
         # Extract itemized charge breakdown (international shipments)
@@ -1073,21 +1103,15 @@ class UPSMCPClient:
         Returns:
             Normalised response dict.
         """
-        rated = (
-            raw.get("RateResponse", {})
-            .get("RatedShipment", [{}])
-        )
+        rated = raw.get("RateResponse", {}).get("RatedShipment", [{}])
         if isinstance(rated, dict):
             rated = [rated]
         first = rated[0] if rated else {}
 
-        negotiated = (
-            first.get("NegotiatedRateCharges", {})
-            .get("TotalCharge", {})
-        )
+        negotiated = first.get("NegotiatedRateCharges", {}).get("TotalCharge", {})
         published = first.get("TotalCharges", {})
         charges = negotiated if negotiated.get("MonetaryValue") else published
-        value = charges.get("MonetaryValue", "0")
+        value = charges.get("MonetaryValue")
 
         # Extract itemized charge breakdown (international rates)
         charge_breakdown = None
@@ -1127,10 +1151,7 @@ class UPSMCPClient:
 
     def _normalize_shop_rate_response(self, raw: dict) -> dict[str, Any]:
         """Extract all available services from a UPS Shop response."""
-        rated = (
-            raw.get("RateResponse", {})
-            .get("RatedShipment", [])
-        )
+        rated = raw.get("RateResponse", {}).get("RatedShipment", [])
         if isinstance(rated, dict):
             rated = [rated]
 
@@ -1142,31 +1163,35 @@ class UPSMCPClient:
                 continue
 
             desc = str(service.get("Description", "")).strip()
-            negotiated = (
-                shipment.get("NegotiatedRateCharges", {})
-                .get("TotalCharge", {})
+            negotiated = shipment.get("NegotiatedRateCharges", {}).get(
+                "TotalCharge", {}
             )
             published = shipment.get("TotalCharges", {})
             charges = negotiated if negotiated.get("MonetaryValue") else published
             amount = str(charges.get("MonetaryValue", "0"))
             currency = str(charges.get("CurrencyCode", "USD"))
 
-            delivery_days = (
-                shipment.get("GuaranteedDelivery", {})
-                .get("BusinessDaysInTransit")
+            delivery_days = shipment.get("GuaranteedDelivery", {}).get(
+                "BusinessDaysInTransit"
             )
 
-            services.append({
-                "serviceCode": code,
-                "serviceName": SERVICE_CODE_NAMES.get(code, desc or f"UPS Service {code}"),
-                "serviceDescription": desc or SERVICE_CODE_NAMES.get(code, ""),
-                "totalCharges": {
-                    "monetaryValue": amount,
-                    "amount": amount,
-                    "currencyCode": currency,
-                },
-                "deliveryDays": str(delivery_days).strip() if delivery_days else None,
-            })
+            services.append(
+                {
+                    "serviceCode": code,
+                    "serviceName": SERVICE_CODE_NAMES.get(
+                        code, desc or f"UPS Service {code}"
+                    ),
+                    "serviceDescription": desc or SERVICE_CODE_NAMES.get(code, ""),
+                    "totalCharges": {
+                        "monetaryValue": amount,
+                        "amount": amount,
+                        "currencyCode": currency,
+                    },
+                    "deliveryDays": str(delivery_days).strip()
+                    if delivery_days
+                    else None,
+                }
+            )
 
         services.sort(
             key=lambda s: self._parse_amount(
@@ -1205,12 +1230,14 @@ class UPSMCPClient:
                 candidate_data = [candidate_data]
             for c in candidate_data:
                 akf = c.get("AddressKeyFormat", {})
-                candidates.append({
-                    "addressLines": akf.get("AddressLine", []),
-                    "city": akf.get("PoliticalDivision2", ""),
-                    "stateProvinceCode": akf.get("PoliticalDivision1", ""),
-                    "postalCode": akf.get("PostcodePrimaryLow", ""),
-                })
+                candidates.append(
+                    {
+                        "addressLines": akf.get("AddressLine", []),
+                        "city": akf.get("PoliticalDivision2", ""),
+                        "stateProvinceCode": akf.get("PoliticalDivision1", ""),
+                        "postalCode": akf.get("PostcodePrimaryLow", ""),
+                    }
+                )
 
         return {
             "status": status,
@@ -1300,16 +1327,20 @@ class UPSMCPClient:
             Normalised response dict with success, status, and raw_status.
         """
         cancel_resp = (
-            raw.get("PickupCancelResponse", {})
-            or raw.get("response", {})
-            or {}
+            raw.get("PickupCancelResponse", {}) or raw.get("response", {}) or {}
         )
-        status_obj = cancel_resp.get("ResponseStatus", {}) if isinstance(cancel_resp, dict) else {}
+        status_obj = (
+            cancel_resp.get("ResponseStatus", {})
+            if isinstance(cancel_resp, dict)
+            else {}
+        )
 
         # Check for embedded error indicators
         if isinstance(cancel_resp, dict):
             error_code = cancel_resp.get("ErrorCode") or cancel_resp.get("errorCode")
-            error_desc = cancel_resp.get("ErrorDescription") or cancel_resp.get("errorDescription")
+            error_desc = cancel_resp.get("ErrorDescription") or cancel_resp.get(
+                "errorDescription"
+            )
             if error_code or error_desc:
                 return {
                     "success": False,
@@ -1321,7 +1352,9 @@ class UPSMCPClient:
 
         # Extract status code/description when available
         status_code = status_obj.get("Code", "") if isinstance(status_obj, dict) else ""
-        status_desc = status_obj.get("Description", "") if isinstance(status_obj, dict) else ""
+        status_desc = (
+            status_obj.get("Description", "") if isinstance(status_obj, dict) else ""
+        )
 
         return {
             "success": True,
@@ -1376,6 +1409,7 @@ class UPSMCPClient:
             currencyCode, totalDuties, totalVAT, totalBrokerageFees,
             and per-commodity items.
         """
+
         def _first_present(mapping: dict[str, Any], *keys: str, default: Any) -> Any:
             """Return the first present non-None value for a sequence of keys."""
             for key in keys:
@@ -1468,12 +1502,12 @@ class UPSMCPClient:
             ),
             "totalBrokerageFees": str(shipment.get("totalBrokerageFees", 0)),
             "brokerageFeeItems": brokerage_items,
-            "transId": str(
-                _first_present(raw, "transID", "transId", default="")
-            ),
+            "transId": str(_first_present(raw, "transID", "transId", default="")),
             "alVersion": _first_present(raw, "alVersion", "alversion", default=0),
             "perfStats": (
-                raw.get("perfStats", {}) if isinstance(raw.get("perfStats", {}), dict) else {}
+                raw.get("perfStats", {})
+                if isinstance(raw.get("perfStats", {}), dict)
+                else {}
             ),
             "items": items,
         }
@@ -1504,7 +1538,11 @@ class UPSMCPClient:
 
     def _normalize_push_document_response(self, raw: dict) -> dict[str, Any]:
         """Extract details from raw UPS push-document response."""
-        push = raw.get("PushToImageRepositoryResponse", {}) if isinstance(raw, dict) else {}
+        push = (
+            raw.get("PushToImageRepositoryResponse", {})
+            if isinstance(raw, dict)
+            else {}
+        )
         result: dict[str, Any] = {"success": True}
 
         forms_group_id = push.get("FormsGroupID")
@@ -1610,10 +1648,7 @@ class UPSMCPClient:
         drop_locs = search.get("DropLocation", [])
         if isinstance(drop_locs, dict):
             drop_locs = [drop_locs]
-        locations = [
-            self._normalize_locator_location(loc)
-            for loc in drop_locs
-        ]
+        locations = [self._normalize_locator_location(loc) for loc in drop_locs]
         return {
             "success": True,
             "locations": locations,
@@ -1672,7 +1707,9 @@ class UPSMCPClient:
                     "StateProvinceCode",
                     addr.get("PoliticalDivision1", ""),
                 ),
-                "PostalCode": addr.get("PostalCode", addr.get("PostcodePrimaryLow", "")),
+                "PostalCode": addr.get(
+                    "PostalCode", addr.get("PostcodePrimaryLow", "")
+                ),
                 "CountryCode": addr.get("CountryCode", ""),
             },
             "phone": phone,
@@ -1725,21 +1762,21 @@ class UPSMCPClient:
                 if isinstance(address_line, list):
                     address_line = ", ".join(str(x) for x in address_line if x)
 
-                state = (
-                    addr_obj.get("StateProvinceCode")
-                    or addr_obj.get("StateProvince")
+                state = addr_obj.get("StateProvinceCode") or addr_obj.get(
+                    "StateProvince"
                 )
-                postal = (
-                    addr_obj.get("PostalCode")
-                    or addr_obj.get("PostcodePrimaryLow")
+                postal = addr_obj.get("PostalCode") or addr_obj.get(
+                    "PostcodePrimaryLow"
                 )
                 parts = [
                     address_line,
                     ", ".join(
-                        p for p in [
+                        p
+                        for p in [
                             addr_obj.get("City", ""),
                             state,
-                        ] if p
+                        ]
+                        if p
                     ),
                     postal,
                 ]
@@ -1886,7 +1923,9 @@ class UPSMCPClient:
             )
 
         sa_code, sa_message, remediation = translate_ups_error(
-            ups_code, ups_message, context=context,
+            ups_code,
+            ups_message,
+            context=context,
         )
 
         return UPSServiceError(
