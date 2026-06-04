@@ -2,13 +2,29 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build Phase 3 of the marketplace readiness roadmap: the ShipAgent-side hosted boundary for the external UPS MCP server, including typed capability contracts, safe adapter methods, response validators, fail-closed readiness checks, fixtures, and documentation. This repository owns the boundary and tests; the actual UPS MCP server changes happen in its separate repository after this contract is defined.
+**Goal:** Implement the UPS MCP boundary slice of `docs/superpowers/specs/2026-06-04-marketplace-production-readiness-design.md`: the ShipAgent-side hosted boundary for the external UPS MCP server, including typed capability contracts, safe adapter methods, response validators, fail-closed readiness checks, fixtures, and documentation. This repository owns the boundary and tests; the actual UPS MCP server changes happen in its separate repository under a separate implementation plan.
 
 **Architecture:** Add a hosted-only `src/hosted/ups_boundary/` package that wraps the existing `UPSMCPClient` without moving UPS business logic into provider adapters. The boundary exposes introspection, evaluates whether the external UPS MCP server satisfies hosted-v1 requirements, validates normalized UPS responses before hosted workflows consume them, and produces readiness reports that production startup can fail closed on. Existing local desktop flows continue using `src/services/ups_mcp_client.py` directly until the broader marketplace workflow-spine phases replace the Claude SDK conversation path.
 
 **Tech Stack:** Python, Pydantic v2, pytest, pytest-asyncio, existing `MCPClient`, existing `UPSMCPClient`, existing sanitized error taxonomy.
 
 ---
+
+## Source Of Truth
+
+This is a child implementation plan, not an independent product or architecture
+spec. The authoritative hosted marketplace design is
+`docs/superpowers/specs/2026-06-04-marketplace-production-readiness-design.md`.
+
+Use this plan only for the ShipAgent-side UPS MCP boundary work. If this plan
+conflicts with the marketplace readiness design, the marketplace readiness
+design wins. Update this plan before implementation rather than resolving the
+conflict ad hoc in code.
+
+The external UPS MCP server is outside this repository. This plan may create a
+contract document for that server, but it must not be used as the implementation
+plan for the UPS MCP repository. That repository needs its own plan after this
+ShipAgent boundary contract is accepted.
 
 ## Context
 
