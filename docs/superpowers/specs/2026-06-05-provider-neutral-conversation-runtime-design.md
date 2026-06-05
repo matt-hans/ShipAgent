@@ -52,7 +52,14 @@ adapter, but it is not the long-term orchestration architecture.
 
 The parity sections are based on current ShipAgent code and the Claude Agent SDK
 documentation areas for streaming output, agent loop results, MCP behavior,
-hooks, and sessions.
+hooks, and sessions:
+
+- <https://code.claude.com/docs/en/agent-sdk/streaming-output>
+- <https://code.claude.com/docs/en/agent-sdk/agent-loop>
+- <https://code.claude.com/docs/en/agent-sdk/python>
+- <https://code.claude.com/docs/en/agent-sdk/mcp>
+- <https://code.claude.com/docs/en/agent-sdk/hooks>
+- <https://code.claude.com/docs/en/agent-sdk/sessions>
 
 ## Non-Goals
 
@@ -213,6 +220,36 @@ The runtime may omit provider-specific fields from frontend SSE events, but it
 must retain them for audit and diagnostics where the current Claude SDK path
 already exposes them.
 
+The provider contract should be expressed as typed ShipAgent runtime objects,
+not provider SDK classes:
+
+- `ProviderInputMessage`: role, content parts, optional tool results, and
+  provider-safe metadata.
+- `ProviderSystemInstruction`: system/developer instructions after ShipAgent
+  data-safety projection.
+- `ProviderToolDeclaration`: tool name, description, input schema, and
+  provider-specific projection hints.
+- `ProviderStreamEvent`: one of text delta, text block complete, tool call
+  started, tool call arguments delta where supported, tool call complete, result
+  metadata, provider error, or stream complete.
+- `ProviderToolCall`: stable call id when available, tool name, parsed input,
+  raw argument text when parsing fails, and provider metadata.
+- `ProviderToolResult`: call id, safe content for the model, optional structured
+  payload, error flag, and sanitized error details.
+- `ProviderFinalResult`: final assistant text, metadata, error status, and any
+  provider result fields listed above.
+
+Adapters are responsible for provider-specific mechanics such as OpenAI response
+items, Anthropic Messages content blocks, Gemini function calls, streaming
+argument deltas, and provider error envelopes. `ConversationRuntimeSession` is
+responsible for the agent loop and never imports provider-native message classes.
+
+Provider capability differences must be explicit. Each adapter reports whether
+it supports streaming text, streaming tool arguments, parallel tool calls,
+cancellation, usage/cost metadata, stable tool-call ids, and provider session
+ids. The runtime may degrade gracefully, but tests must prove the observable
+ShipAgent SSE contract remains stable for providers with weaker capabilities.
+
 ### WorkflowToolCatalog
 
 The existing deterministic tool definitions should be exposed through a neutral
@@ -226,11 +263,75 @@ Each tool definition should include:
 - output shape expectations where available
 - side-effect class
 - confirmation policy
+- mode exposure: batch, interactive, or both
+- model-result projection policy
+- frontend artifact events emitted by the handler
+- audit phase/event metadata
+- timeout and cancellation behavior
+- idempotency/retry class
+- internal service dependencies
 - Python handler
 
 This catalog can reuse existing handler modules under
 `src/orchestrator/agent/tools/` during migration, but the long-term namespace
 should reflect workflow ownership rather than Claude-agent ownership.
+
+The catalog inventory must account for every current ShipAgent wrapper tool.
+Current batch-mode tools:
+
+- `get_source_info`
+- `get_schema`
+- `ship_command_pipeline`
+- `fetch_rows`
+- `resolve_filter_intent`
+- `confirm_filter_interpretation`
+- `get_job_status`
+- `batch_execute`
+- `get_platform_status`
+- `connect_shopify`
+- `connect_amazon`
+- `schedule_pickup`
+- `cancel_pickup`
+- `rate_pickup`
+- `get_pickup_status`
+- `find_locations`
+- `get_service_center_facilities`
+- `request_document_upload`
+- `upload_paperless_document`
+- `push_document_to_shipment`
+- `delete_paperless_document`
+- `resolve_contact`
+- `save_contact`
+- `list_contacts`
+- `delete_contact`
+- `track_package`
+- `get_landed_cost`
+
+Current interactive-mode tools:
+
+- `get_job_status`
+- `get_platform_status`
+- `schedule_pickup`
+- `cancel_pickup`
+- `rate_pickup`
+- `get_pickup_status`
+- `find_locations`
+- `get_service_center_facilities`
+- `request_document_upload`
+- `upload_paperless_document`
+- `push_document_to_shipment`
+- `delete_paperless_document`
+- `resolve_contact`
+- `save_contact`
+- `list_contacts`
+- `delete_contact`
+- `track_package`
+- `get_landed_cost`
+- `preview_interactive_shipment`
+
+Phase 0 is incomplete if any listed capability is missing, silently renamed, or
+exposed in the wrong mode without an explicit Intentional Non-Parity entry and a
+test proving the new behavior.
 
 ### LocalToolDispatcher
 
@@ -258,6 +359,38 @@ The dispatcher must represent internal MCP connection failures as normalized
 tool errors with sanitized messages. If UPS connectivity is unavailable, the
 model sees a safe tool result and the frontend receives the same error event
 shape it receives today for agent/tool failures.
+
+Tool dispatch has two output channels and they must stay separate:
+
+- frontend/audit output: rich, sanitized events such as `preview_ready`,
+  `pickup_result`, `tracking_result`, and decision-audit records
+- model-bound output: compact, provider-safe tool results that never include raw
+  rows, labels, credentials, full addresses, carrier request bodies, raw UPS
+  responses, or uploaded document bytes
+
+This split is required because some current handlers emit rich UI artifacts while
+returning slim model payloads, and some current handlers still return row samples.
+The neutral dispatcher owns the final model-bound projection even when a reused
+handler returns more data than the provider should see.
+
+Dispatch order is part of parity:
+
+1. Normalize and parse provider tool-call input.
+2. Emit/record the `tool_call` event with the same payload keys the frontend
+   already consumes: `tool_name`, `tool_input`, and optional `tool_use_id`.
+3. Reject unknown or disallowed tools before handler execution.
+4. Run pre-dispatch policy checks.
+5. Execute the handler with the session bridge/runtime context.
+6. Persist any emitted artifact events once.
+7. Run post-dispatch audit/error detection.
+8. Project the handler result into a safe provider tool result.
+9. Feed that result back into the provider turn loop.
+
+The current backend does not emit a live `tool_result` SSE event in the normal
+conversation path even though the frontend type union includes it. Phase 0 should
+not introduce `tool_result` as a new live event unless the frontend handler and
+tests are updated in the same change. For 1:1 parity, active tool chips may
+continue clearing on `done`.
 
 ### RuntimePolicyEngine
 
@@ -315,6 +448,35 @@ Responsibilities:
 The runtime should not depend on provider-native session memory. Persisted
 conversation history and session state remain ShipAgent-owned.
 
+The runtime turn loop must be deterministic and provider-neutral:
+
+1. Resolve current session state, mode, model, source signature, contacts, and
+   prompt context through ShipAgent services.
+2. Build provider-safe system instructions and history messages from ShipAgent
+   persistence, not from provider-native session memory.
+3. Declare the catalog tools enabled for the current mode.
+4. Start provider streaming for the user turn.
+5. Translate provider text deltas into `agent_message_delta`.
+6. Accumulate completed text blocks and emit/store `agent_message` according to
+   existing buffering rules.
+7. Translate provider tool calls into `tool_call`, dispatch them, and feed
+   projected tool results back to the provider.
+8. Continue the provider loop until a normalized final result arrives or the turn
+   is interrupted/cancelled.
+9. Record result metadata, audit events, run status, and last turn count.
+10. Let the route/service emit `done` exactly once after processing completes.
+
+The runtime must preserve the current transient chat suppression behavior:
+
+- when `AGENT_HIDE_TRANSIENT_CHAT` is enabled and an artifact event appears, do
+  not persist or emit transient assistant text for that turn
+- when no artifact appears, emit and persist only the final buffered assistant
+  text
+- artifact events are persisted once using the existing metadata mapping
+
+This behavior is currently route-owned; after consolidation it should live in the
+canonical conversation service or a small helper with fake-provider tests.
+
 Interrupt behavior needs explicit parity tests. The current Claude SDK adapter
 calls `ClaudeSDKClient.interrupt()`, and the SDK requires draining interrupted
 messages before issuing the next query. The neutral runtime must define the same
@@ -336,10 +498,12 @@ neutral owner.
 
 | Current behavior | Current owner | Neutral owner | Decision | Required tests |
 | --- | --- | --- | --- | --- |
+| Provider init/system messages and MCP status discovery | Claude SDK `SystemMessage` and MCP lifecycle | `ConversationRuntimeSession` plus dispatcher/service status | Preserve user-safe visibility, not provider-native message class | init/status metadata captured without leaking raw provider objects |
 | Text streaming from partial message events to `agent_message_delta` | `src/orchestrator/agent/client.py` | `ConversationRuntimeSession` | Preserve SSE shape | fake provider streams multiple deltas |
 | Complete assistant text to `agent_message` | `src/orchestrator/agent/client.py` | `ConversationRuntimeSession` | Preserve SSE shape and history write behavior | streamed and non-streamed text stored once |
 | Tool call event emission and stream/assistant dedupe by tool id | `src/orchestrator/agent/client.py` | `ConversationRuntimeSession` | Preserve dedupe semantics | duplicate provider tool id emits one `tool_call` |
 | Missing tool id fallback to complete assistant message | `src/orchestrator/agent/client.py` | `ConversationRuntimeSession` | Preserve | missing id still emits one canonical tool call |
+| Streaming tool argument deltas | Claude `StreamEvent` raw event payloads | `ModelProviderClient` and runtime parser | Preserve final parsed tool input, not raw delta shape | partial argument chunks become one tool call with parsed input |
 | Result errors to `error` events | `src/orchestrator/agent/client.py` | `ConversationRuntimeSession` | Preserve with sanitized provider-safe text | provider result error emits one sanitized error |
 | `num_turns` and last turn count | Claude `ResultMessage` and adapter state | `ConversationRuntimeSession` | Preserve normalized turn count | final result updates `last_turn_count` |
 | `total_cost_usd`, `usage`, `session_id`, `subtype`, `stop_reason` | Claude `ResultMessage` | `ModelProviderClient` result metadata | Preserve when provider supplies it | adapter contract tests include all fields |
@@ -349,9 +513,14 @@ neutral owner.
 | PreToolUse hook denials | `src/orchestrator/agent/hooks.py` | `RuntimePolicyEngine` | Preserve denial result shape | policy tests port current hook cases |
 | PostToolUse audit/error detection | `src/orchestrator/agent/hooks.py` | `RuntimePolicyEngine` and dispatcher | Preserve | every dispatched tool logs audit and detects errors |
 | Session continuation | Claude SDK internal session memory | ShipAgent-owned persisted history and runtime state | Intentionally changed | resumed session builds provider messages from ShipAgent history |
+| Prompt resume context injection | `build_system_prompt(... prior_conversation=...)` and Claude session memory | canonical conversation service | Preserve effective context, change owner | resumed DB session gets bounded prior messages and no duplicates |
+| Tool-result continuation | Claude SDK agent loop | `ConversationRuntimeSession` | Preserve loop behavior | model receives projected tool results and can call another tool before final text |
 | Interrupt and drain | `ClaudeSDKClient.interrupt()` | `ConversationRuntimeSession` | Preserve observable behavior | interrupt, drain, next-message ordering tests |
 | Lifecycle errors for already-started/not-started agents | `OrchestrationAgent` | `ConversationRuntimeSession` | Preserve user-safe behavior | start twice, stop before start, process before start tests |
 | MCP connection status/failure | Claude MCP client lifecycle | dispatcher/workflow service status results | Preserve user-visible safe failure | unavailable UPS returns safe tool/error events |
+| Transient assistant text suppression around artifacts | FastAPI conversation route | canonical conversation service | Preserve | artifact turn suppresses transient text; non-artifact turn keeps final text |
+| Artifact event persistence | FastAPI conversation route | canonical conversation service | Preserve | live artifact and persisted replay metadata match frontend expectations |
+| SSE keepalive and terminal event | FastAPI event generator | FastAPI route/SSE adapter | Preserve | `ping` emitted on idle timeout and `done` emitted once per turn |
 
 ## Intentional Non-Parity
 
@@ -372,6 +541,9 @@ The neutral runtime must not blindly clone all Claude SDK behavior.
   provider-keyed.
 - Claude SDK-specific event classes are not preserved. The stable contract is
   ShipAgent's normalized SSE and runtime event shape.
+- Live `tool_result` SSE emission is not added by default. It is typed in the
+  frontend but not currently handled by the live SSE mapper. Adding it requires a
+  deliberate frontend contract update.
 
 ## Data Safety
 
@@ -385,6 +557,32 @@ UPS responses.
 This is an intentional behavior change from the current Claude SDK path where
 some tool responses can expose `sample_rows` or full rows to the model. Phase 0
 must close that gap rather than treat it as parity.
+
+The phrase "model prompts" includes every message sent to a provider, not just
+the initial user/system prompt. Tool results fed back into the model are
+model-bound messages and must obey the same safety rules.
+
+Allowed model-bound data:
+
+- source type, row counts, column names, schema fingerprints, and source
+  signatures
+- redacted summaries and aggregate counts
+- opaque handles such as `fetch_id`, `job_id`, `artifact_id`, and confirmation
+  tokens
+- filter intent/spec metadata needed for deterministic services
+- preview totals and warning counts without full addresses or labels
+- short, sanitized error messages and public ShipAgent error codes
+
+Disallowed model-bound data:
+
+- raw order rows, even as samples
+- full names plus full addresses or phone numbers
+- label image/PDF data or label download URLs that reveal shipment details
+- credentials, credential references that can be used outside ShipAgent, and
+  environment variable values
+- carrier request/response bodies
+- raw SQL or provider platform payloads
+- uploaded document bytes or base64 content
 
 Tool handlers and workflow services remain responsible for applying filters,
 mapping columns, generating previews, storing approvals, executing shipments,
@@ -418,6 +616,12 @@ Add fake-provider runtime tests:
 - provider result metadata is captured for audit/diagnostics
 - interrupt drains or discards stale buffered events before the next message
 - session deletion cancels message tasks and detaches callbacks
+- artifact turns suppress transient assistant text when configured
+- non-artifact turns emit only the final buffered assistant message
+- artifact event persistence is idempotent and replay metadata matches the live
+  frontend event shape
+- `done` is emitted once per turn and `ping` behavior remains route-owned
+- `tool_result` is not emitted unless frontend support is intentionally added
 
 Port current hook tests to `RuntimePolicyEngine` tests:
 
@@ -438,6 +642,23 @@ Add migration guard tests:
 - required install has no `claude-agent-sdk` or `anthropic` dependency
 - PyInstaller hidden imports do not include Claude SDK or Anthropic SDK
 - local conversation route passes through a fake normalized provider runtime
+- every current ShipAgent wrapper tool appears in the neutral catalog with the
+  expected mode exposure
+- every model-bound tool result passes the data-safety projection test
+- direct `mcp__ups__*` provider-facing calls are unavailable
+- existing frontend shared SSE event type names remain unchanged
+
+Add provider adapter contract tests for capability differences:
+
+- provider with no streaming still emits a final `agent_message`
+- provider with no stable tool-call id still emits one canonical `tool_call`
+- provider with parallel tool calls dispatches each call and associates each
+  result with the right provider call id when available
+- provider with cancellation support stops streaming promptly
+- provider without cancellation support suppresses stale events from the
+  cancelled turn before processing the next turn
+- provider error envelopes normalize to safe ShipAgent errors without leaking raw
+  provider payloads
 
 ## Migration Sequence
 
@@ -446,17 +667,19 @@ Add migration guard tests:
    `src/services/conversation_handler.py` so one service path owns agent
    lifecycle and message processing.
 3. Extract neutral tool catalog from current Claude SDK tool wrapping.
-4. Extract policy checks from Claude hooks into `RuntimePolicyEngine`.
-5. Build `LocalToolDispatcher` over existing deterministic handlers.
-6. Define `ModelProviderClient` and implement a fake provider for tests.
-7. Implement `ConversationRuntimeSession` using the fake provider.
-8. Add OpenAI, Anthropic Messages API, and Gemini HTTP adapters behind the
+4. Add catalog inventory tests for all current batch and interactive tools.
+5. Extract policy checks from Claude hooks into `RuntimePolicyEngine`.
+6. Build `LocalToolDispatcher` over existing deterministic handlers, including
+   model-bound result projection.
+7. Define `ModelProviderClient` and implement a fake provider for tests.
+8. Implement `ConversationRuntimeSession` using the fake provider.
+9. Add OpenAI, Anthropic Messages API, and Gemini HTTP adapters behind the
    normalized provider contract.
-9. Switch local conversation creation from Claude SDK compatibility adapter to
+10. Switch local conversation creation from Claude SDK compatibility adapter to
    `ConversationRuntimeSession`.
-10. Remove active `claude_agent_sdk` imports, mocks, startup assumptions, and
+11. Remove active `claude_agent_sdk` imports, mocks, startup assumptions, and
    Claude-only model defaults.
-11. Keep or delete the optional Claude SDK compatibility adapter based on usage;
+12. Keep or delete the optional Claude SDK compatibility adapter based on usage;
     it must not be in core dependencies or package hidden imports.
 
 ## Acceptance Criteria
@@ -482,9 +705,13 @@ Phase 0 is done when:
 - active non-test source outside an optional compatibility adapter has no
   `claude_agent_sdk` imports
 - the Angular/Tauri conversation and SSE contract remains stable
-- no row-level shipping data is sent to model-provider prompts
+- no row-level shipping data is sent in any model-bound provider message,
+  including tool results
 - result metadata, interruption, tool-call dedupe, policy denial shape, and
   internal MCP failure behavior are covered by parity tests
+- the neutral catalog accounts for every current wrapper tool by name and mode
+- transient assistant text suppression, artifact persistence, `done`, and `ping`
+  behavior are covered by fake-provider tests
 
 ## Risks And Mitigations
 
