@@ -195,25 +195,75 @@ class RuntimePolicyEngine:
         return _deny(reason)
 
     def detect_error_response(self, response: Any) -> bool:
-        if isinstance(response, dict):
-            if response.get("error"):
-                return True
-            if response.get("isError") is True:
-                return True
-            if response.get("is_error") is True:
-                return True
-            status = response.get("status") or response.get("statusCode")
-            return isinstance(status, int) and status >= 400
-
-        if isinstance(response, str):
-            response_lower = response.lower()
-            if "error:" in response_lower or '"error"' in response_lower:
-                return True
-            return "failed" in response_lower and "validation failed" not in response_lower
-
-        return False
+        return _detect_error_response(response)
 
     def serialize_response(self, response: Any) -> str:
         if isinstance(response, str):
             return response
         return json.dumps(response, default=str)
+
+
+_STATUS_ERROR_MARKERS = {"error", "errored"}
+_STATUS_NORMALIZED_KEYS = {"status", "statuscode"}
+
+
+def _normalize_response_key(key: Any) -> str:
+    return "".join(char.lower() for char in str(key) if char.isalnum())
+
+
+def _is_status_key(key: Any) -> bool:
+    return _normalize_response_key(key) in _STATUS_NORMALIZED_KEYS
+
+
+def _is_status_error_marker(status: str) -> bool:
+    return status.strip().lower() in _STATUS_ERROR_MARKERS
+
+
+def _detect_error_response(response: Any, *, parent_key: Any = None) -> bool:
+    if isinstance(response, dict):
+        if response.get("error"):
+            return True
+        if response.get("isError") is True:
+            return True
+        if response.get("is_error") is True:
+            return True
+        for status_key, status in response.items():
+            if not _is_status_key(status_key):
+                continue
+            if isinstance(status, int) and status >= 400:
+                return True
+            if isinstance(status, str) and _is_status_error_marker(status):
+                return True
+        return any(
+            _detect_error_response(value, parent_key=key)
+            for key, value in response.items()
+        )
+
+    if isinstance(response, list):
+        return any(
+            _detect_error_response(item, parent_key=parent_key) for item in response
+        )
+
+    if isinstance(response, str):
+        json_response = _parse_json_response(response)
+        if json_response is not None:
+            return _detect_error_response(json_response, parent_key=parent_key)
+
+        response_lower = response.lower()
+        if "error:" in response_lower or '"error"' in response_lower:
+            return True
+        if _is_status_key(parent_key):
+            return _is_status_error_marker(response)
+        return "failed" in response_lower and "validation failed" not in response_lower
+
+    return False
+
+
+def _parse_json_response(response: str) -> Any:
+    stripped = response.strip()
+    if not stripped or stripped[0] not in "[{":
+        return None
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
