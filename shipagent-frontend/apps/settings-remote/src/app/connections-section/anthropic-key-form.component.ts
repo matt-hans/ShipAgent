@@ -1,8 +1,8 @@
 /**
- * AnthropicKeyFormComponent — Credential form for updating the Anthropic API key.
+ * AnthropicKeyFormComponent — Credential form for updating model provider keys.
  *
  * Port of AnthropicKeyForm.tsx React component.
- * Simple password input with save button. Calls the keyring-backed credential endpoint.
+ * Simple provider selector and password input. Calls the keyring-backed credential endpoint.
  */
 
 import {
@@ -25,13 +25,35 @@ import { ApiService } from '@shipagent/shared-api';
   template: `
     <div class="space-y-3 pt-1">
       <div class="space-y-1">
-        <label class="text-[11px] font-medium text-muted-foreground">
+        <label
+          for="settings-model-provider-key"
+          class="text-[11px] font-medium text-muted-foreground"
+        >
+          Provider
+        </label>
+        <select
+          id="settings-model-provider-key"
+          [(ngModel)]="credentialKey"
+          class="w-full text-xs px-2.5 py-1.5 rounded-md border border-border bg-background text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
+        >
+          @for (option of providerOptions; track option.key) {
+            <option [value]="option.key">{{ option.label }}</option>
+          }
+        </select>
+      </div>
+
+      <div class="space-y-1">
+        <label
+          for="settings-model-provider-api-key"
+          class="text-[11px] font-medium text-muted-foreground"
+        >
           API Key
         </label>
         <input
+          id="settings-model-provider-api-key"
           type="password"
           [(ngModel)]="apiKey"
-          placeholder="sk-ant-..."
+          [placeholder]="selectedPlaceholder()"
           class="w-full text-xs px-2.5 py-1.5 rounded-md border border-border bg-background text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-primary/50"
         />
       </div>
@@ -67,9 +89,20 @@ export class AnthropicKeyFormComponent {
   @Output() saved = new EventEmitter<void>();
 
   apiKey = '';
+  credentialKey = 'ANTHROPIC_API_KEY';
+  providerOptions = [
+    { key: 'ANTHROPIC_API_KEY', label: 'Anthropic', placeholder: 'sk-ant-...' },
+    { key: 'OPENAI_API_KEY', label: 'OpenAI', placeholder: 'sk-...' },
+    { key: 'GEMINI_API_KEY', label: 'Gemini', placeholder: 'AI...' },
+  ];
   saving = signal(false);
   error = signal<string | null>(null);
   success = signal<string | null>(null);
+
+  selectedPlaceholder(): string {
+    return this.providerOptions.find((option) => option.key === this.credentialKey)
+      ?.placeholder ?? 'API key';
+  }
 
   async onSave(): Promise<void> {
     if (!this.apiKey.trim()) {
@@ -81,7 +114,7 @@ export class AnthropicKeyFormComponent {
     this.success.set(null);
     try {
       await firstValueFrom(
-        this.apiService.putCredential('ANTHROPIC_API_KEY', this.apiKey.trim()),
+        this.apiService.putCredential(this.credentialKey, this.apiKey.trim()),
       );
       this.success.set('API key updated successfully.');
       this.apiKey = '';

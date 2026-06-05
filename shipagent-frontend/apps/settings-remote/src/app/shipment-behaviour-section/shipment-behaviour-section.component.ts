@@ -4,7 +4,7 @@
  * Port of ShipmentBehaviourSection.tsx React component.
  * Fields:
  * - Batch concurrency (range 1-20, debounced DB write)
- * - Agent model (dropdown: haiku, sonnet, opus)
+ * - Agent model/provider selection
  * - Default shipper address (all fields, saved on demand)
  *
  * Injects SettingsStore and ApiService.
@@ -112,19 +112,31 @@ import type { AppSettings } from '@shipagent/shared-types';
                 <line x1="1" y1="9" x2="4" y2="9"></line>
                 <line x1="1" y1="14" x2="4" y2="14"></line>
               </svg>
-              <label class="text-sm font-medium text-foreground">
+              <label
+                for="agent-model-select"
+                class="text-sm font-medium text-foreground"
+              >
                 Agent Model
               </label>
             </div>
             <select
+              id="agent-model-select"
               [(ngModel)]="agentModel"
               name="agentModel"
               (change)="saveAgentModel()"
               class="w-full rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/50"
             >
-              <option value="claude-haiku-4-5-20251001">Haiku 4.5 (default)</option>
-              <option value="claude-sonnet-4-6">Sonnet 4.6</option>
-              <option value="claude-opus-4-6">Opus 4.6</option>
+              <optgroup label="Anthropic">
+                <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (default)</option>
+                <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                <option value="claude-opus-4-6">Claude Opus 4.6</option>
+              </optgroup>
+              <optgroup label="OpenAI">
+                <option value="openai:default">OpenAI default</option>
+              </optgroup>
+              <optgroup label="Gemini">
+                <option value="gemini:default">Gemini default</option>
+              </optgroup>
             </select>
             <p class="text-[10px] text-slate-500">
               Changes apply to new conversations.
