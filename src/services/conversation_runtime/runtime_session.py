@@ -21,6 +21,8 @@ from src.services.conversation_runtime.tool_catalog import WorkflowToolCatalog
 
 logger = logging.getLogger(__name__)
 _GENERIC_PROVIDER_ERROR_MESSAGE = "Provider error"
+_MAX_PROVIDER_HISTORY_MESSAGES = 30
+_HISTORY_ROLES = {"user", "assistant"}
 
 
 class ConversationRuntimeSession:
@@ -32,6 +34,7 @@ class ConversationRuntimeSession:
         interactive_shipping: bool,
         session_id: str | None,
         max_turns: int = 50,
+        prior_conversation: list[dict[str, Any]] | None = None,
     ) -> None:
         self._provider = provider
         self._system_prompt = system_prompt or ""
@@ -45,6 +48,10 @@ class ConversationRuntimeSession:
         self.last_result_metadata: ProviderResultMetadata | None = None
         self.emitter_bridge = EventEmitterBridge()
         self.emitter_bridge.session_id = session_id
+        self._history = _build_provider_history(
+            prior_conversation,
+            limit=_MAX_PROVIDER_HISTORY_MESSAGES,
+        )
 
     async def start(self) -> None:
         if self._started:
@@ -96,13 +103,17 @@ class ConversationRuntimeSession:
                 return
             frontend_events.append({"event": event_type, "data": dict(data)})
 
+        def drain_frontend_events() -> list[dict[str, Any]]:
+            events = [*frontend_events]
+            frontend_events.clear()
+            return events
+
         self.emitter_bridge.callback = capture_frontend_event
-        messages: list[ProviderInputMessage] = [
-            ProviderInputMessage(
-                role="user",
-                content=[ProviderContentPart(text=user_input)],
-            )
-        ]
+        user_message = ProviderInputMessage(
+            role="user",
+            content=[ProviderContentPart(text=user_input)],
+        )
+        messages: list[ProviderInputMessage] = [*self._history, user_message]
         catalog = WorkflowToolCatalog.for_mode(
             interactive_shipping=self._interactive_shipping,
             bridge=self.emitter_bridge,
@@ -114,10 +125,10 @@ class ConversationRuntimeSession:
             ),
             emit_frontend=capture_frontend_event,
         )
-        system_instructions = [
-            ProviderSystemInstruction(content=self._system_prompt)
-        ]
+        system_instructions = [ProviderSystemInstruction(content=self._system_prompt)]
         metadata_turn_count: int | None = None
+        assistant_history_messages: list[ProviderInputMessage] = []
+        emitted_tool_call_ids: set[str] = set()
 
         try:
             for _provider_turn in range(self._max_turns):
@@ -132,7 +143,10 @@ class ConversationRuntimeSession:
                         if self._is_generation_interrupted(generation):
                             return
 
-                        if event.type == ProviderStreamEventType.TEXT_DELTA and event.text:
+                        if (
+                            event.type == ProviderStreamEventType.TEXT_DELTA
+                            and event.text
+                        ):
                             yield {
                                 "event": "agent_message_delta",
                                 "data": {"text": event.text},
@@ -143,6 +157,12 @@ class ConversationRuntimeSession:
                         ):
                             if metadata_turn_count is None:
                                 self._last_turn_count += 1
+                            assistant_history_messages.append(
+                                ProviderInputMessage(
+                                    role="assistant",
+                                    content=[ProviderContentPart(text=event.text)],
+                                )
+                            )
                             yield {
                                 "event": "agent_message",
                                 "data": {"text": event.text},
@@ -187,19 +207,28 @@ class ConversationRuntimeSession:
                     return
 
                 if not tool_calls:
+                    self._append_history([user_message, *assistant_history_messages])
                     return
 
                 for call in tool_calls:
                     if self._is_generation_interrupted(generation):
                         return
+                    if call.call_id is not None:
+                        if call.call_id in emitted_tool_call_ids:
+                            continue
+                        emitted_tool_call_ids.add(call.call_id)
 
-                    result = await dispatcher.dispatch(call)
+                    dispatcher.emit_tool_call(call)
+                    for frontend_event in drain_frontend_events():
+                        yield frontend_event
+
+                    result = await dispatcher.execute(call)
                     if self._is_generation_interrupted(generation):
                         frontend_events.clear()
                         return
 
-                    while frontend_events:
-                        yield frontend_events.pop(0)
+                    for frontend_event in drain_frontend_events():
+                        yield frontend_event
 
                     messages.append(
                         ProviderInputMessage(
@@ -248,3 +277,34 @@ class ConversationRuntimeSession:
 
     def _is_generation_interrupted(self, generation: int) -> bool:
         return generation in self._interrupted_generations
+
+    def _append_history(self, messages: list[ProviderInputMessage]) -> None:
+        if not messages:
+            return
+        self._history = [
+            *self._history,
+            *messages,
+        ][-_MAX_PROVIDER_HISTORY_MESSAGES:]
+
+
+def _build_provider_history(
+    prior_conversation: list[dict[str, Any]] | None,
+    *,
+    limit: int,
+) -> list[ProviderInputMessage]:
+    if not prior_conversation:
+        return []
+
+    history: list[ProviderInputMessage] = []
+    for message in prior_conversation:
+        role = message.get("role")
+        content = message.get("content")
+        if role not in _HISTORY_ROLES or not isinstance(content, str) or not content:
+            continue
+        history.append(
+            ProviderInputMessage(
+                role=role,
+                content=[ProviderContentPart(text=content)],
+            )
+        )
+    return history[-limit:]

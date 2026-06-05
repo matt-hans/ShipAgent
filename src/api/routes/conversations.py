@@ -1,10 +1,9 @@
 """FastAPI routes for agent-driven SSE conversations.
 
-Each conversation session has a persistent OrchestrationAgent instance.
-The agent and its MCP servers stay alive across messages, leveraging the
-Claude SDK's internal conversation memory. Agent is rebuilt only when the
-connected data source changes. Sessions are serialized per-conversation
-via asyncio.Lock to prevent concurrent access.
+Each conversation session has a persistent conversation agent instance. Runtime
+adapters stay behind the provider-neutral conversation service boundary, and
+the agent is rebuilt only when the connected data source changes. Sessions are
+serialized per-conversation via asyncio.Lock to prevent concurrent access.
 
 Endpoints:
     POST   /conversations/              — Create new session
@@ -115,6 +114,7 @@ def _resolve_session(session_id: str) -> "AgentSession":  # noqa: F821
 
     if session is None:
         from src.db.connection import get_db_context
+
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             db_data = svc.get_session_with_messages(session_id, limit=0)
@@ -190,9 +190,9 @@ async def _process_agent_message(
 ) -> None:
     """Process a user message through the persistent agent.
 
-    Runs as a background task. Reuses the session's agent (SDK maintains
-    conversation history internally). The agent and MCP servers stay alive
-    across messages. An asyncio.Lock serializes access per session.
+    Runs as a background task. Reuses the session's provider-neutral
+    conversation agent across messages. An asyncio.Lock serializes access per
+    session.
 
     Args:
         session_id: Conversation session ID.
@@ -200,6 +200,7 @@ async def _process_agent_message(
     """
     queue = _get_event_queue(session_id)
     session = _session_manager.get_or_create_session(session_id)
+    turn_generation: int | None = None
 
     if session.terminating:
         logger.info("Skipping message for terminating session %s", session_id)
@@ -219,28 +220,56 @@ async def _process_agent_message(
 
     run_token = set_decision_run_id(run_id)
 
+    def _record_turn_generation(generation: int) -> None:
+        nonlocal turn_generation
+        turn_generation = generation
+
+    def _turn_can_emit() -> bool:
+        if _session_manager.get_session(session_id) is not session:
+            return False
+        if session.terminating:
+            return False
+        if turn_generation is None:
+            return True
+        return session.is_turn_generation_active(turn_generation)
+
     try:
+
         def _emit_sync(event_type: str, data: dict) -> None:
-            queue.put_nowait(_sanitize_queue_event({"event": event_type, "data": data}))
+            if _turn_can_emit():
+                queue.put_nowait(
+                    _sanitize_queue_event({"event": event_type, "data": data})
+                )
 
         async for event in conversation_handler.process_message(
             session,
             content,
             interactive_shipping=session.interactive_shipping,
             emit_callback=_emit_sync,
+            turn_generation_callback=_record_turn_generation,
         ):
+            if not _turn_can_emit():
+                break
             await queue.put(_sanitize_queue_event(event))
     except Exception as e:
         logger.error("Agent processing failed for session %s: %s", session_id, e)
-        await queue.put(
-            {
-                "event": "error",
-                "data": {"message": sanitize_error_message(str(e))},
-            }
-        )
+        if _turn_can_emit():
+            await queue.put(
+                {
+                    "event": "error",
+                    "data": {"message": sanitize_error_message(str(e))},
+                }
+            )
     finally:
         reset_decision_run_id(run_token)
-        await queue.put({"event": "done", "data": {}})
+        if _turn_can_emit():
+            await queue.put({"event": "done", "data": {}})
+        if (
+            turn_generation is not None
+            and _session_manager.get_session(session_id) is session
+            and session.is_turn_generation_active(turn_generation)
+        ):
+            session.invalidate_active_turn_generation()
 
 
 def _schedule_agent_message(
@@ -250,7 +279,9 @@ def _schedule_agent_message(
 ) -> None:
     """Schedule agent message processing and bind task to session lifecycle."""
     session = _session_manager.get_or_create_session(session_id)
-    task = asyncio.create_task(_process_agent_message(session_id, content, run_id=run_id))
+    task = asyncio.create_task(
+        _process_agent_message(session_id, content, run_id=run_id)
+    )
     session.message_tasks.add(task)
 
     def _on_done(done_task: asyncio.Task[None]) -> None:
@@ -361,11 +392,14 @@ async def create_conversation(
     # Persist session to database
     try:
         from src.db.connection import get_db_context
+
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             svc.create_session(
                 session_id=session_id,
-                mode="interactive" if effective_payload.interactive_shipping else "batch",
+                mode="interactive"
+                if effective_payload.interactive_shipping
+                else "batch",
             )
     except Exception as e:
         logger.error("Failed to persist session %s to DB: %s", session_id, e)
@@ -409,6 +443,7 @@ async def send_message(
     # Persist user message to database and set title from first message
     try:
         from src.db.connection import get_db_context
+
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             svc.save_message(session_id, "user", payload.content)
@@ -502,20 +537,21 @@ async def upload_document(
     file_content_base64 = base64.b64encode(file_bytes).decode("ascii")
 
     # Stage attachment for the tool handler
-    attachment_store.stage(session_id, {
-        "file_content_base64": file_content_base64,
-        "file_name": file_name,
-        "file_format": normalized_ext,
-        "document_type": document_type,
-        "file_size_bytes": len(file_bytes),
-    })
+    attachment_store.stage(
+        session_id,
+        {
+            "file_content_base64": file_content_base64,
+            "file_name": file_name,
+            "file_format": normalized_ext,
+            "document_type": document_type,
+            "file_size_bytes": len(file_bytes),
+        },
+    )
 
     # Build agent message
     doc_type_label = DOCUMENT_TYPE_LABELS.get(document_type, f"Type {document_type}")
     notes_suffix = f" Notes: {notes}" if notes.strip() else ""
-    agent_message = (
-        f"[DOCUMENT_ATTACHED: {file_name} ({normalized_ext}, {doc_type_label})]{notes_suffix}"
-    )
+    agent_message = f"[DOCUMENT_ATTACHED: {file_name} ({normalized_ext}, {doc_type_label})]{notes_suffix}"
 
     # Store in conversation history and trigger agent processing
     _session_manager.add_message(session_id, "user", agent_message)
@@ -523,7 +559,9 @@ async def upload_document(
         session_id=session_id,
         user_message=agent_message,
         model=os.environ.get("AGENT_MODEL") or os.environ.get("ANTHROPIC_MODEL"),
-        interactive_shipping=bool(session.interactive_shipping) if session is not None else False,
+        interactive_shipping=bool(session.interactive_shipping)
+        if session is not None
+        else False,
     )
     DecisionAuditService.log_event(
         run_id=run_id,
@@ -648,6 +686,7 @@ async def delete_conversation(session_id: str) -> Response:
     # Soft-delete from database (keep for history)
     try:
         from src.db.connection import get_db_context
+
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             svc.soft_delete_session(session_id)
@@ -708,16 +747,21 @@ async def list_conversations(
         List of session summaries ordered by recency.
     """
     from src.db.connection import get_db_context
+
     try:
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             sessions = svc.list_sessions(
-                active_only=active_only, limit=limit, offset=offset,
+                active_only=active_only,
+                limit=limit,
+                offset=offset,
             )
         return [ChatSessionSummary(**s) for s in sessions]
     except Exception as exc:
         logger.error("Failed to list conversations: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to list conversations") from None
+        raise HTTPException(
+            status_code=500, detail="Failed to list conversations"
+        ) from None
 
 
 @router.get("/{session_id}/messages", response_model=SessionDetailResponse)
@@ -740,6 +784,7 @@ async def get_session_messages(
         HTTPException: 404 if session not found.
     """
     from src.db.connection import get_db_context
+
     with get_db_context() as db:
         svc = ConversationPersistenceService(db)
         result = svc.get_session_with_messages(session_id, limit=limit, offset=offset)
@@ -747,7 +792,9 @@ async def get_session_messages(
         raise HTTPException(status_code=404, detail="Session not found")
 
     return SessionDetailResponse(
-        session=ChatSessionSummary(**result["session"], message_count=len(result["messages"])),
+        session=ChatSessionSummary(
+            **result["session"], message_count=len(result["messages"])
+        ),
         messages=[PersistedMessageResponse(**m) for m in result["messages"]],
     )
 
@@ -767,6 +814,7 @@ async def update_conversation(
         Updated session ID and title.
     """
     from src.db.connection import get_db_context
+
     with get_db_context() as db:
         svc = ConversationPersistenceService(db)
         found = svc.update_session_title(session_id, payload.title)
@@ -798,7 +846,11 @@ async def export_conversation(session_id: str) -> Response:
     if export is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    title_slug = (export["session"].get("title") or "conversation").replace(" ", "-").lower()[:30]
+    title_slug = (
+        (export["session"].get("title") or "conversation")
+        .replace(" ", "-")
+        .lower()[:30]
+    )
     filename = f"{title_slug}-{session_id[:8]}.json"
 
     return Response(
@@ -830,6 +882,7 @@ async def save_artifact(
     """
     try:
         from src.db.connection import get_db_context
+
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             svc.save_message(

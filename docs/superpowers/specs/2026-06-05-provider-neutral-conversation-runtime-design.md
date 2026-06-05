@@ -163,6 +163,216 @@ Broaden to the PR's backend validation set after the targeted checks pass.
 Phase 0 moves conversation semantics out of the Claude SDK adapter and into
 provider-neutral services.
 
+### Resolved Phase 0 Decisions
+
+#### Conversation Ownership
+
+`src/services/conversation_handler.py` is the sole owner of per-turn
+conversation semantics. Agent rebuild, source resolution, transient assistant
+text suppression, artifact persistence, audit run lifecycle, model resolution,
+and message streaming move into this service path.
+
+`src/api/routes/conversations.py` remains the HTTP/SSE adapter. It is
+responsible for request validation, user-message persistence, SSE queueing,
+keepalive `ping`, and terminal `done` emission. It must not keep a parallel
+agent lifecycle, `_ensure_agent`, or message-processing flow.
+
+#### Tool Catalog Compatibility
+
+The neutral `WorkflowToolCatalog` freezes current ShipAgent wrapper tool names
+and mode exposure as the Phase 0 compatibility contract. The first migration
+step builds catalog metadata and handler references around the existing
+`src/orchestrator/agent/tools/` handlers, with inventory tests proving every
+batch and interactive tool is present in the expected mode.
+
+Handler modules may move to a neutral namespace only after fake-provider parity
+tests prove the runtime, dispatcher, policy, artifact, and persistence behavior
+matches the existing Claude SDK path.
+
+#### UPS Capability Exposure
+
+Phase 0 removes provider-facing `mcp__ups__*` tool exposure categorically,
+including direct tools that the current Claude SDK path may allow, such as
+`mcp__ups__rate_shipment`. Direct UPS MCP exposure is an SDK implementation
+shortcut, not a ShipAgent product contract.
+
+Retained UPS capabilities must be exposed through ShipAgent wrapper tools in the
+neutral catalog. Each wrapper must carry policy, confirmation requirements where
+applicable, frontend artifact emission, audit metadata, and model-safe result
+projection. If a current direct UPS MCP capability is still needed, add an
+explicit wrapper before switching runtimes. Otherwise list it as Intentional
+Non-Parity and add a migration guard proving the raw provider-facing tool is
+unavailable.
+
+#### Model-Bound Tool Result Projection
+
+`LocalToolDispatcher` is the final enforcement point for model-bound data
+safety. Reused handlers may continue returning richer payloads for frontend
+artifacts, audit, or compatibility/debug paths, but every result fed back to a
+model provider must be projected into a compact provider-safe shape.
+
+Provider-bound tool results may include counts, schema details, redacted
+summaries, public workflow status, sanitized errors, and opaque identifiers such
+as `fetch_id`, `job_id`, `artifact_id`, and confirmation tokens. They must strip
+or replace raw rows, row samples, full addresses, carrier request/response
+bodies, labels, credentials, label/document URLs, and uploaded document bytes.
+`include_rows=True` must not cause raw rows to reach provider messages in Phase
+0.
+
+Phase 0 tests must fail if any provider-bound tool result contains raw row data,
+full addresses, carrier payloads, labels, credentials, or document bytes.
+
+#### Provider Adapter Boundary
+
+`ModelProviderClient` exposes only normalized provider events, normalized final
+results, provider-safe errors, and provider capability metadata. Provider
+adapters translate protocol-specific details into `ProviderStreamEvent`,
+`ProviderToolCall`, `ProviderToolResult`, and `ProviderFinalResult` shapes, and
+report capabilities such as streaming text, streaming tool arguments, stable
+tool-call IDs, parallel tool calls, usage/cost metadata, provider session IDs,
+and cancellation support.
+
+`ConversationRuntimeSession` owns the agent loop, ShipAgent-owned history,
+tool-result continuation, retry/turn control, policy dispatch, stop/interrupt
+behavior, and all shipping decisions. Provider adapters must not own
+conversation memory, workflow decisions, tool dispatch, policy checks, retry
+loops, or shipping behavior.
+
+#### Parallel Tool Calls
+
+`ConversationRuntimeSession` accepts multiple provider tool calls in one turn and
+preserves provider call IDs when available. Dispatch is sequential by default so
+side-effecting shipping workflows, confirmation gates, artifact emission, and
+audit events remain deterministic.
+
+Parallel dispatch may be enabled only for catalog entries explicitly marked
+read-only and idempotent, such as status or schema lookups. Money-changing,
+state-changing, artifact-emitting, confirmation-gated, or non-idempotent tools
+must be serialized even if the provider supports parallel tool calls. Tests must
+prove each provider call receives the correct corresponding tool result and that
+audit/event order is stable for serialized tools.
+
+#### Interrupt And Late Event Suppression
+
+Neutral interrupt handling uses a per-turn generation token. Route cancellation
+marks the active turn interrupted, requests provider cancellation when the
+provider reports cancellation support, and invalidates that turn's event token.
+
+Any late provider deltas, tool calls, tool results, or artifact callbacks from an
+invalidated turn must be ignored before they can reach session history, audit
+state, or the SSE queue. The next user message starts with a fresh token and
+must not receive stale events from the interrupted turn.
+
+Session deletion cancels message tasks, stops runtime resources, detaches
+callbacks, invalidates active turn tokens, and prevents late events from entering
+the SSE queue for the deleted session.
+
+#### Session Memory And Resume
+
+ShipAgent-owned persisted conversation history and bounded runtime state are the
+only source of resume/session memory. Each provider turn is built from ShipAgent
+persistence and provider-safe runtime context, not from Claude, OpenAI, Gemini,
+or Anthropic provider-native session memory.
+
+Provider session or conversation IDs may be retained when available, but only as
+audit and diagnostic metadata. They must not be required for continuity and must
+not allow hidden provider state to bypass ShipAgent history construction,
+policy, or data-safety projection.
+
+#### Result Metadata And SSE Stability
+
+Provider result metadata is persisted to audit and diagnostics in normalized
+form, including `provider`, `model`, `session_id`, `stop_reason`,
+`result_subtype`, `num_turns`, `usage`, `total_cost_usd`, and
+`raw_usage_provider` when supplied by the provider.
+
+This metadata is not added to live frontend SSE payloads by default. The
+existing live event contract remains stable: `agent_message_delta`,
+`agent_message`, `tool_call`, existing artifact events, `error`, route-owned
+`ping`, and route-owned terminal `done`. Metadata may enter SSE only through an
+explicit frontend contract update and matching tests in the same change.
+
+#### Policy Denial Shape
+
+`RuntimePolicyEngine` preserves the current Claude hook denial payload shape as
+the canonical policy decision record: `hookEventName`,
+`permissionDecision="deny"`, and `permissionDecisionReason`. This retains audit
+and test parity with the Claude SDK hook path.
+
+`LocalToolDispatcher` translates policy denials into normalized errored
+`ProviderToolResult` instances for the model, using a sanitized human-readable
+reason and no raw provider, tool, handler, carrier, or row payload.
+
+#### Artifact Persistence And Replay
+
+Artifact persistence remains limited to the existing persistable artifact set:
+`preview_ready`, `pickup_result`, `location_result`, `landed_cost_result`,
+`paperless_result`, `tracking_result`, and `contact_saved`.
+
+Persisted artifact metadata keeps the current mapping:
+`preview_ready -> batchPreview`, `pickup_result -> pickup`,
+`location_result -> location`, `landed_cost_result -> landedCost`,
+`paperless_result -> paperless`, `tracking_result -> tracking`, and
+`contact_saved -> contactSaved`. Live artifact events and persisted replay
+metadata must continue to normalize to the shapes the Angular conversation and
+domain-card code already expects.
+
+Non-persisted live events such as `preview_partial`, `pickup_preview`, and
+`paperless_upload_prompt` remain live-only unless a deliberate frontend replay
+contract update is added with matching tests. Fake-provider tests must prove an
+artifact is persisted once and replay metadata matches the live frontend
+expectations.
+
+#### Internal Service Failure Boundary
+
+When a model successfully requests a ShipAgent wrapper tool, internal gateway or
+MCP failures are represented as sanitized tool failures rather than
+provider/runtime failures. This includes UPS, data source, Shopify, Amazon,
+document, contact, and other internal workflow service outages.
+
+`LocalToolDispatcher` emits the same user-visible artifact/error shape that the
+current tool path would emit where applicable, records audit failure metadata,
+and returns an errored provider-safe `ProviderToolResult` to the model. Live
+provider/runtime `error` events are reserved for model-provider failures,
+runtime exceptions, cancellation failures, and unrecoverable loop errors.
+
+#### Prompt And Context Ownership
+
+Prompt construction remains a ShipAgent service concern. ShipAgent-owned
+prompt/context builders produce provider-safe system/developer instructions,
+including data-source summaries, source signatures, schema information,
+contacts, bounded resume context, mode instructions, and safety rules.
+
+Provider adapters may format these instructions for their provider API, but they
+must not inject shipping workflow policy, carrier behavior, row data,
+provider-specific business defaults, or hidden model-specific shipping
+instructions.
+
+#### Fake Provider Runtime Gate
+
+No real provider adapter becomes the default until a fake-provider
+`ConversationRuntimeSession` test suite covers the current SSE, tool dispatch,
+artifact, policy, resume, interruption, result-metadata, and data-safety parity
+surface. The fake provider is the deterministic acceptance gate for moving
+conversation semantics out of the Claude SDK path.
+
+OpenAI, Anthropic Messages API, and Gemini adapters are added only behind the
+same normalized provider contract after the fake-provider runtime semantics are
+proven.
+
+#### Claude SDK Compatibility Adapter
+
+After Phase 0 switches local conversation to `ConversationRuntimeSession`, the
+Claude SDK compatibility adapter may remain only as an optional isolated
+fallback for rollback or comparison. It must sit behind an explicit optional
+runtime, remain excluded from required installation and packaged hidden imports,
+and must not be used by tests as the canonical conversation path.
+
+Once Phase 0 is accepted, active non-test source outside the optional
+compatibility adapter must not import `claude_agent_sdk`, and the adapter must
+not own shared streaming, tool registration, policy, session memory, interrupt,
+usage, error, or shipping workflow semantics.
+
 Before swapping runtimes, consolidate local conversation ownership. The
 canonical path should be `src/services/conversation_handler.py`. The duplicate
 agent lifecycle and message-processing flow in `src/api/routes/conversations.py`

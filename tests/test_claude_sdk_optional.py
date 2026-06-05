@@ -51,11 +51,17 @@ def test_conversation_runtime_package_does_not_import_claude_sdk_or_hooks():
 
 
 def test_active_non_compat_source_does_not_import_claude_agent_sdk_after_runtime_split():
-    source_roots = [PROJECT_ROOT / "src" / "services"]
+    source_roots = [PROJECT_ROOT / "src"]
+    optional_adapter_paths = {
+        PROJECT_ROOT / "src" / "orchestrator" / "agent" / "client.py",
+        PROJECT_ROOT / "src" / "orchestrator" / "agent" / "hooks.py",
+    }
     combined = []
     for root in source_roots:
         for path in root.rglob("*.py"):
-            if path.name == "__pycache__":
+            if "__pycache__" in path.parts:
+                continue
+            if path in optional_adapter_paths:
                 continue
             combined.append(path.read_text())
     source = "\n".join(combined)
