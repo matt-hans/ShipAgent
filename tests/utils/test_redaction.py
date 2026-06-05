@@ -1,6 +1,5 @@
 """Tests for secret redaction utility."""
 
-import pytest
 
 
 class TestRedactForLogging:

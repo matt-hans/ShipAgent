@@ -17,16 +17,16 @@ from pathlib import Path
 from fastmcp import Context
 
 from src.mcp.data_source.models import SOURCE_ROW_NUM_COLUMN
-
-# Strict identifier regex: only alphanumeric, underscores, and dots (for schema.table).
-# Prevents SQL injection via crafted table names (CWE-89).
-_TABLE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 from src.services.write_back_utils import (
     apply_csv_updates_atomic,
     apply_delimited_updates_atomic,
     apply_excel_updates_atomic,
     write_companion_csv,
 )
+
+# Strict identifier regex: only alphanumeric, underscores, and dots (for schema.table).
+# Prevents SQL injection via crafted table names (CWE-89).
+_TABLE_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 
 
 async def write_back(

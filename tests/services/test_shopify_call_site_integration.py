@@ -2,8 +2,6 @@
 
 import os
 
-import pytest
-
 
 class TestSystemPromptShopifyDetection:
     """Tests for Shopify detection in system_prompt via resolve_shopify_credentials."""
@@ -23,8 +21,8 @@ class TestSystemPromptShopifyDetection:
 
     def test_shopify_not_configured(self):
         """Returns None when no Shopify credentials."""
-        from src.services.runtime_credentials import resolve_shopify_credentials
         import src.services.runtime_credentials as rc
+        from src.services.runtime_credentials import resolve_shopify_credentials
         rc._shopify_fallback_warned = False
 
         for var in ("SHOPIFY_ACCESS_TOKEN", "SHOPIFY_STORE_DOMAIN"):
@@ -38,8 +36,8 @@ class TestConnectShopifyCredentialResolution:
 
     def test_connect_shopify_env_fallback_detects_creds(self):
         """resolve_shopify_credentials returns creds from env."""
-        from src.services.runtime_credentials import resolve_shopify_credentials
         import src.services.runtime_credentials as rc
+        from src.services.runtime_credentials import resolve_shopify_credentials
         rc._shopify_fallback_warned = False
 
         os.environ["SHOPIFY_ACCESS_TOKEN"] = "test_tok"
@@ -55,8 +53,8 @@ class TestConnectShopifyCredentialResolution:
 
     def test_connect_shopify_no_creds_returns_none(self):
         """resolve_shopify_credentials returns None when empty."""
-        from src.services.runtime_credentials import resolve_shopify_credentials
         import src.services.runtime_credentials as rc
+        from src.services.runtime_credentials import resolve_shopify_credentials
         rc._shopify_fallback_warned = False
 
         for var in ("SHOPIFY_ACCESS_TOKEN", "SHOPIFY_STORE_DOMAIN"):

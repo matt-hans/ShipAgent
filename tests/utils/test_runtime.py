@@ -3,7 +3,7 @@
 import sys
 from unittest.mock import patch
 
-from src.utils.runtime import is_bundled, get_resource_dir
+from src.utils.runtime import get_resource_dir, is_bundled
 
 
 def test_is_bundled_false_in_dev():

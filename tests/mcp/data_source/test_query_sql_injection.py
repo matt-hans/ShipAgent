@@ -192,7 +192,6 @@ class TestDuckDBFileAccessBlocking:
 
     def test_read_csv_auto_in_blocklist(self):
         """READ_CSV_AUTO must be in the dangerous keywords list."""
-        import re as re_mod
 
         from src.mcp.data_source.tools.query_tools import query_data
 

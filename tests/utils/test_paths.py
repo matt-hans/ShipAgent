@@ -4,7 +4,12 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-from src.utils.paths import get_data_dir, get_log_dir, get_default_db_path, get_labels_dir
+from src.utils.paths import (
+    get_data_dir,
+    get_default_db_path,
+    get_labels_dir,
+    get_log_dir,
+)
 
 
 def test_get_data_dir_returns_path():
