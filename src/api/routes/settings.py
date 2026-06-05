@@ -5,7 +5,6 @@ All endpoints use /api/v1/settings prefix.
 """
 
 import logging
-import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -102,6 +101,8 @@ class SettingsPatch(BaseModel):
 class CredentialStatusResponse(BaseModel):
     """Which credentials are configured (never returns values)."""
     anthropic_api_key: bool = False
+    openai_api_key: bool = False
+    gemini_api_key: bool = False
     ups_client_id: bool = False
     ups_client_secret: bool = False
     shopify_access_token: bool = False
@@ -162,6 +163,8 @@ def get_credential_status() -> CredentialStatusResponse:
 
     return CredentialStatusResponse(
         anthropic_api_key=status.get("ANTHROPIC_API_KEY", False),
+        openai_api_key=status.get("OPENAI_API_KEY", False),
+        gemini_api_key=status.get("GEMINI_API_KEY", False),
         ups_client_id=status.get("UPS_CLIENT_ID", False),
         ups_client_secret=status.get("UPS_CLIENT_SECRET", False),
         shopify_access_token=status.get("SHOPIFY_ACCESS_TOKEN", False),
@@ -177,7 +180,7 @@ def set_credential(data: SetCredentialRequest) -> dict:
     Returns 503 with actionable message if the keychain is unavailable,
     so the onboarding UI can display a helpful error instead of a raw 500.
     """
-    from src.services.keyring_store import KeyringStore, MANAGED_CREDENTIALS
+    from src.services.keyring_store import MANAGED_CREDENTIALS, KeyringStore
     if data.key not in MANAGED_CREDENTIALS:
         raise HTTPException(
             status_code=400,

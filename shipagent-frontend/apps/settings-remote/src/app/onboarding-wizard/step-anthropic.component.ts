@@ -1,7 +1,7 @@
 /**
- * StepAnthropicComponent — Onboarding Step 1: Anthropic API key.
+ * StepAnthropicComponent — Onboarding Step 1: model provider API key.
  *
- * Collects and saves the Anthropic API key via the keyring-backed credential
+ * Collects and saves a model provider API key via the keyring-backed credential
  * endpoint. Shows current credential status.
  */
 
@@ -28,33 +28,53 @@ import type { CredentialStatus } from '@shipagent/shared-types';
   template: `
     <div class="card-premium p-6">
       <h2 class="text-lg font-semibold text-foreground mb-1">
-        Anthropic API Key
+        Model Provider API Key
       </h2>
       <p class="text-sm text-muted-foreground mb-4">
-        ShipAgent uses Claude to understand your shipping commands.
+        ShipAgent uses your selected model provider to understand shipping commands.
         Your key is stored securely in the system keychain.
       </p>
 
       @if (credentialStatus(); as status) {
         <div class="mb-4 p-2 rounded-md text-xs"
-          [class]="status.anthropic_api_key
+          [class]="hasConfiguredModelKey(status)
             ? 'bg-success/10 text-success border border-success/30'
             : 'bg-muted text-muted-foreground border border-border'">
-          @if (status.anthropic_api_key) {
-            API key is currently configured.
+          @if (hasConfiguredModelKey(status)) {
+            Model provider key is currently configured.
           } @else {
-            No API key configured yet.
+            No model provider key configured yet.
           }
         </div>
       }
 
-      <label class="block text-sm font-medium text-foreground mb-1.5">
+      <label
+        for="onboarding-model-provider-key"
+        class="block text-sm font-medium text-foreground mb-1.5"
+      >
+        Provider
+      </label>
+      <select
+        id="onboarding-model-provider-key"
+        [(ngModel)]="credentialKey"
+        class="w-full mb-3 px-3 py-2 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
+      >
+        @for (option of providerOptions; track option.key) {
+          <option [value]="option.key">{{ option.label }}</option>
+        }
+      </select>
+
+      <label
+        for="onboarding-model-provider-api-key"
+        class="block text-sm font-medium text-foreground mb-1.5"
+      >
         API Key
       </label>
       <input
+        id="onboarding-model-provider-api-key"
         type="password"
         [(ngModel)]="apiKey"
-        placeholder="sk-ant-..."
+        [placeholder]="selectedPlaceholder()"
         class="w-full px-3 py-2 rounded-lg border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-accent/40"
       />
 
@@ -83,6 +103,12 @@ export class StepAnthropicComponent implements OnInit {
   @Output() saved = new EventEmitter<void>();
 
   apiKey = '';
+  credentialKey = 'ANTHROPIC_API_KEY';
+  providerOptions = [
+    { key: 'ANTHROPIC_API_KEY', label: 'Anthropic', placeholder: 'sk-ant-...' },
+    { key: 'OPENAI_API_KEY', label: 'OpenAI', placeholder: 'sk-...' },
+    { key: 'GEMINI_API_KEY', label: 'Gemini', placeholder: 'AI...' },
+  ];
   saving = signal(false);
   error = signal<string | null>(null);
   credentialStatus = signal<CredentialStatus | null>(null);
@@ -93,16 +119,25 @@ export class StepAnthropicComponent implements OnInit {
     }
   }
 
+  hasConfiguredModelKey(status: CredentialStatus): boolean {
+    return status.anthropic_api_key || status.openai_api_key || status.gemini_api_key;
+  }
+
+  selectedPlaceholder(): string {
+    return this.providerOptions.find((option) => option.key === this.credentialKey)
+      ?.placeholder ?? 'API key';
+  }
+
   async onSave(): Promise<void> {
     if (!this.apiKey.trim()) {
-      this.error.set('Anthropic API key is required to continue.');
+      this.error.set('A model provider API key is required to continue.');
       return;
     }
     this.saving.set(true);
     this.error.set(null);
     try {
       await firstValueFrom(
-        this.apiService.putCredential('ANTHROPIC_API_KEY', this.apiKey.trim()),
+        this.apiService.putCredential(this.credentialKey, this.apiKey.trim()),
       );
       this.apiKey = '';
       this.saved.emit();

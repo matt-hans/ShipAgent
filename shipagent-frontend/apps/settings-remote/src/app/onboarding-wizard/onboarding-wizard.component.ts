@@ -3,7 +3,7 @@
  *
  * Port of OnboardingWizard.tsx React component.
  * Three steps:
- *   1. Anthropic API Key (required)
+ *   1. Model provider API key (required)
  *   2. UPS Credentials (optional — can skip)
  *   3. Shipper Address (optional — can skip)
  *
@@ -61,7 +61,7 @@ type Step = 1 | 2 | 3;
           </span>
         </div>
 
-        <!-- Step 1: Anthropic API Key -->
+        <!-- Step 1: Model provider API key -->
         @if (step() === 1) {
           <app-step-anthropic
             [initialStatus]="credentialStatus()"

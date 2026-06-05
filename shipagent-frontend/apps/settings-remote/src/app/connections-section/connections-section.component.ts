@@ -2,7 +2,7 @@
  * ConnectionsSectionComponent — Settings accordion section for provider connections.
  *
  * Port of ConnectionsSection.tsx React component.
- * Renders ProviderCard for Anthropic, UPS, Shopify, Amazon with credential forms.
+ * Renders model-provider credentials plus UPS, Shopify, and Amazon connections.
  * Reads credential and connection state from SettingsStore and PlatformsStore.
  */
 
@@ -76,21 +76,21 @@ import type { ProviderConnectionInfo } from '@shipagent/shared-types';
       @if (isOpen) {
         <div class="settings-section-content space-y-2">
 
-          <!-- Anthropic API Key -->
+          <!-- Model provider API keys -->
           <div class="rounded-lg border border-border overflow-hidden">
             <button
               class="w-full flex items-center justify-between px-3 py-2.5 hover:bg-muted/30 transition-colors"
-              (click)="toggleProvider('anthropic')"
+              (click)="toggleProvider('model-providers')"
             >
               <div class="flex items-center gap-2">
                 <!-- Key icon -->
                 <svg class="h-4 w-4 text-[#D97706]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
                 </svg>
-                <span class="text-xs font-medium text-foreground">Anthropic</span>
-                @if (credentialStatus()?.anthropic_api_key) {
+                <span class="text-xs font-medium text-foreground">Model Providers</span>
+                @if (configuredModelProviderCount() > 0) {
                   <span class="text-[9px] px-1.5 py-0.5 rounded-full bg-success/15 text-success border border-success/30">
-                    Configured
+                    {{ configuredModelProviderCount() }} configured
                   </span>
                 } @else {
                   <span class="text-[9px] px-1.5 py-0.5 rounded-full bg-warning/15 text-warning border border-warning/30">
@@ -100,14 +100,14 @@ import type { ProviderConnectionInfo } from '@shipagent/shared-types';
               </div>
               <svg
                 class="h-3.5 w-3.5 text-muted-foreground transition-transform"
-                [class.rotate-180]="openProvider() === 'anthropic'"
+                [class.rotate-180]="openProvider() === 'model-providers'"
                 viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round" stroke-linejoin="round"
               >
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
             </button>
-            @if (openProvider() === 'anthropic') {
+            @if (openProvider() === 'model-providers') {
               <div class="px-3 pb-3 border-t border-border">
                 <app-anthropic-key-form
                   (saved)="onCredentialSaved()"
@@ -260,8 +260,7 @@ export class ConnectionsSectionComponent implements OnInit {
     const platformsConfigured = this.allConnections().filter(
       (c: ProviderConnectionInfo) => c.status !== 'disconnected',
     ).length;
-    const hasAnthropicKey = this.settingsStore.credentialStatus()?.anthropic_api_key ? 1 : 0;
-    return platformsConfigured + hasAnthropicKey;
+    return platformsConfigured + this.configuredModelProviderCount();
   });
 
   ngOnInit(): void {
@@ -343,9 +342,19 @@ export class ConnectionsSectionComponent implements OnInit {
   }
 
   onCredentialSaved(): void {
-    // Refresh credential status after saving Anthropic key
+    // Refresh credential status after saving a model provider key.
     firstValueFrom(this.apiService.getCredentialStatus())
       .then((status) => this.settingsStore.setCredentialStatus(status))
       .catch(() => { /* non-critical */ });
+  }
+
+  configuredModelProviderCount(): number {
+    const status = this.settingsStore.credentialStatus();
+    if (!status) return 0;
+    return [
+      status.anthropic_api_key,
+      status.openai_api_key,
+      status.gemini_api_key,
+    ].filter(Boolean).length;
   }
 }
