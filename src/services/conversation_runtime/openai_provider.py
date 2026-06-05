@@ -9,6 +9,7 @@ from typing import Any
 from src.services.conversation_runtime.models import (
     ProviderCapabilities,
     ProviderInputMessage,
+    ProviderOutputItem,
     ProviderResultMetadata,
     ProviderStreamEvent,
     ProviderStreamEventType,
@@ -171,6 +172,15 @@ class OpenAIProviderClient:
             raise
 
         if completed_response is not None:
+            output_items = _openai_output_items(completed_response)
+            for item in output_items:
+                yield ProviderStreamEvent(
+                    type=ProviderStreamEventType.PROVIDER_OUTPUT_ITEM,
+                    provider_output_item=ProviderOutputItem(
+                        provider="openai",
+                        item=item,
+                    ),
+                )
             for call in _tool_calls_from_openai_response(completed_response):
                 if call.call_id is not None and call.call_id in emitted_call_ids:
                     continue
@@ -227,14 +237,24 @@ def to_openai_input(messages: list[ProviderInputMessage]) -> list[dict[str, Any]
                 )
             continue
 
-        if text:
-            input_items.append({"role": message.role, "content": text})
-
         if message.role == "assistant":
+            raw_items = _message_openai_output_items(message)
+            raw_function_call_ids = {
+                call_id
+                for item in raw_items
+                if _is_openai_function_call_item(item)
+                for call_id in (item.get("call_id"),)
+                if isinstance(call_id, str) and call_id
+            }
+            if text and not _has_openai_message_item(raw_items):
+                input_items.append({"role": message.role, "content": text})
+            input_items.extend(raw_items)
             for part in message.content:
                 if part.type != "tool_call" or part.tool_call is None:
                     continue
                 call = part.tool_call
+                if call.call_id is not None and call.call_id in raw_function_call_ids:
+                    continue
                 item: dict[str, Any] = {
                     "type": "function_call",
                     "call_id": call.call_id,
@@ -248,6 +268,10 @@ def to_openai_input(messages: list[ProviderInputMessage]) -> list[dict[str, Any]
                 if isinstance(item_id, str) and item_id:
                     item["id"] = item_id
                 input_items.append(item)
+            continue
+
+        if text:
+            input_items.append({"role": message.role, "content": text})
     return input_items
 
 
@@ -297,15 +321,15 @@ def _tool_call_from_openai_event(
 
 def _tool_calls_from_openai_response(response: Any) -> list[ProviderToolCall]:
     calls: list[ProviderToolCall] = []
-    for item in _field(response, "output") or []:
-        if _field(item, "type") != "function_call":
+    for item in _openai_output_items(response):
+        if item.get("type") != "function_call":
             continue
-        name = _field(item, "name")
+        name = item.get("name")
         if not isinstance(name, str) or not name:
             continue
-        raw_arguments = _field(item, "arguments") or ""
-        call_id = _field(item, "call_id")
-        item_id = _field(item, "id")
+        raw_arguments = item.get("arguments") or ""
+        call_id = item.get("call_id")
+        item_id = item.get("id")
         calls.append(
             ProviderToolCall(
                 call_id=call_id if isinstance(call_id, str) and call_id else None,
@@ -319,6 +343,40 @@ def _tool_calls_from_openai_response(response: Any) -> list[ProviderToolCall]:
             )
         )
     return calls
+
+
+def _openai_output_items(response: Any) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for item in _field(response, "output") or []:
+        plain = _to_plain_dict(item)
+        item_type = plain.get("type")
+        if not isinstance(item_type, str) or not item_type:
+            continue
+        items.append(_strip_none_values(plain))
+    return items
+
+
+def _message_openai_output_items(message: ProviderInputMessage) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for part in message.content:
+        if (
+            part.type != "provider_output_item"
+            or part.provider_output_item is None
+            or part.provider_output_item.provider != "openai"
+        ):
+            continue
+        item = _strip_none_values(dict(part.provider_output_item.item))
+        if item:
+            items.append(item)
+    return items
+
+
+def _is_openai_function_call_item(item: dict[str, Any]) -> bool:
+    return item.get("type") == "function_call"
+
+
+def _has_openai_message_item(items: list[dict[str, Any]]) -> bool:
+    return any(item.get("type") == "message" for item in items)
 
 
 def _metadata_from_openai_response(response: Any, model: str) -> ProviderResultMetadata:
@@ -382,3 +440,7 @@ def _to_plain_dict(value: Any) -> dict[str, Any]:
     if hasattr(value, "__dict__"):
         return dict(value.__dict__)
     return {}
+
+
+def _strip_none_values(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item is not None}

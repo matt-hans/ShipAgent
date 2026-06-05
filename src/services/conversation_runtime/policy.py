@@ -68,6 +68,18 @@ class RuntimePolicyEngine:
     _FILTER_TOOLS = {"resolve_filter_intent", "ship_command_pipeline", "fetch_rows"}
     _BANNED_SQL_KEYS = {"where_clause", "sql", "query", "raw_sql"}
     _DIRECT_UPS_DENIAL_REASONS = {
+        "mcp__ups__rate_shipment": (
+            "Direct mcp__ups__rate_shipment is not allowed. "
+            "Use the rate_shipment orchestrator tool instead."
+        ),
+        "mcp__ups__validate_address": (
+            "Direct mcp__ups__validate_address is not allowed. "
+            "Use the validate_address orchestrator tool instead."
+        ),
+        "mcp__ups__get_time_in_transit": (
+            "Direct mcp__ups__get_time_in_transit is not allowed. "
+            "Use the get_time_in_transit orchestrator tool instead."
+        ),
         "mcp__ups__void_shipment": (
             "Direct mcp__ups__void_shipment is not available in the "
             "provider-neutral runtime until a ShipAgent void workflow wrapper "

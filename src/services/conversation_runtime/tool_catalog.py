@@ -45,6 +45,9 @@ _READ_ONLY = {
     "confirm_filter_interpretation",
     "get_job_status",
     "get_platform_status",
+    "rate_shipment",
+    "validate_address",
+    "get_time_in_transit",
     "rate_pickup",
     "get_pickup_status",
     "find_locations",
@@ -91,6 +94,9 @@ _PARALLEL_READ_ONLY = {
     "get_schema",
     "get_job_status",
     "get_platform_status",
+    "rate_shipment",
+    "validate_address",
+    "get_time_in_transit",
     "list_contacts",
 }
 

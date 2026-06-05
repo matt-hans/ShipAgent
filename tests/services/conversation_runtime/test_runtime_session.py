@@ -6,6 +6,7 @@ from src.services.conversation_runtime.fake_provider import FakeProviderClient
 from src.services.conversation_runtime.models import (
     ProviderCapabilities,
     ProviderInputMessage,
+    ProviderOutputItem,
     ProviderResultMetadata,
     ProviderStreamEvent,
     ProviderStreamEventType,
@@ -183,6 +184,57 @@ async def test_runtime_dispatches_tool_and_feeds_result_back_to_provider() -> No
     assert provider.requests[1]["messages"][-2].content[-1].tool_call == call
     assert provider.requests[1]["messages"][-1].role == "tool"
     assert provider.requests[1]["messages"][-1].tool_call_id == "tool-1"
+
+
+@pytest.mark.asyncio
+async def test_runtime_preserves_provider_output_items_before_tool_results() -> None:
+    reasoning_item = ProviderOutputItem(
+        provider="openai",
+        item={"id": "rs_123", "type": "reasoning", "summary": []},
+    )
+    call = ProviderToolCall(
+        call_id="tool-1",
+        tool_name="get_schema",
+        parsed_input={},
+    )
+    provider = FakeProviderClient(
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.PROVIDER_OUTPUT_ITEM,
+                    provider_output_item=reasoning_item,
+                ),
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
+                    tool_call=call,
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                    text="Schema ready.",
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+        ]
+    )
+    runtime = ConversationRuntimeSession(
+        provider=provider,
+        system_prompt="system",
+        interactive_shipping=False,
+        session_id="runtime-provider-output-item",
+    )
+    await runtime.start()
+
+    events = [event async for event in runtime.process_message_stream("Show schema")]
+
+    assert [event["event"] for event in events] == ["tool_call", "agent_message"]
+    assistant_message = provider.requests[1]["messages"][-2]
+    assert assistant_message.role == "assistant"
+    assert assistant_message.content[0].provider_output_item == reasoning_item
+    assert assistant_message.content[1].tool_call == call
+    assert provider.requests[1]["messages"][-1].role == "tool"
 
 
 @pytest.mark.asyncio

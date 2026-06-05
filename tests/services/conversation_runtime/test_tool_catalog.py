@@ -14,6 +14,9 @@ EXPECTED_BATCH_TOOLS = {
     "resolve_filter_intent",
     "confirm_filter_interpretation",
     "get_job_status",
+    "rate_shipment",
+    "validate_address",
+    "get_time_in_transit",
     "batch_execute",
     "get_platform_status",
     "connect_shopify",
@@ -40,6 +43,9 @@ EXPECTED_BATCH_TOOLS = {
 EXPECTED_INTERACTIVE_TOOLS = {
     "get_job_status",
     "get_platform_status",
+    "rate_shipment",
+    "validate_address",
+    "get_time_in_transit",
     "schedule_pickup",
     "cancel_pickup",
     "rate_pickup",
@@ -103,6 +109,9 @@ def test_side_effecting_tools_are_not_parallelizable() -> None:
 
     assert catalog.get("batch_execute").allow_parallel is False
     assert catalog.get("schedule_pickup").allow_parallel is False
+    assert catalog.get("rate_shipment").allow_parallel is True
+    assert catalog.get("validate_address").allow_parallel is True
+    assert catalog.get("get_time_in_transit").allow_parallel is True
     assert catalog.get("get_schema").allow_parallel is True
     assert catalog.get("get_job_status").mode in {ToolMode.BATCH, ToolMode.BOTH}
 

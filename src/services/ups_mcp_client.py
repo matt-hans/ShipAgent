@@ -115,6 +115,7 @@ class UPSMCPClient:
             "rate_shipment",
             "validate_address",
             "track_package",
+            "get_time_in_transit",
             "rate_pickup",
             "get_pickup_status",
             "get_landed_cost_quote",
@@ -412,6 +413,28 @@ class UPSMCPClient:
             raise self._translate_error(e) from e
 
         return raw
+
+    async def get_time_in_transit(self, request_body: dict[str, Any]) -> dict[str, Any]:
+        """Get UPS time-in-transit estimates.
+
+        Args:
+            request_body: Full UPS TimeInTransit request payload.
+
+        Returns:
+            Raw UPS time-in-transit response dict.
+
+        Raises:
+            UPSServiceError: On UPS API error.
+        """
+        try:
+            return await self._call(
+                "get_time_in_transit",
+                {
+                    "request_body": request_body,
+                },
+            )
+        except MCPToolError as e:
+            raise self._translate_error(e) from e
 
     # ── Pickup methods ─────────────────────────────────────────────────
 

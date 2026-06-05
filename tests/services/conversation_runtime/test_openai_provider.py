@@ -8,6 +8,7 @@ import pytest
 from src.services.conversation_runtime.models import (
     ProviderContentPart,
     ProviderInputMessage,
+    ProviderOutputItem,
     ProviderStreamEventType,
     ProviderToolCall,
     ProviderToolDeclaration,
@@ -60,6 +61,77 @@ def test_openai_input_pairs_assistant_function_call_with_tool_output() -> None:
             "type": "function_call_output",
             "call_id": "call_123",
             "output": '{"columns":["sku"]}',
+        },
+    ]
+
+
+def test_openai_input_preserves_reasoning_items_with_tool_outputs() -> None:
+    reasoning_item = {
+        "id": "rs_123",
+        "type": "reasoning",
+        "content": [],
+        "summary": [],
+    }
+    raw_function_call = {
+        "id": "fc_123",
+        "type": "function_call",
+        "call_id": "call_123",
+        "name": "get_schema",
+        "arguments": '{"source":"orders"}',
+    }
+    reconstructed_call = ProviderToolCall(
+        call_id="call_123",
+        tool_name="get_schema",
+        parsed_input={"source": "orders"},
+        raw_arguments='{"source":"orders"}',
+    )
+
+    input_items = to_openai_input(
+        [
+            ProviderInputMessage(
+                role="user",
+                content=[ProviderContentPart(text="Show schema")],
+            ),
+            ProviderInputMessage(
+                role="assistant",
+                content=[
+                    ProviderContentPart(
+                        type="provider_output_item",
+                        provider_output_item=ProviderOutputItem(
+                            provider="openai",
+                            item=reasoning_item,
+                        ),
+                    ),
+                    ProviderContentPart(
+                        type="provider_output_item",
+                        provider_output_item=ProviderOutputItem(
+                            provider="openai",
+                            item=raw_function_call,
+                        ),
+                    ),
+                    ProviderContentPart(
+                        type="tool_call",
+                        tool_call=reconstructed_call,
+                    ),
+                ],
+            ),
+            ProviderInputMessage(
+                role="tool",
+                content=[ProviderContentPart(text="Schema ready")],
+                tool_call_id="call_123",
+                metadata={"tool_name": "get_schema"},
+            ),
+        ]
+    )
+
+    assert input_items == [
+        {"role": "user", "content": "Show schema"},
+        reasoning_item,
+        raw_function_call,
+        {
+            "type": "function_call_output",
+            "call_id": "call_123",
+            "output": "Schema ready",
         },
     ]
 
@@ -118,7 +190,21 @@ async def test_openai_stream_normalizes_text_and_function_call_events() -> None:
                     id="resp_123",
                     model="gpt-5-mini",
                     status="completed",
-                    output=[],
+                    output=[
+                        {
+                            "id": "rs_123",
+                            "type": "reasoning",
+                            "content": [],
+                            "summary": [],
+                        },
+                        {
+                            "id": "fc_123",
+                            "type": "function_call",
+                            "call_id": "call_123",
+                            "name": "get_schema",
+                            "arguments": '{"source":"orders"}',
+                        },
+                    ],
                     usage={"input_tokens": 10, "output_tokens": 2},
                 ),
             )
@@ -154,4 +240,19 @@ async def test_openai_stream_normalizes_text_and_function_call_events() -> None:
     assert json.loads(tool_event.tool_call.raw_arguments) == {"source": "orders"}
     assert tool_event.tool_call.call_id == "call_123"
     assert tool_event.tool_call.tool_name == "get_schema"
+    provider_items = [
+        event.provider_output_item.item
+        for event in events
+        if event.type == ProviderStreamEventType.PROVIDER_OUTPUT_ITEM
+    ]
+    assert provider_items == [
+        {"id": "rs_123", "type": "reasoning", "content": [], "summary": []},
+        {
+            "id": "fc_123",
+            "type": "function_call",
+            "call_id": "call_123",
+            "name": "get_schema",
+            "arguments": '{"source":"orders"}',
+        },
+    ]
     assert fake_responses.kwargs["model"] == "gpt-5-mini"

@@ -11,6 +11,7 @@ ProviderRole = Literal["system", "developer", "user", "assistant", "tool"]
 class ProviderStreamEventType(StrEnum):
     TEXT_DELTA = "text_delta"
     TEXT_BLOCK_COMPLETE = "text_block_complete"
+    PROVIDER_OUTPUT_ITEM = "provider_output_item"
     TOOL_CALL_STARTED = "tool_call_started"
     TOOL_ARGUMENTS_DELTA = "tool_arguments_delta"
     TOOL_CALL_COMPLETE = "tool_call_complete"
@@ -40,10 +41,17 @@ class ProviderToolCall:
 
 
 @dataclass(frozen=True)
+class ProviderOutputItem:
+    provider: str
+    item: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class ProviderContentPart:
-    type: Literal["text", "tool_call"] = "text"
+    type: Literal["text", "tool_call", "provider_output_item"] = "text"
     text: str = ""
     tool_call: ProviderToolCall | None = None
+    provider_output_item: ProviderOutputItem | None = None
 
 
 @dataclass(frozen=True)
@@ -123,5 +131,6 @@ class ProviderStreamEvent:
     type: ProviderStreamEventType
     text: str | None = None
     tool_call: ProviderToolCall | None = None
+    provider_output_item: ProviderOutputItem | None = None
     metadata: ProviderResultMetadata | None = None
     error_message: str | None = None
