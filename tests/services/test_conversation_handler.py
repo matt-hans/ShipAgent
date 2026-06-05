@@ -190,6 +190,132 @@ class TestProcessMessage:
     """Tests for the process_message() streaming function."""
 
     @pytest.mark.asyncio
+    async def test_process_message_with_fake_runtime_streams_sse_contract(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "fake")
+        monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "false")
+        monkeypatch.setenv("AGENT_AUDIT_ENABLED", "false")
+
+        from src.services.conversation_runtime.fake_provider import FakeProviderClient
+        from src.services.conversation_runtime.models import (
+            ProviderStreamEvent,
+            ProviderStreamEventType,
+        )
+        from src.services.conversation_runtime.runtime_session import (
+            ConversationRuntimeSession,
+        )
+
+        provider = FakeProviderClient(
+            script=[
+                [
+                    ProviderStreamEvent(
+                        type=ProviderStreamEventType.TEXT_DELTA,
+                        text="A",
+                    ),
+                    ProviderStreamEvent(
+                        type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                        text="Answer",
+                    ),
+                    ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+                ]
+            ]
+        )
+        session = MagicMock()
+        session.session_id = "handler-fake"
+        session.agent = ConversationRuntimeSession(
+            provider=provider,
+            system_prompt="system",
+            interactive_shipping=False,
+            session_id="handler-fake",
+        )
+        await session.agent.start()
+        session.agent_source_hash = _make_test_session_hash()
+        session.lock = asyncio.Lock()
+        session.confirmed_resolutions = {}
+        session.interactive_shipping = False
+
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(_CONTACTS_PATCH, return_value=[]),
+            patch(
+                "src.services.conversation_handler._persist_assistant_message",
+            ) as persist_assistant,
+        ):
+            mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
+            events = [event async for event in process_message(session, "hello")]
+
+        assert [event["event"] for event in events] == [
+            "agent_message_delta",
+            "agent_message",
+        ]
+        persist_assistant.assert_called_once_with("handler-fake", "Answer")
+
+    @pytest.mark.asyncio
+    async def test_fake_runtime_artifact_callback_persists_once(self, monkeypatch):
+        monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "true")
+        monkeypatch.setenv("AGENT_AUDIT_ENABLED", "false")
+
+        class FakeAgent:
+            last_turn_count = 0
+
+            def __init__(self):
+                self.emitter_bridge = MagicMock(callback=None)
+
+            async def process_message_stream(self, _content):
+                self.emitter_bridge.callback(
+                    "tracking_result",
+                    {"tracking_number": "1Z999"},
+                )
+                yield {
+                    "event": "tracking_result",
+                    "data": {"tracking_number": "1Z999"},
+                }
+
+        session = MagicMock()
+        session.session_id = "artifact-once"
+        session.agent = FakeAgent()
+        session.agent_source_hash = _make_test_session_hash()
+        session.lock = asyncio.Lock()
+        session.confirmed_resolutions = {}
+        session.interactive_shipping = False
+        emitted: list[dict] = []
+
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(_CONTACTS_PATCH, return_value=[]),
+            patch(
+                "src.services.conversation_handler._persist_artifact_message",
+            ) as persist_artifact,
+        ):
+            mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
+            async for event in process_message(
+                session,
+                "track 1Z999",
+                emit_callback=lambda event_type, data: emitted.append(
+                    {"event": event_type, "data": data}
+                ),
+            ):
+                emitted.append(event)
+
+        assert [event["event"] for event in emitted] == [
+            "tracking_result",
+            "tracking_result",
+        ]
+        persist_artifact.assert_called_once_with(
+            "artifact-once",
+            "tracking_result",
+            {"tracking_number": "1Z999"},
+        )
+
+    @pytest.mark.asyncio
     async def test_suppresses_transient_assistant_messages_when_artifact_is_emitted(
         self,
         monkeypatch,
