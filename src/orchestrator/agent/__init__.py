@@ -46,48 +46,10 @@ Exports:
         create_hook_matchers: Factory for ClaudeAgentOptions hooks configuration
 """
 
-from src.orchestrator.agent.config import (
-    PROJECT_ROOT,
-    MCPServerConfig,
-    create_mcp_servers_config,
-    get_data_mcp_config,
-)
-from src.orchestrator.agent.hooks import (
-    create_hook_matchers,
-    detect_error_response,
-    log_post_tool,
-    validate_data_query,
-    validate_pre_tool,
-    validate_shipping_input,
-)
+from __future__ import annotations
 
-# Client
-try:
-    from src.orchestrator.agent.client import (
-        OrchestrationAgent,
-        create_agent,
-    )
-except ModuleNotFoundError as exc:
-    if exc.name not in {None, "claude_agent_sdk"} and "claude_agent_sdk" not in str(exc):
-        raise
-    _sdk_import_error = exc
-
-    class OrchestrationAgent:  # type: ignore[no-redef]
-        """Fallback stub when claude_agent_sdk is unavailable."""
-
-        def __init__(self, *args, **kwargs):
-            raise ModuleNotFoundError(
-                "No module named 'claude_agent_sdk'. "
-                "Start backend with ./scripts/start-backend.sh (project .venv), "
-                "or install deps via .venv/bin/python -m pip install -e '.[dev]'."
-            ) from _sdk_import_error
-
-    async def create_agent(*args, **kwargs):  # type: ignore[no-redef]
-        raise ModuleNotFoundError(
-            "No module named 'claude_agent_sdk'. "
-            "Start backend with ./scripts/start-backend.sh (project .venv), "
-            "or install deps via .venv/bin/python -m pip install -e '.[dev]'."
-        ) from _sdk_import_error
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     # Main entry points
@@ -106,3 +68,32 @@ __all__ = [
     "detect_error_response",
     "create_hook_matchers",
 ]
+
+_EXPORT_MODULES = {
+    "OrchestrationAgent": "src.orchestrator.agent.client",
+    "create_agent": "src.orchestrator.agent.client",
+    "PROJECT_ROOT": "src.orchestrator.agent.config",
+    "MCPServerConfig": "src.orchestrator.agent.config",
+    "get_data_mcp_config": "src.orchestrator.agent.config",
+    "create_mcp_servers_config": "src.orchestrator.agent.config",
+    "validate_pre_tool": "src.orchestrator.agent.hooks",
+    "validate_shipping_input": "src.orchestrator.agent.hooks",
+    "validate_data_query": "src.orchestrator.agent.hooks",
+    "log_post_tool": "src.orchestrator.agent.hooks",
+    "detect_error_response": "src.orchestrator.agent.hooks",
+    "create_hook_matchers": "src.orchestrator.agent.hooks",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    value = getattr(import_module(module_name), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))
