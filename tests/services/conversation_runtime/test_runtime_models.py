@@ -7,6 +7,7 @@ from src.services.conversation_runtime import (
     ProviderContentPart,
     ProviderFinalResult,
     ProviderInputMessage,
+    ProviderOutputItem,
     ProviderResultMetadata,
     ProviderRole,
     ProviderStreamEvent,
@@ -113,6 +114,26 @@ def test_assistant_message_can_carry_tool_call_content_part() -> None:
 
     assert message.content[0].type == "tool_call"
     assert message.content[0].tool_call is call
+
+
+def test_assistant_message_can_carry_provider_output_item_part() -> None:
+    output_item = ProviderOutputItem(
+        provider="openai",
+        item={"id": "rs_123", "type": "reasoning", "summary": []},
+    )
+
+    message = ProviderInputMessage(
+        role="assistant",
+        content=[
+            ProviderContentPart(
+                type="provider_output_item",
+                provider_output_item=output_item,
+            )
+        ],
+    )
+
+    assert message.content[0].type == "provider_output_item"
+    assert message.content[0].provider_output_item is output_item
 
 
 def test_stream_event_metadata_uses_normalized_result_metadata_contract() -> None:

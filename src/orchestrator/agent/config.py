@@ -6,12 +6,13 @@ The configurations are used by ClaudeAgentOptions when initializing the agent.
 Configuration includes:
     - Data MCP: Python-based server for data source operations
     - External Sources MCP: Python-based unified gateway for external platforms
-    - UPS MCP: UPS API server for shipping, rating, tracking, address validation
-      (local fork, run as Python module via .venv)
+    - UPS MCP: UPS API server used behind shared workflow tools and retained
+      for Claude adapter backward compatibility (local fork, run as Python
+      module via .venv)
 
 Hybrid UPS architecture:
-    - Interactive path: Agent calls UPS MCP tools directly for ad-hoc operations
-      (rate checks, address validation, tracking, label recovery, transit times)
+    - Interactive path: Agent uses orchestrator workflow tools for ad-hoc
+      operations (rate checks, address validation, tracking, transit times)
     - Batch path: BatchEngine uses UPSMCPClient (programmatic MCP over stdio)
       for deterministic high-volume execution with per-row state tracking
 

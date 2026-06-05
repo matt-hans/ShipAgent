@@ -68,6 +68,9 @@ async def test_denies_resolve_filter_intent_with_invalid_operator() -> None:
     ("tool_name", "expected_wrapper"),
     [
         ("mcp__ups__create_shipment", "preview_interactive_shipment"),
+        ("mcp__ups__rate_shipment", "rate_shipment"),
+        ("mcp__ups__validate_address", "validate_address"),
+        ("mcp__ups__get_time_in_transit", "get_time_in_transit"),
         ("mcp__ups__void_shipment", "not available"),
         ("mcp__ups__schedule_pickup", "schedule_pickup"),
         ("mcp__ups__cancel_pickup", "cancel_pickup"),

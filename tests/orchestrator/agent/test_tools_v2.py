@@ -828,6 +828,7 @@ def test_tool_definitions_filtered_for_interactive_mode():
     names = {d["name"] for d in defs}
     expected = {
         "get_job_status", "get_platform_status", "preview_interactive_shipment",
+        "rate_shipment", "validate_address", "get_time_in_transit",
         "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
         "find_locations", "get_service_center_facilities",
         "request_document_upload", "upload_paperless_document",
@@ -1733,6 +1734,88 @@ async def test_get_landed_cost_tool_handles_malformed_args():
     assert "Unexpected error" in result["content"][0]["text"]
 
 
+@pytest.mark.asyncio
+async def test_rate_shipment_tool_calls_shared_ups_gateway():
+    """rate_shipment_tool forwards to UPSMCPClient.get_rate."""
+    mock_ups = AsyncMock()
+    mock_ups.get_rate.return_value = {"success": True, "totalCharges": "12.34"}
+
+    with patch(
+        "src.orchestrator.agent.tools.ups._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.ups import rate_shipment_tool
+
+        result = await rate_shipment_tool(
+            {
+                "request_body": {"RateRequest": {"Shipment": {}}},
+                "requestoption": "Shop",
+            }
+        )
+
+    assert result["isError"] is False
+    mock_ups.get_rate.assert_awaited_once_with(
+        request_body={"RateRequest": {"Shipment": {}}},
+        requestoption="Shop",
+    )
+
+
+@pytest.mark.asyncio
+async def test_validate_address_tool_calls_shared_ups_gateway():
+    """validate_address_tool forwards normalized address fields."""
+    mock_ups = AsyncMock()
+    mock_ups.validate_address.return_value = {"status": "valid", "candidates": []}
+
+    with patch(
+        "src.orchestrator.agent.tools.ups._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.ups import validate_address_tool
+
+        result = await validate_address_tool(
+            {
+                "addressLine1": "123 Main St",
+                "addressLine2": "Suite 5",
+                "city": "Austin",
+                "stateProvinceCode": "TX",
+                "postalCode": "78701",
+                "countryCode": "US",
+            }
+        )
+
+    assert result["isError"] is False
+    mock_ups.validate_address.assert_awaited_once_with(
+        addressLine1="123 Main St",
+        addressLine2="Suite 5",
+        city="Austin",
+        stateProvinceCode="TX",
+        postalCode="78701",
+        countryCode="US",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_time_in_transit_tool_calls_shared_ups_gateway():
+    """get_time_in_transit_tool forwards to UPSMCPClient.get_time_in_transit."""
+    mock_ups = AsyncMock()
+    mock_ups.get_time_in_transit.return_value = {"TransitResponse": {}}
+
+    with patch(
+        "src.orchestrator.agent.tools.ups._get_ups_client",
+        return_value=mock_ups,
+    ):
+        from src.orchestrator.agent.tools.ups import get_time_in_transit_tool
+
+        result = await get_time_in_transit_tool(
+            {"request_body": {"TimeInTransitRequest": {}}}
+        )
+
+    assert result["isError"] is False
+    mock_ups.get_time_in_transit.assert_awaited_once_with(
+        request_body={"TimeInTransitRequest": {}},
+    )
+
+
 # ---------------------------------------------------------------------------
 # UPS MCP v2 — Tool registration (Task 13)
 # ---------------------------------------------------------------------------
@@ -1743,6 +1826,9 @@ def test_v2_tools_registered_batch_mode():
     defs = get_all_tool_definitions()
     names = {d["name"] for d in defs}
     expected_v2 = {
+        "rate_shipment",
+        "validate_address",
+        "get_time_in_transit",
         "schedule_pickup",
         "cancel_pickup",
         "rate_pickup",
@@ -1771,6 +1857,9 @@ def test_v2_tools_available_in_interactive_mode():
     assert "preview_interactive_shipment" in names
     # v2 tools now included
     v2_tools = {
+        "rate_shipment",
+        "validate_address",
+        "get_time_in_transit",
         "schedule_pickup",
         "cancel_pickup",
         "rate_pickup",

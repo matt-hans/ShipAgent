@@ -164,6 +164,16 @@ class ConversationRuntimeSession:
                                 "data": {"text": event.text},
                             }
                         elif (
+                            event.type == ProviderStreamEventType.PROVIDER_OUTPUT_ITEM
+                            and event.provider_output_item
+                        ):
+                            assistant_parts.append(
+                                ProviderContentPart(
+                                    type="provider_output_item",
+                                    provider_output_item=event.provider_output_item,
+                                )
+                            )
+                        elif (
                             event.type == ProviderStreamEventType.TOOL_CALL_COMPLETE
                             and event.tool_call
                         ):
