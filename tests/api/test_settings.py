@@ -30,8 +30,12 @@ def test_get_credential_status(client: TestClient):
     assert resp.status_code == 200
     data = resp.json()
     assert "anthropic_api_key" in data
+    assert "openai_api_key" in data
+    assert "gemini_api_key" in data
     # Should be False since no key is set in test (unless env var set)
     assert isinstance(data["anthropic_api_key"], bool)
+    assert isinstance(data["openai_api_key"], bool)
+    assert isinstance(data["gemini_api_key"], bool)
 
 
 def test_post_onboarding_complete(client: TestClient):

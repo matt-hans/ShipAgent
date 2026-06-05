@@ -255,8 +255,6 @@ async def test_shutdown_event_calls_gateway_shutdown(monkeypatch):
     monkeypatch.setenv("FILTER_TOKEN_SECRET", "x" * 40)
 
     with patch(
-        "src.api.main._ensure_agent_sdk_available",
-    ), patch(
         "src.api.main.init_db",
     ), patch(
         "src.api.main.run_startup_recovery", new=AsyncMock(),
@@ -371,6 +369,37 @@ async def test_process_message_uses_gateway_for_source_info():
     mock_gw.get_source_info_typed.assert_awaited_once()
     conversations._session_manager.remove_session(session_id)
     conversations._event_queues.pop(session_id, None)
+
+
+@pytest.mark.asyncio
+async def test_route_ensure_agent_uses_provider_neutral_factory():
+    """Route-level agent startup goes through the provider-neutral factory."""
+    from src.api.routes import conversations as conversations_mod
+    conversations = importlib.reload(conversations_mod)
+
+    session = conversations._session_manager.get_or_create_session("factory-route")
+    session.agent = None
+    session.agent_source_hash = None
+
+    fake_agent = AsyncMock()
+
+    with (
+        patch(
+            "src.api.routes.conversations.create_conversation_agent",
+            return_value=fake_agent,
+        ) as create_agent,
+        patch(
+            "src.orchestrator.agent.system_prompt.build_system_prompt",
+            return_value="test prompt",
+        ),
+    ):
+        rebuilt = await conversations._ensure_agent(session, source_info=None)
+
+    assert rebuilt is True
+    create_agent.assert_called_once()
+    fake_agent.start.assert_awaited_once()
+    assert session.agent is fake_agent
+    conversations._session_manager.remove_session("factory-route")
 
 
 @pytest.mark.asyncio

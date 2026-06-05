@@ -56,6 +56,7 @@ from src.orchestrator.agent.intent_detection import (
 )
 from src.services.agent_session_manager import AgentSessionManager
 from src.services.batch_engine import BatchEngine
+from src.services.conversation_agent import create_conversation_agent
 from src.services.conversation_persistence_service import ConversationPersistenceService
 from src.services.decision_audit_context import (
     get_decision_job_id,
@@ -213,7 +214,6 @@ async def _ensure_agent(
     Returns:
         True if a new agent was started/rebuilt, False if existing reused.
     """
-    from src.orchestrator.agent.client import OrchestrationAgent
     from src.orchestrator.agent.system_prompt import build_system_prompt
 
     source_hash = _compute_source_hash(source_info)
@@ -259,7 +259,7 @@ async def _ensure_agent(
         column_samples=column_samples,
         prior_conversation=prior_conversation,
     )
-    agent = OrchestrationAgent(
+    agent = create_conversation_agent(
         system_prompt=system_prompt,
         interactive_shipping=session.interactive_shipping,
         session_id=session.session_id,

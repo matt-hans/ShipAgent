@@ -1,4 +1,4 @@
-"""Orchestration Agent using Claude Agent SDK.
+"""Claude SDK-backed conversation agent adapter.
 
 The OrchestrationAgent coordinates MCP servers (Data Source, External Sources,
 UPS) via stdio transport, providing a unified interface for natural language
@@ -24,11 +24,14 @@ Per CONTEXT.md:
 - Graceful shutdown with 5s timeout
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
 import time
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 from typing import Any
 
 try:
@@ -46,11 +49,23 @@ try:
 except ModuleNotFoundError as exc:
     if exc.name != "claude_agent_sdk":
         raise
-    raise ModuleNotFoundError(
-        "No module named 'claude_agent_sdk'. "
-        "Start backend with ./scripts/start-backend.sh (project .venv), "
-        "or install deps via .venv/bin/python -m pip install -e '.[dev]'."
-    ) from exc
+    _SDK_IMPORT_ERROR = exc
+
+    class _MissingSdkType:
+        pass
+
+    AssistantMessage = _MissingSdkType  # type: ignore[assignment]
+    ClaudeAgentOptions = None  # type: ignore[assignment]
+    ClaudeSDKClient = None  # type: ignore[assignment]
+    ResultMessage = _MissingSdkType  # type: ignore[assignment]
+    SdkMcpTool = None  # type: ignore[assignment]
+    TextBlock = _MissingSdkType  # type: ignore[assignment]
+    ToolUseBlock = _MissingSdkType  # type: ignore[assignment]
+    McpStdioServerConfig = dict  # type: ignore[assignment]
+    StreamEvent = _MissingSdkType  # type: ignore[assignment]
+    create_sdk_mcp_server = None  # type: ignore[assignment]
+else:
+    _SDK_IMPORT_ERROR = None
 
 from src.orchestrator.agent.config import create_mcp_servers_config
 from src.orchestrator.agent.hooks import create_hook_matchers
@@ -69,7 +84,21 @@ DEFAULT_MODEL = (
 )
 
 logger = logging.getLogger(__name__)
-_HAS_STREAM_EVENT = True
+_HAS_STREAM_EVENT = _SDK_IMPORT_ERROR is None
+
+
+def is_claude_sdk_available() -> bool:
+    """Return whether the optional Claude SDK adapter can be used."""
+    return _SDK_IMPORT_ERROR is None
+
+
+def _require_claude_sdk() -> None:
+    if _SDK_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "Claude SDK runtime is not installed. Backend startup no longer "
+            "requires it, but this adapter cannot run without the optional "
+            "claude_agent_sdk package."
+        ) from _SDK_IMPORT_ERROR
 
 
 def _create_orchestrator_mcp_server(
@@ -84,7 +113,8 @@ def _create_orchestrator_mcp_server(
     Returns:
         McpSdkServerConfig for ClaudeAgentOptions.mcp_servers.
     """
-    tools: list[SdkMcpTool[Any]] = []
+    _require_claude_sdk()
+    tools: list[Any] = []
 
     for tool_def in get_all_tool_definitions(
         event_bridge=event_bridge,
@@ -156,7 +186,20 @@ class OrchestrationAgent:
         self._interactive_shipping = interactive_shipping
         self.emitter_bridge = EventEmitterBridge()
         self.emitter_bridge.session_id = session_id
-        self._options = self._create_options(max_turns, permission_mode)
+        self._options = (
+            self._create_options(max_turns, permission_mode)
+            if is_claude_sdk_available()
+            else SimpleNamespace(
+                system_prompt=self._system_prompt,
+                model=self._model,
+                mcp_servers={},
+                allowed_tools=[],
+                hooks={},
+                include_partial_messages=False,
+                permission_mode=permission_mode,
+                max_turns=max_turns,
+            )
+        )
         self._client: ClaudeSDKClient | None = None
         self._started = False
         self._start_time: float | None = None
@@ -166,6 +209,7 @@ class OrchestrationAgent:
         self, max_turns: int, permission_mode: str
     ) -> ClaudeAgentOptions:
         """Create ClaudeAgentOptions with MCP servers, hooks, and streaming."""
+        _require_claude_sdk()
         # Resolve UPS credentials via runtime adapter (DB priority, env fallback)
         from src.services.runtime_credentials import resolve_ups_credentials
 
@@ -245,6 +289,7 @@ class OrchestrationAgent:
 
         logger.info("[OrchestrationAgent] Starting...")
 
+        _require_claude_sdk()
         self._client = ClaudeSDKClient(self._options)
         await self._client.connect()
 
@@ -538,7 +583,7 @@ class OrchestrationAgent:
         """Assistant turn count from the most recent streamed request."""
         return self._last_turn_count
 
-    async def __aenter__(self) -> "OrchestrationAgent":
+    async def __aenter__(self) -> OrchestrationAgent:
         """Async context manager entry - start the agent."""
         await self.start()
         return self

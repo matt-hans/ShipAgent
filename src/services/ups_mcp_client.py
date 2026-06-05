@@ -121,6 +121,7 @@ class UPSMCPClient:
             "find_locations",
             "get_political_divisions",
             "get_service_center_facilities",
+            "shipagent_capabilities",
         }
     )
 
@@ -242,6 +243,17 @@ class UPSMCPClient:
         return self._mcp.retry_attempts_total
 
     # ── Public API ─────────────────────────────────────────────────────
+
+    async def list_tool_names(self) -> set[str]:
+        """Return tool names exposed by the UPS MCP server."""
+        return await self._mcp.list_tool_names()
+
+    async def get_shipagent_capabilities(self) -> dict[str, Any] | None:
+        """Return ShipAgent capabilities declared by the UPS MCP server."""
+        tool_names = await self.list_tool_names()
+        if "shipagent_capabilities" not in tool_names:
+            return None
+        return await self._call("shipagent_capabilities", {})
 
     async def get_rate(
         self,
