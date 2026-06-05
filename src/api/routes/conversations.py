@@ -623,8 +623,9 @@ async def _teardown_session(session_id: str) -> None:
     session = _session_manager.get_session(session_id)
     if session is not None:
         session.terminating = True
-    await _session_manager.cancel_session_prewarm_task(session_id)
+        session.invalidate_active_turn_generation()
     await _session_manager.cancel_session_message_tasks(session_id)
+    await _session_manager.cancel_session_prewarm_task(session_id)
     await _session_manager.stop_session_agent(session_id)
     _session_manager.remove_session(session_id)
     _event_queues.pop(session_id, None)
