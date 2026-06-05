@@ -49,6 +49,15 @@ def validate_rate_quote_result(
 ) -> UpsBoundaryValidationResult:
     """Validate a normalized hosted-v1 UPS rate quote result."""
     name = "rate_quote_result"
+    unsafe_result = _reject_unsafe_result(
+        result,
+        name,
+        "E-3004",
+        "Rate quote result contains unsafe fields.",
+    )
+    if unsafe_result is not None:
+        return unsafe_result
+
     if result.get("success") is True and _has_money_shape(result.get("totalCharges")):
         return _valid(name)
     return _invalid(name, "E-3004", "Rate quote result is not normalized.")
@@ -59,6 +68,15 @@ def validate_rate_shop_result(
 ) -> UpsBoundaryValidationResult:
     """Validate a normalized hosted-v1 UPS rate shop result."""
     name = "rate_shop_result"
+    unsafe_result = _reject_unsafe_result(
+        result,
+        name,
+        "E-3004",
+        "Rate shop result contains unsafe fields.",
+    )
+    if unsafe_result is not None:
+        return unsafe_result
+
     rated_shipments = result.get("ratedShipments")
     if result.get("success") is not True or not _non_empty_list(rated_shipments):
         return _invalid(name, "E-3004", "Rate shop result is not normalized.")
@@ -79,6 +97,15 @@ def validate_address_validation_result(
 ) -> UpsBoundaryValidationResult:
     """Validate a normalized hosted-v1 UPS address validation result."""
     name = "address_validation_result"
+    unsafe_result = _reject_unsafe_result(
+        result,
+        name,
+        "E-3007",
+        "Address validation result contains unsafe fields.",
+    )
+    if unsafe_result is not None:
+        return unsafe_result
+
     if result.get("status") not in _ADDRESS_STATUSES:
         return _invalid(name, "E-3007", "Address validation result is not normalized.")
 
@@ -94,6 +121,15 @@ def validate_create_shipment_result(
 ) -> UpsBoundaryValidationResult:
     """Validate a normalized hosted-v1 UPS create shipment result."""
     name = "create_shipment_result"
+    unsafe_result = _reject_unsafe_result(
+        result,
+        name,
+        "E-3006",
+        "Create shipment result contains unsafe fields.",
+    )
+    if unsafe_result is not None:
+        return unsafe_result
+
     if result.get("success") is not True:
         return _invalid(name, "E-3006", "Create shipment result is not normalized.")
     if not _non_empty_string(result.get("idempotencyKey")):
@@ -171,15 +207,44 @@ def _non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
+def _reject_unsafe_result(
+    result: Mapping[str, Any],
+    name: str,
+    error_code: str,
+    message: str,
+) -> UpsBoundaryValidationResult | None:
+    if _contains_unsafe_key(result):
+        return _invalid(name, error_code, message)
+    return None
+
+
 def _contains_unsafe_key(value: Any) -> bool:
     if isinstance(value, Mapping):
         return any(
-            key in _UNSAFE_KEYS or _contains_unsafe_key(child)
+            _is_unsafe_key(key) or _contains_unsafe_key(child)
             for key, child in value.items()
         )
     if isinstance(value, list):
         return any(_contains_unsafe_key(child) for child in value)
     return False
+
+
+def _is_unsafe_key(key: Any) -> bool:
+    if not isinstance(key, str):
+        return False
+    return _to_snake_key(key) in _UNSAFE_KEYS
+
+
+def _to_snake_key(key: str) -> str:
+    chars: list[str] = []
+    for char in key.replace("-", "_"):
+        if char.isupper():
+            if chars and chars[-1] != "_":
+                chars.append("_")
+            chars.append(char.lower())
+        else:
+            chars.append(char.lower())
+    return "".join(chars)
 
 
 def _valid(name: str) -> UpsBoundaryValidationResult:

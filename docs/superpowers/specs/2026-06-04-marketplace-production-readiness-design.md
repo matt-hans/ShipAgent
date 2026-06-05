@@ -128,6 +128,11 @@ FastAPI routes, conversation API, and SSE event contract stable for the Angular
 frontend, but the internals should stop depending on Claude SDK sessions, Claude
 SDK MCP wiring, or Claude-specific hooks.
 
+This is a compatibility refactor, not a desktop deprecation. The Angular/Tauri
+shell, local FastAPI sidecar, local credentials, local files, local SSE updates,
+and user-selected model provider path must keep working while their internals
+move onto the shared workflow spine.
+
 Local conversation becomes another adapter over the canonical workflow engine:
 
 - a model-provider adapter interprets the user's request and proposes a typed
@@ -236,6 +241,13 @@ OpenAI / Claude / MCP client
   -> internal adapters: UPS MCP, Shopify, file ingestion
 ```
 
+Hosted marketplace calls do not require a second internal ShipAgent LLM. The
+external client model can propose typed tool arguments, filters, mappings, and
+shipment preferences, but ShipAgent workflow services deterministically validate
+and apply those inputs. UPS rating, address validation, shipment creation, label
+persistence, audit, and status updates run through deterministic services and
+internal adapters, not through another model-planning loop.
+
 The actual UPS MCP server is a separate repository. This repository owns:
 
 - the hosted ShipAgent workflow contracts
@@ -247,6 +259,14 @@ The actual UPS MCP server is a separate repository. This repository owns:
 The UPS MCP repository owns UPS endpoint coverage, request/response details,
 UPS auth behavior, UPS idempotency pass-through, and UPS-specific normalization.
 Public marketplace tools in this repository never expose raw UPS MCP primitives.
+
+The private UPS MCP hop is a carrier integration boundary, not an additional
+model or public app surface. ShipAgent could technically call UPS APIs directly,
+but doing so would pull carrier-specific protocol details, auth behavior,
+normalization, retry/idempotency semantics, and raw response handling into the
+hosted workflow engine. Keeping UPS behind a private MCP contract lets ShipAgent
+fail readiness explicitly, reuse the UPS integration repository, and keep public
+marketplace tools carrier-agnostic.
 
 Provider-specific code should be packaging and protocol translation only.
 Shipping business logic belongs in provider-neutral ShipAgent workflow services.
@@ -516,6 +536,8 @@ only through the same HTTP model-provider contract used by OpenAI and Gemini.
 Row-level order data must not be placed in model prompts. The model may see
 counts, costs, warning categories, opaque IDs, service summaries, redacted
 destination summaries, confirmation state, widget hints, and hosted URLs.
+ShipAgent workers must not call a second internal model to process row-level
+shipping data or decide UPS execution steps.
 
 ## Hosted Public Contracts
 
@@ -531,6 +553,12 @@ Public hosted tool inputs must never accept:
 - full addresses or origin profile fields
 - raw shipment payloads
 - service choices at `create_shipments` time
+
+Hosted production must not expose public exploratory row/sample tools. Local/dev
+or internal/admin tooling may inspect rows for debugging, but public MCP tools
+must use deterministic filters over stored rows and return only transcript-safe
+aggregates, opaque IDs, warning categories, redacted summaries, widget hints, and
+next actions.
 
 Public inputs use opaque IDs:
 
@@ -568,6 +596,8 @@ Public hosted results must include only transcript-safe information:
 Public hosted results must not include:
 
 - full `order_data`
+- row samples
+- sample rows
 - raw labels
 - base64/PDF bytes
 - `label_path`
@@ -578,6 +608,11 @@ Public hosted results must not include:
 - raw UPS request/response bodies
 - raw audit details
 - exception strings, stack traces, or local paths
+
+This includes apparently small samples: a single row can contain names,
+addresses, phone numbers, order IDs, customs data, or business-sensitive values.
+Hosted public outputs should prove the filter/config result through counts,
+redacted summaries, and server-side persisted preview state instead.
 
 ### Hosted Error Envelope
 
@@ -793,6 +828,12 @@ lanes. Each enabled lane needs a `HostedLanePolicy` or equivalent config:
 `INTERNATIONAL_ENABLED_LANES=*` remains local/private-beta only and fails hosted
 production readiness.
 
+The UPS MCP `international_charges` capability is necessary but not sufficient
+to enable hosted international shipping. It proves normalized charge shape
+support only. Hosted production must fail closed for any origin/destination lane
+that is not explicitly allowlisted with a reviewed lane policy and passing
+fixture coverage.
+
 Public outputs may summarize international state, for example "3 international
 rows, 1 missing commodity code, estimated duties/taxes $X". They must not expose
 commodity descriptions, HS codes, full commercial invoice details, full
@@ -895,6 +936,11 @@ hosted_idempotency_key = hosted_job_id + preview_row_id + row_checksum
 ```
 
 This state is committed before calling UPS.
+Hosted worker/execution code owns exact idempotency key construction and
+verification. It must verify the key matches the committed
+`hosted_job_id:preview_row_id:row_checksum` context before crossing the UPS
+boundary. The UPS boundary contract only requires the normalized response to
+echo a non-empty `idempotencyKey`.
 
 For each eligible preview row, persist a canonical `rate_payload_hash` and
 redacted payload summary derived from:
@@ -948,6 +994,13 @@ or SSE dependencies.
 ### Labels
 
 Hosted labels are backed by tenant-scoped artifact metadata and object storage.
+Private carrier boundary responses may include label bytes only for hosted
+workers to persist into object storage. Those bytes must be stripped before any
+model-visible `structuredContent`, widget payload, job status, audit summary, or
+label link response.
+The UPS boundary validates label response shape only. Hosted workers/artifact
+services own base64 decoding, size limits, content-type sniffing, malware
+scanning, tenant-scoped object storage, and signed-link publication.
 
 `get_label_links(job_id)` verifies tenant/job ownership and returns only:
 
@@ -1028,23 +1081,86 @@ Required UPS MCP capabilities for hosted v1:
 - rate quote with `requestoption="Rate"`
 - rate shopping with `requestoption="Shop"`
 - address validation with normalized valid/ambiguous/invalid/candidate output
-- create shipment with idempotency metadata pass-through
+  when called in ShipAgent hosted response mode
+- create shipment with a required deterministic idempotency key in ShipAgent
+  hosted response mode
+- idempotency metadata pass-through, distinct from any optional claim of true
+  carrier-level idempotent create semantics
 - normalized shipment response with shipment ID, tracking numbers, charges,
-  label data metadata, and safe warnings
+  label data metadata, and safe warnings when called in ShipAgent hosted
+  response mode
 - normalized charge breakdown for international/duties/taxes where applicable
+  when called in ShipAgent hosted response mode
+- international lane enablement only through explicit ShipAgent reviewed lane
+  policy and passing fixtures; `international_charges` alone does not enable a
+  lane
 - stable error-code mapping for auth, rate limit, validation, service
   unavailability, address failure, customs failure, and ambiguous transport
 - no unsafe retries for mutating shipment creation
-- capability/version endpoint or equivalent self-description
+- capability/version endpoint or equivalent self-description with
+  `contract_version="hosted-v1"`
+- explicit response format declaration including `shipagent_v1`
+- shape-level validation of hosted-safe UPS error envelopes in
+  `response_format="shipagent_v1"`
+
+The external UPS MCP server may preserve raw UPS API payloads as its default
+tool response format for existing local/dev users. ShipAgent hosted calls should
+request an explicit hosted-normalized response mode, such as
+`response_format="shipagent_v1"`, and the ShipAgent boundary validators should
+evaluate that normalized mode.
+
+Hosted-normalized success validators should require minimum normalized fields
+while allowing extra normalized metadata. Public ShipAgent result DTOs are still
+responsible for stripping hosted-unsafe fields before transcript or widget
+output. Hosted-safe UPS error envelopes are different: they are closed shapes
+because error leakage is safety-sensitive.
+
+For `create_shipment` in hosted-normalized mode, ShipAgent passes a deterministic
+`idempotency_key` such as `hosted_job_id:preview_row_id:row_checksum`. The UPS
+MCP server must preserve that key in available transaction/correlation metadata
+and return it in the normalized response. The capability declaration should use
+`idempotency_metadata_passthrough` for this behavior. It should declare
+`carrier_idempotent_create` only if true UPS-side idempotent create semantics
+are proven.
+
+The ShipAgent UPS boundary validator checks only that `idempotencyKey` is a
+non-empty string. It does not validate the exact key format because the boundary
+phase does not own hosted job IDs, preview row IDs, row checksums, or row state.
+The later hosted worker/execution phase validates exact format and row-state
+match.
+
+For hosted-normalized domain failures, the UPS boundary should validate only the
+safe envelope shape. Safe errors include code, category, message, retryability,
+and correlation ID, and the error envelope must contain only those safe keys.
+They must not include raw details, request payloads, stack traces, local paths,
+credentials, or raw UPS response bodies.
 
 This repository should add:
 
 - `UpsAdapterCapabilities` or equivalent DTO
 - startup/readiness check against the UPS MCP server
 - tests that fail hosted readiness if required capabilities are missing
-- adapter-level fixtures for Rate, Shop, address validation, create shipment,
-  international lanes, and error mapping
+- hosted-v1 boundary fixtures for Rate, Shop, address validation, create
+  shipment, and error mapping
 - documentation of UPS MCP repo changes required for hosted v1
+
+The ShipAgent-side boundary should be transport-neutral. The UPS boundary phase
+defines the client protocol, readiness-only adapter, validators, and fixture
+contract, and may use stdio-backed clients for local development and tests. It
+does not add hosted operation methods for Rate, Shop, address validation, or
+shipment creation. Hosted production must use a private remote UPS MCP client,
+but that transport implementation, service-to-service auth, endpoint
+configuration, network observability, per-tenant credential handoff, operation
+call wiring, artifact persistence, and production startup integration belong to
+later hosted runtime/auth/storage phases. Hosted production readiness remains
+fail-closed until the private remote client exists and satisfies the boundary
+checks.
+
+The UPS boundary phase does not add hosted international lane fixtures. Those
+fixtures are deferred until hosted lane policy and provider review gates exist:
+Phase 6 defines the lane policy and per-lane fixture requirement, Phase 9 adds
+end-to-end readiness/review automation, and Phase 10 tracks the UPS MCP
+repository's international charge/customs fixture work.
 
 Do not block this repository's planning on implementing the UPS MCP repo changes,
 but do not mark hosted production ready until the external UPS MCP contract is
@@ -1079,6 +1195,8 @@ Production readiness requires automated gates.
 - provider-safe errors are returned
 - production startup fails closed on missing DB/object storage/queue/KMS/OAuth
   issuer/provider artifact registration/UPS MCP capabilities
+- diagnostic `degraded` readiness never satisfies hosted production startup;
+  production requires `status == "ready"`
 
 ### Model Provider Agnosticism Gates
 
@@ -1151,6 +1269,9 @@ Production readiness requires automated gates.
 - generic MCP inspector/test-client flow passes
 - published docs include setup, auth, privacy, support, and at least three
   realistic examples
+- provider review automation owns fixture freshness, review-age, and provenance
+  checks; stale review evidence may produce diagnostic `degraded` readiness,
+  which still fails hosted production startup
 
 ### UPS MCP Contract Gates
 
@@ -1159,8 +1280,11 @@ Production readiness requires automated gates.
 - address validation fixtures pass
 - create-shipment fixture passes with idempotency metadata
 - international lane fixture passes for every hosted-enabled lane
+- no international lane is hosted-enabled by capability declaration alone
 - error mapping fixtures produce provider-safe ShipAgent errors
 - mutating tool retry policy is compatible with hosted idempotency rules
+- `degraded` UPS boundary readiness is diagnostic only and does not pass
+  production startup
 
 ## Out Of Scope For This First Release
 
@@ -1173,6 +1297,7 @@ Production readiness requires automated gates.
 - customer self-host installer
 - migration of the full desktop Angular shell to hosted mode
 - public row retry/resolve tools
+- public exploratory row/sample tools
 - public tracking-number lookup surface
 - public origin-profile creation with full address fields
 - MCP tool arguments carrying file bytes, local paths, credentials, row arrays,
@@ -1230,10 +1355,20 @@ claim.
 - Implement the ShipAgent-side hosted UPS boundary plan in
   `docs/superpowers/plans/2026-06-04-shipagent-ups-mcp-boundary.md`.
 - Add capability DTOs, response validators, readiness checks, fixtures, and
-  external UPS MCP contract documentation.
+  the standalone external UPS MCP contract document at
+  `docs/integrations/ups-mcp-hosted-contract.md`.
+- Define a transport-neutral UPS boundary client protocol; do not implement the
+  hosted private remote MCP transport in this phase.
+- Keep `HostedUpsBoundaryAdapter` readiness-only in this phase; hosted operation
+  methods and `response_format="shipagent_v1"` call wiring belong to later
+  hosted worker phases.
 - Keep raw UPS MCP primitives private and unreachable from public provider
   adapters.
+- Do not edit registry exports, public hosted tool projections, or generated
+  provider artifacts in this phase; those belong to Phase 1.
 - Fail hosted readiness when required UPS MCP capabilities are missing.
+- Treat `degraded` UPS boundary readiness as non-production-ready; only
+  `status == "ready"` may satisfy later hosted startup gates.
 
 ### Phase 4: Hosted Auth, Setup, Accounts, And Profiles
 
@@ -1260,6 +1395,8 @@ claim.
 - Add preview/version state machine.
 - Add address validation records and resolution flow.
 - Add hosted lane policy for international v1 lanes.
+- Require reviewed fixtures before any international lane becomes
+  hosted-enabled.
 - Add default preview rating.
 - Add read-only `compare_rates`.
 - Add explicit `select_rate`.
@@ -1291,6 +1428,8 @@ claim.
 - Generate generic MCP descriptor and inspector fixtures.
 - Add end-to-end readiness suites across registry, workflow, tenant isolation,
   widgets, provider artifacts, and UPS MCP capability compatibility.
+- Add fixture freshness/review-age/provenance checks that can emit diagnostic
+  `degraded` readiness without passing hosted production startup.
 
 ### Phase 10: UPS MCP Repo Follow-Up
 
@@ -1303,6 +1442,7 @@ work in the UPS MCP repository:
 - idempotency metadata pass-through
 - create shipment response normalization
 - international charge/customs fixtures
+- explicit reviewed-lane allowlist compatibility
 - safe error mapping
 - mutating retry policy verification
 

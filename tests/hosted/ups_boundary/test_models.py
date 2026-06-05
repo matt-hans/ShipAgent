@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from src.hosted.ups_boundary.models import (
+    UpsBoundaryCapability,
     UpsBoundaryCapabilityReport,
     UpsBoundaryCheck,
     UpsBoundarySeverity,
@@ -10,12 +11,30 @@ from src.hosted.ups_boundary.models import (
 )
 
 
-def test_capability_report_ready_when_no_missing_requirements_or_error_checks():
-    """Reports are ready when all requirements are present and checks are non-error."""
+def test_capability_report_default_fails_closed():
+    """Empty reports are not ready without positive contract evidence."""
     report = UpsBoundaryCapabilityReport()
 
-    assert report.ready is True
+    assert report.ready is False
     assert isinstance(report.checked_at, datetime)
+
+
+def test_capability_report_ready_with_positive_contract_evidence():
+    """Reports are ready when required evidence exists and checks are non-error."""
+    report = UpsBoundaryCapabilityReport(
+        available_tools={"rate_shipment"},
+        declared_capabilities={UpsBoundaryCapability.RATE_QUOTE},
+        response_formats={"shipagent_v1"},
+        checks=[
+            UpsBoundaryCheck(
+                name="boundary_contract",
+                severity=UpsBoundarySeverity.OK,
+                message="Hosted UPS boundary contract is ready.",
+            ),
+        ],
+    )
+
+    assert report.ready is True
 
 
 def test_capability_report_not_ready_with_missing_tools():

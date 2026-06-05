@@ -1,6 +1,7 @@
 """Tests for hosted UPS MCP boundary readiness classification."""
 
 from src.hosted.ups_boundary.models import (
+    UpsBoundaryCapability,
     UpsBoundaryCapabilityReport,
     UpsBoundaryCheck,
     UpsBoundarySeverity,
@@ -16,9 +17,20 @@ class FakeInspectableAdapter:
         return self.report
 
 
+def _report_with_positive_evidence(
+    checks: list[UpsBoundaryCheck],
+) -> UpsBoundaryCapabilityReport:
+    return UpsBoundaryCapabilityReport(
+        available_tools={"rate_shipment"},
+        declared_capabilities={UpsBoundaryCapability.RATE_QUOTE},
+        response_formats={"shipagent_v1"},
+        checks=checks,
+    )
+
+
 async def test_check_ups_mcp_boundary_readiness_returns_ready_for_ready_report():
     adapter = FakeInspectableAdapter(
-        UpsBoundaryCapabilityReport(
+        _report_with_positive_evidence(
             checks=[
                 UpsBoundaryCheck(
                     name="boundary_contract",
@@ -58,8 +70,13 @@ async def test_check_ups_mcp_boundary_readiness_returns_not_ready_when_missing_r
 
 async def test_check_ups_mcp_boundary_readiness_returns_degraded_for_warn_only_checks():
     adapter = FakeInspectableAdapter(
-        UpsBoundaryCapabilityReport(
+        _report_with_positive_evidence(
             checks=[
+                UpsBoundaryCheck(
+                    name="boundary_contract",
+                    severity=UpsBoundarySeverity.OK,
+                    message="Hosted UPS boundary contract is ready.",
+                ),
                 UpsBoundaryCheck(
                     name="fixture_age",
                     severity=UpsBoundarySeverity.WARN,

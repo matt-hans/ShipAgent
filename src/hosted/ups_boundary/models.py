@@ -75,8 +75,19 @@ class UpsBoundaryCapabilityReport(BaseModel):
             or self.missing_response_formats
         ):
             return False
-        return not any(
-            check.severity == UpsBoundarySeverity.ERROR for check in self.checks
+        if any(check.severity == UpsBoundarySeverity.ERROR for check in self.checks):
+            return False
+
+        has_contract_success = any(
+            check.name == "boundary_contract"
+            and check.severity == UpsBoundarySeverity.OK
+            for check in self.checks
+        )
+        return (
+            bool(self.available_tools)
+            and bool(self.declared_capabilities)
+            and bool(self.response_formats)
+            and has_contract_success
         )
 
 
