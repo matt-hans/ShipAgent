@@ -48,6 +48,18 @@ def test_fake_runtime_creates_conversation_runtime_session(
     assert agent.emitter_bridge.session_id == "fake-session"
 
 
+def test_provider_neutral_runtime_does_not_expose_raw_ups_mcp_tool(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "fake")
+
+    from src.services.conversation_runtime.tool_catalog import WorkflowToolCatalog
+
+    for interactive in (False, True):
+        catalog = WorkflowToolCatalog.for_mode(interactive_shipping=interactive)
+        assert all(not tool.name.startswith("mcp__ups__") for tool in catalog.tools)
+
+
 @pytest.mark.parametrize("runtime", ["openai", "gemini"])
 def test_explicit_unwired_runtime_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
