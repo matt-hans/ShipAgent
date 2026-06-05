@@ -9,23 +9,30 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.services.conversation_handler import (
+    _contacts_rebuild_signature,
     compute_source_hash,
     ensure_agent,
     process_message,
 )
 
 # Precompute the expected hash for empty contacts list (matches JSON serialization)
-_EMPTY_CONTACTS_HASH = hashlib.sha256(json.dumps([], sort_keys=True, default=str).encode()).hexdigest()[:8]
+_EMPTY_CONTACTS_HASH = hashlib.sha256(
+    json.dumps([], sort_keys=True, default=str).encode()
+).hexdigest()[:8]
 _NONE_HASH = f"none|interactive=False|contacts={_EMPTY_CONTACTS_HASH}"
 
 
-def _make_test_session_hash(source_hash: str = "none", interactive: bool = False) -> str:
+def _make_test_session_hash(
+    source_hash: str = "none", interactive: bool = False
+) -> str:
     """Compute the combined hash that ensure_agent() will produce.
 
     Mirrors the 3-component hash in conversation_handler.ensure_agent():
         f"{source_hash}|interactive={interactive}|contacts={contacts_hash}"
     """
-    contacts_hash = hashlib.sha256(json.dumps([], sort_keys=True, default=str).encode()).hexdigest()[:8]
+    contacts_hash = hashlib.sha256(
+        json.dumps([], sort_keys=True, default=str).encode()
+    ).hexdigest()[:8]
     return f"{source_hash}|interactive={interactive}|contacts={contacts_hash}"
 
 
@@ -92,6 +99,41 @@ class TestEnsureAgent:
         assert result is False  # No new agent created
 
     @pytest.mark.asyncio
+    async def test_reuses_agent_when_only_contact_mru_order_changes(self):
+        """MRU-only contact reordering does not invalidate the agent."""
+        contacts = [
+            {
+                "handle": "warehouse",
+                "city": "Austin",
+                "state_province": "TX",
+                "use_as_ship_to": False,
+                "use_as_shipper": True,
+            },
+            {
+                "handle": "customer",
+                "city": "Boston",
+                "state_province": "MA",
+                "use_as_ship_to": True,
+                "use_as_shipper": False,
+            },
+        ]
+        contacts_hash = hashlib.sha256(
+            json.dumps(
+                _contacts_rebuild_signature(contacts),
+                sort_keys=True,
+                default=str,
+            ).encode()
+        ).hexdigest()[:8]
+        session = MagicMock()
+        session.agent = AsyncMock()
+        session.agent_source_hash = f"none|interactive=False|contacts={contacts_hash}"
+
+        with patch(_CONTACTS_PATCH, return_value=list(reversed(contacts))):
+            result = await ensure_agent(session, source_info=None)
+
+        assert result is False
+
+    @pytest.mark.asyncio
     async def test_rebuilds_agent_when_hash_changes(self):
         """Stops old agent and creates new one when source changes."""
         old_agent = AsyncMock()
@@ -117,7 +159,6 @@ class TestEnsureAgent:
         old_agent.stop.assert_called_once()
         new_agent.start.assert_called_once()
         assert session.agent is new_agent
-
 
     @pytest.mark.asyncio
     async def test_fetches_column_samples_in_batch_mode(self):
@@ -148,7 +189,9 @@ class TestEnsureAgent:
                 return_value=mock_gw,
             ),
         ):
-            result = await ensure_agent(session, source_info=mock_source, interactive_shipping=False)
+            result = await ensure_agent(
+                session, source_info=mock_source, interactive_shipping=False
+            )
 
         assert result is True
         mock_gw.get_column_samples.assert_called_once_with(max_samples=5)
@@ -178,7 +221,9 @@ class TestEnsureAgent:
                 return_value="test prompt",
             ) as mock_build,
         ):
-            result = await ensure_agent(session, source_info=mock_source, interactive_shipping=True)
+            result = await ensure_agent(
+                session, source_info=mock_source, interactive_shipping=True
+            )
 
         assert result is True
         # Verify column_samples is None in interactive mode
@@ -554,9 +599,7 @@ class TestProcessMessage:
                 )
             ]
 
-        assert events == [
-            {"event": "agent_message", "data": {"text": "final answer"}}
-        ]
+        assert events == [{"event": "agent_message", "data": {"text": "final answer"}}]
         session.add_message.assert_called_once_with("assistant", "final answer")
         persist_assistant.assert_called_once_with("svc-final-buffer", "final answer")
 
@@ -683,9 +726,7 @@ class TestProcessMessage:
             patch(_CONTACTS_PATCH, return_value=[]),
         ):
             mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
-            async for _ in process_message(
-                session, "Test", emit_callback=callback
-            ):
+            async for _ in process_message(session, "Test", emit_callback=callback):
                 pass
 
         # Callback was set during processing

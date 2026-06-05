@@ -178,6 +178,9 @@ async def test_runtime_dispatches_tool_and_feeds_result_back_to_provider() -> No
     events = [event async for event in runtime.process_message_stream("Show schema")]
 
     assert [event["event"] for event in events] == ["tool_call", "agent_message"]
+    assert provider.requests[1]["messages"][-2].role == "assistant"
+    assert provider.requests[1]["messages"][-2].content[-1].type == "tool_call"
+    assert provider.requests[1]["messages"][-2].content[-1].tool_call == call
     assert provider.requests[1]["messages"][-1].role == "tool"
     assert provider.requests[1]["messages"][-1].tool_call_id == "tool-1"
 
@@ -376,7 +379,8 @@ async def test_runtime_dedupes_duplicate_stable_tool_call_ids(
 
     assert [event["event"] for event in events] == ["tool_call", "agent_message"]
     assert len(tool.calls) == 1
-    assert len(provider.requests[1]["messages"]) == 2
+    assert len(provider.requests[1]["messages"]) == 3
+    assert provider.requests[1]["messages"][-2].role == "assistant"
     assert provider.requests[1]["messages"][-1].tool_call_id == "duplicate-call"
 
 

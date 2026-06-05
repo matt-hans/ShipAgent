@@ -82,6 +82,20 @@ def _get_mru_contacts_for_prompt() -> list[dict]:
         return []
 
 
+def _contacts_rebuild_signature(contacts: list[dict]) -> list[dict]:
+    """Return contact content sorted independently from MRU prompt order."""
+    return sorted(
+        contacts,
+        key=lambda contact: (
+            str(contact.get("handle") or ""),
+            str(contact.get("city") or ""),
+            str(contact.get("state_province") or ""),
+            bool(contact.get("use_as_ship_to")),
+            bool(contact.get("use_as_shipper")),
+        ),
+    )
+
+
 def _load_prior_conversation(session_id: str) -> list[dict] | None:
     """Load prior conversation messages from DB for system prompt injection.
 
@@ -377,7 +391,11 @@ async def ensure_agent(
     # Fetch MRU contacts for prompt injection (C1 fix)
     contacts = _get_mru_contacts_for_prompt()
     contacts_hash = hashlib.sha256(
-        json.dumps(contacts, sort_keys=True, default=str).encode()
+        json.dumps(
+            _contacts_rebuild_signature(contacts),
+            sort_keys=True,
+            default=str,
+        ).encode()
     ).hexdigest()[:8]
 
     combined_hash = (

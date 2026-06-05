@@ -20,9 +20,30 @@ class ProviderStreamEventType(StrEnum):
 
 
 @dataclass(frozen=True)
+class ProviderToolResult:
+    call_id: str | None
+    tool_name: str
+    content: str
+    structured_payload: dict[str, Any] = field(default_factory=dict)
+    is_error: bool = False
+    sanitized_error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ProviderToolCall:
+    call_id: str | None
+    tool_name: str
+    parsed_input: dict[str, Any]
+    raw_arguments: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ProviderContentPart:
-    type: Literal["text"] = "text"
+    type: Literal["text", "tool_call"] = "text"
     text: str = ""
+    tool_call: ProviderToolCall | None = None
 
 
 @dataclass(frozen=True)
@@ -74,26 +95,6 @@ class ModelProviderClient(Protocol):
     ) -> AsyncIterator[ProviderStreamEvent]: ...
 
     async def cancel(self) -> None: ...
-
-
-@dataclass(frozen=True)
-class ProviderToolResult:
-    call_id: str | None
-    tool_name: str
-    content: str
-    structured_payload: dict[str, Any] = field(default_factory=dict)
-    is_error: bool = False
-    sanitized_error: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ProviderToolCall:
-    call_id: str | None
-    tool_name: str
-    parsed_input: dict[str, Any]
-    raw_arguments: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
