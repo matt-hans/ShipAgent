@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -189,8 +190,255 @@ class TestProcessMessage:
     """Tests for the process_message() streaming function."""
 
     @pytest.mark.asyncio
-    async def test_yields_agent_events(self):
+    async def test_suppresses_transient_assistant_messages_when_artifact_is_emitted(
+        self,
+        monkeypatch,
+    ):
+        """Artifact turns hide transient assistant text and persist the artifact."""
+        monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "true")
+
+        class FakeAgent:
+            def __init__(self):
+                self.emitter_bridge = SimpleNamespace(callback=None)
+
+            async def process_message_stream(self, _content):
+                if self.emitter_bridge.callback:
+                    self.emitter_bridge.callback(
+                        "preview_ready",
+                        {"job_id": "job-1", "total_rows": 1, "preview_rows": []},
+                    )
+                yield {"event": "agent_message", "data": {"text": "draft"}}
+                yield {"event": "agent_message", "data": {"text": "final"}}
+
+        session = MagicMock()
+        session.agent = FakeAgent()
+        session.session_id = "svc-suppress"
+        session.agent_source_hash = _make_test_session_hash()
+        session.lock = asyncio.Lock()
+
+        emitted_events = []
+
+        def _emit(event_type, data):
+            emitted_events.append({"event": event_type, "data": data})
+
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(_CONTACTS_PATCH, return_value=[]),
+            patch(
+                "src.services.conversation_handler._persist_artifact_message",
+                create=True,
+            ) as persist_artifact,
+            patch(
+                "src.services.conversation_handler._persist_assistant_message",
+                create=True,
+            ) as persist_assistant,
+        ):
+            mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
+            yielded_events = [
+                event
+                async for event in process_message(
+                    session,
+                    "Ship all orders",
+                    emit_callback=_emit,
+                )
+            ]
+
+        assert yielded_events == []
+        assert emitted_events == [
+            {
+                "event": "preview_ready",
+                "data": {"job_id": "job-1", "total_rows": 1, "preview_rows": []},
+            }
+        ]
+        persist_artifact.assert_called_once_with(
+            "svc-suppress",
+            "preview_ready",
+            {"job_id": "job-1", "total_rows": 1, "preview_rows": []},
+        )
+        persist_assistant.assert_not_called()
+        session.add_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_suppresses_transient_agent_message_deltas_when_artifact_is_emitted(
+        self,
+        monkeypatch,
+    ):
+        """Artifact turns hide transient assistant deltas as well as final text."""
+        monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "true")
+
+        class FakeAgent:
+            def __init__(self):
+                self.emitter_bridge = SimpleNamespace(callback=None)
+
+            async def process_message_stream(self, _content):
+                if self.emitter_bridge.callback:
+                    self.emitter_bridge.callback(
+                        "preview_ready",
+                        {"job_id": "job-1", "total_rows": 1, "preview_rows": []},
+                    )
+                yield {
+                    "event": "agent_message_delta",
+                    "data": {"text": "draft token"},
+                }
+                yield {"event": "agent_message", "data": {"text": "final"}}
+
+        session = MagicMock()
+        session.agent = FakeAgent()
+        session.session_id = "svc-suppress-delta"
+        session.agent_source_hash = _make_test_session_hash()
+        session.lock = asyncio.Lock()
+
+        emitted_events = []
+
+        def _emit(event_type, data):
+            emitted_events.append({"event": event_type, "data": data})
+
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(_CONTACTS_PATCH, return_value=[]),
+            patch(
+                "src.services.conversation_handler._persist_artifact_message",
+                create=True,
+            ),
+            patch(
+                "src.services.conversation_handler._persist_assistant_message",
+                create=True,
+            ) as persist_assistant,
+        ):
+            mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
+            yielded_events = [
+                event
+                async for event in process_message(
+                    session,
+                    "Ship all orders",
+                    emit_callback=_emit,
+                )
+            ]
+
+        assert yielded_events == []
+        assert emitted_events == [
+            {
+                "event": "preview_ready",
+                "data": {"job_id": "job-1", "total_rows": 1, "preview_rows": []},
+            }
+        ]
+        persist_assistant.assert_not_called()
+        session.add_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_yields_bridge_artifact_events_without_external_emit_callback(self):
+        """Non-SSE callers still receive artifacts emitted through the bridge."""
+
+        class FakeAgent:
+            def __init__(self):
+                self.emitter_bridge = SimpleNamespace(callback=None)
+
+            async def process_message_stream(self, _content):
+                if self.emitter_bridge.callback:
+                    self.emitter_bridge.callback(
+                        "preview_ready",
+                        {"job_id": "job-1", "total_rows": 1, "preview_rows": []},
+                    )
+                if False:
+                    yield {}
+
+        session = MagicMock()
+        session.agent = FakeAgent()
+        session.session_id = "svc-bridge-artifact"
+        session.agent_source_hash = _make_test_session_hash()
+        session.lock = asyncio.Lock()
+
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(_CONTACTS_PATCH, return_value=[]),
+            patch(
+                "src.services.conversation_handler._persist_artifact_message",
+                create=True,
+            ) as persist_artifact,
+        ):
+            mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
+            events = [
+                event
+                async for event in process_message(
+                    session,
+                    "Ship all orders",
+                    emit_callback=None,
+                )
+            ]
+
+        assert events == [
+            {
+                "event": "preview_ready",
+                "data": {"job_id": "job-1", "total_rows": 1, "preview_rows": []},
+            }
+        ]
+        persist_artifact.assert_called_once_with(
+            "svc-bridge-artifact",
+            "preview_ready",
+            {"job_id": "job-1", "total_rows": 1, "preview_rows": []},
+        )
+
+    @pytest.mark.asyncio
+    async def test_keeps_final_buffered_assistant_message_when_no_artifact(
+        self,
+        monkeypatch,
+    ):
+        """Non-artifact turns emit and persist only the final buffered text."""
+        monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "true")
+
+        class FakeAgent:
+            def __init__(self):
+                self.emitter_bridge = SimpleNamespace(callback=None)
+
+            async def process_message_stream(self, _content):
+                yield {"event": "agent_message", "data": {"text": "draft"}}
+                yield {"event": "agent_message", "data": {"text": "final answer"}}
+
+        session = MagicMock()
+        session.agent = FakeAgent()
+        session.session_id = "svc-final-buffer"
+        session.agent_source_hash = _make_test_session_hash()
+        session.lock = asyncio.Lock()
+
+        with (
+            patch(
+                "src.services.conversation_handler.get_data_gateway",
+                new_callable=AsyncMock,
+            ) as mock_gw,
+            patch(_CONTACTS_PATCH, return_value=[]),
+            patch(
+                "src.services.conversation_handler._persist_assistant_message",
+            ) as persist_assistant,
+        ):
+            mock_gw.return_value.get_source_info_typed = AsyncMock(return_value=None)
+            events = [
+                event
+                async for event in process_message(
+                    session,
+                    "Ship all orders",
+                )
+            ]
+
+        assert events == [
+            {"event": "agent_message", "data": {"text": "final answer"}}
+        ]
+        session.add_message.assert_called_once_with("assistant", "final answer")
+        persist_assistant.assert_called_once_with("svc-final-buffer", "final answer")
+
+    @pytest.mark.asyncio
+    async def test_yields_agent_events(self, monkeypatch):
         """Yields events from the agent stream."""
+        monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "false")
+
         session = MagicMock()
         session.agent = MagicMock()
         session.session_id = "sess-test-001"
