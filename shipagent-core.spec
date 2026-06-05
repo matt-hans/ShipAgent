@@ -34,9 +34,6 @@ a = Analysis(
         'mcp',
         # DuckDB
         'duckdb',
-        # Agent SDK
-        'claude_agent_sdk',
-        'anthropic',
         # NL Engine
         'sqlglot',
         'jinja2',

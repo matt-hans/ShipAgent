@@ -6,14 +6,15 @@ when available.
 """
 
 import asyncio
+import collections as _collections
 import hmac as _hmac
 import json as _json
 import logging
 import os
 import sys
+import threading as _threading
 import time as _time
 import uuid
-import warnings
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from importlib.metadata import version as _pkg_version
@@ -80,39 +81,6 @@ def _parse_allowed_origins() -> list[str]:
     if not raw:
         return []
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
-
-
-def _ensure_agent_sdk_available() -> None:
-    """Fail fast when backend is not running with the project virtualenv.
-
-    SHIPAGENT_SKIP_SDK_CHECK is a DEV-ONLY escape hatch for running tests
-    or frontend work without the full agent SDK. It must NEVER be set in
-    production builds (L-5). The CI release workflow blocks placeholder
-    values, and this flag is logged as a warning.
-    """
-    if os.environ.get("SHIPAGENT_SKIP_SDK_CHECK", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        logger.warning(
-            "SECURITY: SHIPAGENT_SKIP_SDK_CHECK is set — skipping SDK validation. "
-            "This is a DEV-ONLY flag and must NOT be used in production (L-5)."
-        )
-        return
-    try:
-        import claude_agent_sdk  # noqa: F401
-    except ModuleNotFoundError as exc:
-        if exc.name != "claude_agent_sdk":
-            raise
-        raise RuntimeError(
-            "Missing required dependency 'claude_agent_sdk'. "
-            "Start the backend with ./scripts/start-backend.sh "
-            "or install deps with .venv/bin/python -m pip install -e '.[dev]'."
-        ) from exc
-    sdk_version = getattr(claude_agent_sdk, "__version__", "unknown")
-    logger.info("Claude Agent SDK version: %s", sdk_version)
 
 
 async def _process_watched_file(file_path: str, config) -> None:
@@ -467,11 +435,7 @@ async def lifespan(app: FastAPI):
 
     # --- Startup ---
     _startup_time = _time.time()
-    _ensure_agent_sdk_available()
     validate_api_key_strength()  # Fail fast on weak API keys (F-6)
-    warnings.filterwarnings(
-        "default", category=DeprecationWarning, module="claude_agent_sdk"
-    )
 
     # Create data/log/label directories (no-op in dev, creates platformdirs in bundled)
     from src.utils.paths import ensure_dirs_exist
@@ -717,10 +681,6 @@ if allowed_origins:
 # Lightweight application-level rate limiting (CWE-770, Finding 6).
 # Protects session-creation and data-import endpoints from resource
 # exhaustion in the Tauri desktop context where no reverse proxy exists.
-# ---------------------------------------------------------------------------
-import collections as _collections
-import threading as _threading
-
 # Per-IP sliding window with bounded capacity (CWE-770).
 # Max 10,000 tracked IPs to prevent memory exhaustion from IP rotation attacks.
 _RATE_LIMIT_MAX_IPS = 10_000

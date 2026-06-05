@@ -12,6 +12,7 @@ from typing import Any
 
 from src.db.models import AgentDecisionRunStatus
 from src.services.agent_session_manager import AgentSession
+from src.services.conversation_agent import create_conversation_agent
 from src.services.decision_audit_context import (
     get_decision_job_id,
     get_decision_run_id,
@@ -130,7 +131,6 @@ async def ensure_agent(
     Returns:
         True if a new agent was created, False if reused existing.
     """
-    from src.orchestrator.agent.client import OrchestrationAgent
     from src.orchestrator.agent.system_prompt import build_system_prompt
 
     source_hash = compute_source_hash(source_info)
@@ -172,7 +172,7 @@ async def ensure_agent(
         prior_conversation=prior_conversation,
     )
 
-    agent = OrchestrationAgent(
+    agent = create_conversation_agent(
         system_prompt=system_prompt,
         interactive_shipping=interactive_shipping,
         session_id=session.session_id,
