@@ -49,6 +49,7 @@ class TestKeyManagement:
     def test_permissive_key_file_warns(self, temp_key_dir, caplog):
         """Key file with overly permissive permissions logs a warning."""
         import logging
+
         from src.services.credential_encryption import get_or_create_key
 
         key_path = os.path.join(temp_key_dir, ".shipagent_key")
@@ -287,7 +288,9 @@ class TestEncryptDecrypt:
     def test_round_trip(self, temp_key_dir):
         """Encrypt then decrypt returns original data."""
         from src.services.credential_encryption import (
-            decrypt_credentials, encrypt_credentials, get_or_create_key,
+            decrypt_credentials,
+            encrypt_credentials,
+            get_or_create_key,
         )
 
         key = get_or_create_key(key_dir=temp_key_dir)
@@ -299,7 +302,10 @@ class TestEncryptDecrypt:
 
     def test_envelope_format(self, temp_key_dir):
         """Ciphertext is a valid JSON envelope with version and algorithm."""
-        from src.services.credential_encryption import encrypt_credentials, get_or_create_key
+        from src.services.credential_encryption import (
+            encrypt_credentials,
+            get_or_create_key,
+        )
 
         key = get_or_create_key(key_dir=temp_key_dir)
         ciphertext = encrypt_credentials({"k": "v"}, key, aad="test:aad")
@@ -311,7 +317,10 @@ class TestEncryptDecrypt:
 
     def test_different_nonce_each_call(self, temp_key_dir):
         """Each encryption produces different ciphertext (unique nonce)."""
-        from src.services.credential_encryption import encrypt_credentials, get_or_create_key
+        from src.services.credential_encryption import (
+            encrypt_credentials,
+            get_or_create_key,
+        )
 
         key = get_or_create_key(key_dir=temp_key_dir)
         plaintext = {"token": "abc123"}
@@ -322,8 +331,10 @@ class TestEncryptDecrypt:
     def test_wrong_key_fails(self, temp_key_dir):
         """Decryption with wrong key raises CredentialDecryptionError."""
         from src.services.credential_encryption import (
-            CredentialDecryptionError, decrypt_credentials,
-            encrypt_credentials, get_or_create_key,
+            CredentialDecryptionError,
+            decrypt_credentials,
+            encrypt_credentials,
+            get_or_create_key,
         )
 
         key = get_or_create_key(key_dir=temp_key_dir)
@@ -335,8 +346,10 @@ class TestEncryptDecrypt:
     def test_wrong_aad_fails(self, temp_key_dir):
         """Decryption with wrong AAD raises CredentialDecryptionError."""
         from src.services.credential_encryption import (
-            CredentialDecryptionError, decrypt_credentials,
-            encrypt_credentials, get_or_create_key,
+            CredentialDecryptionError,
+            decrypt_credentials,
+            encrypt_credentials,
+            get_or_create_key,
         )
 
         key = get_or_create_key(key_dir=temp_key_dir)
@@ -347,8 +360,10 @@ class TestEncryptDecrypt:
     def test_tampered_ciphertext_fails(self, temp_key_dir):
         """Tampered ciphertext raises CredentialDecryptionError."""
         from src.services.credential_encryption import (
-            CredentialDecryptionError, decrypt_credentials,
-            encrypt_credentials, get_or_create_key,
+            CredentialDecryptionError,
+            decrypt_credentials,
+            encrypt_credentials,
+            get_or_create_key,
         )
 
         key = get_or_create_key(key_dir=temp_key_dir)
@@ -363,7 +378,9 @@ class TestEncryptDecrypt:
     def test_empty_dict_round_trip(self, temp_key_dir):
         """Empty credentials dict encrypts and decrypts cleanly."""
         from src.services.credential_encryption import (
-            decrypt_credentials, encrypt_credentials, get_or_create_key,
+            decrypt_credentials,
+            encrypt_credentials,
+            get_or_create_key,
         )
 
         key = get_or_create_key(key_dir=temp_key_dir)
@@ -373,7 +390,9 @@ class TestEncryptDecrypt:
     def test_corrupt_envelope_json_raises(self, temp_key_dir):
         """Non-JSON ciphertext raises CredentialDecryptionError."""
         from src.services.credential_encryption import (
-            CredentialDecryptionError, decrypt_credentials, get_or_create_key,
+            CredentialDecryptionError,
+            decrypt_credentials,
+            get_or_create_key,
         )
 
         key = get_or_create_key(key_dir=temp_key_dir)
@@ -383,7 +402,9 @@ class TestEncryptDecrypt:
     def test_unsupported_version_raises(self, temp_key_dir):
         """Envelope with unknown version raises CredentialDecryptionError."""
         from src.services.credential_encryption import (
-            CredentialDecryptionError, decrypt_credentials, get_or_create_key,
+            CredentialDecryptionError,
+            decrypt_credentials,
+            get_or_create_key,
         )
 
         key = get_or_create_key(key_dir=temp_key_dir)
@@ -394,7 +415,9 @@ class TestEncryptDecrypt:
     def test_wrong_algorithm_raises(self, temp_key_dir):
         """Envelope with unknown algorithm raises CredentialDecryptionError."""
         from src.services.credential_encryption import (
-            CredentialDecryptionError, decrypt_credentials, get_or_create_key,
+            CredentialDecryptionError,
+            decrypt_credentials,
+            get_or_create_key,
         )
 
         key = get_or_create_key(key_dir=temp_key_dir)
@@ -404,10 +427,13 @@ class TestEncryptDecrypt:
 
     def test_decrypted_payload_must_be_dict(self, temp_key_dir):
         """Decrypted payload that is not a dict raises CredentialDecryptionError."""
-        from src.services.credential_encryption import (
-            CredentialDecryptionError, decrypt_credentials, get_or_create_key,
-        )
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        from src.services.credential_encryption import (
+            CredentialDecryptionError,
+            decrypt_credentials,
+            get_or_create_key,
+        )
 
         key = get_or_create_key(key_dir=temp_key_dir)
         # Manually encrypt a JSON array (not a dict)
@@ -444,8 +470,10 @@ class TestEncryptDecrypt:
     def test_decrypt_rejects_short_key(self, temp_key_dir):
         """decrypt_credentials rejects non-32-byte key."""
         from src.services.credential_encryption import (
-            CredentialDecryptionError, decrypt_credentials,
-            encrypt_credentials, get_or_create_key,
+            CredentialDecryptionError,
+            decrypt_credentials,
+            encrypt_credentials,
+            get_or_create_key,
         )
 
         key = get_or_create_key(key_dir=temp_key_dir)

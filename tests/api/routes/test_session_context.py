@@ -7,10 +7,10 @@ and persists the context with type='amazon'.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from src.api.routes.conversations import _persist_session_context
+from src.services.conversation_handler import _persist_session_context
 
-# ConversationPersistenceService is module-level import in conversations.py
-_CPS_TARGET = "src.api.routes.conversations.ConversationPersistenceService"
+# ConversationPersistenceService is lazily imported inside the function body.
+_CPS_TARGET = "src.services.conversation_persistence_service.ConversationPersistenceService"
 # get_db_context is lazily imported inside the function body
 _DB_CTX_TARGET = "src.db.connection.get_db_context"
 # SavedDataSourceService is lazily imported inside the function body

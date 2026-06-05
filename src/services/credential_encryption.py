@@ -140,7 +140,7 @@ def get_or_create_key(key_dir: str | None = None) -> bytes:
             raise ValueError(
                 f"Key file {key_path} has invalid length {len(key)} (expected {_REQUIRED_KEY_LENGTH}). "
                 "Delete the file to regenerate."
-            )
+            ) from None
         # Warn if existing file has overly permissive permissions
         if platform.system() != "Windows":
             mode = stat.S_IMODE(os.stat(key_path).st_mode)
@@ -167,7 +167,7 @@ def get_or_create_key(key_dir: str | None = None) -> bytes:
             raise ValueError(
                 f"Key file {key_path} has invalid length {len(key)} (expected {_REQUIRED_KEY_LENGTH}). "
                 "Delete the file to regenerate."
-            )
+            ) from None
         return key
 
     if platform.system() != "Windows":

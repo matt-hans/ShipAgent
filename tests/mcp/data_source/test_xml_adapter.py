@@ -206,7 +206,7 @@ class TestXMLAdapterXXEPrevention:
         )
         path = xml_file(xxe_xml)
         adapter = XMLAdapter()
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match="entities are disabled"):
             adapter.import_data(conn, file_path=path)
 
     def test_xxe_parameter_entity_rejected(self, conn, xml_file):
@@ -221,7 +221,7 @@ class TestXMLAdapterXXEPrevention:
         )
         path = xml_file(xxe_xml)
         adapter = XMLAdapter()
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match="entities are disabled"):
             adapter.import_data(conn, file_path=path)
 
     def test_safe_xml_still_works(self, conn, xml_file):

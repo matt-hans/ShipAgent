@@ -158,6 +158,26 @@ def test_session_has_message_tasks_set():
     assert len(session.message_tasks) == 0
 
 
+def test_session_generation_token_increments_and_invalidates_old_token():
+    session = AgentSession("token-session")
+
+    first = session.begin_turn_generation()
+    second = session.begin_turn_generation()
+
+    assert first != second
+    assert session.is_turn_generation_active(first) is False
+    assert session.is_turn_generation_active(second) is True
+
+
+def test_session_cancel_invalidates_active_turn_generation():
+    session = AgentSession("cancel-token")
+    token = session.begin_turn_generation()
+
+    session.invalidate_active_turn_generation()
+
+    assert session.is_turn_generation_active(token) is False
+
+
 def test_session_agent_can_be_set():
     """Agent can be set on a session externally."""
     session = AgentSession("test")

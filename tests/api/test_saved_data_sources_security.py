@@ -43,8 +43,9 @@ class TestSavedSourceQueryValidation:
 
     def test_blocklist_matches_query_tools_blocklist(self):
         """Saved source blocklist includes the same keywords as query_tools.py."""
-        from src.mcp.data_source.tools.query_tools import query_data
         import inspect
+
+        from src.mcp.data_source.tools.query_tools import query_data
 
         source = inspect.getsource(query_data)
         # Verify the core dangerous keywords are in query_data source

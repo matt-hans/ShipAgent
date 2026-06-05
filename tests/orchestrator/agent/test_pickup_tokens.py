@@ -7,8 +7,6 @@ from bypassing the confirmation step.
 
 import time
 
-import pytest
-
 from src.orchestrator.agent.tools.pickup import (
     _hash_pickup_details,
     _issue_pickup_token,

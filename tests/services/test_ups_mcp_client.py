@@ -455,6 +455,35 @@ class TestValidateAddress:
 
 
 # ---------------------------------------------------------------------------
+# get_time_in_transit passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestGetTimeInTransit:
+    """Test get_time_in_transit() MCP passthrough."""
+
+    @pytest.mark.asyncio
+    async def test_calls_read_only_transit_tool(self, ups_client, mock_mcp_client):
+        """Calls the hosted UPS transit tool with read-only retry policy."""
+        mock_mcp_client.call_tool.return_value = {
+            "TimeInTransitResponse": {"TransitResponse": {"Shipment": {}}},
+        }
+        request_body = {"TimeInTransitRequest": {"Shipment": {}}}
+
+        result = await ups_client.get_time_in_transit(request_body=request_body)
+
+        assert result == {
+            "TimeInTransitResponse": {"TransitResponse": {"Shipment": {}}},
+        }
+        mock_mcp_client.call_tool.assert_awaited_once_with(
+            "get_time_in_transit",
+            {"request_body": request_body},
+            max_retries=2,
+            base_delay=0.2,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Error translation
 # ---------------------------------------------------------------------------
 

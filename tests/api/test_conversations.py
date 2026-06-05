@@ -69,6 +69,7 @@ class TestCreateConversation:
         ):
             mock_task = MagicMock()
             mock_task.done.return_value = False
+
             def _fake_create_task(coro):
                 coro.close()
                 return mock_task
@@ -230,6 +231,7 @@ class TestTerminatingSessionGuard:
 
         # Mark the session as terminating
         from src.api.routes.conversations import _session_manager
+
         session = _session_manager.get_session(session_id)
         assert session is not None
         session.terminating = True
@@ -239,7 +241,10 @@ class TestTerminatingSessionGuard:
             json={"content": "test"},
         )
         assert response.status_code == 409
-        assert "terminated" in response.json()["detail"].lower() or "terminating" in response.json()["detail"].lower()
+        assert (
+            "terminated" in response.json()["detail"].lower()
+            or "terminating" in response.json()["detail"].lower()
+        )
 
         # Clean up
         session.terminating = False
@@ -254,14 +259,19 @@ async def test_shutdown_event_calls_gateway_shutdown(monkeypatch):
     mock_app = MagicMock()
     monkeypatch.setenv("FILTER_TOKEN_SECRET", "x" * 40)
 
-    with patch(
-        "src.api.main.init_db",
-    ), patch(
-        "src.api.main.run_startup_recovery", new=AsyncMock(),
-    ), patch(
-        "src.services.gateway_provider.shutdown_gateways",
-        new=AsyncMock(),
-    ) as mock_shutdown:
+    with (
+        patch(
+            "src.api.main.init_db",
+        ),
+        patch(
+            "src.api.main.run_startup_recovery",
+            new=AsyncMock(),
+        ),
+        patch(
+            "src.services.gateway_provider.shutdown_gateways",
+            new=AsyncMock(),
+        ) as mock_shutdown,
+    ):
         async with lifespan(mock_app):
             pass  # simulate app running
         mock_shutdown.assert_awaited_once()
@@ -285,7 +295,12 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
 
     creation_count = 0
 
-    async def _fake_ensure_agent(sess, _source_info):
+    async def _fake_ensure_agent(
+        sess,
+        _source_info,
+        interactive_shipping=False,
+        **_kwargs,
+    ):
         nonlocal creation_count
         if sess.agent is None:
             creation_count += 1
@@ -309,7 +324,11 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
             new=AsyncMock(return_value=mock_gw),
         ),
         patch(
-            "src.api.routes.conversations._ensure_agent",
+            "src.services.conversation_handler.get_data_gateway",
+            new=AsyncMock(return_value=mock_gw),
+        ),
+        patch(
+            "src.services.conversation_handler.ensure_agent",
             new=AsyncMock(side_effect=_fake_ensure_agent),
         ),
     ):
@@ -327,6 +346,7 @@ async def test_prewarm_and_first_message_do_not_double_create_agent():
 async def test_process_message_uses_gateway_for_source_info():
     """_process_agent_message uses DataSourceGateway for source info."""
     from src.api.routes import conversations as conversations_mod
+
     conversations = importlib.reload(conversations_mod)
 
     class _FakeAgent:
@@ -349,18 +369,23 @@ async def test_process_message_uses_gateway_for_source_info():
     mock_gw = AsyncMock()
     mock_gw.get_source_info_typed = AsyncMock(return_value=mock_source_info)
 
-    async def _fake_ensure_agent(sess, _source_info):
+    async def _fake_ensure_agent(
+        sess,
+        _source_info,
+        interactive_shipping=False,
+        **_kwargs,
+    ):
         sess.agent = _FakeAgent()
         sess.agent_source_hash = "hash"
         return True
 
     with (
         patch(
-            "src.services.gateway_provider.get_data_gateway",
+            "src.services.conversation_handler.get_data_gateway",
             new=AsyncMock(return_value=mock_gw),
         ),
         patch(
-            "src.api.routes.conversations._ensure_agent",
+            "src.services.conversation_handler.ensure_agent",
             new=AsyncMock(side_effect=_fake_ensure_agent),
         ),
     ):
@@ -372,40 +397,94 @@ async def test_process_message_uses_gateway_for_source_info():
 
 
 @pytest.mark.asyncio
-async def test_route_ensure_agent_uses_provider_neutral_factory():
-    """Route-level agent startup goes through the provider-neutral factory."""
+async def test_process_message_sanitizes_delegated_error_events():
+    """Route queues sanitized errors yielded by the conversation service."""
     from src.api.routes import conversations as conversations_mod
+
     conversations = importlib.reload(conversations_mod)
 
-    session = conversations._session_manager.get_or_create_session("factory-route")
-    session.agent = None
-    session.agent_source_hash = None
+    async def _fake_process_message(*_args, **_kwargs):
+        yield {
+            "event": "error",
+            "data": {"message": "Provider failed with token=sk-secret-token"},
+        }
 
-    fake_agent = AsyncMock()
+    session_id = "sanitize-delegated-error"
+    conversations._session_manager.get_or_create_session(session_id)
 
-    with (
-        patch(
-            "src.api.routes.conversations.create_conversation_agent",
-            return_value=fake_agent,
-        ) as create_agent,
-        patch(
-            "src.orchestrator.agent.system_prompt.build_system_prompt",
-            return_value="test prompt",
-        ),
+    with patch(
+        "src.api.routes.conversations.conversation_handler.process_message",
+        new=_fake_process_message,
     ):
-        rebuilt = await conversations._ensure_agent(session, source_info=None)
+        await conversations._process_agent_message(session_id, "hello")
 
-    assert rebuilt is True
-    create_agent.assert_called_once()
-    fake_agent.start.assert_awaited_once()
-    assert session.agent is fake_agent
-    conversations._session_manager.remove_session("factory-route")
+    queue = conversations._event_queues[session_id]
+    queued_events = []
+    while not queue.empty():
+        queued_events.append(await queue.get())
+
+    error_events = [event for event in queued_events if event.get("event") == "error"]
+    assert len(error_events) == 1
+    error_message = error_events[0]["data"]["message"]
+    assert "sk-secret-token" not in error_message
+    assert "***REDACTED***" in error_message
+
+    conversations._session_manager.remove_session(session_id)
+    conversations._event_queues.pop(session_id, None)
+
+
+@pytest.mark.asyncio
+async def test_process_message_suppresses_late_events_after_session_termination():
+    """Invalidated turn generations prevent stale events entering the SSE queue."""
+    from src.api.routes import conversations as conversations_mod
+
+    conversations = importlib.reload(conversations_mod)
+
+    release_late_event = asyncio.Event()
+
+    async def _fake_process_message(session, *_args, **kwargs):
+        turn_generation_callback = kwargs.get("turn_generation_callback")
+        if turn_generation_callback is not None:
+            turn_generation_callback(session.begin_turn_generation())
+        yield {"event": "agent_message_delta", "data": {"text": "early"}}
+        await release_late_event.wait()
+        yield {"event": "agent_message_delta", "data": {"text": "late"}}
+
+    session_id = "suppress-late-event"
+    session = conversations._session_manager.get_or_create_session(session_id)
+    queue = conversations._get_event_queue(session_id)
+
+    with patch(
+        "src.api.routes.conversations.conversation_handler.process_message",
+        new=_fake_process_message,
+    ):
+        task = asyncio.create_task(
+            conversations._process_agent_message(session_id, "hello"),
+        )
+        first_event = await asyncio.wait_for(queue.get(), timeout=1.0)
+
+        session.terminating = True
+        session.invalidate_active_turn_generation()
+        release_late_event.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    queued_events = [first_event]
+    while not queue.empty():
+        queued_events.append(await queue.get())
+
+    assert queued_events == [
+        {"event": "agent_message_delta", "data": {"text": "early"}},
+    ]
+
+    conversations._session_manager.remove_session(session_id)
+    conversations._event_queues.pop(session_id, None)
 
 
 @pytest.mark.asyncio
 async def test_process_message_auto_switches_interactive_to_batch_for_batch_command():
     """Interactive sessions auto-switch to batch mode for batch shipping commands."""
     from src.api.routes import conversations as conversations_mod
+
     conversations = importlib.reload(conversations_mod)
 
     class _FakeAgent:
@@ -431,7 +510,12 @@ async def test_process_message_auto_switches_interactive_to_batch_for_batch_comm
 
     observed_modes: list[bool] = []
 
-    async def _fake_ensure_agent(sess, _source_info):
+    async def _fake_ensure_agent(
+        sess,
+        _source_info,
+        interactive_shipping=False,
+        **_kwargs,
+    ):
         observed_modes.append(sess.interactive_shipping)
         sess.agent = _FakeAgent()
         sess.agent_source_hash = "hash"
@@ -439,11 +523,11 @@ async def test_process_message_auto_switches_interactive_to_batch_for_batch_comm
 
     with (
         patch(
-            "src.services.gateway_provider.get_data_gateway",
+            "src.services.conversation_handler.get_data_gateway",
             new=AsyncMock(return_value=mock_gw),
         ),
         patch(
-            "src.api.routes.conversations._ensure_agent",
+            "src.services.conversation_handler.ensure_agent",
             new=AsyncMock(side_effect=_fake_ensure_agent),
         ),
     ):
@@ -464,6 +548,7 @@ async def test_process_message_suppresses_transient_messages_when_artifact_emitt
 ):
     """Transient agent_message events are hidden when an artifact event is emitted."""
     from src.api.routes import conversations as conversations_mod
+
     conversations = importlib.reload(conversations_mod)
 
     monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "true")
@@ -478,8 +563,14 @@ async def test_process_message_suppresses_transient_messages_when_artifact_emitt
                     "preview_ready",
                     {"job_id": "job-1", "total_rows": 1, "preview_rows": []},
                 )
-            yield {"event": "agent_message", "data": {"text": "Let me try one approach"}}
-            yield {"event": "agent_message", "data": {"text": "Let me try another approach"}}
+            yield {
+                "event": "agent_message",
+                "data": {"text": "Let me try one approach"},
+            }
+            yield {
+                "event": "agent_message",
+                "data": {"text": "Let me try another approach"},
+            }
 
     session_id = "suppress-transient-preview"
     conversations._session_manager.get_or_create_session(session_id)
@@ -493,18 +584,23 @@ async def test_process_message_suppresses_transient_messages_when_artifact_emitt
     mock_gw = AsyncMock()
     mock_gw.get_source_info_typed = AsyncMock(return_value=mock_source_info)
 
-    async def _fake_ensure_agent(sess, _source_info):
+    async def _fake_ensure_agent(
+        sess,
+        _source_info,
+        interactive_shipping=False,
+        **_kwargs,
+    ):
         sess.agent = _FakeAgent()
         sess.agent_source_hash = "hash"
         return True
 
     with (
         patch(
-            "src.services.gateway_provider.get_data_gateway",
+            "src.services.conversation_handler.get_data_gateway",
             new=AsyncMock(return_value=mock_gw),
         ),
         patch(
-            "src.api.routes.conversations._ensure_agent",
+            "src.services.conversation_handler.ensure_agent",
             new=AsyncMock(side_effect=_fake_ensure_agent),
         ),
     ):
@@ -530,6 +626,7 @@ async def test_process_message_suppresses_transient_messages_when_artifact_emitt
 async def test_process_message_keeps_final_message_when_no_artifact(monkeypatch):
     """Without artifact events, only the final buffered agent message is emitted."""
     from src.api.routes import conversations as conversations_mod
+
     conversations = importlib.reload(conversations_mod)
 
     monkeypatch.setenv("AGENT_HIDE_TRANSIENT_CHAT", "true")
@@ -554,18 +651,23 @@ async def test_process_message_keeps_final_message_when_no_artifact(monkeypatch)
     mock_gw = AsyncMock()
     mock_gw.get_source_info_typed = AsyncMock(return_value=mock_source_info)
 
-    async def _fake_ensure_agent(sess, _source_info):
+    async def _fake_ensure_agent(
+        sess,
+        _source_info,
+        interactive_shipping=False,
+        **_kwargs,
+    ):
         sess.agent = _FakeAgent()
         sess.agent_source_hash = "hash"
         return True
 
     with (
         patch(
-            "src.services.gateway_provider.get_data_gateway",
+            "src.services.conversation_handler.get_data_gateway",
             new=AsyncMock(return_value=mock_gw),
         ),
         patch(
-            "src.api.routes.conversations._ensure_agent",
+            "src.services.conversation_handler.ensure_agent",
             new=AsyncMock(side_effect=_fake_ensure_agent),
         ),
     ):

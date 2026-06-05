@@ -109,37 +109,83 @@ def create_conversation_agent(
     model: str | None = None,
     interactive_shipping: bool = False,
     session_id: str | None = None,
+    prior_conversation: list[dict[str, Any]] | None = None,
 ) -> ConversationAgent:
     """Create the configured conversation runtime behind a neutral interface."""
     runtime = os.environ.get("SHIPAGENT_AGENT_RUNTIME", "auto").strip().lower()
     model_provider = _infer_model_provider(model)
-    if runtime in {"", "auto"} and model_provider in {"openai", "gemini"}:
-        return UnavailableConversationAgent(
-            reason=(
-                f"{model_provider.title()} model runtime is not wired yet. "
-                "Choose a configured runtime before sending shipping commands."
-            ),
+    if runtime == "fake":
+        from src.services.conversation_runtime.fake_provider import FakeProviderClient
+        from src.services.conversation_runtime.runtime_session import (
+            ConversationRuntimeSession,
+        )
+
+        return ConversationRuntimeSession(
+            provider=FakeProviderClient(script=[]),
+            system_prompt=system_prompt,
+            interactive_shipping=interactive_shipping,
             session_id=session_id,
+            max_turns=max_turns,
+            prior_conversation=prior_conversation,
+        )
+
+    if runtime in {"", "auto"} and model_provider == "openai":
+        return _create_openai_conversation_agent(
+            system_prompt=system_prompt,
+            interactive_shipping=interactive_shipping,
+            session_id=session_id,
+            max_turns=max_turns,
+            prior_conversation=prior_conversation,
             model=model,
         )
-    if runtime in {"openai", "gemini"}:
-        return UnavailableConversationAgent(
-            reason=(
-                f"{runtime.title()} model runtime is not wired yet. "
-                "Choose a configured runtime before sending shipping commands."
-            ),
+    if runtime == "openai":
+        if model_provider not in {None, "openai"}:
+            return _runtime_model_mismatch(
+                runtime=runtime,
+                model_provider=model_provider,
+                session_id=session_id,
+                model=model,
+            )
+        return _create_openai_conversation_agent(
+            system_prompt=system_prompt,
+            interactive_shipping=interactive_shipping,
             session_id=session_id,
+            max_turns=max_turns,
+            prior_conversation=prior_conversation,
+            model=model,
+        )
+
+    if runtime in {"", "auto"} and model_provider == "gemini":
+        return _create_gemini_conversation_agent(
+            system_prompt=system_prompt,
+            interactive_shipping=interactive_shipping,
+            session_id=session_id,
+            max_turns=max_turns,
+            prior_conversation=prior_conversation,
+            model=model,
+        )
+    if runtime == "gemini":
+        if model_provider not in {None, "gemini"}:
+            return _runtime_model_mismatch(
+                runtime=runtime,
+                model_provider=model_provider,
+                session_id=session_id,
+                model=model,
+            )
+        return _create_gemini_conversation_agent(
+            system_prompt=system_prompt,
+            interactive_shipping=interactive_shipping,
+            session_id=session_id,
+            max_turns=max_turns,
+            prior_conversation=prior_conversation,
             model=model,
         )
 
     if runtime in {"", "auto", "claude", "claude_sdk", "anthropic"}:
         if runtime not in {"", "auto"} and model_provider in {"openai", "gemini"}:
-            return UnavailableConversationAgent(
-                reason=(
-                    f"Configured runtime '{runtime}' does not match selected "
-                    f"model provider '{model_provider}'. Choose a matching "
-                    "runtime before sending shipping commands."
-                ),
+            return _runtime_model_mismatch(
+                runtime=runtime,
+                model_provider=model_provider,
                 session_id=session_id,
                 model=model,
             )
@@ -161,8 +207,9 @@ def create_conversation_agent(
         if runtime not in {"", "auto"}:
             return UnavailableConversationAgent(
                 reason=(
-                    "Claude SDK runtime is not installed. Install the optional "
-                    "Claude adapter or choose another configured model runtime."
+                    "Claude SDK runtime is not installed. Install backend "
+                    "dependencies with .venv/bin/python -m pip install -e '.[dev]' "
+                    "or choose another configured model runtime."
                 ),
                 session_id=session_id,
                 model=model,
@@ -173,6 +220,114 @@ def create_conversation_agent(
         reason=(
             "No supported model runtime is configured. Configure a model "
             "provider before sending shipping commands."
+        ),
+        session_id=session_id,
+        model=model,
+    )
+
+
+def _create_openai_conversation_agent(
+    *,
+    system_prompt: str | None,
+    interactive_shipping: bool,
+    session_id: str | None,
+    max_turns: int,
+    prior_conversation: list[dict[str, Any]] | None,
+    model: str | None,
+) -> ConversationAgent:
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return UnavailableConversationAgent(
+            reason=(
+                "OpenAI API key is not configured. Add OPENAI_API_KEY in "
+                "Settings before sending shipping commands."
+            ),
+            session_id=session_id,
+            model=model,
+        )
+    try:
+        from src.services.conversation_runtime.openai_provider import (
+            OpenAIProviderClient,
+        )
+        from src.services.conversation_runtime.runtime_session import (
+            ConversationRuntimeSession,
+        )
+
+        provider = OpenAIProviderClient(model=model, api_key=api_key)
+    except RuntimeError as exc:
+        return UnavailableConversationAgent(
+            reason=str(exc),
+            session_id=session_id,
+            model=model,
+        )
+
+    return ConversationRuntimeSession(
+        provider=provider,
+        system_prompt=system_prompt,
+        interactive_shipping=interactive_shipping,
+        session_id=session_id,
+        max_turns=max_turns,
+        prior_conversation=prior_conversation,
+    )
+
+
+def _create_gemini_conversation_agent(
+    *,
+    system_prompt: str | None,
+    interactive_shipping: bool,
+    session_id: str | None,
+    max_turns: int,
+    prior_conversation: list[dict[str, Any]] | None,
+    model: str | None,
+) -> ConversationAgent:
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        return UnavailableConversationAgent(
+            reason=(
+                "Gemini API key is not configured. Add GEMINI_API_KEY in "
+                "Settings before sending shipping commands."
+            ),
+            session_id=session_id,
+            model=model,
+        )
+    try:
+        from src.services.conversation_runtime.gemini_provider import (
+            GeminiProviderClient,
+        )
+        from src.services.conversation_runtime.runtime_session import (
+            ConversationRuntimeSession,
+        )
+
+        provider = GeminiProviderClient(model=model, api_key=api_key)
+    except RuntimeError as exc:
+        return UnavailableConversationAgent(
+            reason=str(exc),
+            session_id=session_id,
+            model=model,
+        )
+
+    return ConversationRuntimeSession(
+        provider=provider,
+        system_prompt=system_prompt,
+        interactive_shipping=interactive_shipping,
+        session_id=session_id,
+        max_turns=max_turns,
+        prior_conversation=prior_conversation,
+    )
+
+
+def _runtime_model_mismatch(
+    *,
+    runtime: str,
+    model_provider: str | None,
+    session_id: str | None,
+    model: str | None,
+) -> ConversationAgent:
+    return UnavailableConversationAgent(
+        reason=(
+            f"Configured runtime '{runtime}' does not match selected "
+            f"model provider '{model_provider}'. Choose a matching "
+            "runtime before sending shipping commands."
         ),
         session_id=session_id,
         model=model,

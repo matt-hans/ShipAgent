@@ -5,9 +5,10 @@ UPS) via stdio transport, providing a unified interface for natural language
 shipping commands.
 
 Hybrid UPS architecture:
-- Interactive path: Agent calls UPS MCP tools directly (rate_shipment,
-  validate_address, track_package, create_shipment, void_shipment,
-  recover_label, get_time_in_transit)
+- Interactive path: Agent uses orchestrator workflow tools for previews and
+  shared read-only UPS operations. The Claude adapter may mount the raw UPS MCP
+  for backward compatibility, but canonical shipping behavior lives in the
+  shared workflow tools.
 - Batch path: BatchEngine uses UPSMCPClient (programmatic MCP over stdio)
   for deterministic high-volume execution with per-row state tracking
 
@@ -88,16 +89,15 @@ _HAS_STREAM_EVENT = _SDK_IMPORT_ERROR is None
 
 
 def is_claude_sdk_available() -> bool:
-    """Return whether the optional Claude SDK adapter can be used."""
+    """Return whether the Claude SDK adapter can be used."""
     return _SDK_IMPORT_ERROR is None
 
 
 def _require_claude_sdk() -> None:
     if _SDK_IMPORT_ERROR is not None:
         raise RuntimeError(
-            "Claude SDK runtime is not installed. Backend startup no longer "
-            "requires it, but this adapter cannot run without the optional "
-            "claude_agent_sdk package."
+            "Claude SDK runtime is not installed. Install backend dependencies "
+            "with .venv/bin/python -m pip install -e '.[dev]'."
         ) from _SDK_IMPORT_ERROR
 
 
@@ -140,8 +140,7 @@ class OrchestrationAgent:
 
     Manages the lifecycle of Data Source, External Sources, and UPS MCPs as
     child processes, routes tool calls through hooks, and maintains conversation
-    context. The agent has direct access to all 7 UPS MCP tools for interactive
-    operations. BatchEngine uses UPSService separately for deterministic batch
+    context. BatchEngine uses UPSService separately for deterministic batch
     execution.
 
     Usage:

@@ -13,7 +13,6 @@ from src.orchestrator.agent.hooks import (
     validate_filter_spec_on_pipeline,
     validate_intent_on_resolve,
 )
-from src.orchestrator.models.filter_spec import FilterGroup
 
 
 def _is_denied(result: dict) -> bool:

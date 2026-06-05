@@ -7,7 +7,7 @@ import pytest
 
 from src.mcp.external_sources.clients.amazon import AmazonClient
 from src.mcp.external_sources.clients.base import PlatformClient
-from src.mcp.external_sources.models import ExternalOrder, OrderFilters
+from src.mcp.external_sources.models import ExternalOrder, OrderFilters, TrackingUpdate
 
 
 class TestAmazonClientInit:
@@ -350,10 +350,6 @@ class TestGetOrderWithItems:
         assert order.items[0]["id"] == "i-99"
         assert order.item_count == 3
         mock_fetch_items.assert_called_once_with("222-0000001-0000001")
-
-
-from src.mcp.external_sources.models import TrackingUpdate
-
 
 class TestUpdateTracking:
     """Test tracking write-back via confirmShipment."""
