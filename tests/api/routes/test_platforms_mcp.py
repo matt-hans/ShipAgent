@@ -288,6 +288,7 @@ class TestAmazonEnvStatus:
     def test_env_status_not_configured(self, mock_resolve):
         """Returns configured=False when no credentials found."""
         from fastapi.testclient import TestClient
+
         from src.api.main import app
 
         mock_resolve.return_value = None
@@ -305,6 +306,7 @@ class TestAmazonEnvStatus:
     async def test_env_status_configured_and_valid(self, mock_resolve, mock_get_ext):
         """Returns configured=True, valid=True when credentials work."""
         from fastapi.testclient import TestClient
+
         from src.api.main import app
         from src.services.connection_types import AmazonSPAPICredentials
 

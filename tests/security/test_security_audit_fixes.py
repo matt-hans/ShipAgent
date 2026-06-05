@@ -13,11 +13,8 @@ Validates all fixes from the security audit report:
 - Finding 11: Error sanitization in tool responses (CWE-200)
 """
 
-import threading
-import time
 
 import pytest
-
 
 # ============================================================================
 # Finding 1: Oracle SQL Injection Prevention (CWE-89)
@@ -133,7 +130,7 @@ class TestContactHandleSanitization:
                 assert len(handle_part) <= 30
         # No raw newlines from the handle should create new lines
         # Count lines in the Available contacts section
-        contact_lines = [l for l in result.split("\n") if l.startswith("- @")]
+        contact_lines = [line for line in result.split("\n") if line.startswith("- @")]
         assert len(contact_lines) == 1  # Only one contact line
 
     def test_handle_control_chars_stripped(self):
@@ -337,7 +334,6 @@ class TestSampleInjectionSurface:
     def test_sample_budget_enforced_in_schema_section(self):
         """Schema section stops embedding samples after budget is exhausted."""
         from src.orchestrator.agent.system_prompt import (
-            _MAX_TOTAL_SAMPLE_CHARS,
             _build_schema_section,
         )
         from src.services.data_source_mcp_client import DataSourceInfo
@@ -360,7 +356,7 @@ class TestSampleInjectionSurface:
 
         result = _build_schema_section(source_info, column_samples=column_samples)
         # Count how many lines have "samples:" in them
-        sample_lines = [l for l in result.split("\n") if "samples:" in l]
+        sample_lines = [line for line in result.split("\n") if "samples:" in line]
         # Should be fewer than 20 (budget should cut it off)
         assert len(sample_lines) < 20
 

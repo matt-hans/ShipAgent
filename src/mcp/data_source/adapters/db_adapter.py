@@ -22,12 +22,12 @@ from collections import OrderedDict
 from typing import Literal
 from urllib.parse import urlparse
 
-logger = logging.getLogger(__name__)
-
 from duckdb import DuckDBPyConnection
 
 from ..models import SOURCE_ROW_NUM_COLUMN, ImportResult, SchemaColumn
 from .base import BaseSourceAdapter
+
+logger = logging.getLogger(__name__)
 
 # Threshold for requiring WHERE clause (per CONTEXT.md)
 LARGE_TABLE_THRESHOLD = 10000

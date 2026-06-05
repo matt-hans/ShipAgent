@@ -101,7 +101,7 @@ def get_data_mcp_config() -> MCPServerConfig:
 
 
 def get_ups_mcp_config(
-    credentials: "UPSCredentials | None" = None,
+    credentials: UPSCredentials | None = None,
 ) -> MCPServerConfig | None:
     """Get configuration for the UPS MCP server.
 
@@ -205,7 +205,7 @@ def get_external_sources_mcp_config() -> MCPServerConfig:
 
 
 def create_mcp_servers_config(
-    ups_credentials: "UPSCredentials | None" = None,
+    ups_credentials: UPSCredentials | None = None,
 ) -> dict[str, MCPServerConfig]:
     """Create MCP server configurations for ClaudeAgentOptions.
 

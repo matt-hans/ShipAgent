@@ -117,7 +117,7 @@ def sample_job(test_db: Session) -> Job:
         Job instance with pending status.
     """
     # Hash of empty checksum_concat (no rows yet) — required by H-1 + TOCTOU
-    empty_hash = hashlib.sha256("".encode()).hexdigest()
+    empty_hash = hashlib.sha256(b"").hexdigest()
     job = Job(
         name="Test Job",
         original_command="Ship all orders using UPS Ground",

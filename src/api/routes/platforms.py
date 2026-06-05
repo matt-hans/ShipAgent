@@ -8,10 +8,9 @@ ExternalSourcesMCPClient via gateway_provider. No direct platform
 client imports or local state management.
 """
 
-import os
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from src.mcp.external_sources.models import (
@@ -200,6 +199,10 @@ async def activate_shopify() -> ShopifyActivateResponse:
             error=f"Unexpected error during Shopify activation: {exc}",
         )
 
+@router.get("/shopify/activate")
+async def activate_shopify_get_not_allowed() -> None:
+    """Reject accidental GETs before the frontend catch-all can serve them."""
+    raise HTTPException(status_code=405, detail="Method Not Allowed")
 
 
 @router.post("/amazon/activate", response_model=ShopifyActivateResponse)

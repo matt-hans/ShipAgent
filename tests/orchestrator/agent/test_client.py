@@ -13,7 +13,8 @@ These tests are marked with @pytest.mark.integration for selective running.
 
 import asyncio
 import os
-from unittest.mock import patch
+import sys
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -202,6 +203,8 @@ class TestOrchestrationAgentIntegration:
             pytest.skip("ANTHROPIC_API_KEY not set")
         if os.environ.get("CLAUDECODE"):
             pytest.skip("Cannot run SDK integration tests inside Claude Code session")
+        if isinstance(sys.modules.get("claude_agent_sdk"), Mock):
+            pytest.skip("Claude SDK integration tests require the real SDK package")
 
     @pytest.mark.asyncio
     async def test_agent_lifecycle(self, skip_without_api_key):
