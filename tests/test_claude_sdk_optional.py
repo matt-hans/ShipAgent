@@ -42,6 +42,45 @@ def test_pyinstaller_spec_does_not_force_anthropic_sdk_hidden_import():
     assert '"anthropic"' not in spec
 
 
+def test_conversation_runtime_package_does_not_import_claude_sdk_or_hooks():
+    runtime_dir = PROJECT_ROOT / "src" / "services" / "conversation_runtime"
+    source = "\n".join(path.read_text() for path in runtime_dir.glob("*.py"))
+
+    assert "claude_agent_sdk" not in source
+    assert "src.orchestrator.agent.hooks" not in source
+
+
+def test_conversation_runtime_imports_do_not_load_claude_sdk_or_hooks():
+    code = """
+import builtins
+
+real_import = builtins.__import__
+
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "claude_agent_sdk" or name.startswith("claude_agent_sdk."):
+        raise AssertionError(f"runtime imported forbidden Claude SDK module: {name}")
+    if name == "src.orchestrator.agent.hooks":
+        raise AssertionError("runtime imported src.orchestrator.agent.hooks")
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guarded_import
+
+import src.services.conversation_runtime.models  # noqa: F401
+import src.services.conversation_runtime.fake_provider  # noqa: F401
+import src.services.conversation_runtime.tool_catalog  # noqa: F401
+import src.services.conversation_runtime.policy  # noqa: F401
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_backend_modules_import_when_claude_agent_sdk_is_unavailable():
     code = """
 import builtins
