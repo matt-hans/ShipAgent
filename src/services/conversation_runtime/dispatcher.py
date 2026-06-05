@@ -105,9 +105,7 @@ _SAFE_SCALAR_KEYS = {
     "total_count",
 }
 
-_SAFE_NORMALIZED_SCALAR_KEYS = {
-    _normalize_model_key(key) for key in _SAFE_SCALAR_KEYS
-}
+_SAFE_NORMALIZED_SCALAR_KEYS = {_normalize_model_key(key) for key in _SAFE_SCALAR_KEYS}
 
 _SAFE_NORMALIZED_LIST_CONTAINER_KEYS = {
     _normalize_model_key("items"),
@@ -469,10 +467,7 @@ _ADDRESS_STREET_TOKENS = {
 }
 
 _SAFE_STRING_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyz"
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789"
-    "._-",
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-",
 )
 
 _GENERIC_POLICY_DENIAL_CONTENT = "Tool call denied by policy."
@@ -490,9 +485,14 @@ class LocalToolDispatcher:
         # Dispatcher records provider-neutral tool calls; handlers own domain events.
         self.emit_frontend = emit_frontend
 
-    async def dispatch(self, call: ProviderToolCall) -> ProviderToolResult:
-        self._emit_tool_call(call)
+    async def dispatch(
+        self,
+        call: ProviderToolCall,
+    ) -> ProviderToolResult:
+        self.emit_tool_call(call)
+        return await self.execute(call)
 
+    async def execute(self, call: ProviderToolCall) -> ProviderToolResult:
         if not self.catalog.has(call.tool_name):
             content = (
                 f"Tool {call.tool_name!r} is not available in this conversation mode."
@@ -563,7 +563,7 @@ class LocalToolDispatcher:
             sanitized_error=sanitize_error_message(content) if is_error else None,
         )
 
-    def _emit_tool_call(self, call: ProviderToolCall) -> None:
+    def emit_tool_call(self, call: ProviderToolCall) -> None:
         payload = {
             "tool_name": call.tool_name,
             "tool_input": dict(call.parsed_input),
@@ -642,9 +642,7 @@ def _has_error_content(policy: RuntimePolicyEngine, value: Any) -> bool:
                 return True
             continue
 
-        if policy.detect_error_response(
-            _project_error_detection_payload(json_payload)
-        ):
+        if policy.detect_error_response(_project_error_detection_payload(json_payload)):
             return True
 
     return False
@@ -994,8 +992,7 @@ def _is_unsafe_model_key(normalized_key: str) -> bool:
     if normalized_key in _DROP_MODEL_NORMALIZED_KEYS:
         return True
     return any(
-        fragment in normalized_key
-        for fragment in _UNSAFE_NORMALIZED_KEY_FRAGMENTS
+        fragment in normalized_key for fragment in _UNSAFE_NORMALIZED_KEY_FRAGMENTS
     )
 
 
@@ -1100,8 +1097,7 @@ def _has_row_value_technical_suffix(value: str) -> bool:
         return False
 
     return any(
-        token in _SCHEMA_ROW_VALUE_TECHNICAL_SUFFIX_TOKENS
-        for token in tokens[1:]
+        token in _SCHEMA_ROW_VALUE_TECHNICAL_SUFFIX_TOKENS for token in tokens[1:]
     )
 
 
@@ -1306,9 +1302,7 @@ def _is_safe_short_token(value: Any) -> bool:
         return False
 
     normalized_value = _normalize_model_key(value)
-    return not any(
-        unsafe in normalized_value for unsafe in _UNSAFE_SCALAR_SUBSTRINGS
-    )
+    return not any(unsafe in normalized_value for unsafe in _UNSAFE_SCALAR_SUBSTRINGS)
 
 
 def _summarize_payload(tool_name: str, payload: Any, *, is_error: bool) -> str:

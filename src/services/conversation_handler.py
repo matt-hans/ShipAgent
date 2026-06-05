@@ -8,7 +8,7 @@ import hashlib
 import json
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from src.db.models import AgentDecisionRunStatus
@@ -102,16 +102,55 @@ def _load_prior_conversation(session_id: str) -> list[dict] | None:
     try:
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
-            result = svc.get_session_with_messages(session_id, limit=MAX_RESUME_MESSAGES)
+            result = svc.get_session_with_messages(
+                session_id, limit=MAX_RESUME_MESSAGES
+            )
             if result is None or not result["messages"]:
                 return None
             return [
-                {"role": m["role"], "content": m["content"]}
-                for m in result["messages"]
+                {"role": m["role"], "content": m["content"]} for m in result["messages"]
             ]
     except Exception as e:
         logger.warning("Failed to load prior conversation for %s: %s", session_id, e)
         return None
+
+
+def _without_current_user_turn(
+    prior_conversation: list[dict] | None,
+    current_user_message: str | None,
+) -> list[dict] | None:
+    """Drop the just-persisted current user turn from resume history."""
+    if not prior_conversation or current_user_message is None:
+        return prior_conversation
+    last_message = prior_conversation[-1]
+    if (
+        last_message.get("role") == "user"
+        and last_message.get("content") == current_user_message
+    ):
+        trimmed = prior_conversation[:-1]
+        return trimmed or None
+    return prior_conversation
+
+
+def _begin_turn_guard(
+    session: AgentSession,
+    turn_generation_callback: Any | None,
+) -> Callable[[], bool]:
+    begin_turn_generation = getattr(session, "begin_turn_generation", None)
+    is_turn_generation_active = getattr(session, "is_turn_generation_active", None)
+    if not callable(begin_turn_generation) or not callable(is_turn_generation_active):
+        return lambda: getattr(session, "terminating", False) is not True
+
+    turn_generation = begin_turn_generation()
+    if turn_generation_callback is not None:
+        turn_generation_callback(turn_generation)
+
+    def turn_active() -> bool:
+        if getattr(session, "terminating", False) is True:
+            return False
+        return bool(is_turn_generation_active(turn_generation))
+
+    return turn_active
 
 
 def compute_source_hash(source_info: Any) -> str:
@@ -316,11 +355,12 @@ async def ensure_agent(
     session: AgentSession,
     source_info: Any,
     interactive_shipping: bool = False,
+    current_user_message: str | None = None,
 ) -> bool:
     """Ensure the agent exists and is current for the session.
 
-    Creates a new OrchestrationAgent if none exists or if the data source
-    has changed. This is the canonical agent creation path.
+    Creates a new conversation agent if none exists or if the data source has
+    changed. This is the canonical agent creation path.
 
     Args:
         session: The agent session to ensure.
@@ -336,9 +376,13 @@ async def ensure_agent(
 
     # Fetch MRU contacts for prompt injection (C1 fix)
     contacts = _get_mru_contacts_for_prompt()
-    contacts_hash = hashlib.sha256(json.dumps(contacts, sort_keys=True, default=str).encode()).hexdigest()[:8]
+    contacts_hash = hashlib.sha256(
+        json.dumps(contacts, sort_keys=True, default=str).encode()
+    ).hexdigest()[:8]
 
-    combined_hash = f"{source_hash}|interactive={interactive_shipping}|contacts={contacts_hash}"
+    combined_hash = (
+        f"{source_hash}|interactive={interactive_shipping}|contacts={contacts_hash}"
+    )
 
     # Reuse existing agent if config hasn't changed
     if session.agent is not None and session.agent_source_hash == combined_hash:
@@ -362,7 +406,10 @@ async def ensure_agent(
             logger.debug("Could not fetch column samples: %s", e)
 
     # Load prior conversation for resumed sessions
-    prior_conversation = _load_prior_conversation(session.session_id)
+    prior_conversation = _without_current_user_turn(
+        _load_prior_conversation(session.session_id),
+        current_user_message,
+    )
 
     system_prompt = build_system_prompt(
         source_info=source_info,
@@ -377,6 +424,7 @@ async def ensure_agent(
         interactive_shipping=interactive_shipping,
         session_id=session.session_id,
         model=_resolve_agent_model(),
+        prior_conversation=prior_conversation,
     )
     await agent.start()
 
@@ -392,6 +440,7 @@ async def process_message(
     content: str,
     interactive_shipping: bool = False,
     emit_callback: Any | None = None,
+    turn_generation_callback: Any | None = None,
 ) -> AsyncIterator[dict]:
     """Process a user message through the agent, yielding SSE-compatible events.
 
@@ -431,12 +480,18 @@ async def process_message(
 
     try:
         async with session.lock:
+            _turn_active = _begin_turn_guard(session, turn_generation_callback)
+
             try:
                 gw = await get_data_gateway()
                 source_info = await gw.get_source_info_typed()
             except Exception as exc:
-                logger.warning("Failed to resolve data source for %s: %s", session.session_id, exc)
+                logger.warning(
+                    "Failed to resolve data source for %s: %s", session.session_id, exc
+                )
                 source_info = None
+            if not _turn_active():
+                return
 
             source_type = (
                 getattr(source_info, "source_type", "none")
@@ -476,7 +531,14 @@ async def process_message(
                 session.interactive_shipping = False
                 interactive_shipping = False
 
-            await ensure_agent(session, source_info, interactive_shipping)
+            await ensure_agent(
+                session,
+                source_info,
+                interactive_shipping,
+                current_user_message=content,
+            )
+            if not _turn_active():
+                return
 
             persisted_events: set[str] = set()
             hide_transient_chat = _hide_transient_chat_enabled()
@@ -484,6 +546,11 @@ async def process_message(
             buffered_agent_messages: list[str] = []
             preview_ready_logged = False
             pending_bridge_events: list[dict[str, Any]] = []
+
+            def _drain_pending_bridge_events() -> list[dict[str, Any]]:
+                events = [*pending_bridge_events]
+                pending_bridge_events.clear()
+                return events
 
             def _track_preview_ready(event_type: str, data: dict[str, Any]) -> None:
                 nonlocal preview_ready_logged
@@ -523,6 +590,8 @@ async def process_message(
 
             def _service_emit(event_type: str, data: dict) -> None:
                 nonlocal artifact_emitted
+                if not _turn_active():
+                    return
                 event_data = data or {}
                 if hide_transient_chat and event_type in _LIVE_ARTIFACT_EVENTS:
                     artifact_emitted = True
@@ -543,6 +612,7 @@ async def process_message(
                 if is_shipping_request(content):
                     bridge.last_shipping_command = content
                 elif is_confirmation_response(content):
+                    # Preserve the previous shipping command for confirmation turns.
                     pass
                 else:
                     bridge.last_shipping_command = None
@@ -550,8 +620,12 @@ async def process_message(
 
             try:
                 async for event in session.agent.process_message_stream(content):
-                    while pending_bridge_events:
-                        yield pending_bridge_events.pop(0)
+                    if not _turn_active():
+                        return
+                    for bridge_event in _drain_pending_bridge_events():
+                        if not _turn_active():
+                            return
+                        yield bridge_event
 
                     event_type = event.get("event")
                     data = event.get("data", {})
@@ -581,10 +655,14 @@ async def process_message(
 
                     yield event
 
-                while pending_bridge_events:
-                    yield pending_bridge_events.pop(0)
+                for bridge_event in _drain_pending_bridge_events():
+                    if not _turn_active():
+                        return
+                    yield bridge_event
 
                 if hide_transient_chat:
+                    if not _turn_active():
+                        return
                     if artifact_emitted:
                         logger.info(
                             "agent_transient_chat_suppressed session_id=%s buffered=%d",

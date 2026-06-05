@@ -109,6 +109,7 @@ def create_conversation_agent(
     model: str | None = None,
     interactive_shipping: bool = False,
     session_id: str | None = None,
+    prior_conversation: list[dict[str, Any]] | None = None,
 ) -> ConversationAgent:
     """Create the configured conversation runtime behind a neutral interface."""
     runtime = os.environ.get("SHIPAGENT_AGENT_RUNTIME", "auto").strip().lower()
@@ -144,6 +145,7 @@ def create_conversation_agent(
             interactive_shipping=interactive_shipping,
             session_id=session_id,
             max_turns=max_turns,
+            prior_conversation=prior_conversation,
         )
 
     if runtime in {"", "auto", "claude", "claude_sdk", "anthropic"}:

@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from src.services.conversation_runtime.fake_provider import FakeProviderClient
@@ -12,6 +14,62 @@ from src.services.conversation_runtime.models import (
     ProviderToolDeclaration,
 )
 from src.services.conversation_runtime.runtime_session import ConversationRuntimeSession
+
+
+class FakeRuntimeTool:
+    name = "get_schema"
+    allow_parallel = False
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def handler(self, args: dict):
+        self.calls.append(args)
+        return {
+            "isError": False,
+            "content": [
+                {
+                    "type": "text",
+                    "text": '{"column_count":1,"columns":[{"name":"sku","type":"string"}]}',
+                }
+            ],
+        }
+
+
+class BlockingRuntimeTool(FakeRuntimeTool):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def handler(self, args: dict):
+        self.started.set()
+        await self.release.wait()
+        return await super().handler(args)
+
+
+class FailingRuntimeTool(FakeRuntimeTool):
+    async def handler(self, args: dict):
+        self.calls.append(args)
+        raise RuntimeError("raw address=1 Main label_url=https://labels.example/leak")
+
+
+class FakeRuntimeCatalog:
+    def __init__(self, tool: FakeRuntimeTool) -> None:
+        self.tool = tool
+
+    def has(self, name: str) -> bool:
+        return name == self.tool.name
+
+    def get(self, name: str) -> FakeRuntimeTool:
+        return self.tool
+
+    def provider_declarations(self) -> list:
+        return []
+
+
+def _message_text(message: ProviderInputMessage) -> str:
+    return "".join(part.text for part in message.content)
 
 
 class RaisingProviderClient:
@@ -36,9 +94,7 @@ class RaisingProviderClient:
         _ = messages, system_instructions, tools
 
         async def _stream_events():
-            raise RuntimeError(
-                "provider secret api_key=sk-test-123 address=1 Main"
-            )
+            raise RuntimeError("provider secret api_key=sk-test-123 address=1 Main")
             yield
 
         return _stream_events()
@@ -124,6 +180,341 @@ async def test_runtime_dispatches_tool_and_feeds_result_back_to_provider() -> No
     assert [event["event"] for event in events] == ["tool_call", "agent_message"]
     assert provider.requests[1]["messages"][-1].role == "tool"
     assert provider.requests[1]["messages"][-1].tool_call_id == "tool-1"
+
+
+@pytest.mark.asyncio
+async def test_runtime_preserves_safe_history_across_sequential_turns() -> None:
+    provider = FakeProviderClient(
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                    text="First answer.",
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                    text="Second answer.",
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+        ]
+    )
+    runtime = ConversationRuntimeSession(
+        provider=provider,
+        system_prompt="system",
+        interactive_shipping=False,
+        session_id="runtime-history",
+    )
+    await runtime.start()
+
+    first_events = [event async for event in runtime.process_message_stream("First")]
+    second_events = [event async for event in runtime.process_message_stream("Second")]
+
+    assert first_events == [
+        {"event": "agent_message", "data": {"text": "First answer."}},
+    ]
+    assert second_events == [
+        {"event": "agent_message", "data": {"text": "Second answer."}},
+    ]
+    second_request_messages = provider.requests[1]["messages"]
+    assert [
+        (message.role, _message_text(message)) for message in second_request_messages
+    ] == [
+        ("user", "First"),
+        ("assistant", "First answer."),
+        ("user", "Second"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_seeds_provider_messages_from_prior_conversation() -> None:
+    provider = FakeProviderClient(
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                    text="Fresh answer.",
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+        ]
+    )
+    runtime = ConversationRuntimeSession(
+        provider=provider,
+        system_prompt="system",
+        interactive_shipping=False,
+        session_id="runtime-resume",
+        prior_conversation=[
+            {"role": "user", "content": "Older question"},
+            {"role": "assistant", "content": "Older answer"},
+            {"role": "tool", "content": "unsafe tool result should not seed"},
+        ],
+    )
+    await runtime.start()
+
+    events = [event async for event in runtime.process_message_stream("Fresh")]
+
+    assert events == [
+        {"event": "agent_message", "data": {"text": "Fresh answer."}},
+    ]
+    request_messages = provider.requests[0]["messages"]
+    assert [(message.role, _message_text(message)) for message in request_messages] == [
+        ("user", "Older question"),
+        ("assistant", "Older answer"),
+        ("user", "Fresh"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_yields_tool_call_before_blocking_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call = ProviderToolCall(
+        call_id="blocking-call",
+        tool_name="get_schema",
+        parsed_input={"source": "orders"},
+    )
+    provider = FakeProviderClient(
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
+                    tool_call=call,
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                    text="Schema ready.",
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+        ]
+    )
+    tool = BlockingRuntimeTool()
+    monkeypatch.setattr(
+        "src.services.conversation_runtime.runtime_session.WorkflowToolCatalog.for_mode",
+        lambda **_kwargs: FakeRuntimeCatalog(tool),
+    )
+    runtime = ConversationRuntimeSession(
+        provider=provider,
+        system_prompt="system",
+        interactive_shipping=False,
+        session_id="runtime-tool-order",
+    )
+    await runtime.start()
+
+    stream = runtime.process_message_stream("Show schema")
+    first_event = await asyncio.wait_for(stream.__anext__(), timeout=0.2)
+
+    assert first_event == {
+        "event": "tool_call",
+        "data": {
+            "tool_name": "get_schema",
+            "tool_input": {"source": "orders"},
+            "tool_use_id": "blocking-call",
+        },
+    }
+    assert not tool.started.is_set()
+
+    tool.release.set()
+    remaining = [event async for event in stream]
+    assert remaining == [
+        {"event": "agent_message", "data": {"text": "Schema ready."}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_dedupes_duplicate_stable_tool_call_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    duplicate_call = ProviderToolCall(
+        call_id="duplicate-call",
+        tool_name="get_schema",
+        parsed_input={},
+    )
+    provider = FakeProviderClient(
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
+                    tool_call=duplicate_call,
+                ),
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
+                    tool_call=duplicate_call,
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                    text="Schema ready.",
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+        ]
+    )
+    tool = FakeRuntimeTool()
+    monkeypatch.setattr(
+        "src.services.conversation_runtime.runtime_session.WorkflowToolCatalog.for_mode",
+        lambda **_kwargs: FakeRuntimeCatalog(tool),
+    )
+    runtime = ConversationRuntimeSession(
+        provider=provider,
+        system_prompt="system",
+        interactive_shipping=False,
+        session_id="runtime-dedupe",
+    )
+    await runtime.start()
+
+    events = [event async for event in runtime.process_message_stream("Show schema")]
+
+    assert [event["event"] for event in events] == ["tool_call", "agent_message"]
+    assert len(tool.calls) == 1
+    assert len(provider.requests[1]["messages"]) == 2
+    assert provider.requests[1]["messages"][-1].tool_call_id == "duplicate-call"
+
+
+@pytest.mark.asyncio
+async def test_runtime_dispatches_missing_tool_call_id_as_canonical_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call = ProviderToolCall(
+        call_id=None,
+        tool_name="get_schema",
+        parsed_input={},
+    )
+    provider = FakeProviderClient(
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
+                    tool_call=call,
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                    text="Schema ready.",
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+        ]
+    )
+    tool = FakeRuntimeTool()
+    monkeypatch.setattr(
+        "src.services.conversation_runtime.runtime_session.WorkflowToolCatalog.for_mode",
+        lambda **_kwargs: FakeRuntimeCatalog(tool),
+    )
+    runtime = ConversationRuntimeSession(
+        provider=provider,
+        system_prompt="system",
+        interactive_shipping=False,
+        session_id="runtime-missing-tool-id",
+    )
+    await runtime.start()
+
+    events = [event async for event in runtime.process_message_stream("Show schema")]
+
+    assert events[0] == {
+        "event": "tool_call",
+        "data": {
+            "tool_name": "get_schema",
+            "tool_input": {},
+        },
+    }
+    assert len(tool.calls) == 1
+    assert provider.requests[1]["messages"][-1].tool_call_id is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_handles_non_streaming_complete_text_provider() -> None:
+    provider = FakeProviderClient(
+        capabilities=ProviderCapabilities(
+            provider="fake",
+            model="fake-non-streaming",
+            supports_streaming_text=False,
+            supports_stable_tool_call_ids=False,
+        ),
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                    text="Complete text.",
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+        ],
+    )
+    runtime = ConversationRuntimeSession(
+        provider=provider,
+        system_prompt="system",
+        interactive_shipping=False,
+        session_id="runtime-non-streaming",
+    )
+    await runtime.start()
+
+    events = [event async for event in runtime.process_message_stream("Hi")]
+
+    assert events == [
+        {"event": "agent_message", "data": {"text": "Complete text."}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_feeds_internal_tool_failure_back_without_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    call = ProviderToolCall(
+        call_id="failing-call",
+        tool_name="get_schema",
+        parsed_input={},
+    )
+    provider = FakeProviderClient(
+        script=[
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
+                    tool_call=call,
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+            [
+                ProviderStreamEvent(
+                    type=ProviderStreamEventType.TEXT_BLOCK_COMPLETE,
+                    text="Handled failure.",
+                ),
+                ProviderStreamEvent(type=ProviderStreamEventType.STREAM_COMPLETE),
+            ],
+        ]
+    )
+    tool = FailingRuntimeTool()
+    monkeypatch.setattr(
+        "src.services.conversation_runtime.runtime_session.WorkflowToolCatalog.for_mode",
+        lambda **_kwargs: FakeRuntimeCatalog(tool),
+    )
+    runtime = ConversationRuntimeSession(
+        provider=provider,
+        system_prompt="system",
+        interactive_shipping=False,
+        session_id="runtime-tool-failure",
+    )
+    await runtime.start()
+
+    events = [event async for event in runtime.process_message_stream("Show schema")]
+
+    assert [event["event"] for event in events] == ["tool_call", "agent_message"]
+    tool_result_message = provider.requests[1]["messages"][-1]
+    assert tool_result_message.role == "tool"
+    assert tool_result_message.metadata["is_error"] is True
+    assert "1 Main" not in _message_text(tool_result_message)
+    assert "labels.example" not in _message_text(tool_result_message)
 
 
 @pytest.mark.asyncio

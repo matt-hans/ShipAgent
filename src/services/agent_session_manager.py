@@ -1,10 +1,9 @@
 """Agent session manager for per-conversation lifecycle.
 
-Manages agent sessions keyed by conversation ID. Each session maintains
-its own conversation history and a persistent OrchestrationAgent instance.
-The agent stays alive across messages within the same session, leveraging
-the Claude SDK's internal conversation memory. MCP servers are spawned once
-on first message and persist until session deletion.
+Manages agent sessions keyed by conversation ID. Each session maintains its own
+conversation history and a persistent conversation agent instance. Runtime
+adapters stay behind the provider-neutral conversation boundary and persist
+until session deletion.
 
 Example:
     mgr = AgentSessionManager()
@@ -26,15 +25,14 @@ logger = logging.getLogger(__name__)
 class AgentSession:
     """A single conversation session with a persistent agent.
 
-    The agent instance persists across messages so the Claude SDK maintains
-    internal conversation history. An asyncio.Lock serializes message
-    processing to prevent concurrent access to the same agent.
+    The agent instance persists across messages. An asyncio.Lock serializes
+    message processing to prevent concurrent access to the same agent.
 
     Attributes:
         session_id: Unique conversation identifier.
         history: Ordered list of messages [{role, content, timestamp}].
         created_at: When the session was created.
-        agent: Persistent OrchestrationAgent instance (None until first message).
+        agent: Persistent conversation agent instance (None until first message).
         agent_source_hash: Hash of the data source used to build the agent's
             system prompt. If the data source changes, the agent is rebuilt.
         interactive_shipping: Whether interactive single-shipment mode is enabled.
@@ -53,13 +51,17 @@ class AgentSession:
         self.history: list[dict] = []
         self.created_at = datetime.now(UTC)
         self.last_active = datetime.now(UTC)
-        self.agent: Any = None  # OrchestrationAgent, set by conversations route
+        self.agent: Any = None  # ConversationAgent, set by conversations route
         self.agent_source_hash: str | None = None
         self.interactive_shipping: bool = False
         self.terminating: bool = False
-        self.confirmed_resolutions: dict[str, Any] = {}  # token → confirmed ResolvedFilterSpec
+        self.confirmed_resolutions: dict[
+            str, Any
+        ] = {}  # token → confirmed ResolvedFilterSpec
         self.lock = asyncio.Lock()
-        self._history_lock = threading.Lock()  # Protects history + last_active (M-4, CWE-362)
+        self._history_lock = (
+            threading.Lock()
+        )  # Protects history + last_active (M-4, CWE-362)
         self.prewarm_task: asyncio.Task[Any] | None = None
         self.message_tasks: set[asyncio.Task[Any]] = set()
         self._turn_generation = 0
@@ -77,11 +79,13 @@ class AgentSession:
         """
         with self._history_lock:
             self.last_active = datetime.now(UTC)
-            self.history.append({
-                "role": role,
-                "content": content,
-                "timestamp": datetime.now(UTC).isoformat(),
-            })
+            self.history.append(
+                {
+                    "role": role,
+                    "content": content,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                }
+            )
 
     def begin_turn_generation(self) -> int:
         self._turn_generation += 1
@@ -268,7 +272,8 @@ class AgentSessionManager:
             return 0
         cutoff = datetime.now(UTC) - timedelta(hours=_SESSION_TTL_HOURS)
         expired = [
-            sid for sid, s in self._sessions.items()
+            sid
+            for sid, s in self._sessions.items()
             if s.last_active < cutoff and not s.terminating
         ]
         for sid in expired:
