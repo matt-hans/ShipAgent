@@ -109,6 +109,29 @@ def test_post_tool_error_detection_for_dict_and_string() -> None:
     assert engine.detect_error_response('response {"error": "bad"}') is True
     assert engine.detect_error_response("UPS request failed") is True
     assert engine.detect_error_response("validation failed: missing address") is False
+    assert engine.detect_error_response({"status": "failed", "job_id": "job-1"}) is False
+    assert engine.detect_error_response({"data": {"status": "failed"}}) is False
     assert engine.detect_error_response("no errors found") is False
     assert engine.detect_error_response("exception handled cleanly") is False
     assert engine.detect_error_response({"ok": True}) is False
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"status": "error"},
+        {"status": "errored"},
+        {"statusCode": "error"},
+        {"data": {"status": "error"}},
+        {"data": {"statusCode": "error"}},
+        [{"status": "error"}],
+        [{"data": {"status": "errored"}}],
+        [{"data": [{"statusCode": "error"}]}],
+    ],
+)
+def test_post_tool_error_detection_for_explicit_status_error_markers(
+    response: object,
+) -> None:
+    engine = RuntimePolicyEngine(interactive_shipping=False)
+
+    assert engine.detect_error_response(response) is True
