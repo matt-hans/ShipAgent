@@ -1,10 +1,9 @@
 """FastAPI routes for agent-driven SSE conversations.
 
-Each conversation session has a persistent OrchestrationAgent instance.
-The agent and its MCP servers stay alive across messages, leveraging the
-Claude SDK's internal conversation memory. Agent is rebuilt only when the
-connected data source changes. Sessions are serialized per-conversation
-via asyncio.Lock to prevent concurrent access.
+Each conversation session has a persistent conversation agent instance. Runtime
+adapters stay behind the provider-neutral conversation service boundary, and
+the agent is rebuilt only when the connected data source changes. Sessions are
+serialized per-conversation via asyncio.Lock to prevent concurrent access.
 
 Endpoints:
     POST   /conversations/              — Create new session
@@ -24,9 +23,8 @@ import base64
 import json
 import logging
 import os
-import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -49,20 +47,11 @@ from src.api.schemas_conversations import (
     UploadDocumentResponse,
 )
 from src.db.models import AgentDecisionRunStatus
-from src.orchestrator.agent.intent_detection import (
-    is_batch_shipping_request,
-    is_confirmation_response,
-    is_shipping_request,
-)
+from src.services import conversation_handler
 from src.services.agent_session_manager import AgentSessionManager
-from src.services.batch_engine import BatchEngine
-from src.services.conversation_agent import create_conversation_agent
 from src.services.conversation_persistence_service import ConversationPersistenceService
 from src.services.decision_audit_context import (
-    get_decision_job_id,
-    reset_decision_job_id,
     reset_decision_run_id,
-    set_decision_job_id,
     set_decision_run_id,
 )
 from src.services.decision_audit_service import DecisionAuditService
@@ -75,25 +64,9 @@ from src.utils.redaction import sanitize_error_message
 
 if TYPE_CHECKING:
     from src.services.agent_session_manager import AgentSession
-    from src.services.data_source_mcp_client import DataSourceInfo
 
 logger = logging.getLogger(__name__)
 
-
-def _resolve_agent_model() -> str | None:
-    """Read agent_model from DB settings, returning None on failure.
-
-    Returns:
-        The agent model string if set, or None to fall back to env/default.
-    """
-    try:
-        from src.db.connection import get_db_context
-        from src.services.settings_service import SettingsService
-        with get_db_context() as db:
-            return SettingsService(db).get_or_create().agent_model
-    except Exception:
-        logger.warning("Failed to read agent_model from settings")
-        return None
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -141,6 +114,7 @@ def _resolve_session(session_id: str) -> "AgentSession":  # noqa: F821
 
     if session is None:
         from src.db.connection import get_db_context
+
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             db_data = svc.get_session_with_messages(session_id, limit=0)
@@ -160,123 +134,6 @@ def _resolve_session(session_id: str) -> "AgentSession":  # noqa: F821
     return session
 
 
-def _compute_source_hash(source_info: "DataSourceInfo | None") -> str:  # noqa: F821
-    """Compute a simple hash of data source metadata for change detection.
-
-    Args:
-        source_info: Current data source info, or None.
-
-    Returns:
-        Hash string identifying the data source state.
-    """
-    if source_info is None:
-        return "none"
-    parts = [
-        source_info.source_type,
-        str(source_info.file_path or ""),
-        str(source_info.row_count),
-        ",".join(c.name for c in source_info.columns),
-        str(getattr(source_info, "signature", "") or ""),
-    ]
-    return "|".join(parts)
-
-
-def _build_source_signature(source_info: "DataSourceInfo | None") -> dict[str, Any] | None:  # noqa: F821
-    """Build a stable source signature payload from typed source info."""
-    if source_info is None:
-        return None
-    columns = getattr(source_info, "columns", []) or []
-    column_names = [getattr(col, "name", "") for col in columns]
-    return {
-        "source_type": getattr(source_info, "source_type", "unknown"),
-        "source_ref": getattr(source_info, "file_path", "") or "",
-        "schema_fingerprint": getattr(source_info, "signature", "") or "",
-        "row_count": getattr(source_info, "row_count", 0) or 0,
-        "columns": column_names,
-    }
-
-
-async def _ensure_agent(
-    session: "AgentSession",  # noqa: F821
-    source_info: "DataSourceInfo | None",  # noqa: F821
-) -> bool:
-    """Ensure the session has a running agent, creating or rebuilding as needed.
-
-    Creates a new agent on first call or when the data source or
-    interactive_shipping flag changes. The agent and its MCP servers
-    persist across messages for the session lifetime, leveraging the
-    SDK's internal conversation memory.
-
-    Args:
-        session: The conversation session.
-        source_info: Current data source metadata.
-
-    Returns:
-        True if a new agent was started/rebuilt, False if existing reused.
-    """
-    from src.orchestrator.agent.system_prompt import build_system_prompt
-
-    source_hash = _compute_source_hash(source_info)
-    combined_hash = f"{source_hash}|interactive={session.interactive_shipping}"
-
-    # Reuse existing agent if config hasn't changed
-    if session.agent is not None and session.agent_source_hash == combined_hash:
-        return False
-
-    # Stop old agent if config changed mid-conversation
-    if session.agent is not None:
-        logger.info(
-            "Config changed for session %s, rebuilding agent "
-            "(interactive_shipping=%s)",
-            session.session_id,
-            session.interactive_shipping,
-        )
-        try:
-            await session.agent.stop()
-        except Exception as e:
-            logger.warning("Error stopping old agent: %s", e)
-        # Source changed — invalidate confirmed semantic cache bound to prior schema.
-        session.confirmed_resolutions.clear()
-
-    # Fetch column samples for filter grounding (batch mode only).
-    column_samples: dict[str, list] | None = None
-    if source_info is not None and not session.interactive_shipping:
-        try:
-            from src.services.gateway_provider import get_data_gateway
-
-            gw_for_samples = await get_data_gateway()
-            column_samples = await gw_for_samples.get_column_samples(max_samples=5)
-        except Exception as e:
-            logger.warning("Failed to fetch column samples: %s", e)
-
-    # Load prior conversation for resumed sessions
-    from src.services.conversation_handler import _load_prior_conversation
-    prior_conversation = _load_prior_conversation(session.session_id)
-
-    system_prompt = build_system_prompt(
-        source_info=source_info,
-        interactive_shipping=session.interactive_shipping,
-        column_samples=column_samples,
-        prior_conversation=prior_conversation,
-    )
-    agent = create_conversation_agent(
-        system_prompt=system_prompt,
-        interactive_shipping=session.interactive_shipping,
-        session_id=session.session_id,
-        model=_resolve_agent_model(),
-    )
-    await agent.start()
-
-    session.agent = agent
-    session.agent_source_hash = combined_hash
-    logger.info(
-        "Agent started for session %s interactive_shipping=%s",
-        session.session_id,
-        session.interactive_shipping,
-    )
-    return True
-
-
 async def _prewarm_session_agent(session_id: str) -> None:
     """Best-effort prewarm for session agent startup.
 
@@ -292,7 +149,11 @@ async def _prewarm_session_agent(session_id: str) -> None:
             source_info = await gw.get_source_info_typed()
             if source_info is None:
                 return
-            rebuilt = await _ensure_agent(session, source_info)
+            rebuilt = await conversation_handler.ensure_agent(
+                session,
+                source_info,
+                interactive_shipping=session.interactive_shipping,
+            )
             logger.info(
                 "Agent prewarm complete: session_id=%s rebuilt=%s source_type=%s",
                 session_id,
@@ -306,6 +167,22 @@ async def _prewarm_session_agent(session_id: str) -> None:
         logger.warning("Agent prewarm failed for session %s: %s", session_id, e)
 
 
+def _sanitize_queue_event(event: dict) -> dict:
+    """Sanitize sensitive text in events before queueing to SSE clients."""
+    if event.get("event") != "error":
+        return event
+    data = event.get("data")
+    if not isinstance(data, dict) or "message" not in data:
+        return event
+    return {
+        **event,
+        "data": {
+            **data,
+            "message": sanitize_error_message(str(data.get("message"))),
+        },
+    }
+
+
 async def _process_agent_message(
     session_id: str,
     content: str,
@@ -313,9 +190,9 @@ async def _process_agent_message(
 ) -> None:
     """Process a user message through the persistent agent.
 
-    Runs as a background task. Reuses the session's agent (SDK maintains
-    conversation history internally). The agent and MCP servers stay alive
-    across messages. An asyncio.Lock serializes access per session.
+    Runs as a background task. Reuses the session's provider-neutral
+    conversation agent across messages. An asyncio.Lock serializes access per
+    session.
 
     Args:
         session_id: Conversation session ID.
@@ -323,6 +200,7 @@ async def _process_agent_message(
     """
     queue = _get_event_queue(session_id)
     session = _session_manager.get_or_create_session(session_id)
+    turn_generation: int | None = None
 
     if session.terminating:
         logger.info("Skipping message for terminating session %s", session_id)
@@ -340,451 +218,58 @@ async def _process_agent_message(
         await queue.put({"event": "done", "data": {}})
         return
 
-    started_at = time.perf_counter()
-    first_event_at: float | None = None
-    first_event_source = ""
-    preview_rows_rated = 0
-    preview_total_rows = 0
-    preview_first_partial_logged = False
-    preview_total_logged = False
-    source_type = "none"
-    agent_rebuilt = False
-    raw_hide_transient = os.environ.get("AGENT_HIDE_TRANSIENT_CHAT", "true").strip().lower()
-    hide_transient_chat = raw_hide_transient not in {"0", "false", "no", "off"}
-    buffered_agent_messages: list[str] = []
-    artifact_emitted = False
-    run_status: AgentDecisionRunStatus = AgentDecisionRunStatus.completed
-    artifact_events = {
-        "preview_partial",
-        "preview_ready",
-        "pickup_preview",
-        "pickup_result",
-        "location_result",
-        "landed_cost_result",
-        "paperless_upload_prompt",
-        "paperless_result",
-        "tracking_result",
-    }
-
-    logger.info(
-        "agent_timing marker=message_received session_id=%s content_len=%d elapsed=%.3f",
-        session_id,
-        len(content),
-        0.0,
-    )
-
-    def _track_preview_event(
-        event_type: str,
-        data: dict[str, Any],
-        source: str,
-    ) -> None:
-        nonlocal preview_rows_rated, preview_total_rows
-        nonlocal preview_first_partial_logged, preview_total_logged
-
-        if event_type == "preview_partial":
-            rows_rated = int(data.get("rows_rated", 0))
-            total_rows = int(data.get("total_rows", 0))
-            preview_rows_rated = max(preview_rows_rated, rows_rated)
-            preview_total_rows = max(preview_total_rows, total_rows)
-            if not preview_first_partial_logged:
-                preview_first_partial_logged = True
-                logger.info(
-                    "metric=preview_first_partial_latency_ms session_id=%s "
-                    "source=%s value=%d",
-                    session_id,
-                    source,
-                    int((time.perf_counter() - started_at) * 1000),
-                )
-            return
-
-        if event_type == "preview_ready":
-            preview_total_rows = int(data.get("total_rows", preview_total_rows))
-            preview_rows_rated = len(data.get("preview_rows", []))
-            if not preview_total_logged:
-                preview_total_logged = True
-                logger.info(
-                    "metric=preview_total_latency_ms session_id=%s source=%s value=%d",
-                    session_id,
-                    source,
-                    int((time.perf_counter() - started_at) * 1000),
-                )
-
-    def _mark_first_event(source: str) -> None:
-        nonlocal first_event_at, first_event_source
-        if first_event_at is None:
-            first_event_at = time.perf_counter()
-            first_event_source = source
-            logger.info(
-                "agent_timing marker=first_event session_id=%s source=%s elapsed=%.3f",
-                session_id,
-                source,
-                first_event_at - started_at,
-            )
-
-    # Track which artifact events have been persisted to avoid double-writes.
-    _persisted_events: set[str] = set()
-
     run_token = set_decision_run_id(run_id)
-    job_token = set_decision_job_id(None)
 
-    async with session.lock:
-        try:
-            from src.services.gateway_provider import get_data_gateway
+    def _record_turn_generation(generation: int) -> None:
+        nonlocal turn_generation
+        turn_generation = generation
 
-            gw = await get_data_gateway()
-            source_info = await gw.get_source_info_typed()
-            DecisionAuditService.update_run_source_signature(
-                run_id,
-                _build_source_signature(source_info),
-            )
-            DecisionAuditService.log_event(
-                run_id=run_id,
-                phase="ingress",
-                event_name="conversation.processing.started",
-                actor="api",
-                payload={
-                    "session_id": session_id,
-                    "content_length": len(content),
-                    "source_type": getattr(source_info, "source_type", "none")
-                    if source_info is not None
-                    else "none",
-                },
-            )
+    def _turn_can_emit() -> bool:
+        if _session_manager.get_session(session_id) is not session:
+            return False
+        if session.terminating:
+            return False
+        if turn_generation is None:
+            return True
+        return session.is_turn_generation_active(turn_generation)
 
-            source_type = source_info.source_type if source_info is not None else "none"
-            _persist_session_context(session_id, source_info)
-            logger.info(
-                "agent_timing marker=source_resolved session_id=%s source_type=%s elapsed=%.3f",
-                session_id,
-                source_type,
-                time.perf_counter() - started_at,
-            )
+    try:
 
-            # Auto-failover: batch shipping commands require FilterSpec tools.
-            # If the session is in interactive mode, switch to batch mode and
-            # rebuild so resolve_filter_intent/ship_command_pipeline are available.
-            if (
-                session.interactive_shipping
-                and is_batch_shipping_request(content)
-            ):
-                logger.info(
-                    "Switching session %s from interactive to batch mode for "
-                    "batch shipping command.",
-                    session_id,
+        def _emit_sync(event_type: str, data: dict) -> None:
+            if _turn_can_emit():
+                queue.put_nowait(
+                    _sanitize_queue_event({"event": event_type, "data": data})
                 )
-                session.interactive_shipping = False
 
-            # Create or reuse agent (persists across messages)
-            agent_rebuilt = await _ensure_agent(session, source_info)
-            logger.info(
-                "agent_timing marker=agent_ready session_id=%s agent_rebuilt=%s elapsed=%.3f",
-                session_id,
-                agent_rebuilt,
-                time.perf_counter() - started_at,
-            )
-
-            # Bridge tool events to the SSE queue.
-            def _emit_to_queue(event_type: str, data: dict) -> None:
-                nonlocal artifact_emitted
-                _mark_first_event("tool_emit")
-                _track_preview_event(event_type, data, "tool_emit")
-                if hide_transient_chat and event_type in artifact_events:
-                    artifact_emitted = True
-                # Persist artifact events to the database for history replay.
-                if event_type in _PERSISTABLE_ARTIFACTS and event_type not in _persisted_events:
-                    _persisted_events.add(event_type)
-                    _persist_artifact_message(session_id, event_type, data)
-                queue.put_nowait({"event": event_type, "data": data})
-
-            session.agent.emitter_bridge.callback = _emit_to_queue
-            session.agent.emitter_bridge.last_user_message = content
-            if is_shipping_request(content):
-                session.agent.emitter_bridge.last_shipping_command = content
-            elif is_confirmation_response(content):
-                # Keep prior shipping command context for one confirmation turn.
-                pass
-            else:
-                session.agent.emitter_bridge.last_shipping_command = None
-            session.agent.emitter_bridge.confirmed_resolutions = (
-                session.confirmed_resolutions
-            )
-            try:
-                # Process message — SDK maintains conversation context internally.
-                async for event in session.agent.process_message_stream(content):
-                    event_type = event.get("event")
-                    _mark_first_event(str(event_type or "unknown"))
-                    if isinstance(event_type, str):
-                        _track_preview_event(
-                            event_type,
-                            event.get("data", {}),
-                            "agent_stream",
-                        )
-                    if hide_transient_chat and event_type in artifact_events:
-                        artifact_emitted = True
-
-                    # Persist artifact events from the agent stream.
-                    if (
-                        isinstance(event_type, str)
-                        and event_type in _PERSISTABLE_ARTIFACTS
-                        and event_type not in _persisted_events
-                    ):
-                        _persisted_events.add(event_type)
-                        _persist_artifact_message(
-                            session_id, event_type, event.get("data", {}),
-                        )
-
-                    if event_type == "agent_message":
-                        text = event.get("data", {}).get("text", "")
-                        if hide_transient_chat:
-                            if text:
-                                buffered_agent_messages.append(text)
-                            continue
-                        if text:
-                            _session_manager.add_message(session_id, "assistant", text)
-                            _persist_assistant_message(session_id, text)
-                    elif event_type == "error":
-                        run_status = AgentDecisionRunStatus.failed
-                    elif event_type == "preview_ready":
-                        event_job_id = event.get("data", {}).get("job_id")
-                        if isinstance(event_job_id, str) and event_job_id:
-                            set_decision_job_id(event_job_id)
-                            DecisionAuditService.set_run_job_id(run_id, event_job_id)
-                            DecisionAuditService.log_event(
-                                run_id=run_id,
-                                phase="pipeline",
-                                event_name="pipeline.preview_ready",
-                                actor="system",
-                                payload={
-                                    "job_id": event_job_id,
-                                    "total_rows": event.get("data", {}).get("total_rows", 0),
-                                },
-                            )
-
-                    await queue.put(event)
-
-                if hide_transient_chat:
-                    if artifact_emitted:
-                        logger.info(
-                            "agent_transient_chat_suppressed session_id=%s buffered=%d",
-                            session_id,
-                            len(buffered_agent_messages),
-                        )
-                    elif buffered_agent_messages:
-                        final_text = buffered_agent_messages[-1]
-                        if final_text:
-                            await queue.put(
-                                {
-                                    "event": "agent_message",
-                                    "data": {"text": final_text},
-                                }
-                            )
-                            _session_manager.add_message(
-                                session_id,
-                                "assistant",
-                                final_text,
-                            )
-                            _persist_assistant_message(session_id, final_text)
-            finally:
-                session.agent.emitter_bridge.callback = None
-
-        except Exception as e:
-            logger.error("Agent processing failed for session %s: %s", session_id, e)
-            _mark_first_event("error")
-            run_status = AgentDecisionRunStatus.failed
-            DecisionAuditService.log_event(
-                run_id=run_id,
-                phase="error",
-                event_name="conversation.processing.failed",
-                actor="system",
-                payload={"error": str(e)},
-            )
+        async for event in conversation_handler.process_message(
+            session,
+            content,
+            interactive_shipping=session.interactive_shipping,
+            emit_callback=_emit_sync,
+            turn_generation_callback=_record_turn_generation,
+        ):
+            if not _turn_can_emit():
+                break
+            await queue.put(_sanitize_queue_event(event))
+    except Exception as e:
+        logger.error("Agent processing failed for session %s: %s", session_id, e)
+        if _turn_can_emit():
             await queue.put(
                 {
                     "event": "error",
                     "data": {"message": sanitize_error_message(str(e))},
                 }
             )
-
-    # Signal end of response
-    await queue.put({"event": "done", "data": {}})
-
-    elapsed = time.perf_counter() - started_at
-    ttfb = (first_event_at - started_at) if first_event_at is not None else -1.0
-    agent_turns_count = (
-        int(getattr(session.agent, "last_turn_count", 0))
-        if session.agent is not None
-        else 0
-    )
-    logger.info(
-        "agent_timing marker=done_emitted session_id=%s source_type=%s "
-        "agent_rebuilt=%s agent_turns_count=%d "
-        "preview_rows_rated=%d preview_total_rows=%d batch_concurrency=%s "
-        "interactive_shipping=%s first_event_source=%s ttfb=%.3f elapsed=%.3f",
-        session_id,
-        source_type,
-        agent_rebuilt,
-        agent_turns_count,
-        preview_rows_rated,
-        preview_total_rows,
-        BatchEngine._resolve_concurrency(),
-        session.interactive_shipping,
-        first_event_source,
-        ttfb,
-        elapsed,
-    )
-    try:
-        DecisionAuditService.log_event(
-            run_id=run_id,
-            phase="egress",
-            event_name="conversation.processing.completed",
-            actor="api",
-            payload={
-                "session_id": session_id,
-                "agent_turns_count": agent_turns_count,
-                "preview_rows_rated": preview_rows_rated,
-                "preview_total_rows": preview_total_rows,
-                "first_event_source": first_event_source,
-                "ttfb_ms": int(ttfb * 1000) if ttfb >= 0 else None,
-                "elapsed_ms": int(elapsed * 1000),
-            },
-            latency_ms=int(elapsed * 1000),
-        )
-        DecisionAuditService.complete_run(
-            run_id,
-            status=run_status,
-            job_id=get_decision_job_id(),
-        )
     finally:
-        reset_decision_job_id(job_token)
         reset_decision_run_id(run_token)
-
-
-def _persist_session_context(session_id: str, source_info: "DataSourceInfo | None") -> None:
-    """Persist the current data source context to the session record.
-
-    Best-effort — failures are logged but never block the SSE stream.
-
-    Args:
-        session_id: Conversation session ID.
-        source_info: Current data source info, or None.
-    """
-    try:
-        if source_info is None:
-            return
-
-        from src.db.connection import get_db_context
-        from src.services.saved_data_source_service import SavedDataSourceService
-
-        # Resolve saved_source_id by matching file_path
-        saved_source_id: str | None = None
-        file_path = getattr(source_info, "file_path", None) or ""
-        source_type = getattr(source_info, "source_type", None) or ""
-        row_count = getattr(source_info, "row_count", 0) or 0
-
-        # Determine source category (local vs platform)
-        ds_type: str | None = None
-        if source_type in ("csv", "excel", "database"):
-            ds_type = "local"
-        elif source_type == "shopify":
-            ds_type = "shopify"
-        elif source_type == "amazon":
-            ds_type = "amazon"
-
-        with get_db_context() as db:
-            if ds_type == "local" and file_path:
-                sources = SavedDataSourceService.list_sources(db, source_type=source_type)
-                for src in sources:
-                    if src.file_path and src.file_path == file_path:
-                        saved_source_id = src.id
-                        break
-
-            # Build label from file path
-            label = file_path.rsplit("/", 1)[-1] if file_path else source_type
-
-            context_data = {
-                "data_source": {
-                    "type": ds_type,
-                    "source_type": source_type,
-                    "saved_source_id": saved_source_id,
-                    "file_path": file_path or None,
-                    "label": label,
-                    "row_count": row_count,
-                },
-            }
-
-            svc = ConversationPersistenceService(db)
-            svc.update_session_context(session_id, context_data)
-    except Exception as exc:
-        logger.error("Failed to persist session context for %s: %s", session_id, exc)
-
-
-def _persist_assistant_message(session_id: str, text: str) -> None:
-    """Persist an assistant message to the database.
-
-    Best-effort — failures are logged at error level but do not block
-    the SSE event stream.
-
-    Args:
-        session_id: Conversation session ID.
-        text: Assistant message text.
-    """
-    try:
-        from src.db.connection import get_db_context
-        with get_db_context() as db:
-            svc = ConversationPersistenceService(db)
-            svc.save_message(session_id, "assistant", text)
-    except Exception as exc:
-        logger.error("Failed to persist assistant msg for %s: %s", session_id, exc)
-
-
-# Artifact event types that should be persisted to the database.
-_PERSISTABLE_ARTIFACTS: set[str] = {
-    "preview_ready",
-    "pickup_result",
-    "location_result",
-    "landed_cost_result",
-    "paperless_result",
-    "tracking_result",
-    "contact_saved",
-}
-
-# Mapping from event_type → metadata key used by the frontend ConversationMessage.
-_ARTIFACT_METADATA_KEY: dict[str, str] = {
-    "preview_ready": "batchPreview",
-    "pickup_result": "pickup",
-    "location_result": "location",
-    "landed_cost_result": "landedCost",
-    "paperless_result": "paperless",
-    "tracking_result": "tracking",
-    "contact_saved": "contactSaved",
-}
-
-
-def _persist_artifact_message(session_id: str, event_type: str, data: dict) -> None:
-    """Persist a tool-emitted artifact event as a system_artifact message.
-
-    Best-effort — failures are logged but do not block the SSE stream.
-
-    Args:
-        session_id: Conversation session ID.
-        event_type: The SSE event type (e.g. 'tracking_result').
-        data: The event payload data.
-    """
-    meta_key = _ARTIFACT_METADATA_KEY.get(event_type, event_type)
-    metadata = {"action": event_type, meta_key: data}
-    try:
-        from src.db.connection import get_db_context
-        with get_db_context() as db:
-            svc = ConversationPersistenceService(db)
-            svc.save_message(
-                session_id,
-                role="assistant",
-                content="",
-                message_type="system_artifact",
-                metadata=metadata,
-            )
-    except Exception as exc:
-        logger.error("Failed to persist artifact %s for %s: %s", event_type, session_id, exc)
+        if _turn_can_emit():
+            await queue.put({"event": "done", "data": {}})
+        if (
+            turn_generation is not None
+            and _session_manager.get_session(session_id) is session
+            and session.is_turn_generation_active(turn_generation)
+        ):
+            session.invalidate_active_turn_generation()
 
 
 def _schedule_agent_message(
@@ -794,7 +279,9 @@ def _schedule_agent_message(
 ) -> None:
     """Schedule agent message processing and bind task to session lifecycle."""
     session = _session_manager.get_or_create_session(session_id)
-    task = asyncio.create_task(_process_agent_message(session_id, content, run_id=run_id))
+    task = asyncio.create_task(
+        _process_agent_message(session_id, content, run_id=run_id)
+    )
     session.message_tasks.add(task)
 
     def _on_done(done_task: asyncio.Task[None]) -> None:
@@ -905,11 +392,14 @@ async def create_conversation(
     # Persist session to database
     try:
         from src.db.connection import get_db_context
+
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             svc.create_session(
                 session_id=session_id,
-                mode="interactive" if effective_payload.interactive_shipping else "batch",
+                mode="interactive"
+                if effective_payload.interactive_shipping
+                else "batch",
             )
     except Exception as e:
         logger.error("Failed to persist session %s to DB: %s", session_id, e)
@@ -953,6 +443,7 @@ async def send_message(
     # Persist user message to database and set title from first message
     try:
         from src.db.connection import get_db_context
+
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             svc.save_message(session_id, "user", payload.content)
@@ -1046,20 +537,21 @@ async def upload_document(
     file_content_base64 = base64.b64encode(file_bytes).decode("ascii")
 
     # Stage attachment for the tool handler
-    attachment_store.stage(session_id, {
-        "file_content_base64": file_content_base64,
-        "file_name": file_name,
-        "file_format": normalized_ext,
-        "document_type": document_type,
-        "file_size_bytes": len(file_bytes),
-    })
+    attachment_store.stage(
+        session_id,
+        {
+            "file_content_base64": file_content_base64,
+            "file_name": file_name,
+            "file_format": normalized_ext,
+            "document_type": document_type,
+            "file_size_bytes": len(file_bytes),
+        },
+    )
 
     # Build agent message
     doc_type_label = DOCUMENT_TYPE_LABELS.get(document_type, f"Type {document_type}")
     notes_suffix = f" Notes: {notes}" if notes.strip() else ""
-    agent_message = (
-        f"[DOCUMENT_ATTACHED: {file_name} ({normalized_ext}, {doc_type_label})]{notes_suffix}"
-    )
+    agent_message = f"[DOCUMENT_ATTACHED: {file_name} ({normalized_ext}, {doc_type_label})]{notes_suffix}"
 
     # Store in conversation history and trigger agent processing
     _session_manager.add_message(session_id, "user", agent_message)
@@ -1067,7 +559,9 @@ async def upload_document(
         session_id=session_id,
         user_message=agent_message,
         model=os.environ.get("AGENT_MODEL") or os.environ.get("ANTHROPIC_MODEL"),
-        interactive_shipping=bool(session.interactive_shipping) if session is not None else False,
+        interactive_shipping=bool(session.interactive_shipping)
+        if session is not None
+        else False,
     )
     DecisionAuditService.log_event(
         run_id=run_id,
@@ -1167,8 +661,9 @@ async def _teardown_session(session_id: str) -> None:
     session = _session_manager.get_session(session_id)
     if session is not None:
         session.terminating = True
-    await _session_manager.cancel_session_prewarm_task(session_id)
+        session.invalidate_active_turn_generation()
     await _session_manager.cancel_session_message_tasks(session_id)
+    await _session_manager.cancel_session_prewarm_task(session_id)
     await _session_manager.stop_session_agent(session_id)
     _session_manager.remove_session(session_id)
     _event_queues.pop(session_id, None)
@@ -1191,6 +686,7 @@ async def delete_conversation(session_id: str) -> Response:
     # Soft-delete from database (keep for history)
     try:
         from src.db.connection import get_db_context
+
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             svc.soft_delete_session(session_id)
@@ -1251,16 +747,21 @@ async def list_conversations(
         List of session summaries ordered by recency.
     """
     from src.db.connection import get_db_context
+
     try:
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             sessions = svc.list_sessions(
-                active_only=active_only, limit=limit, offset=offset,
+                active_only=active_only,
+                limit=limit,
+                offset=offset,
             )
         return [ChatSessionSummary(**s) for s in sessions]
     except Exception as exc:
         logger.error("Failed to list conversations: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to list conversations") from None
+        raise HTTPException(
+            status_code=500, detail="Failed to list conversations"
+        ) from None
 
 
 @router.get("/{session_id}/messages", response_model=SessionDetailResponse)
@@ -1283,6 +784,7 @@ async def get_session_messages(
         HTTPException: 404 if session not found.
     """
     from src.db.connection import get_db_context
+
     with get_db_context() as db:
         svc = ConversationPersistenceService(db)
         result = svc.get_session_with_messages(session_id, limit=limit, offset=offset)
@@ -1290,7 +792,9 @@ async def get_session_messages(
         raise HTTPException(status_code=404, detail="Session not found")
 
     return SessionDetailResponse(
-        session=ChatSessionSummary(**result["session"], message_count=len(result["messages"])),
+        session=ChatSessionSummary(
+            **result["session"], message_count=len(result["messages"])
+        ),
         messages=[PersistedMessageResponse(**m) for m in result["messages"]],
     )
 
@@ -1310,6 +814,7 @@ async def update_conversation(
         Updated session ID and title.
     """
     from src.db.connection import get_db_context
+
     with get_db_context() as db:
         svc = ConversationPersistenceService(db)
         found = svc.update_session_title(session_id, payload.title)
@@ -1341,7 +846,11 @@ async def export_conversation(session_id: str) -> Response:
     if export is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    title_slug = (export["session"].get("title") or "conversation").replace(" ", "-").lower()[:30]
+    title_slug = (
+        (export["session"].get("title") or "conversation")
+        .replace(" ", "-")
+        .lower()[:30]
+    )
     filename = f"{title_slug}-{session_id[:8]}.json"
 
     return Response(
@@ -1373,6 +882,7 @@ async def save_artifact(
     """
     try:
         from src.db.connection import get_db_context
+
         with get_db_context() as db:
             svc = ConversationPersistenceService(db)
             svc.save_message(

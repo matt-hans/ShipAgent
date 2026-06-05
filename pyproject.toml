@@ -44,6 +44,10 @@ dependencies = [
     "rich>=13.0.0",
     "watchdog>=4.0.0",
     "pyyaml>=6.0",
+    # Model runtime adapters
+    "claude-agent-sdk>=0.1.50",
+    "openai>=2.11.0",
+    "google-genai>=1.33.0",
 ]
 
 [project.optional-dependencies]

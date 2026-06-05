@@ -250,8 +250,6 @@ class TestServiceConstructionFailure:
         """
         from src.services.connection_service import ConnectionService
 
-        original_init = ConnectionService.__init__
-
         def bad_init(self, db, key_dir=None):
             raise RuntimeError("Key file permission denied")
 

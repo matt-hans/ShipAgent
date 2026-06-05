@@ -346,8 +346,9 @@ class TestAutoDetectColSpecs:
         shipping fields (WT_LBS, LEN, WID, HGT, SERVICE, PKG_TYPE) contain
         the expected values without bleeding.
         """
-        import duckdb as _duckdb
         from pathlib import Path
+
+        import duckdb as _duckdb
 
         fwf_path = Path("test_data/shipments_domestic.fwf")
         if not fwf_path.exists():
@@ -476,8 +477,9 @@ class TestAutoDetectColSpecs:
         causing DuckDB to assign VARCHAR to numeric columns, which broke
         SQL comparisons like WHERE WT_LBS > 20.
         """
-        import duckdb as _duckdb
         from pathlib import Path
+
+        import duckdb as _duckdb
 
         fwf_path = Path("test_data/shipments_domestic.fwf")
         if not fwf_path.exists():

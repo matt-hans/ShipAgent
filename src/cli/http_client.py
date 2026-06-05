@@ -11,8 +11,6 @@ import logging
 import os
 from collections.abc import AsyncIterator
 
-from src.utils.runtime import get_default_port
-
 from src.cli.protocol import (
     AgentEvent,
     DataSourceStatus,
@@ -26,6 +24,7 @@ from src.cli.protocol import (
     SourceSchemaColumn,
     SubmitResult,
 )
+from src.utils.runtime import get_default_port
 
 logger = logging.getLogger(__name__)
 

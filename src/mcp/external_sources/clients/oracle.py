@@ -136,7 +136,7 @@ class OracleClient(PlatformClient):
 
         # Validate all identifiers at init time (CWE-89 defense-in-depth)
         _quote_identifier(self._table_config["orders_table"])
-        for logical_name, col_name in self._table_config["columns"].items():
+        for _logical_name, col_name in self._table_config["columns"].items():
             _quote_identifier(col_name)
 
     @property

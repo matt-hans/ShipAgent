@@ -11,13 +11,13 @@ import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from src.db.models import AppSettings, Base
 from src.services.settings_service import SettingsService
-
 
 # ─── Fixtures ────────────────────────────────────────────────────────
 
@@ -204,7 +204,7 @@ def test_patch_validates_batch_concurrency_range():
     """batch_concurrency outside [1, 20] should be rejected."""
     from src.api.routes.settings import SettingsPatch
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         SettingsPatch(batch_concurrency=25)
 
 
@@ -212,7 +212,7 @@ def test_patch_validates_country_code_format():
     """shipper_country must be a 2-letter code."""
     from src.api.routes.settings import SettingsPatch
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         SettingsPatch(shipper_country="USA")
 
 
@@ -471,7 +471,6 @@ def test_bundle_entry_has_global_exception_handler():
 
 def test_port_reporting_server_signals_failure():
     """PortReportingServer should emit SHIPAGENT_ERROR on startup failure."""
-    import ast
     from pathlib import Path
 
     src = Path("src/bundle_entry.py").read_text()
@@ -490,8 +489,8 @@ def test_port_reporting_server_signals_failure():
 
 def test_build_script_pubkey_grep_rejects_placeholder():
     """Verify that the grep command in bundle_backend.sh catches placeholders."""
-    import subprocess
     import json
+    import subprocess
 
     # Write a tauri conf with placeholder pubkey
     import tempfile
@@ -513,9 +512,8 @@ def test_build_script_pubkey_grep_rejects_placeholder():
 
 def test_build_script_pubkey_grep_accepts_real_key():
     """Verify that the grep command passes for a real pubkey."""
-    import subprocess
     import json
-
+    import subprocess
     import tempfile
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump({"plugins": {"updater": {"pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk="}}}, f)
@@ -593,6 +591,7 @@ def test_bundle_backend_uses_port_zero():
 def test_get_cli_args_requires_cli_command():
     """get_cli_args() should assert when called without 'cli' subcommand."""
     from unittest.mock import patch as _patch
+
     from src.bundle_entry import get_cli_args
 
     with _patch("src.bundle_entry.sys") as mock_sys:
@@ -618,6 +617,6 @@ def test_get_all_status_does_single_probe(mock_kr):
     mock_kr.get_password.side_effect = counting_get
     store = KeyringStore()
     os.environ.pop("ANTHROPIC_API_KEY", None)
-    status = store.get_all_status()
+    store.get_all_status()
     # Only the probe call should fail, then env fallback for all keys
     assert call_count == 1, f"Expected 1 probe call, got {call_count}"

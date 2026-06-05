@@ -19,7 +19,6 @@ from sqlalchemy.orm import sessionmaker
 
 from src.db.models import Base, ProviderConnection
 
-
 # ---------- shared fixtures ---------- #
 
 

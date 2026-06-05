@@ -60,6 +60,11 @@ from src.orchestrator.agent.tools.pipeline import (  # noqa: E402
     ship_command_pipeline_tool,
 )
 from src.orchestrator.agent.tools.tracking import track_package_tool  # noqa: E402
+from src.orchestrator.agent.tools.ups import (  # noqa: E402
+    get_time_in_transit_tool,
+    rate_shipment_tool,
+    validate_address_tool,
+)
 
 
 def get_all_tool_definitions(
@@ -259,6 +264,76 @@ def get_all_tool_definitions(
                 "required": ["job_id"],
             },
             "handler": get_job_status_tool,
+        },
+        {
+            "name": "rate_shipment",
+            "description": (
+                "Get a UPS shipment rate quote using a complete UPS RateRequest "
+                "payload. Read-only; does not create shipments."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "request_body": {
+                        "type": "object",
+                        "description": "Complete UPS RateRequest request body.",
+                    },
+                    "requestoption": {
+                        "type": "string",
+                        "description": (
+                            "UPS rating mode: Rate, Shop, or Shoptimeintransit."
+                        ),
+                        "enum": ["Rate", "Shop", "Shoptimeintransit"],
+                        "default": "Rate",
+                    },
+                },
+                "required": ["request_body"],
+            },
+            "handler": _bind_bridge(rate_shipment_tool, bridge),
+        },
+        {
+            "name": "validate_address",
+            "description": (
+                "Validate a shipping address with UPS. Read-only; returns "
+                "candidate status information."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "addressLine1": {"type": "string"},
+                    "addressLine2": {"type": "string", "default": ""},
+                    "city": {"type": "string"},
+                    "stateProvinceCode": {"type": "string"},
+                    "postalCode": {"type": "string"},
+                    "countryCode": {"type": "string", "default": "US"},
+                },
+                "required": [
+                    "addressLine1",
+                    "city",
+                    "stateProvinceCode",
+                    "postalCode",
+                    "countryCode",
+                ],
+            },
+            "handler": _bind_bridge(validate_address_tool, bridge),
+        },
+        {
+            "name": "get_time_in_transit",
+            "description": (
+                "Get UPS time-in-transit estimates using a complete UPS "
+                "TimeInTransit request body. Read-only."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "request_body": {
+                        "type": "object",
+                        "description": "Complete UPS TimeInTransit request body.",
+                    },
+                },
+                "required": ["request_body"],
+            },
+            "handler": _bind_bridge(get_time_in_transit_tool, bridge),
         },
         {
             "name": "batch_execute",
@@ -782,6 +857,7 @@ def get_all_tool_definitions(
     interactive_allowed = {
         "get_job_status", "get_platform_status",
         # v2 tools — work independently of data source
+        "rate_shipment", "validate_address", "get_time_in_transit",
         "schedule_pickup", "cancel_pickup", "rate_pickup", "get_pickup_status",
         "find_locations", "get_service_center_facilities",
         "request_document_upload", "upload_paperless_document",

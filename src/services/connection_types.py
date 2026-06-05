@@ -6,7 +6,6 @@ runtime_credentials.py, and agent config.py.
 
 from dataclasses import dataclass, field
 
-
 # --- Shared Constants ---
 
 VALID_PROVIDERS: frozenset[str] = frozenset({"ups", "shopify", "amazon"})

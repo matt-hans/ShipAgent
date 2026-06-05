@@ -79,17 +79,19 @@ def main(
 def version():
     """Show ShipAgent version and dependency info."""
     from importlib.metadata import version as pkg_version
+
+    from src.orchestrator.agent.client import is_claude_sdk_available
+
     try:
         v = pkg_version("shipagent")
     except Exception:
         v = "unknown"
     console.print(f"[bold]ShipAgent[/bold] v{v}")
     console.print("  CLI: headless automation suite")
-    try:
-        import claude_agent_sdk
-        console.print(f"  Agent SDK: {getattr(claude_agent_sdk, '__version__', 'unknown')}")
-    except ImportError:
-        console.print("  Agent SDK: [red]not installed[/red]")
+    if is_claude_sdk_available():
+        console.print("  Claude SDK runtime: available")
+    else:
+        console.print("  Claude SDK runtime: [red]not installed[/red]")
 
 
 # --- Config commands ---
@@ -117,7 +119,7 @@ def config_show():
     if cfg.watch_folders:
         console.print(f"\n[bold]Watch Folders ({len(cfg.watch_folders)}):[/bold]")
         for wf in cfg.watch_folders:
-            console.print(f"  {wf.path} → \"{wf.command}\"")
+            console.print(f'  {wf.path} → "{wf.command}"')
 
     if cfg.ups:
         console.print("\n[bold]UPS:[/bold]")
@@ -138,7 +140,9 @@ def config_validate(
             raise typer.Exit(1)
         console.print("[green]Config is valid.[/green]")
         console.print(f"  Watch folders: {len(cfg.watch_folders)}")
-        console.print(f"  Auto-confirm: {'enabled' if cfg.auto_confirm.enabled else 'disabled'}")
+        console.print(
+            f"  Auto-confirm: {'enabled' if cfg.auto_confirm.enabled else 'disabled'}"
+        )
     except FileNotFoundError as e:
         console.print(f"[red]Config file not found:[/red] {e}")
         raise typer.Exit(1) from e
@@ -218,7 +222,9 @@ def job_approve(
     async def _run():
         async with client:
             await client.approve_job(job_id)
-            console.print(f"[green]Job {job_id} approved and queued for execution.[/green]")
+            console.print(
+                f"[green]Job {job_id} approved and queued for execution.[/green]"
+            )
 
     asyncio.run(_run())
 
@@ -246,7 +252,9 @@ def job_cancel(
 @job_app.command("logs")
 def job_logs(
     job_id: str = typer.Argument(help="Job ID to stream logs for"),
-    follow: bool = typer.Option(False, "--follow", "-f", help="Follow/stream progress in real-time"),
+    follow: bool = typer.Option(
+        False, "--follow", "-f", help="Follow/stream progress in real-time"
+    ),
 ):
     """Stream progress events for a job.
 
@@ -267,17 +275,32 @@ def job_logs(
                         try:
                             async for event in client.stream_progress(job_id):
                                 retry_delay = 1.0  # Reset on success
-                                status_color = "green" if event.event_type == "row_completed" else "red"
-                                row_info = f"Row {event.row_number}/{event.total_rows}" if event.row_number else ""
-                                tracking = f" → {event.tracking_number}" if event.tracking_number else ""
+                                status_color = (
+                                    "green"
+                                    if event.event_type == "row_completed"
+                                    else "red"
+                                )
+                                row_info = (
+                                    f"Row {event.row_number}/{event.total_rows}"
+                                    if event.row_number
+                                    else ""
+                                )
+                                tracking = (
+                                    f" → {event.tracking_number}"
+                                    if event.tracking_number
+                                    else ""
+                                )
                                 console.print(
                                     f"[{status_color}]{event.event_type}[/{status_color}] "
                                     f"{row_info}{tracking} {event.message}"
                                 )
                             break  # Stream ended normally (job completed)
                         except ShipAgentClientError:
-                            console.print(f"[yellow]Connection lost. Retrying in {retry_delay:.0f}s...[/yellow]")
+                            console.print(
+                                f"[yellow]Connection lost. Retrying in {retry_delay:.0f}s...[/yellow]"
+                            )
                             import asyncio as _asyncio
+
                             await _asyncio.sleep(retry_delay)
                             retry_delay = min(retry_delay * 2, max_retry_delay)
                 else:
@@ -397,7 +420,8 @@ def submit(
                         _log.warning(
                             "Auto-confirm: %d/%d rows had unparseable order_data; "
                             "service_code checks may be incomplete",
-                            _parse_failures, len(rows),
+                            _parse_failures,
+                            len(rows),
                         )
 
                     # Address validation state is not re-persisted on rows
@@ -434,13 +458,12 @@ def submit(
                             message=f"Auto-confirm blocked: {violation_msgs}",
                         )
                 except ShipAgentClientError as e:
-                    console.print(
-                        f"[yellow]Auto-confirm skipped:[/yellow] {e.message}"
-                    )
+                    console.print(f"[yellow]Auto-confirm skipped:[/yellow] {e.message}")
 
             if json_output:
                 import dataclasses
                 import json
+
                 console.print(json.dumps(dataclasses.asdict(result), indent=2))
             else:
                 console.print(f"[green]Job submitted:[/green] {result.job_id}")
@@ -475,8 +498,12 @@ def daemon_start_cmd(
     if _config_path:
         os.environ["SHIPAGENT_CONFIG_PATH"] = str(_config_path)
 
-    console.print(f"[bold]Starting ShipAgent daemon on {final_host}:{final_port}[/bold]")
-    start_daemon(host=final_host, port=final_port, pid_file=pid_file, log_level=log_level)
+    console.print(
+        f"[bold]Starting ShipAgent daemon on {final_host}:{final_port}[/bold]"
+    )
+    start_daemon(
+        host=final_host, port=final_port, pid_file=pid_file, log_level=log_level
+    )
 
 
 @daemon_app.command("stop")
@@ -500,13 +527,19 @@ def daemon_status_cmd():
 
     cfg = load_config(config_path=_config_path)
     pid_file = cfg.daemon.pid_file if cfg else "~/.shipagent/daemon.pid"
-    base_url = f"http://{cfg.daemon.host}:{cfg.daemon.port}" if cfg else "http://127.0.0.1:8000"
+    base_url = (
+        f"http://{cfg.daemon.host}:{cfg.daemon.port}"
+        if cfg
+        else "http://127.0.0.1:8000"
+    )
 
     status = check_status(pid_file=pid_file, base_url=base_url)
     if status["alive"] and status["healthy"]:
         console.print(f"[green]Daemon running[/green] (PID {status['pid']}) — healthy")
     elif status["alive"]:
-        console.print(f"[yellow]Daemon running[/yellow] (PID {status['pid']}) — unhealthy")
+        console.print(
+            f"[yellow]Daemon running[/yellow] (PID {status['pid']}) — unhealthy"
+        )
     else:
         console.print("[red]Daemon not running[/red]")
 
@@ -536,8 +569,12 @@ def data_source_status():
 def data_source_connect(
     file: str | None = typer.Argument(None, help="Path to CSV or Excel file"),
     db: str | None = typer.Option(None, "--db", help="Database connection string"),
-    query: str | None = typer.Option(None, "--query", help="SQL query (required with --db)"),
-    platform: str | None = typer.Option(None, "--platform", help="Platform name (shopify)"),
+    query: str | None = typer.Option(
+        None, "--query", help="SQL query (required with --db)"
+    ),
+    platform: str | None = typer.Option(
+        None, "--platform", help="Platform name (shopify)"
+    ),
 ):
     """Connect a data source (file, database, or platform)."""
     cfg = load_config(config_path=_config_path)
@@ -702,15 +739,12 @@ def interact(
     asyncio.run(_run())
 
 
-async def _run_repl_in_context(
-    client, session_id: str | None = None
-) -> None:
+async def _run_repl_in_context(client, session_id: str | None = None) -> None:
     """Run the REPL loop using an already-open client context.
 
     This is used when pre-loading a data source before entering the REPL,
     since the client is already opened by the interact command.
     """
-
 
     if session_id is None:
         session_id = await client.create_session(interactive=False)
@@ -747,6 +781,7 @@ async def _run_repl_in_context(
             await client.delete_session(session_id)
         except Exception as e:
             import logging
+
             logging.getLogger(__name__).warning(
                 "Failed to clean up session %s: %s", session_id, e
             )
@@ -768,6 +803,7 @@ def contacts_list():
             console.print("[dim]No contacts saved.[/dim]")
             return
         from rich.table import Table
+
         table = Table(title="Address Book")
         table.add_column("Handle", style="cyan")
         table.add_column("Name")
@@ -775,7 +811,9 @@ def contacts_list():
         table.add_column("State")
         table.add_column("Country")
         for c in contacts:
-            table.add_row(f"@{c.handle}", c.display_name, c.city, c.state_province, c.country_code)
+            table.add_row(
+                f"@{c.handle}", c.display_name, c.city, c.state_province, c.country_code
+            )
         console.print(table)
 
 
@@ -799,9 +837,15 @@ def contacts_add(
         svc = ContactService(db)
         try:
             contact = svc.create_contact(
-                handle=handle, display_name=name, address_line_1=address,
-                city=city, state_province=state, postal_code=zip_code,
-                country_code=country, phone=phone, company=company,
+                handle=handle,
+                display_name=name,
+                address_line_1=address,
+                city=city,
+                state_province=state,
+                postal_code=zip_code,
+                country_code=country,
+                phone=phone,
+                company=company,
             )
             db.commit()
             console.print(f"[green]Created contact @{contact.handle}[/green]")
@@ -811,7 +855,9 @@ def contacts_add(
 
 
 @contacts_app.command("show")
-def contacts_show(handle: str = typer.Argument(..., help="Contact handle (with or without @)")):
+def contacts_show(
+    handle: str = typer.Argument(..., help="Contact handle (with or without @)"),
+):
     """Show details for a contact."""
     from src.db.connection import get_db_context
     from src.services.contact_service import ContactService
@@ -823,6 +869,7 @@ def contacts_show(handle: str = typer.Argument(..., help="Contact handle (with o
             console.print(f"[red]Contact @{handle.lstrip('@')} not found[/red]")
             raise typer.Exit(code=1)
         from rich.panel import Panel
+
         lines = [
             f"Handle:   @{contact.handle}",
             f"Name:     {contact.display_name}",
@@ -869,7 +916,9 @@ def contacts_delete(
 
 @contacts_app.command("export")
 def contacts_export(
-    output: str = typer.Option("contacts.json", "--output", "-o", help="Output file path"),
+    output: str = typer.Option(
+        "contacts.json", "--output", "-o", help="Output file path"
+    ),
 ):
     """Export all contacts to JSON."""
     import json as _json
@@ -882,25 +931,27 @@ def contacts_export(
         contacts = svc.list_contacts()
         data = []
         for c in contacts:
-            data.append({
-                "handle": c.handle,
-                "display_name": c.display_name,
-                "attention_name": c.attention_name,
-                "company": c.company,
-                "phone": c.phone,
-                "email": c.email,
-                "address_line_1": c.address_line_1,
-                "address_line_2": c.address_line_2,
-                "city": c.city,
-                "state_province": c.state_province,
-                "postal_code": c.postal_code,
-                "country_code": c.country_code,
-                "use_as_ship_to": c.use_as_ship_to,
-                "use_as_shipper": c.use_as_shipper,
-                "use_as_third_party": c.use_as_third_party,
-                "tags": c.tag_list,
-                "notes": c.notes,
-            })
+            data.append(
+                {
+                    "handle": c.handle,
+                    "display_name": c.display_name,
+                    "attention_name": c.attention_name,
+                    "company": c.company,
+                    "phone": c.phone,
+                    "email": c.email,
+                    "address_line_1": c.address_line_1,
+                    "address_line_2": c.address_line_2,
+                    "city": c.city,
+                    "state_province": c.state_province,
+                    "postal_code": c.postal_code,
+                    "country_code": c.country_code,
+                    "use_as_ship_to": c.use_as_ship_to,
+                    "use_as_shipper": c.use_as_shipper,
+                    "use_as_third_party": c.use_as_third_party,
+                    "tags": c.tag_list,
+                    "notes": c.notes,
+                }
+            )
         Path(output).write_text(_json.dumps(data, indent=2))
         console.print(f"[green]Exported {len(data)} contacts to {output}[/green]")
 
@@ -929,7 +980,9 @@ def contacts_import(file_path: str = typer.Argument(..., help="JSON file to impo
                 handle = item.get("handle", "").lstrip("@").lower().strip()
                 existing = svc.get_by_handle(handle) if handle else None
                 if existing:
-                    update_fields = {k: v for k, v in item.items() if k != "handle" and v is not None}
+                    update_fields = {
+                        k: v for k, v in item.items() if k != "handle" and v is not None
+                    }
                     svc.update_contact(existing.id, **update_fields)
                     updated += 1
                 else:
@@ -938,7 +991,9 @@ def contacts_import(file_path: str = typer.Argument(..., help="JSON file to impo
             except ValueError as e:
                 console.print(f"[yellow]Skipped: {e}[/yellow]")
         db.commit()
-        console.print(f"[green]Imported {created} new, {updated} updated / {len(data)} total[/green]")
+        console.print(
+            f"[green]Imported {created} new, {updated} updated / {len(data)} total[/green]"
+        )
 
 
 # --- Commands CLI ---
@@ -957,6 +1012,7 @@ def commands_list():
             console.print("[dim]No custom commands defined.[/dim]")
             return
         from rich.table import Table
+
         table = Table(title="Custom Commands")
         table.add_column("Command", style="cyan")
         table.add_column("Description")
@@ -970,7 +1026,9 @@ def commands_list():
 def commands_add(
     name: str = typer.Option(..., "--name", "-n", help="Command name without /"),
     body: str = typer.Option(..., "--body", "-b", help="Instruction text"),
-    description: str | None = typer.Option(None, "--description", "-d", help="Description"),
+    description: str | None = typer.Option(
+        None, "--description", "-d", help="Description"
+    ),
 ):
     """Add a new custom command."""
     from src.db.connection import get_db_context
@@ -988,7 +1046,9 @@ def commands_add(
 
 
 @commands_app.command("show")
-def commands_show(name: str = typer.Argument(..., help="Command name (with or without /)")):
+def commands_show(
+    name: str = typer.Argument(..., help="Command name (with or without /)"),
+):
     """Show a command's body."""
     from src.db.connection import get_db_context
     from src.services.custom_command_service import CustomCommandService
@@ -1000,10 +1060,13 @@ def commands_show(name: str = typer.Argument(..., help="Command name (with or wi
             console.print(f"[red]Command /{name.lstrip('/')} not found[/red]")
             raise typer.Exit(code=1)
         from rich.panel import Panel
-        console.print(Panel(
-            f"[bold]/{cmd.name}[/bold]\n{cmd.description or ''}\n\n{cmd.body}",
-            title=f"/{cmd.name}",
-        ))
+
+        console.print(
+            Panel(
+                f"[bold]/{cmd.name}[/bold]\n{cmd.description or ''}\n\n{cmd.body}",
+                title=f"/{cmd.name}",
+            )
+        )
 
 
 @commands_app.command("delete")

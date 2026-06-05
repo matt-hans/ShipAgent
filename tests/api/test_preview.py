@@ -15,7 +15,7 @@ from src.db.models import Job, JobRow, JobStatus, RowStatus
 
 # SHA-256 of empty string — used for jobs with no rows that still need
 # a valid preview_hash to pass the H-1 + TOCTOU checks.
-_EMPTY_PREVIEW_HASH = hashlib.sha256("".encode()).hexdigest()
+_EMPTY_PREVIEW_HASH = hashlib.sha256(b"").hexdigest()
 
 
 class TestGetPreview:
@@ -516,7 +516,7 @@ class TestPreviewHashFormat:
         assert response.status_code == 200
 
         test_db.refresh(job)
-        expected = hashlib.sha256("1:cs1|2:cs2".encode()).hexdigest()
+        expected = hashlib.sha256(b"1:cs1|2:cs2").hexdigest()
         assert job.preview_hash == expected
 
     def test_preview_hash_boundary_collision_detected(
@@ -525,6 +525,6 @@ class TestPreviewHashFormat:
         """Checksums that would collide with plain join produce different hashes."""
         # Old scheme: "".join(["ab","cd"]) == "".join(["abc","d"]) == "abcd"
         # New scheme: "1:ab|2:cd" != "1:abc|2:d"
-        hash_a = hashlib.sha256("1:ab|2:cd".encode()).hexdigest()
-        hash_b = hashlib.sha256("1:abc|2:d".encode()).hexdigest()
+        hash_a = hashlib.sha256(b"1:ab|2:cd").hexdigest()
+        hash_b = hashlib.sha256(b"1:abc|2:d").hexdigest()
         assert hash_a != hash_b

@@ -8,7 +8,6 @@ import io
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -57,7 +56,7 @@ class TestUploadSizeLimit:
 
     def test_upload_cleanup_on_oversize(self, client: TestClient, tmp_path: Path):
         """Partial file is deleted after rejection."""
-        from src.api.routes.data_sources import UPLOAD_DIR, _MAX_UPLOAD_SIZE_BYTES
+        from src.api.routes.data_sources import _MAX_UPLOAD_SIZE_BYTES, UPLOAD_DIR
 
         oversize_content = b"x" * (_MAX_UPLOAD_SIZE_BYTES + 1024)
         files = {

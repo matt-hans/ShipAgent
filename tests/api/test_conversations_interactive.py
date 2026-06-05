@@ -7,12 +7,14 @@ Covers:
 - Rebuild hash differentation by interactive_shipping flag
 """
 
-from src.api.routes.conversations import _compute_source_hash
 from src.api.schemas_conversations import (
     CreateConversationRequest,
     CreateConversationResponse,
 )
 from src.services.agent_session_manager import AgentSession
+from src.services.conversation_handler import (
+    compute_source_hash as _compute_source_hash,
+)
 
 
 class TestCreateConversationRequest:

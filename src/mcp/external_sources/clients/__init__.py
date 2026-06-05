@@ -1,5 +1,6 @@
 """Platform client implementations."""
 
+from src.mcp.external_sources.clients.amazon import AmazonClient
 from src.mcp.external_sources.clients.base import PlatformClient
 from src.mcp.external_sources.clients.oracle import (
     DEFAULT_TABLE_CONFIG,
@@ -7,7 +8,6 @@ from src.mcp.external_sources.clients.oracle import (
     OracleDependencyError,
 )
 from src.mcp.external_sources.clients.sap import SAPClient
-from src.mcp.external_sources.clients.amazon import AmazonClient
 from src.mcp.external_sources.clients.shopify import ShopifyClient
 from src.mcp.external_sources.clients.woocommerce import (
     WooCommerceAPIError,

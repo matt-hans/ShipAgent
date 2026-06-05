@@ -36,9 +36,11 @@ def _seed_session_with_messages(db_session, session_id: str, count: int = 5):
 
 def _mock_db_context(db_session):
     """Create a context manager mock for get_db_context."""
+
     @contextmanager
     def fake_ctx():
         yield db_session
+
     return fake_ctx
 
 
@@ -49,6 +51,7 @@ class TestLoadPriorConversation:
         """Non-existent session returns None."""
         with patch("src.db.connection.get_db_context", _mock_db_context(db_session)):
             from src.services.conversation_handler import _load_prior_conversation
+
             result = _load_prior_conversation("nonexistent")
             assert result is None
 
@@ -58,6 +61,7 @@ class TestLoadPriorConversation:
 
         with patch("src.db.connection.get_db_context", _mock_db_context(db_session)):
             from src.services.conversation_handler import _load_prior_conversation
+
             result = _load_prior_conversation("test-session")
             assert result is not None
             assert len(result) == 3
@@ -70,16 +74,19 @@ class TestLoadPriorConversation:
 
         with patch("src.db.connection.get_db_context", _mock_db_context(db_session)):
             from src.services.conversation_handler import _load_prior_conversation
+
             result = _load_prior_conversation("empty-session")
             assert result is None
 
     def test_db_error_returns_none(self):
         """Database error is caught and returns None."""
+
         def failing_ctx():
             raise RuntimeError("DB is down")
 
         with patch("src.db.connection.get_db_context", failing_ctx):
             from src.services.conversation_handler import _load_prior_conversation
+
             result = _load_prior_conversation("any-session")
             assert result is None
 
@@ -98,12 +105,25 @@ class TestEnsureAgentPriorConversation:
         mock_agent_instance = AsyncMock()
         mock_prompt = MagicMock(return_value="test prompt")
 
-        with patch("src.services.conversation_handler._load_prior_conversation", return_value=None), \
-             patch("src.services.conversation_handler._get_mru_contacts_for_prompt", return_value=[]), \
-             patch("src.orchestrator.agent.system_prompt.build_system_prompt", mock_prompt), \
-             patch("src.services.conversation_handler.create_conversation_agent", return_value=mock_agent_instance):
-
+        with (
+            patch(
+                "src.services.conversation_handler._load_prior_conversation",
+                return_value=None,
+            ),
+            patch(
+                "src.services.conversation_handler._get_mru_contacts_for_prompt",
+                return_value=[],
+            ),
+            patch(
+                "src.orchestrator.agent.system_prompt.build_system_prompt", mock_prompt
+            ),
+            patch(
+                "src.services.conversation_handler.create_conversation_agent",
+                return_value=mock_agent_instance,
+            ),
+        ):
             from src.services.conversation_handler import ensure_agent
+
             await ensure_agent(mock_session, source_info=None)
 
             mock_prompt.assert_called_once()
@@ -130,16 +150,28 @@ class TestEnsureAgentPriorConversation:
             if result is None or not result["messages"]:
                 return None
             return [
-                {"role": m["role"], "content": m["content"]}
-                for m in result["messages"]
+                {"role": m["role"], "content": m["content"]} for m in result["messages"]
             ]
 
-        with patch("src.services.conversation_handler._load_prior_conversation", side_effect=mock_load), \
-             patch("src.services.conversation_handler._get_mru_contacts_for_prompt", return_value=[]), \
-             patch("src.orchestrator.agent.system_prompt.build_system_prompt", mock_prompt), \
-             patch("src.services.conversation_handler.create_conversation_agent", return_value=mock_agent_instance):
-
+        with (
+            patch(
+                "src.services.conversation_handler._load_prior_conversation",
+                side_effect=mock_load,
+            ),
+            patch(
+                "src.services.conversation_handler._get_mru_contacts_for_prompt",
+                return_value=[],
+            ),
+            patch(
+                "src.orchestrator.agent.system_prompt.build_system_prompt", mock_prompt
+            ),
+            patch(
+                "src.services.conversation_handler.create_conversation_agent",
+                return_value=mock_agent_instance,
+            ),
+        ):
             from src.services.conversation_handler import ensure_agent
+
             await ensure_agent(mock_session, source_info=None)
 
             mock_prompt.assert_called_once()
@@ -148,3 +180,64 @@ class TestEnsureAgentPriorConversation:
             assert prior is not None
             assert len(prior) == 4
             assert prior[0]["content"] == "Message 0"
+
+    @pytest.mark.asyncio
+    async def test_current_user_message_is_not_duplicated_in_prior_conversation(
+        self,
+        db_session,
+    ):
+        """The just-persisted user turn is excluded from provider seed history."""
+        svc = ConversationPersistenceService(db_session)
+        svc.create_session(session_id="current-turn-session", mode="batch")
+        svc.save_message("current-turn-session", "user", "Older question")
+        svc.save_message("current-turn-session", "assistant", "Older answer")
+        svc.save_message("current-turn-session", "user", "Current question")
+
+        mock_session = MagicMock()
+        mock_session.agent = None
+        mock_session.agent_source_hash = None
+        mock_session.session_id = "current-turn-session"
+
+        mock_agent_instance = AsyncMock()
+        mock_prompt = MagicMock(return_value="test prompt")
+        mock_create_agent = MagicMock(return_value=mock_agent_instance)
+
+        def mock_load(session_id):
+            result = svc.get_session_with_messages(session_id, limit=30)
+            return [
+                {"role": m["role"], "content": m["content"]} for m in result["messages"]
+            ]
+
+        with (
+            patch(
+                "src.services.conversation_handler._load_prior_conversation",
+                side_effect=mock_load,
+            ),
+            patch(
+                "src.services.conversation_handler._get_mru_contacts_for_prompt",
+                return_value=[],
+            ),
+            patch(
+                "src.orchestrator.agent.system_prompt.build_system_prompt",
+                mock_prompt,
+            ),
+            patch(
+                "src.services.conversation_handler.create_conversation_agent",
+                mock_create_agent,
+            ),
+        ):
+            from src.services.conversation_handler import ensure_agent
+
+            await ensure_agent(
+                mock_session,
+                source_info=None,
+                current_user_message="Current question",
+            )
+
+        prompt_prior = mock_prompt.call_args[1]["prior_conversation"]
+        runtime_prior = mock_create_agent.call_args[1]["prior_conversation"]
+        assert prompt_prior == [
+            {"role": "user", "content": "Older question"},
+            {"role": "assistant", "content": "Older answer"},
+        ]
+        assert runtime_prior == prompt_prior

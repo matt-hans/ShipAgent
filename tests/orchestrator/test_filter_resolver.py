@@ -643,7 +643,10 @@ class TestFilterResolverWithoutTokenSecret:
 
     def test_resolve_filter_intent_works_without_token_secret(self, monkeypatch):
         """Resolution should succeed with ephemeral fallback when env var is unset."""
-        from src.orchestrator.filter_resolver import _get_token_secret, resolve_filter_intent
+        from src.orchestrator.filter_resolver import (
+            _get_token_secret,
+            resolve_filter_intent,
+        )
 
         # Clear the env var AND any cached fallback from prior tests
         monkeypatch.delenv("FILTER_TOKEN_SECRET", raising=False)
