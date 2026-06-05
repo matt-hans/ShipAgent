@@ -1,5 +1,7 @@
 """Tests for hosted UPS MCP normalized response validators."""
 
+import pytest
+
 from src.hosted.ups_boundary.fixtures import (
     HOSTED_V1_ADDRESS_VALIDATION_SUCCESS,
     HOSTED_V1_CREATE_SHIPMENT_SUCCESS,
@@ -32,6 +34,73 @@ def test_validate_rate_quote_result_accepts_extra_success_fields():
     result = validate_rate_quote_result(payload)
 
     assert result.valid is True
+
+
+@pytest.mark.parametrize(
+    ("validator", "payload", "error_code"),
+    [
+        (
+            validate_rate_quote_result,
+            {
+                **HOSTED_V1_RATE_QUOTE_SUCCESS,
+                "rawResponse": {"provider": "unsafe"},
+            },
+            "E-3004",
+        ),
+        (
+            validate_rate_shop_result,
+            {
+                **HOSTED_V1_RATE_SHOP_SUCCESS,
+                "ratedShipments": [
+                    {
+                        **HOSTED_V1_RATE_SHOP_SUCCESS["ratedShipments"][0],
+                        "accessToken": "unsafe",
+                    },
+                ],
+            },
+            "E-3004",
+        ),
+        (
+            validate_address_validation_result,
+            {
+                **HOSTED_V1_ADDRESS_VALIDATION_SUCCESS,
+                "candidates": [
+                    {
+                        **HOSTED_V1_ADDRESS_VALIDATION_SUCCESS["candidates"][0],
+                        "local_path": "/tmp/unsafe",
+                    },
+                ],
+            },
+            "E-3007",
+        ),
+        (
+            validate_create_shipment_result,
+            {
+                **HOSTED_V1_CREATE_SHIPMENT_SUCCESS,
+                "requestBody": {"provider": "unsafe"},
+            },
+            "E-3006",
+        ),
+        (
+            validate_create_shipment_result,
+            {
+                **HOSTED_V1_CREATE_SHIPMENT_SUCCESS,
+                "labelData": [
+                    {
+                        **HOSTED_V1_CREATE_SHIPMENT_SUCCESS["labelData"][0],
+                        "credentials": {"provider": "unsafe"},
+                    },
+                ],
+            },
+            "E-3006",
+        ),
+    ],
+)
+def test_success_validators_reject_unsafe_fields(validator, payload, error_code):
+    result = validator(payload)
+
+    assert result.valid is False
+    assert result.error_code == error_code
 
 
 def test_validate_rate_quote_result_rejects_missing_currency():
