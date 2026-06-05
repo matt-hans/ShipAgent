@@ -892,6 +892,63 @@ class TestUPSMCPClientLifecycle:
             await client.get_rate(request_body={})
 
 
+class TestUPSMCPClientBoundaryIntrospection:
+    """Test hosted UPS boundary introspection helpers."""
+
+    @pytest.mark.asyncio
+    async def test_lists_tool_names_delegates_to_mcp(self, ups_client, mock_mcp_client):
+        """list_tool_names delegates to the generic MCP client."""
+        mock_mcp_client.list_tool_names = AsyncMock(
+            return_value={"rate_shipment", "shipagent_capabilities"},
+        )
+
+        result = await ups_client.list_tool_names()
+
+        assert result == {"rate_shipment", "shipagent_capabilities"}
+        mock_mcp_client.list_tool_names.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_get_shipagent_capabilities_returns_none_when_tool_absent(
+        self,
+        ups_client,
+        mock_mcp_client,
+    ):
+        """get_shipagent_capabilities returns None when the MCP tool is absent."""
+        mock_mcp_client.list_tool_names = AsyncMock(return_value={"rate_shipment"})
+
+        result = await ups_client.get_shipagent_capabilities()
+
+        assert result is None
+        mock_mcp_client.call_tool.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_shipagent_capabilities_returns_payload_when_present(
+        self,
+        ups_client,
+        mock_mcp_client,
+    ):
+        """get_shipagent_capabilities calls the read-only capabilities tool."""
+        payload = {
+            "contract_version": "hosted-v1",
+            "server_name": "ups_mcp",
+            "capabilities": ["rate_quote"],
+        }
+        mock_mcp_client.list_tool_names = AsyncMock(
+            return_value={"rate_shipment", "shipagent_capabilities"},
+        )
+        mock_mcp_client.call_tool.return_value = payload
+
+        result = await ups_client.get_shipagent_capabilities()
+
+        assert result == payload
+        mock_mcp_client.call_tool.assert_awaited_once_with(
+            "shipagent_capabilities",
+            {},
+            max_retries=2,
+            base_delay=0.2,
+        )
+
+
 class TestUPSMCPReconnectBehavior:
     """Transport reconnect behavior in _call()."""
 

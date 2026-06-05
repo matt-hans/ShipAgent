@@ -70,7 +70,12 @@ class MCPConnectionError(Exception):
 
 # Default retryable error classifier
 _DEFAULT_RETRYABLE_PATTERNS = [
-    "429", "503", "502", "rate limit", "timeout", "connection",
+    "429",
+    "503",
+    "502",
+    "rate limit",
+    "timeout",
+    "connection",
 ]
 
 
@@ -166,13 +171,27 @@ class MCPClient:
         Returns:
             True if the connection is alive and responsive.
         """
-        if self._session is None:
-            return False
         try:
-            await self._session.list_tools()
+            await self.list_tool_names()
             return True
         except Exception:
             return False
+
+    async def list_tool_names(self) -> set[str]:
+        """Return tool names exposed by the connected MCP server.
+
+        Raises:
+            MCPConnectionError: Session not initialized.
+        """
+        if self._session is None:
+            raise MCPConnectionError(
+                command=self._server_params.command,
+                reason="MCP client not connected",
+            )
+
+        result = await self._session.list_tools()
+        tools = getattr(result, "tools", result)
+        return {tool.name for tool in tools}
 
     @property
     def retry_attempts_total(self) -> int:
@@ -211,12 +230,15 @@ class MCPClient:
             if self._elicitation_callback is not None:
                 session_kwargs["elicitation_callback"] = self._elicitation_callback
             self._session_context = ClientSession(
-                read_stream, write_stream, **session_kwargs,
+                read_stream,
+                write_stream,
+                **session_kwargs,
             )
             self._session = await self._session_context.__aenter__()
             await self._session.initialize()
             logger.info(
-                "MCP client connected to '%s'", self._server_params.command,
+                "MCP client connected to '%s'",
+                self._server_params.command,
             )
         except Exception as e:
             # Clean up partial state on failure
@@ -321,7 +343,9 @@ class MCPClient:
                         "status": "ok",
                         "attempt": attempt + 1,
                         "retry_count": attempt,
-                        "total_duration_ms": int((time.perf_counter() - call_started) * 1000),
+                        "total_duration_ms": int(
+                            (time.perf_counter() - call_started) * 1000
+                        ),
                     },
                     latency_ms=int((time.perf_counter() - attempt_started) * 1000),
                 )
@@ -345,11 +369,15 @@ class MCPClient:
 
             # Check if retryable
             if attempt < retries and self._is_retryable(error_text):
-                delay = delay_base * (2 ** attempt)
+                delay = delay_base * (2**attempt)
                 logger.warning(
                     "MCP tool '%s' returned retryable error (attempt %d/%d), "
                     "retrying in %.1fs: %s",
-                    name, attempt + 1, retries + 1, delay, error_text[:200],
+                    name,
+                    attempt + 1,
+                    retries + 1,
+                    delay,
+                    error_text[:200],
                 )
                 self._retry_attempts_total += 1
                 DecisionAuditService.log_event_from_context(
