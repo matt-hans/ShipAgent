@@ -1073,6 +1073,102 @@ class HumanReadableOpaqueValuesTool:
         }
 
 
+class RateShipmentResultTool:
+    name = "rate_shipment"
+    allow_parallel = True
+
+    async def handler(self, _args):
+        return {
+            "isError": False,
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "success": True,
+                            "totalCharges": {
+                                "monetaryValue": "15.50",
+                                "amount": "15.50",
+                                "currencyCode": "USD",
+                            },
+                            "chargeBreakdown": {
+                                "transportationCharges": {
+                                    "monetaryValue": "12.00",
+                                    "currencyCode": "USD",
+                                }
+                            },
+                            "requestBody": {"address": "1 Main"},
+                            "labelUrl": "https://labels.example/leak",
+                        }
+                    ),
+                }
+            ],
+        }
+
+
+class ValidateAddressResultTool:
+    name = "validate_address"
+    allow_parallel = True
+
+    async def handler(self, _args):
+        return {
+            "isError": False,
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "status": "valid",
+                            "candidates": [
+                                {
+                                    "addressLines": ["123 MAIN ST"],
+                                    "city": "AUSTIN",
+                                    "stateProvinceCode": "TX",
+                                    "postalCode": "78701",
+                                }
+                            ],
+                        }
+                    ),
+                }
+            ],
+        }
+
+
+class TimeInTransitResultTool:
+    name = "get_time_in_transit"
+    allow_parallel = True
+
+    async def handler(self, _args):
+        return {
+            "isError": False,
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "TimeInTransitResponse": {
+                                "TransitResponse": {
+                                    "ServiceSummary": [
+                                        {
+                                            "Service": {
+                                                "Code": "03",
+                                                "Description": "UPS Ground",
+                                            },
+                                            "EstimatedArrival": {
+                                                "BusinessDaysInTransit": "3",
+                                                "Date": "20260220",
+                                            },
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    ),
+                }
+            ],
+        }
+
+
 class FakeCatalog:
     def __init__(self, tool=None):
         self.tool = tool or FakeTool()
@@ -1112,6 +1208,79 @@ async def test_dispatcher_strips_rows_from_provider_result(
     }
     assert "sample_rows" not in result.content
     assert "1 Main" not in result.content
+
+
+async def test_dispatcher_returns_actionable_rate_result_to_model() -> None:
+    dispatcher = LocalToolDispatcher(
+        catalog=FakeCatalog(RateShipmentResultTool()),
+        policy=RuntimePolicyEngine(interactive_shipping=False),
+        emit_frontend=lambda _event, _payload: None,
+    )
+
+    result = await dispatcher.dispatch(
+        ProviderToolCall(
+            call_id="call-1",
+            tool_name="rate_shipment",
+            parsed_input={},
+        )
+    )
+
+    assert result.is_error is False
+    payload = json.loads(result.content)
+    assert payload["totalCharges"]["monetaryValue"] == "15.50"
+    assert payload["totalCharges"]["currencyCode"] == "USD"
+    assert (
+        payload["chargeBreakdown"]["transportationCharges"]["monetaryValue"] == "12.00"
+    )
+    assert "requestBody" not in payload
+    assert "labels.example" not in result.content
+    assert result.structured_payload == payload
+
+
+async def test_dispatcher_returns_actionable_address_candidates_to_model() -> None:
+    dispatcher = LocalToolDispatcher(
+        catalog=FakeCatalog(ValidateAddressResultTool()),
+        policy=RuntimePolicyEngine(interactive_shipping=False),
+        emit_frontend=lambda _event, _payload: None,
+    )
+
+    result = await dispatcher.dispatch(
+        ProviderToolCall(
+            call_id="call-1",
+            tool_name="validate_address",
+            parsed_input={},
+        )
+    )
+
+    assert result.is_error is False
+    payload = json.loads(result.content)
+    assert payload["status"] == "valid"
+    assert payload["candidates"][0]["addressLines"] == ["123 MAIN ST"]
+    assert payload["candidates"][0]["city"] == "AUSTIN"
+    assert result.structured_payload == payload
+
+
+async def test_dispatcher_returns_actionable_transit_result_to_model() -> None:
+    dispatcher = LocalToolDispatcher(
+        catalog=FakeCatalog(TimeInTransitResultTool()),
+        policy=RuntimePolicyEngine(interactive_shipping=False),
+        emit_frontend=lambda _event, _payload: None,
+    )
+
+    result = await dispatcher.dispatch(
+        ProviderToolCall(
+            call_id="call-1",
+            tool_name="get_time_in_transit",
+            parsed_input={},
+        )
+    )
+
+    assert result.is_error is False
+    payload = json.loads(result.content)
+    service = payload["TimeInTransitResponse"]["TransitResponse"]["ServiceSummary"][0]
+    assert service["Service"]["Code"] == "03"
+    assert service["EstimatedArrival"]["BusinessDaysInTransit"] == "3"
+    assert result.structured_payload == payload
 
 
 async def test_dispatcher_ignores_error_like_customer_row_fields() -> None:
@@ -2768,7 +2937,7 @@ async def test_dispatcher_success_non_string_scalar_returns_type_marker() -> Non
     assert "42" not in result.content
 
 
-async def test_dispatcher_denies_unknown_tool_before_handler_execution(
+async def test_dispatcher_runs_policy_before_unknown_tool_availability_check(
     dispatcher: LocalToolDispatcher,
 ) -> None:
     result = await dispatcher.dispatch(
@@ -2780,7 +2949,7 @@ async def test_dispatcher_denies_unknown_tool_before_handler_execution(
     )
 
     assert result.is_error is True
-    assert "not available" in result.content
+    assert "Use the rate_shipment orchestrator tool instead" in result.content
 
 
 async def test_dispatcher_turns_policy_denial_into_provider_tool_error(
