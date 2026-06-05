@@ -13,6 +13,7 @@ These tests are marked with @pytest.mark.integration for selective running.
 
 import asyncio
 import os
+from unittest.mock import patch
 
 import pytest
 
@@ -136,7 +137,8 @@ class TestAgentOptions:
         """UPS MCP should be absent when no credentials are available."""
         monkeypatch.delenv("UPS_CLIENT_ID", raising=False)
         monkeypatch.delenv("UPS_CLIENT_SECRET", raising=False)
-        agent = OrchestrationAgent()
+        with patch("src.services.runtime_credentials.resolve_ups_credentials", return_value=None):
+            agent = OrchestrationAgent()
         mcp_servers = agent._options.mcp_servers
         assert "ups" not in mcp_servers
         assert "orchestrator" in mcp_servers

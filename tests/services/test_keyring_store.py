@@ -64,9 +64,11 @@ def test_get_all_status(mock_kr):
     mock_kr.get_password.side_effect = (
         lambda svc, key: "val" if key == "ANTHROPIC_API_KEY" else None
     )
-    clean_env = {key: "" for key in MANAGED_CREDENTIALS}
+    clean_env = dict.fromkeys(MANAGED_CREDENTIALS, "")
     with patch.dict("os.environ", clean_env):
         store = KeyringStore()
         status = store.get_all_status()
         assert status["ANTHROPIC_API_KEY"] is True
+        assert status["OPENAI_API_KEY"] is False
+        assert status["GEMINI_API_KEY"] is False
         assert status["UPS_CLIENT_ID"] is False

@@ -101,7 +101,7 @@ class TestEnsureAgentPriorConversation:
         with patch("src.services.conversation_handler._load_prior_conversation", return_value=None), \
              patch("src.services.conversation_handler._get_mru_contacts_for_prompt", return_value=[]), \
              patch("src.orchestrator.agent.system_prompt.build_system_prompt", mock_prompt), \
-             patch("src.orchestrator.agent.client.OrchestrationAgent", return_value=mock_agent_instance):
+             patch("src.services.conversation_handler.create_conversation_agent", return_value=mock_agent_instance):
 
             from src.services.conversation_handler import ensure_agent
             await ensure_agent(mock_session, source_info=None)
@@ -137,7 +137,7 @@ class TestEnsureAgentPriorConversation:
         with patch("src.services.conversation_handler._load_prior_conversation", side_effect=mock_load), \
              patch("src.services.conversation_handler._get_mru_contacts_for_prompt", return_value=[]), \
              patch("src.orchestrator.agent.system_prompt.build_system_prompt", mock_prompt), \
-             patch("src.orchestrator.agent.client.OrchestrationAgent", return_value=mock_agent_instance):
+             patch("src.services.conversation_handler.create_conversation_agent", return_value=mock_agent_instance):
 
             from src.services.conversation_handler import ensure_agent
             await ensure_agent(mock_session, source_info=None)

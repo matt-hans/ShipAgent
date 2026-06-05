@@ -23,6 +23,8 @@ export interface AppSettings {
 /** Credential status (never returns values, only booleans). */
 export interface CredentialStatus {
   anthropic_api_key: boolean;
+  openai_api_key: boolean;
+  gemini_api_key: boolean;
   ups_client_id: boolean;
   ups_client_secret: boolean;
   shopify_access_token: boolean;
@@ -33,6 +35,8 @@ export interface CredentialStatus {
 /** Credential key identifiers. */
 export type CredentialKey =
   | 'anthropic_api_key'
+  | 'openai_api_key'
+  | 'gemini_api_key'
   | 'ups_client_id'
   | 'ups_client_secret'
   | 'shopify_access_token'

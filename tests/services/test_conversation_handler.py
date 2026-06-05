@@ -64,7 +64,7 @@ class TestEnsureAgent:
         mock_agent = AsyncMock()
         with (
             patch(
-                "src.orchestrator.agent.client.OrchestrationAgent",
+                "src.services.conversation_handler.create_conversation_agent",
                 return_value=mock_agent,
             ),
             patch(
@@ -102,7 +102,7 @@ class TestEnsureAgent:
         new_agent = AsyncMock()
         with (
             patch(
-                "src.orchestrator.agent.client.OrchestrationAgent",
+                "src.services.conversation_handler.create_conversation_agent",
                 return_value=new_agent,
             ),
             patch(
@@ -134,7 +134,7 @@ class TestEnsureAgent:
 
         with (
             patch(
-                "src.orchestrator.agent.client.OrchestrationAgent",
+                "src.services.conversation_handler.create_conversation_agent",
                 return_value=mock_agent,
             ),
             patch(
@@ -169,7 +169,7 @@ class TestEnsureAgent:
 
         with (
             patch(
-                "src.orchestrator.agent.client.OrchestrationAgent",
+                "src.services.conversation_handler.create_conversation_agent",
                 return_value=mock_agent,
             ),
             patch(

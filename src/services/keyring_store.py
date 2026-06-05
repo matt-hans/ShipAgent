@@ -23,6 +23,8 @@ SERVICE_NAME = "com.shipagent.app"
 # Credentials managed by this store (immutable — used for membership checks)
 MANAGED_CREDENTIALS = frozenset({
     "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
     "UPS_CLIENT_ID",
     "UPS_CLIENT_SECRET",
     "SHOPIFY_ACCESS_TOKEN",

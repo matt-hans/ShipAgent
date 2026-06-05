@@ -21,6 +21,7 @@ from src.services.mcp_client import (
 def _make_text_content(text: str) -> MagicMock:
     """Create a mock TextContent with the given text."""
     from mcp.types import TextContent
+
     content = MagicMock(spec=TextContent)
     content.text = text
     # Make isinstance check work
@@ -40,6 +41,7 @@ def _make_call_result(text: str, is_error: bool = False) -> MagicMock:
 def _make_server_params() -> MagicMock:
     """Create mock StdioServerParameters."""
     from mcp import StdioServerParameters
+
     return StdioServerParameters(command="test-cmd", args=["--test"])
 
 
@@ -58,9 +60,10 @@ class TestMCPClientLifecycle:
         mock_read = MagicMock()
         mock_write = MagicMock()
 
-        with patch("src.services.mcp_client.stdio_client") as mock_stdio, \
-             patch("src.services.mcp_client.ClientSession") as MockSession:
-
+        with (
+            patch("src.services.mcp_client.stdio_client") as mock_stdio,
+            patch("src.services.mcp_client.ClientSession") as MockSession,
+        ):
             # stdio_client is an async context manager
             mock_stdio_ctx = AsyncMock()
             mock_stdio_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
@@ -106,9 +109,10 @@ class TestMCPClientLifecycle:
         mock_read = MagicMock()
         mock_write = MagicMock()
 
-        with patch("src.services.mcp_client.stdio_client") as mock_stdio, \
-             patch("src.services.mcp_client.ClientSession") as MockSession:
-
+        with (
+            patch("src.services.mcp_client.stdio_client") as mock_stdio,
+            patch("src.services.mcp_client.ClientSession") as MockSession,
+        ):
             mock_stdio_ctx = AsyncMock()
             mock_stdio_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_stdio_ctx.__aexit__ = AsyncMock(return_value=None)
@@ -135,8 +139,10 @@ class TestMCPClientLifecycle:
         mock_read = MagicMock()
         mock_write = MagicMock()
 
-        with patch("src.services.mcp_client.stdio_client") as mock_stdio, \
-             patch("src.services.mcp_client.ClientSession") as MockSession:
+        with (
+            patch("src.services.mcp_client.stdio_client") as mock_stdio,
+            patch("src.services.mcp_client.ClientSession") as MockSession,
+        ):
             mock_stdio_ctx = AsyncMock()
             mock_stdio_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_stdio_ctx.__aexit__ = AsyncMock(return_value=None)
@@ -172,8 +178,10 @@ class TestMCPClientLifecycle:
         mock_read2 = MagicMock()
         mock_write2 = MagicMock()
 
-        with patch("src.services.mcp_client.stdio_client") as mock_stdio, \
-             patch("src.services.mcp_client.ClientSession") as MockSession:
+        with (
+            patch("src.services.mcp_client.stdio_client") as mock_stdio,
+            patch("src.services.mcp_client.ClientSession") as MockSession,
+        ):
             stdio_ctx1 = AsyncMock()
             stdio_ctx1.__aenter__ = AsyncMock(return_value=(mock_read1, mock_write1))
             stdio_ctx1.__aexit__ = AsyncMock(return_value=None)
@@ -334,7 +342,9 @@ class TestMCPClientCallTool:
             return "custom-retryable" in text
 
         params = _make_server_params()
-        client = MCPClient(params, max_retries=3, base_delay=0.01, is_retryable=custom_retryable)
+        client = MCPClient(
+            params, max_retries=3, base_delay=0.01, is_retryable=custom_retryable
+        )
         client._session = mock_session
 
         result = await client.call_tool("test_tool", {})
@@ -409,27 +419,79 @@ class TestMCPClientHealthCheck:
         assert await client.check_health() is False
 
 
+class TestMCPClientListToolNames:
+    """Test list_tool_names() introspection method."""
+
+    @pytest.mark.asyncio
+    async def test_list_tool_names_returns_names_from_list_tools_result_tools(self):
+        """list_tool_names returns tool names from result.tools."""
+        tool_a = MagicMock()
+        tool_a.name = "rate_shipment"
+        tool_b = MagicMock()
+        tool_b.name = "create_shipment"
+        list_result = MagicMock()
+        list_result.tools = [tool_a, tool_b]
+
+        mock_session = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=list_result)
+
+        client = MCPClient(_make_server_params())
+        client._session = mock_session
+
+        assert await client.list_tool_names() == {"rate_shipment", "create_shipment"}
+
+    @pytest.mark.asyncio
+    async def test_list_tool_names_returns_names_from_iterable_list_tools_result(self):
+        """list_tool_names accepts iterable list_tools results."""
+        tool_a = MagicMock()
+        tool_a.name = "rate_shipment"
+        tool_b = MagicMock()
+        tool_b.name = "validate_address"
+
+        mock_session = AsyncMock()
+        mock_session.list_tools = AsyncMock(return_value=[tool_a, tool_b])
+
+        client = MCPClient(_make_server_params())
+        client._session = mock_session
+
+        assert await client.list_tool_names() == {"rate_shipment", "validate_address"}
+
+    @pytest.mark.asyncio
+    async def test_list_tool_names_raises_connection_error_when_not_connected(self):
+        """list_tool_names raises when there is no active session."""
+        client = MCPClient(_make_server_params())
+
+        with pytest.raises(MCPConnectionError, match="MCP client not connected"):
+            await client.list_tool_names()
+
+
 class TestDefaultIsRetryable:
     """Test _default_is_retryable patterns."""
 
-    @pytest.mark.parametrize("text", [
-        "429 Too Many Requests",
-        "503 Service Unavailable",
-        "502 Bad Gateway",
-        "rate limit exceeded",
-        "connection refused",
-        "timeout after 30s",
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "429 Too Many Requests",
+            "503 Service Unavailable",
+            "502 Bad Gateway",
+            "rate limit exceeded",
+            "connection refused",
+            "timeout after 30s",
+        ],
+    )
     def test_retryable_patterns(self, text: str):
         """Known transient error patterns are classified as retryable."""
         assert _default_is_retryable(text) is True
 
-    @pytest.mark.parametrize("text", [
-        "Invalid address line 1",
-        "Missing required field: weight",
-        "Authentication failed",
-        "400 Bad Request",
-    ])
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Invalid address line 1",
+            "Missing required field: weight",
+            "Authentication failed",
+            "400 Bad Request",
+        ],
+    )
     def test_non_retryable_patterns(self, text: str):
         """Validation and auth errors are not retryable."""
         assert _default_is_retryable(text) is False
@@ -456,9 +518,10 @@ class TestElicitationCallback:
         mock_read = MagicMock()
         mock_write = MagicMock()
 
-        with patch("src.services.mcp_client.stdio_client") as mock_stdio, \
-             patch("src.services.mcp_client.ClientSession") as MockSession:
-
+        with (
+            patch("src.services.mcp_client.stdio_client") as mock_stdio,
+            patch("src.services.mcp_client.ClientSession") as MockSession,
+        ):
             mock_stdio_ctx = AsyncMock()
             mock_stdio_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_stdio_ctx.__aexit__ = AsyncMock(return_value=None)
@@ -478,7 +541,9 @@ class TestElicitationCallback:
 
         MockSession.assert_called_once()
         call_kwargs = MockSession.call_args
-        assert call_kwargs.kwargs.get("elicitation_callback") is _auto_decline_elicitation
+        assert (
+            call_kwargs.kwargs.get("elicitation_callback") is _auto_decline_elicitation
+        )
 
     @pytest.mark.asyncio
     async def test_none_callback_omits_kwarg(self):
@@ -487,9 +552,10 @@ class TestElicitationCallback:
         mock_read = MagicMock()
         mock_write = MagicMock()
 
-        with patch("src.services.mcp_client.stdio_client") as mock_stdio, \
-             patch("src.services.mcp_client.ClientSession") as MockSession:
-
+        with (
+            patch("src.services.mcp_client.stdio_client") as mock_stdio,
+            patch("src.services.mcp_client.ClientSession") as MockSession,
+        ):
             mock_stdio_ctx = AsyncMock()
             mock_stdio_ctx.__aenter__ = AsyncMock(return_value=(mock_read, mock_write))
             mock_stdio_ctx.__aexit__ = AsyncMock(return_value=None)

@@ -44,6 +44,8 @@ export const settingsFixtures = {
   /** All credentials configured. */
   allCredentials: (): CredentialStatus => ({
     anthropic_api_key: true,
+    openai_api_key: true,
+    gemini_api_key: true,
     ups_client_id: true,
     ups_client_secret: true,
     shopify_access_token: true,
@@ -54,6 +56,8 @@ export const settingsFixtures = {
   /** No credentials configured. */
   noCredentials: (): CredentialStatus => ({
     anthropic_api_key: false,
+    openai_api_key: false,
+    gemini_api_key: false,
     ups_client_id: false,
     ups_client_secret: false,
     shopify_access_token: false,
@@ -64,6 +68,8 @@ export const settingsFixtures = {
   /** Only Anthropic key configured (minimum for operation). */
   anthropicOnlyCredentials: (): CredentialStatus => ({
     anthropic_api_key: true,
+    openai_api_key: false,
+    gemini_api_key: false,
     ups_client_id: false,
     ups_client_secret: false,
     shopify_access_token: false,

@@ -32,8 +32,8 @@ if [ ! -x .venv/bin/python ]; then
     exit 1
 fi
 
-if ! .venv/bin/python -c "import uvicorn, claude_agent_sdk" >/dev/null 2>&1; then
-    echo "Error: backend dependencies are missing in .venv (uvicorn/claude_agent_sdk)."
+if ! .venv/bin/python -c "import uvicorn" >/dev/null 2>&1; then
+    echo "Error: backend dependencies are missing in .venv (uvicorn)."
     echo "Run: .venv/bin/python -m pip install -e '.[dev]'"
     exit 1
 fi
