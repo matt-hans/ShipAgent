@@ -32,6 +32,22 @@ def test_gemini_model_fails_closed_in_auto_runtime(monkeypatch: pytest.MonkeyPat
     assert "Gemini model runtime is not wired yet" in agent.reason
 
 
+def test_fake_runtime_creates_conversation_runtime_session(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "fake")
+
+    agent = create_conversation_agent(
+        system_prompt="system",
+        model="fake:default",
+        interactive_shipping=False,
+        session_id="fake-session",
+    )
+
+    assert agent.__class__.__name__ == "ConversationRuntimeSession"
+    assert agent.emitter_bridge.session_id == "fake-session"
+
+
 @pytest.mark.parametrize("runtime", ["openai", "gemini"])
 def test_explicit_unwired_runtime_fails_closed(
     monkeypatch: pytest.MonkeyPatch,
