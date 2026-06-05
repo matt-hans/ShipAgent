@@ -62,6 +62,8 @@ class AgentSession:
         self._history_lock = threading.Lock()  # Protects history + last_active (M-4, CWE-362)
         self.prewarm_task: asyncio.Task[Any] | None = None
         self.message_tasks: set[asyncio.Task[Any]] = set()
+        self._turn_generation = 0
+        self._invalid_turn_generations: set[int] = set()
 
     def add_message(self, role: str, content: str) -> None:
         """Append a message to the conversation history.
@@ -80,6 +82,20 @@ class AgentSession:
                 "content": content,
                 "timestamp": datetime.now(UTC).isoformat(),
             })
+
+    def begin_turn_generation(self) -> int:
+        self._turn_generation += 1
+        self._invalid_turn_generations.add(self._turn_generation - 1)
+        return self._turn_generation
+
+    def invalidate_active_turn_generation(self) -> None:
+        self._invalid_turn_generations.add(self._turn_generation)
+
+    def is_turn_generation_active(self, generation: int) -> bool:
+        return (
+            generation == self._turn_generation
+            and generation not in self._invalid_turn_generations
+        )
 
 
 # Idle session timeout (L-3, CWE-613). Default 4 hours. Override with
