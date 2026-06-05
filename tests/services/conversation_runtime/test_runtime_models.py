@@ -4,7 +4,9 @@ from typing import get_args, get_type_hints
 from src.services.conversation_runtime import (
     ModelProviderClient,
     ProviderCapabilities,
+    ProviderContentPart,
     ProviderFinalResult,
+    ProviderInputMessage,
     ProviderResultMetadata,
     ProviderRole,
     ProviderStreamEvent,
@@ -95,6 +97,22 @@ def test_tool_call_event_carries_parsed_input_and_raw_arguments() -> None:
     assert event.tool_call is call
     assert event.tool_call.parsed_input == {"all_rows": True}
     assert event.tool_call.raw_arguments == '{"all_rows": true}'
+
+
+def test_assistant_message_can_carry_tool_call_content_part() -> None:
+    call = ProviderToolCall(
+        call_id="call-1",
+        tool_name="get_schema",
+        parsed_input={},
+    )
+
+    message = ProviderInputMessage(
+        role="assistant",
+        content=[ProviderContentPart(type="tool_call", tool_call=call)],
+    )
+
+    assert message.content[0].type == "tool_call"
+    assert message.content[0].tool_call is call
 
 
 def test_stream_event_metadata_uses_normalized_result_metadata_contract() -> None:

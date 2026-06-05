@@ -127,11 +127,12 @@ class ConversationRuntimeSession:
         )
         system_instructions = [ProviderSystemInstruction(content=self._system_prompt)]
         metadata_turn_count: int | None = None
-        assistant_history_messages: list[ProviderInputMessage] = []
         emitted_tool_call_ids: set[str] = set()
+        turn_history_messages: list[ProviderInputMessage] = [user_message]
 
         try:
             for _provider_turn in range(self._max_turns):
+                assistant_parts: list[ProviderContentPart] = []
                 tool_calls: list[ProviderToolCall] = []
                 try:
                     stream = self._provider.stream_turn(
@@ -157,12 +158,7 @@ class ConversationRuntimeSession:
                         ):
                             if metadata_turn_count is None:
                                 self._last_turn_count += 1
-                            assistant_history_messages.append(
-                                ProviderInputMessage(
-                                    role="assistant",
-                                    content=[ProviderContentPart(text=event.text)],
-                                )
-                            )
+                            assistant_parts.append(ProviderContentPart(text=event.text))
                             yield {
                                 "event": "agent_message",
                                 "data": {"text": event.text},
@@ -206,17 +202,44 @@ class ConversationRuntimeSession:
                     }
                     return
 
-                if not tool_calls:
-                    self._append_history([user_message, *assistant_history_messages])
-                    return
-
+                unique_tool_calls: list[ProviderToolCall] = []
                 for call in tool_calls:
-                    if self._is_generation_interrupted(generation):
-                        return
                     if call.call_id is not None:
                         if call.call_id in emitted_tool_call_ids:
                             continue
                         emitted_tool_call_ids.add(call.call_id)
+                    unique_tool_calls.append(call)
+
+                if not unique_tool_calls:
+                    if assistant_parts:
+                        assistant_message = ProviderInputMessage(
+                            role="assistant",
+                            content=assistant_parts,
+                        )
+                        messages.append(assistant_message)
+                        turn_history_messages.append(assistant_message)
+                    self._append_history(turn_history_messages)
+                    return
+
+                assistant_message = ProviderInputMessage(
+                    role="assistant",
+                    content=[
+                        *assistant_parts,
+                        *(
+                            ProviderContentPart(
+                                type="tool_call",
+                                tool_call=call,
+                            )
+                            for call in unique_tool_calls
+                        ),
+                    ],
+                )
+                messages.append(assistant_message)
+                turn_history_messages.append(assistant_message)
+
+                for call in unique_tool_calls:
+                    if self._is_generation_interrupted(generation):
+                        return
 
                     dispatcher.emit_tool_call(call)
                     for frontend_event in drain_frontend_events():
@@ -230,18 +253,18 @@ class ConversationRuntimeSession:
                     for frontend_event in drain_frontend_events():
                         yield frontend_event
 
-                    messages.append(
-                        ProviderInputMessage(
-                            role="tool",
-                            content=[ProviderContentPart(text=result.content)],
-                            tool_call_id=result.call_id,
-                            metadata={
-                                "tool_name": result.tool_name,
-                                "structured_payload": result.structured_payload,
-                                "is_error": result.is_error,
-                            },
-                        )
+                    tool_result_message = ProviderInputMessage(
+                        role="tool",
+                        content=[ProviderContentPart(text=result.content)],
+                        tool_call_id=result.call_id,
+                        metadata={
+                            "tool_name": result.tool_name,
+                            "structured_payload": result.structured_payload,
+                            "is_error": result.is_error,
+                        },
                     )
+                    messages.append(tool_result_message)
+                    turn_history_messages.append(tool_result_message)
 
             yield {
                 "event": "error",

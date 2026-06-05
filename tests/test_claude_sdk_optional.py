@@ -1,4 +1,4 @@
-"""Regression tests for removing hard Claude SDK requirements."""
+"""Regression tests for model runtime dependency boundaries."""
 
 from __future__ import annotations
 
@@ -9,10 +9,17 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_required_install_does_not_include_claude_agent_sdk():
+def test_required_install_includes_claude_agent_sdk():
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text()
 
-    assert "claude-agent-sdk" not in pyproject
+    assert "claude-agent-sdk" in pyproject
+
+
+def test_required_install_includes_openai_and_gemini_sdks():
+    pyproject = (PROJECT_ROOT / "pyproject.toml").read_text()
+
+    assert "openai>=" in pyproject
+    assert "google-genai>=" in pyproject
 
 
 def test_required_install_does_not_include_anthropic_sdk():
@@ -21,18 +28,20 @@ def test_required_install_does_not_include_anthropic_sdk():
     assert "anthropic>=" not in pyproject
 
 
-def test_backend_start_script_does_not_probe_claude_agent_sdk():
+def test_backend_start_script_probes_model_runtime_sdks():
     script = (PROJECT_ROOT / "scripts" / "start-backend.sh").read_text()
 
-    assert "claude_agent_sdk" not in script
-    assert "claude-agent-sdk" not in script
+    assert "claude_agent_sdk" in script
+    assert "openai" in script
+    assert "google.genai" in script
 
 
-def test_pyinstaller_spec_does_not_force_claude_agent_sdk_hidden_import():
+def test_pyinstaller_spec_includes_model_runtime_hidden_imports():
     spec = (PROJECT_ROOT / "shipagent-core.spec").read_text()
 
-    assert "'claude_agent_sdk'" not in spec
-    assert '"claude_agent_sdk"' not in spec
+    assert "'claude_agent_sdk'" in spec
+    assert "'openai'" in spec
+    assert "'google.genai'" in spec
 
 
 def test_pyinstaller_spec_does_not_force_anthropic_sdk_hidden_import():
