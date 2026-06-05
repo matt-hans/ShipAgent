@@ -267,6 +267,68 @@ _FILTER_RESOLUTION_TOOLS = {
     "confirm_filter_interpretation",
     "resolve_filter_intent",
 }
+_ACTIONABLE_UPS_RESULT_TOOLS = {
+    "rate_shipment",
+    "validate_address",
+    "get_time_in_transit",
+}
+
+_UPS_RATE_NORMALIZED_KEYS = {
+    _normalize_model_key(key)
+    for key in {
+        "success",
+        "totalCharges",
+        "amount",
+        "monetaryValue",
+        "currencyCode",
+        "chargeBreakdown",
+        "version",
+        "transportationCharges",
+        "serviceOptionsCharges",
+        "dutiesAndTaxes",
+        "ratedShipments",
+        "serviceCode",
+        "serviceName",
+        "serviceDescription",
+        "deliveryDays",
+    }
+}
+
+_UPS_ADDRESS_NORMALIZED_KEYS = {
+    _normalize_model_key(key)
+    for key in {
+        "status",
+        "candidates",
+        "addressLines",
+        "city",
+        "stateProvinceCode",
+        "postalCode",
+    }
+}
+
+_UPS_TRANSIT_NORMALIZED_KEYS = {
+    _normalize_model_key(key)
+    for key in {
+        "TimeInTransitResponse",
+        "TransitResponse",
+        "ServiceSummary",
+        "Service",
+        "Code",
+        "Description",
+        "EstimatedArrival",
+        "Arrival",
+        "Pickup",
+        "Date",
+        "Time",
+        "DayOfWeek",
+        "BusinessDaysInTransit",
+        "TotalTransitDays",
+        "CustomerCenterCutoff",
+        "Guaranteed",
+        "Disclaimer",
+        "MaximumListSize",
+    }
+}
 _FILTER_STATUS_VALUES = {
     "NEEDS_CONFIRMATION",
     "RESOLVED",
@@ -493,6 +555,17 @@ class LocalToolDispatcher:
         return await self.execute(call)
 
     async def execute(self, call: ProviderToolCall) -> ProviderToolResult:
+        decision = await self.policy.check_pre_tool(call)
+        if not decision.allowed:
+            content = _policy_denial_content(decision.reason)
+            return ProviderToolResult(
+                call_id=call.call_id,
+                tool_name=call.tool_name,
+                content=content,
+                is_error=True,
+                sanitized_error=content,
+            )
+
         if not self.catalog.has(call.tool_name):
             content = (
                 f"Tool {call.tool_name!r} is not available in this conversation mode."
@@ -504,17 +577,6 @@ class LocalToolDispatcher:
                 content=sanitized_error or content,
                 is_error=True,
                 sanitized_error=sanitized_error,
-            )
-
-        decision = await self.policy.check_pre_tool(call)
-        if not decision.allowed:
-            content = _policy_denial_content(decision.reason)
-            return ProviderToolResult(
-                call_id=call.call_id,
-                tool_name=call.tool_name,
-                content=content,
-                is_error=True,
-                sanitized_error=content,
             )
 
         tool = self.catalog.get(call.tool_name)
@@ -553,7 +615,11 @@ class LocalToolDispatcher:
         safe_payload = _project_payload(payload, tool_name=call.tool_name)
         structured_payload = _structured_payload(payload, safe_payload)
         summary_payload = safe_payload if isinstance(payload, dict) else None
-        content = _summarize_payload(call.tool_name, summary_payload, is_error=is_error)
+        content = _content_for_tool_result(
+            call.tool_name,
+            summary_payload,
+            is_error=is_error,
+        )
         return ProviderToolResult(
             call_id=call.call_id,
             tool_name=call.tool_name,
@@ -579,7 +645,13 @@ def _generic_error_content(tool_name: str) -> str:
 
 
 def _policy_denial_content(reason: str) -> str:
-    if reason.startswith("Raw SQL keys "):
+    if reason.startswith(
+        (
+            "Raw SQL keys ",
+            "Direct mcp__ups__",
+            "Direct shipment creation ",
+        )
+    ):
         return sanitize_error_message(reason) or _GENERIC_POLICY_DENIAL_CONTENT
     return _GENERIC_POLICY_DENIAL_CONTENT
 
@@ -711,6 +783,9 @@ def _extract_payload(raw_result: Any) -> Any:
 
 
 def _project_payload(value: Any, *, tool_name: str | None = None) -> Any:
+    if tool_name in _ACTIONABLE_UPS_RESULT_TOOLS and isinstance(value, dict):
+        return _project_actionable_ups_payload(value, tool_name=tool_name)
+
     if tool_name in _FILTER_RESOLUTION_TOOLS and isinstance(value, dict):
         return _project_filter_resolution_payload(value)
 
@@ -748,6 +823,77 @@ def _project_payload(value: Any, *, tool_name: str | None = None) -> Any:
         return {"count": len(value)}
 
     return value
+
+
+def _project_actionable_ups_payload(
+    value: dict[str, Any],
+    *,
+    tool_name: str | None,
+) -> dict[str, Any]:
+    if tool_name == "rate_shipment":
+        return _project_allowed_ups_payload(value, _UPS_RATE_NORMALIZED_KEYS)
+    if tool_name == "validate_address":
+        return _project_allowed_ups_payload(value, _UPS_ADDRESS_NORMALIZED_KEYS)
+    if tool_name == "get_time_in_transit":
+        return _project_allowed_ups_payload(value, _UPS_TRANSIT_NORMALIZED_KEYS)
+    return {}
+
+
+def _project_allowed_ups_payload(
+    value: Any,
+    allowed_keys: set[str],
+    *,
+    depth: int = 0,
+) -> Any:
+    if depth > 8:
+        return None
+
+    if isinstance(value, dict):
+        projected: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = _normalize_model_key(key)
+            if normalized_key not in allowed_keys:
+                continue
+
+            projected_item = _project_allowed_ups_payload(
+                item,
+                allowed_keys,
+                depth=depth + 1,
+            )
+            if projected_item is not None:
+                projected[key] = projected_item
+        return projected
+
+    if isinstance(value, list):
+        projected_items = [
+            projected_item
+            for item in value[:50]
+            if (
+                projected_item := _project_allowed_ups_payload(
+                    item,
+                    allowed_keys,
+                    depth=depth + 1,
+                )
+            )
+            is not None
+        ]
+        return projected_items
+
+    if _is_safe_ups_result_scalar(value):
+        return value
+
+    return None
+
+
+def _is_safe_ups_result_scalar(value: Any) -> bool:
+    if value is None or isinstance(value, bool | int | float):
+        return True
+    if not isinstance(value, str):
+        return False
+    if len(value) > 512 or value.strip() != value:
+        return False
+    lowered = value.lower()
+    return "://" not in lowered and "@" not in value
 
 
 def _project_filter_resolution_payload(value: dict[str, Any]) -> dict[str, Any]:
@@ -1303,6 +1449,22 @@ def _is_safe_short_token(value: Any) -> bool:
 
     normalized_value = _normalize_model_key(value)
     return not any(unsafe in normalized_value for unsafe in _UNSAFE_SCALAR_SUBSTRINGS)
+
+
+def _content_for_tool_result(
+    tool_name: str,
+    payload: Any,
+    *,
+    is_error: bool,
+) -> str:
+    if (
+        not is_error
+        and tool_name in _ACTIONABLE_UPS_RESULT_TOOLS
+        and isinstance(payload, dict)
+    ):
+        return json.dumps(payload, sort_keys=True, default=str)
+
+    return _summarize_payload(tool_name, payload, is_error=is_error)
 
 
 def _summarize_payload(tool_name: str, payload: Any, *, is_error: bool) -> str:
