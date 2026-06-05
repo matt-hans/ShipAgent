@@ -35,10 +35,24 @@ Claude-specific assumptions:
   hook/policy checks, session memory, interrupt behavior, usage/error shape, and
   adapter lifecycle.
 
+The immediate cleanup is not satisfied until the repository state proves it.
+Review checks must verify the actual files, not only the intended design:
+
+- `pyproject.toml` must not require `anthropic>=`.
+- `shipagent-core.spec` must not force-bundle `anthropic`.
+- `tests/test_claude_sdk_optional.py` must check both Claude Agent SDK and
+  Anthropic SDK core-runtime absence.
+- `tests/services/test_conversation_agent.py` must exist and directly exercise
+  provider/runtime fail-closed behavior.
+
 This design supersedes the older Claude-SDK-first orchestration plan in
 `docs/plans/2026-02-12-claude-sdk-orchestration-redesign-design.md` for future
 runtime work. The Claude SDK can remain temporarily as an optional compatibility
 adapter, but it is not the long-term orchestration architecture.
+
+The parity sections are based on current ShipAgent code and the Claude Agent SDK
+documentation areas for streaming output, agent loop results, MCP behavior,
+hooks, and sessions.
 
 ## Non-Goals
 
@@ -99,6 +113,10 @@ Runtime resolution should enforce these rules:
 This preserves the current safe user experience: unsupported providers are
 visible and blocked rather than silently routed through the wrong adapter.
 
+Import order is part of the contract. The model/runtime mismatch check must
+complete before importing `src.orchestrator.agent.client`, because that module is
+the Claude SDK compatibility adapter boundary.
+
 ### Immediate Tests
 
 Add focused tests in `tests/services/test_conversation_agent.py`.
@@ -138,6 +156,12 @@ Broaden to the PR's backend validation set after the targeted checks pass.
 Phase 0 moves conversation semantics out of the Claude SDK adapter and into
 provider-neutral services.
 
+Before swapping runtimes, consolidate local conversation ownership. The
+canonical path should be `src/services/conversation_handler.py`. The duplicate
+agent lifecycle and message-processing flow in `src/api/routes/conversations.py`
+should either delegate to the service or be reduced to HTTP/SSE concerns only.
+Fake-provider tests must cover the production path, not a parallel path.
+
 The local conversation API should stay stable:
 
 ```text
@@ -163,11 +187,31 @@ It normalizes:
 - final text responses
 - provider-safe errors
 - usage metadata
+- stop reason
+- provider session/conversation identifiers where available
+- provider result subtype or completion status where available
 
 OpenAI, Anthropic Messages API, and Gemini adapters implement this interface.
 Adapters only translate protocol details. They must not own shipping behavior,
 filtering, mapping, confirmation policy, carrier calls, retry behavior, row data
 handling, or audit decisions.
+
+Normalized result metadata should include these optional fields when providers
+return them:
+
+- `provider`
+- `model`
+- `session_id`
+- `stop_reason`
+- `result_subtype`
+- `num_turns`
+- `usage`
+- `total_cost_usd`
+- `raw_usage_provider`
+
+The runtime may omit provider-specific fields from frontend SSE events, but it
+must retain them for audit and diagnostics where the current Claude SDK path
+already exposes them.
 
 ### WorkflowToolCatalog
 
@@ -197,6 +241,24 @@ tool results back to the model runtime.
 
 It replaces the local need for a Claude SDK in-process MCP server.
 
+Direct external MCP exposure must be an explicit migration decision. The current
+Claude SDK options mount:
+
+- an in-process orchestrator MCP with `mcp__orchestrator__*`
+- an optional UPS stdio MCP with `mcp__ups__*`
+
+Phase 0 should preserve user-visible capabilities through ShipAgent-owned tool
+names, not by exposing raw carrier MCP tools to providers. Direct
+`mcp__ups__*` model calls are intentionally removed from the provider-facing
+local runtime unless a tool is reintroduced through a ShipAgent wrapper with
+policy and UI artifact emission. Local deterministic services may still call UPS
+through internal MCP clients.
+
+The dispatcher must represent internal MCP connection failures as normalized
+tool errors with sanitized messages. If UPS connectivity is unavailable, the
+model sees a safe tool result and the frontend receives the same error event
+shape it receives today for agent/tool failures.
+
 ### RuntimePolicyEngine
 
 `RuntimePolicyEngine` ports the current Claude hook behavior into provider-
@@ -213,6 +275,24 @@ It must enforce:
 - mode-specific behavior for interactive versus batch sessions
 
 Policy decisions should be unit-tested without provider SDK classes.
+
+The port must preserve exact hook semantics unless listed in Intentional
+Non-Parity:
+
+- ordered matcher evaluation, with raw-SQL filter denials before structural
+  filter checks
+- specific direct UPS denial cases for shipment creation, voiding, pickup,
+  tracking, locations, service centers, and landed cost where wrappers are
+  required
+- fallback pre-tool validation for all tools
+- post-tool audit logging for every tool result
+- error-response detection for dict and string responses
+- denial payload shape equivalent to the current `hookSpecificOutput`
+  structure: hook event name, `permissionDecision="deny"`, and human-readable
+  `permissionDecisionReason`
+
+Provider adapters do not get custom policy logic. They pass normalized tool-call
+requests to the policy engine and consume its allow/deny result.
 
 ### ConversationRuntimeSession
 
@@ -235,6 +315,64 @@ Responsibilities:
 The runtime should not depend on provider-native session memory. Persisted
 conversation history and session state remain ShipAgent-owned.
 
+Interrupt behavior needs explicit parity tests. The current Claude SDK adapter
+calls `ClaudeSDKClient.interrupt()`, and the SDK requires draining interrupted
+messages before issuing the next query. The neutral runtime must define the same
+observable behavior:
+
+- route cancellation requests mark the active turn interrupted
+- in-flight provider streams are cancelled when the provider supports it
+- any buffered provider/tool messages are drained or discarded deterministically
+  before the next user message starts
+- the next user message cannot receive stale deltas or tool calls from the
+  interrupted turn
+- session deletion cancels message tasks, stops active runtime resources, and
+  does not leak callbacks into later sessions
+
+## Claude SDK Parity Matrix
+
+Phase 0 must track each currently used Claude SDK behavior to an explicit
+neutral owner.
+
+| Current behavior | Current owner | Neutral owner | Decision | Required tests |
+| --- | --- | --- | --- | --- |
+| Text streaming from partial message events to `agent_message_delta` | `src/orchestrator/agent/client.py` | `ConversationRuntimeSession` | Preserve SSE shape | fake provider streams multiple deltas |
+| Complete assistant text to `agent_message` | `src/orchestrator/agent/client.py` | `ConversationRuntimeSession` | Preserve SSE shape and history write behavior | streamed and non-streamed text stored once |
+| Tool call event emission and stream/assistant dedupe by tool id | `src/orchestrator/agent/client.py` | `ConversationRuntimeSession` | Preserve dedupe semantics | duplicate provider tool id emits one `tool_call` |
+| Missing tool id fallback to complete assistant message | `src/orchestrator/agent/client.py` | `ConversationRuntimeSession` | Preserve | missing id still emits one canonical tool call |
+| Result errors to `error` events | `src/orchestrator/agent/client.py` | `ConversationRuntimeSession` | Preserve with sanitized provider-safe text | provider result error emits one sanitized error |
+| `num_turns` and last turn count | Claude `ResultMessage` and adapter state | `ConversationRuntimeSession` | Preserve normalized turn count | final result updates `last_turn_count` |
+| `total_cost_usd`, `usage`, `session_id`, `subtype`, `stop_reason` | Claude `ResultMessage` | `ModelProviderClient` result metadata | Preserve when provider supplies it | adapter contract tests include all fields |
+| In-process orchestrator MCP tool registration | `create_sdk_mcp_server` in `client.py` | `WorkflowToolCatalog` and `LocalToolDispatcher` | Preserve capability, change mechanism | catalog exposes same ShipAgent tools |
+| Optional UPS stdio MCP tool exposure to model | Claude `mcp_servers["ups"]` and allowed tools | Internal workflow services and UPS clients | Intentionally changed | direct `mcp__ups__*` provider calls unavailable; wrappers still work |
+| Allowed tool wildcard matching | Claude options | `WorkflowToolCatalog` plus policy engine | Preserve effective allow list, not wildcard implementation | unknown tool denied; known wrapper allowed |
+| PreToolUse hook denials | `src/orchestrator/agent/hooks.py` | `RuntimePolicyEngine` | Preserve denial result shape | policy tests port current hook cases |
+| PostToolUse audit/error detection | `src/orchestrator/agent/hooks.py` | `RuntimePolicyEngine` and dispatcher | Preserve | every dispatched tool logs audit and detects errors |
+| Session continuation | Claude SDK internal session memory | ShipAgent-owned persisted history and runtime state | Intentionally changed | resumed session builds provider messages from ShipAgent history |
+| Interrupt and drain | `ClaudeSDKClient.interrupt()` | `ConversationRuntimeSession` | Preserve observable behavior | interrupt, drain, next-message ordering tests |
+| Lifecycle errors for already-started/not-started agents | `OrchestrationAgent` | `ConversationRuntimeSession` | Preserve user-safe behavior | start twice, stop before start, process before start tests |
+| MCP connection status/failure | Claude MCP client lifecycle | dispatcher/workflow service status results | Preserve user-visible safe failure | unavailable UPS returns safe tool/error events |
+
+## Intentional Non-Parity
+
+The neutral runtime must not blindly clone all Claude SDK behavior.
+
+- Raw row data returned to the model is not preserved. Current tools can return
+  `sample_rows` and optional full `rows`; Phase 0 should replace model-bound row
+  payloads with counts, schema, redacted summaries, opaque fetch IDs, and
+  deterministic server-side state. If temporary compatibility requires samples,
+  they must be feature-flagged, redacted, and explicitly removed before Phase 0
+  acceptance.
+- Direct provider-facing `mcp__ups__*` tools are not preserved. ShipAgent-owned
+  wrappers preserve workflow capability while policy remains centralized.
+- Claude SDK session memory is not preserved. ShipAgent-owned persisted history
+  and runtime state become the source of truth.
+- Claude project settings, Claude-only permission modes, and Claude-only model
+  defaults are not preserved. Provider selection becomes explicit and
+  provider-keyed.
+- Claude SDK-specific event classes are not preserved. The stable contract is
+  ShipAgent's normalized SSE and runtime event shape.
+
 ## Data Safety
 
 The model remains a configuration engine, not a data pipe.
@@ -243,6 +381,10 @@ Provider prompts may contain schemas, counts, redacted summaries, opaque IDs,
 workflow state, tool schemas, and user instructions. They must not contain raw
 order rows, full addresses, labels, credentials, carrier request bodies, or raw
 UPS responses.
+
+This is an intentional behavior change from the current Claude SDK path where
+some tool responses can expose `sample_rows` or full rows to the model. Phase 0
+must close that gap rather than treat it as parity.
 
 Tool handlers and workflow services remain responsible for applying filters,
 mapping columns, generating previews, storing approvals, executing shipments,
@@ -258,6 +400,9 @@ Add shared contract tests for all model-provider adapters:
 - multiple tool calls
 - provider error normalization
 - usage metadata normalization
+- stop reason and completion subtype normalization
+- provider session id normalization
+- cost metadata normalization when available
 - cancellation/interruption behavior where supported
 
 Add fake-provider runtime tests:
@@ -268,6 +413,11 @@ Add fake-provider runtime tests:
 - tool errors emit sanitized `error`
 - complete assistant messages are stored once
 - no row-level data appears in model-bound messages
+- duplicate tool call ids are deduped
+- missing tool call ids fall back to the canonical complete event
+- provider result metadata is captured for audit/diagnostics
+- interrupt drains or discards stale buffered events before the next message
+- session deletion cancels message tasks and detaches callbacks
 
 Port current hook tests to `RuntimePolicyEngine` tests:
 
@@ -277,6 +427,10 @@ Port current hook tests to `RuntimePolicyEngine` tests:
   artifact emission
 - raw SQL keys are denied for filter tools
 - filter intent and filter spec structural checks remain enforced
+- matcher order is preserved
+- fallback pre-tool validation is preserved
+- denial payload shape is preserved
+- post-tool audit and error detection are preserved
 
 Add migration guard tests:
 
@@ -288,18 +442,21 @@ Add migration guard tests:
 ## Migration Sequence
 
 1. Land immediate PR cleanup and tests.
-2. Extract neutral tool catalog from current Claude SDK tool wrapping.
-3. Extract policy checks from Claude hooks into `RuntimePolicyEngine`.
-4. Build `LocalToolDispatcher` over existing deterministic handlers.
-5. Define `ModelProviderClient` and implement a fake provider for tests.
-6. Implement `ConversationRuntimeSession` using the fake provider.
-7. Add OpenAI, Anthropic Messages API, and Gemini HTTP adapters behind the
+2. Consolidate the FastAPI conversation route onto
+   `src/services/conversation_handler.py` so one service path owns agent
+   lifecycle and message processing.
+3. Extract neutral tool catalog from current Claude SDK tool wrapping.
+4. Extract policy checks from Claude hooks into `RuntimePolicyEngine`.
+5. Build `LocalToolDispatcher` over existing deterministic handlers.
+6. Define `ModelProviderClient` and implement a fake provider for tests.
+7. Implement `ConversationRuntimeSession` using the fake provider.
+8. Add OpenAI, Anthropic Messages API, and Gemini HTTP adapters behind the
    normalized provider contract.
-8. Switch local conversation creation from Claude SDK compatibility adapter to
+9. Switch local conversation creation from Claude SDK compatibility adapter to
    `ConversationRuntimeSession`.
-9. Remove active `claude_agent_sdk` imports, mocks, startup assumptions, and
+10. Remove active `claude_agent_sdk` imports, mocks, startup assumptions, and
    Claude-only model defaults.
-10. Keep or delete the optional Claude SDK compatibility adapter based on usage;
+11. Keep or delete the optional Claude SDK compatibility adapter based on usage;
     it must not be in core dependencies or package hidden imports.
 
 ## Acceptance Criteria
@@ -317,6 +474,8 @@ Phase 0 is done when:
 
 - local conversation uses `ConversationRuntimeSession` and direct Python tool
   dispatch
+- local conversation message handling has one canonical service path covered by
+  fake-provider tests
 - OpenAI, Anthropic Messages API, and Gemini use shared provider adapter tests
 - Claude SDK does not own streaming, tool registration, policy checks, sessions,
   usage, errors, or interrupt behavior
@@ -324,6 +483,8 @@ Phase 0 is done when:
   `claude_agent_sdk` imports
 - the Angular/Tauri conversation and SSE contract remains stable
 - no row-level shipping data is sent to model-provider prompts
+- result metadata, interruption, tool-call dedupe, policy denial shape, and
+  internal MCP failure behavior are covered by parity tests
 
 ## Risks And Mitigations
 
