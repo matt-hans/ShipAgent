@@ -132,6 +132,20 @@ def create_conversation_agent(
             model=model,
         )
 
+    if runtime == "fake":
+        from src.services.conversation_runtime.fake_provider import FakeProviderClient
+        from src.services.conversation_runtime.runtime_session import (
+            ConversationRuntimeSession,
+        )
+
+        return ConversationRuntimeSession(
+            provider=FakeProviderClient(script=[]),
+            system_prompt=system_prompt,
+            interactive_shipping=interactive_shipping,
+            session_id=session_id,
+            max_turns=max_turns,
+        )
+
     if runtime in {"", "auto", "claude", "claude_sdk", "anthropic"}:
         if runtime not in {"", "auto"} and model_provider in {"openai", "gemini"}:
             return UnavailableConversationAgent(
