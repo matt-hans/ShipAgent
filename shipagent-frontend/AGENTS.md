@@ -16,8 +16,9 @@ Federation.
   progress, chat actions, token highlighting, and document upload flows.
 - `apps/sidebar-remote/` owns data sources, job/session navigation, and adjacent
   sidebar workflows.
-- `apps/settings-remote/` owns settings, credentials, connections, and
-  onboarding.
+- `apps/settings-remote/` owns settings, provider credentials, connections,
+  shipment behavior, and onboarding. Keep Anthropic/OpenAI/Gemini model
+  settings aligned with backend `AGENT_MODEL` and provider connection contracts.
 - `apps/domain-remote/` owns domain cards and card registry behavior.
 - `apps/provider-widget/` is a provider/app-store widget surface.
 - `libs/shared/api/`, `libs/shared/types/`, `libs/shared/state/`,
@@ -44,6 +45,12 @@ Federation.
   `127.0.0.1` sidecar URL.
 - Preserve the mandatory preview/confirmation UX for shipments, pickups, and any
   state-changing shipping action.
+- Keep provider selection UI provider-neutral. The frontend may collect and show
+  provider credentials/settings, but shipping behavior and tool routing remain
+  backend workflow concerns.
+- Do not render raw labels, document bytes, row samples, credentials, or raw UPS
+  request/response bodies from conversation tool payloads. Use backend-sanitized
+  artifacts and event payloads.
 - Prefer accessible, dense operational UI. This is a shipping workflow tool, not
   a marketing site.
 
@@ -88,6 +95,10 @@ compute the affected graph.
 - Backend routes are rooted at `/api/v1`; `ApiService` centralizes HTTP access.
 - Conversation streaming is SSE-based. `ApiService` returns stream URLs; stream
   consumption belongs in the SSE/conversation services.
+- Provider-neutral conversation results can include sanitized tool payloads for
+  rates, address validation, transit estimates, tracking, pickups, landed cost,
+  contacts, and previews. UI components should treat backend event/data shapes as
+  contracts and update shared fixtures when they change.
 - Production serving expects the Angular shell build at
   `shipagent-frontend/dist/apps/shell/browser`, with remotes linked into the
   shell dist after production builds.

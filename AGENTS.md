@@ -23,6 +23,11 @@ workflow and tool backbone. They do not own shipping business logic.
 
 - `src/` - Python backend: FastAPI, orchestration agent, workflow services, MCP
   servers/clients, registry projections, CLI.
+- `src/services/conversation_runtime/` - Provider-neutral conversation runtime:
+  normalized message/tool contracts, OpenAI/Gemini adapters, fake-provider tests,
+  local tool dispatch, policy gates, and provider-safe result projection.
+- `src/hosted/ups_boundary/` - Hosted UPS MCP boundary contract, fixtures,
+  readiness reporting, and validator helpers.
 - `tests/` - Pytest suite mirroring backend package boundaries.
 - `shipagent-frontend/` - Angular 21 + Nx + Native Federation frontend. This is
   the active frontend path; do not use stale `frontend/` paths from older docs.
@@ -44,13 +49,20 @@ workflow and tool backbone. They do not own shipping business logic.
   changing operations require preview and explicit confirmation first.
 - Do not call UPS or external commerce platforms directly from unrelated layers.
   Use the MCP/client gateway and service abstractions already in `src/`.
-- Do not put provider-specific shipping behavior in OpenAI/Anthropic/Microsoft/
-  Gemini adapter code. Add or change canonical workflow tools/services instead.
+- Do not put provider-specific shipping behavior in OpenAI/Anthropic/Gemini
+  adapter code. Add or change canonical workflow tools/services instead.
 - Keep carrier/platform constants, service codes, field limits, defaults, and
   enums centralized in canonical modules. Avoid magic strings scattered through
   routes or components.
 - Preserve auditability. New decisions, confirmations, tool calls, or execution
   paths should have tests and redaction-aware logging where appropriate.
+- Conversation providers are selected with `AGENT_MODEL`: Claude-style model names
+  use the Claude Agent SDK compatibility path; `openai:*` and `gemini:*` use the
+  provider-neutral runtime. Keep all providers on shared workflow tools and
+  provider-safe result projections.
+- Raw UPS MCP calls are not provider-neutral behavior. Expose UPS capabilities
+  through workflow wrappers such as `rate_shipment`, `validate_address`,
+  `get_time_in_transit`, tracking, pickup, landed-cost, and preview/execute tools.
 
 ## Common Commands
 
@@ -64,10 +76,18 @@ Backend setup and dev:
 Backend validation:
 
 ```bash
-pytest
-pytest -k "not stream and not sse and not progress"
-ruff check src/ tests/
-ruff format src/ tests/
+.venv/bin/python -m pytest
+.venv/bin/python -m pytest -k "not stream and not sse and not progress"
+.venv/bin/python -m ruff check src/ tests/
+.venv/bin/python -m ruff format src/ tests/
+```
+
+Model runtime examples:
+
+```bash
+AGENT_MODEL=claude-haiku-4-5-20251001 ./scripts/start-backend.sh
+AGENT_MODEL=openai:gpt-5-mini ./scripts/start-backend.sh
+AGENT_MODEL=gemini:gemini-2.5-flash ./scripts/start-backend.sh
 ```
 
 Frontend setup and validation:
@@ -86,8 +106,8 @@ npx nx run-many -t build --all --configuration=production
 Provider registry artifacts:
 
 ```bash
-python scripts/generate_provider_artifacts.py
-pytest tests/registry/test_artifact_drift.py -v
+.venv/bin/python scripts/generate_provider_artifacts.py
+.venv/bin/python -m pytest tests/registry/test_artifact_drift.py -v
 ```
 
 Packaging:
