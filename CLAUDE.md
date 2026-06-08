@@ -561,6 +561,20 @@ All extensions MUST integrate through agent tools/MCP and follow canonical data 
 - **P2 — Google Sheets, Webhooks**: New adapters/tools. Not started.
 - **P3 — Smart Routing**: Optimal carrier+service recommendation. Requires multi-carrier. Not started.
 
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`matt-hans/ShipAgent`). Use `gh` CLI for all operations. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical labels used as-is: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context repo. Skills read `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
 ## Boundaries
 
 Shipping orchestration only — read-only for orders (except tracking write-back), no inventory management, no payment processing, no customer communication, UPS-only (multi-carrier on roadmap).
