@@ -17,7 +17,11 @@ class Environment(StrEnum):
 
 
 class ControlPlaneSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="SHIPAGENT_", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_prefix="SHIPAGENT_",
+        extra="ignore",
+        frozen=True,
+    )
 
     auth_mode: AuthMode = AuthMode.auth0
     environment: Environment = Environment.local
@@ -28,4 +32,4 @@ class ControlPlaneSettings(BaseSettings):
     auth0_issuer: str = ""
     auth0_audience: str = ""
     relay_signing_secret: str = Field(default="", min_length=0)
-
+    control_plane_schema: str = "shipagent_private"

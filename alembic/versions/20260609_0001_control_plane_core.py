@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from alembic import op
+import os
+
 import sqlalchemy as sa
 
+from alembic import context, op
 
 revision = "20260609_0001"
 down_revision = None
@@ -13,9 +15,9 @@ depends_on = None
 
 
 def _schema() -> str:
-    from alembic import context
-
-    return context.config.get_section("alembic:runtime").get(
+    return os.environ.get(
+        "SHIPAGENT_CONTROL_PLANE_SCHEMA"
+    ) or context.config.get_section("alembic:runtime").get(
         "shipagent_control_plane_schema",
         "shipagent_private",
     )
@@ -30,7 +32,9 @@ def upgrade() -> None:
         "cloud_accounts",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("auth0_subject", sa.String(length=255), nullable=False),
-        sa.Column("suspended", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column(
+            "suspended", sa.Boolean(), nullable=False, server_default=sa.text("0")
+        ),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -49,7 +53,9 @@ def upgrade() -> None:
         sa.Column("client_id", sa.String(length=255), nullable=False),
         sa.Column("surface", sa.String(length=64), nullable=False),
         sa.Column("scopes_text", sa.Text(), nullable=False, server_default=""),
-        sa.Column("status", sa.String(length=32), nullable=False, server_default="active"),
+        sa.Column(
+            "status", sa.String(length=32), nullable=False, server_default="active"
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(
             ["account_id"],
@@ -88,4 +94,3 @@ def downgrade() -> None:
     op.drop_table("audit_events", schema=schema)
     op.drop_table("provider_connections", schema=schema)
     op.drop_table("cloud_accounts", schema=schema)
-

@@ -27,7 +27,9 @@ def test_relay_execution_tools_are_projected_safely():
 
     if generic_names:
         assert "execute_shipments" in generic_names
-        relay_tool = next(tool for tool in generic if tool["name"] == "execute_shipments")
+        relay_tool = next(
+            tool for tool in generic if tool["name"] == "execute_shipments"
+        )
         assert relay_tool["annotations"]["openWorldHint"] is True
 
     if openai_names:
@@ -37,13 +39,14 @@ def test_relay_execution_tools_are_projected_safely():
         )
         assert public_tool["annotations"]["openWorldHint"] is True
 
-    relay_tool = next((tool for tool in generic if tool["name"] == "execute_shipments"), None)
-    if relay_tool is not None:
+    if "execute_shipments" in generic_names:
+        relay_tool = next(
+            tool for tool in generic if tool["name"] == "execute_shipments"
+        )
         assert relay_tool["annotations"]["openWorldHint"] is True
 
-    public_tool = next(
-        (tool for tool in openai_public if tool["name"] == "execute_shipments"),
-        None,
-    )
-    if public_tool is not None:
+    if "execute_shipments" in openai_names:
+        public_tool = next(
+            tool for tool in openai_public if tool["name"] == "execute_shipments"
+        )
         assert public_tool["annotations"]["openWorldHint"] is True
