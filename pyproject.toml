@@ -48,6 +48,11 @@ dependencies = [
     "claude-agent-sdk>=0.1.50",
     "openai>=2.11.0",
     "google-genai>=1.33.0",
+    "pydantic-settings>=2.7",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "redis[hiredis]>=5.2",
+    "PyJWT[crypto]>=2.10",
 ]
 
 [project.optional-dependencies]
