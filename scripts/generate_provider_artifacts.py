@@ -33,8 +33,25 @@ def main() -> None:
         ],
     )
     write_json(
+        OUT / "openai_apps_public_tools.json",
+        [
+            to_openai_app_tool(tool)
+            for tool in exportable_tools(ProviderExport.openai_apps_public)
+        ],
+    )
+    write_json(
+        OUT / "claude_remote_mcp_public_tools.json",
+        [
+            to_mcp_tool_descriptor(tool)
+            for tool in exportable_tools(ProviderExport.claude_remote_mcp_public)
+        ],
+    )
+    write_json(
         OUT / "openai_apps_tools.json",
-        [to_openai_app_tool(tool) for tool in exportable_tools(ProviderExport.openai)],
+        [
+            to_openai_app_tool(tool)
+            for tool in exportable_tools(ProviderExport.openai)
+        ],
     )
     write_json(
         OUT / "microsoft_openapi_operations.json",

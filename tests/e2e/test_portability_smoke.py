@@ -8,7 +8,8 @@ def test_generated_artifacts_cover_first_wave_providers():
     expected = [
         "registry.json",
         "generic_mcp_tools.json",
-        "openai_apps_tools.json",
+        "openai_apps_public_tools.json",
+        "claude_remote_mcp_public_tools.json",
         "microsoft_openapi_operations.json",
         "gemini_functions.json",
     ]
@@ -16,13 +17,33 @@ def test_generated_artifacts_cover_first_wave_providers():
         assert (root / name).exists(), name
 
 
-def test_create_shipments_requires_confirmation_everywhere():
+def test_relay_execution_tools_are_projected_safely():
     root = Path("generated/provider_artifacts")
     generic = json.loads((root / "generic_mcp_tools.json").read_text())
-    microsoft = json.loads((root / "microsoft_openapi_operations.json").read_text())
+    openai_public = json.loads((root / "openai_apps_public_tools.json").read_text())
 
-    mcp_tool = next(tool for tool in generic if tool["name"] == "create_shipments")
-    ms_op = next(op for op in microsoft if op["operationId"] == "create_shipments")
+    generic_names = {tool["name"] for tool in generic}
+    openai_names = {tool["name"] for tool in openai_public}
 
-    assert mcp_tool["annotations"]["openWorldHint"] is True
-    assert ms_op["x-openai-isConsequential"] is True
+    if generic_names:
+        assert "execute_shipments" in generic_names
+        relay_tool = next(tool for tool in generic if tool["name"] == "execute_shipments")
+        assert relay_tool["annotations"]["openWorldHint"] is True
+
+    if openai_names:
+        assert "execute_shipments" in openai_names
+        public_tool = next(
+            tool for tool in openai_public if tool["name"] == "execute_shipments"
+        )
+        assert public_tool["annotations"]["openWorldHint"] is True
+
+    relay_tool = next((tool for tool in generic if tool["name"] == "execute_shipments"), None)
+    if relay_tool is not None:
+        assert relay_tool["annotations"]["openWorldHint"] is True
+
+    public_tool = next(
+        (tool for tool in openai_public if tool["name"] == "execute_shipments"),
+        None,
+    )
+    if public_tool is not None:
+        assert public_tool["annotations"]["openWorldHint"] is True

@@ -14,50 +14,50 @@ def tool(name: str):
 
 
 def test_mcp_descriptor_includes_annotations():
-    descriptor = to_mcp_tool_descriptor(tool("create_shipments"))
+    descriptor = to_mcp_tool_descriptor(tool("execute_shipments"))
 
-    assert descriptor["name"] == "create_shipments"
+    assert descriptor["name"] == "execute_shipments"
     assert descriptor["annotations"]["destructiveHint"] is False
     assert descriptor["annotations"]["readOnlyHint"] is False
 
 
 def test_openai_app_tool_includes_ui_meta_when_present():
-    descriptor = to_openai_app_tool(tool("preview_shipments"))
+    descriptor = to_openai_app_tool(tool("prepare_shipments"))
 
-    assert descriptor["title"] == "Preview shipments"
+    assert descriptor["title"] == "Prepare shipments"
     assert descriptor["_meta"]["ui"]["resourceUri"] == "ui://shipagent/preview.html"
 
 
 def test_openai_app_tool_omits_ui_meta_when_absent():
-    descriptor = to_openai_app_tool(tool("void_shipment"))
+    descriptor = to_openai_app_tool(tool("create_label_download"))
 
     assert "_meta" not in descriptor
 
 
 def test_microsoft_openapi_marks_consequential_operations():
-    operation = to_openapi_operation(tool("create_shipments"))
+    operation = to_openapi_operation(tool("execute_shipments"))
 
     assert operation["x-openai-isConsequential"] is True
 
 
 def test_gemini_function_declaration_has_parameters():
-    declaration = to_gemini_function(tool("preview_shipments"))
+    declaration = to_gemini_function(tool("prepare_shipments"))
 
-    assert declaration["name"] == "preview_shipments"
+    assert declaration["name"] == "prepare_shipments"
     assert declaration["parameters"]["type"] == "object"
 
 
 @pytest.mark.parametrize(
     ("tool_name", "read_only", "destructive", "open_world", "consequential"),
     [
-        ("connect_carrier_account", False, False, True, True),
-        ("create_shipments", False, False, True, True),
-        ("schedule_pickup", False, False, True, True),
-        ("void_shipment", False, True, True, True),
-        ("track_package", True, False, True, False),
+        ("get_shipagent_status", True, False, False, False),
+        ("submit_one_off_shipment", False, False, True, True),
+        ("validate_shipment_address", True, False, False, False),
+        ("get_shipment_rates", True, False, True, False),
+        ("prepare_shipments", True, False, True, False),
+        ("execute_shipments", False, False, True, True),
         ("get_job_status", True, False, False, False),
-        ("get_label_links", True, False, False, False),
-        ("compare_rates", True, False, True, False),
+        ("create_label_download", True, False, True, False),
     ],
 )
 def test_side_effect_safety_metadata(
@@ -78,7 +78,7 @@ def test_side_effect_safety_metadata(
 
 
 def test_exportable_tools_filters_by_provider_and_export_safety_gates():
-    base_tool = tool("track_package")
+    base_tool = tool("get_job_status")
     exportable_update = {
         "implementation_status": "implemented",
         "hosted_readiness": "ready",
@@ -150,16 +150,13 @@ def test_projection_input_schemas_do_not_alias_registry_schemas(
     projection,
     schema_path: tuple[str, ...],
 ):
-    contract = tool("preview_shipments")
+    contract = tool("prepare_shipments")
     descriptor = projection(contract)
     schema = schema_at(descriptor, schema_path)
 
-    schema["properties"]["order_batch_id"]["description"] = "mutated"
+    schema["properties"]["order_batch_id"]["type"] = "integer"
 
-    assert (
-        contract.input_schema["properties"]["order_batch_id"]["description"]
-        == "Hosted order batch to preview."
-    )
+    assert contract.input_schema["properties"]["order_batch_id"]["type"] == "string"
 
 
 @pytest.mark.parametrize(
@@ -176,7 +173,7 @@ def test_projection_output_schemas_do_not_alias_registry_schemas(
     projection,
     schema_path: tuple[str, ...],
 ):
-    contract = tool("preview_shipments")
+    contract = tool("prepare_shipments")
     descriptor = projection(contract)
     schema = schema_at(descriptor, schema_path)
 
