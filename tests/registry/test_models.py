@@ -108,6 +108,7 @@ def test_side_effecting_public_tool_requires_confirmation():
         title="Create shipments",
         side_effect=SideEffectClass.purchase,
         requires_confirmation=True,
+        prepare_tool="prepare_shipments",
         auth_scopes=["shipments:create"],
     )
 
@@ -130,6 +131,17 @@ def test_side_effecting_public_tool_rejects_missing_confirmation(side_effect):
             title=f"{side_effect.value} shipments",
             side_effect=side_effect,
             requires_confirmation=False,
+        )
+
+
+def test_publicly_confirmed_tool_requires_prepare_tool():
+    with pytest.raises(ValidationError):
+        minimal_tool(
+            name="execute_shipments",
+            title="Execute shipments",
+            side_effect=SideEffectClass.write,
+            requires_confirmation=True,
+            prepare_tool="create_preview",
         )
 
 

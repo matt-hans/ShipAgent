@@ -1,21 +1,15 @@
 from src.registry.catalog import load_registry, public_tools
 from src.registry.models import ProviderExport, SideEffectClass, ToolVisibility
-from src.workflows.models import PreviewShipmentsRequest, PreviewShipmentsResult
 
 EXPECTED_PUBLIC = {
-    "connect_carrier_account",
-    "connect_store",
-    "upload_or_import_orders",
-    "preview_shipments",
-    "compare_rates",
-    "create_shipments",
-    "track_package",
-    "schedule_pickup",
-    "void_shipment",
-    "write_back_tracking",
+    "get_shipagent_status",
+    "submit_one_off_shipment",
+    "validate_shipment_address",
+    "get_shipment_rates",
+    "prepare_shipments",
+    "execute_shipments",
     "get_job_status",
-    "get_label_links",
-    "get_audit_summary",
+    "create_label_download",
 }
 
 
@@ -29,8 +23,9 @@ def test_public_tools_are_tenant_safe_and_provider_exportable():
         assert tool.tenant_safe is True
         assert tool.implementation_status == "implemented"
         assert tool.hosted_readiness == "ready"
-        assert tool.provider_export_enabled is True
-        assert ProviderExport.openai in tool.provider_exports
+        assert tool.provider_export_enabled is False
+        assert ProviderExport.openai_apps_public in tool.provider_exports
+        assert ProviderExport.claude_remote_mcp_public in tool.provider_exports
         assert ProviderExport.generic_mcp in tool.provider_exports
         assert ProviderExport.anthropic not in tool.provider_exports
 
@@ -46,14 +41,12 @@ def test_side_effecting_public_tools_require_confirmation():
             assert tool.requires_confirmation is True
 
 
-def test_connect_tools_start_linking_with_confirmation():
-    tools_by_name = {tool.name: tool for tool in public_tools()}
+def test_execute_shipments_declares_prepare_tool_and_execution_gate():
+    tool = next(tool for tool in public_tools() if tool.name == "execute_shipments")
 
-    for name in {"connect_carrier_account", "connect_store"}:
-        tool = tools_by_name[name]
-        assert tool.side_effect == SideEffectClass.write
-        assert tool.requires_confirmation is True
-        assert tool.confirmation_policy == "standard_side_effect"
+    assert tool.prepare_tool == "prepare_shipments"
+    assert tool.execution_target_required is True
+    assert tool.confirmation_policy == "provider_and_shipagent"
 
 
 def test_public_input_schemas_are_closed():
@@ -61,25 +54,11 @@ def test_public_input_schemas_are_closed():
         assert tool.input_schema["additionalProperties"] is False
 
 
-def test_track_package_schema_matches_description():
-    tool = next(tool for tool in public_tools() if tool.name == "track_package")
+def test_prepare_tool_schema_is_strict():
+    tool = next(tool for tool in public_tools() if tool.name == "prepare_shipments")
 
-    assert set(tool.input_schema["properties"]) == {"tracking_number"}
-    assert "shipment id" not in tool.description.lower()
-
-
-def test_preview_shipments_schema_matches_workflow_request_contract():
-    tool = next(tool for tool in public_tools() if tool.name == "preview_shipments")
-    workflow_schema = PreviewShipmentsRequest.model_json_schema()
-    workflow_result_schema = PreviewShipmentsResult.model_json_schema()
-
-    assert set(tool.input_schema["required"]) == set(workflow_schema["required"])
-    assert set(tool.input_schema["properties"]) == set(workflow_schema["properties"])
-    assert tool.input_schema["properties"]["shipments"]["minItems"] == 1
-    assert set(tool.output_schema["required"]) == set(workflow_result_schema["required"])
-    assert set(tool.output_schema["properties"]) == set(
-        workflow_result_schema["properties"]
-    )
+    assert set(tool.input_schema["properties"]) == {"order_batch_id"}
+    assert "tenant_id" not in tool.input_schema["properties"]
 
 
 def test_registry_loads_all_tools():

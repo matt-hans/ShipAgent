@@ -11,10 +11,20 @@ from src.registry.models import (
 )
 from src.registry.tools.schema import object_schema
 
-ALL_PROVIDERS = [
-    ProviderExport.openai,
-    ProviderExport.microsoft,
-    ProviderExport.gemini,
+FIRST_SLICE_TOOL_NAMES = (
+    "get_shipagent_status",
+    "submit_one_off_shipment",
+    "validate_shipment_address",
+    "get_shipment_rates",
+    "prepare_shipments",
+    "execute_shipments",
+    "get_job_status",
+    "create_label_download",
+)
+
+PUBLIC_RELAY_PROVIDERS = [
+    ProviderExport.openai_apps_public,
+    ProviderExport.claude_remote_mcp_public,
     ProviderExport.generic_mcp,
 ]
 
@@ -31,8 +41,17 @@ def public_tool(
     ui_resource: str | None = None,
     implementation_status: Literal["planned", "implemented"] = "implemented",
     hosted_readiness: Literal["not_ready", "ready"] = "ready",
-    provider_export_enabled: bool = True,
+    provider_export_enabled: bool = False,
+    confirmation_policy: str | None = None,
+    result_profile: str | None = None,
+    prepare_tool: str | None = None,
+    execution_target_required: bool = False,
 ) -> ToolContract:
+    confirmation = (
+        confirmation_policy
+        if requires_confirmation
+        else None
+    )
     return ToolContract(
         name=name,
         title=title,
@@ -47,156 +66,57 @@ def public_tool(
         side_effect=side_effect,
         requires_confirmation=requires_confirmation,
         auth_scopes=auth_scopes,
-        provider_exports=ALL_PROVIDERS,
+        provider_exports=PUBLIC_RELAY_PROVIDERS,
         audit_level=AuditLevel.full if requires_confirmation else AuditLevel.basic,
         result_sensitivity=ResultSensitivity.business,
         input_schema=input_schema,
         output_schema=output_schema,
-        confirmation_policy="standard_side_effect" if requires_confirmation else None,
+        confirmation_policy=confirmation,
         ui_resource=ui_resource,
+        result_profile=result_profile or "aggregate",
+        prepare_tool=prepare_tool,
+        execution_target_required=execution_target_required,
     )
 
 
 PUBLIC_TOOLS = [
     public_tool(
-        "connect_carrier_account",
-        "Connect carrier account",
-        "Start or check carrier account linking for shipment creation.",
-        SideEffectClass.write,
-        ["accounts:connect"],
+        "get_shipagent_status",
+        "Get shipagent status",
+        "Return operational status for the active account and device.",
+        SideEffectClass.read,
+        ["account:read", "device:read"],
         object_schema(
             {
-                "carrier": {
+                "correlation_id": {
                     "type": "string",
-                    "enum": ["ups"],
-                    "description": "Carrier account to connect.",
+                    "description": "Opaque client correlation identifier.",
                 }
             },
-            ["carrier"],
-        ),
-        object_schema(
-            {"link_url": {"type": "string"}, "status": {"type": "string"}},
-            ["status"],
-        ),
-        requires_confirmation=True,
-    ),
-    public_tool(
-        "connect_store",
-        "Connect store",
-        "Start or check commerce store account linking for order import and tracking write-back.",
-        SideEffectClass.write,
-        ["stores:connect"],
-        object_schema(
-            {
-                "platform": {
-                    "type": "string",
-                    "description": "Commerce platform to connect.",
-                }
-            },
-            ["platform"],
-        ),
-        object_schema(
-            {"link_url": {"type": "string"}, "status": {"type": "string"}},
-            ["status"],
-        ),
-        requires_confirmation=True,
-    ),
-    public_tool(
-        "upload_or_import_orders",
-        "Upload or import orders",
-        "Import order data from an uploaded file or connected cloud store into a hosted order batch.",
-        SideEffectClass.write,
-        ["orders:write"],
-        object_schema(
-            {
-                "source": {
-                    "type": "string",
-                    "description": "Order source type, such as uploaded file or connected store.",
-                },
-                "source_ref": {
-                    "type": "string",
-                    "description": "Opaque reference for the uploaded file or import source.",
-                },
-            },
-            ["source"],
-        ),
-        object_schema(
-            {"order_batch_id": {"type": "string"}, "row_count": {"type": "integer"}},
-            ["order_batch_id", "row_count"],
-        ),
-        requires_confirmation=True,
-    ),
-    public_tool(
-        "preview_shipments",
-        "Preview shipments",
-        "Preview shipment destinations, service choices, costs, and write-back effects before purchase.",
-        SideEffectClass.estimate,
-        ["orders:read", "shipments:preview"],
-        object_schema(
-            {
-                "tenant_id": {
-                    "type": "string",
-                    "description": "Hosted tenant whose shipments are being previewed.",
-                },
-                "order_batch_id": {
-                    "type": "string",
-                    "description": "Hosted order batch to preview.",
-                },
-                "shipments": {
-                    "type": "array",
-                    "items": {"type": "object"},
-                    "minItems": 1,
-                    "description": "Shipment payloads to rate for the preview.",
-                },
-            },
-            ["tenant_id", "order_batch_id", "shipments"],
+            ["correlation_id"],
         ),
         object_schema(
             {
-                "preview_id": {"type": "string"},
-                "total_cost_cents": {"type": "integer"},
-                "requires_confirmation": {"type": "boolean"},
-                "summary": {"type": "object"},
+                "status": {"type": "string"},
+                "active_device_id": {"type": "string"},
+                "capabilities": {"type": "array", "items": {"type": "string"}},
             },
-            ["preview_id", "total_cost_cents", "requires_confirmation", "summary"],
+            ["status", "active_device_id", "capabilities"],
         ),
-        ui_resource="ui://shipagent/preview.html",
     ),
     public_tool(
-        "compare_rates",
-        "Compare rates",
-        "Compare available rates for one shipment or a shipment batch preview.",
-        SideEffectClass.estimate,
-        ["shipments:rate"],
-        object_schema(
-            {
-                "preview_id": {
-                    "type": "string",
-                    "description": "Shipment preview to rate.",
-                }
-            },
-            ["preview_id"],
-        ),
-        object_schema(
-            {"rates": {"type": "array", "items": {"type": "object"}}},
-            ["rates"],
-        ),
-        ui_resource="ui://shipagent/rates.html",
-    ),
-    public_tool(
-        "create_shipments",
-        "Create shipments",
-        "Create shipping labels after a confirmed preview and return job status.",
+        "submit_one_off_shipment",
+        "Submit one off shipment",
+        "Create a single shipment execution job from an already-validated payload.",
         SideEffectClass.purchase,
         ["shipments:create"],
         object_schema(
             {
-                "confirmation_token": {
-                    "type": "string",
-                    "description": "Confirmation token for the approved shipment preview.",
-                }
+                "preview_id": {"type": "string"},
+                "origin_city": {"type": "string"},
+                "destination_city": {"type": "string"},
             },
-            ["confirmation_token"],
+            ["preview_id"],
         ),
         object_schema(
             {"job_id": {"type": "string"}, "status": {"type": "string"}},
@@ -204,94 +124,85 @@ PUBLIC_TOOLS = [
         ),
         requires_confirmation=True,
         ui_resource="ui://shipagent/confirmation.html",
+        prepare_tool="prepare_shipments",
+        execution_target_required=True,
     ),
     public_tool(
-        "track_package",
-        "Track package",
-        "Track a package by tracking number.",
-        SideEffectClass.read,
-        ["tracking:read"],
+        "validate_shipment_address",
+        "Validate shipment address",
+        "Validate a destination and return canonical address guidance.",
+        SideEffectClass.estimate,
+        ["address:validate"],
         object_schema(
             {
-                "tracking_number": {
+                "address_text": {
                     "type": "string",
-                    "description": "Carrier tracking number to look up.",
+                    "description": "Address text in free form.",
                 }
             },
-            ["tracking_number"],
+            ["address_text"],
         ),
         object_schema(
-            {
-                "status": {"type": "string"},
-                "events": {"type": "array", "items": {"type": "object"}},
-            },
-            ["status"],
+            {"normalized_address": {"type": "string"}, "valid": {"type": "boolean"}},
+            ["normalized_address", "valid"],
         ),
-        ui_resource="ui://shipagent/tracking.html",
     ),
     public_tool(
-        "schedule_pickup",
-        "Schedule pickup",
-        "Schedule a carrier pickup after confirmed pickup details.",
-        SideEffectClass.external_mutation,
-        ["pickups:create"],
+        "get_shipment_rates",
+        "Get shipment rates",
+        "Generate rate options for a validated shipment request.",
+        SideEffectClass.estimate,
+        ["shipments:rate"],
+        object_schema(
+            {"shipment_id": {"type": "string"}},
+            ["shipment_id"],
+        ),
         object_schema(
             {
-                "confirmation_token": {
-                    "type": "string",
-                    "description": "Confirmation token for the approved pickup request.",
-                }
+                "rates": {"type": "array", "items": {"type": "object"}},
+                "selected": {"type": "string"},
             },
-            ["confirmation_token"],
+            ["rates", "selected"],
         ),
-        object_schema(
-            {"pickup_id": {"type": "string"}, "status": {"type": "string"}},
-            ["pickup_id", "status"],
-        ),
-        requires_confirmation=True,
-        ui_resource="ui://shipagent/pickup.html",
+        ui_resource="ui://shipagent/rates.html",
+        execution_target_required=True,
     ),
     public_tool(
-        "void_shipment",
-        "Void shipment",
-        "Void a created shipment after confirmation.",
-        SideEffectClass.destructive,
-        ["shipments:void"],
+        "prepare_shipments",
+        "Prepare shipments",
+        "Create immutable preview artifacts for a shipment batch.",
+        SideEffectClass.estimate,
+        ["shipments:preview"],
         object_schema(
-            {
-                "confirmation_token": {
-                    "type": "string",
-                    "description": "Confirmation token for the shipment void request.",
-                }
-            },
-            ["confirmation_token"],
+            {"order_batch_id": {"type": "string"}},
+            ["order_batch_id"],
         ),
         object_schema(
-            {"shipment_id": {"type": "string"}, "status": {"type": "string"}},
-            ["shipment_id", "status"],
+            {"preview_id": {"type": "string"}, "summary": {"type": "object"}},
+            ["preview_id", "summary"],
         ),
-        requires_confirmation=True,
+        ui_resource="ui://shipagent/preview.html",
+        execution_target_required=True,
     ),
     public_tool(
-        "write_back_tracking",
-        "Write back tracking",
-        "Write tracking numbers back to a connected cloud system after confirmation.",
-        SideEffectClass.external_mutation,
-        ["tracking:write"],
+        "execute_shipments",
+        "Execute shipments",
+        "Execute a prepared preview and return immutable execution artifacts.",
+        SideEffectClass.purchase,
+        ["shipments:execute"],
         object_schema(
-            {
-                "confirmation_token": {
-                    "type": "string",
-                    "description": "Confirmation token for the tracking write-back job.",
-                }
-            },
-            ["confirmation_token"],
+            {"preview_id": {"type": "string"}, "confirmation_token": {"type": "string"}},
+            ["preview_id", "confirmation_token"],
         ),
         object_schema(
             {"job_id": {"type": "string"}, "status": {"type": "string"}},
             ["job_id", "status"],
         ),
         requires_confirmation=True,
+        confirmation_policy="provider_and_shipagent",
+        prepare_tool="prepare_shipments",
+        ui_resource="ui://shipagent/confirmation.html",
+        execution_target_required=True,
     ),
     public_tool(
         "get_job_status",
@@ -300,12 +211,7 @@ PUBLIC_TOOLS = [
         SideEffectClass.read,
         ["jobs:read"],
         object_schema(
-            {
-                "job_id": {
-                    "type": "string",
-                    "description": "ShipAgent job identifier.",
-                }
-            },
+            {"job_id": {"type": "string", "description": "ShipAgent job identifier."}},
             ["job_id"],
         ),
         object_schema(
@@ -314,40 +220,18 @@ PUBLIC_TOOLS = [
         ),
     ),
     public_tool(
-        "get_label_links",
-        "Get label links",
-        "Return tenant-scoped expiring links or opaque handles for generated labels.",
+        "create_label_download",
+        "Create label download",
+        "Create downloadable label artifacts for a completed shipment job.",
         SideEffectClass.read,
         ["labels:read"],
         object_schema(
-            {
-                "job_id": {
-                    "type": "string",
-                    "description": "ShipAgent label creation job identifier.",
-                }
-            },
+            {"job_id": {"type": "string"}},
             ["job_id"],
         ),
         object_schema(
-            {"links": {"type": "array", "items": {"type": "object"}}},
-            ["links"],
+            {"download_url": {"type": "string"}, "status": {"type": "string"}},
+            ["download_url", "status"],
         ),
-    ),
-    public_tool(
-        "get_audit_summary",
-        "Get audit summary",
-        "Return a provider-safe summary of ShipAgent decisions and side effects for a job.",
-        SideEffectClass.read,
-        ["audit:read"],
-        object_schema(
-            {
-                "job_id": {
-                    "type": "string",
-                    "description": "ShipAgent job identifier to summarize.",
-                }
-            },
-            ["job_id"],
-        ),
-        object_schema({"summary": {"type": "object"}}, ["summary"]),
     ),
 ]

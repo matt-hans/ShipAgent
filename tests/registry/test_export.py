@@ -9,19 +9,14 @@ GENERATED_REGISTRY_SNAPSHOT = (
     ROOT / "generated" / "provider_artifacts" / "registry.json"
 )
 EXPECTED_TOOL_NAMES = [
-    "connect_carrier_account",
-    "connect_store",
-    "upload_or_import_orders",
-    "preview_shipments",
-    "compare_rates",
-    "create_shipments",
-    "track_package",
-    "schedule_pickup",
-    "void_shipment",
-    "write_back_tracking",
+    "get_shipagent_status",
+    "submit_one_off_shipment",
+    "validate_shipment_address",
+    "get_shipment_rates",
+    "prepare_shipments",
+    "execute_shipments",
     "get_job_status",
-    "get_label_links",
-    "get_audit_summary",
+    "create_label_download",
     "raw_ups_tool",
 ]
 
