@@ -10,9 +10,9 @@ from fastmcp.tools import Tool
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent, ToolAnnotations
 
+from src.control_plane.result_projection import project_result
 from src.provider_adapters.export_filter import exportable_tools
 from src.provider_adapters.mcp_projection import to_mcp_tool_descriptor
-from src.control_plane.result_projection import project_result
 from src.registry.models import ProviderExport, ToolContract
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]] | dict[str, Any]]

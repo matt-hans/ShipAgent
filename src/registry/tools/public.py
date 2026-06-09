@@ -47,11 +47,7 @@ def public_tool(
     prepare_tool: str | None = None,
     execution_target_required: bool = False,
 ) -> ToolContract:
-    confirmation = (
-        confirmation_policy
-        if requires_confirmation
-        else None
-    )
+    confirmation = confirmation_policy if requires_confirmation else None
     return ToolContract(
         name=name,
         title=title,
@@ -107,25 +103,19 @@ PUBLIC_TOOLS = [
     public_tool(
         "submit_one_off_shipment",
         "Submit one off shipment",
-        "Create a single shipment execution job from an already-validated payload.",
-        SideEffectClass.purchase,
+        "Create a single shipment ingress reference from caller-provided shipment content.",
+        SideEffectClass.estimate,
         ["shipments:create"],
         object_schema(
             {
-                "preview_id": {"type": "string"},
-                "origin_city": {"type": "string"},
-                "destination_city": {"type": "string"},
+                "shipment_payload": {"type": "string"},
             },
-            ["preview_id"],
+            ["shipment_payload"],
         ),
         object_schema(
-            {"job_id": {"type": "string"}, "status": {"type": "string"}},
-            ["job_id", "status"],
+            {"input_reference": {"type": "string"}},
+            ["input_reference"],
         ),
-        requires_confirmation=True,
-        ui_resource="ui://shipagent/confirmation.html",
-        prepare_tool="prepare_shipments",
-        execution_target_required=True,
     ),
     public_tool(
         "validate_shipment_address",
@@ -135,12 +125,12 @@ PUBLIC_TOOLS = [
         ["address:validate"],
         object_schema(
             {
-                "address_text": {
+                "input_reference": {
                     "type": "string",
-                    "description": "Address text in free form.",
-                }
+                    "description": "Reference to a submitted ingress payload.",
+                },
             },
-            ["address_text"],
+            ["input_reference"],
         ),
         object_schema(
             {"normalized_address": {"type": "string"}, "valid": {"type": "boolean"}},
@@ -154,8 +144,8 @@ PUBLIC_TOOLS = [
         SideEffectClass.estimate,
         ["shipments:rate"],
         object_schema(
-            {"shipment_id": {"type": "string"}},
-            ["shipment_id"],
+            {"input_reference": {"type": "string"}},
+            ["input_reference"],
         ),
         object_schema(
             {
@@ -174,11 +164,21 @@ PUBLIC_TOOLS = [
         SideEffectClass.estimate,
         ["shipments:preview"],
         object_schema(
-            {"order_batch_id": {"type": "string"}},
-            ["order_batch_id"],
+            {"input_reference": {"type": "string"}},
+            ["input_reference"],
         ),
         object_schema(
-            {"preview_id": {"type": "string"}, "summary": {"type": "object"}},
+            {
+                "preview_id": {"type": "string"},
+                "summary": {
+                    "type": "object",
+                    "properties": {
+                        "shipment_count": {"type": "integer"},
+                    },
+                    "required": ["shipment_count"],
+                    "additionalProperties": False,
+                },
+            },
             ["preview_id", "summary"],
         ),
         ui_resource="ui://shipagent/preview.html",
@@ -191,7 +191,10 @@ PUBLIC_TOOLS = [
         SideEffectClass.purchase,
         ["shipments:execute"],
         object_schema(
-            {"preview_id": {"type": "string"}, "confirmation_token": {"type": "string"}},
+            {
+                "preview_id": {"type": "string"},
+                "confirmation_token": {"type": "string"},
+            },
             ["preview_id", "confirmation_token"],
         ),
         object_schema(

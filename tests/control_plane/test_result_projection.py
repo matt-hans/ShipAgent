@@ -24,7 +24,11 @@ def _contract(**overrides) -> ToolContract:
         "provider_exports": ["openai_apps_public", "generic_mcp"],
         "audit_level": "full",
         "result_sensitivity": "business",
-        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
         "output_schema": {
             "type": "object",
             "properties": {"job_id": {"type": "string"}},
@@ -61,6 +65,27 @@ def test_project_result_rejects_forbidden_nested_keys_for_aggregate_profile():
     result = {"payload": {"recipient_name": "Jane Doe", "rows": [{"x": 1}]}}
 
     with pytest.raises(ValueError, match="aggregate result contains forbidden keys"):
+        project_result(contract, result)
+
+
+def test_project_result_enforces_closed_output_shape_for_aggregate_profile():
+    contract = _contract(
+        output_schema={
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "object",
+                    "properties": {"status": {"type": "string"}},
+                    "required": ["status"],
+                }
+            },
+            "required": ["summary"],
+            "additionalProperties": False,
+        }
+    )
+    result = {"summary": {"status": "ok", "note": "should be rejected"}}
+
+    with pytest.raises(ValueError, match="additionalProperties=False"):
         project_result(contract, result)
 
 

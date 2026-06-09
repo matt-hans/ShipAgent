@@ -76,7 +76,7 @@
       "visibility": "public"
     },
     {
-      "audit_level": "full",
+      "audit_level": "basic",
       "auth_scopes": [
         "shipments:create"
       ],
@@ -86,25 +86,19 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Create a single shipment execution job from an already-validated payload.",
-      "execution_target_required": true,
+      "description": "Create a single shipment ingress reference from caller-provided shipment content.",
+      "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "destination_city": {
-            "type": "string"
-          },
-          "origin_city": {
-            "type": "string"
-          },
-          "preview_id": {
+          "shipment_payload": {
             "type": "string"
           }
         },
         "required": [
-          "preview_id"
+          "shipment_payload"
         ],
         "type": "object"
       },
@@ -116,20 +110,16 @@
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "job_id": {
-            "type": "string"
-          },
-          "status": {
+          "input_reference": {
             "type": "string"
           }
         },
         "required": [
-          "job_id",
-          "status"
+          "input_reference"
         ],
         "type": "object"
       },
-      "prepare_tool": "prepare_shipments",
+      "prepare_tool": null,
       "provider_export_enabled": false,
       "provider_exports": [
         "openai_apps_public",
@@ -137,13 +127,13 @@
         "generic_mcp"
       ],
       "rate_limit_class": "default",
-      "requires_confirmation": true,
+      "requires_confirmation": false,
       "result_profile": "aggregate",
       "result_sensitivity": "business",
-      "side_effect": "purchase",
+      "side_effect": "estimate",
       "tenant_safe": true,
       "title": "Submit one off shipment",
-      "ui_resource": "ui://shipagent/confirmation.html",
+      "ui_resource": null,
       "visibility": "public"
     },
     {
@@ -164,13 +154,13 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "address_text": {
-            "description": "Address text in free form.",
+          "input_reference": {
+            "description": "Reference to a submitted ingress payload.",
             "type": "string"
           }
         },
         "required": [
-          "address_text"
+          "input_reference"
         ],
         "type": "object"
       },
@@ -230,12 +220,12 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "shipment_id": {
+          "input_reference": {
             "type": "string"
           }
         },
         "required": [
-          "shipment_id"
+          "input_reference"
         ],
         "type": "object"
       },
@@ -298,12 +288,12 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "order_batch_id": {
+          "input_reference": {
             "type": "string"
           }
         },
         "required": [
-          "order_batch_id"
+          "input_reference"
         ],
         "type": "object"
       },
@@ -319,6 +309,15 @@
             "type": "string"
           },
           "summary": {
+            "additionalProperties": false,
+            "properties": {
+              "shipment_count": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "shipment_count"
+            ],
             "type": "object"
           }
         },

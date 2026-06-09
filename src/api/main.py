@@ -57,6 +57,8 @@ from src.api.routes import (  # noqa: E402
     saved_data_sources,
     settings,
 )
+from src.control_plane.config import ControlPlaneSettings  # noqa: E402
+from src.control_plane.startup import validate_startup_security  # noqa: E402
 from src.db.connection import init_db  # noqa: E402
 from src.db.models import JobStatus  # noqa: E402
 from src.errors import ShipAgentError  # noqa: E402
@@ -67,7 +69,14 @@ from src.utils.redaction import sanitize_error_message  # noqa: E402
 # Frontend build directory — Angular Module Federation (Phase 9)
 # In Docker: Dockerfile copies dist/apps/shell/browser to ./shipagent-frontend/dist/apps/shell/browser
 # In dev: Angular build outputs to shipagent-frontend/dist/apps/shell/browser
-FRONTEND_DIR = Path(__file__).parent.parent.parent / "shipagent-frontend" / "dist" / "apps" / "shell" / "browser"
+FRONTEND_DIR = (
+    Path(__file__).parent.parent.parent
+    / "shipagent-frontend"
+    / "dist"
+    / "apps"
+    / "shell"
+    / "browser"
+)
 logger = logging.getLogger(__name__)
 
 # Module-level state for health endpoint and watchdog
@@ -436,6 +445,7 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     _startup_time = _time.time()
     validate_api_key_strength()  # Fail fast on weak API keys (F-6)
+    validate_startup_security(ControlPlaneSettings())
 
     # Create data/log/label directories (no-op in dev, creates platformdirs in bundled)
     from src.utils.paths import ensure_dirs_exist
@@ -468,9 +478,7 @@ async def lifespan(app: FastAPI):
                 _generated_fts = _secrets.token_hex(32)
                 _kr_store.set("FILTER_TOKEN_SECRET", _generated_fts)
                 # CRITICAL: Never log the secret value — only log the event.
-                logger.info(
-                    "Auto-generated FILTER_TOKEN_SECRET and stored in keychain"
-                )
+                logger.info("Auto-generated FILTER_TOKEN_SECRET and stored in keychain")
             else:
                 os.environ["FILTER_TOKEN_SECRET"] = _existing_fts
                 logger.info("Loaded FILTER_TOKEN_SECRET from keychain")
@@ -482,15 +490,15 @@ async def lifespan(app: FastAPI):
             _fts_path = get_data_dir() / ".filter_token_secret"
             if _fts_path.exists():
                 _generated_fts = _fts_path.read_text().strip()
-                logger.info(
-                    "Loaded FILTER_TOKEN_SECRET from fallback file"
-                )
+                logger.info("Loaded FILTER_TOKEN_SECRET from fallback file")
             else:
                 _generated_fts = _secrets.token_hex(32)
                 try:
                     # Use os.open with restricted mode to avoid a brief
                     # window where the file is world-readable.
-                    fd = os.open(str(_fts_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    fd = os.open(
+                        str(_fts_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+                    )
                     with os.fdopen(fd, "w") as f:
                         f.write(_generated_fts)
                     logger.warning(
@@ -695,12 +703,14 @@ _RATE_LIMIT_WINDOW_SECONDS = 60  # sliding window duration
 
 # Exact paths subject to rate limiting (session/resource creation endpoints).
 # Uses exact match to avoid rate-limiting sub-paths like /conversations/{id}/messages.
-_RATE_LIMITED_PATHS = frozenset({
-    "/api/v1/conversations",
-    "/api/v1/conversations/",
-    "/api/v1/data-sources/import",
-    "/api/v1/data-sources/upload",
-})
+_RATE_LIMITED_PATHS = frozenset(
+    {
+        "/api/v1/conversations",
+        "/api/v1/conversations/",
+        "/api/v1/data-sources/import",
+        "/api/v1/data-sources/upload",
+    }
+)
 
 
 @app.middleware("http")
@@ -754,7 +764,9 @@ _SIZE_EXEMPT_SUFFIXES = ("/upload-document",)
 
 def _is_size_exempt(path: str) -> bool:
     """Check if path is exempt from request body size enforcement."""
-    return path.startswith(_SIZE_EXEMPT_PREFIXES) or path.endswith(_SIZE_EXEMPT_SUFFIXES)
+    return path.startswith(_SIZE_EXEMPT_PREFIXES) or path.endswith(
+        _SIZE_EXEMPT_SUFFIXES
+    )
 
 
 @app.middleware("http")
@@ -878,9 +890,7 @@ async def shipagent_error_handler(
         JSONResponse with error details.
     """
     # Redact details to prevent internal information leakage (M-3, CWE-209)
-    safe_details = (
-        sanitize_error_message(str(exc.details)) if exc.details else None
-    )
+    safe_details = sanitize_error_message(str(exc.details)) if exc.details else None
     return JSONResponse(
         status_code=400,
         content={
@@ -1136,12 +1146,34 @@ if FRONTEND_DIR.exists():
         # Serve only files with known-safe static extensions (CWE-552).
         # Prevents the catch-all from exposing sensitive dotfiles (.env, .htaccess)
         # or unexpected file types that may land in the dist directory.
-        _ALLOWED_STATIC_EXTENSIONS = frozenset({
-            ".html", ".css", ".js", ".mjs", ".jsx", ".ts", ".tsx",
-            ".json", ".map", ".svg", ".png", ".jpg", ".jpeg", ".gif",
-            ".ico", ".webp", ".woff", ".woff2", ".ttf", ".eot",
-            ".pdf", ".txt", ".xml", ".webmanifest",
-        })
+        _ALLOWED_STATIC_EXTENSIONS = frozenset(
+            {
+                ".html",
+                ".css",
+                ".js",
+                ".mjs",
+                ".jsx",
+                ".ts",
+                ".tsx",
+                ".json",
+                ".map",
+                ".svg",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".ico",
+                ".webp",
+                ".woff",
+                ".woff2",
+                ".ttf",
+                ".eot",
+                ".pdf",
+                ".txt",
+                ".xml",
+                ".webmanifest",
+            }
+        )
         requested_file = FRONTEND_DIR / full_path
         if (
             requested_file.exists()

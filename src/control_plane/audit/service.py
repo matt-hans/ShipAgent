@@ -54,11 +54,15 @@ class ControlPlaneAuditService:
         error_category: str | None = None,
     ) -> ControlPlaneAuditEvent:
         payload = {
-            "ids": cls._validate_map(ids or {}, cls._ALLOWED_IDS),
-            "hashes": cls._validate_map(hashes or {}, cls._ALLOWED_HASHES),
+            "ids": cls._validate_scalar_map(ids or {}, cls._ALLOWED_IDS),
+            "hashes": cls._validate_scalar_map(
+                hashes or {}, cls._ALLOWED_HASHES, allow_float=False
+            ),
             "counts": cls._validate_counts(counts or {}),
-            "safe_fields": cls._validate_map(safe_fields or {}, cls._ALLOWED_SAFE_FIELDS),
-            "versions": cls._validate_map(versions or {}, cls._ALLOWED_VERSIONS),
+            "safe_fields": cls._validate_scalar_map(
+                safe_fields or {}, cls._ALLOWED_SAFE_FIELDS
+            ),
+            "versions": cls._validate_scalar_map(versions or {}, cls._ALLOWED_VERSIONS),
         }
 
         if error_category is not None:
@@ -90,10 +94,40 @@ class ControlPlaneAuditService:
         return result.rowcount or 0
 
     @classmethod
-    def _validate_map(cls, values: dict[str, Any], allowed: set[str]) -> dict[str, Any]:
+    def _validate_scalar_map(
+        cls,
+        values: dict[str, Any],
+        allowed: set[str],
+        *,
+        allow_float: bool = False,
+    ) -> dict[str, Any]:
         for key in values:
             if key not in allowed:
                 raise ValueError(f"disallowed key: {key}")
+
+            value = values[key]
+            if isinstance(value, (dict, list, tuple, set)):
+                raise TypeError("sensitive payload values must be scalar")
+
+            if value is None:
+                raise TypeError("sensitive payload values must be scalar and non-null")
+
+            if isinstance(value, bool):
+                continue
+
+            if isinstance(value, (int,)):
+                continue
+
+            if allow_float and isinstance(value, float):
+                continue
+
+            if isinstance(value, str):
+                if len(value) > 1024:
+                    raise ValueError("sensitive payload string values too long")
+                continue
+
+            raise TypeError("sensitive payload values must be scalar")
+
         return dict(values)
 
     @classmethod
@@ -104,4 +138,3 @@ class ControlPlaneAuditService:
             if not isinstance(value, int):
                 raise TypeError("counts must be integers")
         return dict(values)
-

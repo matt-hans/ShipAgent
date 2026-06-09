@@ -57,8 +57,18 @@ def test_public_input_schemas_are_closed():
 def test_prepare_tool_schema_is_strict():
     tool = next(tool for tool in public_tools() if tool.name == "prepare_shipments")
 
-    assert set(tool.input_schema["properties"]) == {"order_batch_id"}
+    assert set(tool.input_schema["properties"]) == {"input_reference"}
     assert "tenant_id" not in tool.input_schema["properties"]
+
+
+def test_submit_one_off_shipment_is_non_confirming_input_reference_entrypoint():
+    tool = next(
+        tool for tool in public_tools() if tool.name == "submit_one_off_shipment"
+    )
+
+    assert tool.requires_confirmation is False
+    assert tool.side_effect == "estimate"
+    assert tool.prepare_tool is None
 
 
 def test_registry_loads_all_tools():

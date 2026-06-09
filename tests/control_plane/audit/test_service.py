@@ -17,6 +17,17 @@ async def test_record_accepts_only_allowed_audit_fields(control_db):
         )
 
 
+async def test_record_rejects_nested_payload_values(control_db):
+    with pytest.raises(TypeError, match="sensitive payload values must be scalar"):
+        await ControlPlaneAuditService.record(
+            session=control_db,
+            event_type="prepare_shipments",
+            actor_id_hash="actor-1",
+            account_id="acct-1",
+            safe_fields={"status": {"nested": "value"}},
+        )
+
+
 async def test_record_persists_filtered_payload(control_db):
     event = await ControlPlaneAuditService.record(
         session=control_db,
