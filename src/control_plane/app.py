@@ -15,10 +15,10 @@ from src.control_plane.auth import (
 from src.control_plane.auth.context import AuthorizationContext
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.config import ControlPlaneSettings
-from src.control_plane.routes.oauth_metadata import build_metadata_router
+from src.control_plane.hosted_mcp.server import build_server
 from src.control_plane.request_controls import RequestControls
+from src.control_plane.routes.oauth_metadata import build_metadata_router
 from src.control_plane.startup import validate_startup_security
-from src.hosted_mcp.server import build_server
 
 
 @lru_cache
@@ -82,7 +82,7 @@ def create_control_plane_app() -> FastAPI:
     mcp_app = mcp.http_app(path="/", transport="streamable-http")
     app = FastAPI(lifespan=mcp_app.lifespan)
     verifier = _build_verifier(settings.auth0_issuer, settings.auth0_audience)
-    metadata_resource = _metadata_url(settings)
+    metadata_resource = str(settings.public_base_url).rstrip("/")
     app.include_router(
         build_metadata_router(metadata_resource, settings.auth0_issuer)
     )

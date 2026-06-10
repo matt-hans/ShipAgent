@@ -1,7 +1,6 @@
 import pytest
 from sqlalchemy import select
 
-from src.control_plane.auth.context import AuthorizationContext
 from src.control_plane.auth.provider_clients import ProviderClientRegistry
 from src.control_plane.auth.service import AuthorizationService
 from src.control_plane.models import CloudAccount, ProviderConnection
