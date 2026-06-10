@@ -32,6 +32,8 @@ class ProviderExport(StrEnum):
     microsoft = "microsoft"
     gemini = "gemini"
     generic_mcp = "generic_mcp"
+    openai_apps_public = "openai_apps_public"
+    claude_remote_mcp_public = "claude_remote_mcp_public"
 
 
 class AuditLevel(StrEnum):
@@ -72,6 +74,15 @@ class ToolContract(BaseModel):
     confirmation_policy: str | None = None
     ui_resource: str | None = None
     notes: str = ""
+    prepare_tool: str | None = None
+    execution_target_required: bool = False
+    result_profile: Literal[
+        "aggregate", "provider_ingress_echo", "artifact_action"
+    ] = "aggregate"
+    max_sync_seconds: int = Field(default=30, ge=1, le=300)
+    max_result_bytes: int = Field(default=65536, ge=1024)
+    minimum_capabilities: dict[str, str] = Field(default_factory=dict)
+    rate_limit_class: str = "default"
 
     @field_validator("availability", "provider_exports")
     @classmethod
@@ -121,6 +132,19 @@ class ToolContract(BaseModel):
             and not self.requires_confirmation
         ):
             raise ValueError("side-effecting tools require confirmation")
+        if self.requires_confirmation and not self.prepare_tool:
+            raise ValueError("confirmed tools must declare prepare_tool")
+        if (
+            self.requires_confirmation
+            and self.visibility == ToolVisibility.public
+            and self.prepare_tool is not None
+            and not self.prepare_tool.startswith("prepare_")
+        ):
+            raise ValueError(
+                "public confirmed tools must declare prepare_tool with prepare_* name"
+            )
+        if self.prepare_tool == self.name:
+            raise ValueError("prepare_tool must be distinct from tool name")
         return self
 
 

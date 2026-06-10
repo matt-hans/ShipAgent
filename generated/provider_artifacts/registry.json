@@ -2,195 +2,10 @@
   "schema_version": "1.0.0",
   "tools": [
     {
-      "audit_level": "full",
-      "auth_scopes": [
-        "accounts:connect"
-      ],
-      "availability": [
-        "hosted",
-        "local"
-      ],
-      "confirmation_policy": "standard_side_effect",
-      "contract_version": "1.0.0",
-      "description": "Start or check carrier account linking for shipment creation.",
-      "hosted_readiness": "ready",
-      "implementation_status": "implemented",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "carrier": {
-            "description": "Carrier account to connect.",
-            "enum": [
-              "ups"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "carrier"
-        ],
-        "type": "object"
-      },
-      "name": "connect_carrier_account",
-      "notes": "",
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "link_url": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "provider_export_enabled": true,
-      "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
-        "generic_mcp"
-      ],
-      "requires_confirmation": true,
-      "result_sensitivity": "business",
-      "side_effect": "write",
-      "tenant_safe": true,
-      "title": "Connect carrier account",
-      "ui_resource": null,
-      "visibility": "public"
-    },
-    {
-      "audit_level": "full",
-      "auth_scopes": [
-        "stores:connect"
-      ],
-      "availability": [
-        "hosted",
-        "local"
-      ],
-      "confirmation_policy": "standard_side_effect",
-      "contract_version": "1.0.0",
-      "description": "Start or check commerce store account linking for order import and tracking write-back.",
-      "hosted_readiness": "ready",
-      "implementation_status": "implemented",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "platform": {
-            "description": "Commerce platform to connect.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "platform"
-        ],
-        "type": "object"
-      },
-      "name": "connect_store",
-      "notes": "",
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "link_url": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "provider_export_enabled": true,
-      "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
-        "generic_mcp"
-      ],
-      "requires_confirmation": true,
-      "result_sensitivity": "business",
-      "side_effect": "write",
-      "tenant_safe": true,
-      "title": "Connect store",
-      "ui_resource": null,
-      "visibility": "public"
-    },
-    {
-      "audit_level": "full",
-      "auth_scopes": [
-        "orders:write"
-      ],
-      "availability": [
-        "hosted",
-        "local"
-      ],
-      "confirmation_policy": "standard_side_effect",
-      "contract_version": "1.0.0",
-      "description": "Import order data from an uploaded file or connected cloud store into a hosted order batch.",
-      "hosted_readiness": "ready",
-      "implementation_status": "implemented",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "source": {
-            "description": "Order source type, such as uploaded file or connected store.",
-            "type": "string"
-          },
-          "source_ref": {
-            "description": "Opaque reference for the uploaded file or import source.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source"
-        ],
-        "type": "object"
-      },
-      "name": "upload_or_import_orders",
-      "notes": "",
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "order_batch_id": {
-            "type": "string"
-          },
-          "row_count": {
-            "type": "integer"
-          }
-        },
-        "required": [
-          "order_batch_id",
-          "row_count"
-        ],
-        "type": "object"
-      },
-      "provider_export_enabled": true,
-      "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
-        "generic_mcp"
-      ],
-      "requires_confirmation": true,
-      "result_sensitivity": "business",
-      "side_effect": "write",
-      "tenant_safe": true,
-      "title": "Upload or import orders",
-      "ui_resource": null,
-      "visibility": "public"
-    },
-    {
       "audit_level": "basic",
       "auth_scopes": [
-        "orders:read",
-        "shipments:preview"
+        "account:read",
+        "device:read"
       ],
       "availability": [
         "hosted",
@@ -198,75 +13,203 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Preview shipment destinations, service choices, costs, and write-back effects before purchase.",
+      "description": "Return operational status for the active account and device.",
+      "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "order_batch_id": {
-            "description": "Hosted order batch to preview.",
-            "type": "string"
-          },
-          "shipments": {
-            "description": "Shipment payloads to rate for the preview.",
-            "items": {
-              "type": "object"
-            },
-            "minItems": 1,
-            "type": "array"
-          },
-          "tenant_id": {
-            "description": "Hosted tenant whose shipments are being previewed.",
+          "correlation_id": {
+            "description": "Opaque client correlation identifier.",
             "type": "string"
           }
         },
         "required": [
-          "tenant_id",
-          "order_batch_id",
-          "shipments"
+          "correlation_id"
         ],
         "type": "object"
       },
-      "name": "preview_shipments",
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
+      "name": "get_shipagent_status",
       "notes": "",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "preview_id": {
+          "active_device_id": {
             "type": "string"
           },
-          "requires_confirmation": {
-            "type": "boolean"
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
-          "summary": {
-            "type": "object"
-          },
-          "total_cost_cents": {
-            "type": "integer"
+          "status": {
+            "type": "string"
           }
         },
         "required": [
-          "preview_id",
-          "total_cost_cents",
-          "requires_confirmation",
-          "summary"
+          "status",
+          "active_device_id",
+          "capabilities"
         ],
         "type": "object"
       },
-      "provider_export_enabled": true,
+      "prepare_tool": null,
+      "provider_export_enabled": false,
       "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
+        "openai_apps_public",
+        "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "rate_limit_class": "default",
       "requires_confirmation": false,
+      "result_profile": "aggregate",
+      "result_sensitivity": "business",
+      "side_effect": "read",
+      "tenant_safe": true,
+      "title": "Get shipagent status",
+      "ui_resource": null,
+      "visibility": "public"
+    },
+    {
+      "audit_level": "full",
+      "auth_scopes": [
+        "shipments:create"
+      ],
+      "availability": [
+        "hosted",
+        "local"
+      ],
+      "confirmation_policy": null,
+      "contract_version": "1.0.0",
+      "description": "Create a single shipment execution job from an already-validated payload.",
+      "execution_target_required": true,
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "destination_city": {
+            "type": "string"
+          },
+          "origin_city": {
+            "type": "string"
+          },
+          "preview_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "preview_id"
+        ],
+        "type": "object"
+      },
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
+      "name": "submit_one_off_shipment",
+      "notes": "",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "status"
+        ],
+        "type": "object"
+      },
+      "prepare_tool": "prepare_shipments",
+      "provider_export_enabled": false,
+      "provider_exports": [
+        "openai_apps_public",
+        "claude_remote_mcp_public",
+        "generic_mcp"
+      ],
+      "rate_limit_class": "default",
+      "requires_confirmation": true,
+      "result_profile": "aggregate",
+      "result_sensitivity": "business",
+      "side_effect": "purchase",
+      "tenant_safe": true,
+      "title": "Submit one off shipment",
+      "ui_resource": "ui://shipagent/confirmation.html",
+      "visibility": "public"
+    },
+    {
+      "audit_level": "basic",
+      "auth_scopes": [
+        "address:validate"
+      ],
+      "availability": [
+        "hosted",
+        "local"
+      ],
+      "confirmation_policy": null,
+      "contract_version": "1.0.0",
+      "description": "Validate a destination and return canonical address guidance.",
+      "execution_target_required": false,
+      "hosted_readiness": "ready",
+      "implementation_status": "implemented",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "address_text": {
+            "description": "Address text in free form.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "address_text"
+        ],
+        "type": "object"
+      },
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
+      "name": "validate_shipment_address",
+      "notes": "",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "normalized_address": {
+            "type": "string"
+          },
+          "valid": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "normalized_address",
+          "valid"
+        ],
+        "type": "object"
+      },
+      "prepare_tool": null,
+      "provider_export_enabled": false,
+      "provider_exports": [
+        "openai_apps_public",
+        "claude_remote_mcp_public",
+        "generic_mcp"
+      ],
+      "rate_limit_class": "default",
+      "requires_confirmation": false,
+      "result_profile": "aggregate",
       "result_sensitivity": "business",
       "side_effect": "estimate",
       "tenant_safe": true,
-      "title": "Preview shipments",
-      "ui_resource": "ui://shipagent/preview.html",
+      "title": "Validate shipment address",
+      "ui_resource": null,
       "visibility": "public"
     },
     {
@@ -280,23 +223,26 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Compare available rates for one shipment or a shipment batch preview.",
+      "description": "Generate rate options for a validated shipment request.",
+      "execution_target_required": true,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "preview_id": {
-            "description": "Shipment preview to rate.",
+          "shipment_id": {
             "type": "string"
           }
         },
         "required": [
-          "preview_id"
+          "shipment_id"
         ],
         "type": "object"
       },
-      "name": "compare_rates",
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
+      "name": "get_shipment_rates",
       "notes": "",
       "output_schema": {
         "additionalProperties": false,
@@ -306,92 +252,38 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "selected": {
+            "type": "string"
           }
         },
         "required": [
-          "rates"
+          "rates",
+          "selected"
         ],
         "type": "object"
       },
-      "provider_export_enabled": true,
+      "prepare_tool": null,
+      "provider_export_enabled": false,
       "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
+        "openai_apps_public",
+        "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "rate_limit_class": "default",
       "requires_confirmation": false,
+      "result_profile": "aggregate",
       "result_sensitivity": "business",
       "side_effect": "estimate",
       "tenant_safe": true,
-      "title": "Compare rates",
+      "title": "Get shipment rates",
       "ui_resource": "ui://shipagent/rates.html",
-      "visibility": "public"
-    },
-    {
-      "audit_level": "full",
-      "auth_scopes": [
-        "shipments:create"
-      ],
-      "availability": [
-        "hosted",
-        "local"
-      ],
-      "confirmation_policy": "standard_side_effect",
-      "contract_version": "1.0.0",
-      "description": "Create shipping labels after a confirmed preview and return job status.",
-      "hosted_readiness": "ready",
-      "implementation_status": "implemented",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "confirmation_token": {
-            "description": "Confirmation token for the approved shipment preview.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "confirmation_token"
-        ],
-        "type": "object"
-      },
-      "name": "create_shipments",
-      "notes": "",
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "job_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "job_id",
-          "status"
-        ],
-        "type": "object"
-      },
-      "provider_export_enabled": true,
-      "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
-        "generic_mcp"
-      ],
-      "requires_confirmation": true,
-      "result_sensitivity": "business",
-      "side_effect": "purchase",
-      "tenant_safe": true,
-      "title": "Create shipments",
-      "ui_resource": "ui://shipagent/confirmation.html",
       "visibility": "public"
     },
     {
       "audit_level": "basic",
       "auth_scopes": [
-        "tracking:read"
+        "shipments:preview"
       ],
       "availability": [
         "hosted",
@@ -399,205 +291,95 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Track a package by tracking number.",
+      "description": "Create immutable preview artifacts for a shipment batch.",
+      "execution_target_required": true,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "tracking_number": {
-            "description": "Carrier tracking number to look up.",
+          "order_batch_id": {
             "type": "string"
           }
         },
         "required": [
-          "tracking_number"
+          "order_batch_id"
         ],
         "type": "object"
       },
-      "name": "track_package",
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
+      "name": "prepare_shipments",
       "notes": "",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "events": {
-            "items": {
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "status": {
+          "preview_id": {
             "type": "string"
+          },
+          "summary": {
+            "type": "object"
           }
         },
         "required": [
-          "status"
+          "preview_id",
+          "summary"
         ],
         "type": "object"
       },
-      "provider_export_enabled": true,
+      "prepare_tool": null,
+      "provider_export_enabled": false,
       "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
+        "openai_apps_public",
+        "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "rate_limit_class": "default",
       "requires_confirmation": false,
+      "result_profile": "aggregate",
       "result_sensitivity": "business",
-      "side_effect": "read",
+      "side_effect": "estimate",
       "tenant_safe": true,
-      "title": "Track package",
-      "ui_resource": "ui://shipagent/tracking.html",
+      "title": "Prepare shipments",
+      "ui_resource": "ui://shipagent/preview.html",
       "visibility": "public"
     },
     {
       "audit_level": "full",
       "auth_scopes": [
-        "pickups:create"
+        "shipments:execute"
       ],
       "availability": [
         "hosted",
         "local"
       ],
-      "confirmation_policy": "standard_side_effect",
+      "confirmation_policy": "provider_and_shipagent",
       "contract_version": "1.0.0",
-      "description": "Schedule a carrier pickup after confirmed pickup details.",
+      "description": "Execute a prepared preview and return immutable execution artifacts.",
+      "execution_target_required": true,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
           "confirmation_token": {
-            "description": "Confirmation token for the approved pickup request.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "confirmation_token"
-        ],
-        "type": "object"
-      },
-      "name": "schedule_pickup",
-      "notes": "",
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "pickup_id": {
             "type": "string"
           },
-          "status": {
+          "preview_id": {
             "type": "string"
           }
         },
         "required": [
-          "pickup_id",
-          "status"
-        ],
-        "type": "object"
-      },
-      "provider_export_enabled": true,
-      "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
-        "generic_mcp"
-      ],
-      "requires_confirmation": true,
-      "result_sensitivity": "business",
-      "side_effect": "external_mutation",
-      "tenant_safe": true,
-      "title": "Schedule pickup",
-      "ui_resource": "ui://shipagent/pickup.html",
-      "visibility": "public"
-    },
-    {
-      "audit_level": "full",
-      "auth_scopes": [
-        "shipments:void"
-      ],
-      "availability": [
-        "hosted",
-        "local"
-      ],
-      "confirmation_policy": "standard_side_effect",
-      "contract_version": "1.0.0",
-      "description": "Void a created shipment after confirmation.",
-      "hosted_readiness": "ready",
-      "implementation_status": "implemented",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "confirmation_token": {
-            "description": "Confirmation token for the shipment void request.",
-            "type": "string"
-          }
-        },
-        "required": [
+          "preview_id",
           "confirmation_token"
         ],
         "type": "object"
       },
-      "name": "void_shipment",
-      "notes": "",
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "shipment_id": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "shipment_id",
-          "status"
-        ],
-        "type": "object"
-      },
-      "provider_export_enabled": true,
-      "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
-        "generic_mcp"
-      ],
-      "requires_confirmation": true,
-      "result_sensitivity": "business",
-      "side_effect": "destructive",
-      "tenant_safe": true,
-      "title": "Void shipment",
-      "ui_resource": null,
-      "visibility": "public"
-    },
-    {
-      "audit_level": "full",
-      "auth_scopes": [
-        "tracking:write"
-      ],
-      "availability": [
-        "hosted",
-        "local"
-      ],
-      "confirmation_policy": "standard_side_effect",
-      "contract_version": "1.0.0",
-      "description": "Write tracking numbers back to a connected cloud system after confirmation.",
-      "hosted_readiness": "ready",
-      "implementation_status": "implemented",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "confirmation_token": {
-            "description": "Confirmation token for the tracking write-back job.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "confirmation_token"
-        ],
-        "type": "object"
-      },
-      "name": "write_back_tracking",
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
+      "name": "execute_shipments",
       "notes": "",
       "output_schema": {
         "additionalProperties": false,
@@ -615,19 +397,21 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": true,
+      "prepare_tool": "prepare_shipments",
+      "provider_export_enabled": false,
       "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
+        "openai_apps_public",
+        "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "rate_limit_class": "default",
       "requires_confirmation": true,
+      "result_profile": "aggregate",
       "result_sensitivity": "business",
-      "side_effect": "external_mutation",
+      "side_effect": "purchase",
       "tenant_safe": true,
-      "title": "Write back tracking",
-      "ui_resource": null,
+      "title": "Execute shipments",
+      "ui_resource": "ui://shipagent/confirmation.html",
       "visibility": "public"
     },
     {
@@ -642,6 +426,7 @@
       "confirmation_policy": null,
       "contract_version": "1.0.0",
       "description": "Get the status and progress summary for a ShipAgent job.",
+      "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
       "input_schema": {
@@ -657,6 +442,9 @@
         ],
         "type": "object"
       },
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
       "name": "get_job_status",
       "notes": "",
       "output_schema": {
@@ -675,14 +463,16 @@
         ],
         "type": "object"
       },
-      "provider_export_enabled": true,
+      "prepare_tool": null,
+      "provider_export_enabled": false,
       "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
+        "openai_apps_public",
+        "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "rate_limit_class": "default",
       "requires_confirmation": false,
+      "result_profile": "aggregate",
       "result_sensitivity": "business",
       "side_effect": "read",
       "tenant_safe": true,
@@ -701,14 +491,14 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Return tenant-scoped expiring links or opaque handles for generated labels.",
+      "description": "Create downloadable label artifacts for a completed shipment job.",
+      "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
           "job_id": {
-            "description": "ShipAgent label creation job identifier.",
             "type": "string"
           }
         },
@@ -717,91 +507,41 @@
         ],
         "type": "object"
       },
-      "name": "get_label_links",
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
+      "name": "create_label_download",
       "notes": "",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "links": {
-            "items": {
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "links"
-        ],
-        "type": "object"
-      },
-      "provider_export_enabled": true,
-      "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
-        "generic_mcp"
-      ],
-      "requires_confirmation": false,
-      "result_sensitivity": "business",
-      "side_effect": "read",
-      "tenant_safe": true,
-      "title": "Get label links",
-      "ui_resource": null,
-      "visibility": "public"
-    },
-    {
-      "audit_level": "basic",
-      "auth_scopes": [
-        "audit:read"
-      ],
-      "availability": [
-        "hosted",
-        "local"
-      ],
-      "confirmation_policy": null,
-      "contract_version": "1.0.0",
-      "description": "Return a provider-safe summary of ShipAgent decisions and side effects for a job.",
-      "hosted_readiness": "ready",
-      "implementation_status": "implemented",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "job_id": {
-            "description": "ShipAgent job identifier to summarize.",
+          "download_url": {
+            "type": "string"
+          },
+          "status": {
             "type": "string"
           }
         },
         "required": [
-          "job_id"
+          "download_url",
+          "status"
         ],
         "type": "object"
       },
-      "name": "get_audit_summary",
-      "notes": "",
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "summary": {
-            "type": "object"
-          }
-        },
-        "required": [
-          "summary"
-        ],
-        "type": "object"
-      },
-      "provider_export_enabled": true,
+      "prepare_tool": null,
+      "provider_export_enabled": false,
       "provider_exports": [
-        "openai",
-        "microsoft",
-        "gemini",
+        "openai_apps_public",
+        "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "rate_limit_class": "default",
       "requires_confirmation": false,
+      "result_profile": "aggregate",
       "result_sensitivity": "business",
       "side_effect": "read",
       "tenant_safe": true,
-      "title": "Get audit summary",
+      "title": "Create label download",
       "ui_resource": null,
       "visibility": "public"
     },
@@ -816,6 +556,7 @@
       "confirmation_policy": "private_debug",
       "contract_version": "1.0.0",
       "description": "Private diagnostic access to raw UPS MCP primitives for trusted deployments.",
+      "execution_target_required": false,
       "hosted_readiness": "not_ready",
       "implementation_status": "implemented",
       "input_schema": {
@@ -834,6 +575,9 @@
         ],
         "type": "object"
       },
+      "max_result_bytes": 65536,
+      "max_sync_seconds": 30,
+      "minimum_capabilities": {},
       "name": "raw_ups_tool",
       "notes": "",
       "output_schema": {
@@ -848,11 +592,14 @@
         ],
         "type": "object"
       },
+      "prepare_tool": "raw_ups_preview",
       "provider_export_enabled": false,
       "provider_exports": [
         "generic_mcp"
       ],
+      "rate_limit_class": "default",
       "requires_confirmation": true,
+      "result_profile": "aggregate",
       "result_sensitivity": "confidential",
       "side_effect": "external_mutation",
       "tenant_safe": false,

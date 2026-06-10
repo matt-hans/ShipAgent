@@ -15,11 +15,10 @@ EXTERNAL_BEHAVIOR_TERMS = (
     "commerce",
     "pickup",
     "rate",
-    "shipment",
-    "shipping",
     "store",
     "tracking",
     "ups",
+    "label",
 )
 
 
