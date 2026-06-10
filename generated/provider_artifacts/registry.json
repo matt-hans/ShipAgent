@@ -59,7 +59,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -120,7 +120,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -186,7 +186,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -254,7 +254,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -328,7 +328,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -397,7 +397,7 @@
         "type": "object"
       },
       "prepare_tool": "prepare_shipments",
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -463,7 +463,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -528,7 +528,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",

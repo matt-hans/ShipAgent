@@ -94,3 +94,5 @@ def downgrade() -> None:
     op.drop_table("audit_events", schema=schema)
     op.drop_table("provider_connections", schema=schema)
     op.drop_table("cloud_accounts", schema=schema)
+    if context.get_context().dialect.name == "postgresql":
+        op.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

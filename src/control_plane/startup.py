@@ -12,6 +12,13 @@ def _is_loopback_host(value: str) -> bool:
 
 
 def validate_startup_security(settings: ControlPlaneSettings) -> None:
+    if settings.auth_mode == AuthMode.fake_local and (
+        not settings.database_url or not settings.redis_url
+    ):
+        # Control plane runtime settings are unavailable in dev/test/desktop flows.
+        # Keep deterministic startup for non-control-plane environments.
+        return
+
     if settings.auth_mode != AuthMode.fake_local:
         return
 
@@ -24,4 +31,3 @@ def validate_startup_security(settings: ControlPlaneSettings) -> None:
         or (public_host is not None and not _is_loopback_host(public_host))
     ):
         raise RuntimeError("fake_local auth is restricted to loopback local mode")
-

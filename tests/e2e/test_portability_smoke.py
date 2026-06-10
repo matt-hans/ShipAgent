@@ -25,28 +25,14 @@ def test_relay_execution_tools_are_projected_safely():
     generic_names = {tool["name"] for tool in generic}
     openai_names = {tool["name"] for tool in openai_public}
 
-    if generic_names:
-        assert "execute_shipments" in generic_names
-        relay_tool = next(
-            tool for tool in generic if tool["name"] == "execute_shipments"
-        )
-        assert relay_tool["annotations"]["openWorldHint"] is True
+    assert generic_names, "generic_mcp_tools.json has no exported public tools"
+    assert "execute_shipments" in generic_names
+    relay_tool = next(tool for tool in generic if tool["name"] == "execute_shipments")
+    assert relay_tool["annotations"]["openWorldHint"] is True
 
-    if openai_names:
-        assert "execute_shipments" in openai_names
-        public_tool = next(
-            tool for tool in openai_public if tool["name"] == "execute_shipments"
-        )
-        assert public_tool["annotations"]["openWorldHint"] is True
-
-    if "execute_shipments" in generic_names:
-        relay_tool = next(
-            tool for tool in generic if tool["name"] == "execute_shipments"
-        )
-        assert relay_tool["annotations"]["openWorldHint"] is True
-
-    if "execute_shipments" in openai_names:
-        public_tool = next(
-            tool for tool in openai_public if tool["name"] == "execute_shipments"
-        )
-        assert public_tool["annotations"]["openWorldHint"] is True
+    assert openai_names, "openai_apps_public_tools.json has no exported public tools"
+    assert "execute_shipments" in openai_names
+    public_tool = next(
+        tool for tool in openai_public if tool["name"] == "execute_shipments"
+    )
+    assert public_tool["annotations"]["openWorldHint"] is True
