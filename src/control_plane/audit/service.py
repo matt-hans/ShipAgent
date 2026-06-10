@@ -25,7 +25,7 @@ class ControlPlaneAuditService:
         "status",
         "policy_version",
         "api_version",
-        "notes",
+        "status_note",
     }
     _ALLOWED_VERSIONS = {"schema_version", "contract_version"}
     _ALLOWED_ERROR_CATEGORIES = {

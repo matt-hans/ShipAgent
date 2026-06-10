@@ -1,1 +1,328 @@
-[]
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Return operational status for the active account and device.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "correlation_id": {
+          "description": "Opaque client correlation identifier.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "correlation_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_shipagent_status",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "active_device_id": {
+          "type": "string"
+        },
+        "capabilities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "active_device_id",
+        "capabilities"
+      ],
+      "type": "object"
+    },
+    "title": "Get shipagent status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Create a single shipment ingress reference from caller-provided shipment content.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "shipment_payload": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "shipment_payload"
+      ],
+      "type": "object"
+    },
+    "name": "submit_one_off_shipment",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "input_reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "input_reference"
+      ],
+      "type": "object"
+    },
+    "title": "Submit one off shipment"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Validate a destination and return canonical address guidance.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "input_reference": {
+          "description": "Reference to a submitted ingress payload.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "input_reference"
+      ],
+      "type": "object"
+    },
+    "name": "validate_shipment_address",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "normalized_address": {
+          "type": "string"
+        },
+        "valid": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "normalized_address",
+        "valid"
+      ],
+      "type": "object"
+    },
+    "title": "Validate shipment address"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Generate rate options for a validated shipment request.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "input_reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "input_reference"
+      ],
+      "type": "object"
+    },
+    "name": "get_shipment_rates",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "rates": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "selected": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rates",
+        "selected"
+      ],
+      "type": "object"
+    },
+    "title": "Get shipment rates"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Create immutable preview artifacts for a shipment batch.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "input_reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "input_reference"
+      ],
+      "type": "object"
+    },
+    "name": "prepare_shipments",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "preview_id": {
+          "type": "string"
+        },
+        "summary": {
+          "additionalProperties": false,
+          "properties": {
+            "shipment_count": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "shipment_count"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "preview_id",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "title": "Prepare shipments"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false
+    },
+    "description": "Execute a prepared preview and return immutable execution artifacts.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "confirmation_token": {
+          "type": "string"
+        },
+        "preview_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "preview_id",
+        "confirmation_token"
+      ],
+      "type": "object"
+    },
+    "name": "execute_shipments",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Execute shipments"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Get the status and progress summary for a ShipAgent job.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "description": "ShipAgent job identifier.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_job_status",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Get job status"
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": true
+    },
+    "description": "Create downloadable label artifacts for a completed shipment job.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "job_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id"
+      ],
+      "type": "object"
+    },
+    "name": "create_label_download",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "download_url": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "download_url",
+        "status"
+      ],
+      "type": "object"
+    },
+    "title": "Create label download"
+  }
+]

@@ -41,7 +41,7 @@ def public_tool(
     ui_resource: str | None = None,
     implementation_status: Literal["planned", "implemented"] = "implemented",
     hosted_readiness: Literal["not_ready", "ready"] = "ready",
-    provider_export_enabled: bool = False,
+    provider_export_enabled: bool = True,
     confirmation_policy: str | None = None,
     result_profile: str | None = None,
     prepare_tool: str | None = None,

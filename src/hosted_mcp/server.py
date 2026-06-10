@@ -55,14 +55,14 @@ def build_server(
         descriptor = to_mcp_tool_descriptor(tool)
         server.add_tool(
             BoundRegistryTool(
-            name=tool.name,
-            title=tool.title,
-            description=tool.description,
-            parameters=descriptor["inputSchema"],
-            output_schema=descriptor["outputSchema"],
-            annotations=ToolAnnotations(**descriptor["annotations"]),
-            contract=tool,
-            handler=handler,
-        )
+                name=tool.name,
+                title=tool.title,
+                description=tool.description,
+                parameters=descriptor["inputSchema"],
+                output_schema=descriptor["outputSchema"],
+                annotations=ToolAnnotations(**descriptor["annotations"]),
+                contract=tool,
+                handler=handler,
+            )
         )
     return server

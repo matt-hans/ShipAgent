@@ -15,6 +15,13 @@ async def test_record_accepts_only_allowed_audit_fields(control_db):
             actor_id_hash="actor-1",
             ids={"bad_key": "value"},
         )
+    with pytest.raises(ValueError, match="disallowed key"):
+        await ControlPlaneAuditService.record(
+            session=control_db,
+            event_type="execute_shipment",
+            actor_id_hash="actor-1",
+            safe_fields={"notes": "plain-text"},
+        )
 
 
 async def test_record_rejects_nested_payload_values(control_db):
@@ -39,7 +46,7 @@ async def test_record_persists_filtered_payload(control_db):
         ids={"job_id": "job-1", "correlation_id": "corr-1"},
         hashes={"actor_id_hash": "abc123", "preview_hash": "def456"},
         counts={"row_count": 12},
-        safe_fields={"status": "ok", "policy_version": "v1"},
+        safe_fields={"status": "ok", "policy_version": "v1", "status_note": "queued"},
         versions={"schema_version": "1.0.0"},
         error_category="validation",
     )
@@ -49,7 +56,11 @@ async def test_record_persists_filtered_payload(control_db):
     assert details["ids"] == {"job_id": "job-1", "correlation_id": "corr-1"}
     assert details["hashes"] == {"actor_id_hash": "abc123", "preview_hash": "def456"}
     assert details["counts"] == {"row_count": 12}
-    assert details["safe_fields"] == {"status": "ok", "policy_version": "v1"}
+    assert details["safe_fields"] == {
+        "status": "ok",
+        "policy_version": "v1",
+        "status_note": "queued",
+    }
     assert details["versions"] == {"schema_version": "1.0.0"}
     assert details["error_category"] == "validation"
 
