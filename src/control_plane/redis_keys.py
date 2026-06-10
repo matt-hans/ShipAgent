@@ -23,3 +23,11 @@ class RedisKey:
     @staticmethod
     def provider_poll(connection_id: str, reference: str) -> str:
         return f"sa:poll:{connection_id}:{reference}"
+
+    @staticmethod
+    def rate_limit(connection_id: str, rate_limit_class: str, minute_bucket: str) -> str:
+        return f"sa:rate:{connection_id}:{rate_limit_class}:{minute_bucket}"
+
+    @staticmethod
+    def loop_guard(connection_id: str, tool_name: str, arguments_hash: str) -> str:
+        return f"sa:loop:{connection_id}:{tool_name}:{arguments_hash}"
