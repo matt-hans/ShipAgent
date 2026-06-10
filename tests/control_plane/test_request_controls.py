@@ -41,7 +41,7 @@ async def test_rate_limit_is_namespaced_by_connection_and_class(fake_controls):
             rate_limit_class="estimate",
             arguments_hash=f"hash-{index}",
         )
-    with pytest.raises(RequestControlError, match="rate_limited"):
+    with pytest.raises(RequestControlError, match="rate limit exceeded"):
         await fake_controls.require_allowed(
             connection_id="connection-1",
             tool_name="get_shipment_rates",
