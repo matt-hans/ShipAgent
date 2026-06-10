@@ -6,6 +6,8 @@ import sys
 
 import httpx
 
+from src.control_plane.routes.oauth_metadata import SUPPORTED_SCOPES
+
 
 def check_metadata(base_url: str) -> dict[str, object]:
     response = httpx.get(
@@ -22,6 +24,8 @@ def check_metadata(base_url: str) -> dict[str, object]:
         )
     if not payload.get("authorization_servers"):
         raise RuntimeError("metadata missing authorization_servers")
+    if sorted(payload.get("scopes_supported", [])) != sorted(SUPPORTED_SCOPES):
+        raise RuntimeError("metadata scopes_supported mismatch")
 
     return payload
 

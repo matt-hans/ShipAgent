@@ -28,9 +28,9 @@ def _canonicalize_argument_value(value):
             key: (
                 "[redacted]"
                 if key.lower() in _SENSITIVE_ARGUMENT_KEYS
-                else _canonicalize_argument_value(value[key])
+                else _canonicalize_argument_value(val)
             )
-            for key, value in value.items()
+            for key, val in value.items()
         }
     if isinstance(value, list):
         return [_canonicalize_argument_value(item) for item in value]
@@ -63,7 +63,7 @@ def hash_arguments(arguments: Mapping[str, object]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-@dataclass(frozen=True)
+@dataclass
 class RequestControlError(PermissionError):
     code: str
     message: str

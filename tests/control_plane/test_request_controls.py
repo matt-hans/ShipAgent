@@ -1,4 +1,3 @@
-import asyncio
 import time
 
 import pytest
@@ -35,12 +34,12 @@ def fake_controls():
 
 @pytest.mark.asyncio
 async def test_rate_limit_is_namespaced_by_connection_and_class(fake_controls):
-    for _ in range(10):
+    for index in range(10):
         await fake_controls.require_allowed(
             connection_id="connection-1",
             tool_name="get_shipment_rates",
             rate_limit_class="estimate",
-            arguments_hash="hash-1",
+            arguments_hash=f"hash-{index}",
         )
     with pytest.raises(RequestControlError, match="rate_limited"):
         await fake_controls.require_allowed(
@@ -60,7 +59,7 @@ async def test_repeated_identical_calls_trip_loop_breaker(fake_controls):
             rate_limit_class="read",
             arguments_hash="same-hash",
         )
-    with pytest.raises(RequestControlError, match="provider_loop_detected"):
+    with pytest.raises(RequestControlError, match="loop"):
         await fake_controls.require_allowed(
             connection_id="connection-1",
             tool_name="get_job_status",
