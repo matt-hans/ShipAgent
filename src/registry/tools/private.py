@@ -33,5 +33,6 @@ PRIVATE_TOOLS = [
         ),
         output_schema=object_schema({"result": {"type": "object"}}, ["result"]),
         confirmation_policy="private_debug",
+        prepare_tool="raw_ups_preview",
     )
 ]

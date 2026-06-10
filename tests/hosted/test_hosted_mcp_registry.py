@@ -32,47 +32,47 @@ async def test_hosted_mcp_server_does_not_register_unbound_catalog_tools():
 
 @pytest.mark.asyncio
 async def test_hosted_mcp_server_requires_exportable_and_bound_tools():
-    async def track_package_handler(arguments):
-        return {"status": "in_transit", "events": []}
+    async def execute_shipments_handler(arguments):
+        return {"job_id": "job-1", "status": "running"}
 
     async def job_status_handler(arguments):
         return {"job_id": arguments["job_id"], "status": "running"}
 
-    registered_tool = exportable_mcp_tool("track_package")
+    registered_tool = exportable_mcp_tool("execute_shipments")
     provider_excluded = exportable_mcp_tool("get_job_status").model_copy(
         update={"provider_exports": [ProviderExport.openai]}
     )
-    unbound_tool = exportable_mcp_tool("get_label_links")
+    unbound_tool = exportable_mcp_tool("create_label_download")
 
     server = build_server(
         tools=[registered_tool, provider_excluded, unbound_tool],
         tool_handlers={
-            "track_package": track_package_handler,
+            "execute_shipments": execute_shipments_handler,
             "get_job_status": job_status_handler,
         },
     )
     tools = await server.get_tools()
 
-    assert set(tools) == {"track_package"}
+    assert set(tools) == {"execute_shipments"}
 
 
 @pytest.mark.asyncio
 async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
     async def handler(arguments):
-        return {"status": "in_transit", "events": []}
+        return {"job_id": "job-1", "status": "running"}
 
-    contract = exportable_mcp_tool("track_package")
+    contract = exportable_mcp_tool("execute_shipments")
     descriptor = to_mcp_tool_descriptor(contract)
     server = build_server(
         tools=[contract],
-        tool_handlers={"track_package": handler},
+        tool_handlers={"execute_shipments": handler},
     )
     tools = await server.get_tools()
-    registered = tools["track_package"]
+    registered = tools["execute_shipments"]
 
     assert registered.title == contract.title
     assert registered.description == contract.description
-    assert registered.annotations.readOnlyHint is True
+    assert registered.annotations.readOnlyHint is False
     assert registered.annotations.destructiveHint is False
     assert registered.annotations.openWorldHint is True
     assert registered.parameters == descriptor["inputSchema"]
@@ -82,16 +82,20 @@ async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
 @pytest.mark.asyncio
 async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
     async def handler(arguments):
-        return {"status": "in_transit", "events": []}
+        return {"job_id": "job-1", "status": "running"}
 
-    contract = exportable_mcp_tool("track_package")
+    contract = exportable_mcp_tool("execute_shipments")
     server = build_server(
         tools=[contract],
-        tool_handlers={"track_package": handler},
+        tool_handlers={"execute_shipments": handler},
     )
     tools = await server.get_tools()
 
-    result = await tools["track_package"].run({"tracking_number": "1Z999"})
+    result = await tools["execute_shipments"].run(
+        {"preview_id": "preview-1", "confirmation_token": "token-1"}
+    )
 
-    assert result.structured_content == {"status": "in_transit", "events": []}
-    validate(instance=result.structured_content, schema=tools["track_package"].output_schema)
+    assert result.structured_content == {"job_id": "job-1", "status": "running"}
+    validate(
+        instance=result.structured_content, schema=tools["execute_shipments"].output_schema
+    )
