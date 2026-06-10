@@ -15,7 +15,7 @@ from src.control_plane.auth import (
 from src.control_plane.auth.context import AuthorizationContext
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.config import ControlPlaneSettings
-from src.control_plane.hosted_mcp.server import build_server
+from src.hosted_mcp.server import build_server
 from src.control_plane.request_controls import RequestControls
 from src.control_plane.routes.oauth_metadata import build_metadata_router
 from src.control_plane.startup import validate_startup_security
