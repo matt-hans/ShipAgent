@@ -23,6 +23,9 @@ workflow and tool backbone. They do not own shipping business logic.
 
 - `src/` - Python backend: FastAPI, orchestration agent, workflow services, MCP
   servers/clients, registry projections, CLI.
+- `src/control_plane/` - Relay execution control-plane package: Auth0-backed cloud
+  account identity, provider connection persistence, execution target abstraction,
+  startup security gates, and public tool result projection.
 - `src/services/conversation_runtime/` - Provider-neutral conversation runtime:
   normalized message/tool contracts, OpenAI/Gemini adapters, fake-provider tests,
   local tool dispatch, policy gates, and provider-safe result projection.
@@ -45,6 +48,11 @@ workflow and tool backbone. They do not own shipping business logic.
 - The LLM is a configuration engine, not a data pipe. It can produce filters,
   mappings, and plans; deterministic code applies them to row data.
 - Do not send row-level shipping data through model prompts.
+- Separate relay control-plane persistence in `src/control_plane` from desktop/job
+  persistence in `src/db/`; provider connections and cloud accounts are control
+  plane concepts, not hosted tenant models.
+- Public mutating workflows use prepare/execute flow and confirmation gates before
+  state changes.
 - All shipment creation, pickup scheduling, voiding, or other money/state
   changing operations require preview and explicit confirmation first.
 - Do not call UPS or external commerce platforms directly from unrelated layers.
@@ -73,6 +81,12 @@ Backend setup and dev:
 ./scripts/start-backend.sh
 ```
 
+Control-plane local stack:
+
+```bash
+docker compose -f docker-compose.control-plane.yml up -d
+```
+
 Backend validation:
 
 ```bash
@@ -80,6 +94,13 @@ Backend validation:
 .venv/bin/python -m pytest -k "not stream and not sse and not progress"
 .venv/bin/python -m ruff check src/ tests/
 .venv/bin/python -m ruff format src/ tests/
+```
+
+Control-plane contract/migration checks:
+
+```bash
+.venv/bin/python -m pytest tests/control_plane -v
+alembic -c alembic.ini upgrade head
 ```
 
 Model runtime examples:
@@ -126,6 +147,8 @@ cd src-tauri && cargo tauri build
   affected Nx projects.
 - When changing registry/tool definitions, regenerate provider artifacts and run
   the artifact drift test.
+- After control-plane model or contract changes, run `alembic` migrations and the
+  `tests/control_plane` suites before broad backend validation.
 - Keep generated files out of manual edits unless the generating source changed.
 - Do not commit secrets, real labels, customer data, API keys, `.env`, local DBs,
   cache directories, or dependency folders.
