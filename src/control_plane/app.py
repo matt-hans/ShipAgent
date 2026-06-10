@@ -6,14 +6,14 @@ from redis.asyncio import from_url as redis_from_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.control_plane.auth import (
-    AuthorizationService,
     Auth0TokenVerifier,
+    AuthorizationService,
     ProviderClientRegistry,
     clear_authorization_context,
     set_authorization_context,
 )
-from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.auth.context import AuthorizationContext
+from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.config import ControlPlaneSettings
 from src.control_plane.routes.oauth_metadata import build_metadata_router
 from src.control_plane.request_controls import RequestControls
@@ -63,11 +63,9 @@ async def _resolve_authorization(
         )
 
 
-def _build_verifier(settings: ControlPlaneSettings) -> Auth0TokenVerifier:
-    return Auth0TokenVerifier(
-        issuer=settings.auth0_issuer,
-        audience=settings.auth0_audience,
-    )
+@lru_cache
+def _build_verifier(issuer: str, audience: str) -> Auth0TokenVerifier:
+    return Auth0TokenVerifier(issuer=issuer, audience=audience)
 
 
 def create_control_plane_app() -> FastAPI:
@@ -83,11 +81,10 @@ def create_control_plane_app() -> FastAPI:
     mcp = build_server(request_controls=_build_request_controls(settings))
     mcp_app = mcp.http_app(path="/", transport="streamable-http")
     app = FastAPI(lifespan=mcp_app.lifespan)
+    verifier = _build_verifier(settings.auth0_issuer, settings.auth0_audience)
+    metadata_resource = _metadata_url(settings)
     app.include_router(
-        build_metadata_router(
-            str(settings.public_base_url),
-            settings.auth0_issuer,
-        )
+        build_metadata_router(metadata_resource, settings.auth0_issuer)
     )
     app.mount("/mcp", mcp_app)
 
@@ -113,21 +110,19 @@ def create_control_plane_app() -> FastAPI:
             )
 
         try:
-            verifier = _build_verifier(settings)
             principal = verifier.verify(token)
             context = await _resolve_authorization(settings, principal)
-            token_state = set_authorization_context(context)
+            context_token = set_authorization_context(context)
             request.state.authorization = context
-            try:
-                response = await call_next(request)
-            finally:
-                clear_authorization_context(token_state)
-            return response
-        except PermissionError:
+        except Exception:
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
                 headers=_bearer_challenge(settings),
             )
+        try:
+            return await call_next(request)
+        finally:
+            clear_authorization_context(context_token)
 
     return app

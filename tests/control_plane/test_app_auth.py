@@ -1,6 +1,6 @@
-from fastapi import FastAPI, Request
+from dataclasses import asdict
+from fastapi import Request
 from fastapi.testclient import TestClient
-import pytest
 
 from src.control_plane.app import create_control_plane_app
 from src.control_plane.auth.context import AuthorizationContext
@@ -33,7 +33,7 @@ class _AuthorizationService(AuthorizationService):
 
 
 def _build_app_with_routes(monkeypatch, database_url: str):
-    monkeypatch.setenv("SHIPAGENT_PUBLIC_BASE_URL", "https://dev-mcp.shipagent.app")
+    monkeypatch.setenv("SHIPAGENT_PUBLIC_BASE_URL", "https://dev-mcp.shipagent.app/")
     monkeypatch.setenv("SHIPAGENT_AUTH0_ISSUER", "https://tenant.us.auth0.com/")
     monkeypatch.setenv("SHIPAGENT_AUTH0_AUDIENCE", "https://dev-mcp.shipagent.app")
     monkeypatch.setenv("SHIPAGENT_DATABASE_URL", database_url)
@@ -46,7 +46,11 @@ def _build_app_with_routes(monkeypatch, database_url: str):
 
     @app.get("/_probe")
     async def probe(request: Request):
-        return {"has_context": hasattr(request.state, "authorization")}
+        authorization = getattr(request.state, "authorization", None)
+        return {
+            "has_context": authorization is not None,
+            "authorization": asdict(authorization) if authorization is not None else None,
+        }
 
     return app
 
@@ -79,4 +83,14 @@ def test_valid_token_populates_context(monkeypatch):
         )
 
     assert response.status_code == 200
-    assert response.json()["has_context"] is True
+    payload = response.json()
+    assert payload["has_context"] is True
+    assert payload["authorization"]["account_id"] == "acct-1"
+    assert payload["authorization"]["provider_connection_id"] == "pc-1"
+    assert payload["authorization"]["provider_surface"] == "chatgpt"
+    assert payload["authorization"]["subject"] == "auth0|owner-1"
+    assert payload["authorization"]["client_id"] == "chatgpt-client"
+    assert set(payload["authorization"]["scopes"]) == {
+        "jobs:read",
+        "shipments:preview",
+    }
