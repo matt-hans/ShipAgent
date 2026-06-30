@@ -1,6 +1,7 @@
 from functools import lru_cache
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from redis.asyncio import from_url as redis_from_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -47,6 +48,19 @@ def _bearer_challenge(settings: ControlPlaneSettings) -> dict[str, str]:
     }
 
 
+def _sanitize_validation_errors(exc: RequestValidationError) -> list[dict[str, object]]:
+    safe_errors: list[dict[str, object]] = []
+    for err in exc.errors():
+        safe_errors.append(
+            {
+                "type": err.get("type", "unknown"),
+                "loc": err.get("loc", []),
+                "msg": "Invalid request field",
+            }
+        )
+    return safe_errors
+
+
 async def _resolve_authorization(
     settings: ControlPlaneSettings,
     principal: TokenPrincipal,
@@ -87,6 +101,15 @@ def create_control_plane_app() -> FastAPI:
     )
     app.include_router(build_relay_router(RelayDeviceRegistry(redis_client)))
     app.mount("/mcp", mcp_app)
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_error_handler(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": _sanitize_validation_errors(exc)},
+        )
 
     @app.middleware("http")
     async def _require_authorization(request: Request, call_next):

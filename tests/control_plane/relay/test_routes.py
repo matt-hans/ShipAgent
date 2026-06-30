@@ -148,6 +148,9 @@ def test_register_device_rejects_private_key_material_with_validation_error(
         )
 
     assert response.status_code == 422
+    assert PRIVATE_KEY not in response.text
+    assert "PRIVATE KEY" not in response.text
+    assert "input" not in response.json()["detail"][0]
 
 
 def test_register_device_rejects_invalid_public_key_with_validation_error(
@@ -163,6 +166,9 @@ def test_register_device_rejects_invalid_public_key_with_validation_error(
         )
 
     assert response.status_code == 422
+    assert INVALID_PUBLIC_KEY not in response.text
+    assert "abc" not in response.text
+    assert "input" not in response.json()["detail"][0]
 
 
 def test_rotate_key_returns_updated_fingerprint(monkeypatch) -> None:
@@ -209,6 +215,9 @@ def test_rotate_key_rejects_private_key_material_with_validation_error(
         )
 
     assert response.status_code == 422
+    assert PRIVATE_KEY not in response.text
+    assert "PRIVATE KEY" not in response.text
+    assert "input" not in response.json()["detail"][0]
 
 
 def test_rotate_key_missing_device_returns_404(monkeypatch) -> None:
