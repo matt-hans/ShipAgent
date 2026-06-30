@@ -1,3 +1,4 @@
+from src.control_plane.routes.oauth_metadata import SUPPORTED_SCOPES
 from src.registry.catalog import load_registry, public_tools
 from src.registry.models import ProviderExport, SideEffectClass, ToolVisibility
 
@@ -30,6 +31,19 @@ def test_public_tools_are_tenant_safe_and_provider_exportable():
         assert ProviderExport.claude_remote_mcp_public in tool.provider_exports
         assert ProviderExport.generic_mcp in tool.provider_exports
         assert ProviderExport.anthropic not in tool.provider_exports
+
+
+def test_exported_public_tool_scopes_are_advertised_in_oauth_metadata():
+    supported = set(SUPPORTED_SCOPES)
+    missing = {
+        scope
+        for tool in public_tools()
+        if tool.provider_export_enabled
+        for scope in tool.auth_scopes
+        if scope not in supported
+    }
+
+    assert missing == set()
 
 
 def test_side_effecting_public_tools_require_confirmation():

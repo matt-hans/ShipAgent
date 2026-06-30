@@ -109,7 +109,7 @@ async def test_status_tool_bound_from_default_catalog_projects_execution_target_
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "execution_target:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
 
     token = set_authorization_context(context)
@@ -156,7 +156,7 @@ async def test_loopback_execution_target_status_runs_through_hosted_mcp_tool():
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "execution_target:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
 
     token = set_authorization_context(context)
@@ -218,7 +218,7 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "execution_target:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
 
     token = set_authorization_context(context)
@@ -279,7 +279,7 @@ async def test_hosted_mcp_handler_rejects_missing_scopes():
         clear_authorization_context(token)
 
     assert exc.value.code == "insufficient_scope"
-    assert exc.value.required_scopes == ["execution_target:read"]
+    assert exc.value.required_scopes == ["shipagent.status"]
 
 
 @pytest.mark.asyncio
@@ -380,7 +380,7 @@ async def test_hosted_mcp_handler_translates_request_control_deny():
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "execution_target:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
     token = set_authorization_context(context)
     try:

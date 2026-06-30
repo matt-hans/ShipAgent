@@ -150,6 +150,7 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
                 if heartbeat.relay_session_id != session.relay_session_id:
                     raise ValueError("wrong heartbeat session")
                 await registry.refresh_session(
+                    session.account_id,
                     session.device_id,
                     session.relay_session_id,
                 )
@@ -160,6 +161,7 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
         finally:
             if session is not None:
                 await registry.disconnect_session(
+                    session.account_id,
                     session.device_id,
                     session.relay_session_id,
                 )

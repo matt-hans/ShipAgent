@@ -4,8 +4,7 @@
     {
       "audit_level": "basic",
       "auth_scopes": [
-        "account:read",
-        "execution_target:read"
+        "shipagent.status"
       ],
       "availability": [
         "hosted",
