@@ -130,7 +130,15 @@ class RelayDeviceRegistry:
         )
         return revoked
 
-    async def disconnect_session(self, device_id: str) -> None:
+    async def disconnect_session(self, device_id: str, relay_session_id: str) -> None:
+        session_payload = await self._redis.get(RedisKey.relay_session(device_id))
+        if session_payload is None:
+            return
+        if isinstance(session_payload, bytes):
+            session_payload = session_payload.decode("utf-8")
+        session = RelaySession.model_validate_json(session_payload)
+        if session.relay_session_id != relay_session_id:
+            return
         await self._redis.delete(
             RedisKey.relay_session(device_id),
             RedisKey.relay_heartbeat(device_id),

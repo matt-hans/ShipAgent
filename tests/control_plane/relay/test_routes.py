@@ -369,6 +369,43 @@ def test_connect_websocket_disconnect_clears_ready_liveness(monkeypatch) -> None
     assert RedisKey.relay_heartbeat(registered["device_id"]) not in redis.values
 
 
+def test_connect_websocket_rejects_claims_for_different_outstanding_challenge(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        with client.websocket_connect("/relay/connect") as stale_websocket:
+            stale_websocket.send_json(
+                {"account_id": "acct-1", "device_id": registered["device_id"]}
+            )
+            stale_challenge = stale_websocket.receive_json()
+
+        with client.websocket_connect("/relay/connect") as websocket:
+            websocket.send_json(
+                {"account_id": "acct-1", "device_id": registered["device_id"]}
+            )
+            websocket.receive_json()
+            claims = build_handshake_claims(
+                device_id=registered["device_id"],
+                account_id="acct-1",
+                relay_session_id=stale_challenge["relay_session_id"],
+                nonce=stale_challenge["nonce"],
+                version=VERSION,
+            )
+            signed = KEY_SERVICE.sign_handshake_claims(claims)
+            websocket.send_json(signed.model_dump(mode="json"))
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                websocket.receive_json()
+
+    assert exc_info.value.code == 1008
+
+
 def test_connect_websocket_rejects_unsigned_claims(monkeypatch) -> None:
     app, _redis = _build_app(monkeypatch)
 
