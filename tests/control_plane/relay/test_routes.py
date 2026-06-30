@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -73,6 +75,18 @@ class FakeRedis:
             return False
         self.ttls[key] = seconds
         return True
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        session_key, heartbeat_key, expected_relay_session_id = keys_and_args
+        payload = self.values.get(session_key)
+        if payload is None:
+            return 0
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8")
+        session = json.loads(payload)
+        if session.get("relay_session_id") != expected_relay_session_id:
+            return 0
+        return await self.delete(session_key, heartbeat_key)
 
 
 class _TokenVerifier:

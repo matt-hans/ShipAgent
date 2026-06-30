@@ -22,6 +22,18 @@ _PRIVATE_KEY_PEM_HEADER = re.compile(
     re.IGNORECASE,
 )
 
+_DISCONNECT_SESSION_SCRIPT = """
+local session = redis.call("GET", KEYS[1])
+if not session then
+    return 0
+end
+local ok, payload = pcall(cjson.decode, session)
+if not ok or payload["relay_session_id"] ~= ARGV[1] then
+    return 0
+end
+return redis.call("DEL", KEYS[1], KEYS[2])
+"""
+
 
 def reject_private_key_pem(public_key_pem: str) -> None:
     if _PRIVATE_KEY_PEM_HEADER.search(public_key_pem):
@@ -41,6 +53,8 @@ class RedisLike(Protocol):
     async def delete(self, *keys: str): ...
 
     async def expire(self, key: str, seconds: int): ...
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str): ...
 
 
 class RelayDevice(RelayProtocolModel):
@@ -131,17 +145,12 @@ class RelayDeviceRegistry:
         return revoked
 
     async def disconnect_session(self, device_id: str, relay_session_id: str) -> None:
-        session_payload = await self._redis.get(RedisKey.relay_session(device_id))
-        if session_payload is None:
-            return
-        if isinstance(session_payload, bytes):
-            session_payload = session_payload.decode("utf-8")
-        session = RelaySession.model_validate_json(session_payload)
-        if session.relay_session_id != relay_session_id:
-            return
-        await self._redis.delete(
+        await self._redis.eval(
+            _DISCONNECT_SESSION_SCRIPT,
+            2,
             RedisKey.relay_session(device_id),
             RedisKey.relay_heartbeat(device_id),
+            relay_session_id,
         )
 
     async def create_challenge(

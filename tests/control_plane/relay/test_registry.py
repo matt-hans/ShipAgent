@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from src.control_plane.redis_keys import RedisKey, RedisTtl
 from src.control_plane.relay.protocol import (
@@ -74,6 +75,50 @@ class FakeRedis:
             return False
         self.ttls[key] = seconds
         return True
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        session_key, heartbeat_key, expected_relay_session_id = keys_and_args
+        payload = self.values.get(session_key)
+        if payload is None:
+            return 0
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8")
+        session = json.loads(payload)
+        if session.get("relay_session_id") != expected_relay_session_id:
+            return 0
+        return await self.delete(session_key, heartbeat_key)
+
+
+class InterleavingRedis(FakeRedis):
+    def __init__(self) -> None:
+        super().__init__()
+        self.race_session_key: str | None = None
+        self.race_values: dict[str, str] = {}
+        self.race_armed = False
+
+    def arm_cleanup_race(
+        self,
+        *,
+        session_key: str,
+        race_values: dict[str, str],
+    ) -> None:
+        self.race_session_key = session_key
+        self.race_values = race_values
+        self.race_armed = True
+
+    async def get(self, key: str):
+        value = await super().get(key)
+        if self.race_armed and key == self.race_session_key:
+            self.values.update(self.race_values)
+            self.race_armed = False
+        return value
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        session_key = keys_and_args[0]
+        if self.race_armed and session_key == self.race_session_key:
+            self.values.update(self.race_values)
+            self.race_armed = False
+        return await super().eval(script, numkeys, *keys_and_args)
 
 
 async def test_register_device_can_be_read_without_private_key_material() -> None:
@@ -289,6 +334,63 @@ async def test_disconnect_session_does_not_clear_newer_ready_liveness() -> None:
     heartbeat = RelayHeartbeat.model_validate_json(
         await redis.get(RedisKey.relay_heartbeat(device.device_id))
     )
+    assert stored_session.relay_session_id == second_session.relay_session_id
+    assert heartbeat.relay_session_id == second_session.relay_session_id
+
+
+async def test_disconnect_session_does_not_delete_newer_session_written_during_cleanup() -> None:
+    redis = InterleavingRedis()
+    registry = RelayDeviceRegistry(redis)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    first_challenge = await registry.create_challenge("acct-1", device.device_id)
+    first_claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=first_challenge.relay_session_id,
+        nonce=first_challenge.nonce,
+        version=VERSION,
+    )
+    first_session = await registry.accept_handshake(
+        KEY_SERVICE.sign_handshake_claims(first_claims)
+    )
+    first_session_payload = await redis.get(RedisKey.relay_session(device.device_id))
+    first_heartbeat_payload = await redis.get(
+        RedisKey.relay_heartbeat(device.device_id)
+    )
+    second_challenge = await registry.create_challenge("acct-1", device.device_id)
+    second_claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=second_challenge.relay_session_id,
+        nonce=second_challenge.nonce,
+        version=VERSION,
+    )
+    second_session = await registry.accept_handshake(
+        KEY_SERVICE.sign_handshake_claims(second_claims)
+    )
+    second_session_payload = await redis.get(RedisKey.relay_session(device.device_id))
+    second_heartbeat_payload = await redis.get(
+        RedisKey.relay_heartbeat(device.device_id)
+    )
+    session_key = RedisKey.relay_session(device.device_id)
+    heartbeat_key = RedisKey.relay_heartbeat(device.device_id)
+    await redis.set(session_key, first_session_payload)
+    await redis.set(heartbeat_key, first_heartbeat_payload)
+    redis.arm_cleanup_race(
+        session_key=session_key,
+        race_values={
+            session_key: second_session_payload,
+            heartbeat_key: second_heartbeat_payload,
+        },
+    )
+
+    await registry.disconnect_session(
+        device.device_id,
+        first_session.relay_session_id,
+    )
+
+    stored_session = RelaySession.model_validate_json(await redis.get(session_key))
+    heartbeat = RelayHeartbeat.model_validate_json(await redis.get(heartbeat_key))
     assert stored_session.relay_session_id == second_session.relay_session_id
     assert heartbeat.relay_session_id == second_session.relay_session_id
 
