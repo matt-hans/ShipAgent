@@ -14,6 +14,7 @@ from src.control_plane.relay.protocol import (
 )
 
 PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----\n"
+PRIVATE_KEY = "-----BEGIN ED25519 PRIVATE KEY-----\nsecret\n-----END ED25519 PRIVATE KEY-----\n"
 VERSION = RelayVersionMetadata(
     shipagent_core_version="1.0.0",
     registry_contract_version="registry-v1",
@@ -113,6 +114,21 @@ def test_register_device_returns_public_device_record(monkeypatch) -> None:
     assert "private_key_pem" not in response.text
 
 
+def test_register_device_rejects_private_key_material_with_validation_error(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PRIVATE_KEY},
+        )
+
+    assert response.status_code == 422
+
+
 def test_rotate_key_returns_updated_fingerprint(monkeypatch) -> None:
     app, _redis = _build_app(monkeypatch)
     rotated_key = "-----BEGIN PUBLIC KEY-----\nrotated\n-----END PUBLIC KEY-----\n"
@@ -137,6 +153,26 @@ def test_rotate_key_returns_updated_fingerprint(monkeypatch) -> None:
     assert payload["revoked"] is False
     assert "private_key" not in response.text
     assert "private_key_pem" not in response.text
+
+
+def test_rotate_key_rejects_private_key_material_with_validation_error(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/rotate-key",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"public_key_pem": PRIVATE_KEY},
+        )
+
+    assert response.status_code == 422
 
 
 def test_revoke_device_returns_revoked_record(monkeypatch) -> None:

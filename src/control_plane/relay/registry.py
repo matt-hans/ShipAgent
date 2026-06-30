@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Protocol
 
@@ -13,6 +14,16 @@ from src.control_plane.relay.protocol import (
     RelayVersionMetadata,
     relay_public_key_fingerprint,
 )
+
+_PRIVATE_KEY_PEM_HEADER = re.compile(
+    r"-----BEGIN [^-]*PRIVATE KEY-----",
+    re.IGNORECASE,
+)
+
+
+def reject_private_key_pem(public_key_pem: str) -> None:
+    if _PRIVATE_KEY_PEM_HEADER.search(public_key_pem):
+        raise ValueError("private key material is not allowed")
 
 
 class RedisLike(Protocol):
@@ -59,6 +70,7 @@ class RelayDeviceRegistry:
         public_key_pem: str,
         fingerprint: str | None = None,
     ) -> RelayDevice:
+        reject_private_key_pem(public_key_pem)
         device = RelayDevice(
             account_id=account_id,
             device_id=f"relay_device_{uuid.uuid4().hex}",
@@ -85,6 +97,7 @@ class RelayDeviceRegistry:
         public_key_pem: str,
         fingerprint: str | None = None,
     ) -> RelayDevice:
+        reject_private_key_pem(public_key_pem)
         device = await self.get_device(account_id, device_id)
         if device is None:
             raise ValueError("device not found")
@@ -93,7 +106,6 @@ class RelayDeviceRegistry:
                 "public_key_pem": public_key_pem,
                 "fingerprint": fingerprint
                 or relay_public_key_fingerprint(public_key_pem),
-                "revoked": False,
             }
         )
         await self._store_device(rotated)

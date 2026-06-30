@@ -1,23 +1,39 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, WebSocket
-from pydantic import ValidationError
+from pydantic import ValidationError, field_validator
 
 from src.control_plane.auth.context import get_authorization_context
 from src.control_plane.relay.protocol import (
     RelayHandshakeClaims,
     RelayProtocolModel,
 )
-from src.control_plane.relay.registry import RelayDevice, RelayDeviceRegistry
+from src.control_plane.relay.registry import (
+    RelayDevice,
+    RelayDeviceRegistry,
+    reject_private_key_pem,
+)
 
 
 class RegisterRelayDeviceRequest(RelayProtocolModel):
     device_name: str
     public_key_pem: str
 
+    @field_validator("public_key_pem")
+    @classmethod
+    def reject_private_key_material(cls, value: str) -> str:
+        reject_private_key_pem(value)
+        return value
+
 
 class RotateRelayDeviceKeyRequest(RelayProtocolModel):
     public_key_pem: str
+
+    @field_validator("public_key_pem")
+    @classmethod
+    def reject_private_key_material(cls, value: str) -> str:
+        reject_private_key_pem(value)
+        return value
 
 
 class RelayConnectHello(RelayProtocolModel):

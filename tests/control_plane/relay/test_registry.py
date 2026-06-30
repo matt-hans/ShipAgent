@@ -10,6 +10,7 @@ from src.control_plane.relay.protocol import (
 from src.control_plane.relay.registry import RelayDeviceRegistry
 
 PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----\n"
+PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n"
 VERSION = RelayVersionMetadata(
     shipagent_core_version="1.0.0",
     registry_contract_version="registry-v1",
@@ -66,6 +67,23 @@ async def test_register_device_can_be_read_without_private_key_material() -> Non
     assert "private" not in device.model_dump_json().lower()
 
 
+async def test_register_device_rejects_private_key_material() -> None:
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+
+    try:
+        await registry.register_device(
+            account_id="acct-1",
+            device_name="Dock Mac",
+            public_key_pem=PRIVATE_KEY,
+        )
+    except ValueError as exc:
+        assert "private key" in str(exc)
+    else:
+        raise AssertionError("expected private key material to be rejected")
+    assert all("PRIVATE KEY" not in value for value in redis.values.values())
+
+
 async def test_rotate_key_preserves_device_id_and_updates_public_key() -> None:
     registry = RelayDeviceRegistry(FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -83,6 +101,47 @@ async def test_rotate_key_preserves_device_id_and_updates_public_key() -> None:
     assert rotated.public_key_pem == rotated_key
     assert rotated.fingerprint != device.fingerprint
     assert rotated.revoked is False
+
+
+async def test_rotate_key_rejects_private_key_material() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+
+    try:
+        await registry.rotate_key(
+            account_id="acct-1",
+            device_id=device.device_id,
+            public_key_pem=PRIVATE_KEY,
+        )
+    except ValueError as exc:
+        assert "private key" in str(exc)
+    else:
+        raise AssertionError("expected private key material to be rejected")
+
+    stored = await registry.get_device("acct-1", device.device_id)
+    assert stored == device
+    assert "PRIVATE KEY" not in stored.model_dump_json()
+
+
+async def test_rotate_key_preserves_revoked_state() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    revoked = await registry.revoke_device("acct-1", device.device_id)
+    rotated_key = "-----BEGIN PUBLIC KEY-----\nrotated\n-----END PUBLIC KEY-----\n"
+
+    rotated = await registry.rotate_key(
+        account_id="acct-1",
+        device_id=device.device_id,
+        public_key_pem=rotated_key,
+    )
+
+    assert rotated.revoked == revoked.revoked
+    try:
+        await registry.create_challenge("acct-1", device.device_id)
+    except ValueError as exc:
+        assert "revoked" in str(exc)
+    else:
+        raise AssertionError("expected rotated revoked device to remain revoked")
 
 
 async def test_revoke_device_marks_revoked_and_clears_active_session() -> None:
