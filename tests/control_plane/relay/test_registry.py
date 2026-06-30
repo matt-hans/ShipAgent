@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from src.control_plane.redis_keys import RedisKey, RedisTtl
 from src.control_plane.relay.protocol import (
     RelayHeartbeat,
@@ -8,9 +10,30 @@ from src.control_plane.relay.protocol import (
     build_handshake_claims,
 )
 from src.control_plane.relay.registry import RelayDeviceRegistry
+from src.services.relay_key_service import RelayKeyService
 
-PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----\n"
+
+class InMemoryKeyStore:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    def set(self, key: str, value: str) -> None:
+        self.values[key] = value
+
+    def delete(self, key: str) -> None:
+        self.values.pop(key, None)
+
+
+KEY_SERVICE = RelayKeyService(InMemoryKeyStore())
+KEYPAIR = KEY_SERVICE.generate_or_load_keypair()
+PUBLIC_KEY = KEYPAIR.public_key_pem
+OTHER_KEY_SERVICE = RelayKeyService(InMemoryKeyStore())
+OTHER_KEYPAIR = OTHER_KEY_SERVICE.generate_or_load_keypair()
 PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n"
+INVALID_PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----\n"
 VERSION = RelayVersionMetadata(
     shipagent_core_version="1.0.0",
     registry_contract_version="registry-v1",
@@ -26,6 +49,9 @@ class FakeRedis:
 
     async def get(self, key: str):
         return self.values.get(key)
+
+    async def getdel(self, key: str):
+        return self.values.pop(key, None)
 
     async def set(self, key: str, value: str, ex: int | None = None):
         self.values[key] = value
@@ -84,10 +110,25 @@ async def test_register_device_rejects_private_key_material() -> None:
     assert all("PRIVATE KEY" not in value for value in redis.values.values())
 
 
+async def test_register_device_rejects_invalid_public_key_material() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+
+    try:
+        await registry.register_device(
+            account_id="acct-1",
+            device_name="Dock Mac",
+            public_key_pem=INVALID_PUBLIC_KEY,
+        )
+    except ValueError as exc:
+        assert "public key" in str(exc)
+    else:
+        raise AssertionError("expected invalid public key material to be rejected")
+
+
 async def test_rotate_key_preserves_device_id_and_updates_public_key() -> None:
     registry = RelayDeviceRegistry(FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
-    rotated_key = "-----BEGIN PUBLIC KEY-----\nrotated\n-----END PUBLIC KEY-----\n"
+    rotated_key = OTHER_KEYPAIR.public_key_pem
 
     rotated = await registry.rotate_key(
         account_id="acct-1",
@@ -127,7 +168,7 @@ async def test_rotate_key_preserves_revoked_state() -> None:
     registry = RelayDeviceRegistry(FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
     revoked = await registry.revoke_device("acct-1", device.device_id)
-    rotated_key = "-----BEGIN PUBLIC KEY-----\nrotated\n-----END PUBLIC KEY-----\n"
+    rotated_key = OTHER_KEYPAIR.public_key_pem
 
     rotated = await registry.rotate_key(
         account_id="acct-1",
@@ -197,7 +238,9 @@ async def test_accept_handshake_stores_session_and_heartbeat() -> None:
         version=VERSION,
     )
 
-    session = await registry.accept_handshake(claims, challenge)
+    signed = KEY_SERVICE.sign_handshake_claims(claims)
+
+    session = await registry.accept_handshake(signed)
 
     assert session.account_id == "acct-1"
     assert session.device_id == device.device_id
@@ -226,11 +269,121 @@ async def test_accept_handshake_rejects_wrong_account() -> None:
     )
 
     try:
-        await registry.accept_handshake(claims, challenge)
+        await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(claims))
     except ValueError as exc:
         assert "wrong account" in str(exc)
     else:
         raise AssertionError("expected wrong account to be rejected")
+
+
+async def test_accept_handshake_rejects_unsigned_claims() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    challenge = await registry.create_challenge("acct-1", device.device_id)
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=VERSION,
+    )
+
+    try:
+        await registry.accept_handshake(claims)
+    except ValueError as exc:
+        assert "signed" in str(exc)
+    else:
+        raise AssertionError("expected unsigned claims to be rejected")
+
+
+async def test_accept_handshake_rejects_claims_signed_by_unregistered_key() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    challenge = await registry.create_challenge("acct-1", device.device_id)
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=VERSION,
+    )
+    signed = OTHER_KEY_SERVICE.sign_handshake_claims(claims)
+
+    try:
+        await registry.accept_handshake(signed)
+    except ValueError as exc:
+        assert "signature" in str(exc)
+    else:
+        raise AssertionError("expected unregistered signing key to be rejected")
+
+
+async def test_accept_handshake_consumes_challenge_once() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    challenge = await registry.create_challenge("acct-1", device.device_id)
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=VERSION,
+    )
+    signed = KEY_SERVICE.sign_handshake_claims(claims)
+
+    await registry.accept_handshake(signed)
+
+    try:
+        await registry.accept_handshake(signed)
+    except ValueError as exc:
+        assert "challenge" in str(exc)
+    else:
+        raise AssertionError("expected consumed challenge replay to be rejected")
+
+
+async def test_accept_handshake_allows_only_one_concurrent_accept() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    challenge = await registry.create_challenge("acct-1", device.device_id)
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=VERSION,
+    )
+    signed = KEY_SERVICE.sign_handshake_claims(claims)
+
+    results = await asyncio.gather(
+        registry.accept_handshake(signed),
+        registry.accept_handshake(signed),
+        return_exceptions=True,
+    )
+
+    successes = [result for result in results if not isinstance(result, Exception)]
+    failures = [result for result in results if isinstance(result, ValueError)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert "challenge" in str(failures[0])
+
+
+async def test_accept_handshake_rejects_claims_without_stored_challenge() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id="forged-session",
+        nonce="forged-nonce",
+        version=VERSION,
+    )
+    signed = KEY_SERVICE.sign_handshake_claims(claims)
+
+    try:
+        await registry.accept_handshake(signed)
+    except ValueError as exc:
+        assert "challenge" in str(exc)
+    else:
+        raise AssertionError("expected missing stored challenge to be rejected")
 
 
 async def test_accept_handshake_rejects_wrong_nonce() -> None:
@@ -246,7 +399,7 @@ async def test_accept_handshake_rejects_wrong_nonce() -> None:
     )
 
     try:
-        await registry.accept_handshake(claims, challenge)
+        await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(claims))
     except ValueError as exc:
         assert "nonce" in str(exc)
     else:
@@ -267,7 +420,7 @@ async def test_accept_handshake_rejects_claims_for_different_device_than_challen
     )
 
     try:
-        await registry.accept_handshake(claims, challenge)
+        await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(claims))
     except ValueError as exc:
         assert "device" in str(exc)
     else:
@@ -288,7 +441,7 @@ async def test_accept_handshake_rejects_device_revoked_after_challenge() -> None
     await registry.revoke_device("acct-1", device.device_id)
 
     try:
-        await registry.accept_handshake(claims, challenge)
+        await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(claims))
     except ValueError as exc:
         assert "revoked" in str(exc)
     else:

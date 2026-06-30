@@ -12,9 +12,30 @@ from src.control_plane.relay.protocol import (
     RelayVersionMetadata,
     build_handshake_claims,
 )
+from src.services.relay_key_service import RelayKeyService
 
-PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----\n"
+
+class InMemoryKeyStore:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    def set(self, key: str, value: str) -> None:
+        self.values[key] = value
+
+    def delete(self, key: str) -> None:
+        self.values.pop(key, None)
+
+
+KEY_SERVICE = RelayKeyService(InMemoryKeyStore())
+KEYPAIR = KEY_SERVICE.generate_or_load_keypair()
+PUBLIC_KEY = KEYPAIR.public_key_pem
+OTHER_KEY_SERVICE = RelayKeyService(InMemoryKeyStore())
+OTHER_KEYPAIR = OTHER_KEY_SERVICE.generate_or_load_keypair()
 PRIVATE_KEY = "-----BEGIN ED25519 PRIVATE KEY-----\nsecret\n-----END ED25519 PRIVATE KEY-----\n"
+INVALID_PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----\n"
 VERSION = RelayVersionMetadata(
     shipagent_core_version="1.0.0",
     registry_contract_version="registry-v1",
@@ -129,9 +150,24 @@ def test_register_device_rejects_private_key_material_with_validation_error(
     assert response.status_code == 422
 
 
+def test_register_device_rejects_invalid_public_key_with_validation_error(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": INVALID_PUBLIC_KEY},
+        )
+
+    assert response.status_code == 422
+
+
 def test_rotate_key_returns_updated_fingerprint(monkeypatch) -> None:
     app, _redis = _build_app(monkeypatch)
-    rotated_key = "-----BEGIN PUBLIC KEY-----\nrotated\n-----END PUBLIC KEY-----\n"
+    rotated_key = OTHER_KEYPAIR.public_key_pem
 
     with TestClient(app) as client:
         registered = client.post(
@@ -175,6 +211,20 @@ def test_rotate_key_rejects_private_key_material_with_validation_error(
     assert response.status_code == 422
 
 
+def test_rotate_key_missing_device_returns_404(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/relay/devices/missing-device/rotate-key",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"public_key_pem": PUBLIC_KEY},
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Relay device not found"}
+
+
 def test_revoke_device_returns_revoked_record(monkeypatch) -> None:
     app, _redis = _build_app(monkeypatch)
 
@@ -197,6 +247,19 @@ def test_revoke_device_returns_revoked_record(monkeypatch) -> None:
     assert payload["revoked"] is True
     assert "private_key" not in response.text
     assert "private_key_pem" not in response.text
+
+
+def test_revoke_missing_device_returns_404(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/relay/devices/missing-device/revoke",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Relay device not found"}
 
 
 def test_register_device_requires_authorization(monkeypatch) -> None:
@@ -232,7 +295,8 @@ def test_connect_websocket_challenges_then_accepts_claims(monkeypatch) -> None:
                 nonce=challenge["nonce"],
                 version=VERSION,
             )
-            websocket.send_json(claims.model_dump(mode="json"))
+            signed = KEY_SERVICE.sign_handshake_claims(claims)
+            websocket.send_json(signed.model_dump(mode="json"))
             accepted = websocket.receive_json()
 
     assert accepted == {
@@ -240,6 +304,34 @@ def test_connect_websocket_challenges_then_accepts_claims(monkeypatch) -> None:
         "execution_target_id": f"relay:{registered['device_id']}",
         "state": "ready",
     }
+
+
+def test_connect_websocket_rejects_unsigned_claims(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        with client.websocket_connect("/relay/connect") as websocket:
+            websocket.send_json(
+                {"account_id": "acct-1", "device_id": registered["device_id"]}
+            )
+            challenge = websocket.receive_json()
+            claims = build_handshake_claims(
+                device_id=registered["device_id"],
+                account_id="acct-1",
+                relay_session_id=challenge["relay_session_id"],
+                nonce=challenge["nonce"],
+                version=VERSION,
+            )
+            websocket.send_json(claims.model_dump(mode="json"))
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                websocket.receive_json()
+
+    assert exc_info.value.code == 1008
 
 
 def test_connect_websocket_rejects_claims_for_different_device_than_hello(
@@ -270,7 +362,8 @@ def test_connect_websocket_rejects_claims_for_different_device_than_hello(
                 nonce=challenge["nonce"],
                 version=VERSION,
             )
-            websocket.send_json(claims.model_dump(mode="json"))
+            signed = KEY_SERVICE.sign_handshake_claims(claims)
+            websocket.send_json(signed.model_dump(mode="json"))
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 websocket.receive_json()
 

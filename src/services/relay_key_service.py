@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 from typing import Protocol
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from src.control_plane.relay.protocol import relay_public_key_fingerprint
+from src.control_plane.relay.protocol import (
+    RelayHandshakeClaims,
+    RelaySignedHandshakeClaims,
+    handshake_signature_payload,
+    relay_public_key_fingerprint,
+)
 
 
 class RelayKeyStore(Protocol):
@@ -70,6 +76,24 @@ class RelayKeyService:
             "public_key_pem": keypair.public_key_pem,
             "fingerprint": keypair.fingerprint,
         }
+
+    def sign_handshake_claims(
+        self, claims: RelayHandshakeClaims
+    ) -> RelaySignedHandshakeClaims:
+        private_key_pem = self._store.get(self._key_name)
+        if private_key_pem is None:
+            raise ValueError("relay private key is not available")
+        private_key = serialization.load_pem_private_key(
+            private_key_pem.encode("utf-8"),
+            password=None,
+        )
+        if not isinstance(private_key, Ed25519PrivateKey):
+            raise ValueError("stored relay key is not an Ed25519 private key")
+        signature = private_key.sign(handshake_signature_payload(claims))
+        return RelaySignedHandshakeClaims(
+            claims=claims,
+            signature=base64.b64encode(signature).decode("ascii"),
+        )
 
     def _keypair_from_private_key(
         self, private_key: Ed25519PrivateKey
