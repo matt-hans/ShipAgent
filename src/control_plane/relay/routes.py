@@ -6,6 +6,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from src.control_plane.auth.context import get_authorization_context
 from src.control_plane.relay.protocol import (
+    RelayHeartbeatFrame,
     RelayProtocolModel,
     RelaySignedHandshakeClaims,
 )
@@ -139,7 +140,11 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
                 }
             )
             while True:
-                await websocket.receive_text()
+                heartbeat = RelayHeartbeatFrame.model_validate(
+                    await websocket.receive_json()
+                )
+                if heartbeat.relay_session_id != session.relay_session_id:
+                    raise ValueError("wrong heartbeat session")
                 await registry.refresh_session(
                     session.device_id,
                     session.relay_session_id,

@@ -473,11 +473,97 @@ def test_connect_websocket_heartbeat_refreshes_ready_liveness(monkeypatch) -> No
             redis.ttls[session_key] = 1
             redis.ttls[heartbeat_key] = 1
 
-            websocket.send_text("heartbeat")
+            websocket.send_json(
+                {
+                    "type": "heartbeat",
+                    "relay_session_id": challenge["relay_session_id"],
+                }
+            )
             time.sleep(0.01)
 
             assert redis.ttls[session_key] == RedisTtl.RELAY_SESSION_SECONDS
             assert redis.ttls[heartbeat_key] == RedisTtl.RELAY_SESSION_SECONDS
+
+
+def test_connect_websocket_arbitrary_text_does_not_refresh_liveness(
+    monkeypatch,
+) -> None:
+    app, redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        with client.websocket_connect("/relay/connect") as websocket:
+            websocket.send_json(
+                {"account_id": "acct-1", "device_id": registered["device_id"]}
+            )
+            challenge = websocket.receive_json()
+            claims = build_handshake_claims(
+                device_id=registered["device_id"],
+                account_id="acct-1",
+                relay_session_id=challenge["relay_session_id"],
+                nonce=challenge["nonce"],
+                version=VERSION,
+            )
+            signed = KEY_SERVICE.sign_handshake_claims(claims)
+            websocket.send_json(signed.model_dump(mode="json"))
+            assert websocket.receive_json()["state"] == "ready"
+            session_key = RedisKey.relay_session(registered["device_id"])
+            heartbeat_key = RedisKey.relay_heartbeat(registered["device_id"])
+            redis.ttls[session_key] = 1
+            redis.ttls[heartbeat_key] = 1
+
+            websocket.send_text("not-a-heartbeat-frame")
+            time.sleep(0.01)
+
+            assert redis.ttls.get(session_key) in (None, 1)
+            assert redis.ttls.get(heartbeat_key) in (None, 1)
+
+
+def test_connect_websocket_wrong_session_heartbeat_does_not_refresh_liveness(
+    monkeypatch,
+) -> None:
+    app, redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        with client.websocket_connect("/relay/connect") as websocket:
+            websocket.send_json(
+                {"account_id": "acct-1", "device_id": registered["device_id"]}
+            )
+            challenge = websocket.receive_json()
+            claims = build_handshake_claims(
+                device_id=registered["device_id"],
+                account_id="acct-1",
+                relay_session_id=challenge["relay_session_id"],
+                nonce=challenge["nonce"],
+                version=VERSION,
+            )
+            signed = KEY_SERVICE.sign_handshake_claims(claims)
+            websocket.send_json(signed.model_dump(mode="json"))
+            assert websocket.receive_json()["state"] == "ready"
+            session_key = RedisKey.relay_session(registered["device_id"])
+            heartbeat_key = RedisKey.relay_heartbeat(registered["device_id"])
+            redis.ttls[session_key] = 1
+            redis.ttls[heartbeat_key] = 1
+
+            websocket.send_json(
+                {
+                    "type": "heartbeat",
+                    "relay_session_id": "wrong-session",
+                }
+            )
+            time.sleep(0.01)
+
+            assert redis.ttls.get(session_key) in (None, 1)
+            assert redis.ttls.get(heartbeat_key) in (None, 1)
 
 
 def test_connect_websocket_rejects_claims_for_different_outstanding_challenge(

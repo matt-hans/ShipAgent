@@ -5,6 +5,7 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import Literal
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -67,6 +68,11 @@ class RelayHandshakeClaims(RelayProtocolModel):
 class RelaySignedHandshakeClaims(RelayProtocolModel):
     claims: RelayHandshakeClaims
     signature: str
+
+
+class RelayHeartbeatFrame(RelayProtocolModel):
+    type: Literal["heartbeat"]
+    relay_session_id: str
 
 
 class RelayHeartbeat(RelayProtocolModel):
