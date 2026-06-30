@@ -9,7 +9,11 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from src.control_plane.app import create_control_plane_app
-from src.control_plane.auth.context import AuthorizationContext
+from src.control_plane.auth.context import (
+    AuthorizationContext,
+    clear_authorization_context,
+    set_authorization_context,
+)
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.auth.service import AuthorizationService
 from src.control_plane.redis_keys import RedisKey, RedisTtl
@@ -18,6 +22,7 @@ from src.control_plane.relay.protocol import (
     build_handshake_claims,
 )
 from src.hosted_mcp.server import build_server as real_build_server
+from src.services.desktop_relay_client import DesktopRelayClient
 from src.services.relay_key_service import RelayKeyService
 
 
@@ -80,6 +85,14 @@ class FakeRedis:
         return True
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        if numkeys == 1 and (
+            "SA_RATE_LIMIT" in script or "SA_LOOP_GUARD" in script
+        ):
+            key = keys_and_args[0]
+            count = int(self.values.get(key, "0")) + 1
+            self.values[key] = str(count)
+            self.ttls[key] = int(keys_and_args[-1])
+            return count
         if numkeys == 1:
             key = keys_and_args[0]
             self.ttls.pop(key, None)
@@ -256,6 +269,42 @@ class _AuthorizationService(AuthorizationService):
         )
 
 
+class _RelayTestClientConnection:
+    def __init__(self, websocket) -> None:
+        self._websocket = websocket
+
+    async def send_json(self, payload: dict[str, object]) -> None:
+        self._websocket.send_json(payload)
+
+    async def receive_json(self) -> dict[str, object]:
+        return self._websocket.receive_json()
+
+
+class _RelayTestClientConnectionContext:
+    def __init__(self, client: TestClient, path: str) -> None:
+        self._client = client
+        self._path = path
+        self._websocket_context = None
+
+    async def __aenter__(self) -> _RelayTestClientConnection:
+        self._websocket_context = self._client.websocket_connect(self._path)
+        websocket = self._websocket_context.__enter__()
+        return _RelayTestClientConnection(websocket)
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._websocket_context is not None:
+            self._websocket_context.__exit__(exc_type, exc, tb)
+            self._websocket_context = None
+
+
+class _RelayTestClientTransport:
+    def __init__(self, client: TestClient) -> None:
+        self._client = client
+
+    def connect(self, url: str) -> _RelayTestClientConnectionContext:
+        return _RelayTestClientConnectionContext(self._client, url)
+
+
 def _build_app(monkeypatch):
     redis = FakeRedis()
     monkeypatch.setenv("SHIPAGENT_PUBLIC_BASE_URL", "https://dev-mcp.shipagent.app/")
@@ -269,6 +318,24 @@ def _build_app(monkeypatch):
     )
     monkeypatch.setattr("src.control_plane.app._build_redis_client", lambda _: redis)
     return create_control_plane_app(), redis
+
+
+async def _run_status_tool(server) -> dict[str, object]:
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+    token = set_authorization_context(context)
+    try:
+        result = await tools["get_shipagent_status"].run({"correlation_id": "corr-1"})
+    finally:
+        clear_authorization_context(token)
+    return result.structured_content
 
 
 def test_register_device_returns_public_device_record(monkeypatch) -> None:
@@ -567,6 +634,65 @@ def test_connect_websocket_challenges_then_accepts_claims(monkeypatch) -> None:
         "execution_target_id": f"relay:{registered['device_id']}",
         "state": "ready",
     }
+
+
+def test_desktop_relay_client_connection_makes_hosted_status_ready(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    def capture_build_server(**kwargs):
+        server = real_build_server(**kwargs)
+        captured["server"] = server
+        return server
+
+    monkeypatch.setattr("src.control_plane.app.build_server", capture_build_server)
+    app, _redis = _build_app(monkeypatch)
+
+    async def run_scenario(client: TestClient, device_id: str) -> None:
+        relay_client = DesktopRelayClient(
+            relay_url="/relay/connect",
+            account_id="acct-1",
+            device_id=device_id,
+            key_service=KEY_SERVICE,
+            transport=_RelayTestClientTransport(client),
+        )
+
+        await relay_client.start()
+        try:
+            ready_status = await _run_status_tool(captured["server"])
+        finally:
+            await relay_client.stop()
+        offline_status = await _run_status_tool(captured["server"])
+
+        assert ready_status == {
+            "status": "ok",
+            "execution_target": {
+                "state": "ready",
+                "execution_target_id": f"relay:{device_id}",
+                "device_id": device_id,
+                "capabilities": ["rate_shipment", "get_shipagent_status"],
+                "message": None,
+            },
+        }
+        assert offline_status == {
+            "status": "unavailable",
+            "execution_target": {
+                "state": "offline",
+                "execution_target_id": None,
+                "device_id": None,
+                "capabilities": [],
+                "message": "No active execution target connected.",
+            },
+        }
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        asyncio.run(run_scenario(client, registered["device_id"]))
 
 
 def test_connect_websocket_disconnect_clears_ready_liveness(monkeypatch) -> None:
