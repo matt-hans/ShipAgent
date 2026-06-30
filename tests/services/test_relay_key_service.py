@@ -1,3 +1,8 @@
+from src.control_plane.relay.protocol import (
+    RelayVersionMetadata,
+    build_handshake_claims,
+    verify_handshake_signature,
+)
 from src.services.relay_key_service import RelayKeyService
 
 
@@ -68,3 +73,24 @@ def test_keypair_repr_excludes_private_key_material() -> None:
 
     assert "private_key_pem" not in rendered
     assert keypair.private_key_pem not in rendered
+
+
+def test_sign_handshake_claims_can_be_verified_with_public_key() -> None:
+    service = RelayKeyService(InMemoryStore())
+    keypair = service.generate_or_load_keypair()
+    claims = build_handshake_claims(
+        device_id="device-1",
+        account_id="acct-1",
+        relay_session_id="session-1",
+        nonce="nonce-1",
+        version=RelayVersionMetadata(
+            shipagent_core_version="1.0.0",
+            registry_contract_version="registry-v1",
+            ups_boundary_contract_version="ups-v1",
+        ),
+    )
+
+    signed = service.sign_handshake_claims(claims)
+
+    assert signed.claims == claims
+    verify_handshake_signature(signed, keypair.public_key_pem)

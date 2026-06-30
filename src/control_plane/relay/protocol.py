@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -59,6 +64,11 @@ class RelayHandshakeClaims(RelayProtocolModel):
             raise ValueError("expired")
 
 
+class RelaySignedHandshakeClaims(RelayProtocolModel):
+    claims: RelayHandshakeClaims
+    signature: str
+
+
 class RelayHeartbeat(RelayProtocolModel):
     account_id: str
     device_id: str
@@ -104,6 +114,40 @@ def relay_public_key_fingerprint(public_key_pem: str) -> str:
     normalized = public_key_pem.strip().replace("\r\n", "\n").replace("\r", "\n")
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return f"sha256:{digest}"
+
+
+def handshake_signature_payload(claims: RelayHandshakeClaims) -> bytes:
+    payload = claims.model_dump(mode="json")
+    return json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def load_ed25519_public_key(public_key_pem: str) -> Ed25519PublicKey:
+    try:
+        public_key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
+    except ValueError as exc:
+        raise ValueError("relay public key is not an Ed25519 public key") from exc
+    if not isinstance(public_key, Ed25519PublicKey):
+        raise ValueError("relay public key is not an Ed25519 public key")
+    return public_key
+
+
+def verify_handshake_signature(
+    signed_claims: RelaySignedHandshakeClaims,
+    public_key_pem: str,
+) -> None:
+    public_key = load_ed25519_public_key(public_key_pem)
+    try:
+        signature = base64.b64decode(signed_claims.signature, validate=True)
+        public_key.verify(
+            signature,
+            handshake_signature_payload(signed_claims.claims),
+        )
+    except (InvalidSignature, ValueError) as exc:
+        raise ValueError("invalid handshake signature") from exc
 
 
 def build_handshake_claims(

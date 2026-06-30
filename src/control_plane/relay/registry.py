@@ -7,12 +7,14 @@ from typing import Protocol
 from src.control_plane.redis_keys import RedisKey, RedisTtl
 from src.control_plane.relay.protocol import (
     RelayHandshakeChallenge,
-    RelayHandshakeClaims,
     RelayHeartbeat,
     RelayProtocolModel,
+    RelaySignedHandshakeClaims,
     RelayTargetState,
     RelayVersionMetadata,
+    load_ed25519_public_key,
     relay_public_key_fingerprint,
+    verify_handshake_signature,
 )
 
 _PRIVATE_KEY_PEM_HEADER = re.compile(
@@ -24,6 +26,11 @@ _PRIVATE_KEY_PEM_HEADER = re.compile(
 def reject_private_key_pem(public_key_pem: str) -> None:
     if _PRIVATE_KEY_PEM_HEADER.search(public_key_pem):
         raise ValueError("private key material is not allowed")
+
+
+def validate_relay_public_key(public_key_pem: str) -> None:
+    reject_private_key_pem(public_key_pem)
+    load_ed25519_public_key(public_key_pem)
 
 
 class RedisLike(Protocol):
@@ -57,6 +64,7 @@ class RelaySession(RelayProtocolModel):
 class RelayChallengeBinding(RelayProtocolModel):
     account_id: str
     device_id: str
+    challenge: RelayHandshakeChallenge
 
 
 class RelayDeviceRegistry:
@@ -70,7 +78,7 @@ class RelayDeviceRegistry:
         public_key_pem: str,
         fingerprint: str | None = None,
     ) -> RelayDevice:
-        reject_private_key_pem(public_key_pem)
+        validate_relay_public_key(public_key_pem)
         device = RelayDevice(
             account_id=account_id,
             device_id=f"relay_device_{uuid.uuid4().hex}",
@@ -97,7 +105,7 @@ class RelayDeviceRegistry:
         public_key_pem: str,
         fingerprint: str | None = None,
     ) -> RelayDevice:
-        reject_private_key_pem(public_key_pem)
+        validate_relay_public_key(public_key_pem)
         device = await self.get_device(account_id, device_id)
         if device is None:
             raise ValueError("device not found")
@@ -135,7 +143,11 @@ class RelayDeviceRegistry:
             relay_session_id=f"relay_session_{uuid.uuid4().hex}",
             nonce=f"nonce_{uuid.uuid4().hex}",
         )
-        binding = RelayChallengeBinding(account_id=account_id, device_id=device_id)
+        binding = RelayChallengeBinding(
+            account_id=account_id,
+            device_id=device_id,
+            challenge=challenge,
+        )
         await self._redis.set(
             RedisKey.relay_challenge(challenge.relay_session_id),
             binding.model_dump_json(),
@@ -145,11 +157,13 @@ class RelayDeviceRegistry:
 
     async def accept_handshake(
         self,
-        claims: RelayHandshakeClaims,
-        challenge: RelayHandshakeChallenge,
+        signed_claims: RelaySignedHandshakeClaims,
     ) -> RelaySession:
-        binding = await self._get_challenge_binding(challenge)
-        claims.validate_for(challenge, account_id=binding.account_id)
+        if not isinstance(signed_claims, RelaySignedHandshakeClaims):
+            raise ValueError("signed handshake claims required")
+        claims = signed_claims.claims
+        binding = await self._get_challenge_binding(claims.relay_session_id)
+        claims.validate_for(binding.challenge, account_id=binding.account_id)
         if claims.device_id != binding.device_id:
             raise ValueError("wrong device")
         device = await self.get_device(binding.account_id, binding.device_id)
@@ -157,6 +171,7 @@ class RelayDeviceRegistry:
             raise ValueError("device not found")
         if device.revoked:
             raise ValueError("device revoked")
+        verify_handshake_signature(signed_claims, device.public_key_pem)
         session = RelaySession(
             account_id=binding.account_id,
             device_id=binding.device_id,
@@ -187,11 +202,15 @@ class RelayDeviceRegistry:
         return session
 
     async def _get_challenge_binding(
-        self, challenge: RelayHandshakeChallenge
+        self, relay_session_id: str
     ) -> RelayChallengeBinding:
-        payload = await self._redis.get(
-            RedisKey.relay_challenge(challenge.relay_session_id)
-        )
+        key = RedisKey.relay_challenge(relay_session_id)
+        getdel = getattr(self._redis, "getdel", None)
+        if getdel is not None:
+            payload = await getdel(key)
+        else:
+            payload = await self._redis.get(key)
+            await self._redis.delete(key)
         if payload is None:
             raise ValueError("challenge not found")
         if isinstance(payload, bytes):
