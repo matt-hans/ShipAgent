@@ -54,7 +54,6 @@ def _sanitize_validation_errors(exc: RequestValidationError) -> list[dict[str, o
         safe_errors.append(
             {
                 "type": err.get("type", "unknown"),
-                "loc": err.get("loc", []),
                 "msg": "Invalid request field",
             }
         )

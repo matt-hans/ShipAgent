@@ -8,6 +8,7 @@ from src.control_plane.relay.protocol import (
     RelayTargetState,
     RelayVersionMetadata,
     build_handshake_claims,
+    relay_public_key_fingerprint,
 )
 from src.control_plane.relay.registry import RelayDeviceRegistry
 from src.services.relay_key_service import RelayKeyService
@@ -125,6 +126,19 @@ async def test_register_device_rejects_invalid_public_key_material() -> None:
         raise AssertionError("expected invalid public key material to be rejected")
 
 
+async def test_register_device_derives_fingerprint_ignoring_caller_value() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+
+    device = await registry.register_device(
+        account_id="acct-1",
+        device_name="Dock Mac",
+        public_key_pem=PUBLIC_KEY,
+        fingerprint="sha256:attacker-controlled",
+    )
+
+    assert device.fingerprint == relay_public_key_fingerprint(PUBLIC_KEY)
+
+
 async def test_rotate_key_preserves_device_id_and_updates_public_key() -> None:
     registry = RelayDeviceRegistry(FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -142,6 +156,22 @@ async def test_rotate_key_preserves_device_id_and_updates_public_key() -> None:
     assert rotated.public_key_pem == rotated_key
     assert rotated.fingerprint != device.fingerprint
     assert rotated.revoked is False
+
+
+async def test_rotate_key_derives_fingerprint_ignoring_caller_value() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+
+    rotated = await registry.rotate_key(
+        account_id="acct-1",
+        device_id=device.device_id,
+        public_key_pem=OTHER_KEYPAIR.public_key_pem,
+        fingerprint="sha256:attacker-controlled",
+    )
+
+    assert rotated.fingerprint == relay_public_key_fingerprint(
+        OTHER_KEYPAIR.public_key_pem
+    )
 
 
 async def test_rotate_key_rejects_private_key_material() -> None:

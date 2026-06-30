@@ -84,7 +84,7 @@ class RelayDeviceRegistry:
             device_id=f"relay_device_{uuid.uuid4().hex}",
             device_name=device_name,
             public_key_pem=public_key_pem,
-            fingerprint=fingerprint or relay_public_key_fingerprint(public_key_pem),
+            fingerprint=relay_public_key_fingerprint(public_key_pem),
             revoked=False,
         )
         await self._store_device(device)
@@ -112,8 +112,7 @@ class RelayDeviceRegistry:
         rotated = device.model_copy(
             update={
                 "public_key_pem": public_key_pem,
-                "fingerprint": fingerprint
-                or relay_public_key_fingerprint(public_key_pem),
+                "fingerprint": relay_public_key_fingerprint(public_key_pem),
             }
         )
         await self._store_device(rotated)
