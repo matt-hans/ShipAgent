@@ -5,7 +5,7 @@
       "audit_level": "basic",
       "auth_scopes": [
         "account:read",
-        "device:read"
+        "execution_target:read"
       ],
       "availability": [
         "hosted",
@@ -13,7 +13,7 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Return operational status for the active account and device.",
+      "description": "Return operational status for the active account execution target.",
       "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
@@ -38,14 +38,45 @@
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "active_device_id": {
-            "type": "string"
-          },
-          "capabilities": {
-            "items": {
-              "type": "string"
+          "execution_target": {
+            "additionalProperties": false,
+            "properties": {
+              "capabilities": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "device_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "execution_target_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "type": "string"
+              }
             },
-            "type": "array"
+            "required": [
+              "state",
+              "execution_target_id",
+              "device_id",
+              "capabilities",
+              "message"
+            ],
+            "type": "object"
           },
           "status": {
             "type": "string"
@@ -53,13 +84,12 @@
         },
         "required": [
           "status",
-          "active_device_id",
-          "capabilities"
+          "execution_target"
         ],
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",

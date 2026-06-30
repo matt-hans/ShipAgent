@@ -1,1 +1,78 @@
-[]
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Return operational status for the active account execution target.",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "correlation_id": {
+          "description": "Opaque client correlation identifier.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "correlation_id"
+      ],
+      "type": "object"
+    },
+    "name": "get_shipagent_status",
+    "outputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "execution_target": {
+          "additionalProperties": false,
+          "properties": {
+            "capabilities": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "device_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "execution_target_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "execution_target_id",
+            "device_id",
+            "capabilities",
+            "message"
+          ],
+          "type": "object"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "execution_target"
+      ],
+      "type": "object"
+    },
+    "title": "Get shipagent status"
+  }
+]

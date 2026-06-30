@@ -16,11 +16,15 @@ from src.control_plane.auth import (
 from src.control_plane.auth.context import AuthorizationContext
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.config import ControlPlaneSettings
+from src.control_plane.execution_targets import RelayExecutionTarget
 from src.control_plane.relay.registry import RelayDeviceRegistry
 from src.control_plane.relay.routes import build_relay_router
 from src.control_plane.request_controls import RequestControls
 from src.control_plane.routes.oauth_metadata import build_metadata_router
 from src.control_plane.startup import validate_startup_security
+from src.hosted_mcp.execution_target_handlers import (
+    build_execution_target_tool_handlers,
+)
 from src.hosted_mcp.server import build_server
 
 
@@ -90,7 +94,13 @@ def create_control_plane_app() -> FastAPI:
         raise RuntimeError("SHIPAGENT_PUBLIC_BASE_URL must be set")
 
     redis_client = _build_redis_client(settings.redis_url)
-    mcp = build_server(request_controls=RequestControls(redis_client=redis_client))
+    relay_registry = RelayDeviceRegistry(redis_client)
+    mcp = build_server(
+        tool_handlers=build_execution_target_tool_handlers(
+            RelayExecutionTarget(relay_registry)
+        ),
+        request_controls=RequestControls(redis_client=redis_client),
+    )
     mcp_app = mcp.http_app(path="/", transport="streamable-http")
     app = FastAPI(lifespan=mcp_app.lifespan)
     verifier = _build_verifier(settings.auth0_issuer, settings.auth0_audience)
@@ -98,7 +108,7 @@ def create_control_plane_app() -> FastAPI:
     app.include_router(
         build_metadata_router(metadata_resource, settings.auth0_issuer)
     )
-    app.include_router(build_relay_router(RelayDeviceRegistry(redis_client)))
+    app.include_router(build_relay_router(relay_registry))
     app.mount("/mcp", mcp_app)
 
     @app.exception_handler(RequestValidationError)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -16,6 +17,7 @@ from src.control_plane.relay.protocol import (
     RelayVersionMetadata,
     build_handshake_claims,
 )
+from src.hosted_mcp.server import build_server as real_build_server
 from src.services.relay_key_service import RelayKeyService
 
 
@@ -82,8 +84,10 @@ class FakeRedis:
             key = keys_and_args[0]
             self.ttls.pop(key, None)
             return self.values.pop(key, None)
-        if numkeys == 3 and len(keys_and_args) == 4:
-            device_key, session_key, heartbeat_key, device_payload = keys_and_args
+        if numkeys == 4 and len(keys_and_args) == 5:
+            device_key, session_key, heartbeat_key, active_target_key, device_payload = (
+                keys_and_args
+            )
             current_payload = self.values.get(device_key)
             if current_payload is None:
                 return "missing"
@@ -91,13 +95,17 @@ class FakeRedis:
                 current_payload = current_payload.decode("utf-8")
             current_device = json.loads(current_payload)
             if current_device.get("revoked") is True:
-                await self.delete(session_key, heartbeat_key)
+                await self._delete_current_liveness(
+                    session_key, heartbeat_key, active_target_key
+                )
                 return "revoked"
             self.values[device_key] = device_payload
-            await self.delete(session_key, heartbeat_key)
+            await self._delete_current_liveness(
+                session_key, heartbeat_key, active_target_key
+            )
             return "ok"
-        if numkeys == 3 and len(keys_and_args) == 3:
-            device_key, session_key, heartbeat_key = keys_and_args
+        if numkeys == 4 and len(keys_and_args) == 4:
+            device_key, session_key, heartbeat_key, active_target_key = keys_and_args
             current_payload = self.values.get(device_key)
             if current_payload is None:
                 return "missing"
@@ -107,16 +115,16 @@ class FakeRedis:
             current_device["revoked"] = True
             revoked_payload = json.dumps(current_device)
             self.values[device_key] = revoked_payload
-            self.values.pop(session_key, None)
-            self.values.pop(heartbeat_key, None)
-            self.ttls.pop(session_key, None)
-            self.ttls.pop(heartbeat_key, None)
+            await self._delete_current_liveness(
+                session_key, heartbeat_key, active_target_key
+            )
             return revoked_payload
-        if numkeys == 3:
+        if numkeys == 4:
             (
                 device_key,
                 session_key,
                 heartbeat_key,
+                active_target_key,
                 expected_fingerprint,
                 expected_public_key_pem,
                 session_payload,
@@ -138,11 +146,15 @@ class FakeRedis:
                 return "stale"
             self.values[session_key] = session_payload
             self.values[heartbeat_key] = heartbeat_payload
+            self.values[active_target_key] = session_payload
             self.ttls[session_key] = int(ttl)
             self.ttls[heartbeat_key] = int(ttl)
+            self.ttls[active_target_key] = int(ttl)
             return "ok"
-        if numkeys == 2 and len(keys_and_args) == 4:
-            session_key, heartbeat_key, expected_relay_session_id, ttl = keys_and_args
+        if numkeys == 3 and len(keys_and_args) == 5:
+            session_key, heartbeat_key, active_target_key, expected_relay_session_id, ttl = (
+                keys_and_args
+            )
             payload = self.values.get(session_key)
             if payload is None or heartbeat_key not in self.values:
                 return 0
@@ -153,16 +165,65 @@ class FakeRedis:
                 return 0
             self.ttls[session_key] = int(ttl)
             self.ttls[heartbeat_key] = int(ttl)
+            active_payload = self.values.get(active_target_key)
+            if active_payload is not None:
+                if isinstance(active_payload, bytes):
+                    active_payload = active_payload.decode("utf-8")
+                active = json.loads(active_payload)
+                if (
+                    active.get("device_id") == session.get("device_id")
+                    and active.get("relay_session_id") == expected_relay_session_id
+                ):
+                    self.ttls[active_target_key] = int(ttl)
             return 1
-        session_key, heartbeat_key, expected_relay_session_id = keys_and_args
+        session_key, heartbeat_key, active_target_key, expected_relay_session_id = (
+            keys_and_args
+        )
         payload = self.values.get(session_key)
         if payload is None:
             return 0
         if isinstance(payload, bytes):
             payload = payload.decode("utf-8")
-        session = json.loads(payload)
+        try:
+            session = json.loads(payload)
+        except json.JSONDecodeError:
+            return await self.delete(session_key, heartbeat_key)
         if session.get("relay_session_id") != expected_relay_session_id:
             return 0
+        active_payload = self.values.get(active_target_key)
+        if active_payload is not None:
+            if isinstance(active_payload, bytes):
+                active_payload = active_payload.decode("utf-8")
+            active = json.loads(active_payload)
+            if (
+                active.get("device_id") == session.get("device_id")
+                and active.get("relay_session_id") == expected_relay_session_id
+            ):
+                return await self.delete(session_key, heartbeat_key, active_target_key)
+        return await self.delete(session_key, heartbeat_key)
+
+    async def _delete_current_liveness(
+        self,
+        session_key: str,
+        heartbeat_key: str,
+        active_target_key: str,
+    ):
+        payload = self.values.get(session_key)
+        if payload is None:
+            return await self.delete(session_key, heartbeat_key)
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8")
+        session = json.loads(payload)
+        active_payload = self.values.get(active_target_key)
+        if active_payload is not None:
+            if isinstance(active_payload, bytes):
+                active_payload = active_payload.decode("utf-8")
+            active = json.loads(active_payload)
+            if (
+                active.get("device_id") == session.get("device_id")
+                and active.get("relay_session_id") == session.get("relay_session_id")
+            ):
+                return await self.delete(session_key, heartbeat_key, active_target_key)
         return await self.delete(session_key, heartbeat_key)
 
 
@@ -228,6 +289,26 @@ def test_register_device_returns_public_device_record(monkeypatch) -> None:
     assert payload["revoked"] is False
     assert "private_key" not in response.text
     assert "private_key_pem" not in response.text
+
+
+def test_control_plane_app_binds_only_status_mcp_tool(monkeypatch) -> None:
+    captured = {}
+
+    def capture_build_server(**kwargs):
+        server = real_build_server(**kwargs)
+        captured["server"] = server
+        captured["handler_names"] = set((kwargs.get("tool_handlers") or {}).keys())
+        captured["request_controls"] = kwargs.get("request_controls")
+        return server
+
+    monkeypatch.setattr("src.control_plane.app.build_server", capture_build_server)
+
+    _app, _redis = _build_app(monkeypatch)
+    tools = asyncio.run(captured["server"].get_tools())
+
+    assert captured["handler_names"] == {"get_shipagent_status"}
+    assert captured["request_controls"] is not None
+    assert set(tools) == {"get_shipagent_status"}
 
 
 def test_register_device_rejects_private_key_material_with_validation_error(
@@ -515,6 +596,7 @@ def test_connect_websocket_disconnect_clears_ready_liveness(monkeypatch) -> None
 
     assert RedisKey.relay_session(registered["device_id"]) not in redis.values
     assert RedisKey.relay_heartbeat(registered["device_id"]) not in redis.values
+    assert RedisKey.relay_active_target("acct-1") not in redis.values
 
 
 def test_connect_websocket_heartbeat_refreshes_ready_liveness(monkeypatch) -> None:
@@ -543,8 +625,10 @@ def test_connect_websocket_heartbeat_refreshes_ready_liveness(monkeypatch) -> No
             assert websocket.receive_json()["state"] == "ready"
             session_key = RedisKey.relay_session(registered["device_id"])
             heartbeat_key = RedisKey.relay_heartbeat(registered["device_id"])
+            active_target_key = RedisKey.relay_active_target("acct-1")
             redis.ttls[session_key] = 1
             redis.ttls[heartbeat_key] = 1
+            redis.ttls[active_target_key] = 1
 
             websocket.send_json(
                 {
@@ -556,6 +640,7 @@ def test_connect_websocket_heartbeat_refreshes_ready_liveness(monkeypatch) -> No
 
             assert redis.ttls[session_key] == RedisTtl.RELAY_SESSION_SECONDS
             assert redis.ttls[heartbeat_key] == RedisTtl.RELAY_SESSION_SECONDS
+            assert redis.ttls[active_target_key] == RedisTtl.RELAY_SESSION_SECONDS
 
 
 def test_connect_websocket_arbitrary_text_does_not_refresh_liveness(
