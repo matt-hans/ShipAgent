@@ -22,7 +22,9 @@ def test_generate_or_load_keypair_reloads_stored_keypair() -> None:
     generated = service.generate_or_load_keypair()
     reloaded = RelayKeyService(store).load_keypair()
 
-    assert reloaded == generated
+    assert reloaded is not None
+    assert reloaded.public_key_pem == generated.public_key_pem
+    assert reloaded.fingerprint == generated.fingerprint
     assert generated.fingerprint.startswith("sha256:")
 
 
@@ -34,7 +36,9 @@ def test_rotate_keypair_replaces_stored_keypair() -> None:
     rotated = service.rotate_keypair()
     reloaded = service.load_keypair()
 
-    assert rotated == reloaded
+    assert reloaded is not None
+    assert reloaded.public_key_pem == rotated.public_key_pem
+    assert reloaded.fingerprint == rotated.fingerprint
     assert rotated.fingerprint != original.fingerprint
 
 
@@ -55,3 +59,12 @@ def test_registration_payload_excludes_private_key_material() -> None:
     }
     assert "private_key" not in payload
     assert "private_key_pem" not in payload
+
+
+def test_keypair_repr_excludes_private_key_material() -> None:
+    keypair = RelayKeyService(InMemoryStore()).generate_or_load_keypair()
+
+    rendered = repr(keypair)
+
+    assert "private_key_pem" not in rendered
+    assert keypair.private_key_pem not in rendered

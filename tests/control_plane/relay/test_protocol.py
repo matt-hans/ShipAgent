@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from src.control_plane.relay.protocol import (
     ExecutionTargetStatus,
@@ -39,6 +40,15 @@ def test_shipagent_status_uses_target_agnostic_keys() -> None:
     assert _contains_desktop_key(payload) is False
 
 
+def test_protocol_models_reject_unknown_fields() -> None:
+    with pytest.raises(ValidationError):
+        RelayHandshakeChallenge(
+            relay_session_id="session-123",
+            nonce="nonce-123",
+            unexpected="value",
+        )
+
+
 def test_handshake_claims_validate_against_challenge_and_account() -> None:
     now = datetime.now(UTC)
     version = RelayVersionMetadata(
@@ -51,6 +61,7 @@ def test_handshake_claims_validate_against_challenge_and_account() -> None:
     claims = build_handshake_claims(
         device_id="device-123",
         account_id="account-123",
+        relay_session_id=challenge.relay_session_id,
         nonce=challenge.nonce,
         version=version,
         now=now,
@@ -73,6 +84,26 @@ def test_handshake_claims_validate_against_challenge_and_account() -> None:
     expired = claims.model_copy(update={"expires_at": now - timedelta(seconds=1)})
     with pytest.raises(ValueError, match="expired"):
         expired.validate_for(challenge, account_id="account-123")
+
+
+def test_handshake_claims_reject_relay_session_mismatch() -> None:
+    version = RelayVersionMetadata(
+        shipagent_core_version="1.0.0",
+        registry_contract_version="registry-v1",
+        ups_boundary_contract_version="ups-v1",
+        capabilities=[],
+    )
+    challenge = RelayHandshakeChallenge(relay_session_id="session-123", nonce="nonce-123")
+    claims = build_handshake_claims(
+        device_id="device-123",
+        account_id="account-123",
+        relay_session_id="wrong-session",
+        nonce=challenge.nonce,
+        version=version,
+    )
+
+    with pytest.raises(ValueError, match="relay_session_id"):
+        claims.validate_for(challenge, account_id="account-123")
 
 
 def _contains_desktop_key(value: Any) -> bool:
