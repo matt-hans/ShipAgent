@@ -77,6 +77,10 @@ class FakeRedis:
         return True
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        if numkeys == 1:
+            key = keys_and_args[0]
+            self.ttls.pop(key, None)
+            return self.values.pop(key, None)
         session_key, heartbeat_key, expected_relay_session_id = keys_and_args
         payload = self.values.get(session_key)
         if payload is None:

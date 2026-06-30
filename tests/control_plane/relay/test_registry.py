@@ -77,6 +77,10 @@ class FakeRedis:
         return True
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        if numkeys == 1:
+            key = keys_and_args[0]
+            self.ttls.pop(key, None)
+            return self.values.pop(key, None)
         session_key, heartbeat_key, expected_relay_session_id = keys_and_args
         payload = self.values.get(session_key)
         if payload is None:
@@ -119,6 +123,55 @@ class InterleavingRedis(FakeRedis):
             self.values.update(self.race_values)
             self.race_armed = False
         return await super().eval(script, numkeys, *keys_and_args)
+
+
+class NoGetDelConcurrentRedis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.ttls: dict[str, int] = {}
+        self.concurrent_get_key: str | None = None
+        self.concurrent_get_count = 0
+        self.concurrent_get_release = asyncio.Event()
+
+    def arm_concurrent_get(self, key: str) -> None:
+        self.concurrent_get_key = key
+        self.concurrent_get_count = 0
+        self.concurrent_get_release = asyncio.Event()
+
+    async def get(self, key: str):
+        value = self.values.get(key)
+        if key == self.concurrent_get_key:
+            self.concurrent_get_count += 1
+            if self.concurrent_get_count == 2:
+                self.concurrent_get_release.set()
+            await asyncio.wait_for(self.concurrent_get_release.wait(), timeout=1)
+        return value
+
+    async def set(self, key: str, value: str, ex: int | None = None):
+        self.values[key] = value
+        if ex is not None:
+            self.ttls[key] = ex
+        return True
+
+    async def delete(self, *keys: str):
+        deleted = 0
+        for key in keys:
+            if key in self.values:
+                deleted += 1
+            self.values.pop(key, None)
+            self.ttls.pop(key, None)
+        return deleted
+
+    async def expire(self, key: str, seconds: int):
+        if key not in self.values:
+            return False
+        self.ttls[key] = seconds
+        return True
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        key = keys_and_args[0]
+        self.ttls.pop(key, None)
+        return self.values.pop(key, None)
 
 
 async def test_register_device_can_be_read_without_private_key_material() -> None:
@@ -546,6 +599,34 @@ async def test_accept_handshake_allows_only_one_concurrent_accept() -> None:
         version=VERSION,
     )
     signed = KEY_SERVICE.sign_handshake_claims(claims)
+
+    results = await asyncio.gather(
+        registry.accept_handshake(signed),
+        registry.accept_handshake(signed),
+        return_exceptions=True,
+    )
+
+    successes = [result for result in results if not isinstance(result, Exception)]
+    failures = [result for result in results if isinstance(result, ValueError)]
+    assert len(successes) == 1
+    assert len(failures) == 1
+    assert "challenge" in str(failures[0])
+
+
+async def test_accept_handshake_allows_only_one_concurrent_accept_without_getdel() -> None:
+    redis = NoGetDelConcurrentRedis()
+    registry = RelayDeviceRegistry(redis)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    challenge = await registry.create_challenge("acct-1", device.device_id)
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=VERSION,
+    )
+    signed = KEY_SERVICE.sign_handshake_claims(claims)
+    redis.arm_concurrent_get(RedisKey.relay_challenge(challenge.relay_session_id))
 
     results = await asyncio.gather(
         registry.accept_handshake(signed),
