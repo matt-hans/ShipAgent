@@ -12,6 +12,8 @@ EXPECTED_PUBLIC = {
     "create_label_download",
 }
 
+DEFAULT_EXPORTED_PUBLIC = {"get_shipagent_status"}
+
 
 def test_public_catalog_has_expected_tools():
     assert {tool.name for tool in public_tools()} == EXPECTED_PUBLIC
@@ -23,7 +25,7 @@ def test_public_tools_are_tenant_safe_and_provider_exportable():
         assert tool.tenant_safe is True
         assert tool.implementation_status == "implemented"
         assert tool.hosted_readiness == "ready"
-        assert tool.provider_export_enabled is False
+        assert tool.provider_export_enabled is (tool.name in DEFAULT_EXPORTED_PUBLIC)
         assert ProviderExport.openai_apps_public in tool.provider_exports
         assert ProviderExport.claude_remote_mcp_public in tool.provider_exports
         assert ProviderExport.generic_mcp in tool.provider_exports
