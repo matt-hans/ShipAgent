@@ -10,7 +10,7 @@ from src.control_plane.relay.protocol import (
     build_handshake_claims,
     relay_public_key_fingerprint,
 )
-from src.control_plane.relay.registry import RelayDeviceRegistry
+from src.control_plane.relay.registry import RelayDeviceRegistry, RelaySession
 from src.services.relay_key_service import RelayKeyService
 
 
@@ -235,13 +235,62 @@ async def test_disconnect_session_clears_ready_liveness() -> None:
     redis = FakeRedis()
     registry = RelayDeviceRegistry(redis)
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
-    await redis.set(RedisKey.relay_session(device.device_id), "session")
-    await redis.set(RedisKey.relay_heartbeat(device.device_id), "heartbeat")
+    challenge = await registry.create_challenge("acct-1", device.device_id)
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=VERSION,
+    )
+    session = await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(claims))
 
-    await registry.disconnect_session(device.device_id)
+    await registry.disconnect_session(device.device_id, session.relay_session_id)
 
     assert await redis.get(RedisKey.relay_session(device.device_id)) is None
     assert await redis.get(RedisKey.relay_heartbeat(device.device_id)) is None
+
+
+async def test_disconnect_session_does_not_clear_newer_ready_liveness() -> None:
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    first_challenge = await registry.create_challenge("acct-1", device.device_id)
+    first_claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=first_challenge.relay_session_id,
+        nonce=first_challenge.nonce,
+        version=VERSION,
+    )
+    first_session = await registry.accept_handshake(
+        KEY_SERVICE.sign_handshake_claims(first_claims)
+    )
+    second_challenge = await registry.create_challenge("acct-1", device.device_id)
+    second_claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=second_challenge.relay_session_id,
+        nonce=second_challenge.nonce,
+        version=VERSION,
+    )
+    second_session = await registry.accept_handshake(
+        KEY_SERVICE.sign_handshake_claims(second_claims)
+    )
+
+    await registry.disconnect_session(
+        device.device_id,
+        first_session.relay_session_id,
+    )
+
+    stored_session = RelaySession.model_validate_json(
+        await redis.get(RedisKey.relay_session(device.device_id))
+    )
+    heartbeat = RelayHeartbeat.model_validate_json(
+        await redis.get(RedisKey.relay_heartbeat(device.device_id))
+    )
+    assert stored_session.relay_session_id == second_session.relay_session_id
+    assert heartbeat.relay_session_id == second_session.relay_session_id
 
 
 async def test_create_challenge_rejects_missing_device() -> None:

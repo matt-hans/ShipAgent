@@ -128,6 +128,8 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
             signed_claims = RelaySignedHandshakeClaims.model_validate(
                 await websocket.receive_json()
             )
+            if signed_claims.claims.relay_session_id != challenge.relay_session_id:
+                raise ValueError("wrong challenge")
             session = await registry.accept_handshake(signed_claims)
             await websocket.send_json(
                 {
@@ -144,6 +146,9 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
             await websocket.close(code=1008)
         finally:
             if session is not None:
-                await registry.disconnect_session(session.device_id)
+                await registry.disconnect_session(
+                    session.device_id,
+                    session.relay_session_id,
+                )
 
     return router
