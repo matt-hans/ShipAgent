@@ -3,6 +3,7 @@ from src.control_plane.redis_keys import RedisKey, RedisTtl
 
 def test_keys_are_namespaced_and_contain_no_payload_data():
     assert RedisKey.relay_device("acct-1", "device-1") == "sa:relay:device:acct-1:device-1"
+    assert RedisKey.relay_challenge("session-1") == "sa:relay:challenge:session-1"
     assert RedisKey.relay_session("device-1") == "sa:relay:session:device-1"
     assert RedisKey.relay_heartbeat("device-1") == "sa:relay:heartbeat:device-1"
     assert RedisKey.invocation("corr-1") == "sa:invocation:corr-1"
