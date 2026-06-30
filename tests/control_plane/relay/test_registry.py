@@ -120,7 +120,10 @@ class FakeRedis:
                 return 0
             if isinstance(payload, bytes):
                 payload = payload.decode("utf-8")
-            session = json.loads(payload)
+            try:
+                session = json.loads(payload)
+            except json.JSONDecodeError:
+                return 0
             if session.get("relay_session_id") != expected_relay_session_id:
                 return 0
             self.ttls[session_key] = int(ttl)
@@ -191,7 +194,10 @@ class FakeRedis:
             return 0
         if isinstance(payload, bytes):
             payload = payload.decode("utf-8")
-        session = json.loads(payload)
+        try:
+            session = json.loads(payload)
+        except json.JSONDecodeError:
+            return 0
         if session.get("relay_session_id") != expected_relay_session_id:
             return 0
         active_payload = self.values.get(active_target_key)
@@ -263,7 +269,7 @@ class InterleavingRedis(FakeRedis):
         return value
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
-        if numkeys == 2:
+        if numkeys in {2, 3}:
             session_key = keys_and_args[0]
         else:
             session_key = None
@@ -645,7 +651,7 @@ async def test_rotate_key_does_not_clear_newer_active_target() -> None:
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "execution_target:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
     status = await RelayExecutionTarget(registry).status(context)
     active = RelaySession.model_validate_json(
@@ -806,7 +812,7 @@ async def test_revoke_device_does_not_clear_newer_active_target() -> None:
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "execution_target:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
     status = await RelayExecutionTarget(registry).status(context)
     active = RelaySession.model_validate_json(
@@ -831,7 +837,11 @@ async def test_disconnect_session_clears_ready_liveness() -> None:
     )
     session = await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(claims))
 
-    await registry.disconnect_session(device.device_id, session.relay_session_id)
+    await registry.disconnect_session(
+        "acct-1",
+        device.device_id,
+        session.relay_session_id,
+    )
 
     assert await redis.get(RedisKey.relay_session(device.device_id)) is None
     assert await redis.get(RedisKey.relay_heartbeat(device.device_id)) is None
@@ -866,6 +876,7 @@ async def test_disconnect_session_does_not_clear_newer_ready_liveness() -> None:
     )
 
     await registry.disconnect_session(
+        "acct-1",
         device.device_id,
         first_session.relay_session_id,
     )
@@ -934,6 +945,7 @@ async def test_disconnect_session_does_not_delete_newer_session_written_during_c
     )
 
     await registry.disconnect_session(
+        "acct-1",
         device.device_id,
         first_session.relay_session_id,
     )
@@ -947,7 +959,7 @@ async def test_disconnect_session_does_not_delete_newer_session_written_during_c
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "execution_target:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
     status = await RelayExecutionTarget(registry).status(context)
 
@@ -977,24 +989,64 @@ async def test_refresh_session_extends_liveness_only_for_matching_session() -> N
     redis.ttls[heartbeat_key] = 1
     redis.ttls[active_target_key] = 1
 
-    await registry.refresh_session(device.device_id, "wrong-session")
+    await registry.refresh_session("acct-1", device.device_id, "wrong-session")
 
     assert redis.ttls[session_key] == 1
     assert redis.ttls[heartbeat_key] == 1
     assert redis.ttls[active_target_key] == 1
 
-    await registry.refresh_session(device.device_id, session.relay_session_id)
+    await registry.refresh_session(
+        "acct-1",
+        device.device_id,
+        session.relay_session_id,
+    )
 
     assert redis.ttls[session_key] == RedisTtl.RELAY_SESSION_SECONDS
     assert redis.ttls[heartbeat_key] == RedisTtl.RELAY_SESSION_SECONDS
     assert redis.ttls[active_target_key] == RedisTtl.RELAY_SESSION_SECONDS
 
     await redis.delete(session_key, heartbeat_key, active_target_key)
-    await registry.refresh_session(device.device_id, session.relay_session_id)
+    await registry.refresh_session(
+        "acct-1",
+        device.device_id,
+        session.relay_session_id,
+    )
 
     assert session_key not in redis.values
     assert heartbeat_key not in redis.values
     assert active_target_key not in redis.values
+
+
+async def test_liveness_cleanup_ignores_malformed_session_without_clearing_unrelated_active_target() -> None:
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    session_key = RedisKey.relay_session("device-1")
+    heartbeat_key = RedisKey.relay_heartbeat("device-1")
+    active_target_key = RedisKey.relay_active_target("acct-1")
+    unrelated_active = RelaySession(
+        account_id="acct-1",
+        device_id="device-2",
+        relay_session_id="session-2",
+        execution_target_id="relay:device-2",
+        state=RelayTargetState.READY,
+        version=VERSION,
+    )
+    await redis.set(session_key, "not-json")
+    await redis.set(heartbeat_key, "heartbeat")
+    await redis.set(active_target_key, unrelated_active.model_dump_json())
+
+    await registry.refresh_session(
+        account_id="acct-1",
+        device_id="device-1",
+        relay_session_id="session-1",
+    )
+    await registry.disconnect_session(
+        account_id="acct-1",
+        device_id="device-1",
+        relay_session_id="session-1",
+    )
+
+    assert await redis.get(active_target_key) == unrelated_active.model_dump_json()
 
 
 async def test_create_challenge_rejects_missing_device() -> None:
@@ -1315,7 +1367,7 @@ async def test_relay_execution_target_reports_unavailable_without_active_target(
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "execution_target:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
 
     status = await RelayExecutionTarget(registry).status(context)
@@ -1330,6 +1382,109 @@ async def test_relay_execution_target_reports_unavailable_without_active_target(
             "message": "No active execution target connected.",
         },
     }
+
+
+async def test_relay_execution_target_reports_unavailable_with_malformed_active_target() -> None:
+    from src.control_plane.execution_targets import RelayExecutionTarget
+
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    await redis.set(RedisKey.relay_active_target("acct-1"), "not-json")
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    status = await RelayExecutionTarget(registry).status(context)
+
+    assert status.status == "unavailable"
+    assert status.execution_target.state == RelayTargetState.OFFLINE
+
+
+async def test_relay_execution_target_reports_unavailable_with_malformed_active_target_bytes() -> None:
+    from src.control_plane.execution_targets import RelayExecutionTarget
+
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    await redis.set(RedisKey.relay_active_target("acct-1"), b"\xff")
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    status = await RelayExecutionTarget(registry).status(context)
+
+    assert status.status == "unavailable"
+    assert status.execution_target.state == RelayTargetState.OFFLINE
+
+
+async def test_relay_execution_target_reports_unavailable_with_malformed_session() -> None:
+    from src.control_plane.execution_targets import RelayExecutionTarget
+
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    active = RelaySession(
+        account_id="acct-1",
+        device_id="device-1",
+        relay_session_id="session-1",
+        execution_target_id="relay:device-1",
+        state=RelayTargetState.READY,
+        version=VERSION,
+    )
+    await redis.set(RedisKey.relay_active_target("acct-1"), active.model_dump_json())
+    await redis.set(RedisKey.relay_session("device-1"), "not-json")
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    status = await RelayExecutionTarget(registry).status(context)
+
+    assert status.status == "unavailable"
+    assert status.execution_target.state == RelayTargetState.OFFLINE
+
+
+async def test_relay_execution_target_reports_unavailable_with_malformed_heartbeat() -> None:
+    from src.control_plane.execution_targets import RelayExecutionTarget
+
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    active = RelaySession(
+        account_id="acct-1",
+        device_id="device-1",
+        relay_session_id="session-1",
+        execution_target_id="relay:device-1",
+        state=RelayTargetState.READY,
+        version=VERSION,
+    )
+    await redis.set(RedisKey.relay_active_target("acct-1"), active.model_dump_json())
+    await redis.set(RedisKey.relay_session("device-1"), active.model_dump_json())
+    await redis.set(RedisKey.relay_heartbeat("device-1"), "not-json")
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    status = await RelayExecutionTarget(registry).status(context)
+
+    assert status.status == "unavailable"
+    assert status.execution_target.state == RelayTargetState.OFFLINE
 
 
 async def test_relay_execution_target_reports_ready_after_handshake() -> None:
@@ -1353,7 +1508,7 @@ async def test_relay_execution_target_reports_ready_after_handshake() -> None:
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "execution_target:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
 
     status = await RelayExecutionTarget(registry).status(context)

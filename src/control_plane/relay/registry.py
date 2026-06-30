@@ -4,6 +4,8 @@ import re
 import uuid
 from typing import Protocol
 
+from pydantic import ValidationError
+
 from src.control_plane.redis_keys import RedisKey, RedisTtl
 from src.control_plane.relay.protocol import (
     RelayHandshakeChallenge,
@@ -296,29 +298,33 @@ class RelayDeviceRegistry:
             raise ValueError("device not found")
         return RelayDevice.model_validate_json(revoked_payload)
 
-    async def disconnect_session(self, device_id: str, relay_session_id: str) -> None:
-        session = await self._get_session(device_id)
+    async def disconnect_session(
+        self,
+        account_id: str,
+        device_id: str,
+        relay_session_id: str,
+    ) -> None:
         await self._redis.eval(
             _DISCONNECT_SESSION_SCRIPT,
             3,
             RedisKey.relay_session(device_id),
             RedisKey.relay_heartbeat(device_id),
-            RedisKey.relay_active_target(session.account_id)
-            if session is not None
-            else RedisKey.relay_active_target("_unknown"),
+            RedisKey.relay_active_target(account_id),
             relay_session_id,
         )
 
-    async def refresh_session(self, device_id: str, relay_session_id: str) -> None:
-        session = await self._get_session(device_id)
+    async def refresh_session(
+        self,
+        account_id: str,
+        device_id: str,
+        relay_session_id: str,
+    ) -> None:
         await self._redis.eval(
             _REFRESH_SESSION_SCRIPT,
             3,
             RedisKey.relay_session(device_id),
             RedisKey.relay_heartbeat(device_id),
-            RedisKey.relay_active_target(session.account_id)
-            if session is not None
-            else RedisKey.relay_active_target("_unknown"),
+            RedisKey.relay_active_target(account_id),
             relay_session_id,
             str(RedisTtl.RELAY_SESSION_SECONDS),
         )
@@ -327,9 +333,9 @@ class RelayDeviceRegistry:
         payload = await self._redis.get(RedisKey.relay_active_target(account_id))
         if payload is None:
             return None
-        if isinstance(payload, bytes):
-            payload = payload.decode("utf-8")
-        active = RelaySession.model_validate_json(payload)
+        active = _decode_liveness_model(RelaySession, payload)
+        if active is None:
+            return None
         if active.account_id != account_id:
             return None
 
@@ -450,14 +456,19 @@ class RelayDeviceRegistry:
         payload = await self._redis.get(RedisKey.relay_session(device_id))
         if payload is None:
             return None
-        if isinstance(payload, bytes):
-            payload = payload.decode("utf-8")
-        return RelaySession.model_validate_json(payload)
+        return _decode_liveness_model(RelaySession, payload)
 
     async def _get_heartbeat(self, device_id: str) -> RelayHeartbeat | None:
         payload = await self._redis.get(RedisKey.relay_heartbeat(device_id))
         if payload is None:
             return None
+        return _decode_liveness_model(RelayHeartbeat, payload)
+
+
+def _decode_liveness_model(model_type, payload):
+    try:
         if isinstance(payload, bytes):
             payload = payload.decode("utf-8")
-        return RelayHeartbeat.model_validate_json(payload)
+        return model_type.model_validate_json(payload)
+    except (UnicodeDecodeError, ValidationError, ValueError):
+        return None

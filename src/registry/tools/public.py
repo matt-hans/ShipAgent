@@ -85,7 +85,7 @@ PUBLIC_TOOLS = [
         "Get shipagent status",
         "Return operational status for the active account execution target.",
         SideEffectClass.read,
-        ["account:read", "execution_target:read"],
+        ["shipagent.status"],
         object_schema(
             {
                 "correlation_id": {
