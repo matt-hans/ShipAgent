@@ -3,7 +3,7 @@ from dataclasses import asdict
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from src.control_plane.app import create_control_plane_app
+from src.control_plane.app import _build_verifier, create_control_plane_app
 from src.control_plane.auth.context import AuthorizationContext
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.auth.service import AuthorizationService
@@ -46,6 +46,7 @@ def _build_app_with_routes(monkeypatch, database_url: str):
     monkeypatch.setattr(
         "src.control_plane.app.AuthorizationService", _AuthorizationService
     )
+    _build_verifier.cache_clear()
 
     app = create_control_plane_app()
 
