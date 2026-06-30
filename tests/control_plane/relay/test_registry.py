@@ -169,7 +169,7 @@ async def test_accept_handshake_rejects_wrong_account() -> None:
     try:
         await registry.accept_handshake(claims, challenge)
     except ValueError as exc:
-        assert "device not found" in str(exc)
+        assert "wrong account" in str(exc)
     else:
         raise AssertionError("expected wrong account to be rejected")
 
@@ -192,6 +192,27 @@ async def test_accept_handshake_rejects_wrong_nonce() -> None:
         assert "nonce" in str(exc)
     else:
         raise AssertionError("expected wrong nonce to be rejected")
+
+
+async def test_accept_handshake_rejects_claims_for_different_device_than_challenge() -> None:
+    registry = RelayDeviceRegistry(FakeRedis())
+    challenged_device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    other_device = await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
+    challenge = await registry.create_challenge("acct-1", challenged_device.device_id)
+    claims = build_handshake_claims(
+        device_id=other_device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=VERSION,
+    )
+
+    try:
+        await registry.accept_handshake(claims, challenge)
+    except ValueError as exc:
+        assert "device" in str(exc)
+    else:
+        raise AssertionError("expected claims for a different device to be rejected")
 
 
 async def test_accept_handshake_rejects_device_revoked_after_challenge() -> None:

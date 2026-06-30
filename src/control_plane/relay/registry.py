@@ -43,6 +43,11 @@ class RelaySession(RelayProtocolModel):
     version: RelayVersionMetadata
 
 
+class RelayChallengeBinding(RelayProtocolModel):
+    account_id: str
+    device_id: str
+
+
 class RelayDeviceRegistry:
     def __init__(self, redis_client: RedisLike) -> None:
         self._redis = redis_client
@@ -114,27 +119,37 @@ class RelayDeviceRegistry:
             raise ValueError("device not found")
         if device.revoked:
             raise ValueError("device revoked")
-        return RelayHandshakeChallenge(
+        challenge = RelayHandshakeChallenge(
             relay_session_id=f"relay_session_{uuid.uuid4().hex}",
             nonce=f"nonce_{uuid.uuid4().hex}",
         )
+        binding = RelayChallengeBinding(account_id=account_id, device_id=device_id)
+        await self._redis.set(
+            RedisKey.relay_challenge(challenge.relay_session_id),
+            binding.model_dump_json(),
+            ex=RedisTtl.REPLAY_NONCE_SECONDS,
+        )
+        return challenge
 
     async def accept_handshake(
         self,
         claims: RelayHandshakeClaims,
         challenge: RelayHandshakeChallenge,
     ) -> RelaySession:
-        claims.validate_for(challenge, account_id=claims.account_id)
-        device = await self.get_device(claims.account_id, claims.device_id)
+        binding = await self._get_challenge_binding(challenge)
+        claims.validate_for(challenge, account_id=binding.account_id)
+        if claims.device_id != binding.device_id:
+            raise ValueError("wrong device")
+        device = await self.get_device(binding.account_id, binding.device_id)
         if device is None:
             raise ValueError("device not found")
         if device.revoked:
             raise ValueError("device revoked")
         session = RelaySession(
-            account_id=claims.account_id,
-            device_id=claims.device_id,
+            account_id=binding.account_id,
+            device_id=binding.device_id,
             relay_session_id=claims.relay_session_id,
-            execution_target_id=f"relay:{claims.device_id}",
+            execution_target_id=f"relay:{binding.device_id}",
             state=RelayTargetState.READY,
             version=claims.version,
         )
@@ -158,6 +173,18 @@ class RelayDeviceRegistry:
             ex=RedisTtl.RELAY_SESSION_SECONDS,
         )
         return session
+
+    async def _get_challenge_binding(
+        self, challenge: RelayHandshakeChallenge
+    ) -> RelayChallengeBinding:
+        payload = await self._redis.get(
+            RedisKey.relay_challenge(challenge.relay_session_id)
+        )
+        if payload is None:
+            raise ValueError("challenge not found")
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8")
+        return RelayChallengeBinding.model_validate_json(payload)
 
     async def _store_device(self, device: RelayDevice) -> None:
         await self._redis.set(

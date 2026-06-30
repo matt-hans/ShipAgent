@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from src.control_plane.app import create_control_plane_app
 from src.control_plane.auth.context import AuthorizationContext
@@ -202,3 +204,38 @@ def test_connect_websocket_challenges_then_accepts_claims(monkeypatch) -> None:
         "execution_target_id": f"relay:{registered['device_id']}",
         "state": "ready",
     }
+
+
+def test_connect_websocket_rejects_claims_for_different_device_than_hello(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        challenged = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        other = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Warehouse Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        with client.websocket_connect("/relay/connect") as websocket:
+            websocket.send_json(
+                {"account_id": "acct-1", "device_id": challenged["device_id"]}
+            )
+            challenge = websocket.receive_json()
+            claims = build_handshake_claims(
+                device_id=other["device_id"],
+                account_id="acct-1",
+                relay_session_id=challenge["relay_session_id"],
+                nonce=challenge["nonce"],
+                version=VERSION,
+            )
+            websocket.send_json(claims.model_dump(mode="json"))
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                websocket.receive_json()
+
+    assert exc_info.value.code == 1008

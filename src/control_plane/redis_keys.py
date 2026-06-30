@@ -13,6 +13,10 @@ class RedisKey:
         return f"sa:relay:device:{account_id}:{device_id}"
 
     @staticmethod
+    def relay_challenge(relay_session_id: str) -> str:
+        return f"sa:relay:challenge:{relay_session_id}"
+
+    @staticmethod
     def relay_session(device_id: str) -> str:
         return f"sa:relay:session:{device_id}"
 
