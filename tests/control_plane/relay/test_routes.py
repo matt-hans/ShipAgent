@@ -155,10 +155,13 @@ class _TokenVerifier:
         pass
 
     def verify(self, token: str) -> TokenPrincipal:
+        scopes = {"jobs:read", "shipments:preview"}
+        if token == "relay-manage-token":
+            scopes.add("relay:manage")
         return TokenPrincipal(
             subject="auth0|owner-1",
             client_id="chatgpt-client",
-            scopes=frozenset({"jobs:read", "shipments:preview"}),
+            scopes=frozenset(scopes),
         )
 
 
@@ -197,7 +200,7 @@ def test_register_device_returns_public_device_record(monkeypatch) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         )
 
@@ -219,7 +222,7 @@ def test_register_device_rejects_private_key_material_with_validation_error(
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PRIVATE_KEY},
         )
 
@@ -237,7 +240,7 @@ def test_register_device_rejects_invalid_public_key_with_validation_error(
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": INVALID_PUBLIC_KEY},
         )
 
@@ -256,7 +259,7 @@ def test_register_device_rejects_extra_private_key_field_without_echoing_key_nam
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={
                 "device_name": "Dock Mac",
                 "public_key_pem": PUBLIC_KEY,
@@ -271,6 +274,21 @@ def test_register_device_rejects_extra_private_key_field_without_echoing_key_nam
     assert "loc" not in response.json()["detail"][0]
 
 
+def test_register_device_rejects_provider_token_without_relay_manage_scope(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        )
+
+    assert response.status_code == 403
+
+
 def test_rotate_key_returns_updated_fingerprint(monkeypatch) -> None:
     app, _redis = _build_app(monkeypatch)
     rotated_key = OTHER_KEYPAIR.public_key_pem
@@ -278,12 +296,12 @@ def test_rotate_key_returns_updated_fingerprint(monkeypatch) -> None:
     with TestClient(app) as client:
         registered = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         response = client.post(
             f"/relay/devices/{registered['device_id']}/rotate-key",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"public_key_pem": rotated_key},
         )
 
@@ -305,12 +323,12 @@ def test_rotate_key_rejects_private_key_material_with_validation_error(
     with TestClient(app, raise_server_exceptions=False) as client:
         registered = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         response = client.post(
             f"/relay/devices/{registered['device_id']}/rotate-key",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"public_key_pem": PRIVATE_KEY},
         )
 
@@ -326,12 +344,32 @@ def test_rotate_key_missing_device_returns_404(monkeypatch) -> None:
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post(
             "/relay/devices/missing-device/rotate-key",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"public_key_pem": PUBLIC_KEY},
         )
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Relay device not found"}
+
+
+def test_rotate_key_rejects_provider_token_without_relay_manage_scope(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/rotate-key",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"public_key_pem": OTHER_KEYPAIR.public_key_pem},
+        )
+
+    assert response.status_code == 403
 
 
 def test_revoke_device_returns_revoked_record(monkeypatch) -> None:
@@ -340,12 +378,12 @@ def test_revoke_device_returns_revoked_record(monkeypatch) -> None:
     with TestClient(app) as client:
         registered = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         response = client.post(
             f"/relay/devices/{registered['device_id']}/revoke",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
         )
 
     assert response.status_code == 200
@@ -364,11 +402,30 @@ def test_revoke_missing_device_returns_404(monkeypatch) -> None:
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post(
             "/relay/devices/missing-device/revoke",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
         )
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Relay device not found"}
+
+
+def test_revoke_device_rejects_provider_token_without_relay_manage_scope(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/revoke",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+    assert response.status_code == 403
 
 
 def test_register_device_requires_authorization(monkeypatch) -> None:
@@ -389,7 +446,7 @@ def test_connect_websocket_challenges_then_accepts_claims(monkeypatch) -> None:
     with TestClient(app) as client:
         registered = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         with client.websocket_connect("/relay/connect") as websocket:
@@ -421,7 +478,7 @@ def test_connect_websocket_disconnect_clears_ready_liveness(monkeypatch) -> None
     with TestClient(app) as client:
         registered = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         with client.websocket_connect("/relay/connect") as websocket:
@@ -450,7 +507,7 @@ def test_connect_websocket_heartbeat_refreshes_ready_liveness(monkeypatch) -> No
     with TestClient(app) as client:
         registered = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         with client.websocket_connect("/relay/connect") as websocket:
@@ -493,7 +550,7 @@ def test_connect_websocket_arbitrary_text_does_not_refresh_liveness(
     with TestClient(app) as client:
         registered = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         with client.websocket_connect("/relay/connect") as websocket:
@@ -531,7 +588,7 @@ def test_connect_websocket_wrong_session_heartbeat_does_not_refresh_liveness(
     with TestClient(app) as client:
         registered = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         with client.websocket_connect("/relay/connect") as websocket:
@@ -574,7 +631,7 @@ def test_connect_websocket_rejects_claims_for_different_outstanding_challenge(
     with TestClient(app) as client:
         registered = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         with client.websocket_connect("/relay/connect") as stale_websocket:
@@ -609,7 +666,7 @@ def test_connect_websocket_rejects_unsigned_claims(monkeypatch) -> None:
     with TestClient(app) as client:
         registered = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         with client.websocket_connect("/relay/connect") as websocket:
@@ -639,12 +696,12 @@ def test_connect_websocket_rejects_claims_for_different_device_than_hello(
     with TestClient(app) as client:
         challenged = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         other = client.post(
             "/relay/devices/register",
-            headers={"Authorization": "Bearer valid-token"},
+            headers={"Authorization": "Bearer relay-manage-token"},
             json={"device_name": "Warehouse Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         with client.websocket_connect("/relay/connect") as websocket:
