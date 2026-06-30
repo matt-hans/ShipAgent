@@ -51,17 +51,14 @@ def test_registration_payload_excludes_private_key_material() -> None:
     service = RelayKeyService(InMemoryStore())
     keypair = service.generate_or_load_keypair()
 
-    payload = service.public_registration_payload(
-        account_id="account-123",
-        device_name="Warehouse Mac",
-    )
+    payload = service.public_registration_payload(device_name="Warehouse Mac")
 
     assert payload == {
-        "account_id": "account-123",
         "device_name": "Warehouse Mac",
         "public_key_pem": keypair.public_key_pem,
-        "fingerprint": keypair.fingerprint,
     }
+    assert "account_id" not in payload
+    assert "fingerprint" not in payload
     assert "private_key" not in payload
     assert "private_key_pem" not in payload
 

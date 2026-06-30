@@ -130,6 +130,12 @@ class RelayDeviceRegistry:
         )
         return revoked
 
+    async def disconnect_session(self, device_id: str) -> None:
+        await self._redis.delete(
+            RedisKey.relay_session(device_id),
+            RedisKey.relay_heartbeat(device_id),
+        )
+
     async def create_challenge(
         self, account_id: str, device_id: str
     ) -> RelayHandshakeChallenge:

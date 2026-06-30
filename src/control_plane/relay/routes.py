@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, WebSocket
 from pydantic import ValidationError, field_validator
+from starlette.websockets import WebSocketDisconnect
 
 from src.control_plane.auth.context import get_authorization_context
 from src.control_plane.relay.protocol import (
@@ -116,6 +117,7 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
     @router.websocket("/connect")
     async def connect(websocket: WebSocket) -> None:
         await websocket.accept()
+        session = None
         try:
             hello = RelayConnectHello.model_validate(await websocket.receive_json())
             challenge = await registry.create_challenge(
@@ -134,9 +136,14 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
                     "state": session.state.value,
                 }
             )
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            pass
         except (ValidationError, ValueError):
             await websocket.close(code=1008)
-        else:
-            await websocket.close()
+        finally:
+            if session is not None:
+                await registry.disconnect_session(session.device_id)
 
     return router
