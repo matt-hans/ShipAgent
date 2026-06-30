@@ -34,6 +34,15 @@ end
 return redis.call("DEL", KEYS[1], KEYS[2])
 """
 
+_CONSUME_CHALLENGE_SCRIPT = """
+local challenge = redis.call("GET", KEYS[1])
+if not challenge then
+    return nil
+end
+redis.call("DEL", KEYS[1])
+return challenge
+"""
+
 
 def reject_private_key_pem(public_key_pem: str) -> None:
     if _PRIVATE_KEY_PEM_HEADER.search(public_key_pem):
@@ -227,12 +236,7 @@ class RelayDeviceRegistry:
         self, relay_session_id: str
     ) -> RelayChallengeBinding:
         key = RedisKey.relay_challenge(relay_session_id)
-        getdel = getattr(self._redis, "getdel", None)
-        if getdel is not None:
-            payload = await getdel(key)
-        else:
-            payload = await self._redis.get(key)
-            await self._redis.delete(key)
+        payload = await self._redis.eval(_CONSUME_CHALLENGE_SCRIPT, 1, key)
         if payload is None:
             raise ValueError("challenge not found")
         if isinstance(payload, bytes):
