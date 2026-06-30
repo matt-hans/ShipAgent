@@ -96,6 +96,22 @@ class FakeRedis:
             self.values[device_key] = device_payload
             await self.delete(session_key, heartbeat_key)
             return "ok"
+        if numkeys == 3 and len(keys_and_args) == 3:
+            device_key, session_key, heartbeat_key = keys_and_args
+            current_payload = self.values.get(device_key)
+            if current_payload is None:
+                return "missing"
+            if isinstance(current_payload, bytes):
+                current_payload = current_payload.decode("utf-8")
+            current_device = json.loads(current_payload)
+            current_device["revoked"] = True
+            revoked_payload = json.dumps(current_device)
+            self.values[device_key] = revoked_payload
+            self.values.pop(session_key, None)
+            self.values.pop(heartbeat_key, None)
+            self.ttls.pop(session_key, None)
+            self.ttls.pop(heartbeat_key, None)
+            return revoked_payload
         if numkeys == 3:
             (
                 device_key,

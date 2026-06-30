@@ -96,6 +96,22 @@ redis.call("DEL", KEYS[2], KEYS[3])
 return "ok"
 """
 
+_REVOKE_DEVICE_SCRIPT = """
+local device = redis.call("GET", KEYS[1])
+if not device then
+    return "missing"
+end
+local ok, payload = pcall(cjson.decode, device)
+if not ok then
+    return "missing"
+end
+payload["revoked"] = true
+local revoked = cjson.encode(payload)
+redis.call("SET", KEYS[1], revoked)
+redis.call("DEL", KEYS[2], KEYS[3])
+return revoked
+"""
+
 
 def reject_private_key_pem(public_key_pem: str) -> None:
     if _PRIVATE_KEY_PEM_HEADER.search(public_key_pem):
@@ -208,16 +224,18 @@ class RelayDeviceRegistry:
         return rotated
 
     async def revoke_device(self, account_id: str, device_id: str) -> RelayDevice:
-        device = await self.get_device(account_id, device_id)
-        if device is None:
-            raise ValueError("device not found")
-        revoked = device.model_copy(update={"revoked": True})
-        await self._store_device(revoked)
-        await self._redis.delete(
+        revoked_payload = await self._redis.eval(
+            _REVOKE_DEVICE_SCRIPT,
+            3,
+            RedisKey.relay_device(account_id, device_id),
             RedisKey.relay_session(device_id),
             RedisKey.relay_heartbeat(device_id),
         )
-        return revoked
+        if isinstance(revoked_payload, bytes):
+            revoked_payload = revoked_payload.decode("utf-8")
+        if revoked_payload == "missing":
+            raise ValueError("device not found")
+        return RelayDevice.model_validate_json(revoked_payload)
 
     async def disconnect_session(self, device_id: str, relay_session_id: str) -> None:
         await self._redis.eval(
