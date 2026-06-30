@@ -10,6 +10,13 @@ from src.control_plane.relay.protocol import (
 )
 from src.control_plane.relay.registry import RelayDeviceRegistry
 
+PUBLIC_STATUS_CAPABILITIES = frozenset(
+    {
+        "get_shipagent_status",
+        "rate_shipment",
+    }
+)
+
 
 class ExecutionTarget(Protocol):
     async def status(self, context: AuthorizationContext) -> ShipAgentStatus: ...
@@ -51,7 +58,11 @@ class RelayExecutionTarget:
                     state=heartbeat.state,
                     execution_target_id=heartbeat.execution_target_id,
                     device_id=heartbeat.device_id,
-                    capabilities=list(heartbeat.version.capabilities),
+                    capabilities=[
+                        capability
+                        for capability in heartbeat.version.capabilities
+                        if capability in PUBLIC_STATUS_CAPABILITIES
+                    ],
                     message=None,
                 ),
             )
