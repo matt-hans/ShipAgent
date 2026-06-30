@@ -95,6 +95,22 @@ class FakeRedis:
             self.values[device_key] = device_payload
             await self.delete(session_key, heartbeat_key)
             return "ok"
+        if numkeys == 3 and len(keys_and_args) == 3:
+            device_key, session_key, heartbeat_key = keys_and_args
+            current_payload = self.values.get(device_key)
+            if current_payload is None:
+                return "missing"
+            if isinstance(current_payload, bytes):
+                current_payload = current_payload.decode("utf-8")
+            current_device = json.loads(current_payload)
+            current_device["revoked"] = True
+            revoked_payload = json.dumps(current_device)
+            self.values[device_key] = revoked_payload
+            self.values.pop(session_key, None)
+            self.values.pop(heartbeat_key, None)
+            self.ttls.pop(session_key, None)
+            self.ttls.pop(heartbeat_key, None)
+            return revoked_payload
         if numkeys == 3:
             (
                 device_key,
@@ -260,6 +276,21 @@ class RevokingOnRotateRedis(FakeRedis):
             await self.delete(self.session_key, self.heartbeat_key)
             self.race_armed = False
         return await super().eval(script, numkeys, *keys_and_args)
+
+
+class FailingSeparateDeleteRedis(FakeRedis):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_next_delete = False
+
+    def fail_separate_delete(self) -> None:
+        self.fail_next_delete = True
+
+    async def delete(self, *keys: str):
+        if self.fail_next_delete:
+            self.fail_next_delete = False
+            raise RuntimeError("delete failed")
+        return await super().delete(*keys)
 
 
 class NoGetDelConcurrentRedis:
@@ -573,6 +604,33 @@ async def test_revoke_device_marks_revoked_and_clears_active_session() -> None:
     assert revoked.revoked is True
     assert await redis.get(RedisKey.relay_session(device.device_id)) is None
     assert await redis.get(RedisKey.relay_heartbeat(device.device_id)) is None
+
+
+async def test_revoke_device_does_not_leave_revoked_device_with_stale_liveness() -> None:
+    redis = FailingSeparateDeleteRedis()
+    registry = RelayDeviceRegistry(redis)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    session_key = RedisKey.relay_session(device.device_id)
+    heartbeat_key = RedisKey.relay_heartbeat(device.device_id)
+    await redis.set(session_key, "session")
+    await redis.set(heartbeat_key, "heartbeat")
+
+    redis.fail_separate_delete()
+    try:
+        revoked = await registry.revoke_device("acct-1", device.device_id)
+    except RuntimeError:
+        stored = await registry.get_device("acct-1", device.device_id)
+        session = await redis.get(session_key)
+        heartbeat = await redis.get(heartbeat_key)
+        assert not (
+            stored is not None
+            and stored.revoked is True
+            and (session is not None or heartbeat is not None)
+        )
+    else:
+        assert revoked.revoked is True
+        assert await redis.get(session_key) is None
+        assert await redis.get(heartbeat_key) is None
 
 
 async def test_disconnect_session_clears_ready_liveness() -> None:
