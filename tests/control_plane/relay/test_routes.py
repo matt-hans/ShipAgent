@@ -171,6 +171,30 @@ def test_register_device_rejects_invalid_public_key_with_validation_error(
     assert "input" not in response.json()["detail"][0]
 
 
+def test_register_device_rejects_extra_private_key_field_without_echoing_key_name(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+    malicious_key = "-----BEGIN PRIVATE KEY-----"
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={
+                "device_name": "Dock Mac",
+                "public_key_pem": PUBLIC_KEY,
+                malicious_key: "attacker-controlled",
+            },
+        )
+
+    assert response.status_code == 422
+    assert malicious_key not in response.text
+    assert "PRIVATE KEY" not in response.text
+    assert "input" not in response.json()["detail"][0]
+    assert "loc" not in response.json()["detail"][0]
+
+
 def test_rotate_key_returns_updated_fingerprint(monkeypatch) -> None:
     app, _redis = _build_app(monkeypatch)
     rotated_key = OTHER_KEYPAIR.public_key_pem
