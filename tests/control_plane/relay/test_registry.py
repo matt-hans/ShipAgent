@@ -83,6 +83,15 @@ class FakeRedis:
             return self.values.pop(key, None)
         if numkeys == 3 and len(keys_and_args) == 4:
             device_key, session_key, heartbeat_key, device_payload = keys_and_args
+            current_payload = self.values.get(device_key)
+            if current_payload is None:
+                return "missing"
+            if isinstance(current_payload, bytes):
+                current_payload = current_payload.decode("utf-8")
+            current_device = json.loads(current_payload)
+            if current_device.get("revoked") is True:
+                await self.delete(session_key, heartbeat_key)
+                return "revoked"
             self.values[device_key] = device_payload
             await self.delete(session_key, heartbeat_key)
             return "ok"
@@ -209,6 +218,39 @@ class RevokingOnSessionPublishRedis(FakeRedis):
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
         if self.race_armed and numkeys == 3:
+            device_payload = self.values[self.device_key]
+            if isinstance(device_payload, bytes):
+                device_payload = device_payload.decode("utf-8")
+            device = json.loads(device_payload)
+            device["revoked"] = True
+            self.values[self.device_key] = json.dumps(device)
+            await self.delete(self.session_key, self.heartbeat_key)
+            self.race_armed = False
+        return await super().eval(script, numkeys, *keys_and_args)
+
+
+class RevokingOnRotateRedis(FakeRedis):
+    def __init__(self) -> None:
+        super().__init__()
+        self.device_key: str | None = None
+        self.session_key: str | None = None
+        self.heartbeat_key: str | None = None
+        self.race_armed = False
+
+    def arm_revoke_before_rotate(
+        self,
+        *,
+        device_key: str,
+        session_key: str,
+        heartbeat_key: str,
+    ) -> None:
+        self.device_key = device_key
+        self.session_key = session_key
+        self.heartbeat_key = heartbeat_key
+        self.race_armed = True
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        if self.race_armed and numkeys == 3 and len(keys_and_args) == 4:
             device_payload = self.values[self.device_key]
             if isinstance(device_payload, bytes):
                 device_payload = device_payload.decode("utf-8")
@@ -422,6 +464,38 @@ async def test_rotate_key_clears_ready_liveness_and_rejects_old_key_claims() -> 
     assert await redis.get(RedisKey.relay_heartbeat(device.device_id)) is None
 
 
+async def test_rotate_key_does_not_overwrite_concurrent_revocation() -> None:
+    redis = RevokingOnRotateRedis()
+    registry = RelayDeviceRegistry(redis)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    session_key = RedisKey.relay_session(device.device_id)
+    heartbeat_key = RedisKey.relay_heartbeat(device.device_id)
+    await redis.set(session_key, "stale-session")
+    await redis.set(heartbeat_key, "stale-heartbeat")
+    redis.arm_revoke_before_rotate(
+        device_key=RedisKey.relay_device("acct-1", device.device_id),
+        session_key=session_key,
+        heartbeat_key=heartbeat_key,
+    )
+
+    try:
+        await registry.rotate_key(
+            account_id="acct-1",
+            device_id=device.device_id,
+            public_key_pem=OTHER_KEYPAIR.public_key_pem,
+        )
+    except ValueError as exc:
+        assert "revoked" in str(exc)
+    else:
+        raise AssertionError("expected concurrent revocation to reject rotation")
+
+    stored = await registry.get_device("acct-1", device.device_id)
+    assert stored.revoked is True
+    assert stored.public_key_pem == PUBLIC_KEY
+    assert await redis.get(session_key) is None
+    assert await redis.get(heartbeat_key) is None
+
+
 async def test_rotate_key_derives_fingerprint_ignoring_caller_value() -> None:
     registry = RelayDeviceRegistry(FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -464,13 +538,19 @@ async def test_rotate_key_preserves_revoked_state() -> None:
     revoked = await registry.revoke_device("acct-1", device.device_id)
     rotated_key = OTHER_KEYPAIR.public_key_pem
 
-    rotated = await registry.rotate_key(
-        account_id="acct-1",
-        device_id=device.device_id,
-        public_key_pem=rotated_key,
-    )
+    try:
+        await registry.rotate_key(
+            account_id="acct-1",
+            device_id=device.device_id,
+            public_key_pem=rotated_key,
+        )
+    except ValueError as exc:
+        assert "revoked" in str(exc)
+    else:
+        raise AssertionError("expected revoked device rotation to be rejected")
 
-    assert rotated.revoked == revoked.revoked
+    stored = await registry.get_device("acct-1", device.device_id)
+    assert stored == revoked
     try:
         await registry.create_challenge("acct-1", device.device_id)
     except ValueError as exc:

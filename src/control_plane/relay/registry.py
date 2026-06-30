@@ -79,6 +79,18 @@ return "ok"
 """
 
 _STORE_DEVICE_CLEAR_LIVENESS_SCRIPT = """
+local device = redis.call("GET", KEYS[1])
+if not device then
+    return "missing"
+end
+local ok, payload = pcall(cjson.decode, device)
+if not ok then
+    return "missing"
+end
+if payload["revoked"] == true then
+    redis.call("DEL", KEYS[2], KEYS[3])
+    return "revoked"
+end
 redis.call("SET", KEYS[1], ARGV[1])
 redis.call("DEL", KEYS[2], KEYS[3])
 return "ok"
@@ -179,7 +191,7 @@ class RelayDeviceRegistry:
                 "fingerprint": relay_public_key_fingerprint(public_key_pem),
             }
         )
-        await self._redis.eval(
+        rotate_status = await self._redis.eval(
             _STORE_DEVICE_CLEAR_LIVENESS_SCRIPT,
             3,
             RedisKey.relay_device(account_id, device_id),
@@ -187,6 +199,12 @@ class RelayDeviceRegistry:
             RedisKey.relay_heartbeat(device_id),
             rotated.model_dump_json(),
         )
+        if isinstance(rotate_status, bytes):
+            rotate_status = rotate_status.decode("utf-8")
+        if rotate_status != "ok":
+            if rotate_status == "revoked":
+                raise ValueError("device revoked")
+            raise ValueError("device not found")
         return rotated
 
     async def revoke_device(self, account_id: str, device_id: str) -> RelayDevice:
