@@ -1,3 +1,5 @@
+import pytest
+
 from src.control_plane.relay.protocol import (
     RelayVersionMetadata,
     build_handshake_claims,
@@ -33,18 +35,71 @@ def test_generate_or_load_keypair_reloads_stored_keypair() -> None:
     assert generated.fingerprint.startswith("sha256:")
 
 
-def test_rotate_keypair_replaces_stored_keypair() -> None:
+def test_stage_keypair_rotation_does_not_replace_active_keypair() -> None:
     store = InMemoryStore()
     service = RelayKeyService(store)
     original = service.generate_or_load_keypair()
 
-    rotated = service.rotate_keypair()
+    staged = service.stage_keypair_rotation()
+    reloaded = service.load_keypair()
+    reloaded_staged = service.load_staged_keypair_rotation()
+
+    assert reloaded is not None
+    assert reloaded.public_key_pem == original.public_key_pem
+    assert reloaded.fingerprint == original.fingerprint
+    assert reloaded_staged is not None
+    assert reloaded_staged.public_key_pem == staged.public_key_pem
+    assert reloaded_staged.fingerprint == staged.fingerprint
+    assert staged.fingerprint != original.fingerprint
+
+
+def test_rotate_keypair_alias_stages_key_without_replacing_active_keypair() -> None:
+    service = RelayKeyService(InMemoryStore())
+    original = service.generate_or_load_keypair()
+
+    staged = service.rotate_keypair()
     reloaded = service.load_keypair()
 
     assert reloaded is not None
-    assert reloaded.public_key_pem == rotated.public_key_pem
-    assert reloaded.fingerprint == rotated.fingerprint
-    assert rotated.fingerprint != original.fingerprint
+    assert reloaded.public_key_pem == original.public_key_pem
+    assert service.load_staged_keypair_rotation() == staged
+
+
+def test_commit_keypair_rotation_promotes_staged_keypair() -> None:
+    service = RelayKeyService(InMemoryStore())
+    original = service.generate_or_load_keypair()
+    staged = service.stage_keypair_rotation()
+
+    committed = service.commit_staged_keypair_rotation()
+    reloaded = service.load_keypair()
+
+    assert committed.public_key_pem == staged.public_key_pem
+    assert reloaded is not None
+    assert reloaded.public_key_pem == staged.public_key_pem
+    assert reloaded.fingerprint != original.fingerprint
+    assert service.load_staged_keypair_rotation() is None
+
+
+def test_discard_keypair_rotation_keeps_active_keypair() -> None:
+    service = RelayKeyService(InMemoryStore())
+    original = service.generate_or_load_keypair()
+
+    staged = service.stage_keypair_rotation()
+    service.discard_staged_keypair_rotation()
+    reloaded = service.load_keypair()
+
+    assert staged.fingerprint != original.fingerprint
+    assert reloaded is not None
+    assert reloaded.public_key_pem == original.public_key_pem
+    assert service.load_staged_keypair_rotation() is None
+
+
+def test_commit_keypair_rotation_requires_staged_keypair() -> None:
+    service = RelayKeyService(InMemoryStore())
+    service.generate_or_load_keypair()
+
+    with pytest.raises(ValueError, match="no staged relay key rotation"):
+        service.commit_staged_keypair_rotation()
 
 
 def test_registration_payload_excludes_private_key_material() -> None:
