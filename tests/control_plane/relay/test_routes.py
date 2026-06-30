@@ -8,6 +8,7 @@ from src.control_plane.app import create_control_plane_app
 from src.control_plane.auth.context import AuthorizationContext
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.auth.service import AuthorizationService
+from src.control_plane.redis_keys import RedisKey
 from src.control_plane.relay.protocol import (
     RelayVersionMetadata,
     build_handshake_claims,
@@ -337,6 +338,35 @@ def test_connect_websocket_challenges_then_accepts_claims(monkeypatch) -> None:
         "execution_target_id": f"relay:{registered['device_id']}",
         "state": "ready",
     }
+
+
+def test_connect_websocket_disconnect_clears_ready_liveness(monkeypatch) -> None:
+    app, redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        with client.websocket_connect("/relay/connect") as websocket:
+            websocket.send_json(
+                {"account_id": "acct-1", "device_id": registered["device_id"]}
+            )
+            challenge = websocket.receive_json()
+            claims = build_handshake_claims(
+                device_id=registered["device_id"],
+                account_id="acct-1",
+                relay_session_id=challenge["relay_session_id"],
+                nonce=challenge["nonce"],
+                version=VERSION,
+            )
+            signed = KEY_SERVICE.sign_handshake_claims(claims)
+            websocket.send_json(signed.model_dump(mode="json"))
+            assert websocket.receive_json()["state"] == "ready"
+
+    assert RedisKey.relay_session(registered["device_id"]) not in redis.values
+    assert RedisKey.relay_heartbeat(registered["device_id"]) not in redis.values
 
 
 def test_connect_websocket_rejects_unsigned_claims(monkeypatch) -> None:

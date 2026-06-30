@@ -231,6 +231,19 @@ async def test_revoke_device_marks_revoked_and_clears_active_session() -> None:
     assert await redis.get(RedisKey.relay_heartbeat(device.device_id)) is None
 
 
+async def test_disconnect_session_clears_ready_liveness() -> None:
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    await redis.set(RedisKey.relay_session(device.device_id), "session")
+    await redis.set(RedisKey.relay_heartbeat(device.device_id), "heartbeat")
+
+    await registry.disconnect_session(device.device_id)
+
+    assert await redis.get(RedisKey.relay_session(device.device_id)) is None
+    assert await redis.get(RedisKey.relay_heartbeat(device.device_id)) is None
+
+
 async def test_create_challenge_rejects_missing_device() -> None:
     registry = RelayDeviceRegistry(FakeRedis())
 

@@ -66,15 +66,11 @@ class RelayKeyService:
         self._store.set(self._key_name, keypair.private_key_pem)
         return keypair
 
-    def public_registration_payload(
-        self, account_id: str, device_name: str
-    ) -> dict[str, str]:
+    def public_registration_payload(self, device_name: str) -> dict[str, str]:
         keypair = self.generate_or_load_keypair()
         return {
-            "account_id": account_id,
             "device_name": device_name,
             "public_key_pem": keypair.public_key_pem,
-            "fingerprint": keypair.fingerprint,
         }
 
     def sign_handshake_claims(
