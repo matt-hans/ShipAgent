@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import queue
+import subprocess
+import sys
+import textwrap
+import threading
 import time
 
+import httpx
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
+from fastmcp import Client as FastMCPClient
 from starlette.websockets import WebSocketDisconnect
 
 from src.control_plane.app import create_control_plane_app
@@ -45,7 +54,9 @@ KEYPAIR = KEY_SERVICE.generate_or_load_keypair()
 PUBLIC_KEY = KEYPAIR.public_key_pem
 OTHER_KEY_SERVICE = RelayKeyService(InMemoryKeyStore())
 OTHER_KEYPAIR = OTHER_KEY_SERVICE.generate_or_load_keypair()
-PRIVATE_KEY = "-----BEGIN ED25519 PRIVATE KEY-----\nsecret\n-----END ED25519 PRIVATE KEY-----\n"
+PRIVATE_KEY = (
+    "-----BEGIN ED25519 PRIVATE KEY-----\nsecret\n-----END ED25519 PRIVATE KEY-----\n"
+)
 INVALID_PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----\n"
 VERSION = RelayVersionMetadata(
     shipagent_core_version="1.0.0",
@@ -85,9 +96,7 @@ class FakeRedis:
         return True
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
-        if numkeys == 1 and (
-            "SA_RATE_LIMIT" in script or "SA_LOOP_GUARD" in script
-        ):
+        if numkeys == 1 and ("SA_RATE_LIMIT" in script or "SA_LOOP_GUARD" in script):
             key = keys_and_args[0]
             count = int(self.values.get(key, "0")) + 1
             self.values[key] = str(count)
@@ -98,9 +107,13 @@ class FakeRedis:
             self.ttls.pop(key, None)
             return self.values.pop(key, None)
         if numkeys == 4 and len(keys_and_args) == 5:
-            device_key, session_key, heartbeat_key, active_target_key, device_payload = (
-                keys_and_args
-            )
+            (
+                device_key,
+                session_key,
+                heartbeat_key,
+                active_target_key,
+                device_payload,
+            ) = keys_and_args
             current_payload = self.values.get(device_key)
             if current_payload is None:
                 return "missing"
@@ -165,9 +178,13 @@ class FakeRedis:
             self.ttls[active_target_key] = int(ttl)
             return "ok"
         if numkeys == 3 and len(keys_and_args) == 5:
-            session_key, heartbeat_key, active_target_key, expected_relay_session_id, ttl = (
-                keys_and_args
-            )
+            (
+                session_key,
+                heartbeat_key,
+                active_target_key,
+                expected_relay_session_id,
+                ttl,
+            ) = keys_and_args
             payload = self.values.get(session_key)
             if payload is None or heartbeat_key not in self.values:
                 return 0
@@ -232,10 +249,9 @@ class FakeRedis:
             if isinstance(active_payload, bytes):
                 active_payload = active_payload.decode("utf-8")
             active = json.loads(active_payload)
-            if (
-                active.get("device_id") == session.get("device_id")
-                and active.get("relay_session_id") == session.get("relay_session_id")
-            ):
+            if active.get("device_id") == session.get("device_id") and active.get(
+                "relay_session_id"
+            ) == session.get("relay_session_id"):
                 return await self.delete(session_key, heartbeat_key, active_target_key)
         return await self.delete(session_key, heartbeat_key)
 
@@ -246,6 +262,8 @@ class _TokenVerifier:
 
     def verify(self, token: str) -> TokenPrincipal:
         scopes = {"jobs:read", "shipments:preview"}
+        if token == "status-token":
+            scopes.add("shipagent.status")
         if token == "relay-manage-token":
             scopes.add("relay:manage")
         return TokenPrincipal(
@@ -336,6 +354,196 @@ async def _run_status_tool(server) -> dict[str, object]:
     finally:
         clear_authorization_context(token)
     return result.structured_content
+
+
+async def _run_status_tool_over_http(
+    base_url: str,
+    *,
+    correlation_id: str = "corr-1",
+) -> dict[str, object]:
+    async with FastMCPClient(
+        f"{base_url}/mcp/",
+        auth="status-token",
+        timeout=2,
+        init_timeout=2,
+    ) as client:
+        result = await client.call_tool(
+            "get_shipagent_status",
+            {"correlation_id": correlation_id},
+        )
+    structured = result.structured_content
+    assert structured is not None
+    return structured
+
+
+async def _poll_status_tool_over_http(
+    base_url: str,
+    *,
+    expected_state: str,
+    relay_process: subprocess.Popen[str] | None = None,
+    timeout_seconds: float = 5.0,
+) -> dict[str, object]:
+    deadline = time.monotonic() + timeout_seconds
+    last_status: dict[str, object] | None = None
+    last_error: Exception | None = None
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        if relay_process is not None and relay_process.poll() is not None:
+            stderr = relay_process.stderr.read() if relay_process.stderr else ""
+            raise AssertionError(
+                f"relay process exited before {expected_state} status: {stderr}"
+            )
+        try:
+            last_status = await _run_status_tool_over_http(
+                base_url,
+                correlation_id=f"poll-{expected_state}-{attempt}",
+            )
+            execution_target = last_status.get("execution_target")
+            if (
+                isinstance(execution_target, dict)
+                and execution_target.get("state") == expected_state
+            ):
+                return last_status
+        except Exception as exc:  # pragma: no cover - surfaced in assertion below
+            last_error = exc
+        await asyncio.sleep(0.2)
+    raise AssertionError(
+        f"timed out waiting for {expected_state} status; "
+        f"last_status={last_status!r} last_error={last_error!r}"
+    )
+
+
+def _start_uvicorn_server(app, *, port: int) -> tuple[uvicorn.Server, threading.Thread]:
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            lifespan="on",
+            log_level="warning",
+        )
+    )
+    thread = threading.Thread(target=server.run, name="relay-test-uvicorn", daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _wait_for_http_server(base_url: str, *, timeout_seconds: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(
+                f"{base_url}/.well-known/oauth-protected-resource",
+                timeout=0.2,
+            )
+            if response.status_code == 200:
+                return
+        except Exception as exc:  # pragma: no cover - surfaced in assertion below
+            last_error = exc
+        time.sleep(0.05)
+    raise AssertionError(f"control-plane server did not start: {last_error!r}")
+
+
+def _stop_uvicorn_server(server: uvicorn.Server, thread: threading.Thread) -> None:
+    server.should_exit = True
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def _start_desktop_relay_process(
+    *,
+    relay_url: str,
+    account_id: str,
+    device_id: str,
+    private_key_pem: str,
+) -> subprocess.Popen[str]:
+    script = textwrap.dedent(
+        """
+        import asyncio
+        import json
+        import os
+        import sys
+
+        from src.services.desktop_relay_client import DesktopRelayClient
+        from src.services.relay_key_service import RelayKeyService
+
+
+        class EnvStore:
+            def get(self, key):
+                return os.environ.get(key)
+
+            def set(self, key, value):
+                os.environ[key] = value
+
+            def delete(self, key):
+                os.environ.pop(key, None)
+
+
+        async def main():
+            config = json.loads(os.environ["SHIPAGENT_RELAY_PROCESS_CONFIG"])
+            client = DesktopRelayClient(
+                relay_url=config["relay_url"],
+                account_id=config["account_id"],
+                device_id=config["device_id"],
+                key_service=RelayKeyService(EnvStore()),
+                heartbeat_interval_seconds=0.2,
+            )
+            accepted = await client.start()
+            print(accepted.model_dump_json(), flush=True)
+            await asyncio.to_thread(sys.stdin.readline)
+            await client.stop()
+
+
+        asyncio.run(main())
+        """
+    )
+    env = os.environ.copy()
+    env["SHIPAGENT_RELAY_PROCESS_CONFIG"] = json.dumps(
+        {
+            "relay_url": relay_url,
+            "account_id": account_id,
+            "device_id": device_id,
+        }
+    )
+    env["SHIPAGENT_RELAY_DEVICE_PRIVATE_KEY"] = private_key_pem
+    return subprocess.Popen(
+        [sys.executable, "-u", "-c", script],
+        cwd=os.getcwd(),
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _read_relay_process_json_line(
+    relay_process: subprocess.Popen[str],
+    *,
+    timeout_seconds: float = 5.0,
+) -> dict[str, object]:
+    assert relay_process.stdout is not None
+    lines: queue.Queue[str] = queue.Queue(maxsize=1)
+
+    def read_line() -> None:
+        lines.put(relay_process.stdout.readline())
+
+    threading.Thread(target=read_line, name="relay-process-stdout", daemon=True).start()
+    try:
+        line = lines.get(timeout=timeout_seconds)
+    except queue.Empty as exc:
+        stderr = relay_process.stderr.read() if relay_process.poll() is not None else ""
+        raise AssertionError(
+            f"relay process did not report readiness: {stderr}"
+        ) from exc
+    if not line:
+        stderr = relay_process.stderr.read() if relay_process.stderr else ""
+        raise AssertionError(f"relay process exited without readiness: {stderr}")
+    payload = json.loads(line)
+    assert isinstance(payload, dict)
+    return payload
 
 
 def test_register_device_returns_public_device_record(monkeypatch) -> None:
@@ -693,6 +901,82 @@ def test_desktop_relay_client_connection_makes_hosted_status_ready(
             json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
         ).json()
         asyncio.run(run_scenario(client, registered["device_id"]))
+
+
+def test_desktop_relay_process_makes_hosted_http_status_ready_then_offline(
+    monkeypatch,
+    unused_tcp_port: int,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+    base_url = f"http://127.0.0.1:{unused_tcp_port}"
+    server, thread = _start_uvicorn_server(app, port=unused_tcp_port)
+    relay_process: subprocess.Popen[str] | None = None
+    try:
+        _wait_for_http_server(base_url)
+        registered = httpx.post(
+            f"{base_url}/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+            timeout=2,
+        )
+        assert registered.status_code == 200
+        device_id = registered.json()["device_id"]
+
+        relay_process = _start_desktop_relay_process(
+            relay_url=f"ws://127.0.0.1:{unused_tcp_port}/relay/connect",
+            account_id="acct-1",
+            device_id=device_id,
+            private_key_pem=KEYPAIR.private_key_pem,
+        )
+        accepted = _read_relay_process_json_line(relay_process)
+        assert accepted == {
+            "relay_session_id": accepted["relay_session_id"],
+            "execution_target_id": f"relay:{device_id}",
+            "state": "ready",
+        }
+        ready_status = asyncio.run(
+            _run_status_tool_over_http(base_url, correlation_id="ready-status")
+        )
+
+        assert ready_status == {
+            "status": "ok",
+            "execution_target": {
+                "state": "ready",
+                "execution_target_id": f"relay:{device_id}",
+                "device_id": device_id,
+                "capabilities": ["rate_shipment", "get_shipagent_status"],
+                "message": None,
+            },
+        }
+
+        assert relay_process.stdin is not None
+        relay_process.stdin.write("\n")
+        relay_process.stdin.flush()
+        relay_process.wait(timeout=5)
+        assert relay_process.returncode == 0, relay_process.stderr.read()
+
+        offline_status = asyncio.run(
+            _poll_status_tool_over_http(base_url, expected_state="offline")
+        )
+        assert offline_status == {
+            "status": "unavailable",
+            "execution_target": {
+                "state": "offline",
+                "execution_target_id": None,
+                "device_id": None,
+                "capabilities": [],
+                "message": "No active execution target connected.",
+            },
+        }
+    finally:
+        if relay_process is not None and relay_process.poll() is None:
+            relay_process.terminate()
+            try:
+                relay_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                relay_process.kill()
+                relay_process.wait(timeout=5)
+        _stop_uvicorn_server(server, thread)
 
 
 def test_connect_websocket_disconnect_clears_ready_liveness(monkeypatch) -> None:

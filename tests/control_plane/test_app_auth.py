@@ -22,7 +22,9 @@ class _TokenVerifier:
 
 
 class _AuthorizationService(AuthorizationService):
-    async def resolve(self, *, subject: str, client_id: str, scopes: set[str]) -> AuthorizationContext:
+    async def resolve(
+        self, *, subject: str, client_id: str, scopes: set[str]
+    ) -> AuthorizationContext:
         return AuthorizationContext(
             account_id="acct-1",
             provider_connection_id="pc-1",
@@ -41,7 +43,9 @@ def _build_app_with_routes(monkeypatch, database_url: str):
     monkeypatch.setenv("SHIPAGENT_REDIS_URL", "redis://127.0.0.1:6379/0")
 
     monkeypatch.setattr("src.control_plane.app.Auth0TokenVerifier", _TokenVerifier)
-    monkeypatch.setattr("src.control_plane.app.AuthorizationService", _AuthorizationService)
+    monkeypatch.setattr(
+        "src.control_plane.app.AuthorizationService", _AuthorizationService
+    )
 
     app = create_control_plane_app()
 
@@ -50,7 +54,9 @@ def _build_app_with_routes(monkeypatch, database_url: str):
         authorization = getattr(request.state, "authorization", None)
         return {
             "has_context": authorization is not None,
-            "authorization": asdict(authorization) if authorization is not None else None,
+            "authorization": asdict(authorization)
+            if authorization is not None
+            else None,
         }
 
     return app
@@ -64,6 +70,7 @@ def test_protected_resource_metadata(monkeypatch):
     assert response.status_code == 200
     assert response.json()["resource"] == "https://dev-mcp.shipagent.app"
     assert response.json()["authorization_servers"] == ["https://tenant.us.auth0.com/"]
+    assert "relay:manage" in response.json()["scopes_supported"]
 
 
 def test_missing_token_returns_bearer_challenge(monkeypatch):

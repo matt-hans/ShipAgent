@@ -8,6 +8,7 @@ SUPPORTED_SCOPES: Final = [
     "shipments:create",
     "jobs:read",
     "labels:read",
+    "relay:manage",
 ]
 
 
