@@ -16,6 +16,8 @@ from src.control_plane.relay.registry import (
     validate_relay_public_key,
 )
 
+RELAY_MANAGE_SCOPE = "relay:manage"
+
 
 class RegisterRelayDeviceRequest(RelayProtocolModel):
     device_name: str
@@ -50,10 +52,12 @@ class RelayDeviceResponse(RelayProtocolModel):
     revoked: bool
 
 
-def _require_account_id() -> str:
+def _require_relay_manage_account_id() -> str:
     context = get_authorization_context()
     if context is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    if RELAY_MANAGE_SCOPE not in context.scopes:
+        raise HTTPException(status_code=403, detail="Insufficient relay scope")
     return context.account_id
 
 
@@ -83,7 +87,7 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
         request: RegisterRelayDeviceRequest,
     ) -> RelayDeviceResponse:
         device = await registry.register_device(
-            account_id=_require_account_id(),
+            account_id=_require_relay_manage_account_id(),
             device_name=request.device_name,
             public_key_pem=request.public_key_pem,
         )
@@ -96,7 +100,7 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
     ) -> RelayDeviceResponse:
         try:
             device = await registry.rotate_key(
-                account_id=_require_account_id(),
+                account_id=_require_relay_manage_account_id(),
                 device_id=device_id,
                 public_key_pem=request.public_key_pem,
             )
@@ -108,7 +112,7 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
     async def revoke_device(device_id: str) -> RelayDeviceResponse:
         try:
             device = await registry.revoke_device(
-                account_id=_require_account_id(),
+                account_id=_require_relay_manage_account_id(),
                 device_id=device_id,
             )
         except ValueError as exc:
