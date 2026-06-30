@@ -34,6 +34,21 @@ end
 return redis.call("DEL", KEYS[1], KEYS[2])
 """
 
+_REFRESH_SESSION_SCRIPT = """
+local session = redis.call("GET", KEYS[1])
+local heartbeat = redis.call("GET", KEYS[2])
+if not session or not heartbeat then
+    return 0
+end
+local ok, payload = pcall(cjson.decode, session)
+if not ok or payload["relay_session_id"] ~= ARGV[1] then
+    return 0
+end
+redis.call("EXPIRE", KEYS[1], tonumber(ARGV[2]))
+redis.call("EXPIRE", KEYS[2], tonumber(ARGV[2]))
+return 1
+"""
+
 _CONSUME_CHALLENGE_SCRIPT = """
 local challenge = redis.call("GET", KEYS[1])
 if not challenge then
@@ -60,6 +75,12 @@ if payload["fingerprint"] ~= ARGV[1] or payload["public_key_pem"] ~= ARGV[2] the
 end
 redis.call("SET", KEYS[2], ARGV[3], "EX", tonumber(ARGV[5]))
 redis.call("SET", KEYS[3], ARGV[4], "EX", tonumber(ARGV[5]))
+return "ok"
+"""
+
+_STORE_DEVICE_CLEAR_LIVENESS_SCRIPT = """
+redis.call("SET", KEYS[1], ARGV[1])
+redis.call("DEL", KEYS[2], KEYS[3])
 return "ok"
 """
 
@@ -158,7 +179,14 @@ class RelayDeviceRegistry:
                 "fingerprint": relay_public_key_fingerprint(public_key_pem),
             }
         )
-        await self._store_device(rotated)
+        await self._redis.eval(
+            _STORE_DEVICE_CLEAR_LIVENESS_SCRIPT,
+            3,
+            RedisKey.relay_device(account_id, device_id),
+            RedisKey.relay_session(device_id),
+            RedisKey.relay_heartbeat(device_id),
+            rotated.model_dump_json(),
+        )
         return rotated
 
     async def revoke_device(self, account_id: str, device_id: str) -> RelayDevice:
@@ -180,6 +208,16 @@ class RelayDeviceRegistry:
             RedisKey.relay_session(device_id),
             RedisKey.relay_heartbeat(device_id),
             relay_session_id,
+        )
+
+    async def refresh_session(self, device_id: str, relay_session_id: str) -> None:
+        await self._redis.eval(
+            _REFRESH_SESSION_SCRIPT,
+            2,
+            RedisKey.relay_session(device_id),
+            RedisKey.relay_heartbeat(device_id),
+            relay_session_id,
+            str(RedisTtl.RELAY_SESSION_SECONDS),
         )
 
     async def create_challenge(

@@ -81,6 +81,11 @@ class FakeRedis:
             key = keys_and_args[0]
             self.ttls.pop(key, None)
             return self.values.pop(key, None)
+        if numkeys == 3 and len(keys_and_args) == 4:
+            device_key, session_key, heartbeat_key, device_payload = keys_and_args
+            self.values[device_key] = device_payload
+            await self.delete(session_key, heartbeat_key)
+            return "ok"
         if numkeys == 3:
             (
                 device_key,
@@ -110,6 +115,19 @@ class FakeRedis:
             self.ttls[session_key] = int(ttl)
             self.ttls[heartbeat_key] = int(ttl)
             return "ok"
+        if numkeys == 2 and len(keys_and_args) == 4:
+            session_key, heartbeat_key, expected_relay_session_id, ttl = keys_and_args
+            payload = self.values.get(session_key)
+            if payload is None or heartbeat_key not in self.values:
+                return 0
+            if isinstance(payload, bytes):
+                payload = payload.decode("utf-8")
+            session = json.loads(payload)
+            if session.get("relay_session_id") != expected_relay_session_id:
+                return 0
+            self.ttls[session_key] = int(ttl)
+            self.ttls[heartbeat_key] = int(ttl)
+            return 1
         session_key, heartbeat_key, expected_relay_session_id = keys_and_args
         payload = self.values.get(session_key)
         if payload is None:
@@ -362,6 +380,48 @@ async def test_rotate_key_preserves_device_id_and_updates_public_key() -> None:
     assert rotated.revoked is False
 
 
+async def test_rotate_key_clears_ready_liveness_and_rejects_old_key_claims() -> None:
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    challenge = await registry.create_challenge("acct-1", device.device_id)
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=VERSION,
+    )
+    await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(claims))
+
+    await registry.rotate_key(
+        account_id="acct-1",
+        device_id=device.device_id,
+        public_key_pem=OTHER_KEYPAIR.public_key_pem,
+    )
+
+    assert await redis.get(RedisKey.relay_session(device.device_id)) is None
+    assert await redis.get(RedisKey.relay_heartbeat(device.device_id)) is None
+    rotated_challenge = await registry.create_challenge("acct-1", device.device_id)
+    old_key_claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=rotated_challenge.relay_session_id,
+        nonce=rotated_challenge.nonce,
+        version=VERSION,
+    )
+    try:
+        await registry.accept_handshake(
+            KEY_SERVICE.sign_handshake_claims(old_key_claims)
+        )
+    except ValueError as exc:
+        assert "signature" in str(exc)
+    else:
+        raise AssertionError("expected old-key signed claims to be rejected")
+    assert await redis.get(RedisKey.relay_session(device.device_id)) is None
+    assert await redis.get(RedisKey.relay_heartbeat(device.device_id)) is None
+
+
 async def test_rotate_key_derives_fingerprint_ignoring_caller_value() -> None:
     registry = RelayDeviceRegistry(FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -552,6 +612,41 @@ async def test_disconnect_session_does_not_delete_newer_session_written_during_c
     heartbeat = RelayHeartbeat.model_validate_json(await redis.get(heartbeat_key))
     assert stored_session.relay_session_id == second_session.relay_session_id
     assert heartbeat.relay_session_id == second_session.relay_session_id
+
+
+async def test_refresh_session_extends_liveness_only_for_matching_session() -> None:
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    challenge = await registry.create_challenge("acct-1", device.device_id)
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=VERSION,
+    )
+    session = await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(claims))
+    session_key = RedisKey.relay_session(device.device_id)
+    heartbeat_key = RedisKey.relay_heartbeat(device.device_id)
+    redis.ttls[session_key] = 1
+    redis.ttls[heartbeat_key] = 1
+
+    await registry.refresh_session(device.device_id, "wrong-session")
+
+    assert redis.ttls[session_key] == 1
+    assert redis.ttls[heartbeat_key] == 1
+
+    await registry.refresh_session(device.device_id, session.relay_session_id)
+
+    assert redis.ttls[session_key] == RedisTtl.RELAY_SESSION_SECONDS
+    assert redis.ttls[heartbeat_key] == RedisTtl.RELAY_SESSION_SECONDS
+
+    await redis.delete(session_key, heartbeat_key)
+    await registry.refresh_session(device.device_id, session.relay_session_id)
+
+    assert session_key not in redis.values
+    assert heartbeat_key not in redis.values
 
 
 async def test_create_challenge_rejects_missing_device() -> None:
