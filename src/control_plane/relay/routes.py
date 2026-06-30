@@ -140,6 +140,10 @@ def build_relay_router(registry: RelayDeviceRegistry) -> APIRouter:
             )
             while True:
                 await websocket.receive_text()
+                await registry.refresh_session(
+                    session.device_id,
+                    session.relay_session_id,
+                )
         except WebSocketDisconnect:
             pass
         except (ValidationError, ValueError):

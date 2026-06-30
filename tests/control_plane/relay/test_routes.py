@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,7 +11,7 @@ from src.control_plane.app import create_control_plane_app
 from src.control_plane.auth.context import AuthorizationContext
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.auth.service import AuthorizationService
-from src.control_plane.redis_keys import RedisKey
+from src.control_plane.redis_keys import RedisKey, RedisTtl
 from src.control_plane.relay.protocol import (
     RelayVersionMetadata,
     build_handshake_claims,
@@ -81,6 +82,11 @@ class FakeRedis:
             key = keys_and_args[0]
             self.ttls.pop(key, None)
             return self.values.pop(key, None)
+        if numkeys == 3 and len(keys_and_args) == 4:
+            device_key, session_key, heartbeat_key, device_payload = keys_and_args
+            self.values[device_key] = device_payload
+            await self.delete(session_key, heartbeat_key)
+            return "ok"
         if numkeys == 3:
             (
                 device_key,
@@ -110,6 +116,19 @@ class FakeRedis:
             self.ttls[session_key] = int(ttl)
             self.ttls[heartbeat_key] = int(ttl)
             return "ok"
+        if numkeys == 2 and len(keys_and_args) == 4:
+            session_key, heartbeat_key, expected_relay_session_id, ttl = keys_and_args
+            payload = self.values.get(session_key)
+            if payload is None or heartbeat_key not in self.values:
+                return 0
+            if isinstance(payload, bytes):
+                payload = payload.decode("utf-8")
+            session = json.loads(payload)
+            if session.get("relay_session_id") != expected_relay_session_id:
+                return 0
+            self.ttls[session_key] = int(ttl)
+            self.ttls[heartbeat_key] = int(ttl)
+            return 1
         session_key, heartbeat_key, expected_relay_session_id = keys_and_args
         payload = self.values.get(session_key)
         if payload is None:
@@ -414,6 +433,42 @@ def test_connect_websocket_disconnect_clears_ready_liveness(monkeypatch) -> None
 
     assert RedisKey.relay_session(registered["device_id"]) not in redis.values
     assert RedisKey.relay_heartbeat(registered["device_id"]) not in redis.values
+
+
+def test_connect_websocket_heartbeat_refreshes_ready_liveness(monkeypatch) -> None:
+    app, redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        with client.websocket_connect("/relay/connect") as websocket:
+            websocket.send_json(
+                {"account_id": "acct-1", "device_id": registered["device_id"]}
+            )
+            challenge = websocket.receive_json()
+            claims = build_handshake_claims(
+                device_id=registered["device_id"],
+                account_id="acct-1",
+                relay_session_id=challenge["relay_session_id"],
+                nonce=challenge["nonce"],
+                version=VERSION,
+            )
+            signed = KEY_SERVICE.sign_handshake_claims(claims)
+            websocket.send_json(signed.model_dump(mode="json"))
+            assert websocket.receive_json()["state"] == "ready"
+            session_key = RedisKey.relay_session(registered["device_id"])
+            heartbeat_key = RedisKey.relay_heartbeat(registered["device_id"])
+            redis.ttls[session_key] = 1
+            redis.ttls[heartbeat_key] = 1
+
+            websocket.send_text("heartbeat")
+            time.sleep(0.01)
+
+            assert redis.ttls[session_key] == RedisTtl.RELAY_SESSION_SECONDS
+            assert redis.ttls[heartbeat_key] == RedisTtl.RELAY_SESSION_SECONDS
 
 
 def test_connect_websocket_rejects_claims_for_different_outstanding_challenge(
