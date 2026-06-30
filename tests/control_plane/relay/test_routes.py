@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from fastmcp import Client as FastMCPClient
 from starlette.websockets import WebSocketDisconnect
 
-from src.control_plane.app import create_control_plane_app
+from src.control_plane.app import _build_verifier, create_control_plane_app
 from src.control_plane.auth.context import (
     AuthorizationContext,
     clear_authorization_context,
@@ -335,6 +335,7 @@ def _build_app(monkeypatch):
         "src.control_plane.app.AuthorizationService", _AuthorizationService
     )
     monkeypatch.setattr("src.control_plane.app._build_redis_client", lambda _: redis)
+    _build_verifier.cache_clear()
     return create_control_plane_app(), redis
 
 
