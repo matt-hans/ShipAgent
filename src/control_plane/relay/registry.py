@@ -30,13 +30,14 @@ if not session then
     return 0
 end
 local ok, payload = pcall(cjson.decode, session)
-if not ok or payload["relay_session_id"] ~= ARGV[1] then
+if not ok or type(payload) ~= "table" or payload["relay_session_id"] ~= ARGV[1] then
     return 0
 end
 local active = redis.call("GET", KEYS[3])
 if active then
     local active_ok, active_payload = pcall(cjson.decode, active)
     if active_ok
+        and type(active_payload) == "table"
         and active_payload["device_id"] == payload["device_id"]
         and active_payload["relay_session_id"] == ARGV[1]
     then
@@ -53,7 +54,7 @@ if not session or not heartbeat then
     return 0
 end
 local ok, payload = pcall(cjson.decode, session)
-if not ok or payload["relay_session_id"] ~= ARGV[1] then
+if not ok or type(payload) ~= "table" or payload["relay_session_id"] ~= ARGV[1] then
     return 0
 end
 redis.call("EXPIRE", KEYS[1], tonumber(ARGV[2]))
@@ -62,6 +63,7 @@ local active = redis.call("GET", KEYS[3])
 if active then
     local active_ok, active_payload = pcall(cjson.decode, active)
     if active_ok
+        and type(active_payload) == "table"
         and active_payload["device_id"] == payload["device_id"]
         and active_payload["relay_session_id"] == ARGV[1]
     then
@@ -107,9 +109,10 @@ local function clear_current_liveness()
     if session then
         local session_ok, session_payload = pcall(cjson.decode, session)
         local active = redis.call("GET", KEYS[4])
-        if session_ok and active then
+        if session_ok and type(session_payload) == "table" and active then
             local active_ok, active_payload = pcall(cjson.decode, active)
             if active_ok
+                and type(active_payload) == "table"
                 and active_payload["device_id"] == session_payload["device_id"]
                 and active_payload["relay_session_id"] == session_payload["relay_session_id"]
             then
@@ -143,9 +146,10 @@ local function clear_current_liveness()
     if session then
         local session_ok, session_payload = pcall(cjson.decode, session)
         local active = redis.call("GET", KEYS[4])
-        if session_ok and active then
+        if session_ok and type(session_payload) == "table" and active then
             local active_ok, active_payload = pcall(cjson.decode, active)
             if active_ok
+                and type(active_payload) == "table"
                 and active_payload["device_id"] == session_payload["device_id"]
                 and active_payload["relay_session_id"] == session_payload["relay_session_id"]
             then

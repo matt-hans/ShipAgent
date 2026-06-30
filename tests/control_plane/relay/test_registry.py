@@ -124,6 +124,8 @@ class FakeRedis:
                 session = json.loads(payload)
             except json.JSONDecodeError:
                 return 0
+            if not isinstance(session, dict):
+                return 0
             if session.get("relay_session_id") != expected_relay_session_id:
                 return 0
             self.ttls[session_key] = int(ttl)
@@ -134,7 +136,8 @@ class FakeRedis:
                     active_payload = active_payload.decode("utf-8")
                 active = json.loads(active_payload)
                 if (
-                    active.get("device_id") == session.get("device_id")
+                    isinstance(active, dict)
+                    and active.get("device_id") == session.get("device_id")
                     and active.get("relay_session_id") == expected_relay_session_id
                 ):
                     self.ttls[active_target_key] = int(ttl)
@@ -198,6 +201,8 @@ class FakeRedis:
             session = json.loads(payload)
         except json.JSONDecodeError:
             return 0
+        if not isinstance(session, dict):
+            return 0
         if session.get("relay_session_id") != expected_relay_session_id:
             return 0
         active_payload = self.values.get(active_target_key)
@@ -206,7 +211,8 @@ class FakeRedis:
                 active_payload = active_payload.decode("utf-8")
             active = json.loads(active_payload)
             if (
-                active.get("device_id") == session.get("device_id")
+                isinstance(active, dict)
+                and active.get("device_id") == session.get("device_id")
                 and active.get("relay_session_id") == expected_relay_session_id
             ):
                 return await self._script_delete(
@@ -229,13 +235,16 @@ class FakeRedis:
             session = json.loads(payload)
         except json.JSONDecodeError:
             return await self._script_delete(session_key, heartbeat_key)
+        if not isinstance(session, dict):
+            return await self._script_delete(session_key, heartbeat_key)
         active_payload = self.values.get(active_target_key)
         if active_payload is not None:
             if isinstance(active_payload, bytes):
                 active_payload = active_payload.decode("utf-8")
             active = json.loads(active_payload)
             if (
-                active.get("device_id") == session.get("device_id")
+                isinstance(active, dict)
+                and active.get("device_id") == session.get("device_id")
                 and active.get("relay_session_id") == session.get("relay_session_id")
             ):
                 return await self._script_delete(
@@ -1049,6 +1058,128 @@ async def test_liveness_cleanup_ignores_malformed_session_without_clearing_unrel
     assert await redis.get(active_target_key) == unrelated_active.model_dump_json()
 
 
+async def test_liveness_cleanup_ignores_scalar_json_session_without_clearing_unrelated_active_target() -> None:
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    session_key = RedisKey.relay_session("device-1")
+    heartbeat_key = RedisKey.relay_heartbeat("device-1")
+    active_target_key = RedisKey.relay_active_target("acct-1")
+    unrelated_active = RelaySession(
+        account_id="acct-1",
+        device_id="device-2",
+        relay_session_id="session-2",
+        execution_target_id="relay:device-2",
+        state=RelayTargetState.READY,
+        version=VERSION,
+    )
+    await redis.set(session_key, "123")
+    await redis.set(heartbeat_key, "heartbeat")
+    await redis.set(active_target_key, unrelated_active.model_dump_json())
+    redis.ttls[session_key] = 1
+    redis.ttls[heartbeat_key] = 1
+    redis.ttls[active_target_key] = 1
+
+    await registry.refresh_session(
+        account_id="acct-1",
+        device_id="device-1",
+        relay_session_id="session-1",
+    )
+    await registry.disconnect_session(
+        account_id="acct-1",
+        device_id="device-1",
+        relay_session_id="session-1",
+    )
+
+    assert await redis.get(active_target_key) == unrelated_active.model_dump_json()
+    assert redis.ttls[session_key] == 1
+    assert redis.ttls[heartbeat_key] == 1
+    assert redis.ttls[active_target_key] == 1
+
+
+async def test_refresh_and_disconnect_ignore_scalar_json_active_target() -> None:
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    session = RelaySession(
+        account_id="acct-1",
+        device_id="device-1",
+        relay_session_id="session-1",
+        execution_target_id="relay:device-1",
+        state=RelayTargetState.READY,
+        version=VERSION,
+    )
+    session_key = RedisKey.relay_session("device-1")
+    heartbeat_key = RedisKey.relay_heartbeat("device-1")
+    active_target_key = RedisKey.relay_active_target("acct-1")
+    await redis.set(session_key, session.model_dump_json())
+    await redis.set(heartbeat_key, "heartbeat")
+    await redis.set(active_target_key, "123")
+    redis.ttls[session_key] = 1
+    redis.ttls[heartbeat_key] = 1
+    redis.ttls[active_target_key] = 1
+
+    await registry.refresh_session(
+        account_id="acct-1",
+        device_id="device-1",
+        relay_session_id="session-1",
+    )
+    await registry.disconnect_session(
+        account_id="acct-1",
+        device_id="device-1",
+        relay_session_id="session-1",
+    )
+
+    assert await redis.get(session_key) is None
+    assert await redis.get(heartbeat_key) is None
+    assert await redis.get(active_target_key) == "123"
+    assert redis.ttls[active_target_key] == 1
+
+
+async def test_rotate_and_revoke_ignore_scalar_json_active_target() -> None:
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+
+    rotate_device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    rotate_challenge = await registry.create_challenge("acct-1", rotate_device.device_id)
+    rotate_claims = build_handshake_claims(
+        device_id=rotate_device.device_id,
+        account_id="acct-1",
+        relay_session_id=rotate_challenge.relay_session_id,
+        nonce=rotate_challenge.nonce,
+        version=VERSION,
+    )
+    await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(rotate_claims))
+    active_target_key = RedisKey.relay_active_target("acct-1")
+    await redis.set(active_target_key, "123")
+
+    await registry.rotate_key(
+        account_id="acct-1",
+        device_id=rotate_device.device_id,
+        public_key_pem=OTHER_KEYPAIR.public_key_pem,
+    )
+
+    assert await redis.get(RedisKey.relay_session(rotate_device.device_id)) is None
+    assert await redis.get(RedisKey.relay_heartbeat(rotate_device.device_id)) is None
+    assert await redis.get(active_target_key) == "123"
+
+    revoke_device = await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
+    revoke_challenge = await registry.create_challenge("acct-1", revoke_device.device_id)
+    revoke_claims = build_handshake_claims(
+        device_id=revoke_device.device_id,
+        account_id="acct-1",
+        relay_session_id=revoke_challenge.relay_session_id,
+        nonce=revoke_challenge.nonce,
+        version=VERSION,
+    )
+    await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(revoke_claims))
+    await redis.set(active_target_key, "123")
+
+    await registry.revoke_device("acct-1", revoke_device.device_id)
+
+    assert await redis.get(RedisKey.relay_session(revoke_device.device_id)) is None
+    assert await redis.get(RedisKey.relay_heartbeat(revoke_device.device_id)) is None
+    assert await redis.get(active_target_key) == "123"
+
+
 async def test_create_challenge_rejects_missing_device() -> None:
     registry = RelayDeviceRegistry(FakeRedis())
 
@@ -1523,3 +1654,45 @@ async def test_relay_execution_target_reports_ready_after_handshake() -> None:
             "message": None,
         },
     }
+
+
+async def test_relay_execution_target_filters_non_public_capabilities_from_status() -> None:
+    from src.control_plane.execution_targets import RelayExecutionTarget
+
+    redis = FakeRedis()
+    registry = RelayDeviceRegistry(redis)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    challenge = await registry.create_challenge("acct-1", device.device_id)
+    version = VERSION.model_copy(
+        update={
+            "capabilities": [
+                "rate_shipment",
+                "account_number:123456",
+                "get_shipagent_status",
+                "raw_ups_payload:secret",
+            ]
+        }
+    )
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=version,
+    )
+    await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(claims))
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    status = await RelayExecutionTarget(registry).status(context)
+
+    assert status.execution_target.capabilities == [
+        "rate_shipment",
+        "get_shipagent_status",
+    ]
