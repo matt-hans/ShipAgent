@@ -136,52 +136,58 @@ class DesktopRelayClient:
         self._connection: RelayClientConnection | None = None
         self._accepted: RelayAcceptedResponse | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._lifecycle_lock = asyncio.Lock()
 
     async def start(self) -> RelayAcceptedResponse:
-        if self._connection_context is not None:
-            raise RuntimeError("relay client is already started")
+        async with self._lifecycle_lock:
+            if self._connection_context is not None:
+                raise RuntimeError("relay client is already started")
 
-        connection_context = self._transport.connect(self._relay_url)
-        connection = await connection_context.__aenter__()
-        self._connection_context = connection_context
-        self._connection = connection
+            connection_context = self._transport.connect(self._relay_url)
+            connection = await connection_context.__aenter__()
+            self._connection_context = connection_context
+            self._connection = connection
 
-        try:
-            await self._connection.send_json(
-                {"account_id": self._account_id, "device_id": self._device_id}
-            )
-            challenge = RelayHandshakeChallenge.model_validate(
-                await self._connection.receive_json()
-            )
-            claims = build_handshake_claims(
-                device_id=self._device_id,
-                account_id=self._account_id,
-                relay_session_id=challenge.relay_session_id,
-                nonce=challenge.nonce,
-                version=self._version,
-            )
-            signed_claims = self._key_service.sign_handshake_claims(claims)
-            await self._connection.send_json(signed_claims.model_dump(mode="json"))
+            try:
+                await self._connection.send_json(
+                    {"account_id": self._account_id, "device_id": self._device_id}
+                )
+                challenge = RelayHandshakeChallenge.model_validate(
+                    await self._connection.receive_json()
+                )
+                claims = build_handshake_claims(
+                    device_id=self._device_id,
+                    account_id=self._account_id,
+                    relay_session_id=challenge.relay_session_id,
+                    nonce=challenge.nonce,
+                    version=self._version,
+                )
+                signed_claims = self._key_service.sign_handshake_claims(claims)
+                await self._connection.send_json(signed_claims.model_dump(mode="json"))
 
-            accepted = RelayAcceptedResponse.model_validate(
-                await self._connection.receive_json()
-            )
-            if accepted.relay_session_id != challenge.relay_session_id:
-                raise ValueError("accepted relay session mismatch")
-            if accepted.state != RelayTargetState.READY:
-                raise ValueError("accepted relay state must be ready")
-            if accepted.execution_target_id != f"relay:{self._device_id}":
-                raise ValueError("accepted execution target mismatch")
-            self._accepted = accepted
-            self._heartbeat_task = asyncio.create_task(
-                self._heartbeat_loop(accepted.relay_session_id)
-            )
-            return accepted
-        except BaseException:
-            await self.stop()
-            raise
+                accepted = RelayAcceptedResponse.model_validate(
+                    await self._connection.receive_json()
+                )
+                if accepted.relay_session_id != challenge.relay_session_id:
+                    raise ValueError("accepted relay session mismatch")
+                if accepted.state != RelayTargetState.READY:
+                    raise ValueError("accepted relay state must be ready")
+                if accepted.execution_target_id != f"relay:{self._device_id}":
+                    raise ValueError("accepted execution target mismatch")
+                self._accepted = accepted
+                self._heartbeat_task = asyncio.create_task(
+                    self._heartbeat_loop(accepted.relay_session_id)
+                )
+                return accepted
+            except BaseException:
+                await self._stop_unlocked()
+                raise
 
     async def stop(self) -> None:
+        async with self._lifecycle_lock:
+            await self._stop_unlocked()
+
+    async def _stop_unlocked(self) -> None:
         try:
             if self._heartbeat_task is not None:
                 self._heartbeat_task.cancel()
