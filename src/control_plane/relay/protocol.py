@@ -4,7 +4,11 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class RelayProtocolModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class RelayTargetState(StrEnum):
@@ -13,22 +17,23 @@ class RelayTargetState(StrEnum):
     UPDATE_REQUIRED = "update_required"
 
 
-class RelayVersionMetadata(BaseModel):
+class RelayVersionMetadata(RelayProtocolModel):
     shipagent_core_version: str
     registry_contract_version: str
     ups_boundary_contract_version: str
     capabilities: list[str] = Field(default_factory=list)
 
 
-class RelayHandshakeChallenge(BaseModel):
+class RelayHandshakeChallenge(RelayProtocolModel):
     relay_session_id: str
     nonce: str
     audience: str = "shipagent-cloud-relay"
 
 
-class RelayHandshakeClaims(BaseModel):
+class RelayHandshakeClaims(RelayProtocolModel):
     device_id: str
     account_id: str
+    relay_session_id: str
     nonce: str
     audience: str
     version: RelayVersionMetadata
@@ -40,6 +45,8 @@ class RelayHandshakeClaims(BaseModel):
     ) -> None:
         if self.audience != challenge.audience:
             raise ValueError("wrong audience")
+        if self.relay_session_id != challenge.relay_session_id:
+            raise ValueError("wrong relay_session_id")
         if self.nonce != challenge.nonce:
             raise ValueError("wrong nonce")
         if self.account_id != account_id:
@@ -52,7 +59,7 @@ class RelayHandshakeClaims(BaseModel):
             raise ValueError("expired")
 
 
-class RelayHeartbeat(BaseModel):
+class RelayHeartbeat(RelayProtocolModel):
     account_id: str
     device_id: str
     relay_session_id: str
@@ -62,7 +69,7 @@ class RelayHeartbeat(BaseModel):
     active_source_fingerprint: str | None = None
 
 
-class RelayInvocationEnvelope(BaseModel):
+class RelayInvocationEnvelope(RelayProtocolModel):
     relay_session_id: str
     sequence: int = Field(ge=1)
     relay_invocation_id: str
@@ -73,14 +80,14 @@ class RelayInvocationEnvelope(BaseModel):
     audit_correlation_id: str
 
 
-class RelayInvocationResult(BaseModel):
+class RelayInvocationResult(RelayProtocolModel):
     relay_invocation_id: str
     status: str
     result: dict[str, object] | None = None
     error: dict[str, object] | None = None
 
 
-class ExecutionTargetStatus(BaseModel):
+class ExecutionTargetStatus(RelayProtocolModel):
     state: RelayTargetState
     execution_target_id: str | None = None
     device_id: str | None = None
@@ -88,7 +95,7 @@ class ExecutionTargetStatus(BaseModel):
     message: str | None = None
 
 
-class ShipAgentStatus(BaseModel):
+class ShipAgentStatus(RelayProtocolModel):
     status: str
     execution_target: ExecutionTargetStatus
 
@@ -102,6 +109,7 @@ def relay_public_key_fingerprint(public_key_pem: str) -> str:
 def build_handshake_claims(
     device_id: str,
     account_id: str,
+    relay_session_id: str,
     nonce: str,
     version: RelayVersionMetadata,
     lifetime_seconds: int = 60,
@@ -111,6 +119,7 @@ def build_handshake_claims(
     return RelayHandshakeClaims(
         device_id=device_id,
         account_id=account_id,
+        relay_session_id=relay_session_id,
         nonce=nonce,
         audience="shipagent-cloud-relay",
         version=version,

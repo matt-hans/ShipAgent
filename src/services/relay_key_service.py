@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from cryptography.hazmat.primitives import serialization
@@ -19,9 +19,9 @@ class RelayKeyStore(Protocol):
 
 @dataclass(frozen=True)
 class RelayKeyPair:
-    private_key_pem: str
     public_key_pem: str
     fingerprint: str
+    private_key_pem: str = field(repr=False)
 
 
 class RelayKeyService:
