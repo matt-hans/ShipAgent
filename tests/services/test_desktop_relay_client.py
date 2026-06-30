@@ -82,6 +82,18 @@ class FakeConnectionContext:
         return None
 
 
+class SlowEnterConnectionContext(FakeConnectionContext):
+    def __init__(self, connection: FakeConnection) -> None:
+        super().__init__(connection)
+        self.enter_started = asyncio.Event()
+        self.release_enter = asyncio.Event()
+
+    async def __aenter__(self) -> FakeConnection:
+        self.enter_started.set()
+        await self.release_enter.wait()
+        return self.connection
+
+
 class FakeTransport:
     def __init__(self, connection: FakeConnection) -> None:
         self.connection = connection
@@ -101,6 +113,17 @@ class QueueTransport:
 
     def connect(self, url: str) -> FakeConnectionContext:
         connection_context = FakeConnectionContext(self.connections.pop(0))
+        self.connection_contexts.append(connection_context)
+        return connection_context
+
+
+class SlowEnterTransport:
+    def __init__(self, connections: list[FakeConnection]) -> None:
+        self.connections = list(connections)
+        self.connection_contexts: list[SlowEnterConnectionContext] = []
+
+    def connect(self, url: str) -> SlowEnterConnectionContext:
+        connection_context = SlowEnterConnectionContext(self.connections.pop(0))
         self.connection_contexts.append(connection_context)
         return connection_context
 
@@ -202,6 +225,7 @@ async def test_start_sends_hello_and_signed_handshake_for_challenge() -> None:
         "execution_target_id": "relay:device-1",
         "state": "ready",
     }
+    await client.stop()
 
 
 @pytest.mark.asyncio
@@ -386,6 +410,123 @@ async def test_start_rejects_when_client_is_already_started() -> None:
     assert len(transport.connection_contexts) == 1
     assert transport.connection_contexts[0].exit_count == 1
     assert second_connection.sent == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_opens_only_one_connection_and_rejects_other() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    first_connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+        ]
+    )
+    second_connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+        ]
+    )
+    transport = SlowEnterTransport([first_connection, second_connection])
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=transport,
+        sleep=ControlledSleep(),
+    )
+
+    start_tasks = [asyncio.create_task(client.start()) for _ in range(2)]
+    for _ in range(20):
+        if transport.connection_contexts:
+            break
+        await asyncio.sleep(0)
+    assert transport.connection_contexts
+    await asyncio.wait_for(transport.connection_contexts[0].enter_started.wait(), 1)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    for connection_context in list(transport.connection_contexts):
+        connection_context.release_enter.set()
+
+    results = await asyncio.gather(*start_tasks, return_exceptions=True)
+    opened_context_count = len(transport.connection_contexts)
+    runtime_error_count = sum(isinstance(result, RuntimeError) for result in results)
+    successful_start_count = sum(not isinstance(result, BaseException) for result in results)
+    try:
+        await client.stop()
+        exit_counts = [context.exit_count for context in transport.connection_contexts]
+    finally:
+        for connection_context in transport.connection_contexts:
+            if connection_context.exit_count == 0:
+                await connection_context.__aexit__(None, None, None)
+
+    assert opened_context_count == 1
+    assert successful_start_count == 1
+    assert runtime_error_count == 1
+    assert exit_counts == [1]
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_in_progress_start_and_closes_connection() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+        ]
+    )
+    transport = SlowEnterTransport([connection])
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=transport,
+        sleep=ControlledSleep(),
+    )
+
+    start_task = asyncio.create_task(client.start())
+    for _ in range(20):
+        if transport.connection_contexts:
+            break
+        await asyncio.sleep(0)
+    assert transport.connection_contexts
+    connection_context = transport.connection_contexts[0]
+    await asyncio.wait_for(connection_context.enter_started.wait(), 1)
+    stop_task = asyncio.create_task(client.stop())
+    await asyncio.sleep(0)
+
+    connection_context.release_enter.set()
+    started = await start_task
+    await stop_task
+
+    assert started.execution_target_id == "relay:device-1"
+    assert connection_context.exit_count == 1
 
 
 @pytest.mark.asyncio
