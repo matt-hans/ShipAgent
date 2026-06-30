@@ -25,6 +25,10 @@ class RedisKey:
         return f"sa:relay:heartbeat:{device_id}"
 
     @staticmethod
+    def relay_active_target(account_id: str) -> str:
+        return f"sa:relay:active-target:{account_id}"
+
+    @staticmethod
     def replay_nonce(device_id: str, nonce: str) -> str:
         return f"sa:relay:nonce:{device_id}:{nonce}"
 

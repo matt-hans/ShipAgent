@@ -10,16 +10,19 @@ from fastmcp.tools import Tool
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent, ToolAnnotations
 
-from src.control_plane.auth.context import AuthorizationContext, get_authorization_context
+from src.control_plane.auth.context import (
+    AuthorizationContext,
+    get_authorization_context,
+)
 from src.control_plane.request_controls import (
     RequestControlError,
     RequestControls,
     hash_arguments,
 )
+from src.control_plane.result_projection import project_result
 from src.provider_adapters.export_filter import exportable_tools
 from src.provider_adapters.mcp_projection import to_mcp_tool_descriptor
-from src.control_plane.result_projection import project_result
-from src.registry.models import ToolContract, ProviderExport
+from src.registry.models import ProviderExport, ToolContract
 
 ToolHandler = Callable[
     [AuthorizationContext, dict[str, Any]],
@@ -86,7 +89,7 @@ class BoundRegistryTool(Tool):
                     arguments_hash=arguments_hash,
                 )
             except RequestControlError as err:
-                raise self._loop_guard_or_rate_limit_error(err)
+                raise self._loop_guard_or_rate_limit_error(err) from err
 
         result = self._handler(context, arguments)
         if inspect.isawaitable(result):
