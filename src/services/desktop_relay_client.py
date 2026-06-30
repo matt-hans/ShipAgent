@@ -138,6 +138,9 @@ class DesktopRelayClient:
         self._heartbeat_task: asyncio.Task[None] | None = None
 
     async def start(self) -> RelayAcceptedResponse:
+        if self._connection_context is not None:
+            raise RuntimeError("relay client is already started")
+
         connection_context = self._transport.connect(self._relay_url)
         connection = await connection_context.__aenter__()
         self._connection_context = connection_context
@@ -165,27 +168,32 @@ class DesktopRelayClient:
             )
             if accepted.relay_session_id != challenge.relay_session_id:
                 raise ValueError("accepted relay session mismatch")
+            if accepted.state != RelayTargetState.READY:
+                raise ValueError("accepted relay state must be ready")
+            if accepted.execution_target_id != f"relay:{self._device_id}":
+                raise ValueError("accepted execution target mismatch")
             self._accepted = accepted
             self._heartbeat_task = asyncio.create_task(
                 self._heartbeat_loop(accepted.relay_session_id)
             )
             return accepted
-        except Exception:
+        except BaseException:
             await self.stop()
             raise
 
     async def stop(self) -> None:
-        if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._heartbeat_task
-            self._heartbeat_task = None
-
-        if self._connection_context is not None:
-            await self._connection_context.__aexit__(None, None, None)
-            self._connection_context = None
-            self._connection = None
-            self._accepted = None
+        try:
+            if self._heartbeat_task is not None:
+                self._heartbeat_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await self._heartbeat_task
+                self._heartbeat_task = None
+        finally:
+            if self._connection_context is not None:
+                await self._connection_context.__aexit__(None, None, None)
+                self._connection_context = None
+                self._connection = None
+                self._accepted = None
 
     async def _heartbeat_loop(self, relay_session_id: str) -> None:
         while True:

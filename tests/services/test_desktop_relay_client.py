@@ -45,6 +45,30 @@ class FakeConnection:
         return self.incoming.pop(0)
 
 
+class BlockingReceiveConnection(FakeConnection):
+    def __init__(self) -> None:
+        super().__init__([])
+        self.receive_started = asyncio.Event()
+        self.release_receive = asyncio.Event()
+
+    async def receive_json(self) -> dict[str, Any]:
+        self.receive_started.set()
+        await self.release_receive.wait()
+        return {}
+
+
+class FailingHeartbeatConnection(FakeConnection):
+    def __init__(self, incoming: list[dict[str, Any]]) -> None:
+        super().__init__(incoming)
+        self.heartbeat_send_attempted = asyncio.Event()
+
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        if payload.get("type") == "heartbeat":
+            self.heartbeat_send_attempted.set()
+            raise RuntimeError("heartbeat send failed")
+        await super().send_json(payload)
+
+
 class FakeConnectionContext:
     def __init__(self, connection: FakeConnection) -> None:
         self.connection = connection
@@ -68,6 +92,17 @@ class FakeTransport:
         self.urls.append(url)
         self.connection_context = FakeConnectionContext(self.connection)
         return self.connection_context
+
+
+class QueueTransport:
+    def __init__(self, connections: list[FakeConnection]) -> None:
+        self.connections = list(connections)
+        self.connection_contexts: list[FakeConnectionContext] = []
+
+    def connect(self, url: str) -> FakeConnectionContext:
+        connection_context = FakeConnectionContext(self.connections.pop(0))
+        self.connection_contexts.append(connection_context)
+        return connection_context
 
 
 class ControlledSleep:
@@ -170,6 +205,32 @@ async def test_start_sends_hello_and_signed_handshake_for_challenge() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_closes_connection_when_cancelled_during_receive() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    connection = BlockingReceiveConnection()
+    transport = FakeTransport(connection)
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=transport,
+    )
+
+    start_task = asyncio.create_task(client.start())
+    await asyncio.wait_for(connection.receive_started.wait(), timeout=1)
+    start_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+
+    assert transport.connection_context is not None
+    assert transport.connection_context.exit_count == 1
+
+
+@pytest.mark.asyncio
 async def test_start_sends_session_bound_heartbeat_frames() -> None:
     key_service = RelayKeyService(InMemoryStore())
     key_service.generate_or_load_keypair()
@@ -211,6 +272,46 @@ async def test_start_sends_session_bound_heartbeat_frames() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stop_closes_connection_after_heartbeat_send_failure() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    connection = FailingHeartbeatConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+        ]
+    )
+    transport = FakeTransport(connection)
+    sleep = ControlledSleep()
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=transport,
+        heartbeat_interval_seconds=30,
+        sleep=sleep,
+    )
+
+    await client.start()
+    await sleep.release_next()
+    await asyncio.wait_for(connection.heartbeat_send_attempted.wait(), timeout=1)
+    await client.stop()
+
+    assert transport.connection_context is not None
+    assert transport.connection_context.exit_count == 1
+
+
+@pytest.mark.asyncio
 async def test_stop_closes_relay_connection_context_once() -> None:
     key_service = RelayKeyService(InMemoryStore())
     key_service.generate_or_load_keypair()
@@ -248,6 +349,46 @@ async def test_stop_closes_relay_connection_context_once() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_rejects_when_client_is_already_started() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    first_connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+        ]
+    )
+    second_connection = FakeConnection([])
+    transport = QueueTransport([first_connection, second_connection])
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=transport,
+        sleep=ControlledSleep(),
+    )
+
+    await client.start()
+    with pytest.raises(RuntimeError, match="already started"):
+        await client.start()
+    await client.stop()
+
+    assert len(transport.connection_contexts) == 1
+    assert transport.connection_contexts[0].exit_count == 1
+    assert second_connection.sent == []
+
+
+@pytest.mark.asyncio
 async def test_start_rejects_accepted_session_mismatch_before_heartbeat() -> None:
     key_service = RelayKeyService(InMemoryStore())
     key_service.generate_or_load_keypair()
@@ -277,6 +418,80 @@ async def test_start_rejects_accepted_session_mismatch_before_heartbeat() -> Non
     )
 
     with pytest.raises(ValueError, match="relay session"):
+        await client.start()
+
+    assert [payload.get("type") for payload in connection.sent] == [None, None]
+    assert transport.connection_context is not None
+    assert transport.connection_context.exit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_non_ready_accepted_state_before_heartbeat() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "offline",
+            },
+        ]
+    )
+    transport = FakeTransport(connection)
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=transport,
+        sleep=ControlledSleep(),
+    )
+
+    with pytest.raises(ValueError, match="state"):
+        await client.start()
+
+    assert [payload.get("type") for payload in connection.sent] == [None, None]
+    assert transport.connection_context is not None
+    assert transport.connection_context.exit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_execution_target_mismatch_before_heartbeat() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:different-device",
+                "state": "ready",
+            },
+        ]
+    )
+    transport = FakeTransport(connection)
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=transport,
+        sleep=ControlledSleep(),
+    )
+
+    with pytest.raises(ValueError, match="execution target"):
         await client.start()
 
     assert [payload.get("type") for payload in connection.sent] == [None, None]
