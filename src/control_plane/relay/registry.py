@@ -1,0 +1,166 @@
+from __future__ import annotations
+
+import uuid
+from typing import Protocol
+
+from src.control_plane.redis_keys import RedisKey, RedisTtl
+from src.control_plane.relay.protocol import (
+    RelayHandshakeChallenge,
+    RelayHandshakeClaims,
+    RelayHeartbeat,
+    RelayProtocolModel,
+    RelayTargetState,
+    RelayVersionMetadata,
+    relay_public_key_fingerprint,
+)
+
+
+class RedisLike(Protocol):
+    async def get(self, key: str): ...
+
+    async def set(self, key: str, value: str, ex: int | None = None): ...
+
+    async def delete(self, *keys: str): ...
+
+    async def expire(self, key: str, seconds: int): ...
+
+
+class RelayDevice(RelayProtocolModel):
+    account_id: str
+    device_id: str
+    device_name: str
+    public_key_pem: str
+    fingerprint: str
+    revoked: bool = False
+
+
+class RelaySession(RelayProtocolModel):
+    account_id: str
+    device_id: str
+    relay_session_id: str
+    execution_target_id: str
+    state: RelayTargetState
+    version: RelayVersionMetadata
+
+
+class RelayDeviceRegistry:
+    def __init__(self, redis_client: RedisLike) -> None:
+        self._redis = redis_client
+
+    async def register_device(
+        self,
+        account_id: str,
+        device_name: str,
+        public_key_pem: str,
+        fingerprint: str | None = None,
+    ) -> RelayDevice:
+        device = RelayDevice(
+            account_id=account_id,
+            device_id=f"relay_device_{uuid.uuid4().hex}",
+            device_name=device_name,
+            public_key_pem=public_key_pem,
+            fingerprint=fingerprint or relay_public_key_fingerprint(public_key_pem),
+            revoked=False,
+        )
+        await self._store_device(device)
+        return device
+
+    async def get_device(self, account_id: str, device_id: str) -> RelayDevice | None:
+        payload = await self._redis.get(RedisKey.relay_device(account_id, device_id))
+        if payload is None:
+            return None
+        if isinstance(payload, bytes):
+            payload = payload.decode("utf-8")
+        return RelayDevice.model_validate_json(payload)
+
+    async def rotate_key(
+        self,
+        account_id: str,
+        device_id: str,
+        public_key_pem: str,
+        fingerprint: str | None = None,
+    ) -> RelayDevice:
+        device = await self.get_device(account_id, device_id)
+        if device is None:
+            raise ValueError("device not found")
+        rotated = device.model_copy(
+            update={
+                "public_key_pem": public_key_pem,
+                "fingerprint": fingerprint
+                or relay_public_key_fingerprint(public_key_pem),
+                "revoked": False,
+            }
+        )
+        await self._store_device(rotated)
+        return rotated
+
+    async def revoke_device(self, account_id: str, device_id: str) -> RelayDevice:
+        device = await self.get_device(account_id, device_id)
+        if device is None:
+            raise ValueError("device not found")
+        revoked = device.model_copy(update={"revoked": True})
+        await self._store_device(revoked)
+        await self._redis.delete(
+            RedisKey.relay_session(device_id),
+            RedisKey.relay_heartbeat(device_id),
+        )
+        return revoked
+
+    async def create_challenge(
+        self, account_id: str, device_id: str
+    ) -> RelayHandshakeChallenge:
+        device = await self.get_device(account_id, device_id)
+        if device is None:
+            raise ValueError("device not found")
+        if device.revoked:
+            raise ValueError("device revoked")
+        return RelayHandshakeChallenge(
+            relay_session_id=f"relay_session_{uuid.uuid4().hex}",
+            nonce=f"nonce_{uuid.uuid4().hex}",
+        )
+
+    async def accept_handshake(
+        self,
+        claims: RelayHandshakeClaims,
+        challenge: RelayHandshakeChallenge,
+    ) -> RelaySession:
+        claims.validate_for(challenge, account_id=claims.account_id)
+        device = await self.get_device(claims.account_id, claims.device_id)
+        if device is None:
+            raise ValueError("device not found")
+        if device.revoked:
+            raise ValueError("device revoked")
+        session = RelaySession(
+            account_id=claims.account_id,
+            device_id=claims.device_id,
+            relay_session_id=claims.relay_session_id,
+            execution_target_id=f"relay:{claims.device_id}",
+            state=RelayTargetState.READY,
+            version=claims.version,
+        )
+        heartbeat = RelayHeartbeat(
+            account_id=session.account_id,
+            device_id=session.device_id,
+            relay_session_id=session.relay_session_id,
+            execution_target_id=session.execution_target_id,
+            state=session.state,
+            version=session.version,
+            active_source_fingerprint=device.fingerprint,
+        )
+        await self._redis.set(
+            RedisKey.relay_session(session.device_id),
+            session.model_dump_json(),
+            ex=RedisTtl.RELAY_SESSION_SECONDS,
+        )
+        await self._redis.set(
+            RedisKey.relay_heartbeat(session.device_id),
+            heartbeat.model_dump_json(),
+            ex=RedisTtl.RELAY_SESSION_SECONDS,
+        )
+        return session
+
+    async def _store_device(self, device: RelayDevice) -> None:
+        await self._redis.set(
+            RedisKey.relay_device(device.account_id, device.device_id),
+            device.model_dump_json(),
+        )
