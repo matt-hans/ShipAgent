@@ -43,6 +43,26 @@ redis.call("DEL", KEYS[1])
 return challenge
 """
 
+_PUBLISH_SESSION_SCRIPT = """
+local device = redis.call("GET", KEYS[1])
+if not device then
+    return "missing"
+end
+local ok, payload = pcall(cjson.decode, device)
+if not ok then
+    return "missing"
+end
+if payload["revoked"] == true then
+    return "revoked"
+end
+if payload["fingerprint"] ~= ARGV[1] or payload["public_key_pem"] ~= ARGV[2] then
+    return "stale"
+end
+redis.call("SET", KEYS[2], ARGV[3], "EX", tonumber(ARGV[5]))
+redis.call("SET", KEYS[3], ARGV[4], "EX", tonumber(ARGV[5]))
+return "ok"
+"""
+
 
 def reject_private_key_pem(public_key_pem: str) -> None:
     if _PRIVATE_KEY_PEM_HEADER.search(public_key_pem):
@@ -220,16 +240,26 @@ class RelayDeviceRegistry:
             version=session.version,
             active_source_fingerprint=device.fingerprint,
         )
-        await self._redis.set(
+        publish_status = await self._redis.eval(
+            _PUBLISH_SESSION_SCRIPT,
+            3,
+            RedisKey.relay_device(binding.account_id, binding.device_id),
             RedisKey.relay_session(session.device_id),
-            session.model_dump_json(),
-            ex=RedisTtl.RELAY_SESSION_SECONDS,
-        )
-        await self._redis.set(
             RedisKey.relay_heartbeat(session.device_id),
+            device.fingerprint,
+            device.public_key_pem,
+            session.model_dump_json(),
             heartbeat.model_dump_json(),
-            ex=RedisTtl.RELAY_SESSION_SECONDS,
+            str(RedisTtl.RELAY_SESSION_SECONDS),
         )
+        if isinstance(publish_status, bytes):
+            publish_status = publish_status.decode("utf-8")
+        if publish_status != "ok":
+            if publish_status == "revoked":
+                raise ValueError("device revoked")
+            if publish_status == "missing":
+                raise ValueError("device not found")
+            raise ValueError("device changed")
         return session
 
     async def _get_challenge_binding(

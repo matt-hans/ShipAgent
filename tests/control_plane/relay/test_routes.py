@@ -81,6 +81,35 @@ class FakeRedis:
             key = keys_and_args[0]
             self.ttls.pop(key, None)
             return self.values.pop(key, None)
+        if numkeys == 3:
+            (
+                device_key,
+                session_key,
+                heartbeat_key,
+                expected_fingerprint,
+                expected_public_key_pem,
+                session_payload,
+                heartbeat_payload,
+                ttl,
+            ) = keys_and_args
+            device_payload = self.values.get(device_key)
+            if device_payload is None:
+                return "missing"
+            if isinstance(device_payload, bytes):
+                device_payload = device_payload.decode("utf-8")
+            device = json.loads(device_payload)
+            if device.get("revoked") is True:
+                return "revoked"
+            if (
+                device.get("fingerprint") != expected_fingerprint
+                or device.get("public_key_pem") != expected_public_key_pem
+            ):
+                return "stale"
+            self.values[session_key] = session_payload
+            self.values[heartbeat_key] = heartbeat_payload
+            self.ttls[session_key] = int(ttl)
+            self.ttls[heartbeat_key] = int(ttl)
+            return "ok"
         session_key, heartbeat_key, expected_relay_session_id = keys_and_args
         payload = self.values.get(session_key)
         if payload is None:

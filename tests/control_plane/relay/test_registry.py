@@ -81,6 +81,35 @@ class FakeRedis:
             key = keys_and_args[0]
             self.ttls.pop(key, None)
             return self.values.pop(key, None)
+        if numkeys == 3:
+            (
+                device_key,
+                session_key,
+                heartbeat_key,
+                expected_fingerprint,
+                expected_public_key_pem,
+                session_payload,
+                heartbeat_payload,
+                ttl,
+            ) = keys_and_args
+            device_payload = self.values.get(device_key)
+            if device_payload is None:
+                return "missing"
+            if isinstance(device_payload, bytes):
+                device_payload = device_payload.decode("utf-8")
+            device = json.loads(device_payload)
+            if device.get("revoked") is True:
+                return "revoked"
+            if (
+                device.get("fingerprint") != expected_fingerprint
+                or device.get("public_key_pem") != expected_public_key_pem
+            ):
+                return "stale"
+            self.values[session_key] = session_payload
+            self.values[heartbeat_key] = heartbeat_payload
+            self.ttls[session_key] = int(ttl)
+            self.ttls[heartbeat_key] = int(ttl)
+            return "ok"
         session_key, heartbeat_key, expected_relay_session_id = keys_and_args
         payload = self.values.get(session_key)
         if payload is None:
@@ -118,9 +147,57 @@ class InterleavingRedis(FakeRedis):
         return value
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
-        session_key = keys_and_args[0]
-        if self.race_armed and session_key == self.race_session_key:
+        if numkeys == 2:
+            session_key = keys_and_args[0]
+        else:
+            session_key = None
+        if session_key is not None and self.race_armed and session_key == self.race_session_key:
             self.values.update(self.race_values)
+            self.race_armed = False
+        return await super().eval(script, numkeys, *keys_and_args)
+
+
+class RevokingOnSessionPublishRedis(FakeRedis):
+    def __init__(self) -> None:
+        super().__init__()
+        self.device_key: str | None = None
+        self.session_key: str | None = None
+        self.heartbeat_key: str | None = None
+        self.race_armed = False
+
+    def arm_revoke_before_publish(
+        self,
+        *,
+        device_key: str,
+        session_key: str,
+        heartbeat_key: str,
+    ) -> None:
+        self.device_key = device_key
+        self.session_key = session_key
+        self.heartbeat_key = heartbeat_key
+        self.race_armed = True
+
+    async def set(self, key: str, value: str, ex: int | None = None):
+        if self.race_armed and key == self.session_key:
+            device_payload = self.values[self.device_key]
+            if isinstance(device_payload, bytes):
+                device_payload = device_payload.decode("utf-8")
+            device = json.loads(device_payload)
+            device["revoked"] = True
+            self.values[self.device_key] = json.dumps(device)
+            await self.delete(self.session_key, self.heartbeat_key)
+            self.race_armed = False
+        return await super().set(key, value, ex=ex)
+
+    async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        if self.race_armed and numkeys == 3:
+            device_payload = self.values[self.device_key]
+            if isinstance(device_payload, bytes):
+                device_payload = device_payload.decode("utf-8")
+            device = json.loads(device_payload)
+            device["revoked"] = True
+            self.values[self.device_key] = json.dumps(device)
+            await self.delete(self.session_key, self.heartbeat_key)
             self.race_armed = False
         return await super().eval(script, numkeys, *keys_and_args)
 
@@ -169,6 +246,35 @@ class NoGetDelConcurrentRedis:
         return True
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        if numkeys == 3:
+            (
+                device_key,
+                session_key,
+                heartbeat_key,
+                expected_fingerprint,
+                expected_public_key_pem,
+                session_payload,
+                heartbeat_payload,
+                ttl,
+            ) = keys_and_args
+            device_payload = self.values.get(device_key)
+            if device_payload is None:
+                return "missing"
+            if isinstance(device_payload, bytes):
+                device_payload = device_payload.decode("utf-8")
+            device = json.loads(device_payload)
+            if device.get("revoked") is True:
+                return "revoked"
+            if (
+                device.get("fingerprint") != expected_fingerprint
+                or device.get("public_key_pem") != expected_public_key_pem
+            ):
+                return "stale"
+            self.values[session_key] = session_payload
+            self.values[heartbeat_key] = heartbeat_payload
+            self.ttls[session_key] = int(ttl)
+            self.ttls[heartbeat_key] = int(ttl)
+            return "ok"
         key = keys_and_args[0]
         self.ttls.pop(key, None)
         return self.values.pop(key, None)
@@ -501,6 +607,36 @@ async def test_accept_handshake_stores_session_and_heartbeat() -> None:
     )
     assert heartbeat.relay_session_id == challenge.relay_session_id
     assert heartbeat.active_source_fingerprint == device.fingerprint
+
+
+async def test_accept_handshake_rejects_revocation_before_ready_publish() -> None:
+    redis = RevokingOnSessionPublishRedis()
+    registry = RelayDeviceRegistry(redis)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    challenge = await registry.create_challenge("acct-1", device.device_id)
+    claims = build_handshake_claims(
+        device_id=device.device_id,
+        account_id="acct-1",
+        relay_session_id=challenge.relay_session_id,
+        nonce=challenge.nonce,
+        version=VERSION,
+    )
+    signed = KEY_SERVICE.sign_handshake_claims(claims)
+    redis.arm_revoke_before_publish(
+        device_key=RedisKey.relay_device("acct-1", device.device_id),
+        session_key=RedisKey.relay_session(device.device_id),
+        heartbeat_key=RedisKey.relay_heartbeat(device.device_id),
+    )
+
+    try:
+        await registry.accept_handshake(signed)
+    except ValueError as exc:
+        assert "revoked" in str(exc)
+    else:
+        raise AssertionError("expected revoked device publish to be rejected")
+
+    assert await redis.get(RedisKey.relay_session(device.device_id)) is None
+    assert await redis.get(RedisKey.relay_heartbeat(device.device_id)) is None
 
 
 async def test_accept_handshake_rejects_wrong_account() -> None:
