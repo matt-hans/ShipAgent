@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +16,12 @@ class AuthorizationService:
         self.clients = clients
 
     async def resolve(
-        self, *, subject: str, client_id: str, scopes: set[str]
+        self,
+        *,
+        subject: str,
+        client_id: str,
+        scopes: set[str],
+        auth_time: datetime | None = None,
     ) -> AuthorizationContext:
         surface = self.clients.surface_for(client_id)
         account = await self.db.scalar(
@@ -56,4 +63,5 @@ class AuthorizationService:
             subject=subject,
             client_id=client_id,
             scopes=frozenset(scopes),
+            auth_time=auth_time,
         )

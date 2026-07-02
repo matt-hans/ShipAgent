@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from src.control_plane.auth.context import AuthorizationContext
+from src.control_plane.relay.invocations import (
+    NoLiveRelaySession,
+    RelayInvocationBroker,
+    RelayInvocationTimeout,
+)
 from src.control_plane.relay.protocol import (
     ExecutionTargetStatus,
     RelayTargetState,
@@ -19,7 +24,11 @@ PUBLIC_STATUS_CAPABILITIES = frozenset(
 
 
 class ExecutionTarget(Protocol):
-    async def status(self, context: AuthorizationContext) -> ShipAgentStatus: ...
+    async def status(
+        self,
+        context: AuthorizationContext,
+        arguments: dict[str, Any] | None = None,
+    ) -> ShipAgentStatus: ...
 
 
 class LoopbackExecutionTarget:
@@ -32,13 +41,16 @@ class LoopbackExecutionTarget:
         self._capabilities = list(capabilities or [])
         self._execution_target_id = execution_target_id
 
-    async def status(self, context: AuthorizationContext) -> ShipAgentStatus:
+    async def status(
+        self,
+        context: AuthorizationContext,
+        arguments: dict[str, Any] | None = None,
+    ) -> ShipAgentStatus:
         return ShipAgentStatus(
-            status="ok",
+            status=RelayTargetState.READY,
             execution_target=ExecutionTargetStatus(
                 state=RelayTargetState.READY,
-                execution_target_id=self._execution_target_id,
-                device_id=None,
+                target_id=self._execution_target_id,
                 capabilities=list(self._capabilities),
                 message=None,
             ),
@@ -46,33 +58,56 @@ class LoopbackExecutionTarget:
 
 
 class RelayExecutionTarget:
-    def __init__(self, registry: RelayDeviceRegistry) -> None:
+    def __init__(
+        self,
+        registry: RelayDeviceRegistry,
+        invocation_broker: RelayInvocationBroker | None = None,
+    ) -> None:
         self._registry = registry
+        self._invocation_broker = invocation_broker or RelayInvocationBroker()
 
-    async def status(self, context: AuthorizationContext) -> ShipAgentStatus:
+    async def status(
+        self,
+        context: AuthorizationContext,
+        arguments: dict[str, Any] | None = None,
+    ) -> ShipAgentStatus:
         heartbeat = await self._registry.get_active_heartbeat(context.account_id)
         if heartbeat is not None:
-            return ShipAgentStatus(
-                status="ok",
-                execution_target=ExecutionTargetStatus(
-                    state=heartbeat.state,
-                    execution_target_id=heartbeat.execution_target_id,
-                    device_id=heartbeat.device_id,
-                    capabilities=[
-                        capability
-                        for capability in heartbeat.version.capabilities
-                        if capability in PUBLIC_STATUS_CAPABILITIES
-                    ],
-                    message=None,
-                ),
+            correlation_id = str(
+                (arguments or {}).get("correlation_id") or "get_shipagent_status"
             )
-        return ShipAgentStatus(
-            status="unavailable",
-            execution_target=ExecutionTargetStatus(
-                state=RelayTargetState.OFFLINE,
-                execution_target_id=None,
-                device_id=None,
-                capabilities=[],
-                message="No active execution target connected.",
-            ),
-        )
+            try:
+                result = await self._invocation_broker.invoke(
+                    relay_session_id=heartbeat.relay_session_id,
+                    tool_name="get_shipagent_status",
+                    arguments=arguments or {},
+                    audit_correlation_id=correlation_id,
+                    timeout_seconds=2,
+                )
+            except (NoLiveRelaySession, RelayInvocationTimeout):
+                return _offline_status()
+            if result.status != "ok" or result.result is None:
+                return _offline_status()
+            try:
+                desktop_status = ShipAgentStatus.model_validate(result.result)
+            except ValueError:
+                return _offline_status()
+            desktop_status.execution_target.capabilities = [
+                capability
+                for capability in desktop_status.execution_target.capabilities
+                if capability in PUBLIC_STATUS_CAPABILITIES
+            ]
+            return desktop_status
+        return _offline_status()
+
+
+def _offline_status() -> ShipAgentStatus:
+    return ShipAgentStatus(
+        status=RelayTargetState.OFFLINE,
+        execution_target=ExecutionTargetStatus(
+            state=RelayTargetState.OFFLINE,
+            target_id=None,
+            capabilities=[],
+            message="No active execution target connected.",
+        ),
+    )

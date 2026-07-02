@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class RelayProtocolModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
 
 class RelayTargetState(StrEnum):
@@ -75,6 +75,25 @@ class RelayHeartbeatFrame(RelayProtocolModel):
     relay_session_id: str
 
 
+class RelayInvocationFrame(RelayProtocolModel):
+    type: Literal["invocation"]
+    relay_session_id: str
+    relay_invocation_id: str
+    tool_name: str
+    arguments: dict[str, object] = Field(default_factory=dict)
+    deadline_at: datetime
+    audit_correlation_id: str
+
+
+class RelayInvocationResultFrame(RelayProtocolModel):
+    type: Literal["invocation_result"]
+    relay_session_id: str
+    relay_invocation_id: str
+    status: Literal["ok", "error"]
+    result: dict[str, object] | None = None
+    error: dict[str, object] | None = None
+
+
 class RelayHeartbeat(RelayProtocolModel):
     account_id: str
     device_id: str
@@ -105,15 +124,14 @@ class RelayInvocationResult(RelayProtocolModel):
 
 class ExecutionTargetStatus(RelayProtocolModel):
     state: RelayTargetState
-    execution_target_id: str | None = None
-    device_id: str | None = None
+    target_id: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     message: str | None = None
 
 
 class ShipAgentStatus(RelayProtocolModel):
-    status: str
-    execution_target: ExecutionTargetStatus
+    status: RelayTargetState
+    execution_target: ExecutionTargetStatus = Field(alias="executionTarget")
 
 
 def relay_public_key_fingerprint(public_key_pem: str) -> str:

@@ -7,6 +7,8 @@ from pydantic import ValidationError
 from src.control_plane.relay.protocol import (
     ExecutionTargetStatus,
     RelayHandshakeChallenge,
+    RelayInvocationFrame,
+    RelayInvocationResultFrame,
     RelayTargetState,
     RelayVersionMetadata,
     ShipAgentStatus,
@@ -25,19 +27,26 @@ def test_fingerprint_is_stable_with_trailing_whitespace() -> None:
 
 def test_shipagent_status_uses_target_agnostic_keys() -> None:
     status = ShipAgentStatus(
-        status="ok",
+        status=RelayTargetState.READY,
         execution_target=ExecutionTargetStatus(
             state=RelayTargetState.READY,
-            execution_target_id="target-123",
-            device_id="device-123",
+            target_id="target-123",
             capabilities=["rate_shipment"],
         ),
     )
 
-    payload = status.model_dump(by_alias=False)
+    payload = status.model_dump(mode="json", by_alias=True)
 
-    assert "execution_target" in payload
-    assert _contains_desktop_key(payload) is False
+    assert payload == {
+        "status": "ready",
+        "executionTarget": {
+            "state": "ready",
+            "target_id": "target-123",
+            "capabilities": ["rate_shipment"],
+            "message": None,
+        },
+    }
+    assert _contains_provider_specific_status_key(payload) is False
 
 
 def test_protocol_models_reject_unknown_fields() -> None:
@@ -46,6 +55,41 @@ def test_protocol_models_reject_unknown_fields() -> None:
             relay_session_id="session-123",
             nonce="nonce-123",
             unexpected="value",
+        )
+
+
+def test_invocation_frames_round_trip_and_reject_unknown_fields() -> None:
+    deadline = datetime.now(UTC) + timedelta(seconds=5)
+    invocation = RelayInvocationFrame(
+        type="invocation",
+        relay_session_id="relay-session-1",
+        relay_invocation_id="invocation-1",
+        tool_name="get_shipagent_status",
+        arguments={"correlation_id": "corr-1"},
+        deadline_at=deadline,
+        audit_correlation_id="corr-1",
+    )
+
+    payload = invocation.model_dump(mode="json")
+
+    assert RelayInvocationFrame.model_validate(payload) == invocation
+    with pytest.raises(ValidationError):
+        RelayInvocationFrame.model_validate({**payload, "unexpected": "value"})
+
+    result = RelayInvocationResultFrame(
+        type="invocation_result",
+        relay_session_id="relay-session-1",
+        relay_invocation_id="invocation-1",
+        status="ok",
+        result={"status": "ok"},
+    )
+
+    result_payload = result.model_dump(mode="json")
+
+    assert RelayInvocationResultFrame.model_validate(result_payload) == result
+    with pytest.raises(ValidationError):
+        RelayInvocationResultFrame.model_validate(
+            {**result_payload, "credentials": "secret"}
         )
 
 
@@ -106,9 +150,13 @@ def test_handshake_claims_reject_relay_session_mismatch() -> None:
         claims.validate_for(challenge, account_id="account-123")
 
 
-def _contains_desktop_key(value: Any) -> bool:
+def _contains_provider_specific_status_key(value: Any) -> bool:
     if isinstance(value, dict):
-        return any("desktop" in key or _contains_desktop_key(item) for key, item in value.items())
+        return any(
+            key in {"device_id", "execution_target_id"}
+            or _contains_provider_specific_status_key(item)
+            for key, item in value.items()
+        )
     if isinstance(value, list):
-        return any(_contains_desktop_key(item) for item in value)
+        return any(_contains_provider_specific_status_key(item) for item in value)
     return False

@@ -34,19 +34,17 @@ def exportable_mcp_tool(name: str):
 
 def status_result(
     *,
-    status: str = "ok",
+    status: str = "ready",
     state: str = "ready",
-    execution_target_id: str | None = "target-1",
-    device_id: str | None = "device-1",
+    target_id: str | None = "target-1",
     capabilities: list[str] | None = None,
     message: str | None = None,
 ):
     return {
         "status": status,
-        "execution_target": {
+        "executionTarget": {
             "state": state,
-            "execution_target_id": execution_target_id,
-            "device_id": device_id,
+            "target_id": target_id,
             "capabilities": capabilities or ["rate", "ship"],
             "message": message,
         },
@@ -91,11 +89,10 @@ async def test_hosted_mcp_server_requires_exportable_and_bound_tools():
 async def test_status_tool_bound_from_default_catalog_projects_execution_target_schema():
     async def handler(context, arguments):
         return {
-            "status": "ok",
-            "execution_target": {
+            "status": "ready",
+            "executionTarget": {
                 "state": "ready",
-                "execution_target_id": "loopback",
-                "device_id": None,
+                "target_id": "loopback",
                 "capabilities": ["get_shipagent_status"],
                 "message": None,
             },
@@ -119,11 +116,10 @@ async def test_status_tool_bound_from_default_catalog_projects_execution_target_
         clear_authorization_context(token)
 
     assert result.structured_content == {
-        "status": "ok",
-        "execution_target": {
+        "status": "ready",
+        "executionTarget": {
             "state": "ready",
-            "execution_target_id": "loopback",
-            "device_id": None,
+            "target_id": "loopback",
             "capabilities": ["get_shipagent_status"],
             "message": None,
         },
@@ -166,11 +162,10 @@ async def test_loopback_execution_target_status_runs_through_hosted_mcp_tool():
         clear_authorization_context(token)
 
     assert result.structured_content == {
-        "status": "ok",
-        "execution_target": {
+        "status": "ready",
+        "executionTarget": {
             "state": "ready",
-            "execution_target_id": "loopback",
-            "device_id": None,
+            "target_id": "loopback",
             "capabilities": ["rate_shipment", "get_shipagent_status"],
             "message": None,
         },
@@ -179,6 +174,55 @@ async def test_loopback_execution_target_status_runs_through_hosted_mcp_tool():
         instance=result.structured_content,
         schema=tools["get_shipagent_status"].output_schema,
     )
+
+
+@pytest.mark.asyncio
+async def test_execution_target_status_handler_passes_mcp_arguments():
+    from src.control_plane.relay.protocol import (
+        ExecutionTargetStatus,
+        RelayTargetState,
+        ShipAgentStatus,
+    )
+    from src.hosted_mcp.execution_target_handlers import (
+        build_execution_target_tool_handlers,
+    )
+
+    captured = {}
+
+    class CapturingExecutionTarget:
+        async def status(self, context, arguments=None):
+            captured["context"] = context
+            captured["arguments"] = arguments
+            return ShipAgentStatus(
+                status=RelayTargetState.READY,
+                execution_target=ExecutionTargetStatus(
+                    state=RelayTargetState.READY,
+                    target_id="target-1",
+                    capabilities=["get_shipagent_status"],
+                ),
+            )
+
+    server = build_server(
+        tool_handlers=build_execution_target_tool_handlers(CapturingExecutionTarget())
+    )
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    token = set_authorization_context(context)
+    try:
+        await tools["get_shipagent_status"].run({"correlation_id": "corr-1"})
+    finally:
+        clear_authorization_context(token)
+
+    assert captured["context"] == context
+    assert captured["arguments"] == {"correlation_id": "corr-1"}
 
 
 @pytest.mark.asyncio

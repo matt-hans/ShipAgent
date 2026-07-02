@@ -144,7 +144,7 @@ Extends the existing `RequestControls`: per-account/tool token buckets (exists),
 
 **Plan 2 — Invocation lifecycle + relay-loss recovery.** State machine, timeout ladder, reconnect reconciliation, degraded envelopes, async/poll contract. (`src/control_plane/relay/lifecycle.py`, dispatcher changes desktop-side.)
 **Plan 3 — Version gate.** Heartbeat version enforcement against a compatibility matrix derived from `ToolContract.minimum_capabilities`; `target_update_required` envelope. (`src/control_plane/relay/version_gate.py`.)
-**Plan 4 — Ephemeral retention + purge + cloud audit.** TTL policy in `redis_keys.py`, purge job, thin durable audit models. 
+**Plan 4 — Ephemeral retention + purge + cloud audit.** TTL policy in `redis_keys.py`, purge job, thin durable audit models.
 **Plan 5 — Ingress guard v2.** Loop breaker, dedupe, coalescing, result caps in `request_controls.py`.
 **Plan 6 — Output profiles + origin-based redaction.** Profiles in `result_projection.py`; origin tagging on workflow inputs; aggregate projection for local-source data; tracking-number masking rules.
 **Plan 9 — Desktop settings + device management** (only needs Plan 1). Cloud AI Features enablement in settings-remote (generate key, register, status), device list with revoke/rotate, relay status indicator, Tauri keychain entitlement check.

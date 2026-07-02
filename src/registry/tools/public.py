@@ -97,12 +97,17 @@ PUBLIC_TOOLS = [
         ),
         object_schema(
             {
-                "status": {"type": "string"},
-                "execution_target": object_schema(
+                "status": {
+                    "type": "string",
+                    "enum": ["ready", "offline", "update_required"],
+                },
+                "executionTarget": object_schema(
                     {
-                        "state": {"type": "string"},
-                        "execution_target_id": {"type": ["string", "null"]},
-                        "device_id": {"type": ["string", "null"]},
+                        "state": {
+                            "type": "string",
+                            "enum": ["ready", "offline", "update_required"],
+                        },
+                        "target_id": {"type": ["string", "null"]},
                         "capabilities": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -111,14 +116,13 @@ PUBLIC_TOOLS = [
                     },
                     [
                         "state",
-                        "execution_target_id",
-                        "device_id",
+                        "target_id",
                         "capabilities",
                         "message",
                     ],
                 ),
             },
-            ["status", "execution_target"],
+            ["status", "executionTarget"],
         ),
         provider_export_enabled=True,
     ),

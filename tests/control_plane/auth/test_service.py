@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import select
 
@@ -57,6 +59,24 @@ async def test_resolve_reuses_active_connection_and_updates_scopes(control_db):
     )
     assert connection is not None
     assert connection.scopes_text == "jobs:read"
+
+
+@pytest.mark.asyncio
+async def test_resolve_preserves_auth_time_in_authorization_context(control_db):
+    service = AuthorizationService(
+        control_db,
+        ProviderClientRegistry({"chatgpt-client": "chatgpt"}),
+    )
+    auth_time = datetime(2026, 7, 2, 12, 30, tzinfo=UTC)
+
+    context = await service.resolve(
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes={"relay:manage"},
+        auth_time=auth_time,
+    )
+
+    assert context.auth_time == auth_time
 
 
 @pytest.mark.asyncio

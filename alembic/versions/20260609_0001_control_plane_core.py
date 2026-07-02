@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision = "20260609_0001"
 down_revision = None
@@ -12,10 +12,15 @@ branch_labels = None
 depends_on = None
 
 
-def _schema() -> str:
+def _schema() -> str | None:
     from alembic import context
 
-    return context.config.get_section("alembic:runtime").get(
+    if "shipagent_control_plane_schema" in context.config.attributes:
+        return context.config.attributes["shipagent_control_plane_schema"]
+    if op.get_context().dialect.name == "sqlite":
+        return None
+    runtime_section = context.config.get_section("alembic:runtime") or {}
+    return runtime_section.get(
         "shipagent_control_plane_schema",
         "shipagent_private",
     )
@@ -23,14 +28,14 @@ def _schema() -> str:
 
 def upgrade() -> None:
     schema = _schema()
-
-    op.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
+    if schema is not None:
+        op.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
 
     op.create_table(
         "cloud_accounts",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("auth0_subject", sa.String(length=255), nullable=False),
-        sa.Column("suspended", sa.Boolean(), nullable=False, server_default=sa.text("0")),
+        sa.Column("suspended", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -53,7 +58,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(
             ["account_id"],
-            [f"{schema}.cloud_accounts.id"],
+            [f"{schema}.cloud_accounts.id" if schema else "cloud_accounts.id"],
             ondelete="CASCADE",
         ),
         sa.UniqueConstraint("account_id", "client_id", "surface"),
@@ -88,4 +93,3 @@ def downgrade() -> None:
     op.drop_table("audit_events", schema=schema)
     op.drop_table("provider_connections", schema=schema)
     op.drop_table("cloud_accounts", schema=schema)
-

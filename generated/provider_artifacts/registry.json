@@ -37,7 +37,7 @@
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "execution_target": {
+          "executionTarget": {
             "additionalProperties": false,
             "properties": {
               "capabilities": {
@@ -46,18 +46,6 @@
                 },
                 "type": "array"
               },
-              "device_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "execution_target_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
               "message": {
                 "type": [
                   "string",
@@ -65,25 +53,40 @@
                 ]
               },
               "state": {
+                "enum": [
+                  "ready",
+                  "offline",
+                  "update_required"
+                ],
                 "type": "string"
+              },
+              "target_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
               "state",
-              "execution_target_id",
-              "device_id",
+              "target_id",
               "capabilities",
               "message"
             ],
             "type": "object"
           },
           "status": {
+            "enum": [
+              "ready",
+              "offline",
+              "update_required"
+            ],
             "type": "string"
           }
         },
         "required": [
           "status",
-          "execution_target"
+          "executionTarget"
         ],
         "type": "object"
       },

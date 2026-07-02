@@ -14,7 +14,7 @@ def build_execution_target_tool_handlers(
         context: AuthorizationContext,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        status = await execution_target.status(context)
-        return status.model_dump(mode="json")
+        status = await execution_target.status(context, arguments)
+        return status.model_dump(mode="json", by_alias=True)
 
     return {"get_shipagent_status": get_shipagent_status}

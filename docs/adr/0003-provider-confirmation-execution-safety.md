@@ -18,4 +18,3 @@ the confirmation widget's button — a user gesture, not a model-initiated call.
 On Claude surfaces, conversational confirmation is permitted, backed by Claude's
 native tool-approval prompt. Both paths consume the same one-time token; neither
 surface can execute a shipment the user has not seen priced.
-
