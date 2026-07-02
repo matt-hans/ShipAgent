@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-import os
 from logging.config import fileConfig
 
+from sqlalchemy import engine_from_config, pool, text
+from sqlalchemy.engine import make_url
+
 from alembic import context
-from sqlalchemy import engine_from_config, pool
-
-from src.control_plane.models import ControlPlaneBase
 from src.control_plane.audit.models import ControlPlaneAuditEvent
-from src.control_plane.models import CloudAccount, ProviderConnection
-
+from src.control_plane.models import (
+    CloudAccount,
+    ControlPlaneBase,
+    ProviderConnection,
+    RelayDevice,
+)
 
 config = context.config
 if config.config_file_name is not None:
@@ -22,17 +25,35 @@ target_metadata = ControlPlaneBase.metadata
 
 def _import_all_models() -> None:
     # Ensure model modules are imported for full metadata visibility.
-    ControlPlaneBase.metadata
-    CloudAccount
-    ProviderConnection
-    ControlPlaneAuditEvent
+    for model in (
+        CloudAccount,
+        ProviderConnection,
+        RelayDevice,
+        ControlPlaneAuditEvent,
+    ):
+        assert model is not None
 
 
-def _target_schema() -> str:
-    return config.get_section("alembic:runtime").get(
+def _configured_schema() -> str:
+    runtime_section = config.get_section("alembic:runtime") or {}
+    return runtime_section.get(
         "shipagent_control_plane_schema",
-        os.environ.get("SHIPAGENT_CONTROL_PLANE_SCHEMA", "shipagent_private"),
+        "shipagent_private",
     )
+
+
+def _schema_for_dialect(dialect_name: str) -> str | None:
+    if dialect_name == "sqlite":
+        return None
+    return _configured_schema()
+
+
+def _schema_for_url(url: str) -> str | None:
+    return _schema_for_dialect(make_url(url).get_backend_name())
+
+
+def _configure_schema_attribute(schema: str | None) -> None:
+    config.attributes["shipagent_control_plane_schema"] = schema
 
 
 def run_migrations_offline() -> None:
@@ -40,10 +61,13 @@ def run_migrations_offline() -> None:
 
     _import_all_models()
     url = config.get_main_option("sqlalchemy.url")
+    schema = _schema_for_url(url)
+    _configure_schema_attribute(schema)
     context.configure(
         url=url,
         target_metadata=target_metadata,
-        include_schemas=True,
+        include_schemas=schema is not None,
+        version_table_schema=schema,
         compare_type=True,
         compare_server_default=True,
         literal_binds=True,
@@ -65,14 +89,14 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        schema = _target_schema()
-        connection.execute(
-            f'CREATE SCHEMA IF NOT EXISTS "{schema}"'
-        )
+        schema = _schema_for_dialect(connection.dialect.name)
+        _configure_schema_attribute(schema)
+        if schema is not None:
+            connection.execute(text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            include_schemas=True,
+            include_schemas=schema is not None,
             version_table_schema=schema,
             compare_type=True,
             compare_server_default=True,
@@ -86,4 +110,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-

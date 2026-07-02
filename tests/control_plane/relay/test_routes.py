@@ -6,15 +6,18 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import textwrap
 import threading
 import time
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 from fastmcp import Client as FastMCPClient
+from sqlalchemy import create_engine
 from starlette.websockets import WebSocketDisconnect
 
 from src.control_plane.app import _build_verifier, create_control_plane_app
@@ -25,6 +28,8 @@ from src.control_plane.auth.context import (
 )
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.auth.service import AuthorizationService
+from src.control_plane.execution_targets import LoopbackExecutionTarget
+from src.control_plane.models import ControlPlaneBase
 from src.control_plane.redis_keys import RedisKey, RedisTtl
 from src.control_plane.relay.protocol import (
     RelayVersionMetadata,
@@ -265,17 +270,35 @@ class _TokenVerifier:
         if token == "status-token":
             scopes.add("shipagent.status")
         if token == "relay-manage-token":
-            scopes.add("relay:manage")
+            scopes.add("relay:device:manage")
+        if token == "relay-device-manage-no-auth-time-token":
+            scopes.add("relay:device:manage")
+        auth_time = datetime.now(UTC) if token == "relay-manage-token" else None
+        if token == "stale-relay-device-manage-token":
+            scopes.add("relay:device:manage")
+            auth_time = datetime(2020, 1, 1, tzinfo=UTC)
+        if token == "future-relay-device-manage-token":
+            scopes.add("relay:device:manage")
+            auth_time = datetime.now(UTC) + timedelta(minutes=10)
+        if token == "near-future-relay-device-manage-token":
+            scopes.add("relay:device:manage")
+            auth_time = datetime.now(UTC) + timedelta(minutes=1)
         return TokenPrincipal(
             subject="auth0|owner-1",
             client_id="chatgpt-client",
             scopes=frozenset(scopes),
+            auth_time=auth_time,
         )
 
 
 class _AuthorizationService(AuthorizationService):
     async def resolve(
-        self, *, subject: str, client_id: str, scopes: set[str]
+        self,
+        *,
+        subject: str,
+        client_id: str,
+        scopes: set[str],
+        auth_time: datetime | None = None,
     ) -> AuthorizationContext:
         return AuthorizationContext(
             account_id="acct-1",
@@ -284,6 +307,7 @@ class _AuthorizationService(AuthorizationService):
             subject=subject,
             client_id=client_id,
             scopes=frozenset(scopes),
+            auth_time=auth_time,
         )
 
 
@@ -292,10 +316,10 @@ class _RelayTestClientConnection:
         self._websocket = websocket
 
     async def send_json(self, payload: dict[str, object]) -> None:
-        self._websocket.send_json(payload)
+        await asyncio.to_thread(self._websocket.send_json, payload)
 
     async def receive_json(self) -> dict[str, object]:
-        return self._websocket.receive_json()
+        return await asyncio.to_thread(self._websocket.receive_json)
 
 
 class _RelayTestClientConnectionContext:
@@ -323,20 +347,30 @@ class _RelayTestClientTransport:
         return _RelayTestClientConnectionContext(self._client, url)
 
 
-def _build_app(monkeypatch):
+def _build_app(monkeypatch, *, execution_target=None):
     redis = FakeRedis()
+    fd, database_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    database_url = f"sqlite+aiosqlite:///{database_path}"
+    sync_engine = create_engine(database_url.replace("+aiosqlite", ""))
+    try:
+        ControlPlaneBase.metadata.create_all(sync_engine)
+    finally:
+        sync_engine.dispose()
     monkeypatch.setenv("SHIPAGENT_PUBLIC_BASE_URL", "https://dev-mcp.shipagent.app/")
     monkeypatch.setenv("SHIPAGENT_AUTH0_ISSUER", "https://tenant.us.auth0.com/")
     monkeypatch.setenv("SHIPAGENT_AUTH0_AUDIENCE", "https://dev-mcp.shipagent.app")
-    monkeypatch.setenv("SHIPAGENT_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    monkeypatch.setenv("SHIPAGENT_DATABASE_URL", database_url)
     monkeypatch.setenv("SHIPAGENT_REDIS_URL", "redis://127.0.0.1:6379/0")
     monkeypatch.setattr("src.control_plane.app.Auth0TokenVerifier", _TokenVerifier)
     monkeypatch.setattr(
         "src.control_plane.app.AuthorizationService", _AuthorizationService
     )
-    monkeypatch.setattr("src.control_plane.app._build_redis_client", lambda _: redis)
     _build_verifier.cache_clear()
-    return create_control_plane_app(), redis
+    return create_control_plane_app(
+        redis_client=redis,
+        execution_target=execution_target,
+    ), redis
 
 
 async def _run_status_tool(server) -> dict[str, object]:
@@ -400,7 +434,7 @@ async def _poll_status_tool_over_http(
                 base_url,
                 correlation_id=f"poll-{expected_state}-{attempt}",
             )
-            execution_target = last_status.get("execution_target")
+            execution_target = last_status.get("executionTarget")
             if (
                 isinstance(execution_target, dict)
                 and execution_target.get("state") == expected_state
@@ -567,6 +601,160 @@ def test_register_device_returns_public_device_record(monkeypatch) -> None:
     assert "private_key_pem" not in response.text
 
 
+def test_list_devices_returns_public_device_records(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        second = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Warehouse Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.get(
+            "/relay/devices",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == [first, second]
+    assert "public_key" not in response.text
+    assert "private_key" not in response.text
+    assert "private_key_pem" not in response.text
+
+
+def test_list_devices_rejects_provider_token_without_relay_manage_scope(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/relay/devices",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+    assert response.status_code == 403
+
+
+def test_set_active_device_selects_public_device_record(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        second = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Warehouse Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{second['device_id']}/set-active",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+        listed = client.get(
+            "/relay/devices",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["account_id"] == "acct-1"
+    assert payload["device_id"] == second["device_id"]
+    assert payload["fingerprint"] == second["fingerprint"]
+    assert payload["revoked"] is False
+    assert payload["active"] is True
+    assert [
+        (device["device_id"], device["active"])
+        for device in listed.json()
+    ] == [
+        (first["device_id"], False),
+        (second["device_id"], True),
+    ]
+    assert "public_key" not in response.text
+    assert "private_key" not in response.text
+    assert "private_key_pem" not in response.text
+
+
+def test_set_active_missing_device_returns_404(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(
+            "/relay/devices/missing-device/set-active",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Relay device not found"}
+
+
+def test_set_active_rejects_revoked_device(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        client.post(
+            f"/relay/devices/{registered['device_id']}/revoke",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/set-active",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+
+    assert response.status_code == 410
+    assert response.json() == {"detail": "Relay device revoked"}
+
+
+def test_set_active_rejects_provider_token_without_relay_manage_scope(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/set-active",
+            headers={"Authorization": "Bearer valid-token"},
+        )
+
+    assert response.status_code == 403
+
+
+def test_set_active_rejects_stale_recent_auth(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/set-active",
+            headers={"Authorization": "Bearer stale-relay-device-manage-token"},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
+
+
 def test_control_plane_app_binds_only_status_mcp_tool(monkeypatch) -> None:
     captured = {}
 
@@ -662,6 +850,95 @@ def test_register_device_rejects_provider_token_without_relay_manage_scope(
     assert response.status_code == 403
 
 
+def test_register_device_checks_scope_before_public_key_validation(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PRIVATE_KEY},
+        )
+
+    assert response.status_code == 403
+    assert PRIVATE_KEY not in response.text
+
+
+def test_register_device_rejects_stale_recent_auth(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer stale-relay-device-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
+
+
+def test_register_device_checks_recent_auth_before_public_key_validation(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer stale-relay-device-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PRIVATE_KEY},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
+    assert PRIVATE_KEY not in response.text
+
+
+def test_register_device_rejects_missing_recent_auth_time(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-device-manage-no-auth-time-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
+
+
+def test_register_device_rejects_future_recent_auth_time(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer future-relay-device-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
+
+
+def test_register_device_rejects_near_future_recent_auth_time(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer near-future-relay-device-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
+
+
 def test_rotate_key_returns_updated_fingerprint(monkeypatch) -> None:
     app, _redis = _build_app(monkeypatch)
     rotated_key = OTHER_KEYPAIR.public_key_pem
@@ -745,6 +1022,68 @@ def test_rotate_key_rejects_provider_token_without_relay_manage_scope(
     assert response.status_code == 403
 
 
+def test_rotate_key_checks_scope_before_public_key_validation(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/rotate-key",
+            headers={"Authorization": "Bearer valid-token"},
+            json={"public_key_pem": PRIVATE_KEY},
+        )
+
+    assert response.status_code == 403
+    assert PRIVATE_KEY not in response.text
+
+
+def test_rotate_key_rejects_stale_recent_auth(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/rotate-key",
+            headers={"Authorization": "Bearer stale-relay-device-manage-token"},
+            json={"public_key_pem": OTHER_KEYPAIR.public_key_pem},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
+
+
+def test_rotate_key_checks_recent_auth_before_public_key_validation(
+    monkeypatch,
+) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/rotate-key",
+            headers={"Authorization": "Bearer stale-relay-device-manage-token"},
+            json={"public_key_pem": PRIVATE_KEY},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
+    assert PRIVATE_KEY not in response.text
+
+
 def test_revoke_device_returns_revoked_record(monkeypatch) -> None:
     app, _redis = _build_app(monkeypatch)
 
@@ -767,6 +1106,81 @@ def test_revoke_device_returns_revoked_record(monkeypatch) -> None:
     assert payload["revoked"] is True
     assert "private_key" not in response.text
     assert "private_key_pem" not in response.text
+
+
+def test_unlink_device_returns_revoked_public_record(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        client.post(
+            f"/relay/devices/{registered['device_id']}/set-active",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/unlink",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+        listed = client.get(
+            "/relay/devices",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["account_id"] == "acct-1"
+    assert payload["device_id"] == registered["device_id"]
+    assert payload["fingerprint"] == registered["fingerprint"]
+    assert payload["revoked"] is True
+    assert payload["active"] is False
+    assert listed.json() == [payload]
+    assert "public_key" not in response.text
+    assert "private_key" not in response.text
+    assert "private_key_pem" not in response.text
+
+
+def test_unlink_device_rejects_stale_recent_auth(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/unlink",
+            headers={"Authorization": "Bearer stale-relay-device-manage-token"},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
+
+
+def test_unlink_device_rejects_already_revoked_device(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        client.post(
+            f"/relay/devices/{registered['device_id']}/revoke",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/unlink",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+
+    assert response.status_code == 410
+    assert response.json() == {"detail": "Relay device revoked"}
 
 
 def test_revoke_missing_device_returns_404(monkeypatch) -> None:
@@ -799,6 +1213,24 @@ def test_revoke_device_rejects_provider_token_without_relay_manage_scope(
         )
 
     assert response.status_code == 403
+
+
+def test_revoke_device_rejects_stale_recent_auth(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        response = client.post(
+            f"/relay/devices/{registered['device_id']}/revoke",
+            headers={"Authorization": "Bearer stale-relay-device-manage-token"},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "recent_auth_required"}
 
 
 def test_register_device_requires_authorization(monkeypatch) -> None:
@@ -875,21 +1307,74 @@ def test_desktop_relay_client_connection_makes_hosted_status_ready(
         offline_status = await _run_status_tool(captured["server"])
 
         assert ready_status == {
-            "status": "ok",
-            "execution_target": {
+            "status": "ready",
+            "executionTarget": {
                 "state": "ready",
-                "execution_target_id": f"relay:{device_id}",
-                "device_id": device_id,
+                "target_id": f"relay:{device_id}",
                 "capabilities": ["rate_shipment", "get_shipagent_status"],
                 "message": None,
             },
         }
         assert offline_status == {
-            "status": "unavailable",
-            "execution_target": {
+            "status": "offline",
+            "executionTarget": {
                 "state": "offline",
-                "execution_target_id": None,
-                "device_id": None,
+                "target_id": None,
+                "capabilities": [],
+                "message": "No active execution target connected.",
+            },
+        }
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        asyncio.run(run_scenario(client, registered["device_id"]))
+
+
+def test_hosted_status_returns_offline_when_only_stale_redis_liveness_remains(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    def capture_build_server(**kwargs):
+        server = real_build_server(**kwargs)
+        captured["server"] = server
+        return server
+
+    monkeypatch.setattr("src.control_plane.app.build_server", capture_build_server)
+    app, redis = _build_app(monkeypatch)
+
+    async def run_scenario(client: TestClient, device_id: str) -> None:
+        relay_client = DesktopRelayClient(
+            relay_url="/relay/connect",
+            account_id="acct-1",
+            device_id=device_id,
+            key_service=KEY_SERVICE,
+            transport=_RelayTestClientTransport(client),
+        )
+
+        await relay_client.start()
+        session_key = RedisKey.relay_session(device_id)
+        heartbeat_key = RedisKey.relay_heartbeat(device_id)
+        active_target_key = RedisKey.relay_active_target("acct-1")
+        stale_values = {
+            session_key: redis.values[session_key],
+            heartbeat_key: redis.values[heartbeat_key],
+            active_target_key: redis.values[active_target_key],
+        }
+        await relay_client.stop()
+        redis.values.update(stale_values)
+
+        status = await _run_status_tool(captured["server"])
+
+        assert status == {
+            "status": "offline",
+            "executionTarget": {
+                "state": "offline",
+                "target_id": None,
                 "capabilities": [],
                 "message": "No active execution target connected.",
             },
@@ -940,11 +1425,10 @@ def test_desktop_relay_process_makes_hosted_http_status_ready_then_offline(
         )
 
         assert ready_status == {
-            "status": "ok",
-            "execution_target": {
+            "status": "ready",
+            "executionTarget": {
                 "state": "ready",
-                "execution_target_id": f"relay:{device_id}",
-                "device_id": device_id,
+                "target_id": f"relay:{device_id}",
                 "capabilities": ["rate_shipment", "get_shipagent_status"],
                 "message": None,
             },
@@ -960,11 +1444,10 @@ def test_desktop_relay_process_makes_hosted_http_status_ready_then_offline(
             _poll_status_tool_over_http(base_url, expected_state="offline")
         )
         assert offline_status == {
-            "status": "unavailable",
-            "execution_target": {
+            "status": "offline",
+            "executionTarget": {
                 "state": "offline",
-                "execution_target_id": None,
-                "device_id": None,
+                "target_id": None,
                 "capabilities": [],
                 "message": "No active execution target connected.",
             },
@@ -977,6 +1460,39 @@ def test_desktop_relay_process_makes_hosted_http_status_ready_then_offline(
             except subprocess.TimeoutExpired:
                 relay_process.kill()
                 relay_process.wait(timeout=5)
+        _stop_uvicorn_server(server, thread)
+
+
+def test_control_plane_app_injected_loopback_status_over_mcp_http(
+    monkeypatch,
+    unused_tcp_port: int,
+) -> None:
+    app, _redis = _build_app(
+        monkeypatch,
+        execution_target=LoopbackExecutionTarget(
+            capabilities=["rate_shipment", "get_shipagent_status"],
+            execution_target_id="loopback-target",
+        ),
+    )
+    base_url = f"http://127.0.0.1:{unused_tcp_port}"
+    server, thread = _start_uvicorn_server(app, port=unused_tcp_port)
+    try:
+        _wait_for_http_server(base_url)
+
+        status = asyncio.run(
+            _run_status_tool_over_http(base_url, correlation_id="loopback-status")
+        )
+
+        assert status == {
+            "status": "ready",
+            "executionTarget": {
+                "state": "ready",
+                "target_id": "loopback-target",
+                "capabilities": ["rate_shipment", "get_shipagent_status"],
+                "message": None,
+            },
+        }
+    finally:
         _stop_uvicorn_server(server, thread)
 
 
@@ -1127,6 +1643,52 @@ def test_connect_websocket_wrong_session_heartbeat_does_not_refresh_liveness(
                 {
                     "type": "heartbeat",
                     "relay_session_id": "wrong-session",
+                }
+            )
+            time.sleep(0.01)
+
+            assert redis.ttls.get(session_key) in (None, 1)
+            assert redis.ttls.get(heartbeat_key) in (None, 1)
+
+
+def test_connect_websocket_wrong_session_invocation_result_closes_liveness(
+    monkeypatch,
+) -> None:
+    app, redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        with client.websocket_connect("/relay/connect") as websocket:
+            websocket.send_json(
+                {"account_id": "acct-1", "device_id": registered["device_id"]}
+            )
+            challenge = websocket.receive_json()
+            claims = build_handshake_claims(
+                device_id=registered["device_id"],
+                account_id="acct-1",
+                relay_session_id=challenge["relay_session_id"],
+                nonce=challenge["nonce"],
+                version=VERSION,
+            )
+            signed = KEY_SERVICE.sign_handshake_claims(claims)
+            websocket.send_json(signed.model_dump(mode="json"))
+            assert websocket.receive_json()["state"] == "ready"
+            session_key = RedisKey.relay_session(registered["device_id"])
+            heartbeat_key = RedisKey.relay_heartbeat(registered["device_id"])
+            redis.ttls[session_key] = 1
+            redis.ttls[heartbeat_key] = 1
+
+            websocket.send_json(
+                {
+                    "type": "invocation_result",
+                    "relay_session_id": "wrong-session",
+                    "relay_invocation_id": "invocation-1",
+                    "status": "ok",
+                    "result": {"status": "ok"},
                 }
             )
             time.sleep(0.01)

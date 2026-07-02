@@ -1,5 +1,6 @@
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -10,6 +11,7 @@ class AuthorizationContext:
     subject: str
     client_id: str
     scopes: frozenset[str]
+    auth_time: datetime | None = None
 
 
 _AUTHORIZATION_CONTEXT: ContextVar[AuthorizationContext | None] = ContextVar(

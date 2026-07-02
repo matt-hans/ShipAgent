@@ -9,10 +9,14 @@ from typing import Any, Protocol
 from websockets.asyncio.client import connect as websocket_connect
 
 from src.control_plane.relay.protocol import (
+    ExecutionTargetStatus,
     RelayHandshakeChallenge,
+    RelayInvocationFrame,
+    RelayInvocationResultFrame,
     RelayProtocolModel,
     RelayTargetState,
     RelayVersionMetadata,
+    ShipAgentStatus,
     build_handshake_claims,
 )
 from src.services.relay_key_service import RelayKeyService
@@ -136,7 +140,9 @@ class DesktopRelayClient:
         self._connection: RelayClientConnection | None = None
         self._accepted: RelayAcceptedResponse | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
+        self._receive_task: asyncio.Task[None] | None = None
         self._lifecycle_lock = asyncio.Lock()
+        self._send_lock = asyncio.Lock()
 
     async def start(self) -> RelayAcceptedResponse:
         async with self._lifecycle_lock:
@@ -178,6 +184,9 @@ class DesktopRelayClient:
                 self._heartbeat_task = asyncio.create_task(
                     self._heartbeat_loop(accepted.relay_session_id)
                 )
+                self._receive_task = asyncio.create_task(
+                    self._receive_loop(accepted.relay_session_id)
+                )
                 return accepted
             except BaseException:
                 await self._stop_unlocked()
@@ -189,6 +198,11 @@ class DesktopRelayClient:
 
     async def _stop_unlocked(self) -> None:
         try:
+            if self._receive_task is not None:
+                self._receive_task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await self._receive_task
+                self._receive_task = None
             if self._heartbeat_task is not None:
                 self._heartbeat_task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
@@ -206,6 +220,82 @@ class DesktopRelayClient:
             await self._sleep(self._heartbeat_interval_seconds)
             if self._connection is None:
                 return
-            await self._connection.send_json(
+            await self._send_json(
                 {"type": "heartbeat", "relay_session_id": relay_session_id}
             )
+
+    async def _receive_loop(self, relay_session_id: str) -> None:
+        while True:
+            if self._connection is None:
+                return
+            payload = await self._connection.receive_json()
+            frame_type = payload.get("type")
+            if frame_type != "invocation":
+                continue
+            invocation = RelayInvocationFrame.model_validate(payload)
+            if invocation.relay_session_id != relay_session_id:
+                await self._send_invocation_error(
+                    invocation,
+                    error_code="wrong_relay_session",
+                    message="Invocation was not addressed to this relay session.",
+                )
+                return
+            await self._handle_invocation(invocation)
+
+    async def _handle_invocation(self, invocation: RelayInvocationFrame) -> None:
+        if invocation.tool_name != "get_shipagent_status":
+            await self._send_invocation_error(
+                invocation,
+                error_code="unsupported_tool",
+                message="Relay invocation tool is not supported.",
+            )
+            return
+        accepted = self._accepted
+        if accepted is None:
+            await self._send_invocation_error(
+                invocation,
+                error_code="not_ready",
+                message="Relay client is not ready.",
+            )
+            return
+        status = ShipAgentStatus(
+            status=RelayTargetState.READY,
+            execution_target=ExecutionTargetStatus(
+                state=RelayTargetState.READY,
+                target_id=accepted.execution_target_id,
+                capabilities=list(self._version.capabilities),
+                message=None,
+            ),
+        )
+        await self._send_json(
+            RelayInvocationResultFrame(
+                type="invocation_result",
+                relay_session_id=invocation.relay_session_id,
+                relay_invocation_id=invocation.relay_invocation_id,
+                status="ok",
+                result=status.model_dump(mode="json", by_alias=True),
+            ).model_dump(mode="json")
+        )
+
+    async def _send_invocation_error(
+        self,
+        invocation: RelayInvocationFrame,
+        *,
+        error_code: str,
+        message: str,
+    ) -> None:
+        await self._send_json(
+            RelayInvocationResultFrame(
+                type="invocation_result",
+                relay_session_id=invocation.relay_session_id,
+                relay_invocation_id=invocation.relay_invocation_id,
+                status="error",
+                error={"code": error_code, "message": message},
+            ).model_dump(mode="json")
+        )
+
+    async def _send_json(self, payload: dict[str, Any]) -> None:
+        if self._connection is None:
+            return
+        async with self._send_lock:
+            await self._connection.send_json(payload)

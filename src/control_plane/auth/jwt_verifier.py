@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import jwt
@@ -10,6 +11,7 @@ class TokenPrincipal:
     subject: str
     client_id: str
     scopes: frozenset[str]
+    auth_time: datetime | None = None
 
 
 class Auth0TokenVerifier:
@@ -62,4 +64,17 @@ class Auth0TokenVerifier:
         else:
             scopes = frozenset()
 
-        return TokenPrincipal(subject=subject, client_id=client_id, scopes=scopes)
+        auth_time_claim = claims.get("auth_time")
+        auth_time = (
+            datetime.fromtimestamp(auth_time_claim, tz=UTC)
+            if isinstance(auth_time_claim, int | float)
+            and not isinstance(auth_time_claim, bool)
+            else None
+        )
+
+        return TokenPrincipal(
+            subject=subject,
+            client_id=client_id,
+            scopes=scopes,
+            auth_time=auth_time,
+        )

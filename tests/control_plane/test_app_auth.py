@@ -1,4 +1,5 @@
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 from fastapi import Request
 from fastapi.testclient import TestClient
@@ -7,6 +8,8 @@ from src.control_plane.app import _build_verifier, create_control_plane_app
 from src.control_plane.auth.context import AuthorizationContext
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.auth.service import AuthorizationService
+
+_AUTH_TIME = datetime(2026, 7, 2, 12, 30, tzinfo=UTC)
 
 
 class _TokenVerifier:
@@ -18,12 +21,18 @@ class _TokenVerifier:
             subject="auth0|owner-1",
             client_id="chatgpt-client",
             scopes=frozenset({"jobs:read", "shipments:preview"}),
+            auth_time=_AUTH_TIME,
         )
 
 
 class _AuthorizationService(AuthorizationService):
     async def resolve(
-        self, *, subject: str, client_id: str, scopes: set[str]
+        self,
+        *,
+        subject: str,
+        client_id: str,
+        scopes: set[str],
+        auth_time: datetime | None,
     ) -> AuthorizationContext:
         return AuthorizationContext(
             account_id="acct-1",
@@ -32,6 +41,7 @@ class _AuthorizationService(AuthorizationService):
             subject=subject,
             client_id=client_id,
             scopes=frozenset(scopes),
+            auth_time=auth_time,
         )
 
 
@@ -103,3 +113,4 @@ def test_valid_token_populates_context(monkeypatch):
         "jobs:read",
         "shipments:preview",
     }
+    assert payload["authorization"]["auth_time"] == _AUTH_TIME.isoformat()
