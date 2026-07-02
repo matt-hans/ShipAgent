@@ -3,10 +3,13 @@ from __future__ import annotations
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool, text
-from sqlalchemy.engine import make_url
 
 from alembic import context
 from src.control_plane.audit.models import ControlPlaneAuditEvent
+from src.control_plane.db import (
+    control_plane_schema_for_database_url,
+    resolve_control_plane_schema,
+)
 from src.control_plane.models import (
     CloudAccount,
     ControlPlaneBase,
@@ -34,22 +37,23 @@ def _import_all_models() -> None:
         assert model is not None
 
 
-def _configured_schema() -> str:
+def _configured_schema() -> str | None:
     runtime_section = config.get_section("alembic:runtime") or {}
-    return runtime_section.get(
-        "shipagent_control_plane_schema",
-        "shipagent_private",
-    )
+    return runtime_section.get("shipagent_control_plane_schema")
 
 
 def _schema_for_dialect(dialect_name: str) -> str | None:
-    if dialect_name == "sqlite":
-        return None
-    return _configured_schema()
+    return resolve_control_plane_schema(
+        dialect_name=dialect_name,
+        configured_schema=_configured_schema(),
+    )
 
 
 def _schema_for_url(url: str) -> str | None:
-    return _schema_for_dialect(make_url(url).get_backend_name())
+    return control_plane_schema_for_database_url(
+        url,
+        configured_schema=_configured_schema(),
+    )
 
 
 def _configure_schema_attribute(schema: str | None) -> None:

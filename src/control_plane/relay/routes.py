@@ -120,11 +120,14 @@ def build_relay_router(
     ) -> RelayDeviceResponse:
         account_id = _require_relay_manage_account_id()
         body = await _request_model(request, RegisterRelayDeviceRequest)
-        device = await registry.register_device(
-            account_id=account_id,
-            device_name=body.device_name,
-            public_key_pem=body.public_key_pem,
-        )
+        try:
+            device = await registry.register_device(
+                account_id=account_id,
+                device_name=body.device_name,
+                public_key_pem=body.public_key_pem,
+            )
+        except ValueError as exc:
+            raise _relay_registry_http_error(exc) from exc
         return _device_response(device)
 
     @router.get("/devices", response_model=list[RelayDeviceResponse])

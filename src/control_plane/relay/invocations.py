@@ -6,8 +6,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from src.control_plane.relay.protocol import (
-    RelayInvocationFrame,
+    RelayInvocationEnvelope,
     RelayInvocationResultFrame,
+    relay_invocation_input_hash,
 )
 
 
@@ -32,6 +33,7 @@ class RelayInvocationBroker:
         self._connections: dict[str, RelayInvocationConnection] = {}
         self._pending: dict[str, asyncio.Future[RelayInvocationResultFrame]] = {}
         self._pending_sessions: dict[str, str] = {}
+        self._session_sequences: dict[str, int] = {}
         self._lock = asyncio.Lock()
 
     async def register(
@@ -45,6 +47,7 @@ class RelayInvocationBroker:
     async def unregister(self, relay_session_id: str) -> None:
         async with self._lock:
             self._connections.pop(relay_session_id, None)
+            self._session_sequences.pop(relay_session_id, None)
             invocation_ids = [
                 invocation_id
                 for invocation_id, pending_session_id in self._pending_sessions.items()
@@ -68,23 +71,29 @@ class RelayInvocationBroker:
         timeout_seconds: float,
     ) -> RelayInvocationResultFrame:
         relay_invocation_id = f"relay_invocation_{uuid.uuid4().hex}"
+        idempotency_key = f"relay_idempotency_{uuid.uuid4().hex}"
         loop = asyncio.get_running_loop()
         future: asyncio.Future[RelayInvocationResultFrame] = loop.create_future()
-        frame = RelayInvocationFrame(
-            type="invocation",
-            relay_session_id=relay_session_id,
-            relay_invocation_id=relay_invocation_id,
-            tool_name=tool_name,
-            arguments=arguments,
-            deadline_at=datetime.now(UTC) + timedelta(seconds=timeout_seconds),
-            audit_correlation_id=audit_correlation_id,
-        )
         async with self._lock:
             connection = self._connections.get(relay_session_id)
             if connection is None:
                 raise NoLiveRelaySession("no live relay session")
+            sequence = self._session_sequences.get(relay_session_id, 0) + 1
+            self._session_sequences[relay_session_id] = sequence
             self._pending[relay_invocation_id] = future
             self._pending_sessions[relay_invocation_id] = relay_session_id
+        frame = RelayInvocationEnvelope(
+            type="invocation",
+            relay_session_id=relay_session_id,
+            sequence=sequence,
+            relay_invocation_id=relay_invocation_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            input_hash=relay_invocation_input_hash(tool_name, arguments),
+            deadline_at=datetime.now(UTC) + timedelta(seconds=timeout_seconds),
+            idempotency_key=idempotency_key,
+            audit_correlation_id=audit_correlation_id,
+        )
         try:
             await connection.send_json(frame.model_dump(mode="json"))
             return await asyncio.wait_for(future, timeout=timeout_seconds)

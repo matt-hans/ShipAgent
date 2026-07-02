@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 from src.control_plane.relay.protocol import (
     RelayHandshakeChallenge,
-    RelayInvocationFrame,
+    RelayInvocationEnvelope,
     RelayInvocationResultFrame,
     RelaySignedHandshakeClaims,
     RelayVersionMetadata,
+    relay_invocation_input_hash,
     verify_handshake_signature,
 )
 from src.services.desktop_relay_client import (
@@ -198,6 +199,32 @@ VERSION = RelayVersionMetadata(
 )
 
 
+def relay_invocation_envelope(
+    *,
+    relay_session_id: str,
+    sequence: int = 1,
+    relay_invocation_id: str = "invocation-1",
+    tool_name: str = "get_shipagent_status",
+    arguments: dict[str, object] | None = None,
+    deadline_at: datetime | None = None,
+    idempotency_key: str = "idempotency-1",
+    audit_correlation_id: str = "corr-1",
+) -> RelayInvocationEnvelope:
+    invocation_arguments = arguments or {}
+    return RelayInvocationEnvelope(
+        type="invocation",
+        relay_session_id=relay_session_id,
+        sequence=sequence,
+        relay_invocation_id=relay_invocation_id,
+        tool_name=tool_name,
+        arguments=invocation_arguments,
+        input_hash=relay_invocation_input_hash(tool_name, invocation_arguments),
+        deadline_at=deadline_at or datetime.now(UTC) + timedelta(seconds=30),
+        idempotency_key=idempotency_key,
+        audit_correlation_id=audit_correlation_id,
+    )
+
+
 @pytest.mark.asyncio
 async def test_start_sends_hello_and_signed_handshake_for_challenge() -> None:
     key_service = RelayKeyService(InMemoryStore())
@@ -320,14 +347,9 @@ async def test_receive_loop_dispatches_get_shipagent_status_invocation() -> None
         relay_session_id="relay-session-1",
         nonce="nonce-1",
     )
-    invocation = RelayInvocationFrame(
-        type="invocation",
+    invocation = relay_invocation_envelope(
         relay_session_id=challenge.relay_session_id,
-        relay_invocation_id="invocation-1",
-        tool_name="get_shipagent_status",
         arguments={"correlation_id": "corr-1"},
-        deadline_at=datetime.now(UTC),
-        audit_correlation_id="corr-1",
     )
     connection = FakeConnection(
         [
@@ -386,14 +408,10 @@ async def test_receive_loop_rejects_unsupported_tool_with_sanitized_result() -> 
         relay_session_id="relay-session-1",
         nonce="nonce-1",
     )
-    invocation = RelayInvocationFrame(
-        type="invocation",
+    invocation = relay_invocation_envelope(
         relay_session_id=challenge.relay_session_id,
-        relay_invocation_id="invocation-1",
         tool_name="read_secret_credentials",
         arguments={"token": "secret"},
-        deadline_at=datetime.now(UTC),
-        audit_correlation_id="corr-1",
     )
     connection = FakeConnection(
         [
@@ -440,6 +458,311 @@ async def test_receive_loop_rejects_unsupported_tool_with_sanitized_result() -> 
 
 
 @pytest.mark.asyncio
+async def test_receive_loop_rejects_expired_invocation_without_execution() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    invocation = relay_invocation_envelope(
+        relay_session_id=challenge.relay_session_id,
+        deadline_at=datetime.now(UTC) - timedelta(seconds=1),
+    )
+    connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+            invocation.model_dump(mode="json"),
+        ]
+    )
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=FakeTransport(connection),
+        sleep=ControlledSleep(),
+    )
+
+    await client.start()
+    for _ in range(20):
+        result_payloads = [
+            payload
+            for payload in connection.sent
+            if payload.get("type") == "invocation_result"
+        ]
+        if result_payloads:
+            break
+        await asyncio.sleep(0)
+    await client.stop()
+
+    result = RelayInvocationResultFrame.model_validate(result_payloads[0])
+    assert result.status == "error"
+    assert result.result is None
+    assert result.error == {
+        "code": "expired_deadline",
+        "message": "Relay invocation deadline has expired.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_receive_loop_rejects_input_hash_mismatch_without_execution() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    invocation = relay_invocation_envelope(
+        relay_session_id=challenge.relay_session_id,
+    ).model_copy(update={"input_hash": "sha256:wrong"})
+    connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+            invocation.model_dump(mode="json"),
+        ]
+    )
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=FakeTransport(connection),
+        sleep=ControlledSleep(),
+    )
+
+    await client.start()
+    for _ in range(20):
+        result_payloads = [
+            payload
+            for payload in connection.sent
+            if payload.get("type") == "invocation_result"
+        ]
+        if result_payloads:
+            break
+        await asyncio.sleep(0)
+    await client.stop()
+
+    result = RelayInvocationResultFrame.model_validate(result_payloads[0])
+    assert result.status == "error"
+    assert result.result is None
+    assert result.error == {
+        "code": "input_hash_mismatch",
+        "message": "Relay invocation input hash did not match.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_receive_loop_rejects_replayed_invocation_id_without_execution() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    first_invocation = relay_invocation_envelope(
+        relay_session_id=challenge.relay_session_id,
+        sequence=1,
+        relay_invocation_id="invocation-1",
+        idempotency_key="idempotency-1",
+    )
+    replayed_invocation = relay_invocation_envelope(
+        relay_session_id=challenge.relay_session_id,
+        sequence=2,
+        relay_invocation_id="invocation-1",
+        idempotency_key="idempotency-2",
+    )
+    connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+            first_invocation.model_dump(mode="json"),
+            replayed_invocation.model_dump(mode="json"),
+        ]
+    )
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=FakeTransport(connection),
+        sleep=ControlledSleep(),
+    )
+
+    await client.start()
+    for _ in range(20):
+        result_payloads = [
+            payload
+            for payload in connection.sent
+            if payload.get("type") == "invocation_result"
+        ]
+        if len(result_payloads) == 2:
+            break
+        await asyncio.sleep(0)
+    await client.stop()
+
+    results = [
+        RelayInvocationResultFrame.model_validate(payload) for payload in result_payloads
+    ]
+    assert results[0].status == "ok"
+    assert results[1].status == "error"
+    assert results[1].result is None
+    assert results[1].error == {
+        "code": "duplicate_invocation",
+        "message": "Relay invocation has already been processed.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_receive_loop_rejects_replayed_idempotency_key_without_execution() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    first_invocation = relay_invocation_envelope(
+        relay_session_id=challenge.relay_session_id,
+        sequence=1,
+        relay_invocation_id="invocation-1",
+        idempotency_key="idempotency-1",
+    )
+    replayed_invocation = relay_invocation_envelope(
+        relay_session_id=challenge.relay_session_id,
+        sequence=2,
+        relay_invocation_id="invocation-2",
+        idempotency_key="idempotency-1",
+    )
+    connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+            first_invocation.model_dump(mode="json"),
+            replayed_invocation.model_dump(mode="json"),
+        ]
+    )
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=FakeTransport(connection),
+        sleep=ControlledSleep(),
+    )
+
+    await client.start()
+    for _ in range(20):
+        result_payloads = [
+            payload
+            for payload in connection.sent
+            if payload.get("type") == "invocation_result"
+        ]
+        if len(result_payloads) == 2:
+            break
+        await asyncio.sleep(0)
+    await client.stop()
+
+    results = [
+        RelayInvocationResultFrame.model_validate(payload) for payload in result_payloads
+    ]
+    assert results[0].status == "ok"
+    assert results[1].status == "error"
+    assert results[1].result is None
+    assert results[1].error == {
+        "code": "duplicate_idempotency_key",
+        "message": "Relay invocation idempotency key has already been processed.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_receive_loop_rejects_non_increasing_sequence_without_execution() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    first_invocation = relay_invocation_envelope(
+        relay_session_id=challenge.relay_session_id,
+        sequence=1,
+        relay_invocation_id="invocation-1",
+        idempotency_key="idempotency-1",
+    )
+    replayed_sequence_invocation = relay_invocation_envelope(
+        relay_session_id=challenge.relay_session_id,
+        sequence=1,
+        relay_invocation_id="invocation-2",
+        idempotency_key="idempotency-2",
+    )
+    connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+            first_invocation.model_dump(mode="json"),
+            replayed_sequence_invocation.model_dump(mode="json"),
+        ]
+    )
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=FakeTransport(connection),
+        sleep=ControlledSleep(),
+    )
+
+    await client.start()
+    for _ in range(20):
+        result_payloads = [
+            payload
+            for payload in connection.sent
+            if payload.get("type") == "invocation_result"
+        ]
+        if len(result_payloads) == 2:
+            break
+        await asyncio.sleep(0)
+    await client.stop()
+
+    results = [
+        RelayInvocationResultFrame.model_validate(payload) for payload in result_payloads
+    ]
+    assert results[0].status == "ok"
+    assert results[1].status == "error"
+    assert results[1].result is None
+    assert results[1].error == {
+        "code": "non_increasing_sequence",
+        "message": "Relay invocation sequence must increase.",
+    }
+
+
+@pytest.mark.asyncio
 async def test_receive_loop_rejects_wrong_session_invocation_and_stops() -> None:
     key_service = RelayKeyService(InMemoryStore())
     key_service.generate_or_load_keypair()
@@ -447,14 +770,8 @@ async def test_receive_loop_rejects_wrong_session_invocation_and_stops() -> None
         relay_session_id="relay-session-1",
         nonce="nonce-1",
     )
-    invocation = RelayInvocationFrame(
-        type="invocation",
+    invocation = relay_invocation_envelope(
         relay_session_id="wrong-session",
-        relay_invocation_id="invocation-1",
-        tool_name="get_shipagent_status",
-        arguments={},
-        deadline_at=datetime.now(UTC),
-        audit_correlation_id="corr-1",
     )
     connection = FakeConnection(
         [
@@ -496,6 +813,91 @@ async def test_receive_loop_rejects_wrong_session_invocation_and_stops() -> None
         "code": "wrong_relay_session",
         "message": "Invocation was not addressed to this relay session.",
     }
+
+
+@pytest.mark.asyncio
+async def test_receive_loop_resets_replay_state_for_new_relay_session() -> None:
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    first_challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    second_challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-2",
+        nonce="nonce-2",
+    )
+    first_connection = FakeConnection(
+        [
+            first_challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": first_challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+            relay_invocation_envelope(
+                relay_session_id=first_challenge.relay_session_id,
+                sequence=1,
+                relay_invocation_id="invocation-1",
+                idempotency_key="idempotency-1",
+            ).model_dump(mode="json"),
+        ]
+    )
+    second_connection = FakeConnection(
+        [
+            second_challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": second_challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+            relay_invocation_envelope(
+                relay_session_id=second_challenge.relay_session_id,
+                sequence=1,
+                relay_invocation_id="invocation-1",
+                idempotency_key="idempotency-1",
+            ).model_dump(mode="json"),
+        ]
+    )
+    transport = QueueTransport([first_connection, second_connection])
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=transport,
+        sleep=ControlledSleep(),
+    )
+
+    await client.start()
+    for _ in range(20):
+        first_results = [
+            payload
+            for payload in first_connection.sent
+            if payload.get("type") == "invocation_result"
+        ]
+        if first_results:
+            break
+        await asyncio.sleep(0)
+    await client.stop()
+
+    await client.start()
+    for _ in range(20):
+        second_results = [
+            payload
+            for payload in second_connection.sent
+            if payload.get("type") == "invocation_result"
+        ]
+        if second_results:
+            break
+        await asyncio.sleep(0)
+    await client.stop()
+
+    first_result = RelayInvocationResultFrame.model_validate(first_results[0])
+    second_result = RelayInvocationResultFrame.model_validate(second_results[0])
+    assert first_result.status == "ok"
+    assert second_result.status == "ok"
 
 
 @pytest.mark.asyncio

@@ -75,16 +75,6 @@ class RelayHeartbeatFrame(RelayProtocolModel):
     relay_session_id: str
 
 
-class RelayInvocationFrame(RelayProtocolModel):
-    type: Literal["invocation"]
-    relay_session_id: str
-    relay_invocation_id: str
-    tool_name: str
-    arguments: dict[str, object] = Field(default_factory=dict)
-    deadline_at: datetime
-    audit_correlation_id: str
-
-
 class RelayInvocationResultFrame(RelayProtocolModel):
     type: Literal["invocation_result"]
     relay_session_id: str
@@ -105,10 +95,12 @@ class RelayHeartbeat(RelayProtocolModel):
 
 
 class RelayInvocationEnvelope(RelayProtocolModel):
+    type: Literal["invocation"]
     relay_session_id: str
     sequence: int = Field(ge=1)
     relay_invocation_id: str
     tool_name: str
+    arguments: dict[str, object] = Field(default_factory=dict)
     input_hash: str
     deadline_at: datetime
     idempotency_key: str
@@ -147,6 +139,17 @@ def handshake_signature_payload(claims: RelayHandshakeClaims) -> bytes:
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def relay_invocation_input_hash(
+    tool_name: str,
+    arguments: dict[str, object],
+) -> str:
+    payload = {"arguments": arguments, "tool_name": tool_name}
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"sha256:{digest}"
 
 
 def load_ed25519_public_key(public_key_pem: str) -> Ed25519PublicKey:

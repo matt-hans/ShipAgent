@@ -7,12 +7,13 @@ from pydantic import ValidationError
 from src.control_plane.relay.protocol import (
     ExecutionTargetStatus,
     RelayHandshakeChallenge,
-    RelayInvocationFrame,
+    RelayInvocationEnvelope,
     RelayInvocationResultFrame,
     RelayTargetState,
     RelayVersionMetadata,
     ShipAgentStatus,
     build_handshake_claims,
+    relay_invocation_input_hash,
     relay_public_key_fingerprint,
 )
 
@@ -58,23 +59,32 @@ def test_protocol_models_reject_unknown_fields() -> None:
         )
 
 
-def test_invocation_frames_round_trip_and_reject_unknown_fields() -> None:
+def test_invocation_envelopes_round_trip_and_reject_unknown_fields() -> None:
     deadline = datetime.now(UTC) + timedelta(seconds=5)
-    invocation = RelayInvocationFrame(
+    arguments = {"service": "ground", "package": {"weight": 2}}
+    invocation = RelayInvocationEnvelope(
         type="invocation",
         relay_session_id="relay-session-1",
+        sequence=1,
         relay_invocation_id="invocation-1",
         tool_name="get_shipagent_status",
-        arguments={"correlation_id": "corr-1"},
+        arguments=arguments,
+        input_hash=relay_invocation_input_hash("get_shipagent_status", arguments),
         deadline_at=deadline,
+        idempotency_key="idempotency-1",
         audit_correlation_id="corr-1",
     )
 
     payload = invocation.model_dump(mode="json")
 
-    assert RelayInvocationFrame.model_validate(payload) == invocation
+    assert RelayInvocationEnvelope.model_validate(payload) == invocation
     with pytest.raises(ValidationError):
-        RelayInvocationFrame.model_validate({**payload, "unexpected": "value"})
+        RelayInvocationEnvelope.model_validate({**payload, "unexpected": "value"})
+
+    assert relay_invocation_input_hash(
+        "get_shipagent_status",
+        {"package": {"weight": 2}, "service": "ground"},
+    ) == relay_invocation_input_hash("get_shipagent_status", arguments)
 
     result = RelayInvocationResultFrame(
         type="invocation_result",

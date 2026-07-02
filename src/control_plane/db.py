@@ -15,11 +15,28 @@ DEFAULT_CONTROL_PLANE_SCHEMA = "shipagent_private"
 CONTROL_PLANE_SCHEMA_ENV = "SHIPAGENT_CONTROL_PLANE_SCHEMA"
 
 
-def control_plane_schema_for_database_url(database_url: str) -> str | None:
-    if make_url(database_url).get_backend_name() == "sqlite":
+def resolve_control_plane_schema(
+    *,
+    dialect_name: str,
+    configured_schema: str | None = None,
+) -> str | None:
+    if dialect_name == "sqlite":
         return None
-    schema = os.environ.get(CONTROL_PLANE_SCHEMA_ENV, DEFAULT_CONTROL_PLANE_SCHEMA)
+    schema = os.environ.get(CONTROL_PLANE_SCHEMA_ENV)
+    if schema is None:
+        schema = configured_schema or DEFAULT_CONTROL_PLANE_SCHEMA
     return schema.strip() or None
+
+
+def control_plane_schema_for_database_url(
+    database_url: str,
+    *,
+    configured_schema: str | None = None,
+) -> str | None:
+    return resolve_control_plane_schema(
+        dialect_name=make_url(database_url).get_backend_name(),
+        configured_schema=configured_schema,
+    )
 
 
 def _quote_identifier(identifier: str) -> str:
