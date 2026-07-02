@@ -8,6 +8,7 @@ from typing import Protocol
 
 from pydantic import ValidationError
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.control_plane.models import RelayDevice as RelayDeviceRecord
@@ -87,6 +88,7 @@ redis.call("DEL", KEYS[1])
 return challenge
 """
 
+
 def reject_private_key_pem(public_key_pem: str) -> None:
     if _PRIVATE_KEY_PEM_HEADER.search(public_key_pem):
         raise ValueError("private key material is not allowed")
@@ -156,19 +158,35 @@ class RelayDeviceRegistry:
         fingerprint: str | None = None,
     ) -> RelayDevice:
         validate_relay_public_key(public_key_pem)
+        device_id = f"relay_device_{uuid.uuid4().hex}"
+        device_fingerprint = relay_public_key_fingerprint(public_key_pem)
         async with self._device_db_session() as session:
             active_device_id = await self._get_active_device_id(session, account_id)
-            record = RelayDeviceRecord(
-                id=f"relay_device_{uuid.uuid4().hex}",
+            register_as_active = active_device_id is None
+            record = _new_relay_device_record(
+                device_id=device_id,
                 account_id=account_id,
                 device_name=device_name,
                 public_key_pem=public_key_pem,
-                fingerprint=relay_public_key_fingerprint(public_key_pem),
-                revoked=False,
-                active=active_device_id is None,
+                fingerprint=device_fingerprint,
+                active=register_as_active,
             )
-            session.add(record)
-            await session.commit()
+            try:
+                session.add(record)
+                await _commit_device_session(session)
+            except ValueError as exc:
+                if not register_as_active or "active relay device" not in str(exc):
+                    raise
+                record = _new_relay_device_record(
+                    device_id=device_id,
+                    account_id=account_id,
+                    device_name=device_name,
+                    public_key_pem=public_key_pem,
+                    fingerprint=device_fingerprint,
+                    active=False,
+                )
+                session.add(record)
+                await _commit_device_session(session)
             return _device_from_record(record)
 
     async def get_device(self, account_id: str, device_id: str) -> RelayDevice | None:
@@ -215,10 +233,13 @@ class RelayDeviceRegistry:
                 .values(active=False)
             )
             record.active = True
-            await session.commit()
+            await _commit_device_session(session)
             selected = _device_from_record(record, active=True)
 
-        if previous_active_device_id is not None and previous_active_device_id != device_id:
+        if (
+            previous_active_device_id is not None
+            and previous_active_device_id != device_id
+        ):
             await self._clear_current_liveness(account_id, previous_active_device_id)
         await self._publish_active_liveness_if_connected(account_id, device_id)
         return selected
@@ -395,7 +416,9 @@ class RelayDeviceRegistry:
             heartbeat.model_dump_json(),
             ex=RedisTtl.RELAY_SESSION_SECONDS,
         )
-        selected_device_id = await self._get_selected_active_device_id(session.account_id)
+        selected_device_id = await self._get_selected_active_device_id(
+            session.account_id
+        )
         if selected_device_id is None or selected_device_id == session.device_id:
             await self._redis.set(
                 RedisKey.relay_active_target(session.account_id),
@@ -440,7 +463,7 @@ class RelayDeviceRegistry:
                 if device.revoked:
                     record.revoked = True
                     record.active = False
-            await session.commit()
+            await _commit_device_session(session)
 
     async def _rotate_device_key(
         self,
@@ -456,13 +479,15 @@ class RelayDeviceRegistry:
                 raise ValueError("device revoked")
             record.public_key_pem = public_key_pem
             record.fingerprint = relay_public_key_fingerprint(public_key_pem)
-            await session.commit()
+            await _commit_device_session(session)
             return _device_from_record(record)
 
     async def _clear_current_liveness(self, account_id: str, device_id: str) -> None:
         session_payload = await self._redis.get(RedisKey.relay_session(device_id))
         if session_payload is None:
-            active_payload = await self._redis.get(RedisKey.relay_active_target(account_id))
+            active_payload = await self._redis.get(
+                RedisKey.relay_active_target(account_id)
+            )
             active = (
                 _decode_liveness_model(RelaySession, active_payload)
                 if active_payload is not None
@@ -611,3 +636,44 @@ def _device_from_record(
         revoked=record.revoked,
         active=(record.active and not record.revoked) if active is None else active,
     )
+
+
+def _new_relay_device_record(
+    *,
+    device_id: str,
+    account_id: str,
+    device_name: str,
+    public_key_pem: str,
+    fingerprint: str,
+    active: bool,
+) -> RelayDeviceRecord:
+    return RelayDeviceRecord(
+        id=device_id,
+        account_id=account_id,
+        device_name=device_name,
+        public_key_pem=public_key_pem,
+        fingerprint=fingerprint,
+        revoked=False,
+        active=active,
+    )
+
+
+async def _commit_device_session(session: AsyncSession) -> None:
+    try:
+        await session.commit()
+    except IntegrityError as exc:
+        await session.rollback()
+        raise ValueError(_device_integrity_message(exc)) from exc
+
+
+def _device_integrity_message(exc: IntegrityError) -> str:
+    message = str(exc.orig or exc).lower()
+    if "fingerprint" in message or "account_fingerprint" in message:
+        return "relay device fingerprint already registered"
+    if (
+        "active" in message
+        or "one_active" in message
+        or "relay_devices.account_id" in message
+    ):
+        return "active relay device already exists"
+    return "relay device invariant violated"

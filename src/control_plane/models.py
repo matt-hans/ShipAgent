@@ -1,7 +1,16 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -36,9 +45,7 @@ class ProviderConnection(ControlPlaneBase):
     surface: Mapped[str] = mapped_column(String(64))
     scopes_text: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="active")
-    __table_args__ = (
-        UniqueConstraint("account_id", "client_id", "surface"),
-    )
+    __table_args__ = (UniqueConstraint("account_id", "client_id", "surface"),)
 
 
 class RelayDevice(ControlPlaneBase):
@@ -61,4 +68,18 @@ class RelayDevice(ControlPlaneBase):
         DateTime(timezone=True),
         default=utc_now,
         onupdate=utc_now,
+    )
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "fingerprint",
+            name="uq_relay_devices_account_fingerprint",
+        ),
+        Index(
+            "uq_relay_devices_one_active_per_account",
+            "account_id",
+            unique=True,
+            sqlite_where=text("active = 1 AND revoked = 0"),
+            postgresql_where=text("active IS TRUE AND revoked IS FALSE"),
+        ),
     )

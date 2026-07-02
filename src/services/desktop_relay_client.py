@@ -4,6 +4,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, suppress
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from websockets.asyncio.client import connect as websocket_connect
@@ -11,13 +12,14 @@ from websockets.asyncio.client import connect as websocket_connect
 from src.control_plane.relay.protocol import (
     ExecutionTargetStatus,
     RelayHandshakeChallenge,
-    RelayInvocationFrame,
+    RelayInvocationEnvelope,
     RelayInvocationResultFrame,
     RelayProtocolModel,
     RelayTargetState,
     RelayVersionMetadata,
     ShipAgentStatus,
     build_handshake_claims,
+    relay_invocation_input_hash,
 )
 from src.services.relay_key_service import RelayKeyService
 
@@ -143,6 +145,9 @@ class DesktopRelayClient:
         self._receive_task: asyncio.Task[None] | None = None
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
+        self._processed_relay_invocation_ids: set[str] = set()
+        self._processed_idempotency_keys: set[str] = set()
+        self._last_invocation_sequence = 0
 
     async def start(self) -> RelayAcceptedResponse:
         async with self._lifecycle_lock:
@@ -181,6 +186,7 @@ class DesktopRelayClient:
                 if accepted.execution_target_id != f"relay:{self._device_id}":
                     raise ValueError("accepted execution target mismatch")
                 self._accepted = accepted
+                self._reset_invocation_replay_state()
                 self._heartbeat_task = asyncio.create_task(
                     self._heartbeat_loop(accepted.relay_session_id)
                 )
@@ -232,7 +238,7 @@ class DesktopRelayClient:
             frame_type = payload.get("type")
             if frame_type != "invocation":
                 continue
-            invocation = RelayInvocationFrame.model_validate(payload)
+            invocation = RelayInvocationEnvelope.model_validate(payload)
             if invocation.relay_session_id != relay_session_id:
                 await self._send_invocation_error(
                     invocation,
@@ -240,9 +246,58 @@ class DesktopRelayClient:
                     message="Invocation was not addressed to this relay session.",
                 )
                 return
+            if invocation.relay_invocation_id in self._processed_relay_invocation_ids:
+                await self._send_invocation_error(
+                    invocation,
+                    error_code="duplicate_invocation",
+                    message="Relay invocation has already been processed.",
+                )
+                continue
+            if invocation.idempotency_key in self._processed_idempotency_keys:
+                await self._send_invocation_error(
+                    invocation,
+                    error_code="duplicate_idempotency_key",
+                    message="Relay invocation idempotency key has already been processed.",
+                )
+                continue
+            if invocation.sequence <= self._last_invocation_sequence:
+                await self._send_invocation_error(
+                    invocation,
+                    error_code="non_increasing_sequence",
+                    message="Relay invocation sequence must increase.",
+                )
+                continue
+            deadline_at = invocation.deadline_at
+            if deadline_at.tzinfo is None:
+                deadline_at = deadline_at.replace(tzinfo=UTC)
+            if deadline_at <= datetime.now(UTC):
+                await self._send_invocation_error(
+                    invocation,
+                    error_code="expired_deadline",
+                    message="Relay invocation deadline has expired.",
+                )
+                continue
+            if invocation.input_hash != relay_invocation_input_hash(
+                invocation.tool_name,
+                invocation.arguments,
+            ):
+                await self._send_invocation_error(
+                    invocation,
+                    error_code="input_hash_mismatch",
+                    message="Relay invocation input hash did not match.",
+                )
+                continue
+            self._processed_relay_invocation_ids.add(invocation.relay_invocation_id)
+            self._processed_idempotency_keys.add(invocation.idempotency_key)
+            self._last_invocation_sequence = invocation.sequence
             await self._handle_invocation(invocation)
 
-    async def _handle_invocation(self, invocation: RelayInvocationFrame) -> None:
+    def _reset_invocation_replay_state(self) -> None:
+        self._processed_relay_invocation_ids.clear()
+        self._processed_idempotency_keys.clear()
+        self._last_invocation_sequence = 0
+
+    async def _handle_invocation(self, invocation: RelayInvocationEnvelope) -> None:
         if invocation.tool_name != "get_shipagent_status":
             await self._send_invocation_error(
                 invocation,
@@ -279,7 +334,7 @@ class DesktopRelayClient:
 
     async def _send_invocation_error(
         self,
-        invocation: RelayInvocationFrame,
+        invocation: RelayInvocationEnvelope,
         *,
         error_code: str,
         message: str,

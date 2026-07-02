@@ -14,15 +14,14 @@ depends_on = None
 
 def _schema() -> str | None:
     from alembic import context
+    from src.control_plane.db import resolve_control_plane_schema
 
     if "shipagent_control_plane_schema" in context.config.attributes:
         return context.config.attributes["shipagent_control_plane_schema"]
-    if op.get_context().dialect.name == "sqlite":
-        return None
     runtime_section = context.config.get_section("alembic:runtime") or {}
-    return runtime_section.get(
-        "shipagent_control_plane_schema",
-        "shipagent_private",
+    return resolve_control_plane_schema(
+        dialect_name=op.get_context().dialect.name,
+        configured_schema=runtime_section.get("shipagent_control_plane_schema"),
     )
 
 
@@ -56,9 +55,29 @@ def upgrade() -> None:
             [f"{schema}.cloud_accounts.id" if schema else "cloud_accounts.id"],
             ondelete="CASCADE",
         ),
+        sa.UniqueConstraint(
+            "account_id",
+            "fingerprint",
+            name="uq_relay_devices_account_fingerprint",
+        ),
         schema=schema,
+    )
+    op.create_index(
+        "uq_relay_devices_one_active_per_account",
+        "relay_devices",
+        ["account_id"],
+        unique=True,
+        schema=schema,
+        sqlite_where=sa.text("active = 1 AND revoked = 0"),
+        postgresql_where=sa.text("active IS TRUE AND revoked IS FALSE"),
     )
 
 
 def downgrade() -> None:
-    op.drop_table("relay_devices", schema=_schema())
+    schema = _schema()
+    op.drop_index(
+        "uq_relay_devices_one_active_per_account",
+        table_name="relay_devices",
+        schema=schema,
+    )
+    op.drop_table("relay_devices", schema=schema)

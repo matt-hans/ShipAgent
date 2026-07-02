@@ -4,10 +4,11 @@ import asyncio
 import json
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.control_plane.auth.context import AuthorizationContext
-from src.control_plane.models import CloudAccount
+from src.control_plane.models import CloudAccount, ControlPlaneBase
 from src.control_plane.models import RelayDevice as RelayDeviceRecord
 from src.control_plane.redis_keys import RedisKey, RedisTtl
 from src.control_plane.relay.protocol import (
@@ -43,6 +44,8 @@ KEYPAIR = KEY_SERVICE.generate_or_load_keypair()
 PUBLIC_KEY = KEYPAIR.public_key_pem
 OTHER_KEY_SERVICE = RelayKeyService(InMemoryKeyStore())
 OTHER_KEYPAIR = OTHER_KEY_SERVICE.generate_or_load_keypair()
+THIRD_KEY_SERVICE = RelayKeyService(InMemoryKeyStore())
+THIRD_KEYPAIR = THIRD_KEY_SERVICE.generate_or_load_keypair()
 PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n"
 INVALID_PUBLIC_KEY = "-----BEGIN PUBLIC KEY-----\nabc\n-----END PUBLIC KEY-----\n"
 VERSION = RelayVersionMetadata(
@@ -167,9 +170,13 @@ class FakeRedis:
             self.ttls.pop(key, None)
             return self.values.pop(key, None)
         if numkeys == 4 and len(keys_and_args) == 5:
-            device_key, session_key, heartbeat_key, active_target_key, device_payload = (
-                keys_and_args
-            )
+            (
+                device_key,
+                session_key,
+                heartbeat_key,
+                active_target_key,
+                device_payload,
+            ) = keys_and_args
             current_payload = self.values.get(device_key)
             if current_payload is None:
                 return "missing"
@@ -187,9 +194,13 @@ class FakeRedis:
             )
             return "ok"
         if numkeys == 3 and len(keys_and_args) == 5:
-            session_key, heartbeat_key, active_target_key, expected_relay_session_id, ttl = (
-                keys_and_args
-            )
+            (
+                session_key,
+                heartbeat_key,
+                active_target_key,
+                expected_relay_session_id,
+                ttl,
+            ) = keys_and_args
             payload = self.values.get(session_key)
             if payload is None or heartbeat_key not in self.values:
                 return 0
@@ -357,7 +368,11 @@ class InterleavingRedis(FakeRedis):
             session_key = keys_and_args[0]
         else:
             session_key = None
-        if session_key is not None and self.race_armed and session_key == self.race_session_key:
+        if (
+            session_key is not None
+            and self.race_armed
+            and session_key == self.race_session_key
+        ):
             self.values.update(self.race_values)
             self.race_armed = False
         return await super().eval(script, numkeys, *keys_and_args)
@@ -508,7 +523,9 @@ def test_relay_device_registry_requires_durable_store() -> None:
         RelayDeviceRegistry(FakeRedis())
 
 
-async def test_register_device_can_be_read_without_private_key_material(control_db) -> None:
+async def test_register_device_can_be_read_without_private_key_material(
+    control_db,
+) -> None:
     registry = await _registry(control_db, FakeRedis())
 
     device = await registry.register_device(
@@ -526,11 +543,94 @@ async def test_register_device_can_be_read_without_private_key_material(control_
     assert "private" not in device.model_dump_json().lower()
 
 
+async def test_register_device_rejects_duplicate_fingerprint_for_account(
+    control_db,
+) -> None:
+    registry = await _registry(control_db, FakeRedis())
+    await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+
+    with pytest.raises(ValueError, match="fingerprint already registered"):
+        await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
+
+
+async def test_concurrent_first_device_registration_retries_loser_inactive(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "relay-devices.db"
+    database_url = f"sqlite+aiosqlite:///{database_path}"
+    sync_engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        ControlPlaneBase.metadata.create_all(sync_engine)
+    finally:
+        sync_engine.dispose()
+    engine = create_async_engine(
+        database_url,
+        connect_args={"check_same_thread": False},
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    class FirstRegistrationRace:
+        def __init__(self) -> None:
+            self.count = 0
+            self.ready = asyncio.Event()
+
+        async def wait_for_both_registrations(self) -> None:
+            self.count += 1
+            if self.count == 2:
+                self.ready.set()
+            await asyncio.wait_for(self.ready.wait(), timeout=2)
+
+    race = FirstRegistrationRace()
+
+    class RacingRegistry(RelayDeviceRegistry):
+        async def _get_active_device_id(self, session, account_id):
+            active_device_id = await super()._get_active_device_id(
+                session,
+                account_id,
+            )
+            if active_device_id is None:
+                await race.wait_for_both_registrations()
+            return active_device_id
+
+    try:
+        async with factory() as session:
+            session.add(
+                CloudAccount(
+                    id="acct-race",
+                    auth0_subject="auth0|acct-race",
+                )
+            )
+            await session.commit()
+        first_registry = RacingRegistry(FakeRedis(), db_session_factory=factory)
+        second_registry = RacingRegistry(FakeRedis(), db_session_factory=factory)
+
+        first, second = await asyncio.gather(
+            first_registry.register_device("acct-race", "Dock Mac", PUBLIC_KEY),
+            second_registry.register_device(
+                "acct-race",
+                "Warehouse Mac",
+                OTHER_KEYPAIR.public_key_pem,
+            ),
+        )
+        devices = await first_registry.list_devices("acct-race")
+    finally:
+        await engine.dispose()
+
+    assert {device.device_id for device in devices} == {
+        first.device_id,
+        second.device_id,
+    }
+    assert [device.active for device in devices].count(True) == 1
+    assert [device.active for device in devices].count(False) == 1
+
+
 async def test_list_devices_returns_account_devices_only(control_db) -> None:
     await _ensure_account(control_db, "acct-2")
     registry = await _registry(control_db, FakeRedis())
     first = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
-    second = await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
+    second = await registry.register_device(
+        "acct-1", "Warehouse Mac", OTHER_KEYPAIR.public_key_pem
+    )
     other = await registry.register_device("acct-2", "Other Dock", PUBLIC_KEY)
 
     devices = await registry.list_devices("acct-1")
@@ -545,7 +645,9 @@ async def test_list_devices_returns_account_devices_only(control_db) -> None:
 async def test_set_active_device_selects_unrevoked_device(control_db) -> None:
     registry = await _registry(control_db, FakeRedis())
     first = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
-    second = await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
+    second = await registry.register_device(
+        "acct-1", "Warehouse Mac", OTHER_KEYPAIR.public_key_pem
+    )
 
     selected = await registry.set_active_device("acct-1", second.device_id)
     devices = await registry.list_devices("acct-1")
@@ -565,7 +667,9 @@ async def test_unselected_device_handshake_does_not_replace_active_target(
 
     registry = await _registry(control_db, FakeRedis())
     first = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
-    second = await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
+    second = await registry.register_device(
+        "acct-1", "Warehouse Mac", OTHER_KEYPAIR.public_key_pem
+    )
     await registry.set_active_device("acct-1", first.device_id)
     first_challenge = await registry.create_challenge("acct-1", first.device_id)
     first_claims = build_handshake_claims(
@@ -587,7 +691,9 @@ async def test_unselected_device_handshake_does_not_replace_active_target(
         version=VERSION,
     )
 
-    await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(second_claims))
+    await registry.accept_handshake(
+        OTHER_KEY_SERVICE.sign_handshake_claims(second_claims)
+    )
 
     context = AuthorizationContext(
         account_id="acct-1",
@@ -617,7 +723,9 @@ async def test_active_selection_survives_fresh_redis_and_blocks_unselected_hands
 
     first_registry = await _registry(control_db, FakeRedis())
     first = await first_registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
-    second = await first_registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
+    second = await first_registry.register_device(
+        "acct-1", "Warehouse Mac", OTHER_KEYPAIR.public_key_pem
+    )
     await first_registry.set_active_device("acct-1", first.device_id)
     fresh_registry = RelayDeviceRegistry(FakeRedis(), db_session=control_db)
     second_challenge = await fresh_registry.create_challenge("acct-1", second.device_id)
@@ -629,7 +737,7 @@ async def test_active_selection_survives_fresh_redis_and_blocks_unselected_hands
         version=VERSION,
     )
     await fresh_registry.accept_handshake(
-        KEY_SERVICE.sign_handshake_claims(second_claims)
+        OTHER_KEY_SERVICE.sign_handshake_claims(second_claims)
     )
 
     context = AuthorizationContext(
@@ -658,7 +766,9 @@ async def test_set_active_device_after_redis_loss_selects_reconnected_target(
 
     first_registry = await _registry(control_db, FakeRedis())
     first = await first_registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
-    second = await first_registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
+    second = await first_registry.register_device(
+        "acct-1", "Warehouse Mac", OTHER_KEYPAIR.public_key_pem
+    )
     fresh_registry = RelayDeviceRegistry(FakeRedis(), db_session=control_db)
 
     selected = await fresh_registry.set_active_device("acct-1", second.device_id)
@@ -671,7 +781,7 @@ async def test_set_active_device_after_redis_loss_selects_reconnected_target(
         version=VERSION,
     )
     second_session = await fresh_registry.accept_handshake(
-        KEY_SERVICE.sign_handshake_claims(second_claims)
+        OTHER_KEY_SERVICE.sign_handshake_claims(second_claims)
     )
 
     context = AuthorizationContext(
@@ -704,7 +814,9 @@ async def test_set_active_device_switches_to_connected_device_and_clears_previou
     redis = FakeRedis()
     registry = await _registry(control_db, redis)
     first = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
-    second = await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
+    second = await registry.register_device(
+        "acct-1", "Warehouse Mac", OTHER_KEYPAIR.public_key_pem
+    )
     first_challenge = await registry.create_challenge("acct-1", first.device_id)
     first_claims = build_handshake_claims(
         device_id=first.device_id,
@@ -723,7 +835,7 @@ async def test_set_active_device_switches_to_connected_device_and_clears_previou
         version=VERSION,
     )
     second_session = await registry.accept_handshake(
-        KEY_SERVICE.sign_handshake_claims(second_claims)
+        OTHER_KEY_SERVICE.sign_handshake_claims(second_claims)
     )
 
     selected = await registry.set_active_device("acct-1", second.device_id)
@@ -746,7 +858,9 @@ async def test_set_active_device_switches_to_connected_device_and_clears_previou
     assert status.execution_target.target_id == second_session.execution_target_id
 
 
-async def test_set_active_device_rejects_missing_and_revoked_devices(control_db) -> None:
+async def test_set_active_device_rejects_missing_and_revoked_devices(
+    control_db,
+) -> None:
     registry = await _registry(control_db, FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
     await registry.revoke_device("acct-1", device.device_id)
@@ -821,7 +935,9 @@ async def test_register_device_rejects_invalid_public_key_material(control_db) -
         raise AssertionError("expected invalid public key material to be rejected")
 
 
-async def test_register_device_derives_fingerprint_ignoring_caller_value(control_db) -> None:
+async def test_register_device_derives_fingerprint_ignoring_caller_value(
+    control_db,
+) -> None:
     registry = await _registry(control_db, FakeRedis())
 
     device = await registry.register_device(
@@ -834,7 +950,9 @@ async def test_register_device_derives_fingerprint_ignoring_caller_value(control
     assert device.fingerprint == relay_public_key_fingerprint(PUBLIC_KEY)
 
 
-async def test_rotate_key_preserves_device_id_and_updates_public_key(control_db) -> None:
+async def test_rotate_key_preserves_device_id_and_updates_public_key(
+    control_db,
+) -> None:
     registry = await _registry(control_db, FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
     rotated_key = OTHER_KEYPAIR.public_key_pem
@@ -853,7 +971,9 @@ async def test_rotate_key_preserves_device_id_and_updates_public_key(control_db)
     assert rotated.revoked is False
 
 
-async def test_rotate_key_clears_ready_liveness_and_rejects_old_key_claims(control_db) -> None:
+async def test_rotate_key_clears_ready_liveness_and_rejects_old_key_claims(
+    control_db,
+) -> None:
     redis = FakeRedis()
     registry = await _registry(control_db, redis)
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -933,8 +1053,12 @@ async def test_rotate_key_does_not_clear_newer_active_target(control_db) -> None
         version=VERSION,
     )
     await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(first_claims))
-    second_device = await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
-    second_challenge = await registry.create_challenge("acct-1", second_device.device_id)
+    second_device = await registry.register_device(
+        "acct-1", "Warehouse Mac", OTHER_KEYPAIR.public_key_pem
+    )
+    second_challenge = await registry.create_challenge(
+        "acct-1", second_device.device_id
+    )
     second_claims = build_handshake_claims(
         device_id=second_device.device_id,
         account_id="acct-1",
@@ -943,14 +1067,14 @@ async def test_rotate_key_does_not_clear_newer_active_target(control_db) -> None
         version=VERSION,
     )
     second_session = await registry.accept_handshake(
-        KEY_SERVICE.sign_handshake_claims(second_claims)
+        OTHER_KEY_SERVICE.sign_handshake_claims(second_claims)
     )
     await registry.set_active_device("acct-1", second_device.device_id)
 
     await registry.rotate_key(
         account_id="acct-1",
         device_id=first_device.device_id,
-        public_key_pem=OTHER_KEYPAIR.public_key_pem,
+        public_key_pem=THIRD_KEYPAIR.public_key_pem,
     )
 
     context = AuthorizationContext(
@@ -1055,7 +1179,9 @@ async def test_rotate_key_does_not_unrevoke_concurrent_revocation(control_db) ->
     assert stored.public_key_pem == PUBLIC_KEY
 
 
-async def test_revoke_device_marks_revoked_and_clears_active_session(control_db) -> None:
+async def test_revoke_device_marks_revoked_and_clears_active_session(
+    control_db,
+) -> None:
     redis = FakeRedis()
     registry = await _registry(control_db, redis)
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -1102,7 +1228,9 @@ async def test_unlink_device_revokes_and_clears_active_liveness(control_db) -> N
     assert await redis.get(RedisKey.relay_active_target("acct-1")) is None
 
 
-async def test_revoke_device_does_not_leave_revoked_device_with_stale_liveness(control_db) -> None:
+async def test_revoke_device_does_not_leave_revoked_device_with_stale_liveness(
+    control_db,
+) -> None:
     redis = FailingSeparateDeleteRedis()
     registry = await _registry(control_db, redis)
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -1144,8 +1272,12 @@ async def test_revoke_device_does_not_clear_newer_active_target(control_db) -> N
         version=VERSION,
     )
     await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(first_claims))
-    second_device = await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
-    second_challenge = await registry.create_challenge("acct-1", second_device.device_id)
+    second_device = await registry.register_device(
+        "acct-1", "Warehouse Mac", OTHER_KEYPAIR.public_key_pem
+    )
+    second_challenge = await registry.create_challenge(
+        "acct-1", second_device.device_id
+    )
     second_claims = build_handshake_claims(
         device_id=second_device.device_id,
         account_id="acct-1",
@@ -1154,7 +1286,7 @@ async def test_revoke_device_does_not_clear_newer_active_target(control_db) -> N
         version=VERSION,
     )
     second_session = await registry.accept_handshake(
-        KEY_SERVICE.sign_handshake_claims(second_claims)
+        OTHER_KEY_SERVICE.sign_handshake_claims(second_claims)
     )
     await registry.set_active_device("acct-1", second_device.device_id)
 
@@ -1205,7 +1337,9 @@ async def test_disconnect_session_clears_ready_liveness(control_db) -> None:
     assert await redis.get(RedisKey.relay_active_target("acct-1")) is None
 
 
-async def test_disconnect_session_does_not_clear_newer_ready_liveness(control_db) -> None:
+async def test_disconnect_session_does_not_clear_newer_ready_liveness(
+    control_db,
+) -> None:
     redis = FakeRedis()
     registry = await _registry(control_db, redis)
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -1248,7 +1382,9 @@ async def test_disconnect_session_does_not_clear_newer_ready_liveness(control_db
     assert heartbeat.relay_session_id == second_session.relay_session_id
 
 
-async def test_disconnect_session_does_not_delete_newer_session_written_during_cleanup(control_db) -> None:
+async def test_disconnect_session_does_not_delete_newer_session_written_during_cleanup(
+    control_db,
+) -> None:
     from src.control_plane.execution_targets import RelayExecutionTarget
 
     redis = InterleavingRedis()
@@ -1329,7 +1465,9 @@ async def test_disconnect_session_does_not_delete_newer_session_written_during_c
     assert status.execution_target.target_id == second_session.execution_target_id
 
 
-async def test_refresh_session_extends_liveness_only_for_matching_session(control_db) -> None:
+async def test_refresh_session_extends_liveness_only_for_matching_session(
+    control_db,
+) -> None:
     redis = FakeRedis()
     registry = await _registry(control_db, redis)
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -1377,7 +1515,9 @@ async def test_refresh_session_extends_liveness_only_for_matching_session(contro
     assert active_target_key not in redis.values
 
 
-async def test_liveness_cleanup_ignores_malformed_session_without_clearing_unrelated_active_target(control_db) -> None:
+async def test_liveness_cleanup_ignores_malformed_session_without_clearing_unrelated_active_target(
+    control_db,
+) -> None:
     redis = FakeRedis()
     registry = await _registry(control_db, redis)
     session_key = RedisKey.relay_session("device-1")
@@ -1409,7 +1549,9 @@ async def test_liveness_cleanup_ignores_malformed_session_without_clearing_unrel
     assert await redis.get(active_target_key) == unrelated_active.model_dump_json()
 
 
-async def test_liveness_cleanup_ignores_scalar_json_session_without_clearing_unrelated_active_target(control_db) -> None:
+async def test_liveness_cleanup_ignores_scalar_json_session_without_clearing_unrelated_active_target(
+    control_db,
+) -> None:
     redis = FakeRedis()
     registry = await _registry(control_db, redis)
     session_key = RedisKey.relay_session("device-1")
@@ -1447,7 +1589,9 @@ async def test_liveness_cleanup_ignores_scalar_json_session_without_clearing_unr
     assert redis.ttls[active_target_key] == 1
 
 
-async def test_refresh_and_disconnect_ignore_scalar_json_active_target(control_db) -> None:
+async def test_refresh_and_disconnect_ignore_scalar_json_active_target(
+    control_db,
+) -> None:
     redis = FakeRedis()
     registry = await _registry(control_db, redis)
     session = RelaySession(
@@ -1490,7 +1634,9 @@ async def test_rotate_and_revoke_ignore_scalar_json_active_target(control_db) ->
     registry = await _registry(control_db, redis)
 
     rotate_device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
-    rotate_challenge = await registry.create_challenge("acct-1", rotate_device.device_id)
+    rotate_challenge = await registry.create_challenge(
+        "acct-1", rotate_device.device_id
+    )
     rotate_claims = build_handshake_claims(
         device_id=rotate_device.device_id,
         account_id="acct-1",
@@ -1512,8 +1658,14 @@ async def test_rotate_and_revoke_ignore_scalar_json_active_target(control_db) ->
     assert await redis.get(RedisKey.relay_heartbeat(rotate_device.device_id)) is None
     assert await redis.get(active_target_key) == "123"
 
-    revoke_device = await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
-    revoke_challenge = await registry.create_challenge("acct-1", revoke_device.device_id)
+    revoke_device = await registry.register_device(
+        "acct-1",
+        "Warehouse Mac",
+        THIRD_KEYPAIR.public_key_pem,
+    )
+    revoke_challenge = await registry.create_challenge(
+        "acct-1", revoke_device.device_id
+    )
     revoke_claims = build_handshake_claims(
         device_id=revoke_device.device_id,
         account_id="acct-1",
@@ -1521,7 +1673,9 @@ async def test_rotate_and_revoke_ignore_scalar_json_active_target(control_db) ->
         nonce=revoke_challenge.nonce,
         version=VERSION,
     )
-    await registry.accept_handshake(KEY_SERVICE.sign_handshake_claims(revoke_claims))
+    await registry.accept_handshake(
+        THIRD_KEY_SERVICE.sign_handshake_claims(revoke_claims)
+    )
     await redis.set(active_target_key, "123")
 
     await registry.revoke_device("acct-1", revoke_device.device_id)
@@ -1577,8 +1731,14 @@ async def test_accept_handshake_stores_session_and_heartbeat(control_db) -> None
     assert session.relay_session_id == challenge.relay_session_id
     assert session.execution_target_id == f"relay:{device.device_id}"
     assert session.state == RelayTargetState.READY
-    assert redis.ttls[RedisKey.relay_session(device.device_id)] == RedisTtl.RELAY_SESSION_SECONDS
-    assert redis.ttls[RedisKey.relay_heartbeat(device.device_id)] == RedisTtl.RELAY_SESSION_SECONDS
+    assert (
+        redis.ttls[RedisKey.relay_session(device.device_id)]
+        == RedisTtl.RELAY_SESSION_SECONDS
+    )
+    assert (
+        redis.ttls[RedisKey.relay_heartbeat(device.device_id)]
+        == RedisTtl.RELAY_SESSION_SECONDS
+    )
     heartbeat = RelayHeartbeat.model_validate_json(
         await redis.get(RedisKey.relay_heartbeat(device.device_id))
     )
@@ -1586,7 +1746,9 @@ async def test_accept_handshake_stores_session_and_heartbeat(control_db) -> None
     assert heartbeat.active_source_fingerprint == device.fingerprint
 
 
-async def test_accept_handshake_does_not_require_redis_device_record(control_db) -> None:
+async def test_accept_handshake_does_not_require_redis_device_record(
+    control_db,
+) -> None:
     redis = FakeRedis()
     registry = await _registry(control_db, redis)
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -1671,7 +1833,9 @@ async def test_accept_handshake_rejects_unsigned_claims(control_db) -> None:
         raise AssertionError("expected unsigned claims to be rejected")
 
 
-async def test_accept_handshake_rejects_claims_signed_by_unregistered_key(control_db) -> None:
+async def test_accept_handshake_rejects_claims_signed_by_unregistered_key(
+    control_db,
+) -> None:
     registry = await _registry(control_db, FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
     challenge = await registry.create_challenge("acct-1", device.device_id)
@@ -1741,7 +1905,9 @@ async def test_accept_handshake_allows_only_one_concurrent_accept(control_db) ->
     assert "challenge" in str(failures[0])
 
 
-async def test_accept_handshake_allows_only_one_concurrent_accept_without_getdel(control_db) -> None:
+async def test_accept_handshake_allows_only_one_concurrent_accept_without_getdel(
+    control_db,
+) -> None:
     redis = NoGetDelConcurrentRedis()
     registry = await _registry(control_db, redis)
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
@@ -1769,7 +1935,9 @@ async def test_accept_handshake_allows_only_one_concurrent_accept_without_getdel
     assert "challenge" in str(failures[0])
 
 
-async def test_accept_handshake_rejects_claims_without_stored_challenge(control_db) -> None:
+async def test_accept_handshake_rejects_claims_without_stored_challenge(
+    control_db,
+) -> None:
     registry = await _registry(control_db, FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
     claims = build_handshake_claims(
@@ -1809,10 +1977,14 @@ async def test_accept_handshake_rejects_wrong_nonce(control_db) -> None:
         raise AssertionError("expected wrong nonce to be rejected")
 
 
-async def test_accept_handshake_rejects_claims_for_different_device_than_challenge(control_db) -> None:
+async def test_accept_handshake_rejects_claims_for_different_device_than_challenge(
+    control_db,
+) -> None:
     registry = await _registry(control_db, FakeRedis())
     challenged_device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
-    other_device = await registry.register_device("acct-1", "Warehouse Mac", PUBLIC_KEY)
+    other_device = await registry.register_device(
+        "acct-1", "Warehouse Mac", OTHER_KEYPAIR.public_key_pem
+    )
     challenge = await registry.create_challenge("acct-1", challenged_device.device_id)
     claims = build_handshake_claims(
         device_id=other_device.device_id,
@@ -1830,7 +2002,9 @@ async def test_accept_handshake_rejects_claims_for_different_device_than_challen
         raise AssertionError("expected claims for a different device to be rejected")
 
 
-async def test_accept_handshake_rejects_device_revoked_after_challenge(control_db) -> None:
+async def test_accept_handshake_rejects_device_revoked_after_challenge(
+    control_db,
+) -> None:
     registry = await _registry(control_db, FakeRedis())
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
     challenge = await registry.create_challenge("acct-1", device.device_id)
@@ -1851,7 +2025,9 @@ async def test_accept_handshake_rejects_device_revoked_after_challenge(control_d
         raise AssertionError("expected revoked device to be rejected")
 
 
-async def test_relay_execution_target_reports_unavailable_without_active_target(control_db) -> None:
+async def test_relay_execution_target_reports_unavailable_without_active_target(
+    control_db,
+) -> None:
     try:
         from src.control_plane.execution_targets import RelayExecutionTarget
     except ImportError as exc:
@@ -1880,7 +2056,9 @@ async def test_relay_execution_target_reports_unavailable_without_active_target(
     }
 
 
-async def test_relay_execution_target_reports_unavailable_with_malformed_active_target(control_db) -> None:
+async def test_relay_execution_target_reports_unavailable_with_malformed_active_target(
+    control_db,
+) -> None:
     from src.control_plane.execution_targets import RelayExecutionTarget
 
     redis = FakeRedis()
@@ -1901,7 +2079,9 @@ async def test_relay_execution_target_reports_unavailable_with_malformed_active_
     assert status.execution_target.state == RelayTargetState.OFFLINE
 
 
-async def test_relay_execution_target_reports_unavailable_with_malformed_active_target_bytes(control_db) -> None:
+async def test_relay_execution_target_reports_unavailable_with_malformed_active_target_bytes(
+    control_db,
+) -> None:
     from src.control_plane.execution_targets import RelayExecutionTarget
 
     redis = FakeRedis()
@@ -1922,7 +2102,9 @@ async def test_relay_execution_target_reports_unavailable_with_malformed_active_
     assert status.execution_target.state == RelayTargetState.OFFLINE
 
 
-async def test_relay_execution_target_reports_unavailable_with_malformed_session(control_db) -> None:
+async def test_relay_execution_target_reports_unavailable_with_malformed_session(
+    control_db,
+) -> None:
     from src.control_plane.execution_targets import RelayExecutionTarget
 
     redis = FakeRedis()
@@ -1952,7 +2134,9 @@ async def test_relay_execution_target_reports_unavailable_with_malformed_session
     assert status.execution_target.state == RelayTargetState.OFFLINE
 
 
-async def test_relay_execution_target_reports_unavailable_with_malformed_heartbeat(control_db) -> None:
+async def test_relay_execution_target_reports_unavailable_with_malformed_heartbeat(
+    control_db,
+) -> None:
     from src.control_plane.execution_targets import RelayExecutionTarget
 
     redis = FakeRedis()
@@ -2072,7 +2256,9 @@ async def test_get_active_heartbeat_rejects_rotated_durable_device(
     assert await redis.get(RedisKey.relay_heartbeat(device.device_id)) is not None
 
 
-async def test_relay_execution_target_filters_non_public_capabilities_from_status(control_db) -> None:
+async def test_relay_execution_target_filters_non_public_capabilities_from_status(
+    control_db,
+) -> None:
     from src.control_plane.execution_targets import RelayExecutionTarget
 
     redis = FakeRedis()

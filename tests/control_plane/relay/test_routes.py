@@ -601,6 +601,27 @@ def test_register_device_returns_public_device_record(monkeypatch) -> None:
     assert "private_key_pem" not in response.text
 
 
+def test_register_device_rejects_duplicate_fingerprint(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        first = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        )
+        response = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Warehouse Mac", "public_key_pem": PUBLIC_KEY},
+        )
+
+    assert first.status_code == 200
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Relay request rejected"}
+    assert "fingerprint" not in response.text
+
+
 def test_list_devices_returns_public_device_records(monkeypatch) -> None:
     app, _redis = _build_app(monkeypatch)
 
@@ -613,7 +634,10 @@ def test_list_devices_returns_public_device_records(monkeypatch) -> None:
         second = client.post(
             "/relay/devices/register",
             headers={"Authorization": "Bearer relay-manage-token"},
-            json={"device_name": "Warehouse Mac", "public_key_pem": PUBLIC_KEY},
+            json={
+                "device_name": "Warehouse Mac",
+                "public_key_pem": OTHER_KEYPAIR.public_key_pem,
+            },
         ).json()
         response = client.get(
             "/relay/devices",
@@ -653,7 +677,10 @@ def test_set_active_device_selects_public_device_record(monkeypatch) -> None:
         second = client.post(
             "/relay/devices/register",
             headers={"Authorization": "Bearer relay-manage-token"},
-            json={"device_name": "Warehouse Mac", "public_key_pem": PUBLIC_KEY},
+            json={
+                "device_name": "Warehouse Mac",
+                "public_key_pem": OTHER_KEYPAIR.public_key_pem,
+            },
         ).json()
         response = client.post(
             f"/relay/devices/{second['device_id']}/set-active",
@@ -671,10 +698,7 @@ def test_set_active_device_selects_public_device_record(monkeypatch) -> None:
     assert payload["fingerprint"] == second["fingerprint"]
     assert payload["revoked"] is False
     assert payload["active"] is True
-    assert [
-        (device["device_id"], device["active"])
-        for device in listed.json()
-    ] == [
+    assert [(device["device_id"], device["active"]) for device in listed.json()] == [
         (first["device_id"], False),
         (second["device_id"], True),
     ]
@@ -1776,7 +1800,10 @@ def test_connect_websocket_rejects_claims_for_different_device_than_hello(
         other = client.post(
             "/relay/devices/register",
             headers={"Authorization": "Bearer relay-manage-token"},
-            json={"device_name": "Warehouse Mac", "public_key_pem": PUBLIC_KEY},
+            json={
+                "device_name": "Warehouse Mac",
+                "public_key_pem": OTHER_KEYPAIR.public_key_pem,
+            },
         ).json()
         with client.websocket_connect("/relay/connect") as websocket:
             websocket.send_json(
@@ -1790,7 +1817,7 @@ def test_connect_websocket_rejects_claims_for_different_device_than_hello(
                 nonce=challenge["nonce"],
                 version=VERSION,
             )
-            signed = KEY_SERVICE.sign_handshake_claims(claims)
+            signed = OTHER_KEY_SERVICE.sign_handshake_claims(claims)
             websocket.send_json(signed.model_dump(mode="json"))
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 websocket.receive_json()
