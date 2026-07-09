@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, suppress
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from websockets.asyncio.client import connect as websocket_connect
 
 from src.control_plane.relay.protocol import (
     ExecutionTargetStatus,
+    RelayAuthenticatedMessage,
     RelayHandshakeChallenge,
+    RelayHeartbeatFrame,
     RelayInvocationEnvelope,
     RelayInvocationResultFrame,
-    RelayProtocolModel,
     RelayTargetState,
     RelayVersionMetadata,
     ShipAgentStatus,
@@ -31,7 +34,9 @@ class RelayClientConnection(Protocol):
 
 
 class RelayClientTransport(Protocol):
-    def connect(self, url: str) -> AbstractAsyncContextManager[RelayClientConnection]: ...
+    def connect(
+        self, url: str
+    ) -> AbstractAsyncContextManager[RelayClientConnection]: ...
 
 
 class RawWebSocketConnection(Protocol):
@@ -47,10 +52,7 @@ class WebSocketConnectFactory(Protocol):
     ) -> AbstractAsyncContextManager[RawWebSocketConnection]: ...
 
 
-class RelayAcceptedResponse(RelayProtocolModel):
-    relay_session_id: str
-    execution_target_id: str
-    state: RelayTargetState
+RelayAcceptedResponse = RelayAuthenticatedMessage
 
 
 class WebSocketRelayConnection:
@@ -80,9 +82,9 @@ class WebSocketRelayConnectionContext:
     ) -> None:
         self._url = url
         self._connect_factory = connect_factory
-        self._websocket_context: AbstractAsyncContextManager[
-            RawWebSocketConnection
-        ] | None = None
+        self._websocket_context: (
+            AbstractAsyncContextManager[RawWebSocketConnection] | None
+        ) = None
 
     async def __aenter__(self) -> WebSocketRelayConnection:
         self._websocket_context = self._connect_factory(self._url)
@@ -98,12 +100,32 @@ class WebSocketRelayConnectionContext:
 class WebSocketRelayTransport:
     def __init__(
         self,
+        allow_insecure_loopback: bool = False,
         connect_factory: WebSocketConnectFactory = websocket_connect,
     ) -> None:
+        self._allow_insecure_loopback = allow_insecure_loopback
         self._connect_factory = connect_factory
 
     def connect(self, url: str) -> WebSocketRelayConnectionContext:
+        parsed_url = urlsplit(url)
+        if parsed_url.scheme == "wss":
+            return WebSocketRelayConnectionContext(url, self._connect_factory)
+        if not (
+            self._allow_insecure_loopback
+            and parsed_url.scheme == "ws"
+            and _is_loopback_host(parsed_url.hostname)
+        ):
+            raise ValueError("relay transport requires wss://")
         return WebSocketRelayConnectionContext(url, self._connect_factory)
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    if host is None:
+        return False
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def default_relay_version_metadata() -> RelayVersionMetadata:
@@ -125,6 +147,7 @@ class DesktopRelayClient:
         key_service: RelayKeyService,
         transport: RelayClientTransport | None = None,
         version: RelayVersionMetadata | None = None,
+        active_source_fingerprint: str | None = None,
         heartbeat_interval_seconds: float = 30.0,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -136,13 +159,14 @@ class DesktopRelayClient:
         self._transport = transport or WebSocketRelayTransport()
         self._heartbeat_interval_seconds = heartbeat_interval_seconds
         self._sleep = sleep
-        self._connection_context: AbstractAsyncContextManager[RelayClientConnection] | None = (
-            None
-        )
+        self._connection_context: (
+            AbstractAsyncContextManager[RelayClientConnection] | None
+        ) = None
         self._connection: RelayClientConnection | None = None
         self._accepted: RelayAcceptedResponse | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
         self._receive_task: asyncio.Task[None] | None = None
+        self._active_source_fingerprint = active_source_fingerprint
         self._lifecycle_lock = asyncio.Lock()
         self._send_lock = asyncio.Lock()
         self._processed_relay_invocation_ids: set[str] = set()
@@ -173,10 +197,10 @@ class DesktopRelayClient:
                     nonce=challenge.nonce,
                     version=self._version,
                 )
-                signed_claims = self._key_service.sign_handshake_claims(claims)
-                await self._connection.send_json(signed_claims.model_dump(mode="json"))
+                handshake = self._key_service.sign_handshake_jwt(claims)
+                await self._connection.send_json(handshake.model_dump(mode="json"))
 
-                accepted = RelayAcceptedResponse.model_validate(
+                accepted = RelayAuthenticatedMessage.model_validate(
                     await self._connection.receive_json()
                 )
                 if accepted.relay_session_id != challenge.relay_session_id:
@@ -227,7 +251,13 @@ class DesktopRelayClient:
             if self._connection is None:
                 return
             await self._send_json(
-                {"type": "heartbeat", "relay_session_id": relay_session_id}
+                RelayHeartbeatFrame(
+                    relay_session_id=relay_session_id,
+                    device_id=self._device_id,
+                    version=self._version,
+                    active_source_fingerprint=self._active_source_fingerprint,
+                    sent_at=datetime.now(UTC),
+                ).model_dump(mode="json")
             )
 
     async def _receive_loop(self, relay_session_id: str) -> None:
@@ -236,7 +266,7 @@ class DesktopRelayClient:
                 return
             payload = await self._connection.receive_json()
             frame_type = payload.get("type")
-            if frame_type != "invocation":
+            if frame_type != "relay.invoke":
                 continue
             invocation = RelayInvocationEnvelope.model_validate(payload)
             if invocation.relay_session_id != relay_session_id:
@@ -324,7 +354,6 @@ class DesktopRelayClient:
         )
         await self._send_json(
             RelayInvocationResultFrame(
-                type="invocation_result",
                 relay_session_id=invocation.relay_session_id,
                 relay_invocation_id=invocation.relay_invocation_id,
                 status="ok",
@@ -341,7 +370,6 @@ class DesktopRelayClient:
     ) -> None:
         await self._send_json(
             RelayInvocationResultFrame(
-                type="invocation_result",
                 relay_session_id=invocation.relay_session_id,
                 relay_invocation_id=invocation.relay_invocation_id,
                 status="error",
