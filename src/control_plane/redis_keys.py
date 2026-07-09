@@ -9,8 +9,24 @@ class RedisTtl:
 
 class RedisKey:
     @staticmethod
+    def relay_device(account_id: str, device_id: str) -> str:
+        return f"sa:relay:device:{account_id}:{device_id}"
+
+    @staticmethod
+    def relay_challenge(relay_session_id: str) -> str:
+        return f"sa:relay:challenge:{relay_session_id}"
+
+    @staticmethod
     def relay_session(device_id: str) -> str:
         return f"sa:relay:session:{device_id}"
+
+    @staticmethod
+    def relay_heartbeat(device_id: str) -> str:
+        return f"sa:relay:heartbeat:{device_id}"
+
+    @staticmethod
+    def relay_active_target(account_id: str) -> str:
+        return f"sa:relay:active-target:{account_id}"
 
     @staticmethod
     def replay_nonce(device_id: str, nonce: str) -> str:
