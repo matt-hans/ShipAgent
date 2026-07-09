@@ -1587,17 +1587,30 @@ def test_connect_websocket_challenges_then_accepts_claims(monkeypatch) -> None:
 async def test_rotate_during_final_handshake_cannot_leave_old_key_session_live(
     control_db,
 ) -> None:
-    class PausingAuthenticatedWebSocket:
+    class PausingBeforeFinalHandshakeRegistry(RelayDeviceRegistry):
+        def __init__(self, redis, **kwargs) -> None:
+            super().__init__(redis, **kwargs)
+            self.final_validation_started = asyncio.Event()
+            self.release_final_validation = asyncio.Event()
+
+        async def _before_final_handshake_validation(
+            self,
+            account_id: str,
+            device_id: str,
+        ) -> None:
+            self.final_validation_started.set()
+            await self.release_final_validation.wait()
+
+    class HandshakeWebSocket:
         def __init__(self, device_id: str) -> None:
             self._device_id = device_id
             self._messages: list[dict[str, object]] = [
                 {"account_id": "acct-1", "device_id": device_id}
             ]
-            self.authenticated_started = asyncio.Event()
-            self.release_authenticated = asyncio.Event()
             self.release_disconnect = asyncio.Event()
             self.close_calls: list[int] = []
             self.relay_session_id: str | None = None
+            self.sent: list[dict[str, object]] = []
 
         async def accept(self) -> None:
             return None
@@ -1609,6 +1622,7 @@ async def test_rotate_during_final_handshake_cannot_leave_old_key_session_live(
             raise WebSocketDisconnect()
 
         async def send_json(self, payload: dict[str, object]) -> None:
+            self.sent.append(payload)
             if "nonce" in payload:
                 self.relay_session_id = str(payload["relay_session_id"])
                 self._messages.append(
@@ -1623,25 +1637,35 @@ async def test_rotate_during_final_handshake_cannot_leave_old_key_session_live(
                     ).model_dump(mode="json")
                 )
                 return
-            if payload.get("type") == "relay.authenticated":
-                self.authenticated_started.set()
-                await self.release_authenticated.wait()
 
         async def close(self, code: int = 1000) -> None:
             self.close_calls.append(code)
 
+    async def receive_rotate_request() -> dict[str, object]:
+        return {
+            "type": "http.request",
+            "body": json.dumps({"public_key_pem": PUBLIC_KEY}).encode(),
+        }
+
     control_db.add(CloudAccount(id="acct-1", auth0_subject="auth0|owner-1"))
     await control_db.commit()
-    registry = RelayDeviceRegistry(FakeRedis(), db_session=control_db)
+    registry = PausingBeforeFinalHandshakeRegistry(
+        FakeRedis(),
+        db_session=control_db,
+    )
     broker = RelayInvocationBroker()
     device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
     router = build_relay_router(registry, broker)
     connect = next(
         route.endpoint for route in router.routes if route.path == "/relay/connect"
     )
-    websocket = PausingAuthenticatedWebSocket(device.device_id)
+    rotate = next(
+        route.endpoint
+        for route in router.routes
+        if route.path == "/relay/devices/{device_id}/rotate-key"
+    )
+    websocket = HandshakeWebSocket(device.device_id)
     connect_task = asyncio.create_task(connect(websocket))
-    await asyncio.wait_for(websocket.authenticated_started.wait(), timeout=1)
 
     context = AuthorizationContext(
         account_id="acct-1",
@@ -1654,16 +1678,30 @@ async def test_rotate_during_final_handshake_cannot_leave_old_key_session_live(
     )
     token = set_authorization_context(context)
     try:
-        await registry.rotate_key(
-            "acct-1", device.device_id, OTHER_KEYPAIR.public_key_pem
+        await asyncio.wait_for(registry.final_validation_started.wait(), timeout=1)
+        rotated = await rotate(
+            device.device_id,
+            Request(
+                {
+                    "type": "http",
+                    "method": "POST",
+                    "path": f"/relay/devices/{device.device_id}/rotate-key",
+                },
+                receive_rotate_request,
+            ),
         )
-        await broker.disconnect_device(account_id="acct-1", device_id=device.device_id)
     finally:
         clear_authorization_context(token)
+        registry.release_final_validation.set()
+        websocket.release_disconnect.set()
 
-    websocket.release_authenticated.set()
-    await asyncio.sleep(0)
+    await asyncio.wait_for(connect_task, timeout=1)
 
+    assert rotated.key_version == 2
+    assert websocket.close_calls == [1008]
+    assert all(
+        payload.get("type") != "relay.authenticated" for payload in websocket.sent
+    )
     assert await registry.get_active_heartbeat("acct-1") is None
     with pytest.raises(NoLiveRelaySession):
         await broker.invoke(
@@ -1673,9 +1711,6 @@ async def test_rotate_during_final_handshake_cannot_leave_old_key_session_live(
             audit_correlation_id="final-handshake-race",
             timeout_seconds=0.01,
         )
-
-    websocket.release_disconnect.set()
-    await asyncio.wait_for(connect_task, timeout=1)
 
 
 @pytest.mark.asyncio

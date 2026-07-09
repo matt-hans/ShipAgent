@@ -600,6 +600,10 @@ class RelayDeviceRegistry:
             state=session.state,
             version=session.version,
         )
+        await self._before_final_handshake_validation(
+            session.account_id,
+            session.device_id,
+        )
         async with self._session_operation_guard.hold(
             session.account_id,
             session.device_id,
@@ -614,6 +618,7 @@ class RelayDeviceRegistry:
             if (
                 current_device.fingerprint != device.fingerprint
                 or current_device.public_key_pem != device.public_key_pem
+                or current_device.key_version != device.key_version
             ):
                 raise ValueError("device changed")
             selected_device_id = await self._get_selected_active_device_id(
@@ -635,6 +640,13 @@ class RelayDeviceRegistry:
             if on_accepted is not None:
                 await on_accepted(session)
         return session
+
+    async def _before_final_handshake_validation(
+        self,
+        account_id: str,
+        device_id: str,
+    ) -> None:
+        return None
 
     async def _get_challenge_binding(
         self, relay_session_id: str
