@@ -233,6 +233,8 @@ def _validate_handshake_lifetime(claims: RelayHandshakeClaims) -> None:
         issued_at = issued_at.replace(tzinfo=UTC)
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=UTC)
+    if issued_at > datetime.now(UTC):
+        raise ValueError("invalid handshake issued_at")
     if (
         expires_at <= issued_at
         or (expires_at - issued_at).total_seconds()

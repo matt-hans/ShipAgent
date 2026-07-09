@@ -1,9 +1,11 @@
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import jwt
 import pytest
 from pydantic import ValidationError
 
+import src.control_plane.relay.protocol as relay_protocol
 from src.control_plane.relay.protocol import (
     ExecutionTargetStatus,
     RelayAuthenticatedMessage,
@@ -368,6 +370,47 @@ def test_handshake_jwt_rejects_future_issued_at_time() -> None:
     )
 
     with pytest.raises(ValueError, match="handshake token"):
+        verify_handshake_jwt(token, keypair.public_key_pem)
+
+
+def test_handshake_jwt_rejects_fractional_future_issued_at_time(
+    monkeypatch,
+) -> None:
+    now = datetime(2026, 7, 9, 12, 0, tzinfo=UTC)
+    issued_at = now + timedelta(seconds=0.5)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None) -> datetime:
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(relay_protocol, "datetime", FrozenDateTime)
+    monkeypatch.setattr(jwt.api_jwt, "datetime", FrozenDateTime)
+    service = RelayKeyService(InMemoryStore())
+    keypair = service.generate_or_load_keypair()
+    version = RelayVersionMetadata(
+        shipagent_core_version="1.0.0",
+        registry_contract_version="registry-v1",
+        ups_boundary_contract_version="ups-v1",
+    )
+    token = RelayAuthenticateMessage(
+        token=jwt.encode(
+            {
+                "sub": "device-1",
+                "account_id": "acct-1",
+                "relay_session_id": "session-1",
+                "nonce": "nonce-1",
+                "aud": "shipagent-cloud-relay",
+                "version": version.model_dump(mode="json"),
+                "iat": issued_at.timestamp(),
+                "exp": (issued_at + timedelta(seconds=60)).timestamp(),
+            },
+            keypair.private_key_pem,
+            algorithm="EdDSA",
+        )
+    )
+
+    with pytest.raises(ValueError, match="issued_at"):
         verify_handshake_jwt(token, keypair.public_key_pem)
 
 
