@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from src.control_plane.auth.context import AuthorizationContext
+from src.control_plane.auth.context import (
+    AuthorizationContext,
+    clear_authorization_context,
+    set_authorization_context,
+)
 from src.control_plane.execution_targets import TargetToolRequest
 from src.control_plane.models import CloudAccount, ControlPlaneBase
 from src.control_plane.models import RelayDevice as RelayDeviceRecord
@@ -20,6 +24,7 @@ from src.control_plane.relay.invocations import (
 from src.control_plane.relay.protocol import (
     ExecutionTargetStatus,
     RelayHeartbeat,
+    RelayInvocationEnvelope,
     RelayInvocationResultFrame,
     RelayTargetState,
     RelayVersionMetadata,
@@ -28,6 +33,7 @@ from src.control_plane.relay.protocol import (
     relay_public_key_fingerprint,
 )
 from src.control_plane.relay.registry import RelayDeviceRegistry, RelaySession
+from src.control_plane.relay.routes import build_relay_router
 from src.services.relay_key_service import RelayKeyService
 
 
@@ -823,6 +829,208 @@ async def test_concurrent_first_device_registration_retries_loser_inactive(
     }
     assert [device.active for device in devices].count(True) == 1
     assert [device.active for device in devices].count(False) == 1
+
+
+async def test_concurrent_set_active_disconnects_authoritative_replaced_device(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "relay-device-active-transition.db"
+    database_url = f"sqlite+aiosqlite:///{database_path}"
+    sync_engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        ControlPlaneBase.metadata.create_all(sync_engine)
+    finally:
+        sync_engine.dispose()
+    engine = create_async_engine(
+        database_url,
+        connect_args={"check_same_thread": False},
+    )
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    class PausingActiveTransitionRegistry(RelayDeviceRegistry):
+        def __init__(self, redis: FakeRedis) -> None:
+            super().__init__(redis, db_session_factory=factory)
+            self.paused_device_id: str | None = None
+            self.transition_started = asyncio.Event()
+            self.transition_release = asyncio.Event()
+
+        async def set_active_device_transition(self, account_id, device_id):
+            if device_id == self.paused_device_id:
+                self.transition_started.set()
+                await asyncio.wait_for(self.transition_release.wait(), timeout=2)
+            return await super().set_active_device_transition(account_id, device_id)
+
+    class RelayConnection:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, object]] = []
+            self.close_calls: list[tuple[int, str | None]] = []
+
+        async def send_json(self, payload: dict[str, object]) -> None:
+            self.sent.append(payload)
+
+        async def close(
+            self,
+            code: int = 1000,
+            reason: str | None = None,
+        ) -> None:
+            self.close_calls.append((code, reason))
+
+    try:
+        async with factory() as session:
+            session.add(
+                CloudAccount(
+                    id="acct-transition",
+                    auth0_subject="auth0|acct-transition",
+                )
+            )
+            await session.commit()
+
+        redis = FakeRedis()
+        registry = PausingActiveTransitionRegistry(redis)
+        first = await registry.register_device(
+            "acct-transition",
+            "Dock Mac",
+            PUBLIC_KEY,
+        )
+        second = await registry.register_device(
+            "acct-transition",
+            "Warehouse Mac",
+            OTHER_KEYPAIR.public_key_pem,
+        )
+        third = await registry.register_device(
+            "acct-transition",
+            "Packing Mac",
+            THIRD_KEYPAIR.public_key_pem,
+        )
+        unrelated_key_service = RelayKeyService(InMemoryKeyStore())
+        unrelated = await registry.register_device(
+            "acct-transition",
+            "Unrelated Mac",
+            unrelated_key_service.generate_or_load_keypair().public_key_pem,
+        )
+
+        async def accept(device, key_service: RelayKeyService) -> RelaySession:
+            challenge = await registry.create_challenge(
+                "acct-transition",
+                device.device_id,
+            )
+            return await registry.accept_handshake(
+                key_service.sign_handshake_claims(
+                    build_handshake_claims(
+                        device_id=device.device_id,
+                        account_id="acct-transition",
+                        relay_session_id=challenge.relay_session_id,
+                        nonce=challenge.nonce,
+                        version=VERSION,
+                    )
+                )
+            )
+
+        first_session = await accept(first, KEY_SERVICE)
+        second_session = await accept(second, OTHER_KEY_SERVICE)
+        third_session = await accept(third, THIRD_KEY_SERVICE)
+        unrelated_session = await accept(unrelated, unrelated_key_service)
+
+        broker = RelayInvocationBroker()
+        first_connection = RelayConnection()
+        second_connection = RelayConnection()
+        third_connection = RelayConnection()
+        unrelated_connection = RelayConnection()
+        for relay_session, connection in (
+            (first_session, first_connection),
+            (second_session, second_connection),
+            (third_session, third_connection),
+            (unrelated_session, unrelated_connection),
+        ):
+            await broker.register(
+                relay_session.relay_session_id,
+                connection,
+                account_id=relay_session.account_id,
+                device_id=relay_session.device_id,
+            )
+
+        router = build_relay_router(registry, broker)
+        set_active = next(
+            route.endpoint
+            for route in router.routes
+            if route.path == "/relay/devices/{device_id}/set-active"
+        )
+        context = AuthorizationContext(
+            account_id="acct-transition",
+            provider_connection_id="pc-1",
+            provider_surface="chatgpt",
+            subject="auth0|owner-1",
+            client_id="chatgpt-client",
+            scopes=frozenset({"relay:device:manage"}),
+            auth_time=datetime.now(UTC),
+        )
+
+        async def activate(device_id: str):
+            token = set_authorization_context(context)
+            try:
+                return await set_active(device_id)
+            finally:
+                clear_authorization_context(token)
+
+        registry.paused_device_id = third.device_id
+        third_activation = asyncio.create_task(activate(third.device_id))
+        await asyncio.wait_for(registry.transition_started.wait(), timeout=1)
+
+        await activate(second.device_id)
+        second_pending = asyncio.create_task(
+            broker.invoke(
+                relay_session_id=second_session.relay_session_id,
+                tool_name="get_shipagent_status",
+                arguments={},
+                audit_correlation_id="second-pending",
+                timeout_seconds=30,
+            )
+        )
+        for _ in range(20):
+            if second_connection.sent:
+                break
+            await asyncio.sleep(0)
+        assert second_connection.sent
+
+        registry.transition_release.set()
+        await third_activation
+
+        with pytest.raises(NoLiveRelaySession, match="disconnected"):
+            await second_pending
+        devices = await registry.list_devices("acct-transition")
+        assert [device.device_id for device in devices if device.active] == [
+            third.device_id
+        ]
+        assert second_connection.close_calls == [(1008, "relay device policy changed")]
+        assert unrelated_connection.close_calls == []
+
+        unrelated_pending = asyncio.create_task(
+            broker.invoke(
+                relay_session_id=unrelated_session.relay_session_id,
+                tool_name="get_shipagent_status",
+                arguments={},
+                audit_correlation_id="unrelated-pending",
+                timeout_seconds=1,
+            )
+        )
+        for _ in range(20):
+            if unrelated_connection.sent:
+                break
+            await asyncio.sleep(0)
+        assert unrelated_connection.sent
+        envelope = RelayInvocationEnvelope.model_validate(unrelated_connection.sent[0])
+        await broker.accept_result(
+            RelayInvocationResultFrame(
+                type="relay.invocation_result",
+                relay_session_id=unrelated_session.relay_session_id,
+                relay_invocation_id=envelope.relay_invocation_id,
+                status="ok",
+                result={"status": "ok"},
+            )
+        )
+        await unrelated_pending
+    finally:
+        await engine.dispose()
 
 
 async def test_isolated_sessions_assign_distinct_versions_for_concurrent_rotations(

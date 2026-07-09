@@ -34,6 +34,18 @@ class FailingSendRelayWebSocket(FakeRelayWebSocket):
         raise RuntimeError("websocket disconnected")
 
 
+class BlockingFailingSendRelayWebSocket(FakeRelayWebSocket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.send_started = asyncio.Event()
+        self.release_failure = asyncio.Event()
+
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        self.send_started.set()
+        await self.release_failure.wait()
+        raise RuntimeError("websocket disconnected")
+
+
 @pytest.mark.asyncio
 async def test_broker_sends_invocation_to_live_session_and_resolves_matching_result() -> (
     None
@@ -211,6 +223,56 @@ async def test_broker_maps_send_failure_to_no_live_session() -> None:
             audit_correlation_id="corr-2",
             timeout_seconds=1,
         )
+
+
+@pytest.mark.asyncio
+async def test_stale_send_failure_does_not_unregister_replacement_connection() -> None:
+    broker = RelayInvocationBroker()
+    stale_connection = BlockingFailingSendRelayWebSocket()
+    replacement_connection = FakeRelayWebSocket()
+    await broker.register("relay-session-1", stale_connection)
+
+    stale_invocation = asyncio.create_task(
+        broker.invoke(
+            relay_session_id="relay-session-1",
+            tool_name="get_shipagent_status",
+            arguments={},
+            audit_correlation_id="stale-corr-1",
+            timeout_seconds=1,
+        )
+    )
+    await stale_connection.send_started.wait()
+    await broker.register("relay-session-1", replacement_connection)
+    stale_connection.release_failure.set()
+
+    with pytest.raises(NoLiveRelaySession, match="send failed"):
+        await stale_invocation
+
+    replacement_invocation = asyncio.create_task(
+        broker.invoke(
+            relay_session_id="relay-session-1",
+            tool_name="get_shipagent_status",
+            arguments={},
+            audit_correlation_id="replacement-corr-1",
+            timeout_seconds=1,
+        )
+    )
+    for _ in range(20):
+        if replacement_connection.sent:
+            break
+        await asyncio.sleep(0)
+    assert replacement_connection.sent
+    envelope = RelayInvocationEnvelope.model_validate(replacement_connection.sent[0])
+    await broker.accept_result(
+        RelayInvocationResultFrame(
+            type="relay.invocation_result",
+            relay_session_id="relay-session-1",
+            relay_invocation_id=envelope.relay_invocation_id,
+            status="ok",
+            result={"status": "ok"},
+        )
+    )
+    await replacement_invocation
 
 
 @pytest.mark.asyncio

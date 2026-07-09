@@ -154,7 +154,7 @@ class RelayInvocationBroker:
             try:
                 await connection.send_json(frame.model_dump(mode="json"))
             except Exception as exc:
-                await self.unregister(relay_session_id)
+                await self.unregister(relay_session_id, connection=connection)
                 raise NoLiveRelaySession("relay session send failed") from exc
             return await asyncio.wait_for(future, timeout=timeout_seconds)
         except TimeoutError as exc:
