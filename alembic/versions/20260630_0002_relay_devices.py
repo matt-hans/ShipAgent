@@ -35,7 +35,14 @@ def upgrade() -> None:
         sa.Column("device_name", sa.String(length=255), nullable=False),
         sa.Column("public_key_pem", sa.Text(), nullable=False),
         sa.Column("fingerprint", sa.String(length=96), nullable=False),
+        sa.Column(
+            "key_version",
+            sa.Integer(),
+            nullable=False,
+            server_default=sa.text("1"),
+        ),
         sa.Column("revoked", sa.Boolean(), nullable=False, server_default=sa.false()),
+        sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("active", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column(
             "created_at",

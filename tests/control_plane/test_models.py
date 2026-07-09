@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 
@@ -123,6 +124,36 @@ async def test_relay_device_fingerprint_is_unique_per_account(control_db):
     )
     with pytest.raises(IntegrityError):
         await control_db.commit()
+
+
+async def test_relay_device_round_trips_key_version_and_revocation_timestamp(
+    control_db,
+):
+    revoked_at = datetime(2026, 7, 9, 12, 0, tzinfo=UTC)
+    control_db.add(CloudAccount(id="acct-1", auth0_subject="auth0|owner-1"))
+    device = RelayDevice(
+        id="relay_device_1",
+        account_id="acct-1",
+        device_name="Dock Mac",
+        public_key_pem="public-key",
+        fingerprint="sha256:test",
+        key_version=3,
+        revoked=True,
+        active=False,
+        revoked_at=revoked_at,
+    )
+    control_db.add(device)
+    await control_db.commit()
+    control_db.expunge_all()
+
+    loaded = await control_db.scalar(
+        select(RelayDevice).where(RelayDevice.id == "relay_device_1")
+    )
+
+    assert loaded is not None
+    assert loaded.key_version == 3
+    assert loaded.revoked_at is not None
+    assert loaded.revoked_at.replace(tzinfo=None) == revoked_at.replace(tzinfo=None)
 
 
 async def test_relay_device_allows_only_one_active_unrevoked_device_per_account(
