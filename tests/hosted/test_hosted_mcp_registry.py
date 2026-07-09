@@ -32,6 +32,25 @@ def exportable_mcp_tool(name: str):
     )
 
 
+def status_result(
+    *,
+    status: str = "ready",
+    state: str = "ready",
+    target_id: str | None = "target-1",
+    capabilities: list[str] | None = None,
+    message: str | None = None,
+):
+    return {
+        "status": status,
+        "executionTarget": {
+            "state": state,
+            "target_id": target_id,
+            "capabilities": capabilities or ["rate", "ship"],
+            "message": message,
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_hosted_mcp_server_does_not_register_unbound_catalog_tools():
     server = build_server()
@@ -67,13 +86,149 @@ async def test_hosted_mcp_server_requires_exportable_and_bound_tools():
 
 
 @pytest.mark.asyncio
-async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
+async def test_status_tool_bound_from_default_catalog_projects_execution_target_schema():
     async def handler(context, arguments):
         return {
-            "status": "healthy",
-            "active_device_id": "device-1",
-            "capabilities": ["rate", "ship"],
+            "status": "ready",
+            "executionTarget": {
+                "state": "ready",
+                "target_id": "loopback",
+                "capabilities": ["get_shipagent_status"],
+                "message": None,
+            },
         }
+
+    server = build_server(tool_handlers={"get_shipagent_status": handler})
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    token = set_authorization_context(context)
+    try:
+        result = await tools["get_shipagent_status"].run({"correlation_id": "corr-1"})
+    finally:
+        clear_authorization_context(token)
+
+    assert result.structured_content == {
+        "status": "ready",
+        "executionTarget": {
+            "state": "ready",
+            "target_id": "loopback",
+            "capabilities": ["get_shipagent_status"],
+            "message": None,
+        },
+    }
+    validate(
+        instance=result.structured_content,
+        schema=tools["get_shipagent_status"].output_schema,
+    )
+
+
+@pytest.mark.asyncio
+async def test_loopback_execution_target_status_runs_through_hosted_mcp_tool():
+    try:
+        from src.control_plane.execution_targets import LoopbackExecutionTarget
+        from src.hosted_mcp.execution_target_handlers import (
+            build_execution_target_tool_handlers,
+        )
+    except ModuleNotFoundError as exc:
+        pytest.fail(f"execution target status handler is not available: {exc}")
+
+    server = build_server(
+        tool_handlers=build_execution_target_tool_handlers(
+            LoopbackExecutionTarget(capabilities=["rate_shipment", "get_shipagent_status"])
+        )
+    )
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    token = set_authorization_context(context)
+    try:
+        result = await tools["get_shipagent_status"].run({"correlation_id": "corr-1"})
+    finally:
+        clear_authorization_context(token)
+
+    assert result.structured_content == {
+        "status": "ready",
+        "executionTarget": {
+            "state": "ready",
+            "target_id": "loopback",
+            "capabilities": ["rate_shipment", "get_shipagent_status"],
+            "message": None,
+        },
+    }
+    validate(
+        instance=result.structured_content,
+        schema=tools["get_shipagent_status"].output_schema,
+    )
+
+
+@pytest.mark.asyncio
+async def test_execution_target_status_handler_passes_mcp_arguments():
+    from src.control_plane.relay.protocol import (
+        ExecutionTargetStatus,
+        RelayTargetState,
+        ShipAgentStatus,
+    )
+    from src.hosted_mcp.execution_target_handlers import (
+        build_execution_target_tool_handlers,
+    )
+
+    captured = {}
+
+    class CapturingExecutionTarget:
+        async def status(self, context, arguments=None):
+            captured["context"] = context
+            captured["arguments"] = arguments
+            return ShipAgentStatus(
+                status=RelayTargetState.READY,
+                execution_target=ExecutionTargetStatus(
+                    state=RelayTargetState.READY,
+                    target_id="target-1",
+                    capabilities=["get_shipagent_status"],
+                ),
+            )
+
+    server = build_server(
+        tool_handlers=build_execution_target_tool_handlers(CapturingExecutionTarget())
+    )
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    token = set_authorization_context(context)
+    try:
+        await tools["get_shipagent_status"].run({"correlation_id": "corr-1"})
+    finally:
+        clear_authorization_context(token)
+
+    assert captured["context"] == context
+    assert captured["arguments"] == {"correlation_id": "corr-1"}
+
+
+@pytest.mark.asyncio
+async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
+    async def handler(context, arguments):
+        return status_result()
 
     contract = exportable_mcp_tool("get_shipagent_status")
     descriptor = to_mcp_tool_descriptor(contract)
@@ -93,11 +248,7 @@ async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
 @pytest.mark.asyncio
 async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
     async def handler(context, arguments):
-        return {
-            "status": "healthy",
-            "active_device_id": "device-1",
-            "capabilities": ["rate", "ship"],
-        }
+        return status_result()
 
     contract = exportable_mcp_tool("get_shipagent_status")
     server = build_server(
@@ -111,7 +262,7 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "device:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
 
     token = set_authorization_context(context)
@@ -120,11 +271,7 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
     finally:
         clear_authorization_context(token)
 
-    assert result.structured_content == {
-        "status": "healthy",
-        "active_device_id": "device-1",
-        "capabilities": ["rate", "ship"],
-    }
+    assert result.structured_content == status_result()
     validate(
         instance=result.structured_content,
         schema=tools["get_shipagent_status"].output_schema,
@@ -134,11 +281,7 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
 @pytest.mark.asyncio
 async def test_hosted_mcp_handler_rejects_missing_authorization_context():
     async def handler(context, arguments):
-        return {
-            "status": "healthy",
-            "active_device_id": "device-1",
-            "capabilities": ["rate", "ship"],
-        }
+        return status_result()
 
     contract = exportable_mcp_tool("get_shipagent_status")
     server = build_server(
@@ -156,11 +299,7 @@ async def test_hosted_mcp_handler_rejects_missing_authorization_context():
 @pytest.mark.asyncio
 async def test_hosted_mcp_handler_rejects_missing_scopes():
     async def handler(context, arguments):
-        return {
-            "status": "healthy",
-            "active_device_id": "device-1",
-            "capabilities": ["rate", "ship"],
-        }
+        return status_result()
 
     contract = exportable_mcp_tool("get_shipagent_status")
     server = build_server(
@@ -184,7 +323,7 @@ async def test_hosted_mcp_handler_rejects_missing_scopes():
         clear_authorization_context(token)
 
     assert exc.value.code == "insufficient_scope"
-    assert exc.value.required_scopes == ["device:read"]
+    assert exc.value.required_scopes == ["shipagent.status"]
 
 
 @pytest.mark.asyncio
@@ -256,11 +395,7 @@ async def test_hosted_mcp_handler_translates_request_control_deny():
 
     async def handler(context, arguments):
         invoked["value"] = True
-        return {
-            "status": "healthy",
-            "active_device_id": "device-1",
-            "capabilities": ["rate", "ship"],
-        }
+        return status_result()
 
     class _RequestControls:
         async def require_allowed(
@@ -289,7 +424,7 @@ async def test_hosted_mcp_handler_translates_request_control_deny():
         provider_surface="chatgpt",
         subject="auth0|owner-1",
         client_id="chatgpt-client",
-        scopes=frozenset({"account:read", "device:read"}),
+        scopes=frozenset({"shipagent.status"}),
     )
     token = set_authorization_context(context)
     try:

@@ -1,12 +1,15 @@
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 from fastapi import Request
 from fastapi.testclient import TestClient
 
-from src.control_plane.app import create_control_plane_app
+from src.control_plane.app import _build_verifier, create_control_plane_app
 from src.control_plane.auth.context import AuthorizationContext
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.auth.service import AuthorizationService
+
+_AUTH_TIME = datetime(2026, 7, 2, 12, 30, tzinfo=UTC)
 
 
 class _TokenVerifier:
@@ -18,11 +21,19 @@ class _TokenVerifier:
             subject="auth0|owner-1",
             client_id="chatgpt-client",
             scopes=frozenset({"jobs:read", "shipments:preview"}),
+            auth_time=_AUTH_TIME,
         )
 
 
 class _AuthorizationService(AuthorizationService):
-    async def resolve(self, *, subject: str, client_id: str, scopes: set[str]) -> AuthorizationContext:
+    async def resolve(
+        self,
+        *,
+        subject: str,
+        client_id: str,
+        scopes: set[str],
+        auth_time: datetime | None,
+    ) -> AuthorizationContext:
         return AuthorizationContext(
             account_id="acct-1",
             provider_connection_id="pc-1",
@@ -30,6 +41,7 @@ class _AuthorizationService(AuthorizationService):
             subject=subject,
             client_id=client_id,
             scopes=frozenset(scopes),
+            auth_time=auth_time,
         )
 
 
@@ -41,7 +53,10 @@ def _build_app_with_routes(monkeypatch, database_url: str):
     monkeypatch.setenv("SHIPAGENT_REDIS_URL", "redis://127.0.0.1:6379/0")
 
     monkeypatch.setattr("src.control_plane.app.Auth0TokenVerifier", _TokenVerifier)
-    monkeypatch.setattr("src.control_plane.app.AuthorizationService", _AuthorizationService)
+    monkeypatch.setattr(
+        "src.control_plane.app.AuthorizationService", _AuthorizationService
+    )
+    _build_verifier.cache_clear()
 
     app = create_control_plane_app()
 
@@ -50,7 +65,9 @@ def _build_app_with_routes(monkeypatch, database_url: str):
         authorization = getattr(request.state, "authorization", None)
         return {
             "has_context": authorization is not None,
-            "authorization": asdict(authorization) if authorization is not None else None,
+            "authorization": asdict(authorization)
+            if authorization is not None
+            else None,
         }
 
     return app
@@ -64,6 +81,7 @@ def test_protected_resource_metadata(monkeypatch):
     assert response.status_code == 200
     assert response.json()["resource"] == "https://dev-mcp.shipagent.app"
     assert response.json()["authorization_servers"] == ["https://tenant.us.auth0.com/"]
+    assert "relay:manage" in response.json()["scopes_supported"]
 
 
 def test_missing_token_returns_bearer_challenge(monkeypatch):
@@ -95,3 +113,4 @@ def test_valid_token_populates_context(monkeypatch):
         "jobs:read",
         "shipments:preview",
     }
+    assert payload["authorization"]["auth_time"] == _AUTH_TIME.isoformat()

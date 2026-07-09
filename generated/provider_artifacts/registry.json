@@ -4,8 +4,7 @@
     {
       "audit_level": "basic",
       "auth_scopes": [
-        "account:read",
-        "device:read"
+        "shipagent.status"
       ],
       "availability": [
         "hosted",
@@ -13,7 +12,7 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Return operational status for the active account and device.",
+      "description": "Return operational status for the active account execution target.",
       "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
@@ -38,28 +37,61 @@
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "active_device_id": {
-            "type": "string"
-          },
-          "capabilities": {
-            "items": {
-              "type": "string"
+          "executionTarget": {
+            "additionalProperties": false,
+            "properties": {
+              "capabilities": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "message": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "state": {
+                "enum": [
+                  "ready",
+                  "offline",
+                  "update_required"
+                ],
+                "type": "string"
+              },
+              "target_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
             },
-            "type": "array"
+            "required": [
+              "state",
+              "target_id",
+              "capabilities",
+              "message"
+            ],
+            "type": "object"
           },
           "status": {
+            "enum": [
+              "ready",
+              "offline",
+              "update_required"
+            ],
             "type": "string"
           }
         },
         "required": [
           "status",
-          "active_device_id",
-          "capabilities"
+          "executionTarget"
         ],
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": false,
+      "provider_export_enabled": true,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",

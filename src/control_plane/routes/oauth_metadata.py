@@ -3,11 +3,13 @@ from typing import Final
 from fastapi import APIRouter
 
 SUPPORTED_SCOPES: Final = [
-    "status:read",
+    "shipagent.status",
     "shipments:preview",
     "shipments:create",
     "jobs:read",
     "labels:read",
+    "relay:device:manage",
+    "relay:manage",
 ]
 
 

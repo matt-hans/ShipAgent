@@ -83,9 +83,9 @@ PUBLIC_TOOLS = [
     public_tool(
         "get_shipagent_status",
         "Get shipagent status",
-        "Return operational status for the active account and device.",
+        "Return operational status for the active account execution target.",
         SideEffectClass.read,
-        ["account:read", "device:read"],
+        ["shipagent.status"],
         object_schema(
             {
                 "correlation_id": {
@@ -97,12 +97,34 @@ PUBLIC_TOOLS = [
         ),
         object_schema(
             {
-                "status": {"type": "string"},
-                "active_device_id": {"type": "string"},
-                "capabilities": {"type": "array", "items": {"type": "string"}},
+                "status": {
+                    "type": "string",
+                    "enum": ["ready", "offline", "update_required"],
+                },
+                "executionTarget": object_schema(
+                    {
+                        "state": {
+                            "type": "string",
+                            "enum": ["ready", "offline", "update_required"],
+                        },
+                        "target_id": {"type": ["string", "null"]},
+                        "capabilities": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "message": {"type": ["string", "null"]},
+                    },
+                    [
+                        "state",
+                        "target_id",
+                        "capabilities",
+                        "message",
+                    ],
+                ),
             },
-            ["status", "active_device_id", "capabilities"],
+            ["status", "executionTarget"],
         ),
+        provider_export_enabled=True,
     ),
     public_tool(
         "submit_one_off_shipment",
