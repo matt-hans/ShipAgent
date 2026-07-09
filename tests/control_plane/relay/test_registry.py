@@ -9,9 +9,14 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.control_plane.auth.context import AuthorizationContext
+from src.control_plane.execution_targets import TargetToolRequest
 from src.control_plane.models import CloudAccount, ControlPlaneBase
 from src.control_plane.models import RelayDevice as RelayDeviceRecord
 from src.control_plane.redis_keys import RedisKey, RedisTtl
+from src.control_plane.relay.invocations import (
+    NoLiveRelaySession,
+    RelayInvocationBroker,
+)
 from src.control_plane.relay.protocol import (
     ExecutionTargetStatus,
     RelayHeartbeat,
@@ -101,21 +106,6 @@ class FakeStatusInvocationBroker:
         )
 
 
-class FailingSendStatusInvocationBroker(FakeStatusInvocationBroker):
-    async def invoke(
-        self,
-        *,
-        relay_session_id: str,
-        tool_name: str,
-        arguments: dict[str, object],
-        audit_correlation_id: str,
-        timeout_seconds: float,
-    ) -> RelayInvocationResultFrame:
-        from src.control_plane.relay.invocations import NoLiveRelaySession
-
-        raise NoLiveRelaySession("relay session send failed")
-
-
 class BusyStatusInvocationBroker(FakeStatusInvocationBroker):
     async def invoke(
         self,
@@ -129,6 +119,29 @@ class BusyStatusInvocationBroker(FakeStatusInvocationBroker):
         from src.control_plane.relay.invocations import RelayInvocationBusy
 
         raise RelayInvocationBusy("relay session already has an in-flight invocation")
+
+
+class FailingSendRelayConnection:
+    async def send_json(self, payload: dict[str, object]) -> None:
+        raise RuntimeError("relay transport unavailable")
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        return None
+
+
+def _status_request(context: AuthorizationContext) -> TargetToolRequest:
+    return TargetToolRequest(
+        account_id=context.account_id,
+        provider_connection_id=context.provider_connection_id,
+        provider_surface=context.provider_surface,
+        tool_name="get_shipagent_status",
+        arguments={},
+        correlation_id="get_shipagent_status",
+    )
+
+
+async def _status_from_target(target, context: AuthorizationContext) -> ShipAgentStatus:
+    return ShipAgentStatus.model_validate(await target.invoke(_status_request(context)))
 
 
 async def _ensure_account(control_db, account_id: str = "acct-1") -> None:
@@ -1009,10 +1022,10 @@ async def test_unselected_device_handshake_does_not_replace_active_target(
         client_id="chatgpt-client",
         scopes=frozenset({"shipagent.status"}),
     )
-    status = await RelayExecutionTarget(
-        registry,
-        FakeStatusInvocationBroker(first_session),
-    ).status(context)
+    status = await _status_from_target(
+        RelayExecutionTarget(registry, FakeStatusInvocationBroker(first_session)),
+        context,
+    )
     devices = await registry.list_devices("acct-1")
 
     assert status.execution_target.target_id == first_session.execution_target_id
@@ -1054,7 +1067,7 @@ async def test_active_selection_survives_fresh_redis_and_blocks_unselected_hands
         client_id="chatgpt-client",
         scopes=frozenset({"shipagent.status"}),
     )
-    status = await RelayExecutionTarget(fresh_registry).status(context)
+    status = await _status_from_target(RelayExecutionTarget(fresh_registry), context)
     devices = await fresh_registry.list_devices("acct-1")
 
     assert status.execution_target.state == RelayTargetState.OFFLINE
@@ -1098,10 +1111,12 @@ async def test_set_active_device_after_redis_loss_selects_reconnected_target(
         client_id="chatgpt-client",
         scopes=frozenset({"shipagent.status"}),
     )
-    status = await RelayExecutionTarget(
-        fresh_registry,
-        FakeStatusInvocationBroker(second_session),
-    ).status(context)
+    status = await _status_from_target(
+        RelayExecutionTarget(
+            fresh_registry, FakeStatusInvocationBroker(second_session)
+        ),
+        context,
+    )
     devices = await fresh_registry.list_devices("acct-1")
 
     assert selected.active is True
@@ -1154,10 +1169,10 @@ async def test_set_active_device_switches_to_connected_device_and_clears_previou
         client_id="chatgpt-client",
         scopes=frozenset({"shipagent.status"}),
     )
-    status = await RelayExecutionTarget(
-        registry,
-        FakeStatusInvocationBroker(second_session),
-    ).status(context)
+    status = await _status_from_target(
+        RelayExecutionTarget(registry, FakeStatusInvocationBroker(second_session)),
+        context,
+    )
     assert selected.active is True
     assert await redis.get(RedisKey.relay_session(first.device_id)) is None
     assert await redis.get(RedisKey.relay_heartbeat(first.device_id)) is None
@@ -1516,10 +1531,10 @@ async def test_rotate_key_does_not_clear_newer_active_target(control_db) -> None
         client_id="chatgpt-client",
         scopes=frozenset({"shipagent.status"}),
     )
-    status = await RelayExecutionTarget(
-        registry,
-        FakeStatusInvocationBroker(second_session),
-    ).status(context)
+    status = await _status_from_target(
+        RelayExecutionTarget(registry, FakeStatusInvocationBroker(second_session)),
+        context,
+    )
     active = RelaySession.model_validate_json(
         await redis.get(RedisKey.relay_active_target("acct-1"))
     )
@@ -1756,10 +1771,10 @@ async def test_revoke_device_does_not_clear_newer_active_target(control_db) -> N
         client_id="chatgpt-client",
         scopes=frozenset({"shipagent.status"}),
     )
-    status = await RelayExecutionTarget(
-        registry,
-        FakeStatusInvocationBroker(second_session),
-    ).status(context)
+    status = await _status_from_target(
+        RelayExecutionTarget(registry, FakeStatusInvocationBroker(second_session)),
+        context,
+    )
     active = RelaySession.model_validate_json(
         await redis.get(RedisKey.relay_active_target("acct-1"))
     )
@@ -1910,10 +1925,10 @@ async def test_disconnect_session_does_not_delete_newer_session_written_during_c
         client_id="chatgpt-client",
         scopes=frozenset({"shipagent.status"}),
     )
-    status = await RelayExecutionTarget(
-        registry,
-        FakeStatusInvocationBroker(second_session),
-    ).status(context)
+    status = await _status_from_target(
+        RelayExecutionTarget(registry, FakeStatusInvocationBroker(second_session)),
+        context,
+    )
 
     assert stored_session.relay_session_id == second_session.relay_session_id
     assert heartbeat.relay_session_id == second_session.relay_session_id
@@ -2617,7 +2632,7 @@ async def test_relay_execution_target_reports_unavailable_without_active_target(
         scopes=frozenset({"shipagent.status"}),
     )
 
-    status = await RelayExecutionTarget(registry).status(context)
+    status = await _status_from_target(RelayExecutionTarget(registry), context)
 
     assert status.model_dump(mode="json", by_alias=True) == {
         "status": "offline",
@@ -2647,7 +2662,7 @@ async def test_relay_execution_target_reports_unavailable_with_malformed_active_
         scopes=frozenset({"shipagent.status"}),
     )
 
-    status = await RelayExecutionTarget(registry).status(context)
+    status = await _status_from_target(RelayExecutionTarget(registry), context)
 
     assert status.status == RelayTargetState.OFFLINE
     assert status.execution_target.state == RelayTargetState.OFFLINE
@@ -2670,7 +2685,7 @@ async def test_relay_execution_target_reports_unavailable_with_malformed_active_
         scopes=frozenset({"shipagent.status"}),
     )
 
-    status = await RelayExecutionTarget(registry).status(context)
+    status = await _status_from_target(RelayExecutionTarget(registry), context)
 
     assert status.status == RelayTargetState.OFFLINE
     assert status.execution_target.state == RelayTargetState.OFFLINE
@@ -2702,7 +2717,7 @@ async def test_relay_execution_target_reports_unavailable_with_malformed_session
         scopes=frozenset({"shipagent.status"}),
     )
 
-    status = await RelayExecutionTarget(registry).status(context)
+    status = await _status_from_target(RelayExecutionTarget(registry), context)
 
     assert status.status == RelayTargetState.OFFLINE
     assert status.execution_target.state == RelayTargetState.OFFLINE
@@ -2735,7 +2750,7 @@ async def test_relay_execution_target_reports_unavailable_with_malformed_heartbe
         scopes=frozenset({"shipagent.status"}),
     )
 
-    status = await RelayExecutionTarget(registry).status(context)
+    status = await _status_from_target(RelayExecutionTarget(registry), context)
 
     assert status.status == RelayTargetState.OFFLINE
     assert status.execution_target.state == RelayTargetState.OFFLINE
@@ -2765,10 +2780,19 @@ async def test_relay_execution_target_reports_ready_after_handshake(control_db) 
         scopes=frozenset({"shipagent.status"}),
     )
 
-    status = await RelayExecutionTarget(
-        registry,
-        FakeStatusInvocationBroker(session),
-    ).status(context)
+    broker = FakeStatusInvocationBroker(session)
+    target = RelayExecutionTarget(registry, broker)
+    status = await _status_from_target(target, context)
+    generic_result = await target.invoke(
+        TargetToolRequest(
+            account_id="acct-1",
+            provider_connection_id="pc-1",
+            provider_surface="chatgpt",
+            tool_name="future_target_tool",
+            arguments={"probe": "value"},
+            correlation_id="generic-corr-1",
+        )
+    )
 
     assert status.model_dump(mode="json", by_alias=True) == {
         "status": "ready",
@@ -2779,6 +2803,23 @@ async def test_relay_execution_target_reports_ready_after_handshake(control_db) 
             "message": None,
         },
     }
+    assert generic_result == status.model_dump(mode="json", by_alias=True)
+    assert broker.calls == [
+        {
+            "relay_session_id": session.relay_session_id,
+            "tool_name": "get_shipagent_status",
+            "arguments": {},
+            "audit_correlation_id": "get_shipagent_status",
+            "timeout_seconds": 2,
+        },
+        {
+            "relay_session_id": session.relay_session_id,
+            "tool_name": "future_target_tool",
+            "arguments": {"probe": "value"},
+            "audit_correlation_id": "generic-corr-1",
+            "timeout_seconds": 2,
+        },
+    ]
 
 
 async def test_relay_execution_target_maps_send_failure_to_offline_status(
@@ -2806,15 +2847,30 @@ async def test_relay_execution_target_maps_send_failure_to_offline_status(
         client_id="chatgpt-client",
         scopes=frozenset({"shipagent.status"}),
     )
+    broker = RelayInvocationBroker()
+    await broker.register(
+        session.relay_session_id,
+        FailingSendRelayConnection(),
+        account_id=session.account_id,
+        device_id=session.device_id,
+    )
 
-    status = await RelayExecutionTarget(
-        registry,
-        FailingSendStatusInvocationBroker(session),
-    ).status(context)
+    status = await _status_from_target(
+        RelayExecutionTarget(registry, broker),
+        context,
+    )
 
     assert status.status == RelayTargetState.OFFLINE
     assert status.execution_target.state == RelayTargetState.OFFLINE
     assert status.execution_target.target_id is None
+    with pytest.raises(NoLiveRelaySession):
+        await broker.invoke(
+            relay_session_id=session.relay_session_id,
+            tool_name="get_shipagent_status",
+            arguments={},
+            audit_correlation_id="second-attempt",
+            timeout_seconds=1,
+        )
 
 
 async def test_relay_execution_target_maps_busy_session_to_offline_status(
@@ -2843,10 +2899,10 @@ async def test_relay_execution_target_maps_busy_session_to_offline_status(
         scopes=frozenset({"shipagent.status"}),
     )
 
-    status = await RelayExecutionTarget(
-        registry,
-        BusyStatusInvocationBroker(session),
-    ).status(context)
+    status = await _status_from_target(
+        RelayExecutionTarget(registry, BusyStatusInvocationBroker(session)),
+        context,
+    )
 
     assert status.status == RelayTargetState.OFFLINE
     assert status.execution_target.state == RelayTargetState.OFFLINE
@@ -2940,10 +2996,10 @@ async def test_relay_execution_target_filters_non_public_capabilities_from_statu
         scopes=frozenset({"shipagent.status"}),
     )
 
-    status = await RelayExecutionTarget(
-        registry,
-        FakeStatusInvocationBroker(session),
-    ).status(context)
+    status = await _status_from_target(
+        RelayExecutionTarget(registry, FakeStatusInvocationBroker(session)),
+        context,
+    )
 
     assert status.execution_target.capabilities == [
         "rate_shipment",
