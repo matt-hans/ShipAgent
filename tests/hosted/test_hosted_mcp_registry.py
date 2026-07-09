@@ -386,7 +386,10 @@ async def test_hosted_mcp_handler_applies_request_controls_before_invocation():
         clear_authorization_context(token)
 
     assert invoked["value"] is True
-    assert result.structured_content == {"rates": [{"carrier": "UPS"}], "selected": "ups"}
+    assert result.structured_content == {
+        "rates": [{"carrier": "UPS"}],
+        "selected": "ups",
+    }
     assert calls == [
         {
             "connection_id": "pc-1",
