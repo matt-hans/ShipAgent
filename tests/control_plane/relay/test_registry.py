@@ -215,6 +215,23 @@ class FakeRedis:
         return True
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        if "relay active liveness CAS" in script:
+            (
+                session_key,
+                heartbeat_key,
+                active_target_key,
+                expected_session_snapshot,
+                expected_heartbeat_snapshot,
+                active_snapshot,
+                ttl,
+            ) = keys_and_args
+            if self.values.get(session_key) != expected_session_snapshot:
+                return 0
+            if self.values.get(heartbeat_key) != expected_heartbeat_snapshot:
+                return 0
+            self.values[active_target_key] = active_snapshot
+            self.ttls[active_target_key] = int(ttl)
+            return 1
         if numkeys == 1:
             key = keys_and_args[0]
             self.ttls.pop(key, None)
@@ -592,6 +609,23 @@ class NoGetDelConcurrentRedis:
         return True
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        if "relay active liveness CAS" in script:
+            (
+                session_key,
+                heartbeat_key,
+                active_target_key,
+                expected_session_snapshot,
+                expected_heartbeat_snapshot,
+                active_snapshot,
+                ttl,
+            ) = keys_and_args
+            if self.values.get(session_key) != expected_session_snapshot:
+                return 0
+            if self.values.get(heartbeat_key) != expected_heartbeat_snapshot:
+                return 0
+            self.values[active_target_key] = active_snapshot
+            self.ttls[active_target_key] = int(ttl)
+            return 1
         if numkeys == 3 and len(keys_and_args) == 7:
             (
                 session_key,
@@ -854,11 +888,15 @@ async def test_concurrent_set_active_disconnects_authoritative_replaced_device(
             self.transition_started = asyncio.Event()
             self.transition_release = asyncio.Event()
 
-        async def set_active_device_transition(self, account_id, device_id):
+        async def set_active_device_transition(self, account_id, device_id, **kwargs):
             if device_id == self.paused_device_id:
                 self.transition_started.set()
                 await asyncio.wait_for(self.transition_release.wait(), timeout=2)
-            return await super().set_active_device_transition(account_id, device_id)
+            return await super().set_active_device_transition(
+                account_id,
+                device_id,
+                **kwargs,
+            )
 
     class RelayConnection:
         def __init__(self) -> None:
@@ -1385,6 +1423,67 @@ async def test_set_active_device_switches_to_connected_device_and_clears_previou
     assert await redis.get(RedisKey.relay_session(first.device_id)) is None
     assert await redis.get(RedisKey.relay_heartbeat(first.device_id)) is None
     assert status.execution_target.target_id == second_session.execution_target_id
+
+
+async def test_active_selection_does_not_overwrite_reconnected_target_session(
+    control_db,
+) -> None:
+    class PausingActiveTargetRedis(FakeRedis):
+        def __init__(self) -> None:
+            super().__init__()
+            self.compare_and_set_started = asyncio.Event()
+            self.release_compare_and_set = asyncio.Event()
+            self._heartbeat_key: str | None = None
+
+        def pause_active_target_compare_and_set(self, heartbeat_key: str) -> None:
+            self.compare_and_set_started = asyncio.Event()
+            self.release_compare_and_set = asyncio.Event()
+            self._heartbeat_key = heartbeat_key
+
+        async def get(self, key: str):
+            value = await super().get(key)
+            if key == self._heartbeat_key:
+                self._heartbeat_key = None
+                self.compare_and_set_started.set()
+                await self.release_compare_and_set.wait()
+            return value
+
+    await _ensure_account(control_db)
+    redis = PausingActiveTargetRedis()
+    registry = RelayDeviceRegistry(redis, db_session=control_db)
+    reconnecting_registry = RelayDeviceRegistry(redis, db_session=control_db)
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+
+    async def accept_session(candidate: RelayDeviceRegistry):
+        challenge = await candidate.create_challenge("acct-1", device.device_id)
+        return await candidate.accept_handshake(
+            KEY_SERVICE.sign_handshake_claims(
+                build_handshake_claims(
+                    device_id=device.device_id,
+                    account_id="acct-1",
+                    relay_session_id=challenge.relay_session_id,
+                    nonce=challenge.nonce,
+                    version=VERSION,
+                )
+            )
+        )
+
+    await accept_session(registry)
+    redis.pause_active_target_compare_and_set(
+        RedisKey.relay_heartbeat(device.device_id)
+    )
+    transition = asyncio.create_task(
+        registry.set_active_device_transition("acct-1", device.device_id)
+    )
+    await asyncio.wait_for(redis.compare_and_set_started.wait(), timeout=1)
+    second_session = await accept_session(reconnecting_registry)
+    redis.release_compare_and_set.set()
+    await transition
+
+    heartbeat = await registry.get_active_heartbeat("acct-1")
+
+    assert heartbeat is not None
+    assert heartbeat.relay_session_id == second_session.relay_session_id
 
 
 async def test_active_switch_does_not_delete_session_published_after_cleanup_snapshot(
@@ -2510,12 +2609,17 @@ async def test_two_accepted_sessions_never_publish_mixed_liveness_records(
         registry.accept_handshake(first_handshake, first_challenge.relay_session_id)
     )
     await asyncio.wait_for(redis.publish_started.wait(), timeout=1)
-    second = await registry.accept_handshake(
-        second_handshake,
-        second_challenge.relay_session_id,
+    second_task = asyncio.create_task(
+        registry.accept_handshake(
+            second_handshake,
+            second_challenge.relay_session_id,
+        )
     )
+    await asyncio.sleep(0)
+    assert not second_task.done()
     redis.publish_release.set()
     first = await first_task
+    second = await second_task
 
     session = RelaySession.model_validate_json(
         await redis.get(RedisKey.relay_session(device.device_id))
