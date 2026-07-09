@@ -28,12 +28,21 @@ from src.control_plane.auth.context import (
 )
 from src.control_plane.auth.jwt_verifier import TokenPrincipal
 from src.control_plane.auth.service import AuthorizationService
-from src.control_plane.execution_targets import LoopbackExecutionTarget
+from src.control_plane.execution_targets import (
+    LoopbackExecutionTarget,
+    TargetToolRequest,
+)
 from src.control_plane.models import ControlPlaneBase
 from src.control_plane.redis_keys import RedisKey, RedisTtl
 from src.control_plane.relay.protocol import (
+    RelayHeartbeat,
+    RelayHeartbeatFrame,
+    RelayInvocationResultFrame,
     RelayVersionMetadata,
     build_handshake_claims,
+)
+from src.hosted_mcp.execution_target_handlers import (
+    build_execution_target_tool_handlers,
 )
 from src.hosted_mcp.server import build_server as real_build_server
 from src.services.desktop_relay_client import DesktopRelayClient
@@ -59,6 +68,8 @@ KEYPAIR = KEY_SERVICE.generate_or_load_keypair()
 PUBLIC_KEY = KEYPAIR.public_key_pem
 OTHER_KEY_SERVICE = RelayKeyService(InMemoryKeyStore())
 OTHER_KEYPAIR = OTHER_KEY_SERVICE.generate_or_load_keypair()
+THIRD_KEY_SERVICE = RelayKeyService(InMemoryKeyStore())
+THIRD_KEYPAIR = THIRD_KEY_SERVICE.generate_or_load_keypair()
 PRIVATE_KEY = (
     "-----BEGIN ED25519 PRIVATE KEY-----\nsecret\n-----END ED25519 PRIVATE KEY-----\n"
 )
@@ -150,6 +161,59 @@ class FakeRedis:
                 session_key, heartbeat_key, active_target_key
             )
             return revoked_payload
+        if numkeys == 3 and len(keys_and_args) == 7:
+            (
+                session_key,
+                heartbeat_key,
+                active_target_key,
+                session_payload,
+                heartbeat_payload,
+                publish_active,
+                ttl,
+            ) = keys_and_args
+            self.values[session_key] = session_payload
+            self.values[heartbeat_key] = heartbeat_payload
+            self.ttls[session_key] = int(ttl)
+            self.ttls[heartbeat_key] = int(ttl)
+            if publish_active == "1":
+                self.values[active_target_key] = session_payload
+                self.ttls[active_target_key] = int(ttl)
+            return 1
+        if numkeys == 3 and len(keys_and_args) == 5:
+            (
+                session_key,
+                heartbeat_key,
+                active_target_key,
+                session_snapshot,
+                device_id,
+            ) = keys_and_args
+            current_session = self.values.get(session_key)
+            if session_snapshot == "":
+                if current_session is not None:
+                    return 0
+                deleted = await self.delete(heartbeat_key)
+                active_payload = self.values.get(active_target_key)
+                if active_payload is not None:
+                    if isinstance(active_payload, bytes):
+                        active_payload = active_payload.decode("utf-8")
+                    active = json.loads(active_payload)
+                    if active.get("device_id") == device_id:
+                        deleted += await self.delete(active_target_key)
+                return deleted
+            if current_session != session_snapshot:
+                return 0
+            deleted = await self.delete(session_key, heartbeat_key)
+            active_payload = self.values.get(active_target_key)
+            if active_payload is not None:
+                if isinstance(active_payload, bytes):
+                    active_payload = active_payload.decode("utf-8")
+                active = json.loads(active_payload)
+                session = json.loads(session_snapshot)
+                if active.get("device_id") == session.get("device_id") and active.get(
+                    "relay_session_id"
+                ) == session.get("relay_session_id"):
+                    deleted += await self.delete(active_target_key)
+            return deleted
         if numkeys == 4:
             (
                 device_key,
@@ -182,13 +246,16 @@ class FakeRedis:
             self.ttls[heartbeat_key] = int(ttl)
             self.ttls[active_target_key] = int(ttl)
             return "ok"
-        if numkeys == 3 and len(keys_and_args) == 5:
+        if numkeys == 3 and len(keys_and_args) == 8:
             (
                 session_key,
                 heartbeat_key,
                 active_target_key,
                 expected_relay_session_id,
+                heartbeat_payload,
                 ttl,
+                account_id,
+                device_id,
             ) = keys_and_args
             payload = self.values.get(session_key)
             if payload is None or heartbeat_key not in self.values:
@@ -196,8 +263,13 @@ class FakeRedis:
             if isinstance(payload, bytes):
                 payload = payload.decode("utf-8")
             session = json.loads(payload)
-            if session.get("relay_session_id") != expected_relay_session_id:
+            if (
+                session.get("relay_session_id") != expected_relay_session_id
+                or session.get("account_id") != account_id
+                or session.get("device_id") != device_id
+            ):
                 return 0
+            self.values[heartbeat_key] = heartbeat_payload
             self.ttls[session_key] = int(ttl)
             self.ttls[heartbeat_key] = int(ttl)
             active_payload = self.values.get(active_target_key)
@@ -347,7 +419,29 @@ class _RelayTestClientTransport:
         return _RelayTestClientConnectionContext(self._client, url)
 
 
-def _build_app(monkeypatch, *, execution_target=None):
+class SpyRelayInvocationBroker:
+    def __init__(self) -> None:
+        self.disconnect_calls: list[dict[str, object]] = []
+
+    async def disconnect_device(
+        self,
+        *,
+        account_id: str,
+        device_id: str,
+        code: int = 1008,
+        reason: str = "relay device disconnected",
+    ) -> None:
+        self.disconnect_calls.append(
+            {
+                "account_id": account_id,
+                "device_id": device_id,
+                "code": code,
+                "reason": reason,
+            }
+        )
+
+
+def _build_app(monkeypatch, *, execution_target=None, relay_invocation_broker=None):
     redis = FakeRedis()
     fd, database_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -370,7 +464,57 @@ def _build_app(monkeypatch, *, execution_target=None):
     return create_control_plane_app(
         redis_client=redis,
         execution_target=execution_target,
+        relay_invocation_broker=relay_invocation_broker,
     ), redis
+
+
+class RecordingTarget:
+    def __init__(self, result: dict[str, object]) -> None:
+        self._result = result
+        self.requests: list[TargetToolRequest] = []
+
+    async def invoke(self, request: TargetToolRequest) -> dict[str, object]:
+        self.requests.append(request)
+        return self._result
+
+
+@pytest.mark.asyncio
+async def test_status_handler_builds_full_target_tool_request() -> None:
+    target = RecordingTarget(
+        result={
+            "status": "ready",
+            "executionTarget": {
+                "state": "ready",
+                "target_id": "device-1",
+                "capabilities": [],
+            },
+        }
+    )
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset(),
+    )
+
+    result = await build_execution_target_tool_handlers(target)["get_shipagent_status"](
+        context,
+        {"correlation_id": "corr-1"},
+    )
+
+    assert target.requests == [
+        TargetToolRequest(
+            account_id="acct-1",
+            provider_connection_id="pc-1",
+            provider_surface="chatgpt",
+            tool_name="get_shipagent_status",
+            arguments={"correlation_id": "corr-1"},
+            correlation_id="corr-1",
+        )
+    ]
+    assert result["status"] == "ready"
 
 
 async def _run_status_tool(server) -> dict[str, object]:
@@ -501,7 +645,10 @@ def _start_desktop_relay_process(
         import os
         import sys
 
-        from src.services.desktop_relay_client import DesktopRelayClient
+        from src.services.desktop_relay_client import (
+            DesktopRelayClient,
+            WebSocketRelayTransport,
+        )
         from src.services.relay_key_service import RelayKeyService
 
 
@@ -523,6 +670,7 @@ def _start_desktop_relay_process(
                 account_id=config["account_id"],
                 device_id=config["device_id"],
                 key_service=RelayKeyService(EnvStore()),
+                transport=WebSocketRelayTransport(allow_insecure_loopback=True),
                 heartbeat_interval_seconds=0.2,
             )
             accepted = await client.start()
@@ -777,6 +925,89 @@ def test_set_active_rejects_stale_recent_auth(monkeypatch) -> None:
 
     assert response.status_code == 401
     assert response.json() == {"detail": "recent_auth_required"}
+
+
+def test_device_management_routes_disconnect_replaced_live_sessions(
+    monkeypatch,
+) -> None:
+    broker = SpyRelayInvocationBroker()
+    app, _redis = _build_app(monkeypatch, relay_invocation_broker=broker)
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        second = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={
+                "device_name": "Warehouse Mac",
+                "public_key_pem": OTHER_KEYPAIR.public_key_pem,
+            },
+        ).json()
+
+        broker.disconnect_calls.clear()
+        set_active = client.post(
+            f"/relay/devices/{second['device_id']}/set-active",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+        assert set_active.status_code == 200
+        assert broker.disconnect_calls == [
+            {
+                "account_id": "acct-1",
+                "device_id": first["device_id"],
+                "code": 1008,
+                "reason": "relay device policy changed",
+            }
+        ]
+
+        broker.disconnect_calls.clear()
+        rotate = client.post(
+            f"/relay/devices/{second['device_id']}/rotate-key",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"public_key_pem": THIRD_KEYPAIR.public_key_pem},
+        )
+        assert rotate.status_code == 200
+        assert broker.disconnect_calls == [
+            {
+                "account_id": "acct-1",
+                "device_id": second["device_id"],
+                "code": 1008,
+                "reason": "relay device policy changed",
+            }
+        ]
+
+        broker.disconnect_calls.clear()
+        revoke = client.post(
+            f"/relay/devices/{second['device_id']}/revoke",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+        assert revoke.status_code == 200
+        assert broker.disconnect_calls == [
+            {
+                "account_id": "acct-1",
+                "device_id": second["device_id"],
+                "code": 1008,
+                "reason": "relay device policy changed",
+            }
+        ]
+
+        broker.disconnect_calls.clear()
+        unlink = client.post(
+            f"/relay/devices/{first['device_id']}/unlink",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        )
+        assert unlink.status_code == 200
+        assert broker.disconnect_calls == [
+            {
+                "account_id": "acct-1",
+                "device_id": first["device_id"],
+                "code": 1008,
+                "reason": "relay device policy changed",
+            }
+        ]
 
 
 def test_control_plane_app_binds_only_status_mcp_tool(monkeypatch) -> None:
@@ -1295,6 +1526,7 @@ def test_connect_websocket_challenges_then_accepts_claims(monkeypatch) -> None:
             accepted = websocket.receive_json()
 
     assert accepted == {
+        "type": "relay.authenticated",
         "relay_session_id": challenge["relay_session_id"],
         "execution_target_id": f"relay:{registered['device_id']}",
         "state": "ready",
@@ -1440,6 +1672,7 @@ def test_desktop_relay_process_makes_hosted_http_status_ready_then_offline(
         )
         accepted = _read_relay_process_json_line(relay_process)
         assert accepted == {
+            "type": "relay.authenticated",
             "relay_session_id": accepted["relay_session_id"],
             "execution_target_id": f"relay:{device_id}",
             "state": "ready",
@@ -1580,18 +1813,34 @@ def test_connect_websocket_heartbeat_refreshes_ready_liveness(monkeypatch) -> No
             redis.ttls[session_key] = 1
             redis.ttls[heartbeat_key] = 1
             redis.ttls[active_target_key] = 1
+            refreshed_version = RelayVersionMetadata(
+                shipagent_core_version="1.0.1",
+                registry_contract_version="registry-v2",
+                ups_boundary_contract_version="ups-v2",
+                capabilities=["rate_shipment", "get_shipagent_status"],
+            )
 
             websocket.send_json(
-                {
-                    "type": "heartbeat",
-                    "relay_session_id": challenge["relay_session_id"],
-                }
+                RelayHeartbeatFrame(
+                    relay_session_id=challenge["relay_session_id"],
+                    device_id=registered["device_id"],
+                    version=refreshed_version,
+                    active_source_fingerprint=registered["fingerprint"],
+                    sent_at=datetime.now(UTC),
+                ).model_dump(mode="json")
             )
             time.sleep(0.01)
 
             assert redis.ttls[session_key] == RedisTtl.RELAY_SESSION_SECONDS
             assert redis.ttls[heartbeat_key] == RedisTtl.RELAY_SESSION_SECONDS
             assert redis.ttls[active_target_key] == RedisTtl.RELAY_SESSION_SECONDS
+            refreshed_payload = redis.values[heartbeat_key]
+            refreshed_heartbeat = RelayHeartbeat.model_validate_json(refreshed_payload)
+            assert refreshed_heartbeat.version == refreshed_version
+            assert (
+                refreshed_heartbeat.active_source_fingerprint
+                == registered["fingerprint"]
+            )
 
 
 def test_connect_websocket_arbitrary_text_does_not_refresh_liveness(
@@ -1664,10 +1913,60 @@ def test_connect_websocket_wrong_session_heartbeat_does_not_refresh_liveness(
             redis.ttls[heartbeat_key] = 1
 
             websocket.send_json(
-                {
-                    "type": "heartbeat",
-                    "relay_session_id": "wrong-session",
-                }
+                RelayHeartbeatFrame(
+                    relay_session_id="wrong-session",
+                    device_id=registered["device_id"],
+                    version=VERSION,
+                    active_source_fingerprint=registered["fingerprint"],
+                    sent_at=datetime.now(UTC),
+                ).model_dump(mode="json")
+            )
+            time.sleep(0.01)
+
+            assert redis.ttls.get(session_key) in (None, 1)
+            assert redis.ttls.get(heartbeat_key) in (None, 1)
+
+
+def test_connect_websocket_wrong_device_heartbeat_does_not_refresh_liveness(
+    monkeypatch,
+) -> None:
+    app, redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        with client.websocket_connect("/relay/connect") as websocket:
+            websocket.send_json(
+                {"account_id": "acct-1", "device_id": registered["device_id"]}
+            )
+            challenge = websocket.receive_json()
+            claims = build_handshake_claims(
+                device_id=registered["device_id"],
+                account_id="acct-1",
+                relay_session_id=challenge["relay_session_id"],
+                nonce=challenge["nonce"],
+                version=VERSION,
+            )
+            websocket.send_json(
+                KEY_SERVICE.sign_handshake_claims(claims).model_dump(mode="json")
+            )
+            assert websocket.receive_json()["state"] == "ready"
+            session_key = RedisKey.relay_session(registered["device_id"])
+            heartbeat_key = RedisKey.relay_heartbeat(registered["device_id"])
+            redis.ttls[session_key] = 1
+            redis.ttls[heartbeat_key] = 1
+
+            websocket.send_json(
+                RelayHeartbeatFrame(
+                    relay_session_id=challenge["relay_session_id"],
+                    device_id="another-device",
+                    version=VERSION,
+                    active_source_fingerprint=registered["fingerprint"],
+                    sent_at=datetime.now(UTC),
+                ).model_dump(mode="json")
             )
             time.sleep(0.01)
 
@@ -1707,13 +2006,12 @@ def test_connect_websocket_wrong_session_invocation_result_closes_liveness(
             redis.ttls[heartbeat_key] = 1
 
             websocket.send_json(
-                {
-                    "type": "invocation_result",
-                    "relay_session_id": "wrong-session",
-                    "relay_invocation_id": "invocation-1",
-                    "status": "ok",
-                    "result": {"status": "ok"},
-                }
+                RelayInvocationResultFrame(
+                    relay_session_id="wrong-session",
+                    relay_invocation_id="invocation-1",
+                    status="ok",
+                    result={"status": "ok"},
+                ).model_dump(mode="json")
             )
             time.sleep(0.01)
 
