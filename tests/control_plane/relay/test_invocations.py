@@ -46,6 +46,18 @@ class BlockingFailingSendRelayWebSocket(FakeRelayWebSocket):
         raise RuntimeError("websocket disconnected")
 
 
+class BlockingSendRelayWebSocket(FakeRelayWebSocket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.send_started = asyncio.Event()
+        self.release_send = asyncio.Event()
+
+    async def send_json(self, payload: dict[str, Any]) -> None:
+        self.send_started.set()
+        await self.release_send.wait()
+        self.sent.append(payload)
+
+
 @pytest.mark.asyncio
 async def test_broker_sends_invocation_to_live_session_and_resolves_matching_result() -> (
     None
@@ -316,6 +328,120 @@ async def test_disconnect_device_closes_unregisters_and_fails_pending_call() -> 
             audit_correlation_id="corr-1",
             timeout_seconds=1,
         )
+
+
+@pytest.mark.asyncio
+async def test_reconnect_retires_prior_device_session_before_new_session_is_invokable() -> (
+    None
+):
+    old_websocket = FakeRelayWebSocket()
+    new_websocket = FakeRelayWebSocket()
+    broker = RelayInvocationBroker()
+    await broker.register(
+        "relay-session-1",
+        old_websocket,
+        account_id="acct-1",
+        device_id="device-1",
+    )
+    pending = asyncio.create_task(
+        broker.invoke(
+            relay_session_id="relay-session-1",
+            tool_name="get_shipagent_status",
+            arguments={},
+            audit_correlation_id="old-session",
+            timeout_seconds=0.01,
+        )
+    )
+    for _ in range(20):
+        if old_websocket.sent:
+            break
+        await asyncio.sleep(0)
+    assert old_websocket.sent
+
+    await broker.register(
+        "relay-session-2",
+        new_websocket,
+        account_id="acct-1",
+        device_id="device-1",
+    )
+
+    with pytest.raises(NoLiveRelaySession, match="disconnected"):
+        await pending
+    assert old_websocket.close_calls == [(1008, "relay session replaced")]
+    with pytest.raises(NoLiveRelaySession):
+        await broker.invoke(
+            relay_session_id="relay-session-1",
+            tool_name="get_shipagent_status",
+            arguments={},
+            audit_correlation_id="old-session-after-reconnect",
+            timeout_seconds=0.01,
+        )
+
+    new_invocation = asyncio.create_task(
+        broker.invoke(
+            relay_session_id="relay-session-2",
+            tool_name="get_shipagent_status",
+            arguments={},
+            audit_correlation_id="new-session",
+            timeout_seconds=1,
+        )
+    )
+    for _ in range(20):
+        if new_websocket.sent:
+            break
+        await asyncio.sleep(0)
+    envelope = RelayInvocationEnvelope.model_validate(new_websocket.sent[0])
+    await broker.accept_result(
+        RelayInvocationResultFrame(
+            type="relay.invocation_result",
+            relay_session_id="relay-session-2",
+            relay_invocation_id=envelope.relay_invocation_id,
+            status="ok",
+            result={"status": "ok"},
+        )
+    )
+    await new_invocation
+
+
+@pytest.mark.asyncio
+async def test_reconnect_cannot_complete_while_old_session_send_is_admitted() -> None:
+    old_websocket = BlockingSendRelayWebSocket()
+    new_websocket = FakeRelayWebSocket()
+    broker = RelayInvocationBroker()
+    await broker.register(
+        "relay-session-1",
+        old_websocket,
+        account_id="acct-1",
+        device_id="device-1",
+    )
+    old_invocation = asyncio.create_task(
+        broker.invoke(
+            relay_session_id="relay-session-1",
+            tool_name="get_shipagent_status",
+            arguments={},
+            audit_correlation_id="old-session-send-admission",
+            timeout_seconds=1,
+        )
+    )
+    await asyncio.wait_for(old_websocket.send_started.wait(), timeout=1)
+    reconnect = asyncio.create_task(
+        broker.register(
+            "relay-session-2",
+            new_websocket,
+            account_id="acct-1",
+            device_id="device-1",
+        )
+    )
+
+    try:
+        await asyncio.sleep(0)
+        assert not reconnect.done()
+    finally:
+        old_websocket.release_send.set()
+        await reconnect
+        with pytest.raises(NoLiveRelaySession, match="disconnected"):
+            await old_invocation
+    assert old_websocket.close_calls == [(1008, "relay session replaced")]
 
 
 @pytest.mark.asyncio

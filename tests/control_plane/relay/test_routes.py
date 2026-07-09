@@ -18,6 +18,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 from fastmcp import Client as FastMCPClient
 from sqlalchemy import create_engine
+from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 
 from src.control_plane.app import _build_verifier, create_control_plane_app
@@ -32,8 +33,13 @@ from src.control_plane.execution_targets import (
     LoopbackExecutionTarget,
     TargetToolRequest,
 )
-from src.control_plane.models import ControlPlaneBase
+from src.control_plane.models import CloudAccount, ControlPlaneBase
 from src.control_plane.redis_keys import RedisKey, RedisTtl
+from src.control_plane.relay.invocations import (
+    NoLiveRelaySession,
+    RelayDeviceSessionOperationGuard,
+    RelayInvocationBroker,
+)
 from src.control_plane.relay.protocol import (
     RelayHeartbeat,
     RelayHeartbeatFrame,
@@ -41,6 +47,8 @@ from src.control_plane.relay.protocol import (
     RelayVersionMetadata,
     build_handshake_claims,
 )
+from src.control_plane.relay.registry import RelayDeviceRegistry
+from src.control_plane.relay.routes import build_relay_router
 from src.hosted_mcp.execution_target_handlers import (
     build_execution_target_tool_handlers,
 )
@@ -112,6 +120,23 @@ class FakeRedis:
         return True
 
     async def eval(self, script: str, numkeys: int, *keys_and_args: str):
+        if "relay active liveness CAS" in script:
+            (
+                session_key,
+                heartbeat_key,
+                active_target_key,
+                expected_session_snapshot,
+                expected_heartbeat_snapshot,
+                active_snapshot,
+                ttl,
+            ) = keys_and_args
+            if self.values.get(session_key) != expected_session_snapshot:
+                return 0
+            if self.values.get(heartbeat_key) != expected_heartbeat_snapshot:
+                return 0
+            self.values[active_target_key] = active_snapshot
+            self.ttls[active_target_key] = int(ttl)
+            return 1
         if numkeys == 1 and ("SA_RATE_LIMIT" in script or "SA_LOOP_GUARD" in script):
             key = keys_and_args[0]
             count = int(self.values.get(key, "0")) + 1
@@ -422,6 +447,7 @@ class _RelayTestClientTransport:
 class SpyRelayInvocationBroker:
     def __init__(self) -> None:
         self.disconnect_calls: list[dict[str, object]] = []
+        self.session_operation_guard = RelayDeviceSessionOperationGuard()
 
     async def disconnect_device(
         self,
@@ -747,6 +773,30 @@ def test_register_device_returns_public_device_record(monkeypatch) -> None:
     assert payload["revoked"] is False
     assert "private_key" not in response.text
     assert "private_key_pem" not in response.text
+
+
+def test_device_routes_return_durable_key_version(monkeypatch) -> None:
+    app, _redis = _build_app(monkeypatch)
+
+    with TestClient(app) as client:
+        registered = client.post(
+            "/relay/devices/register",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"device_name": "Dock Mac", "public_key_pem": PUBLIC_KEY},
+        ).json()
+        listed = client.get(
+            "/relay/devices",
+            headers={"Authorization": "Bearer relay-manage-token"},
+        ).json()
+        rotated = client.post(
+            f"/relay/devices/{registered['device_id']}/rotate-key",
+            headers={"Authorization": "Bearer relay-manage-token"},
+            json={"public_key_pem": OTHER_KEYPAIR.public_key_pem},
+        ).json()
+
+    assert registered["key_version"] == 1
+    assert listed[0]["key_version"] == 1
+    assert rotated["key_version"] == 2
 
 
 def test_register_device_rejects_duplicate_fingerprint(monkeypatch) -> None:
@@ -1531,6 +1581,201 @@ def test_connect_websocket_challenges_then_accepts_claims(monkeypatch) -> None:
         "execution_target_id": f"relay:{registered['device_id']}",
         "state": "ready",
     }
+
+
+@pytest.mark.asyncio
+async def test_rotate_during_final_handshake_cannot_leave_old_key_session_live(
+    control_db,
+) -> None:
+    class PausingAuthenticatedWebSocket:
+        def __init__(self, device_id: str) -> None:
+            self._device_id = device_id
+            self._messages: list[dict[str, object]] = [
+                {"account_id": "acct-1", "device_id": device_id}
+            ]
+            self.authenticated_started = asyncio.Event()
+            self.release_authenticated = asyncio.Event()
+            self.release_disconnect = asyncio.Event()
+            self.close_calls: list[int] = []
+            self.relay_session_id: str | None = None
+
+        async def accept(self) -> None:
+            return None
+
+        async def receive_json(self) -> dict[str, object]:
+            if self._messages:
+                return self._messages.pop(0)
+            await self.release_disconnect.wait()
+            raise WebSocketDisconnect()
+
+        async def send_json(self, payload: dict[str, object]) -> None:
+            if "nonce" in payload:
+                self.relay_session_id = str(payload["relay_session_id"])
+                self._messages.append(
+                    KEY_SERVICE.sign_handshake_claims(
+                        build_handshake_claims(
+                            device_id=self._device_id,
+                            account_id="acct-1",
+                            relay_session_id=self.relay_session_id,
+                            nonce=str(payload["nonce"]),
+                            version=VERSION,
+                        )
+                    ).model_dump(mode="json")
+                )
+                return
+            if payload.get("type") == "relay.authenticated":
+                self.authenticated_started.set()
+                await self.release_authenticated.wait()
+
+        async def close(self, code: int = 1000) -> None:
+            self.close_calls.append(code)
+
+    control_db.add(CloudAccount(id="acct-1", auth0_subject="auth0|owner-1"))
+    await control_db.commit()
+    registry = RelayDeviceRegistry(FakeRedis(), db_session=control_db)
+    broker = RelayInvocationBroker()
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    router = build_relay_router(registry, broker)
+    connect = next(
+        route.endpoint for route in router.routes if route.path == "/relay/connect"
+    )
+    websocket = PausingAuthenticatedWebSocket(device.device_id)
+    connect_task = asyncio.create_task(connect(websocket))
+    await asyncio.wait_for(websocket.authenticated_started.wait(), timeout=1)
+
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"relay:device:manage"}),
+        auth_time=datetime.now(UTC),
+    )
+    token = set_authorization_context(context)
+    try:
+        await registry.rotate_key(
+            "acct-1", device.device_id, OTHER_KEYPAIR.public_key_pem
+        )
+        await broker.disconnect_device(account_id="acct-1", device_id=device.device_id)
+    finally:
+        clear_authorization_context(token)
+
+    websocket.release_authenticated.set()
+    await asyncio.sleep(0)
+
+    assert await registry.get_active_heartbeat("acct-1") is None
+    with pytest.raises(NoLiveRelaySession):
+        await broker.invoke(
+            relay_session_id=websocket.relay_session_id or "missing-session",
+            tool_name="get_shipagent_status",
+            arguments={},
+            audit_correlation_id="final-handshake-race",
+            timeout_seconds=0.01,
+        )
+
+    websocket.release_disconnect.set()
+    await asyncio.wait_for(connect_task, timeout=1)
+
+
+@pytest.mark.asyncio
+async def test_rotation_holds_device_guard_across_commit_and_disconnect(
+    control_db,
+) -> None:
+    class PausingRotateRegistry(RelayDeviceRegistry):
+        def __init__(self, redis, **kwargs) -> None:
+            super().__init__(redis, **kwargs)
+            self.rotation_entered = asyncio.Event()
+            self.release_rotation = asyncio.Event()
+
+        async def rotate_key(
+            self,
+            account_id: str,
+            device_id: str,
+            public_key_pem: str,
+        ):
+            self.rotation_entered.set()
+            await self.release_rotation.wait()
+            return await super().rotate_key(
+                account_id,
+                device_id,
+                public_key_pem,
+            )
+
+    class RelayConnection:
+        def __init__(self) -> None:
+            self.close_calls: list[tuple[int, str | None]] = []
+
+        async def send_json(self, payload: dict[str, object]) -> None:
+            return None
+
+        async def close(
+            self,
+            code: int = 1000,
+            reason: str | None = None,
+        ) -> None:
+            self.close_calls.append((code, reason))
+
+    async def receive() -> dict[str, object]:
+        return {
+            "type": "http.request",
+            "body": json.dumps(
+                {"public_key_pem": OTHER_KEYPAIR.public_key_pem}
+            ).encode(),
+        }
+
+    control_db.add(CloudAccount(id="acct-1", auth0_subject="auth0|owner-1"))
+    await control_db.commit()
+    registry = PausingRotateRegistry(FakeRedis(), db_session=control_db)
+    broker = RelayInvocationBroker()
+    device = await registry.register_device("acct-1", "Dock Mac", PUBLIC_KEY)
+    connection = RelayConnection()
+    await broker.register(
+        "relay-session-1",
+        connection,
+        account_id="acct-1",
+        device_id=device.device_id,
+    )
+    router = build_relay_router(registry, broker)
+    rotate = next(
+        route.endpoint
+        for route in router.routes
+        if route.path == "/relay/devices/{device_id}/rotate-key"
+    )
+    request = Request(
+        {"type": "http", "method": "POST", "path": "/relay/devices/rotate-key"},
+        receive,
+    )
+    rotate_task = None
+    token = set_authorization_context(
+        AuthorizationContext(
+            account_id="acct-1",
+            provider_connection_id="pc-1",
+            provider_surface="chatgpt",
+            subject="auth0|owner-1",
+            client_id="chatgpt-client",
+            scopes=frozenset({"relay:device:manage"}),
+            auth_time=datetime.now(UTC),
+        )
+    )
+    try:
+        async with broker.session_operation_guard.hold("acct-1", device.device_id):
+            rotate_task = asyncio.create_task(rotate(device.device_id, request))
+            for _ in range(20):
+                if registry.rotation_entered.is_set():
+                    break
+                await asyncio.sleep(0)
+            assert not registry.rotation_entered.is_set()
+
+        await asyncio.wait_for(registry.rotation_entered.wait(), timeout=1)
+    finally:
+        registry.release_rotation.set()
+        if rotate_task is not None:
+            response = await rotate_task
+        clear_authorization_context(token)
+
+    assert response.key_version == 2
+    assert connection.close_calls == [(1008, "relay device policy changed")]
 
 
 def test_desktop_relay_client_connection_makes_hosted_status_ready(

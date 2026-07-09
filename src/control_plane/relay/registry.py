@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.control_plane.models import CloudAccount, utc_now
 from src.control_plane.models import RelayDevice as RelayDeviceRecord
 from src.control_plane.redis_keys import RedisKey, RedisTtl
+from src.control_plane.relay.invocations import RelayDeviceSessionOperationGuard
 from src.control_plane.relay.protocol import (
     RelayHandshakeChallenge,
     RelayHandshakeToken,
@@ -33,6 +34,7 @@ _PRIVATE_KEY_PEM_HEADER = re.compile(
     r"-----BEGIN [^-]*PRIVATE KEY-----",
     re.IGNORECASE,
 )
+_ACTIVE_SELECTION_GUARD_DEVICE_ID = "__relay_active_selection__"
 
 _DISCONNECT_SESSION_SCRIPT = """
 local session = redis.call("GET", KEYS[1])
@@ -95,6 +97,14 @@ redis.call("SET", KEYS[2], ARGV[2], "EX", ARGV[4])
 if ARGV[3] == "1" then
     redis.call("SET", KEYS[3], ARGV[1], "EX", ARGV[4])
 end
+return 1
+"""
+
+_PUBLISH_ACTIVE_LIVENESS_IF_CURRENT_SCRIPT = """
+-- relay active liveness CAS
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then return 0 end
+if redis.call("GET", KEYS[2]) ~= ARGV[2] then return 0 end
+redis.call("SET", KEYS[3], ARGV[3], "EX", ARGV[4])
 return 1
 """
 
@@ -208,12 +218,22 @@ class RelayDeviceRegistry:
         *,
         db_session_factory: async_sessionmaker[AsyncSession] | None = None,
         db_session: AsyncSession | None = None,
+        session_operation_guard: RelayDeviceSessionOperationGuard | None = None,
     ) -> None:
         if db_session_factory is None and db_session is None:
             raise ValueError("RelayDeviceRegistry requires a durable device store")
         self._redis = redis_client
         self._db_session_factory = db_session_factory
         self._db_session = db_session
+        self._session_operation_guard = (
+            session_operation_guard or RelayDeviceSessionOperationGuard()
+        )
+
+    def bind_session_operation_guard(
+        self,
+        session_operation_guard: RelayDeviceSessionOperationGuard,
+    ) -> None:
+        self._session_operation_guard = session_operation_guard
 
     async def register_device(
         self,
@@ -290,6 +310,35 @@ class RelayDeviceRegistry:
         self,
         account_id: str,
         device_id: str,
+        on_transition: Callable[[RelayActiveDeviceTransition], Awaitable[None]]
+        | None = None,
+    ) -> RelayActiveDeviceTransition:
+        async with self._session_operation_guard.hold(
+            account_id,
+            _ACTIVE_SELECTION_GUARD_DEVICE_ID,
+        ):
+            previous_active_device_id = await self._get_selected_active_device_id(
+                account_id
+            )
+            guarded_device_ids = {device_id}
+            if previous_active_device_id is not None:
+                guarded_device_ids.add(previous_active_device_id)
+            async with self._session_operation_guard.hold_many(
+                account_id,
+                guarded_device_ids,
+            ):
+                transition = await self._set_active_device_transition(
+                    account_id,
+                    device_id,
+                )
+                if on_transition is not None:
+                    await on_transition(transition)
+                return transition
+
+    async def _set_active_device_transition(
+        self,
+        account_id: str,
+        device_id: str,
     ) -> RelayActiveDeviceTransition:
         async with self._device_db_session() as session:
             await session.scalar(
@@ -348,34 +397,48 @@ class RelayDeviceRegistry:
         fingerprint: str | None = None,
     ) -> RelayDevice:
         validate_relay_public_key(public_key_pem)
-        device = await self.get_device(account_id, device_id)
-        if device is None:
-            raise ValueError("device not found")
-        if device.revoked:
-            raise ValueError("device revoked")
-        liveness_snapshot = await self._capture_liveness_session(device_id)
-        rotated = await self._rotate_device_key(account_id, device_id, public_key_pem)
-        await self._clear_current_liveness(account_id, device_id, liveness_snapshot)
-        return rotated
+        async with self._session_operation_guard.hold(account_id, device_id):
+            device = await self.get_device(account_id, device_id)
+            if device is None:
+                raise ValueError("device not found")
+            if device.revoked:
+                raise ValueError("device revoked")
+            liveness_snapshot = await self._capture_liveness_session(device_id)
+            rotated = await self._rotate_device_key(
+                account_id,
+                device_id,
+                public_key_pem,
+            )
+            await self._clear_current_liveness(
+                account_id,
+                device_id,
+                liveness_snapshot,
+            )
+            return rotated
 
     async def revoke_device(self, account_id: str, device_id: str) -> RelayDevice:
-        device = await self.get_device(account_id, device_id)
-        if device is None:
-            raise ValueError("device not found")
-        liveness_snapshot = await self._capture_liveness_session(device_id)
-        revoked = await self._revoke_device(account_id, device_id)
-        try:
-            await self._clear_current_liveness(account_id, device_id, liveness_snapshot)
-        except Exception:
-            if not device.revoked:
-                await self._restore_after_failed_revocation(
+        async with self._session_operation_guard.hold(account_id, device_id):
+            device = await self.get_device(account_id, device_id)
+            if device is None:
+                raise ValueError("device not found")
+            liveness_snapshot = await self._capture_liveness_session(device_id)
+            revoked = await self._revoke_device(account_id, device_id)
+            try:
+                await self._clear_current_liveness(
                     account_id,
                     device_id,
-                    revoked,
-                    active=device.active,
+                    liveness_snapshot,
                 )
-            raise
-        return revoked
+            except Exception:
+                if not device.revoked:
+                    await self._restore_after_failed_revocation(
+                        account_id,
+                        device_id,
+                        revoked,
+                        active=device.active,
+                    )
+                raise
+            return revoked
 
     async def unlink_device(self, account_id: str, device_id: str) -> RelayDevice:
         device = await self.get_device(account_id, device_id)
@@ -504,6 +567,7 @@ class RelayDeviceRegistry:
         self,
         handshake: RelayHandshakeToken,
         challenge_relay_session_id: str | None = None,
+        on_accepted: Callable[[RelaySession], Awaitable[None]] | None = None,
     ) -> RelaySession:
         if not isinstance(handshake, RelayHandshakeToken):
             raise ValueError("handshake token required")
@@ -536,32 +600,40 @@ class RelayDeviceRegistry:
             state=session.state,
             version=session.version,
         )
-        current_device = await self.get_device(binding.account_id, binding.device_id)
-        if current_device is None:
-            raise ValueError("device not found")
-        if current_device.revoked:
-            raise ValueError("device revoked")
-        if (
-            current_device.fingerprint != device.fingerprint
-            or current_device.public_key_pem != device.public_key_pem
+        async with self._session_operation_guard.hold(
+            session.account_id,
+            session.device_id,
         ):
-            raise ValueError("device changed")
-        selected_device_id = await self._get_selected_active_device_id(
-            session.account_id
-        )
-        await self._redis.eval(
-            _PUBLISH_ACCEPTED_LIVENESS_SCRIPT,
-            3,
-            RedisKey.relay_session(session.device_id),
-            RedisKey.relay_heartbeat(session.device_id),
-            RedisKey.relay_active_target(session.account_id),
-            session.model_dump_json(),
-            heartbeat.model_dump_json(),
-            "1"
-            if selected_device_id is None or selected_device_id == session.device_id
-            else "0",
-            str(RedisTtl.RELAY_SESSION_SECONDS),
-        )
+            current_device = await self.get_device(
+                binding.account_id, binding.device_id
+            )
+            if current_device is None:
+                raise ValueError("device not found")
+            if current_device.revoked:
+                raise ValueError("device revoked")
+            if (
+                current_device.fingerprint != device.fingerprint
+                or current_device.public_key_pem != device.public_key_pem
+            ):
+                raise ValueError("device changed")
+            selected_device_id = await self._get_selected_active_device_id(
+                session.account_id
+            )
+            await self._redis.eval(
+                _PUBLISH_ACCEPTED_LIVENESS_SCRIPT,
+                3,
+                RedisKey.relay_session(session.device_id),
+                RedisKey.relay_heartbeat(session.device_id),
+                RedisKey.relay_active_target(session.account_id),
+                session.model_dump_json(),
+                heartbeat.model_dump_json(),
+                "1"
+                if selected_device_id is None or selected_device_id == session.device_id
+                else "0",
+                str(RedisTtl.RELAY_SESSION_SECONDS),
+            )
+            if on_accepted is not None:
+                await on_accepted(session)
         return session
 
     async def _get_challenge_binding(
@@ -686,8 +758,12 @@ class RelayDeviceRegistry:
         account_id: str,
         device_id: str,
     ) -> None:
-        session = await self._get_session(device_id)
-        heartbeat = await self._get_heartbeat(device_id)
+        session_key = RedisKey.relay_session(device_id)
+        heartbeat_key = RedisKey.relay_heartbeat(device_id)
+        session_snapshot = await self._get_liveness_snapshot(session_key)
+        heartbeat_snapshot = await self._get_liveness_snapshot(heartbeat_key)
+        session = _decode_liveness_model(RelaySession, session_snapshot)
+        heartbeat = _decode_liveness_model(RelayHeartbeat, heartbeat_snapshot)
         if (
             session is not None
             and heartbeat is not None
@@ -697,10 +773,16 @@ class RelayDeviceRegistry:
             and heartbeat.device_id == device_id
             and session.relay_session_id == heartbeat.relay_session_id
         ):
-            await self._redis.set(
+            await self._redis.eval(
+                _PUBLISH_ACTIVE_LIVENESS_IF_CURRENT_SCRIPT,
+                3,
+                session_key,
+                heartbeat_key,
                 RedisKey.relay_active_target(account_id),
-                session.model_dump_json(),
-                ex=RedisTtl.RELAY_SESSION_SECONDS,
+                session_snapshot,
+                heartbeat_snapshot,
+                session_snapshot,
+                str(RedisTtl.RELAY_SESSION_SECONDS),
             )
             return
 
@@ -748,16 +830,24 @@ class RelayDeviceRegistry:
         )
 
     async def _get_session(self, device_id: str) -> RelaySession | None:
-        payload = await self._redis.get(RedisKey.relay_session(device_id))
-        if payload is None:
-            return None
-        return _decode_liveness_model(RelaySession, payload)
+        return _decode_liveness_model(
+            RelaySession,
+            await self._get_liveness_snapshot(RedisKey.relay_session(device_id)),
+        )
 
     async def _get_heartbeat(self, device_id: str) -> RelayHeartbeat | None:
-        payload = await self._redis.get(RedisKey.relay_heartbeat(device_id))
+        return _decode_liveness_model(
+            RelayHeartbeat,
+            await self._get_liveness_snapshot(RedisKey.relay_heartbeat(device_id)),
+        )
+
+    async def _get_liveness_snapshot(self, key: str) -> str | None:
+        payload = await self._redis.get(key)
         if payload is None:
             return None
-        return _decode_liveness_model(RelayHeartbeat, payload)
+        if isinstance(payload, bytes):
+            return payload.decode("utf-8")
+        return payload
 
 
 def _decode_liveness_model(model_type, payload):
