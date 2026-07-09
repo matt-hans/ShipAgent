@@ -354,3 +354,118 @@ Commit: `git add tests/e2e/test_portability_smoke.py src/control_plane src/servi
 - [ ] Resolve every critical or important finding through one TDD fix task and repeat the final review.
 - [ ] Confirm `git status --short` is clean and every commit is on `plan-1-relay-walking-skeleton`.
 - [ ] Push `plan-1-relay-walking-skeleton` to `origin`; PR #28 updates automatically. Do not create a replacement PR.
+
+### Task 5: Close final handshake and active-target race windows
+
+**Files:**
+- Modify: `src/control_plane/relay/invocations.py`
+- Modify: `src/control_plane/relay/registry.py`
+- Modify: `src/control_plane/relay/routes.py`
+- Modify: `tests/control_plane/relay/test_invocations.py`
+- Modify: `tests/control_plane/relay/test_registry.py`
+- Modify: `tests/control_plane/relay/test_routes.py`
+- Modify: `tests/control_plane/auth/test_jwt_verifier.py`
+
+**Interfaces:**
+- Produces a per-`(account_id, device_id)` session-operation guard shared by relay connection activation, policy mutations, registration/replacement, and invocation send admission.
+- Produces `RelayInvocationBroker.register(...)` behavior that retires every previous authenticated session for the same device, closes it with policy code `1008`, and fails its pending futures before the replacement becomes invokable.
+- Produces `RelayDeviceRegistry._publish_active_liveness_if_connected(...)` with Redis compare-and-set semantics: write the active target only if the exact session and heartbeat snapshots read by the operation are still current.
+- Produces `RelayDeviceResponse.key_version: int` and returns it from register, list, rotate, revoke, unlink, and set-active routes.
+
+- [ ] **Step 1: Write the old-key policy-mutation race test**
+
+```python
+async def test_rotate_during_final_handshake_cannot_register_old_key_session(
+    app, registry, broker, old_key_handshake
+):
+    paused = registry.pause_before_final_handshake_publish()
+    connect_task = asyncio.create_task(connect_with(old_key_handshake))
+    await paused.wait()
+    await registry.rotate_key("acct-1", "device-1", new_public_key_pem)
+    paused.release()
+    await connect_task
+    assert await registry.get_active_heartbeat("acct-1") is None
+    assert await broker.has_device_session("acct-1", "device-1") is False
+```
+
+- [ ] **Step 2: Run it red**
+
+Run: `.venv/bin/python -m pytest tests/control_plane/relay/test_routes.py -k final_handshake -v`
+
+Expected: FAIL because the old-key handshake publishes after rotation and is registered after the policy disconnect.
+
+- [ ] **Step 3: Serialize session activation and policy mutation**
+
+Use the same per-device guard for: (a) final accepted-handshake publication plus broker registration, (b) rotate/revoke/unlink/set-active durable mutation plus broker disconnect, and (c) broker invocation send admission. An invocation that entered before replacement may be failed by replacement; an invocation that enters after replacement must never send to the prior connection. Do not use an unauthenticated hello to evict a live session. The route must confirm broker registration/replacement while holding the authenticated device guard.
+
+- [ ] **Step 4: Add and run red/green reconnect and policy tests**
+
+```python
+async def test_reconnect_retires_prior_device_session_before_new_session_is_invokable():
+    await register_authenticated_session("session-1", old_socket)
+    pending = asyncio.create_task(invoke_status("session-1"))
+    await wait_for_send(old_socket)
+    await register_authenticated_session("session-2", new_socket)
+    with pytest.raises(NoLiveRelaySession):
+        await pending
+    assert old_socket.close_codes == [1008]
+    assert await invoke_status("session-1") is None
+    assert await invoke_status("session-2") is not None
+```
+
+Run: `.venv/bin/python -m pytest tests/control_plane/relay/test_invocations.py tests/control_plane/relay/test_routes.py -k 'reconnect or final_handshake or rotate or revoke or unlink' -v`
+
+Expected: each new behavior fails before its guard/replacement implementation and passes afterward.
+
+- [ ] **Step 5: Write the active-target compare-and-set race test**
+
+```python
+async def test_active_selection_does_not_overwrite_reconnected_target_session(registry):
+    await registry.accept_handshake(first_handshake, first_challenge.relay_session_id)
+    registry.pause_active_target_compare_and_set()
+    transition = asyncio.create_task(registry.set_active_device_transition("acct-1", "device-1"))
+    await registry.wait_for_active_target_compare_and_set()
+    await registry.accept_handshake(second_handshake, second_challenge.relay_session_id)
+    registry.release_active_target_compare_and_set()
+    await transition
+    heartbeat = await registry.get_active_heartbeat("acct-1")
+    assert heartbeat is not None
+    assert heartbeat.relay_session_id == second_challenge.relay_session_id
+```
+
+- [ ] **Step 6: Implement Redis compare-and-set then run green**
+
+```lua
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then return 0 end
+if redis.call("GET", KEYS[2]) ~= ARGV[2] then return 0 end
+redis.call("SET", KEYS[3], ARGV[3], "EX", ARGV[4])
+return 1
+```
+
+Pass the exact session and heartbeat JSON snapshots read by `_publish_active_liveness_if_connected`. If either changed, leave the current active target untouched. Update fake Redis to execute the observable CAS behavior.
+
+- [ ] **Step 7: Expose key version and format the changed auth test**
+
+```python
+class RelayDeviceResponse(RelayProtocolModel):
+    account_id: str
+    device_id: str
+    fingerprint: str
+    key_version: int
+    revoked: bool
+    active: bool = False
+```
+
+Add route assertions proving `key_version == 1` for registration/listing and increases after rotation. Run `.venv/bin/python -m ruff format tests/control_plane/auth/test_jwt_verifier.py`.
+
+- [ ] **Step 8: Validate and commit**
+
+Run: `.venv/bin/python -m pytest tests/control_plane/relay/test_invocations.py tests/control_plane/relay/test_registry.py tests/control_plane/relay/test_routes.py tests/control_plane -v`
+
+Run: `git diff --name-only $(git merge-base main HEAD)..HEAD | rg '\\.py$' | xargs .venv/bin/python -m ruff format --check`
+
+Run: `.venv/bin/python -m ruff check src/ tests/`
+
+Run: `.venv/bin/python -m pytest tests/registry/test_artifact_drift.py -v && uv lock --check`
+
+Commit: `git add src/control_plane/relay/invocations.py src/control_plane/relay/registry.py src/control_plane/relay/routes.py tests/control_plane/relay/test_invocations.py tests/control_plane/relay/test_registry.py tests/control_plane/relay/test_routes.py tests/control_plane/auth/test_jwt_verifier.py && git commit -m "fix: close final relay session race windows"`
