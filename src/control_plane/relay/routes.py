@@ -141,27 +141,21 @@ def build_relay_router(
     @router.post("/devices/{device_id}/set-active", response_model=RelayDeviceResponse)
     async def set_active_device(device_id: str) -> RelayDeviceResponse:
         account_id = _require_relay_manage_account_id()
-        previous_devices = await registry.list_devices(account_id)
-        previous_active_device_ids = [
-            device.device_id
-            for device in previous_devices
-            if device.active and device.device_id != device_id
-        ]
         try:
-            device = await registry.set_active_device(
+            transition = await registry.set_active_device_transition(
                 account_id=account_id,
                 device_id=device_id,
             )
         except ValueError as exc:
             raise _relay_registry_http_error(exc) from exc
-        for previous_device_id in previous_active_device_ids:
+        if transition.replaced_device_id is not None:
             await invocation_broker.disconnect_device(
                 account_id=account_id,
-                device_id=previous_device_id,
+                device_id=transition.replaced_device_id,
                 code=RELAY_POLICY_CLOSE_CODE,
                 reason=RELAY_POLICY_CLOSE_REASON,
             )
-        return _device_response(device)
+        return _device_response(transition.selected_device)
 
     @router.post("/devices/{device_id}/rotate-key", response_model=RelayDeviceResponse)
     async def rotate_key(

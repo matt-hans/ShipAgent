@@ -4,6 +4,7 @@ import re
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -12,8 +13,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.control_plane.models import CloudAccount, utc_now
 from src.control_plane.models import RelayDevice as RelayDeviceRecord
-from src.control_plane.models import utc_now
 from src.control_plane.redis_keys import RedisKey, RedisTtl
 from src.control_plane.relay.protocol import (
     RelayHandshakeChallenge,
@@ -179,6 +180,12 @@ class RelayDevice(RelayProtocolModel):
     active: bool = False
 
 
+@dataclass(frozen=True)
+class RelayActiveDeviceTransition:
+    selected_device: RelayDevice
+    replaced_device_id: str | None
+
+
 class RelaySession(RelayProtocolModel):
     account_id: str
     device_id: str
@@ -275,7 +282,21 @@ class RelayDeviceRegistry:
             ]
 
     async def set_active_device(self, account_id: str, device_id: str) -> RelayDevice:
+        return (
+            await self.set_active_device_transition(account_id, device_id)
+        ).selected_device
+
+    async def set_active_device_transition(
+        self,
+        account_id: str,
+        device_id: str,
+    ) -> RelayActiveDeviceTransition:
         async with self._device_db_session() as session:
+            await session.scalar(
+                select(CloudAccount.id)
+                .where(CloudAccount.id == account_id)
+                .with_for_update()
+            )
             previous_active_device_id = await self._get_active_device_id(
                 session,
                 account_id,
@@ -310,7 +331,14 @@ class RelayDeviceRegistry:
                 previous_liveness_snapshot,
             )
         await self._publish_active_liveness_if_connected(account_id, device_id)
-        return selected
+        return RelayActiveDeviceTransition(
+            selected_device=selected,
+            replaced_device_id=(
+                previous_active_device_id
+                if previous_active_device_id != device_id
+                else None
+            ),
+        )
 
     async def rotate_key(
         self,
