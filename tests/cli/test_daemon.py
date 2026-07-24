@@ -3,10 +3,13 @@
 import os
 from unittest.mock import patch
 
+import pytest
+
 from src.cli.daemon import (
     is_pid_alive,
     read_pid_file,
     remove_pid_file,
+    start_daemon,
     write_pid_file,
 )
 
@@ -53,3 +56,21 @@ class TestPidFile:
         pid_file = str(tmp_path / "nested" / "dir" / "test.pid")
         write_pid_file(pid_file, 12345)
         assert read_pid_file(pid_file) == 12345
+
+
+def test_start_daemon_rejects_actual_public_bind_for_fake_local(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SHIPAGENT_AUTH_MODE", "fake_local")
+    monkeypatch.setenv("SHIPAGENT_ENVIRONMENT", "local")
+    monkeypatch.delenv("SHIPAGENT_DATABASE_URL", raising=False)
+    monkeypatch.delenv("SHIPAGENT_REDIS_URL", raising=False)
+    pid_file = tmp_path / "daemon.pid"
+
+    with patch("uvicorn.run") as uvicorn_run:
+        with pytest.raises(RuntimeError, match="loopback"):
+            start_daemon(host="0.0.0.0", port=8080, pid_file=str(pid_file))
+
+    uvicorn_run.assert_not_called()
+    assert not pid_file.exists()

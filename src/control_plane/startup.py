@@ -24,3 +24,10 @@ def validate_startup_security(settings: ControlPlaneSettings) -> None:
         or (public_host is not None and not _is_loopback_host(public_host))
     ):
         raise RuntimeError("fake_local auth is restricted to loopback local mode")
+
+
+def validated_listener_host(host: str) -> str:
+    """Validate and return the exact host a server launcher will bind."""
+    settings = ControlPlaneSettings(bind_host=host)
+    validate_startup_security(settings)
+    return settings.bind_host

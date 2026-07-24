@@ -10,6 +10,7 @@ import signal
 import sys
 from pathlib import Path
 
+from src.control_plane.startup import validated_listener_host
 from src.utils.runtime import get_default_port
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,7 @@ def start_daemon(
     """
     if port is None:
         port = get_default_port()
+    host = validated_listener_host(host)
     import uvicorn
 
     # Check for stale PID

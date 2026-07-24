@@ -67,4 +67,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
     CMD curl -fsS http://127.0.0.1:${SHIPAGENT_PORT}/health || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["sh", "-c", "uvicorn src.api.main:app --host 0.0.0.0 --port ${SHIPAGENT_PORT} --workers 1"]
+CMD ["sh", "-c", "exec python -m src.bundle_entry serve --host 0.0.0.0 --port ${SHIPAGENT_PORT}"]
