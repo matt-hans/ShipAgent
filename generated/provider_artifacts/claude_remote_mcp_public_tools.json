@@ -51,16 +51,20 @@
       "openWorldHint": true,
       "readOnlyHint": true
     },
-    "description": "Create a single shipment ingress reference from caller-provided shipment content.",
+    "description": "Register a ShipAgent-owned ingress artifact for one-off shipment workflows.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
-        "shipment_payload": {
+        "ingress_reference": {
+          "description": "Opaque reference minted by the authenticated ShipAgent ingress channel.",
+          "maxLength": 127,
+          "minLength": 23,
+          "pattern": "^sa_[A-Za-z0-9_-]{20,124}$",
           "type": "string"
         }
       },
       "required": [
-        "shipment_payload"
+        "ingress_reference"
       ],
       "type": "object"
     },
@@ -69,6 +73,10 @@
       "additionalProperties": false,
       "properties": {
         "input_reference": {
+          "description": "Opaque ShipAgent shipment input reference.",
+          "maxLength": 127,
+          "minLength": 23,
+          "pattern": "^sa_[A-Za-z0-9_-]{20,124}$",
           "type": "string"
         }
       },
@@ -90,7 +98,10 @@
       "additionalProperties": false,
       "properties": {
         "input_reference": {
-          "description": "Reference to a submitted ingress payload.",
+          "description": "Opaque ShipAgent shipment input reference.",
+          "maxLength": 127,
+          "minLength": 23,
+          "pattern": "^sa_[A-Za-z0-9_-]{20,124}$",
           "type": "string"
         }
       },
@@ -103,16 +114,40 @@
     "outputSchema": {
       "additionalProperties": false,
       "properties": {
-        "normalized_address": {
-          "type": "string"
+        "guidance_codes": {
+          "description": "Bounded redacted remediation categories.",
+          "items": {
+            "enum": [
+              "no_action_required",
+              "postal_code_review_required",
+              "locality_review_required",
+              "region_review_required",
+              "recipient_review_required",
+              "destination_not_recognized",
+              "multiple_candidates",
+              "carrier_validation_unavailable"
+            ],
+            "type": "string"
+          },
+          "maxItems": 8,
+          "type": "array",
+          "uniqueItems": true
         },
         "valid": {
           "type": "boolean"
+        },
+        "validation_artifact_id": {
+          "description": "Opaque ShipAgent validation artifact reference.",
+          "maxLength": 127,
+          "minLength": 23,
+          "pattern": "^sa_[A-Za-z0-9_-]{20,124}$",
+          "type": "string"
         }
       },
       "required": [
-        "normalized_address",
-        "valid"
+        "validation_artifact_id",
+        "valid",
+        "guidance_codes"
       ],
       "type": "object"
     },
@@ -129,6 +164,10 @@
       "additionalProperties": false,
       "properties": {
         "input_reference": {
+          "description": "Opaque ShipAgent shipment input reference.",
+          "maxLength": 127,
+          "minLength": 23,
+          "pattern": "^sa_[A-Za-z0-9_-]{20,124}$",
           "type": "string"
         }
       },
@@ -194,6 +233,10 @@
       "additionalProperties": false,
       "properties": {
         "input_reference": {
+          "description": "Opaque ShipAgent shipment input reference.",
+          "maxLength": 127,
+          "minLength": 23,
+          "pattern": "^sa_[A-Za-z0-9_-]{20,124}$",
           "type": "string"
         }
       },
