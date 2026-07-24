@@ -14,6 +14,7 @@ import logging
 import os
 import threading
 import time
+from urllib.parse import urlsplit
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
@@ -36,6 +37,8 @@ _PUBLIC_PATH_PREFIXES = (
 )
 _BROWSER_SESSION_PATH = "/api/v1/auth/session"
 _PUBLIC_BROWSER_SESSION_METHODS = frozenset({"GET", "DELETE"})
+_SAFE_BROWSER_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_DEFAULT_ORIGIN_PORTS = {"http": 80, "https": 443}
 
 # --- Rate limiting for auth failures (F-6, CWE-307) ---
 _AUTH_FAIL_MAX = 10  # Max failures per IP in the time window
@@ -156,6 +159,58 @@ def should_authenticate(path: str) -> bool:
     return path.startswith("/api/")
 
 
+def _normalized_origin(origin: str) -> tuple[str, str, int] | None:
+    """Parse a browser Origin header into a strict comparison tuple."""
+    try:
+        parsed = urlsplit(origin)
+        scheme = parsed.scheme.lower()
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+
+    if (
+        scheme not in _DEFAULT_ORIGIN_PORTS
+        or not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+
+    return (
+        scheme,
+        hostname.lower().rstrip("."),
+        port or _DEFAULT_ORIGIN_PORTS[scheme],
+    )
+
+
+def _request_origin(request: Request) -> tuple[str, str, int] | None:
+    scheme = request.url.scheme.lower()
+    hostname = request.url.hostname
+    if scheme not in _DEFAULT_ORIGIN_PORTS or not hostname:
+        return None
+    try:
+        port = request.url.port
+    except ValueError:
+        return None
+    return (
+        scheme,
+        hostname.lower().rstrip("."),
+        port or _DEFAULT_ORIGIN_PORTS[scheme],
+    )
+
+
+def _has_trusted_browser_origin(request: Request) -> bool:
+    origin = request.headers.get("Origin")
+    normalized_origin = _normalized_origin(origin) if origin else None
+    return normalized_origin is not None and normalized_origin == _request_origin(
+        request
+    )
+
+
 async def maybe_require_api_key(request: Request, call_next) -> Response:
     """FastAPI middleware entrypoint for optional API-key auth.
 
@@ -191,10 +246,29 @@ async def maybe_require_api_key(request: Request, call_next) -> Response:
         request.cookies.get(BROWSER_SESSION_COOKIE),
         expected_key,
     )
+    if (
+        request.url.path == _BROWSER_SESSION_PATH
+        and method == "POST"
+        and not header_is_valid
+    ):
+        _record_auth_failure(client_ip)
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing API key"},
+        )
     if not header_is_valid and not session_is_valid:
         _record_auth_failure(client_ip)
         return JSONResponse(
             status_code=401,
             content={"detail": "Invalid or missing API key"},
+        )
+    if (
+        not header_is_valid
+        and method not in _SAFE_BROWSER_METHODS
+        and not _has_trusted_browser_origin(request)
+    ):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Browser session origin validation failed"},
         )
     return await call_next(request)
