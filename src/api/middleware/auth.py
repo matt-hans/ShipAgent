@@ -18,6 +18,11 @@ import time
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
+from src.api.browser_session import (
+    BROWSER_SESSION_COOKIE,
+    verify_browser_session,
+)
+
 logger = logging.getLogger(__name__)
 
 _PUBLIC_PATH_PREFIXES = (
@@ -29,6 +34,8 @@ _PUBLIC_PATH_PREFIXES = (
     "/assets/",
     "/static/",
 )
+_BROWSER_SESSION_PATH = "/api/v1/auth/session"
+_PUBLIC_BROWSER_SESSION_METHODS = frozenset({"GET", "DELETE"})
 
 # --- Rate limiting for auth failures (F-6, CWE-307) ---
 _AUTH_FAIL_MAX = 10  # Max failures per IP in the time window
@@ -41,7 +48,10 @@ _auth_lock = threading.Lock()  # Protects _auth_failures (B-1, CWE-362)
 # When SHIPAGENT_TRUST_PROXY is set to "1" or "true", X-Forwarded-For is used
 # for client IP extraction. When unset or "0", only request.client.host is used,
 # preventing attackers from spoofing IPs to bypass rate limiting.
-_TRUST_PROXY = os.environ.get("SHIPAGENT_TRUST_PROXY", "").strip().lower() in ("1", "true")
+_TRUST_PROXY = os.environ.get("SHIPAGENT_TRUST_PROXY", "").strip().lower() in (
+    "1",
+    "true",
+)
 
 
 def _get_client_ip(request: Request) -> str:
@@ -89,9 +99,15 @@ def _record_auth_failure(client_ip: str) -> None:
     with _auth_lock:
         now = time.monotonic()
         # Evict oldest entries when capacity is reached (CWE-770)
-        if len(_auth_failures) >= _AUTH_FAIL_MAX_IPS and client_ip not in _auth_failures:
+        if (
+            len(_auth_failures) >= _AUTH_FAIL_MAX_IPS
+            and client_ip not in _auth_failures
+        ):
             # Remove the entry with the oldest most-recent timestamp
-            oldest_ip = min(_auth_failures, key=lambda ip: _auth_failures[ip][-1] if _auth_failures[ip] else 0)
+            oldest_ip = min(
+                _auth_failures,
+                key=lambda ip: _auth_failures[ip][-1] if _auth_failures[ip] else 0,
+            )
             del _auth_failures[oldest_ip]
         if client_ip not in _auth_failures:
             _auth_failures[client_ip] = []
@@ -146,7 +162,11 @@ async def maybe_require_api_key(request: Request, call_next) -> Response:
     Includes in-process rate limiting (F-6): blocks client IPs that
     exceed _AUTH_FAIL_MAX failures within _AUTH_FAIL_WINDOW_SECONDS.
     """
-    if request.method.upper() == "OPTIONS":
+    method = request.method.upper()
+    if method == "OPTIONS" or (
+        request.url.path == _BROWSER_SESSION_PATH
+        and method in _PUBLIC_BROWSER_SESSION_METHODS
+    ):
         return await call_next(request)
 
     expected_key = get_expected_api_key()
@@ -164,7 +184,14 @@ async def maybe_require_api_key(request: Request, call_next) -> Response:
         )
 
     provided_key = request.headers.get("X-API-Key", "")
-    if not provided_key or not hmac.compare_digest(provided_key, expected_key):
+    header_is_valid = bool(
+        provided_key and hmac.compare_digest(provided_key, expected_key)
+    )
+    session_is_valid = verify_browser_session(
+        request.cookies.get(BROWSER_SESSION_COOKIE),
+        expected_key,
+    )
+    if not header_is_valid and not session_is_valid:
         _record_auth_failure(client_ip)
         return JSONResponse(
             status_code=401,
