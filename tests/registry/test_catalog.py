@@ -123,6 +123,234 @@ def test_public_provider_contract_rejects_sensitive_transport_fields(
         )
 
 
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "oneOf": [object_schema({"api_key": {"type": "string"}}, ["api_key"])],
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "anyOf": [
+                object_schema({"access_key": {"type": "string"}}, ["access_key"])
+            ],
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "allOf": [
+                object_schema(
+                    {"authorization_header": {"type": "string"}},
+                    ["authorization_header"],
+                )
+            ],
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "not": object_schema(
+                {"bearer_value": {"type": "string"}}, ["bearer_value"]
+            ),
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "$ref": "#",
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "$defs": {
+                "hidden": object_schema(
+                    {"credential_value": {"type": "string"}},
+                    ["credential_value"],
+                )
+            },
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "definitions": {
+                "hidden": object_schema(
+                    {"customer_address": {"type": "string"}},
+                    ["customer_address"],
+                )
+            },
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "if": object_schema({"auth_header": {"type": "string"}}, ["auth_header"]),
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "then": object_schema({"label_href": {"type": "string"}}, ["label_href"]),
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "else": object_schema(
+                {"document_link": {"type": "string"}}, ["document_link"]
+            ),
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "dependentSchemas": {
+                "safe": object_schema(
+                    {"raw_customer_row": {"type": "string"}},
+                    ["raw_customer_row"],
+                )
+            },
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "dependentRequired": {"safe": ["api_key"]},
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "dependencies": {
+                "safe": object_schema(
+                    {"carrier_response_body": {"type": "string"}},
+                    ["carrier_response_body"],
+                )
+            },
+        },
+        object_schema(
+            {
+                "values": {
+                    "type": "array",
+                    "prefixItems": [
+                        object_schema({"api_key": {"type": "string"}}, ["api_key"])
+                    ],
+                    "items": {"type": "string"},
+                }
+            },
+            ["values"],
+        ),
+        {
+            **object_schema(
+                {
+                    "values": {
+                        "type": "array",
+                        "items": [
+                            object_schema({"api_key": {"type": "string"}}, ["api_key"])
+                        ],
+                    }
+                },
+                ["values"],
+            ),
+            "$schema": "http://json-schema.org/draft-07/schema#",
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "patternProperties": {".*": {"type": "string"}},
+        },
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "propertyNames": {"pattern": "credential"},
+        },
+        object_schema(
+            {
+                "values": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "contains": {"type": "string"},
+                }
+            },
+            ["values"],
+        ),
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "unevaluatedProperties": True,
+        },
+        object_schema(
+            {
+                "values": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "unevaluatedItems": {"type": "string"},
+                }
+            },
+            ["values"],
+        ),
+        {
+            "type": "object",
+            "properties": {"safe": {"type": "string"}},
+            "required": ["safe"],
+        },
+        {
+            "type": "object",
+            "properties": {"safe": {"type": "string"}},
+            "required": ["safe"],
+            "additionalProperties": True,
+        },
+        {
+            "type": "object",
+            "properties": {"safe": {"type": "string"}},
+            "required": ["safe"],
+            "additionalProperties": {"type": "string"},
+        },
+        {
+            "type": "object",
+            "required": [],
+            "additionalProperties": False,
+        },
+        object_schema({"safe": True}, ["safe"]),
+        object_schema({"safe": False}, ["safe"]),
+        object_schema(
+            {"values": {"type": "array", "items": True}},
+            ["values"],
+        ),
+        object_schema(
+            {"values": {"type": "array", "items": False}},
+            ["values"],
+        ),
+        object_schema({"value": {"type": ["string", "null"]}}, ["value"]),
+        {
+            **object_schema({"safe": {"type": "string"}}, ["safe"]),
+            "examples": [{"safe": "value"}],
+        },
+    ],
+)
+def test_public_provider_contract_rejects_schema_dialect_bypasses(schema):
+    assert provider_schema_privacy_violations("schema_dialect_probe", schema)
+
+    with pytest.raises(ValueError, match="provider privacy"):
+        public_tool(
+            "schema_dialect_probe",
+            "Schema dialect probe",
+            "A deliberately unsupported provider-visible schema dialect fixture.",
+            SideEffectClass.read,
+            ["tools:read"],
+            object_schema({}, []),
+            schema,
+            provider_export_enabled=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "api_key",
+        "access_key",
+        "auth_header",
+        "authorization_header",
+        "bearer_value",
+        "label_href",
+        "document_link",
+    ],
+)
+def test_public_provider_contract_rejects_sensitive_aliases(field_name):
+    schema = object_schema({field_name: {"type": "string"}}, [field_name])
+
+    assert provider_schema_privacy_violations("alias_probe", schema) == [field_name]
+    with pytest.raises(ValueError, match="provider privacy"):
+        public_tool(
+            "alias_probe",
+            "Sensitive alias probe",
+            "A deliberately unsafe provider-visible naming alias fixture.",
+            SideEffectClass.read,
+            ["tools:read"],
+            object_schema({}, []),
+            schema,
+            provider_export_enabled=True,
+        )
+
+
 def test_shipment_content_tools_accept_only_bounded_shipagent_references():
     reference_fields = {
         "submit_one_off_shipment": "ingress_reference",

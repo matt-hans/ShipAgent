@@ -35,11 +35,13 @@ def minimal_tool(**overrides):
             "type": "object",
             "properties": {"order_batch_id": {"type": "string"}},
             "required": ["order_batch_id"],
+            "additionalProperties": False,
         },
         "output_schema": {
             "type": "object",
             "properties": {"preview_id": {"type": "string"}},
             "required": ["preview_id"],
+            "additionalProperties": False,
         },
     }
     data.update(overrides)
