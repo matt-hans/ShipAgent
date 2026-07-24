@@ -16,7 +16,9 @@ def _contract(**overrides) -> ToolContract:
         "implementation_status": "implemented",
         "hosted_readiness": "ready",
         "tenant_safe": True,
-        "provider_export_enabled": True,
+        # Projection tests exercise defense-in-depth independently from the
+        # canonical provider-export schema privacy gate.
+        "provider_export_enabled": False,
         "side_effect": "purchase",
         "requires_confirmation": True,
         "prepare_tool": "prepare_shipments",
