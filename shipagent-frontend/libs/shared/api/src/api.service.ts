@@ -10,7 +10,7 @@
  */
 
 import { Injectable, inject } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
+import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { API_BASE_URL } from './api-url.token';
 import type { PlatformActivationResponse } from './api.models';
@@ -48,6 +48,7 @@ import type {
   ValidateConnectionResult,
   // Settings
   AppSettings,
+  BrowserSessionStatus,
   CredentialStatus,
   // Contacts
   Contact,
@@ -69,6 +70,35 @@ export class ApiService {
   /** Resolve the current base URL from the signal. */
   private get baseUrl(): string {
     return this.apiBaseUrl();
+  }
+
+  // ===========================================================================
+  // BROWSER AUTHENTICATION
+  // ===========================================================================
+
+  /** Get browser session state without exposing credential details. */
+  getBrowserSessionStatus(): Observable<BrowserSessionStatus> {
+    return this.http.get<BrowserSessionStatus>(
+      `${this.baseUrl}/auth/session`,
+    );
+  }
+
+  /** Exchange a transient user-entered API key for an HttpOnly session. */
+  createBrowserSession(apiKey: string): Observable<BrowserSessionStatus> {
+    return this.http.post<BrowserSessionStatus>(
+      `${this.baseUrl}/auth/session`,
+      {},
+      {
+        headers: new HttpHeaders({ 'X-API-Key': apiKey }),
+      },
+    );
+  }
+
+  /** Clear the browser-managed API session cookie. */
+  clearBrowserSession(): Observable<BrowserSessionStatus> {
+    return this.http.delete<BrowserSessionStatus>(
+      `${this.baseUrl}/auth/session`,
+    );
   }
 
   // ===========================================================================

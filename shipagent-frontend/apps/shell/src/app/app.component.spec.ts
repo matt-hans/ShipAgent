@@ -22,12 +22,16 @@
 
 import { TestBed } from '@angular/core/testing';
 import { Component, signal } from '@angular/core';
-import { provideHttpClient } from '@angular/common/http';
 import { vi, beforeAll } from 'vitest';
+import { of, throwError } from 'rxjs';
 import { AppComponent } from './app.component';
 import { RemoteLoaderService } from './remote-loader.service';
 import { AppStore, SettingsStore, ConversationStore } from '@shipagent/shared-state';
-import { API_BASE_URL } from '@shipagent/shared-api';
+import { API_BASE_URL, ApiService } from '@shipagent/shared-api';
+import type {
+  AppSettings,
+  BrowserSessionStatus,
+} from '@shipagent/shared-types';
 import type { RemoteEntry } from './remote-loader.service';
 
 // ---------------------------------------------------------------------------
@@ -86,17 +90,51 @@ function createMockRemoteLoader(): RemoteLoaderService {
   } as unknown as RemoteLoaderService;
 }
 
+const TEST_SETTINGS: AppSettings = {
+  agent_model: null,
+  batch_concurrency: 4,
+  shipper_name: null,
+  shipper_attention_name: null,
+  shipper_address1: null,
+  shipper_address2: null,
+  shipper_city: null,
+  shipper_state: null,
+  shipper_zip: null,
+  shipper_country: null,
+  shipper_phone: null,
+  ups_account_number: null,
+  ups_environment: null,
+  onboarding_completed: false,
+};
+
+function createMockApiService(): ApiService {
+  return {
+    getBrowserSessionStatus: vi.fn().mockReturnValue(
+      of({ required: false, authenticated: true } satisfies BrowserSessionStatus),
+    ),
+    createBrowserSession: vi.fn().mockReturnValue(
+      of({ required: true, authenticated: true } satisfies BrowserSessionStatus),
+    ),
+    clearBrowserSession: vi.fn().mockReturnValue(
+      of({ required: true, authenticated: false } satisfies BrowserSessionStatus),
+    ),
+    getSettings: vi.fn().mockReturnValue(of(TEST_SETTINGS)),
+  } as unknown as ApiService;
+}
+
 describe('AppComponent — shell integration', () => {
   let mockLoader: ReturnType<typeof createMockRemoteLoader>;
+  let mockApi: ApiService;
 
   beforeEach(async () => {
     mockLoader = createMockRemoteLoader();
+    mockApi = createMockApiService();
 
     await TestBed.configureTestingModule({
       imports: [AppComponent],
       providers: [
-        provideHttpClient(),
         { provide: API_BASE_URL, useValue: signal('/api/v1') },
+        { provide: ApiService, useValue: mockApi },
         { provide: RemoteLoaderService, useValue: mockLoader },
       ],
     }).compileComponents();
@@ -139,6 +177,119 @@ describe('AppComponent — shell integration', () => {
     await fixture.whenStable();
 
     expect((mockLoader.loadSettingsFlyout as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  describe('browser API session lifecycle', () => {
+    it('does not initialize settings or remotes before authentication', async () => {
+      vi.mocked(mockApi.getBrowserSessionStatus).mockReturnValue(
+        of({ required: true, authenticated: false }),
+      );
+      const fixture = TestBed.createComponent(AppComponent);
+
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const element = fixture.nativeElement as HTMLElement;
+      expect(element.querySelector('input[type="password"]')).toBeTruthy();
+      expect(mockApi.getSettings).not.toHaveBeenCalled();
+      expect(mockLoader.loadChat).not.toHaveBeenCalled();
+      expect(mockLoader.loadSidebar).not.toHaveBeenCalled();
+    });
+
+    it('authenticates, rechecks the session, and initializes the application', async () => {
+      vi.mocked(mockApi.getBrowserSessionStatus)
+        .mockReturnValueOnce(of({ required: true, authenticated: false }))
+        .mockReturnValueOnce(of({ required: true, authenticated: true }));
+      const fixture = TestBed.createComponent(AppComponent);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const input = fixture.nativeElement.querySelector(
+        'input[type="password"]',
+      ) as HTMLInputElement;
+      input.value = 'entered-once';
+      input.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const unlock = fixture.nativeElement.querySelector(
+        'button[type="submit"]',
+      ) as HTMLButtonElement;
+      unlock.click();
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(mockApi.createBrowserSession).toHaveBeenCalledWith('entered-once');
+      expect(mockApi.getBrowserSessionStatus).toHaveBeenCalledTimes(2);
+      expect(mockApi.getSettings).toHaveBeenCalledTimes(1);
+      expect(mockLoader.loadChat).toHaveBeenCalledTimes(1);
+      expect(mockLoader.loadSidebar).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a retry action when session status cannot be checked', async () => {
+      vi.mocked(mockApi.getBrowserSessionStatus)
+        .mockReturnValueOnce(throwError(() => new Error('offline')))
+        .mockReturnValueOnce(of({ required: false, authenticated: true }));
+      const fixture = TestBed.createComponent(AppComponent);
+      fixture.detectChanges();
+      fixture.detectChanges();
+
+      const retry = Array.from(
+        (fixture.nativeElement as HTMLElement).querySelectorAll('button'),
+      ).find((button) => button.textContent?.includes('Retry connection'));
+      expect(retry).toBeTruthy();
+      retry?.click();
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect(mockApi.getBrowserSessionStatus).toHaveBeenCalledTimes(2);
+      expect(mockApi.getSettings).toHaveBeenCalledTimes(1);
+    });
+
+    it('clears an authenticated session and restores the password gate', async () => {
+      vi.mocked(mockApi.getBrowserSessionStatus).mockReturnValue(
+        of({ required: true, authenticated: true }),
+      );
+      const fixture = TestBed.createComponent(AppComponent);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const clear = (fixture.nativeElement as HTMLElement).querySelector(
+        'button[aria-label="Clear API session"]',
+      ) as HTMLButtonElement;
+      expect(clear).toBeTruthy();
+      clear.click();
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      expect(mockApi.clearBrowserSession).toHaveBeenCalledTimes(1);
+      expect(
+        (fixture.nativeElement as HTMLElement).querySelector(
+          'input[type="password"]',
+        ),
+      ).toBeTruthy();
+
+      const input = fixture.nativeElement.querySelector(
+        'input[type="password"]',
+      ) as HTMLInputElement;
+      input.value = 'entered-again';
+      input.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const unlock = fixture.nativeElement.querySelector(
+        'button[type="submit"]',
+      ) as HTMLButtonElement;
+      unlock.click();
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect(mockApi.createBrowserSession).toHaveBeenCalledWith('entered-again');
+      expect(mockApi.getSettings).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('should render onboarding gate component', async () => {
