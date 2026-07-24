@@ -34,7 +34,7 @@ import {
 import {
   API_BASE_URL,
   ApiService,
-  BrowserSessionState,
+  BrowserSessionTransportService,
 } from '@shipagent/shared-api';
 import type {
   AppSettings,
@@ -149,18 +149,21 @@ function createMockApiService(): ApiService {
       of({
         required: false,
         authenticated: true,
+        csrf_token: null,
       } satisfies BrowserSessionStatus)
     ),
     createBrowserSession: vi.fn().mockReturnValue(
       of({
         required: true,
         authenticated: true,
+        csrf_token: 'v1.created',
       } satisfies BrowserSessionStatus)
     ),
     clearBrowserSession: vi.fn().mockReturnValue(
       of({
         required: true,
         authenticated: false,
+        csrf_token: null,
       } satisfies BrowserSessionStatus)
     ),
     getSettings: vi.fn().mockReturnValue(of(TEST_SETTINGS)),
@@ -234,7 +237,7 @@ describe('AppComponent — shell integration', () => {
   describe('browser API session lifecycle', () => {
     it('does not initialize settings or remotes before authentication', async () => {
       vi.mocked(mockApi.getBrowserSessionStatus).mockReturnValue(
-        of({ required: true, authenticated: false })
+        of({ required: true, authenticated: false, csrf_token: null })
       );
       const fixture = TestBed.createComponent(AppComponent);
 
@@ -251,8 +254,16 @@ describe('AppComponent — shell integration', () => {
 
     it('authenticates, rechecks the session, and initializes the application', async () => {
       vi.mocked(mockApi.getBrowserSessionStatus)
-        .mockReturnValueOnce(of({ required: true, authenticated: false }))
-        .mockReturnValueOnce(of({ required: true, authenticated: true }));
+        .mockReturnValueOnce(
+          of({ required: true, authenticated: false, csrf_token: null })
+        )
+        .mockReturnValueOnce(
+          of({
+            required: true,
+            authenticated: true,
+            csrf_token: 'v1.authenticated',
+          })
+        );
       const fixture = TestBed.createComponent(AppComponent);
       fixture.detectChanges();
       await fixture.whenStable();
@@ -283,7 +294,9 @@ describe('AppComponent — shell integration', () => {
     it('shows a retry action when session status cannot be checked', async () => {
       vi.mocked(mockApi.getBrowserSessionStatus)
         .mockReturnValueOnce(throwError(() => new Error('offline')))
-        .mockReturnValueOnce(of({ required: false, authenticated: true }));
+        .mockReturnValueOnce(
+          of({ required: false, authenticated: true, csrf_token: null })
+        );
       const fixture = TestBed.createComponent(AppComponent);
       fixture.detectChanges();
       fixture.detectChanges();
@@ -302,7 +315,11 @@ describe('AppComponent — shell integration', () => {
 
     it('clears an authenticated session and restores the password gate', async () => {
       vi.mocked(mockApi.getBrowserSessionStatus).mockReturnValue(
-        of({ required: true, authenticated: true })
+        of({
+          required: true,
+          authenticated: true,
+          csrf_token: 'v1.authenticated',
+        })
       );
       const fixture = TestBed.createComponent(AppComponent);
       fixture.detectChanges();
@@ -345,9 +362,13 @@ describe('AppComponent — shell integration', () => {
       expect(mockApi.getSettings).toHaveBeenCalledTimes(2);
     });
 
-    it('restores a blank gate after protected 401 and supports re-authentication', async () => {
+    it('recovers the blank gate after native transport expiry and re-authenticates', async () => {
       vi.mocked(mockApi.getBrowserSessionStatus).mockReturnValue(
-        of({ required: true, authenticated: true })
+        of({
+          required: true,
+          authenticated: true,
+          csrf_token: 'v1.authenticated',
+        })
       );
       const fixture = TestBed.createComponent(AppComponent);
       fixture.detectChanges();
@@ -359,7 +380,16 @@ describe('AppComponent — shell integration', () => {
       expect(readyElement.textContent).toContain('Chat');
       expect(readyElement.textContent).toContain('Sidebar');
 
-      TestBed.inject(BrowserSessionState).markExpired();
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 401,
+        statusText: 'Unauthorized',
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      await TestBed.inject(BrowserSessionTransportService).fetch(
+        '/api/v1/jobs/job-1/labels/merged'
+      );
+      vi.unstubAllGlobals();
       fixture.detectChanges();
       await fixture.whenStable();
       fixture.detectChanges();

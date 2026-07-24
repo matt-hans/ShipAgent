@@ -11,6 +11,7 @@ export { API_BASE_URL } from './api-url.token';
 export { apiErrorInterceptor, apiAuthInterceptor } from './api.interceptors';
 export { provideShipAgentHttpClient } from './api.providers';
 export { BrowserSessionState } from './browser-session.state';
+export { BrowserSessionTransportService } from './browser-session-transport.service';
 export {
   ApiError,
   type ApiErrorBody,

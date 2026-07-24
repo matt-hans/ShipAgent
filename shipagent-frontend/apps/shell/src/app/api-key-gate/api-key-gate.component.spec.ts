@@ -35,7 +35,7 @@ describe('ApiKeyGateComponent', () => {
 
   async function enterKey(value: string): Promise<void> {
     const input = fixture.nativeElement.querySelector(
-      'input[type="password"]',
+      'input[type="password"]'
     ) as HTMLInputElement;
     input.value = value;
     input.dispatchEvent(new Event('input'));
@@ -45,7 +45,7 @@ describe('ApiKeyGateComponent', () => {
 
   function submit(): void {
     const button = fixture.nativeElement.querySelector(
-      'button[type="submit"]',
+      'button[type="submit"]'
     ) as HTMLButtonElement;
     button.click();
     fixture.detectChanges();
@@ -61,13 +61,17 @@ describe('ApiKeyGateComponent', () => {
     submit();
     const request = http.expectOne('/api/v1/auth/session');
     expect(request.request.headers.get('X-API-Key')).toBe('transient-key');
-    request.flush({ required: true, authenticated: true });
+    request.flush({
+      required: true,
+      authenticated: true,
+      csrf_token: 'v1.created',
+    });
     fixture.detectChanges();
     await fixture.whenStable();
     fixture.detectChanges();
 
     const input = fixture.nativeElement.querySelector(
-      'input[type="password"]',
+      'input[type="password"]'
     ) as HTMLInputElement;
     expect(authenticated).toBe(true);
     expect(fixture.componentInstance['apiKey']()).toBe('');
@@ -82,7 +86,7 @@ describe('ApiKeyGateComponent', () => {
     const request = http.expectOne('/api/v1/auth/session');
     request.flush(
       { detail: 'Invalid or missing API key' },
-      { status: 401, statusText: 'Unauthorized' },
+      { status: 401, statusText: 'Unauthorized' }
     );
     fixture.detectChanges();
     await fixture.whenStable();
@@ -90,15 +94,15 @@ describe('ApiKeyGateComponent', () => {
 
     const element = fixture.nativeElement as HTMLElement;
     const input = element.querySelector(
-      'input[type="password"]',
+      'input[type="password"]'
     ) as HTMLInputElement;
     const button = element.querySelector(
-      'button[type="submit"]',
+      'button[type="submit"]'
     ) as HTMLButtonElement;
     expect(fixture.componentInstance['apiKey']()).toBe('');
     expect(input.value).toBe('');
     expect(element.textContent).toContain(
-      'Authentication failed. Check the API key and try again.',
+      'Authentication failed. Check the API key and try again.'
     );
     expect(element.textContent).not.toContain(rejectedKey);
     expect(input.disabled).toBe(false);

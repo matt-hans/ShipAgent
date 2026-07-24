@@ -20,7 +20,7 @@ export type SseConnectionState =
 
 /** Configuration options for the SSE connection. */
 export interface SseConfig {
-  /** Whether to attempt reconnection on error (default: false — EventSource reconnects natively). */
+  /** Whether a consumer may attempt bounded reconnect after an authenticated error. */
   reconnect?: boolean;
   /** Maximum number of manual reconnect attempts (default: 3). */
   maxRetries?: number;
