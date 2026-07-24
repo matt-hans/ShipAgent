@@ -7,6 +7,7 @@ import {
 import {
   API_BASE_URL,
   ApiService,
+  BrowserSessionState,
   provideShipAgentHttpClient,
 } from '@shipagent/shared-api';
 
@@ -61,5 +62,39 @@ describe('browser session HTTP', () => {
     expect(clear.request.method).toBe('DELETE');
     expect(clear.request.headers.has('X-API-Key')).toBe(false);
     clear.flush({ required: true, authenticated: false });
+  });
+
+  it('signals protected 401 responses but excludes every session flow', () => {
+    const browserSession = TestBed.inject(BrowserSessionState);
+    expect(browserSession.expirationVersion()).toBe(0);
+
+    api.getSettings().subscribe({ error: () => undefined });
+    http.expectOne('/api/v1/settings').flush(
+      { detail: 'Expired' },
+      { status: 401, statusText: 'Unauthorized' },
+    );
+    expect(browserSession.expirationVersion()).toBe(1);
+
+    api.getBrowserSessionStatus().subscribe({ error: () => undefined });
+    http.expectOne('/api/v1/auth/session').flush(
+      { detail: 'Unavailable' },
+      { status: 401, statusText: 'Unauthorized' },
+    );
+
+    api.createBrowserSession('replacement').subscribe({
+      error: () => undefined,
+    });
+    http.expectOne('/api/v1/auth/session').flush(
+      { detail: 'Rejected' },
+      { status: 401, statusText: 'Unauthorized' },
+    );
+
+    api.clearBrowserSession().subscribe({ error: () => undefined });
+    http.expectOne('/api/v1/auth/session').flush(
+      { detail: 'Unavailable' },
+      { status: 401, statusText: 'Unauthorized' },
+    );
+
+    expect(browserSession.expirationVersion()).toBe(1);
   });
 });
