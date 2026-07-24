@@ -63,6 +63,13 @@ def _assert_closed_profile_schema_allowed(
                 raise ValueError(f"aggregate result contains unexpected key: {key}")
 
             nested_schema = properties[key]
+            if isinstance(nested, (dict, list)) and not isinstance(
+                nested_schema, Mapping
+            ):
+                location = ".".join((*path, key))
+                raise ValueError(
+                    f"aggregate result container requires a schema object at {location}"
+                )
             if not isinstance(nested_schema, Mapping):
                 continue
             _assert_closed_profile_schema_allowed(
@@ -74,17 +81,18 @@ def _assert_closed_profile_schema_allowed(
 
     elif isinstance(value, list):
         items = schema.get("items")
-        if items is None:
-            return True
-        if not isinstance(items, Mapping):
-            return True
-
         for index, item in enumerate(value):
             if not isinstance(item, (dict, list, str, int, float, bool, type(None))):
                 raise ValueError(
                     f"aggregate result contains unsupported list item at index {index}"
                 )
             if isinstance(item, (dict, list)):
+                if not isinstance(items, Mapping):
+                    location = ".".join((*path, str(index)))
+                    raise ValueError(
+                        "aggregate result container requires a schema object "
+                        f"at {location}"
+                    )
                 _assert_closed_profile_schema_allowed(
                     item,
                     items,
