@@ -29,7 +29,7 @@ function isBrowserSessionFlow(url: string): boolean {
  */
 export const apiErrorInterceptor: HttpInterceptorFn = (
   req: HttpRequest<unknown>,
-  next: HttpHandlerFn,
+  next: HttpHandlerFn
 ) => {
   const browserSession = inject(BrowserSessionState);
 
@@ -53,7 +53,7 @@ export const apiErrorInterceptor: HttpInterceptorFn = (
         return throwError(() => new ApiError(err.status, body, message));
       }
       return throwError(() => err);
-    }),
+    })
   );
 };
 
@@ -66,7 +66,7 @@ export const apiErrorInterceptor: HttpInterceptorFn = (
  */
 export const apiAuthInterceptor: HttpInterceptorFn = (
   req: HttpRequest<unknown>,
-  next: HttpHandlerFn,
+  next: HttpHandlerFn
 ) => {
   return next(req.clone({ withCredentials: true }));
 };
