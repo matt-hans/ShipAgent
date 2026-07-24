@@ -11,11 +11,15 @@ import time
 
 BROWSER_SESSION_COOKIE = "shipagent_browser_session"
 BROWSER_SESSION_TTL_SECONDS = 8 * 60 * 60
+BROWSER_CSRF_HEADER = "X-CSRF-Token"
 
 _CLOCK_SKEW_SECONDS = 60
 _TOKEN_VERSION = "v1"
 _SIGNATURE_BYTES = hashlib.sha256().digest_size
 _MAX_TOKEN_LENGTH = 512
+_CSRF_TOKEN_VERSION = "v1"
+_CSRF_DOMAIN = b"shipagent.browser.csrf.v1\x00"
+_MAX_CSRF_TOKEN_LENGTH = 64
 
 
 def _encode(value: bytes) -> str:
@@ -85,3 +89,42 @@ def verify_browser_session(
         hashlib.sha256,
     ).digest()
     return hmac.compare_digest(signature, expected_signature)
+
+
+def derive_browser_csrf_token(session_token: str, api_key: str) -> str:
+    """Derive a bounded CSRF token bound to the complete signed session."""
+    if (
+        not isinstance(session_token, str)
+        or not session_token
+        or len(session_token) > _MAX_TOKEN_LENGTH
+        or not api_key
+    ):
+        raise ValueError("CSRF derivation requires a bounded session and API key")
+
+    digest = hmac.new(
+        api_key.encode("utf-8"),
+        _CSRF_DOMAIN + session_token.encode("ascii"),
+        hashlib.sha256,
+    ).digest()
+    return f"{_CSRF_TOKEN_VERSION}.{_encode(digest)}"
+
+
+def verify_browser_csrf_token(
+    candidate: str | None,
+    session_token: str | None,
+    api_key: str,
+) -> bool:
+    """Constant-time verify a CSRF token against the exact browser session."""
+    if (
+        not isinstance(candidate, str)
+        or not candidate
+        or len(candidate) > _MAX_CSRF_TOKEN_LENGTH
+        or not isinstance(session_token, str)
+    ):
+        return False
+
+    try:
+        expected = derive_browser_csrf_token(session_token, api_key)
+    except (UnicodeEncodeError, ValueError):
+        return False
+    return hmac.compare_digest(candidate, expected)

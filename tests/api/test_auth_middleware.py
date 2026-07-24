@@ -39,9 +39,7 @@ def test_api_auth_enforced_when_key_is_set(client: TestClient, monkeypatch):
     response = client.get("/api/v1/jobs", headers={"X-API-Key": "wrong"})
     assert response.status_code == 401
 
-    response = client.get(
-        "/api/v1/jobs", headers={"X-API-Key": "a" * 32 + "-test-key"}
-    )
+    response = client.get("/api/v1/jobs", headers={"X-API-Key": "a" * 32 + "-test-key"})
     assert response.status_code == 200
 
 
@@ -83,21 +81,15 @@ class TestAuthRateLimit:
 
         # Send _AUTH_FAIL_MAX bad requests
         for _ in range(_AUTH_FAIL_MAX):
-            resp = client.get(
-                "/api/v1/jobs", headers={"X-API-Key": "wrong-key"}
-            )
+            resp = client.get("/api/v1/jobs", headers={"X-API-Key": "wrong-key"})
             assert resp.status_code == 401
 
         # Next attempt should be rate-limited
-        resp = client.get(
-            "/api/v1/jobs", headers={"X-API-Key": "wrong-key"}
-        )
+        resp = client.get("/api/v1/jobs", headers={"X-API-Key": "wrong-key"})
         assert resp.status_code == 429
         assert "too many" in resp.json()["detail"].lower()
 
-    def test_auth_rate_limit_resets_after_window(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_auth_rate_limit_resets_after_window(self, client: TestClient, monkeypatch):
         """Rate limit resets after clearing the failure records."""
         monkeypatch.setenv("SHIPAGENT_API_KEY", "a" * 32 + "-real-key")
 
@@ -115,6 +107,32 @@ class TestAuthRateLimit:
         # Should work again (401, not 429)
         resp = client.get("/api/v1/jobs", headers={"X-API-Key": "wrong-key"})
         assert resp.status_code == 401
+
+    def test_hostile_origins_do_not_consume_auth_failure_budget(
+        self,
+        client: TestClient,
+        monkeypatch,
+    ):
+        key = "a" * 32 + "-real-key"
+        monkeypatch.setenv("SHIPAGENT_API_KEY", key)
+        monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+
+        for _ in range(_AUTH_FAIL_MAX + 3):
+            response = client.get(
+                "/api/v1/jobs",
+                headers={
+                    "Origin": "https://hostile.example",
+                    "X-API-Key": "wrong-key",
+                },
+            )
+            assert response.status_code == 403
+
+        response = client.get(
+            "/api/v1/jobs",
+            headers={"X-API-Key": key},
+        )
+
+        assert response.status_code == 200
 
 
 class TestRateLimiterThreadSafety:
@@ -180,4 +198,3 @@ class TestTrustedProxyConfig:
             assert _get_client_ip(request) == "1.2.3.4"
         finally:
             auth_mod._TRUST_PROXY = original
-
