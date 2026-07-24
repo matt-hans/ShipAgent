@@ -41,7 +41,7 @@ def public_tool(
     ui_resource: str | None = None,
     implementation_status: Literal["planned", "implemented"] = "implemented",
     hosted_readiness: Literal["not_ready", "ready"] = "ready",
-    provider_export_enabled: bool = True,
+    provider_export_enabled: bool = False,
     confirmation_policy: str | None = None,
     result_profile: str | None = None,
     prepare_tool: str | None = None,
@@ -99,6 +99,7 @@ PUBLIC_TOOLS = [
             },
             ["status", "active_device_id", "capabilities"],
         ),
+        provider_export_enabled=True,
     ),
     public_tool(
         "submit_one_off_shipment",
@@ -116,6 +117,7 @@ PUBLIC_TOOLS = [
             {"input_reference": {"type": "string"}},
             ["input_reference"],
         ),
+        provider_export_enabled=True,
     ),
     public_tool(
         "validate_shipment_address",
@@ -136,6 +138,7 @@ PUBLIC_TOOLS = [
             {"normalized_address": {"type": "string"}, "valid": {"type": "boolean"}},
             ["normalized_address", "valid"],
         ),
+        provider_export_enabled=True,
     ),
     public_tool(
         "get_shipment_rates",
@@ -173,6 +176,7 @@ PUBLIC_TOOLS = [
         ),
         ui_resource="ui://shipagent/rates.html",
         execution_target_required=True,
+        provider_export_enabled=True,
     ),
     public_tool(
         "prepare_shipments",
@@ -200,6 +204,7 @@ PUBLIC_TOOLS = [
         ),
         ui_resource="ui://shipagent/preview.html",
         execution_target_required=True,
+        provider_export_enabled=True,
     ),
     public_tool(
         "execute_shipments",
@@ -223,6 +228,7 @@ PUBLIC_TOOLS = [
         prepare_tool="prepare_shipments",
         ui_resource="ui://shipagent/confirmation.html",
         execution_target_required=True,
+        provider_export_enabled=True,
     ),
     public_tool(
         "get_job_status",
@@ -238,6 +244,7 @@ PUBLIC_TOOLS = [
             {"job_id": {"type": "string"}, "status": {"type": "string"}},
             ["job_id", "status"],
         ),
+        provider_export_enabled=True,
     ),
     public_tool(
         "create_label_download",
@@ -253,5 +260,6 @@ PUBLIC_TOOLS = [
             {"download_url": {"type": "string"}, "status": {"type": "string"}},
             ["download_url", "status"],
         ),
+        provider_export_enabled=True,
     ),
 ]

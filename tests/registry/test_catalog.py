@@ -1,5 +1,8 @@
+import inspect
+
 from src.registry.catalog import load_registry, public_tools
 from src.registry.models import ProviderExport, SideEffectClass, ToolVisibility
+from src.registry.tools.public import public_tool
 
 EXPECTED_PUBLIC = {
     "get_shipagent_status",
@@ -23,11 +26,17 @@ def test_public_tools_are_tenant_safe_and_provider_exportable():
         assert tool.tenant_safe is True
         assert tool.implementation_status == "implemented"
         assert tool.hosted_readiness == "ready"
-        assert tool.provider_export_enabled is False
+        assert tool.provider_export_enabled is True
         assert ProviderExport.openai_apps_public in tool.provider_exports
         assert ProviderExport.claude_remote_mcp_public in tool.provider_exports
         assert ProviderExport.generic_mcp in tool.provider_exports
         assert ProviderExport.anthropic not in tool.provider_exports
+
+
+def test_public_tool_requires_explicit_provider_export_opt_in():
+    signature = inspect.signature(public_tool)
+
+    assert signature.parameters["provider_export_enabled"].default is False
 
 
 def test_side_effecting_public_tools_require_confirmation():
