@@ -51,90 +51,90 @@ type AuthState = 'checking' | 'required' | 'ready' | 'error';
   ],
   template: `
     @if (authState() === 'checking') {
-      <main
-        class="h-screen bg-background flex flex-col items-center justify-center gap-4"
-        role="status"
-        aria-live="polite"
-      >
-        <div
-          class="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent"
-          aria-hidden="true"
-        ></div>
-        <p class="text-sm text-muted-foreground">Checking API session…</p>
-      </main>
+    <main
+      class="h-screen bg-background flex flex-col items-center justify-center gap-4"
+      role="status"
+      aria-live="polite"
+    >
+      <div
+        class="h-10 w-10 animate-spin rounded-full border-4 border-primary border-t-transparent"
+        aria-hidden="true"
+      ></div>
+      <p class="text-sm text-muted-foreground">Checking API session…</p>
+    </main>
     } @else if (authState() === 'error') {
-      <main
-        class="h-screen bg-background flex flex-col items-center justify-center gap-4 p-6 text-center"
+    <main
+      class="h-screen bg-background flex flex-col items-center justify-center gap-4 p-6 text-center"
+    >
+      <h1 class="text-xl font-semibold text-foreground">
+        ShipAgent could not reach the API
+      </h1>
+      <p class="max-w-md text-sm text-muted-foreground">
+        Check that the backend is running, then retry the session check.
+      </p>
+      <button
+        type="button"
+        class="btn-primary rounded-lg px-5 py-2"
+        (click)="checkBrowserSession()"
       >
-        <h1 class="text-xl font-semibold text-foreground">
-          ShipAgent could not reach the API
-        </h1>
-        <p class="max-w-md text-sm text-muted-foreground">
-          Check that the backend is running, then retry the session check.
-        </p>
-        <button
-          type="button"
-          class="btn-primary rounded-lg px-5 py-2"
-          (click)="checkBrowserSession()"
-        >
-          Retry connection
-        </button>
-      </main>
+        Retry connection
+      </button>
+    </main>
     } @else if (authState() === 'required') {
-      <app-api-key-gate
-        (authenticated)="onSessionAuthenticated()"
-      />
+    <app-api-key-gate (authenticated)="onSessionAuthenticated()" />
     } @else {
-      <div class="h-screen flex flex-col bg-background overflow-hidden">
-        <app-header
-          [showApiSessionControl]="sessionRequired()"
-          [clearingApiSession]="clearingSession()"
-          (clearApiSession)="clearBrowserSession()"
-        />
+    <div class="h-screen flex flex-col bg-background overflow-hidden">
+      <app-header
+        [showApiSessionControl]="sessionRequired()"
+        [clearingApiSession]="clearingSession()"
+        (clearApiSession)="clearBrowserSession()"
+      />
 
-        @if (clearSessionFailed()) {
-          <div
-            role="alert"
-            class="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-center text-sm text-destructive"
-          >
-            The API session could not be cleared. Try again.
-          </div>
-        }
-
-        <div class="flex-1 flex overflow-hidden relative">
-          <app-sidebar-shell [collapsed]="appStore.sidebarCollapsed()">
-            @if (sidebarComponent()) {
-              <ng-container
-                [ngComponentOutlet]="sidebarComponent()!"
-                [ngComponentOutletInjector]="sidebarInjector()!"
-              />
-            }
-          </app-sidebar-shell>
-
-          <main class="flex-1 flex flex-col overflow-hidden">
-            @if (chatComponent()) {
-              <ng-container
-                [ngComponentOutlet]="chatComponent()!"
-                [ngComponentOutletInjector]="chatInjector()!"
-              />
-            } @else {
-              <div class="flex-1 flex items-center justify-center text-muted-foreground text-sm">
-                Loading command center...
-              </div>
-            }
-          </main>
-        </div>
-
-        @if (appStore.settingsFlyoutOpen() && settingsComponent()) {
-          <ng-container
-            [ngComponentOutlet]="settingsComponent()!"
-            [ngComponentOutletInjector]="settingsInjector()!"
-          />
-        }
-
-        <app-onboarding-gate />
-        <app-update-checker />
+      @if (clearSessionFailed()) {
+      <div
+        role="alert"
+        class="border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-center text-sm text-destructive"
+      >
+        The API session could not be cleared. Try again.
       </div>
+      }
+
+      <div class="flex-1 flex overflow-hidden relative">
+        <app-sidebar-shell [collapsed]="appStore.sidebarCollapsed()">
+          @if (sidebarComponent()) {
+          <ng-container
+            [ngComponentOutlet]="sidebarComponent()!"
+            [ngComponentOutletInjector]="sidebarInjector()!"
+          />
+          }
+        </app-sidebar-shell>
+
+        <main class="flex-1 flex flex-col overflow-hidden">
+          @if (chatComponent()) {
+          <ng-container
+            [ngComponentOutlet]="chatComponent()!"
+            [ngComponentOutletInjector]="chatInjector()!"
+          />
+          } @else {
+          <div
+            class="flex-1 flex items-center justify-center text-muted-foreground text-sm"
+          >
+            Loading command center...
+          </div>
+          }
+        </main>
+      </div>
+
+      @if (appStore.settingsFlyoutOpen() && settingsComponent()) {
+      <ng-container
+        [ngComponentOutlet]="settingsComponent()!"
+        [ngComponentOutletInjector]="settingsInjector()!"
+      />
+      }
+
+      <app-onboarding-gate />
+      <app-update-checker />
+    </div>
     }
   `,
 })
@@ -261,7 +261,9 @@ export class AppComponent implements OnInit {
       const entry = await this.remoteLoader.loadChat();
       const childInjector = entry.providers?.length
         ? Injector.create({
-            providers: entry.providers as Parameters<typeof Injector.create>[0]['providers'],
+            providers: entry.providers as Parameters<
+              typeof Injector.create
+            >[0]['providers'],
             parent: this.injector,
           })
         : this.injector;
@@ -280,7 +282,9 @@ export class AppComponent implements OnInit {
       const entry = await this.remoteLoader.loadSidebar();
       const childInjector = entry.providers?.length
         ? Injector.create({
-            providers: entry.providers as Parameters<typeof Injector.create>[0]['providers'],
+            providers: entry.providers as Parameters<
+              typeof Injector.create
+            >[0]['providers'],
             parent: this.injector,
           })
         : this.injector;
@@ -317,7 +321,9 @@ export class AppComponent implements OnInit {
       const entry = await this.remoteLoader.loadSettingsFlyout();
       const childInjector = entry.providers?.length
         ? Injector.create({
-            providers: entry.providers as Parameters<typeof Injector.create>[0]['providers'],
+            providers: entry.providers as Parameters<
+              typeof Injector.create
+            >[0]['providers'],
             parent: this.injector,
           })
         : this.injector;

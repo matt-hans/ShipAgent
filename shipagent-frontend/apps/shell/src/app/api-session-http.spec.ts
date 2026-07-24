@@ -69,31 +69,39 @@ describe('browser session HTTP', () => {
     expect(browserSession.expirationVersion()).toBe(0);
 
     api.getSettings().subscribe({ error: () => undefined });
-    http.expectOne('/api/v1/settings').flush(
-      { detail: 'Expired' },
-      { status: 401, statusText: 'Unauthorized' },
-    );
+    http
+      .expectOne('/api/v1/settings')
+      .flush(
+        { detail: 'Expired' },
+        { status: 401, statusText: 'Unauthorized' }
+      );
     expect(browserSession.expirationVersion()).toBe(1);
 
     api.getBrowserSessionStatus().subscribe({ error: () => undefined });
-    http.expectOne('/api/v1/auth/session').flush(
-      { detail: 'Unavailable' },
-      { status: 401, statusText: 'Unauthorized' },
-    );
+    http
+      .expectOne('/api/v1/auth/session')
+      .flush(
+        { detail: 'Unavailable' },
+        { status: 401, statusText: 'Unauthorized' }
+      );
 
     api.createBrowserSession('replacement').subscribe({
       error: () => undefined,
     });
-    http.expectOne('/api/v1/auth/session').flush(
-      { detail: 'Rejected' },
-      { status: 401, statusText: 'Unauthorized' },
-    );
+    http
+      .expectOne('/api/v1/auth/session')
+      .flush(
+        { detail: 'Rejected' },
+        { status: 401, statusText: 'Unauthorized' }
+      );
 
     api.clearBrowserSession().subscribe({ error: () => undefined });
-    http.expectOne('/api/v1/auth/session').flush(
-      { detail: 'Unavailable' },
-      { status: 401, statusText: 'Unauthorized' },
-    );
+    http
+      .expectOne('/api/v1/auth/session')
+      .flush(
+        { detail: 'Unavailable' },
+        { status: 401, statusText: 'Unauthorized' }
+      );
 
     expect(browserSession.expirationVersion()).toBe(1);
   });
