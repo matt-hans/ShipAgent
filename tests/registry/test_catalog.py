@@ -388,6 +388,30 @@ def test_label_download_returns_only_an_opaque_handoff_artifact():
     assert properties["label_artifact_id"]["maxLength"] <= 128
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "expected_statuses"),
+    [
+        ("get_shipagent_status", ["ready", "degraded", "unavailable"]),
+        (
+            "execute_shipments",
+            ["queued", "running", "completed", "failed", "cancelled"],
+        ),
+        (
+            "get_job_status",
+            ["queued", "running", "completed", "failed", "cancelled"],
+        ),
+        ("create_label_download", ["pending", "ready", "unavailable"]),
+    ],
+)
+def test_public_status_outputs_are_bounded_enums(tool_name, expected_statuses):
+    tool = next(tool for tool in public_tools() if tool.name == tool_name)
+
+    assert tool.output_schema["properties"]["status"] == {
+        "type": "string",
+        "enum": expected_statuses,
+    }
+
+
 def test_prepare_tool_schema_is_strict():
     tool = next(tool for tool in public_tools() if tool.name == "prepare_shipments")
 

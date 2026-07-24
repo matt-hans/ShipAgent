@@ -1,6 +1,12 @@
 #!/usr/bin/env python
+# ruff: noqa: E402
+
 import json
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from src.provider_adapters.export_filter import exportable_tools
 from src.provider_adapters.gemini_projection import to_gemini_function
@@ -11,7 +17,6 @@ from src.registry.catalog import load_registry
 from src.registry.export import write_registry_snapshot
 from src.registry.models import ProviderExport
 
-ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "generated" / "provider_artifacts"
 
 
@@ -48,10 +53,7 @@ def main() -> None:
     )
     write_json(
         OUT / "openai_apps_tools.json",
-        [
-            to_openai_app_tool(tool)
-            for tool in exportable_tools(ProviderExport.openai)
-        ],
+        [to_openai_app_tool(tool) for tool in exportable_tools(ProviderExport.openai)],
     )
     write_json(
         OUT / "microsoft_openapi_operations.json",
