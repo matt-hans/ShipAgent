@@ -36,6 +36,8 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
+from src.api.browser_origins import parse_allowed_origins  # noqa: E402
+from src.api.browser_session import BROWSER_CSRF_HEADER  # noqa: E402
 from src.api.middleware.auth import (  # noqa: E402
     get_expected_api_key,
     maybe_require_api_key,
@@ -87,10 +89,7 @@ _watchdog_service = None  # Set by watchdog startup in lifespan
 
 def _parse_allowed_origins() -> list[str]:
     """Parse comma-separated CORS allowlist from ALLOWED_ORIGINS env var."""
-    raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
-    if not raw:
-        return []
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return parse_allowed_origins()
 
 
 async def _process_watched_file(file_path: str, config) -> None:
@@ -683,7 +682,12 @@ if allowed_origins:
         allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-API-Key",
+            BROWSER_CSRF_HEADER,
+        ],
     )
 
 # ---------------------------------------------------------------------------
