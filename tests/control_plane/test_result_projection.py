@@ -105,6 +105,79 @@ def test_project_result_rejects_open_object_schema_inside_array():
         project_result(contract, {"rates": [{"customer_payload": "private"}]})
 
 
+def test_project_result_rejects_container_when_array_schema_omits_items():
+    contract = _contract(
+        output_schema={
+            "type": "object",
+            "properties": {
+                "rates": {"type": "array"},
+            },
+            "required": ["rates"],
+            "additionalProperties": False,
+        }
+    )
+
+    with pytest.raises(ValueError, match="container requires a schema object"):
+        project_result(contract, {"rates": [{"customer_payload": "private"}]})
+
+
+def test_project_result_rejects_container_with_boolean_array_item_schema():
+    contract = _contract(
+        output_schema={
+            "type": "object",
+            "properties": {
+                "rates": {"type": "array", "items": True},
+            },
+            "required": ["rates"],
+            "additionalProperties": False,
+        }
+    )
+
+    with pytest.raises(ValueError, match="container requires a schema object"):
+        project_result(contract, {"rates": [{"customer_payload": "private"}]})
+
+
+def test_project_result_rejects_dictionary_with_boolean_property_schema():
+    contract = _contract(
+        output_schema={
+            "type": "object",
+            "properties": {
+                "payload": True,
+            },
+            "required": ["payload"],
+            "additionalProperties": False,
+        }
+    )
+
+    with pytest.raises(ValueError, match="container requires a schema object"):
+        project_result(contract, {"payload": {"customer_payload": "private"}})
+
+
+@pytest.mark.parametrize(
+    ("nested_schema", "value"),
+    [
+        ({"type": "array"}, ["safe"]),
+        ({"type": "array", "items": True}, ["safe"]),
+        (True, "safe"),
+    ],
+)
+def test_project_result_allows_scalars_without_mapping_nested_schema(
+    nested_schema,
+    value,
+):
+    contract = _contract(
+        output_schema={
+            "type": "object",
+            "properties": {"payload": nested_schema},
+            "required": ["payload"],
+            "additionalProperties": False,
+        }
+    )
+    result = {"payload": value}
+
+    assert project_result(contract, result) == result
+
+
 def test_project_result_skips_forbidden_check_for_non_aggregate_profile():
     contract = _contract(
         result_profile="provider_ingress_echo",
