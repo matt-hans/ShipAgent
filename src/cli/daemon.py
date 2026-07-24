@@ -78,12 +78,17 @@ def is_pid_alive(pid: int) -> bool:
     # Verify process identity via ps
     try:
         import subprocess
+
         result = subprocess.run(
             ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True,
+            text=True,
+            timeout=2,
         )
         cmdline = result.stdout.strip().lower()
-        return any(marker in cmdline for marker in ["shipagent", "uvicorn", "src.api.main"])
+        return any(
+            marker in cmdline for marker in ["shipagent", "uvicorn", "src.api.main"]
+        )
     except Exception:
         # If ps fails, fall back to existence-only
         return True
@@ -118,7 +123,9 @@ def start_daemon(
             )
             sys.exit(1)
         else:
-            logger.warning("Removing stale PID file (PID %d no longer running)", existing_pid)
+            logger.warning(
+                "Removing stale PID file (PID %d no longer running)", existing_pid
+            )
             remove_pid_file(pid_file)
 
     # Write current PID
@@ -162,6 +169,7 @@ def stop_daemon(pid_file: str = "~/.shipagent/daemon.pid") -> bool:
 
     # Wait for process to exit (up to 10s) before removing PID file
     import time as _time
+
     for _ in range(20):
         _time.sleep(0.5)
         try:
@@ -196,6 +204,7 @@ def daemon_status(
     if alive:
         try:
             import httpx
+
             resp = httpx.get(f"{base_url}/health", timeout=5.0)
             result["healthy"] = resp.status_code == 200
         except Exception:
