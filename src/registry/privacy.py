@@ -8,30 +8,61 @@ _ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _NON_ALPHANUMERIC = re.compile(r"[^a-z0-9]+")
 
-_FORBIDDEN_COMPACT_ALIASES = frozenset(
+_CUSTOMER_CONTENT_TOKENS = frozenset({"address", "payload"})
+_CUSTOMER_ROW_TOKENS = frozenset({"row", "rows"})
+_CREDENTIAL_TOKENS = frozenset(
+    {"bearer", "credential", "credentials", "password", "secret", "token"}
+)
+_AUTH_HEADER_TOKENS = frozenset(
+    {"auth", "authentication", "authorization", "authorisation"}
+)
+_TRANSFER_CONTENT_KINDS = frozenset({"document", "label"})
+_TRANSFER_TOKENS = frozenset(
     {
-        "apikey",
-        "accesskey",
-        "authheader",
-        "authenticationheader",
-        "authorizationheader",
-        "authorisationheader",
+        "base64",
+        "bytes",
+        "content",
+        "data",
+        "download",
+        "href",
+        "link",
+        "payload",
+        "uri",
+        "url",
     }
+)
+_CARRIER_DIRECTIONS = frozenset({"request", "response"})
+_CARRIER_CONTENT_TOKENS = frozenset({"body", "carrier", "data", "payload", "raw"})
+
+# Compact aliases cannot be tokenized reliably (for example, XAPIKEY). Derive
+# their fragments from the same privacy families used by the tokenized checks so
+# new spellings do not need a hand-maintained alias allow/block list.
+_FORBIDDEN_COMPACT_SINGLE_TOKEN_FRAGMENTS = (
+    _CUSTOMER_CONTENT_TOKENS | _CREDENTIAL_TOKENS
+)
+_FORBIDDEN_COMPACT_COMPOUND_FRAGMENTS = frozenset(
+    {"apikey", "accesskey", "bearervalue"}
+    | {f"{token}header" for token in _AUTH_HEADER_TOKENS}
     | {
         f"{content_kind}{transfer_kind}"
-        for content_kind in ("label", "document")
-        for transfer_kind in (
-            "base64",
-            "bytes",
-            "content",
-            "data",
-            "download",
-            "href",
-            "link",
-            "uri",
-            "url",
-        )
+        for content_kind in _TRANSFER_CONTENT_KINDS
+        for transfer_kind in _TRANSFER_TOKENS
     }
+    | {
+        f"{direction}{content}"
+        for direction in _CARRIER_DIRECTIONS
+        for content in _CARRIER_CONTENT_TOKENS
+    }
+    | {
+        f"{content}{direction}"
+        for direction in _CARRIER_DIRECTIONS
+        for content in _CARRIER_CONTENT_TOKENS
+    }
+    | {
+        f"customer{content}"
+        for content in _CUSTOMER_CONTENT_TOKENS | _CUSTOMER_ROW_TOKENS
+    }
+    | {f"confirmation{content}" for content in ("artifact", "token")}
 )
 
 _COMMON_SCHEMA_KEYWORDS = frozenset({"type", "description", "enum"})
@@ -59,6 +90,24 @@ def _compact_field_name(value: str) -> str:
 
 def _path_text(path: tuple[str, ...]) -> str:
     return ".".join(path) if path else "schema"
+
+
+def _has_forbidden_compact_fragment(compact_name: str) -> bool:
+    if compact_name == "confirmationartifactid":
+        return False
+
+    has_customer_row = compact_name.endswith(tuple(_CUSTOMER_ROW_TOKENS))
+    return (
+        has_customer_row
+        or any(
+            fragment in compact_name
+            for fragment in _FORBIDDEN_COMPACT_SINGLE_TOKEN_FRAGMENTS
+        )
+        or any(
+            fragment in compact_name
+            for fragment in _FORBIDDEN_COMPACT_COMPOUND_FRAGMENTS
+        )
+    )
 
 
 def _schema_dialect_violations(
@@ -147,61 +196,27 @@ def provider_schema_privacy_violations(
         tokens = _field_tokens(field_name)
         compact_name = _compact_field_name(field_name)
         is_row_count = "row" in tokens and "count" in tokens
-        raw_customer_content = bool(tokens & {"address", "payload"}) or (
-            "row" in tokens and not is_row_count
+        raw_customer_content = bool(tokens & _CUSTOMER_CONTENT_TOKENS) or (
+            bool(tokens & _CUSTOMER_ROW_TOKENS) and not is_row_count
         )
         credential_or_token = (
-            bool(
-                tokens
-                & {
-                    "bearer",
-                    "credential",
-                    "credentials",
-                    "password",
-                    "secret",
-                    "token",
-                }
-            )
+            bool(tokens & _CREDENTIAL_TOKENS)
             or {"api", "key"} <= tokens
             or {"access", "key"} <= tokens
-            or (
-                "header" in tokens
-                and bool(
-                    tokens
-                    & {
-                        "auth",
-                        "authentication",
-                        "authorization",
-                        "authorisation",
-                    }
-                )
-            )
+            or ("header" in tokens and bool(tokens & _AUTH_HEADER_TOKENS))
         )
         label_or_document_transfer = bool(
-            (tokens | tool_tokens) & {"label", "document"}
-        ) and bool(
-            tokens
-            & {
-                "base64",
-                "bytes",
-                "content",
-                "data",
-                "download",
-                "href",
-                "link",
-                "uri",
-                "url",
-            }
-        )
-        raw_carrier_exchange = bool(tokens & {"request", "response"}) and bool(
-            tokens & {"body", "carrier", "data", "payload", "raw"}
+            (tokens | tool_tokens) & _TRANSFER_CONTENT_KINDS
+        ) and bool(tokens & _TRANSFER_TOKENS)
+        raw_carrier_exchange = bool(tokens & _CARRIER_DIRECTIONS) and bool(
+            tokens & _CARRIER_CONTENT_TOKENS
         )
         if (
             raw_customer_content
             or credential_or_token
             or label_or_document_transfer
             or raw_carrier_exchange
-            or compact_name in _FORBIDDEN_COMPACT_ALIASES
+            or _has_forbidden_compact_fragment(compact_name)
         ):
             violations.append(".".join(path))
 

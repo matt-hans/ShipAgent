@@ -18,6 +18,15 @@ EXPECTED_PUBLIC = {
 }
 
 
+def bounded_test_string_schema():
+    return {
+        "type": "string",
+        "pattern": r"^[A-Z]{2}$",
+        "minLength": 2,
+        "maxLength": 2,
+    }
+
+
 def test_public_catalog_has_expected_tools():
     assert {tool.name for tool in public_tools()} == EXPECTED_PUBLIC
 
@@ -118,7 +127,7 @@ def test_public_provider_contract_rejects_sensitive_transport_fields(
             SideEffectClass.read,
             ["tools:read"],
             object_schema({}, []),
-            object_schema({field_name: {"type": "string"}}, [field_name]),
+            object_schema({field_name: bounded_test_string_schema()}, [field_name]),
             provider_export_enabled=True,
         )
 
@@ -344,7 +353,10 @@ def test_public_provider_contract_rejects_schema_dialect_bypasses(schema):
     ],
 )
 def test_public_provider_contract_rejects_sensitive_aliases(field_name):
-    schema = object_schema({field_name: {"type": "string"}}, [field_name])
+    schema = object_schema(
+        {field_name: bounded_test_string_schema()},
+        [field_name],
+    )
 
     assert provider_schema_privacy_violations("alias_probe", schema) == [field_name]
     with pytest.raises(ValueError, match="provider privacy"):
@@ -381,10 +393,46 @@ def test_public_provider_contract_rejects_sensitive_aliases(field_name):
         "documentlink",
         "dOCUMENTlINK",
         "DOCUMENTLINK",
+        "xapikey",
+        "xAPIKey",
+        "XAPIKEY",
+        "bearervalue",
+        "bearerValue",
+        "BEARERVALUE",
+        "customeraddress",
+        "customerAddress",
+        "CUSTOMERADDRESS",
+        "customerpayload",
+        "customerPayload",
+        "CUSTOMERPAYLOAD",
+        "customerrows",
+        "customerRows",
+        "CUSTOMERROWS",
+        "confirmationtoken",
+        "confirmationToken",
+        "CONFIRMATIONTOKEN",
+        "confirmationartifact",
+        "confirmationArtifact",
+        "CONFIRMATIONARTIFACT",
+        "carrierrequestbody",
+        "carrierRequestBody",
+        "CARRIERREQUESTBODY",
+        "carrierresponsebody",
+        "carrierResponseBody",
+        "CARRIERRESPONSEBODY",
+        "labelpayload",
+        "labelPayload",
+        "LABELPAYLOAD",
+        "documentpayload",
+        "documentPayload",
+        "DOCUMENTPAYLOAD",
     ],
 )
 def test_public_provider_contract_rejects_compact_sensitive_aliases(field_name):
-    schema = object_schema({field_name: {"type": "string"}}, [field_name])
+    schema = object_schema(
+        {field_name: bounded_test_string_schema()},
+        [field_name],
+    )
 
     assert provider_schema_privacy_violations("compact_alias_probe", schema) == [
         field_name
@@ -400,6 +448,45 @@ def test_public_provider_contract_rejects_compact_sensitive_aliases(field_name):
             schema,
             provider_export_enabled=True,
         )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_schema"),
+    [
+        (
+            "validationArtifactId",
+            {
+                "type": "string",
+                "pattern": r"^sa_validation_[A-Za-z0-9_-]{16,96}$",
+                "minLength": 30,
+                "maxLength": 110,
+            },
+        ),
+        (
+            "confirmationArtifactId",
+            {
+                "type": "string",
+                "pattern": r"^sa_confirmation_[A-Za-z0-9_-]{16,96}$",
+                "minLength": 32,
+                "maxLength": 112,
+            },
+        ),
+        ("serviceCode", {"type": "string", "enum": ["03"]}),
+        (
+            "shipmentCount",
+            {"type": "integer", "minimum": 0, "maximum": 1_000_000},
+        ),
+        ("rowCount", {"type": "integer", "minimum": 0, "maximum": 1_000_000}),
+        ("metadata", bounded_test_string_schema()),
+    ],
+)
+def test_public_provider_contract_preserves_legitimate_compact_fields(
+    field_name,
+    field_schema,
+):
+    schema = object_schema({field_name: field_schema}, [field_name])
+
+    assert provider_schema_privacy_violations("legitimate_probe", schema) == []
 
 
 def test_shipment_content_tools_accept_only_bounded_shipagent_references():
