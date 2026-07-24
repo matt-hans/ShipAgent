@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -9,10 +8,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from src.control_plane.relay.protocol import (
     RelayHandshakeClaims,
-    RelaySignedHandshakeClaims,
-    handshake_signature_payload,
+    RelayHandshakeToken,
+    encode_handshake_jwt,
     relay_public_key_fingerprint,
 )
+from src.services.keyring_store import KeyringStore
 
 
 class RelayKeyStore(Protocol):
@@ -33,10 +33,10 @@ class RelayKeyPair:
 class RelayKeyService:
     def __init__(
         self,
-        store: RelayKeyStore,
+        store: RelayKeyStore | None = None,
         key_name: str = "SHIPAGENT_RELAY_DEVICE_PRIVATE_KEY",
     ) -> None:
-        self._store = store
+        self._store = store if store is not None else KeyringStore()
         self._key_name = key_name
         self._staged_key_name = f"{key_name}_PENDING_ROTATION"
 
@@ -96,9 +96,7 @@ class RelayKeyService:
             "public_key_pem": keypair.public_key_pem,
         }
 
-    def sign_handshake_claims(
-        self, claims: RelayHandshakeClaims
-    ) -> RelaySignedHandshakeClaims:
+    def sign_handshake_jwt(self, claims: RelayHandshakeClaims) -> RelayHandshakeToken:
         private_key_pem = self._store.get(self._key_name)
         if private_key_pem is None:
             raise ValueError("relay private key is not available")
@@ -108,11 +106,12 @@ class RelayKeyService:
         )
         if not isinstance(private_key, Ed25519PrivateKey):
             raise ValueError("stored relay key is not an Ed25519 private key")
-        signature = private_key.sign(handshake_signature_payload(claims))
-        return RelaySignedHandshakeClaims(
-            claims=claims,
-            signature=base64.b64encode(signature).decode("ascii"),
-        )
+        return encode_handshake_jwt(claims, private_key_pem)
+
+    def sign_handshake_claims(
+        self, claims: RelayHandshakeClaims
+    ) -> RelayHandshakeToken:
+        return self.sign_handshake_jwt(claims)
 
     def _keypair_from_private_key(self, private_key: Ed25519PrivateKey) -> RelayKeyPair:
         private_key_pem = private_key.private_bytes(

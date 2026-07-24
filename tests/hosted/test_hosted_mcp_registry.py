@@ -142,7 +142,9 @@ async def test_loopback_execution_target_status_runs_through_hosted_mcp_tool():
 
     server = build_server(
         tool_handlers=build_execution_target_tool_handlers(
-            LoopbackExecutionTarget(capabilities=["rate_shipment", "get_shipagent_status"])
+            LoopbackExecutionTarget(
+                capabilities=["rate_shipment", "get_shipagent_status"]
+            )
         )
     )
     tools = await server.get_tools()
@@ -178,6 +180,7 @@ async def test_loopback_execution_target_status_runs_through_hosted_mcp_tool():
 
 @pytest.mark.asyncio
 async def test_execution_target_status_handler_passes_mcp_arguments():
+    from src.control_plane.execution_targets import TargetToolRequest
     from src.control_plane.relay.protocol import (
         ExecutionTargetStatus,
         RelayTargetState,
@@ -190,9 +193,8 @@ async def test_execution_target_status_handler_passes_mcp_arguments():
     captured = {}
 
     class CapturingExecutionTarget:
-        async def status(self, context, arguments=None):
-            captured["context"] = context
-            captured["arguments"] = arguments
+        async def invoke(self, request):
+            captured["request"] = request
             return ShipAgentStatus(
                 status=RelayTargetState.READY,
                 execution_target=ExecutionTargetStatus(
@@ -200,7 +202,7 @@ async def test_execution_target_status_handler_passes_mcp_arguments():
                     target_id="target-1",
                     capabilities=["get_shipagent_status"],
                 ),
-            )
+            ).model_dump(mode="json", by_alias=True)
 
     server = build_server(
         tool_handlers=build_execution_target_tool_handlers(CapturingExecutionTarget())
@@ -221,8 +223,14 @@ async def test_execution_target_status_handler_passes_mcp_arguments():
     finally:
         clear_authorization_context(token)
 
-    assert captured["context"] == context
-    assert captured["arguments"] == {"correlation_id": "corr-1"}
+    assert captured["request"] == TargetToolRequest(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        tool_name="get_shipagent_status",
+        arguments={"correlation_id": "corr-1"},
+        correlation_id="corr-1",
+    )
 
 
 @pytest.mark.asyncio
@@ -378,7 +386,10 @@ async def test_hosted_mcp_handler_applies_request_controls_before_invocation():
         clear_authorization_context(token)
 
     assert invoked["value"] is True
-    assert result.structured_content == {"rates": [{"carrier": "UPS"}], "selected": "ups"}
+    assert result.structured_content == {
+        "rates": [{"carrier": "UPS"}],
+        "selected": "ups",
+    }
     assert calls == [
         {
             "connection_id": "pc-1",

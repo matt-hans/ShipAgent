@@ -1,9 +1,11 @@
+import logging
+from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import select
+from sqlalchemy import create_engine, inspect, select
 from sqlalchemy.exc import IntegrityError
 
 from alembic import command
@@ -99,6 +101,25 @@ def test_alembic_offline_upgrade_uses_custom_schema_env(monkeypatch):
     assert "shipagent_private" not in sql
 
 
+def test_alembic_configuration_preserves_application_loggers(tmp_path):
+    application_logger = logging.getLogger("src.orchestrator.filter_config")
+    original_disabled = application_logger.disabled
+    application_logger.disabled = False
+    repo_root = Path(__file__).resolve().parents[2]
+    config = Config(str(repo_root / "alembic.ini"))
+    config.set_main_option("script_location", str(repo_root / "alembic"))
+    config.set_main_option(
+        "sqlalchemy.url",
+        f"sqlite:///{tmp_path / 'control-plane.db'}",
+    )
+
+    try:
+        command.upgrade(config, "head")
+        assert application_logger.disabled is False
+    finally:
+        application_logger.disabled = original_disabled
+
+
 async def test_relay_device_fingerprint_is_unique_per_account(control_db):
     control_db.add(CloudAccount(id="acct-1", auth0_subject="auth0|owner-1"))
     control_db.add(
@@ -123,6 +144,36 @@ async def test_relay_device_fingerprint_is_unique_per_account(control_db):
     )
     with pytest.raises(IntegrityError):
         await control_db.commit()
+
+
+async def test_relay_device_round_trips_key_version_and_revocation_timestamp(
+    control_db,
+):
+    revoked_at = datetime(2026, 7, 9, 12, 0, tzinfo=UTC)
+    control_db.add(CloudAccount(id="acct-1", auth0_subject="auth0|owner-1"))
+    device = RelayDevice(
+        id="relay_device_1",
+        account_id="acct-1",
+        device_name="Dock Mac",
+        public_key_pem="public-key",
+        fingerprint="sha256:test",
+        key_version=3,
+        revoked=True,
+        active=False,
+        revoked_at=revoked_at,
+    )
+    control_db.add(device)
+    await control_db.commit()
+    control_db.expunge_all()
+
+    loaded = await control_db.scalar(
+        select(RelayDevice).where(RelayDevice.id == "relay_device_1")
+    )
+
+    assert loaded is not None
+    assert loaded.key_version == 3
+    assert loaded.revoked_at is not None
+    assert loaded.revoked_at.replace(tzinfo=None) == revoked_at.replace(tzinfo=None)
 
 
 async def test_relay_device_allows_only_one_active_unrevoked_device_per_account(
@@ -188,3 +239,28 @@ async def test_alembic_upgrade_matches_runtime_model_namespace(tmp_path):
 
     assert loaded is not None
     assert loaded.account_id == "acct-1"
+
+
+def test_alembic_upgrades_existing_relay_device_schema_forward(tmp_path):
+    database_path = tmp_path / "existing-control-plane.db"
+    database_url = f"sqlite:///{database_path}"
+    repo_root = Path(__file__).resolve().parents[2]
+    config = Config(str(repo_root / "alembic.ini"))
+    config.set_main_option("script_location", str(repo_root / "alembic"))
+    config.set_main_option("sqlalchemy.url", database_url)
+
+    command.upgrade(config, "20260630_0002")
+    engine = create_engine(database_url)
+    columns_at_plan_one = {
+        column["name"] for column in inspect(engine).get_columns("relay_devices")
+    }
+    assert "key_version" not in columns_at_plan_one
+    assert "revoked_at" not in columns_at_plan_one
+
+    command.upgrade(config, "head")
+    upgraded_columns = {
+        column["name"] for column in inspect(engine).get_columns("relay_devices")
+    }
+    engine.dispose()
+
+    assert {"key_version", "revoked_at"} <= upgraded_columns
