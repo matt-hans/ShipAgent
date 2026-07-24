@@ -165,6 +165,7 @@ if (process.env.SHIPAGENT_SMOKE_SKIP_BUILD !== '1') {
 
 const runtimeKey = randomBytes(48).toString('base64url');
 const filterTokenSecret = randomBytes(48).toString('base64url');
+const credentialEncryptionKey = randomBytes(32).toString('base64');
 const temporaryDirectory = await mkdtemp(
   path.join(tmpdir(), 'shipagent-auth-smoke-')
 );
@@ -188,6 +189,7 @@ try {
         DATABASE_URL: `sqlite:///${databasePath}`,
         FILTER_TOKEN_SECRET: filterTokenSecret,
         SHIPAGENT_API_KEY: runtimeKey,
+        SHIPAGENT_CREDENTIAL_KEY: credentialEncryptionKey,
         SHIPAGENT_DISABLE_DOCS: 'true',
         SHIPAGENT_KEYRING_DISABLED: '1',
         SHIPAGENT_SKIP_SDK_CHECK: 'true',
