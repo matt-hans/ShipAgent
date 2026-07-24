@@ -553,3 +553,212 @@ workarounds.
   installed Playwright Chromium binary.
 - The four broad-backend warnings are existing dependency, pytest-mark, and
   Alembic configuration warnings and did not hide failures.
+
+# Round 4
+
+## Status and commits
+
+All five Round 4 blockers are implemented:
+
+- hosted MCP projection failures return one generic provider-visible error and
+  produce only operation-safe logs;
+- cookie-authenticated mutations require an exact trusted origin, while valid
+  API-key headers and safe session operations retain their intended behavior;
+- browser-session renewal is always authorized by the API-key header rather
+  than by an existing cookie;
+- compact and case-varied sensitive public-schema aliases are rejected; and
+- any protected frontend 401 restores the shell authentication gate across
+  Native Federation boundaries and supports a clean reauthentication path.
+
+Round 4 commits:
+
+- `780f249` — `fix(hosted): sanitize result projection failures`
+- `3ecb5d9` — `fix(auth): protect browser session mutations`
+- `43d8d32` — `fix(registry): reject compact sensitive aliases`
+- `586dae7` — `fix(frontend): restore auth gate on session expiry`
+- `97fb132` — `test(frontend): smoke automatic session expiry recovery`
+- `4a8ec33` — `test(frontend): serialize production smoke builds`
+- `77e8ff9` — `style(frontend): format session expiry changes`
+
+## Finding 1 — Hosted projection failures exposed rejected provider data
+
+### RED
+
+Four real FastMCP client calls failed the new boundary assertions. Schema,
+privacy, size-cap, and non-object projection failures exposed rejected detail
+through provider errors, exception chaining, or framework logging.
+
+### GREEN
+
+- The hosted boundary catches every projection exception at the
+  `project_result()` call site, raises one generic `ToolError` without an
+  exception chain, and does not change execution-error behavior outside that
+  projection boundary.
+- Its warning contains only the canonical tool operation. It omits returned
+  data, validator detail, exception text, and exception arguments.
+- Boundary tests call the actual FastMCP server through `Client(server)` and
+  inspect both the provider response and captured logs.
+- The tests cover four representative sensitive-data categories and assert
+  that none of their fixture values, rejected schema detail, or exception
+  detail crosses either boundary. Sensitive fixture values are intentionally
+  not reproduced in this report.
+
+The four adversarial boundary cases pass after the fix; the broader hosted MCP
+and result-projection slice passes **33 tests**.
+
+## Finding 2 — Cookie authentication permitted cross-origin mutations
+
+### RED
+
+A cookie-authenticated request without `Origin` successfully mutated the real
+onboarding settings endpoint. Hostile same-site and missing-origin requests
+therefore lacked a fail-closed browser mutation boundary.
+
+### GREEN
+
+- Cookie-only unsafe methods require `Origin` to normalize to the exact request
+  scheme, host, and effective port.
+- Missing, malformed, cross-origin, and hostile same-site origins receive 403
+  before route mutation.
+- A valid `X-API-Key` header remains exempt for non-browser integrations.
+- Safe methods and the public session-status/session-clear operations retain
+  their existing behavior.
+- Tests exercise the real onboarding mutation and prove rejected requests leave
+  persisted state unchanged, while exact-origin and valid-header requests
+  succeed.
+
+## Finding 3 — A session cookie could renew itself
+
+### RED
+
+With a valid browser cookie, session-creation POSTs with a missing or incorrect
+API-key header returned 200 and could replace the session cookie.
+
+### GREEN
+
+- `POST /api/v1/auth/session` is now always header-authorized when API-key
+  protection is configured, even when the request already has a valid cookie.
+- Missing and incorrect headers return 401 and do not emit a replacement
+  session cookie.
+- The correct header succeeds and replaces the cookie.
+- The change preserves rate limiting and public GET/DELETE session semantics.
+
+The combined browser-session, authentication-middleware, and settings slice
+passes **37 tests**.
+
+## Finding 4 — Compact sensitive aliases bypassed schema privacy checks
+
+### RED
+
+The new lower-, mixed-, and all-uppercase fixtures produced **18 failures**.
+Compact spellings of credential keys, authentication/authorization headers,
+and label/document payload or link fields were accepted because token-only
+normalization could not prove their sensitive meaning.
+
+### GREEN
+
+- Public-schema privacy validation now combines the existing token analysis
+  with deterministic compact-name normalization.
+- A bounded compact alias set rejects API/access-key, authentication/header,
+  and label/document payload/link families without applying fuzzy matching.
+- Tests cover all three casing styles across the credential, authorization,
+  label, and document families.
+- The full registry suite passes **113 tests**, and canonical generated provider
+  artifacts remain unchanged.
+
+## Finding 5 — Protected frontend 401s did not restore the auth gate
+
+### RED
+
+- The shared API library initially had no session-expiration contract.
+- A shell lifecycle test could keep authenticated chat, sidebar, and settings
+  state rendered after a protected request returned 401.
+
+### GREEN
+
+- Added a root-provided, monotonic browser-session expiration signal in the
+  shared API library.
+- The common error interceptor emits the signal for protected 401 responses and
+  excludes the exact browser-session flow so failed login/status/clear requests
+  cannot recursively invalidate their own gate.
+- The shell reacts to each new expiration event by returning to the
+  authentication gate, clearing settings state, closing the settings flyout,
+  and destroying authenticated shell/remote content.
+- The transient password input is blank when the gate reappears.
+- Successful reauthentication restores authenticated content.
+- Shell and all standalone remotes use the same common HTTP provider; Native
+  Federation shares the library as a singleton.
+- HTTP tests prove protected 401 emission and session-flow exclusion. Shell
+  tests prove ready-to-gate teardown and successful recovery.
+
+The shared frontend unit suite passes **126 tests**: shared state **41**, shell
+**28**, chat **54**, and one each for domain, sidebar, and settings.
+
+## Real production browser invalidation smoke
+
+The updated no-mock Playwright smoke:
+
+1. Builds all seven frontend projects in production mode and links all four
+   Native Federation remotes.
+2. Starts the real bundled FastAPI/static frontend boundary on an ephemeral
+   loopback port and authenticates through the browser session flow.
+3. Performs the onboarding mutation through a same-origin page request.
+4. Opens federated settings content, invalidates the HttpOnly session cookie,
+   and observes real protected API 401 responses.
+5. Proves the shared interceptor restores the gate without a page reload,
+   authenticated shell content is absent, and the transient input is blank.
+6. Reauthenticates and observes a successful protected settings response.
+7. Rechecks storage keys and values, request URLs, console output, DOM, cookie
+   content, and all emitted bundles for credential leakage.
+
+Only generic browser resource diagnostics corresponding to the deliberate 401
+invalidation window are accepted, and the smoke asserts that at least one such
+diagnostic occurred. Every other console or page error still fails the run.
+
+An intermittent Native Federation worker-shutdown hang appeared when all seven
+production builds ran concurrently. The smoke now asks Nx to build
+sequentially. Two final default sequential smoke runs passed, including a fresh
+run from the exact final formatted source.
+
+## Round 4 verification evidence
+
+- Fresh affected backend slice:
+  `../../.venv/bin/python -m pytest tests/api/test_browser_session.py tests/api/test_auth_middleware.py tests/api/test_settings.py tests/hosted/test_hosted_mcp_registry.py tests/control_plane/test_result_projection.py tests/registry -q`
+  — **183 passed, 1 warning in 0.70s**.
+- Fresh broad backend suite:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not progress"`
+  — **3,381 passed, 21 skipped, 103 deselected, 4 warnings in 48.86s**.
+- Clean-tree provider artifact drift — **1 passed**.
+- Frontend typecheck: all **6** configured project targets passed after the
+  required shared-state declaration build.
+- Frontend lint: all **6** configured project targets passed with **0 errors**
+  and the existing **43 warnings**.
+- Frontend tests: all **6** configured project targets passed, **126 tests**
+  total.
+- Exact-source production browser smoke: all **7** production builds passed,
+  all four remotes linked, and invalidation/recovery/leak assertions passed.
+  Nx reused valid cached output for two of the seven hash-matched build tasks.
+- `../../.venv/bin/python -m ruff check src/ tests/` — **All checks passed**.
+- Ruff format check over the **6** changed Python files — all already formatted.
+- Prettier check over the **5** changed TypeScript files and `node --check` over
+  the smoke script passed.
+- `git diff --check 84f37d1..HEAD` reports no whitespace errors.
+
+## Round 4 self-review and remaining concerns
+
+- Requirement-by-requirement and aggregate-diff review found no remaining
+  Round 4 blocker.
+- The broad backend suite retains four existing dependency, pytest-mark, and
+  Alembic configuration warnings.
+- Frontend lint retains 43 existing chat/settings warnings. Production output
+  also retains existing Angular template/build, component-budget, Native
+  Federation, and unconnected Nx Cloud warnings; all validation commands exit
+  zero.
+- The smoke validates emitted production assets, real federation, FastAPI,
+  middleware, HttpOnly cookies, automatic invalidation, and recovery on the
+  host. It does not build or launch a Docker image.
+- No dependency manifests changed, so no dependency installation or upgrade was
+  required for Round 4.
+- Generated provider artifacts are unchanged.
+- No raw credential, canary, customer, or label fixture value is included in
+  this report.
