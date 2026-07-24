@@ -8,6 +8,32 @@ _ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _NON_ALPHANUMERIC = re.compile(r"[^a-z0-9]+")
 
+_FORBIDDEN_COMPACT_ALIASES = frozenset(
+    {
+        "apikey",
+        "accesskey",
+        "authheader",
+        "authenticationheader",
+        "authorizationheader",
+        "authorisationheader",
+    }
+    | {
+        f"{content_kind}{transfer_kind}"
+        for content_kind in ("label", "document")
+        for transfer_kind in (
+            "base64",
+            "bytes",
+            "content",
+            "data",
+            "download",
+            "href",
+            "link",
+            "uri",
+            "url",
+        )
+    }
+)
+
 _COMMON_SCHEMA_KEYWORDS = frozenset({"type", "description", "enum"})
 _SCHEMA_KEYWORDS_BY_TYPE = {
     "object": _COMMON_SCHEMA_KEYWORDS
@@ -25,6 +51,10 @@ def _field_tokens(value: str) -> set[str]:
     acronym_split = _ACRONYM_BOUNDARY.sub("_", value)
     snake_case = _CAMEL_CASE_BOUNDARY.sub("_", acronym_split).lower()
     return {token for token in _NON_ALPHANUMERIC.split(snake_case) if token}
+
+
+def _compact_field_name(value: str) -> str:
+    return _NON_ALPHANUMERIC.sub("", value.lower())
 
 
 def _path_text(path: tuple[str, ...]) -> str:
@@ -107,6 +137,7 @@ def provider_schema_privacy_violations(
     for path in _property_paths(schema):
         field_name = path[-1]
         tokens = _field_tokens(field_name)
+        compact_name = _compact_field_name(field_name)
         is_row_count = "row" in tokens and "count" in tokens
         raw_customer_content = bool(tokens & {"address", "payload"}) or (
             "row" in tokens and not is_row_count
@@ -162,6 +193,7 @@ def provider_schema_privacy_violations(
             or credential_or_token
             or label_or_document_transfer
             or raw_carrier_exchange
+            or compact_name in _FORBIDDEN_COMPACT_ALIASES
         ):
             violations.append(".".join(path))
 
