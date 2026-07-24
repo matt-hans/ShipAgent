@@ -10,6 +10,7 @@ from sqlalchemy.pool import NullPool
 from alembic import context
 from src.control_plane import models as _control_plane_models  # noqa: F401
 from src.control_plane.audit import models as _control_plane_audit_models  # noqa: F401
+from src.control_plane.database_url import normalize_control_plane_database_url
 from src.control_plane.models import ControlPlaneBase
 
 config = context.config
@@ -21,12 +22,13 @@ target_metadata = ControlPlaneBase.metadata
 
 
 def _database_url() -> str:
-    return (
+    configured_url = (
         os.environ.get("SHIPAGENT_DATABASE_URL")
         or os.environ.get("DATABASE_URL")
         or config.get_main_option("sqlalchemy.url")
         or ""
     )
+    return normalize_control_plane_database_url(configured_url)
 
 
 def _target_schema() -> str:
@@ -105,7 +107,7 @@ def run_migrations_online() -> None:
     import asyncio
 
     async def _main() -> None:
-        async with connectable.connect() as connection:
+        async with connectable.begin() as connection:
             await _run_migrations(connection)
         await connectable.dispose()
 
