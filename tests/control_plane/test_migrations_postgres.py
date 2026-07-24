@@ -12,6 +12,26 @@ from src.control_plane.db import build_session_factory
 from src.control_plane.models import CloudAccount
 
 
+def test_postgres_migration_uses_boolean_false_default(monkeypatch, capsys) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    root = Path(__file__).resolve().parents[2]
+    config = Config(str(root / "alembic.ini"))
+    monkeypatch.setenv(
+        "SHIPAGENT_DATABASE_URL",
+        "postgresql+asyncpg://user:password@localhost/shipagent",
+    )
+    monkeypatch.setenv("SHIPAGENT_CONTROL_PLANE_SCHEMA", "shipagent_test")
+
+    command.upgrade(config, "head", sql=True)
+
+    sql = capsys.readouterr().out.lower()
+    normalized_sql = " ".join(sql.split())
+    assert "suspended boolean default false not null" in normalized_sql
+    assert "suspended boolean default 0 not null" not in normalized_sql
+
+
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_alembic_runs_against_postgres_schema_control_plane() -> None:
