@@ -10,6 +10,8 @@ from src.registry.models import (
     ToolVisibility,
 )
 from src.registry.tools.schema import object_schema
+from src.services.ups_constants import DEFAULT_CURRENCY_CODE
+from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
 
 FIRST_SLICE_TOOL_NAMES = (
     "get_shipagent_status",
@@ -42,15 +44,36 @@ ADDRESS_VALIDATION_GUIDANCE_CODES = [
 SYSTEM_STATUS_CODES = ["ready", "degraded", "unavailable"]
 JOB_STATUS_CODES = ["queued", "running", "completed", "failed", "cancelled"]
 LABEL_STATUS_CODES = ["pending", "ready", "unavailable"]
+SHIPAGENT_CAPABILITY_CODES = [
+    "shipment_ingress",
+    "address_validation",
+    "rate_shopping",
+    "shipment_preview",
+    "shipment_execution",
+    "job_status",
+    "label_handoff",
+]
+UPS_SERVICE_CODES = [code.value for code in ServiceCode]
+UPS_SERVICE_NAMES = list(SERVICE_CODE_NAMES.values())
+RATE_CURRENCY_CODES = [DEFAULT_CURRENCY_CODE]
+
+_OPAQUE_ID_BODY_MIN_LENGTH = 16
+_OPAQUE_ID_BODY_MAX_LENGTH = 96
+_MONEY_PATTERN = r"^(0|[1-9][0-9]{0,9})\.[0-9]{2}$"
+_ISO_DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 
 
-def shipagent_reference_schema(description: str) -> dict[str, object]:
+def shipagent_id_schema(kind: str, description: str) -> dict[str, object]:
+    prefix = f"sa_{kind}_"
     return {
         "type": "string",
         "description": description,
-        "pattern": r"^sa_[A-Za-z0-9_-]{20,124}$",
-        "minLength": 23,
-        "maxLength": 127,
+        "pattern": (
+            rf"^{prefix}[A-Za-z0-9_-]"
+            rf"{{{_OPAQUE_ID_BODY_MIN_LENGTH},{_OPAQUE_ID_BODY_MAX_LENGTH}}}$"
+        ),
+        "minLength": len(prefix) + _OPAQUE_ID_BODY_MIN_LENGTH,
+        "maxLength": len(prefix) + _OPAQUE_ID_BODY_MAX_LENGTH,
     }
 
 
@@ -109,18 +132,29 @@ PUBLIC_TOOLS = [
         ["account:read", "device:read"],
         object_schema(
             {
-                "correlation_id": {
-                    "type": "string",
-                    "description": "Opaque client correlation identifier.",
-                }
+                "correlation_id": shipagent_id_schema(
+                    "correlation",
+                    "Opaque ShipAgent correlation identifier.",
+                )
             },
             ["correlation_id"],
         ),
         object_schema(
             {
                 "status": {"type": "string", "enum": SYSTEM_STATUS_CODES},
-                "active_device_id": {"type": "string"},
-                "capabilities": {"type": "array", "items": {"type": "string"}},
+                "active_device_id": shipagent_id_schema(
+                    "device",
+                    "Opaque ShipAgent execution device identifier.",
+                ),
+                "capabilities": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": SHIPAGENT_CAPABILITY_CODES,
+                    },
+                    "maxItems": len(SHIPAGENT_CAPABILITY_CODES),
+                    "uniqueItems": True,
+                },
             },
             ["status", "active_device_id", "capabilities"],
         ),
@@ -134,16 +168,17 @@ PUBLIC_TOOLS = [
         ["shipments:create"],
         object_schema(
             {
-                "ingress_reference": shipagent_reference_schema(
-                    "Opaque reference minted by the authenticated ShipAgent ingress channel."
+                "ingress_reference": shipagent_id_schema(
+                    "ingress",
+                    "Opaque reference minted by the authenticated ShipAgent ingress channel.",
                 ),
             },
             ["ingress_reference"],
         ),
         object_schema(
             {
-                "input_reference": shipagent_reference_schema(
-                    "Opaque ShipAgent shipment input reference."
+                "input_reference": shipagent_id_schema(
+                    "input", "Opaque ShipAgent shipment input reference."
                 )
             },
             ["input_reference"],
@@ -158,16 +193,16 @@ PUBLIC_TOOLS = [
         ["address:validate"],
         object_schema(
             {
-                "input_reference": shipagent_reference_schema(
-                    "Opaque ShipAgent shipment input reference."
+                "input_reference": shipagent_id_schema(
+                    "input", "Opaque ShipAgent shipment input reference."
                 ),
             },
             ["input_reference"],
         ),
         object_schema(
             {
-                "validation_artifact_id": shipagent_reference_schema(
-                    "Opaque ShipAgent validation artifact reference."
+                "validation_artifact_id": shipagent_id_schema(
+                    "validation", "Opaque ShipAgent validation artifact reference."
                 ),
                 "valid": {"type": "boolean"},
                 "guidance_codes": {
@@ -193,8 +228,8 @@ PUBLIC_TOOLS = [
         ["shipments:rate"],
         object_schema(
             {
-                "input_reference": shipagent_reference_schema(
-                    "Opaque ShipAgent shipment input reference."
+                "input_reference": shipagent_id_schema(
+                    "input", "Opaque ShipAgent shipment input reference."
                 )
             },
             ["input_reference"],
@@ -205,11 +240,30 @@ PUBLIC_TOOLS = [
                     "type": "array",
                     "items": object_schema(
                         {
-                            "service_code": {"type": "string"},
-                            "service_name": {"type": "string"},
-                            "total_charge": {"type": "string"},
-                            "currency_code": {"type": "string"},
-                            "estimated_delivery_date": {"type": "string"},
+                            "service_code": {
+                                "type": "string",
+                                "enum": UPS_SERVICE_CODES,
+                            },
+                            "service_name": {
+                                "type": "string",
+                                "enum": UPS_SERVICE_NAMES,
+                            },
+                            "total_charge": {
+                                "type": "string",
+                                "pattern": _MONEY_PATTERN,
+                                "minLength": 4,
+                                "maxLength": 13,
+                            },
+                            "currency_code": {
+                                "type": "string",
+                                "enum": RATE_CURRENCY_CODES,
+                            },
+                            "estimated_delivery_date": {
+                                "type": "string",
+                                "pattern": _ISO_DATE_PATTERN,
+                                "minLength": 10,
+                                "maxLength": 10,
+                            },
                         },
                         [
                             "service_code",
@@ -218,8 +272,12 @@ PUBLIC_TOOLS = [
                             "currency_code",
                         ],
                     ),
+                    "maxItems": len(UPS_SERVICE_CODES),
                 },
-                "selected": {"type": "string"},
+                "selected": {
+                    "type": "string",
+                    "enum": UPS_SERVICE_CODES,
+                },
             },
             ["rates", "selected"],
         ),
@@ -235,19 +293,26 @@ PUBLIC_TOOLS = [
         ["shipments:preview"],
         object_schema(
             {
-                "input_reference": shipagent_reference_schema(
-                    "Opaque ShipAgent shipment input reference."
+                "input_reference": shipagent_id_schema(
+                    "input", "Opaque ShipAgent shipment input reference."
                 )
             },
             ["input_reference"],
         ),
         object_schema(
             {
-                "preview_id": {"type": "string"},
+                "preview_id": shipagent_id_schema(
+                    "preview",
+                    "Opaque ShipAgent shipment preview identifier.",
+                ),
                 "summary": {
                     "type": "object",
                     "properties": {
-                        "shipment_count": {"type": "integer"},
+                        "shipment_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1_000_000,
+                        },
                     },
                     "required": ["shipment_count"],
                     "additionalProperties": False,
@@ -267,16 +332,23 @@ PUBLIC_TOOLS = [
         ["shipments:execute"],
         object_schema(
             {
-                "preview_id": {"type": "string"},
-                "confirmation_artifact_id": shipagent_reference_schema(
-                    "Opaque confirmation artifact minted by an authenticated ShipAgent channel."
+                "preview_id": shipagent_id_schema(
+                    "preview",
+                    "Opaque ShipAgent shipment preview identifier.",
+                ),
+                "confirmation_artifact_id": shipagent_id_schema(
+                    "confirmation",
+                    "Opaque confirmation artifact minted by an authenticated ShipAgent channel.",
                 ),
             },
             ["preview_id", "confirmation_artifact_id"],
         ),
         object_schema(
             {
-                "job_id": {"type": "string"},
+                "job_id": shipagent_id_schema(
+                    "job",
+                    "Opaque ShipAgent shipment job identifier.",
+                ),
                 "status": {"type": "string", "enum": JOB_STATUS_CODES},
             },
             ["job_id", "status"],
@@ -295,12 +367,20 @@ PUBLIC_TOOLS = [
         SideEffectClass.read,
         ["jobs:read"],
         object_schema(
-            {"job_id": {"type": "string", "description": "ShipAgent job identifier."}},
+            {
+                "job_id": shipagent_id_schema(
+                    "job",
+                    "Opaque ShipAgent shipment job identifier.",
+                )
+            },
             ["job_id"],
         ),
         object_schema(
             {
-                "job_id": {"type": "string"},
+                "job_id": shipagent_id_schema(
+                    "job",
+                    "Opaque ShipAgent shipment job identifier.",
+                ),
                 "status": {"type": "string", "enum": JOB_STATUS_CODES},
             },
             ["job_id", "status"],
@@ -314,13 +394,19 @@ PUBLIC_TOOLS = [
         SideEffectClass.read,
         ["labels:read"],
         object_schema(
-            {"job_id": {"type": "string"}},
+            {
+                "job_id": shipagent_id_schema(
+                    "job",
+                    "Opaque ShipAgent shipment job identifier.",
+                )
+            },
             ["job_id"],
         ),
         object_schema(
             {
-                "label_artifact_id": shipagent_reference_schema(
-                    "Opaque label artifact resolved only by an authenticated ShipAgent channel."
+                "label_artifact_id": shipagent_id_schema(
+                    "label",
+                    "Opaque label artifact resolved only by an authenticated ShipAgent channel.",
                 ),
                 "status": {"type": "string", "enum": LABEL_STATUS_CODES},
             },

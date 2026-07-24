@@ -496,6 +496,96 @@ def test_submit_one_off_shipment_is_non_confirming_input_reference_entrypoint():
     assert set(tool.output_schema["properties"]) == {"input_reference"}
 
 
+def test_every_exported_scalar_family_is_bounded():
+    violations: list[str] = []
+
+    def audit(schema, path: str) -> None:
+        schema_type = schema["type"]
+        if schema_type == "object":
+            for name, child in schema["properties"].items():
+                audit(child, f"{path}.{name}")
+        elif schema_type == "array":
+            if "maxItems" not in schema:
+                violations.append(f"{path}:array")
+            audit(schema["items"], f"{path}[]")
+        elif schema_type == "string":
+            if (
+                "enum" not in schema
+                and not {
+                    "pattern",
+                    "minLength",
+                    "maxLength",
+                }
+                <= schema.keys()
+            ):
+                violations.append(f"{path}:string")
+        elif (
+            schema_type in {"integer", "number"}
+            and not {
+                "minimum",
+                "maximum",
+            }
+            <= schema.keys()
+        ):
+            violations.append(f"{path}:{schema_type}")
+
+    for tool in public_tools():
+        audit(tool.input_schema, f"{tool.name}.input")
+        audit(tool.output_schema, f"{tool.name}.output")
+
+    assert violations == []
+
+
+def test_public_provider_contract_rejects_unbounded_string_scalar():
+    schema = object_schema(
+        {"display_code": {"type": "string"}},
+        ["display_code"],
+    )
+
+    assert provider_schema_privacy_violations("scalar_probe", schema) == [
+        "display_code"
+    ]
+    with pytest.raises(ValueError, match="provider privacy"):
+        public_tool(
+            "scalar_probe",
+            "Scalar safety probe",
+            "A provider-visible scalar constraint validation fixture.",
+            SideEffectClass.read,
+            ["tools:read"],
+            object_schema({}, []),
+            schema,
+            provider_export_enabled=True,
+        )
+
+
+@pytest.mark.parametrize("schema_type", ["integer", "number"])
+def test_public_provider_contract_rejects_unbounded_numeric_scalar(schema_type):
+    schema = object_schema(
+        {"aggregate_count": {"type": schema_type}},
+        ["aggregate_count"],
+    )
+
+    assert provider_schema_privacy_violations("scalar_probe", schema) == [
+        "aggregate_count"
+    ]
+
+
+def test_public_provider_contract_rejects_unbounded_array_scalar_family():
+    schema = object_schema(
+        {
+            "result_codes": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["ready"]},
+            }
+        },
+        ["result_codes"],
+    )
+
+    assert provider_schema_privacy_violations("scalar_probe", schema) == [
+        "result_codes"
+    ]
+
+
 def test_registry_loads_all_tools():
     registry = load_registry()
     tools_by_name = {tool.name: tool for tool in registry.tools}

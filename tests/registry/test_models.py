@@ -33,13 +33,27 @@ def minimal_tool(**overrides):
         "result_sensitivity": ResultSensitivity.business,
         "input_schema": {
             "type": "object",
-            "properties": {"order_batch_id": {"type": "string"}},
+            "properties": {
+                "order_batch_id": {
+                    "type": "string",
+                    "pattern": r"^sa_order_[A-Za-z0-9_-]{16,96}$",
+                    "minLength": 25,
+                    "maxLength": 105,
+                }
+            },
             "required": ["order_batch_id"],
             "additionalProperties": False,
         },
         "output_schema": {
             "type": "object",
-            "properties": {"preview_id": {"type": "string"}},
+            "properties": {
+                "preview_id": {
+                    "type": "string",
+                    "pattern": r"^sa_preview_[A-Za-z0-9_-]{16,96}$",
+                    "minLength": 27,
+                    "maxLength": 107,
+                }
+            },
             "required": ["preview_id"],
             "additionalProperties": False,
         },

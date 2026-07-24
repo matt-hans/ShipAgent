@@ -10,6 +10,13 @@ from src.provider_adapters.mcp_projection import to_mcp_tool_descriptor
 from src.registry.catalog import public_tools
 from src.registry.models import ProviderExport
 
+VALID_CONFIRMATION_ID = "sa_confirmation_0123456789abcdef"
+VALID_CORRELATION_ID = "sa_correlation_0123456789abcdef"
+VALID_INGRESS_ID = "sa_ingress_0123456789abcdef"
+VALID_INPUT_ID = "sa_input_0123456789abcdef"
+VALID_JOB_ID = "sa_job_0123456789abcdef"
+VALID_PREVIEW_ID = "sa_preview_0123456789abcdef"
+
 
 def tool(name: str):
     return next(item for item in public_tools() if item.name == name)
@@ -26,6 +33,18 @@ def exportable_mcp_tool(name: str):
     )
 
 
+def rate_result(**overrides):
+    rate = {
+        "service_code": "03",
+        "service_name": "UPS Ground",
+        "total_charge": "12.34",
+        "currency_code": "USD",
+        "estimated_delivery_date": "2026-07-25",
+    }
+    rate.update(overrides)
+    return {"rates": [rate], "selected": "03"}
+
+
 @pytest.mark.asyncio
 async def test_hosted_mcp_server_does_not_register_unbound_catalog_tools():
     server = build_server()
@@ -37,7 +56,7 @@ async def test_hosted_mcp_server_does_not_register_unbound_catalog_tools():
 @pytest.mark.asyncio
 async def test_hosted_mcp_server_requires_exportable_and_bound_tools():
     async def execute_shipments_handler(arguments):
-        return {"job_id": "job-1", "status": "running"}
+        return {"job_id": VALID_JOB_ID, "status": "running"}
 
     async def job_status_handler(arguments):
         return {"job_id": arguments["job_id"], "status": "running"}
@@ -63,7 +82,7 @@ async def test_hosted_mcp_server_requires_exportable_and_bound_tools():
 @pytest.mark.asyncio
 async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
     async def handler(arguments):
-        return {"job_id": "job-1", "status": "running"}
+        return {"job_id": VALID_JOB_ID, "status": "running"}
 
     contract = exportable_mcp_tool("execute_shipments")
     descriptor = to_mcp_tool_descriptor(contract)
@@ -86,7 +105,7 @@ async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
 @pytest.mark.asyncio
 async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
     async def handler(arguments):
-        return {"job_id": "job-1", "status": "running"}
+        return {"job_id": VALID_JOB_ID, "status": "running"}
 
     contract = exportable_mcp_tool("execute_shipments")
     server = build_server(
@@ -97,16 +116,243 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
 
     result = await tools["execute_shipments"].run(
         {
-            "preview_id": "preview-1",
-            "confirmation_artifact_id": "sa_confirmation_artifact_1234",
+            "preview_id": VALID_PREVIEW_ID,
+            "confirmation_artifact_id": VALID_CONFIRMATION_ID,
         }
     )
 
-    assert result.structured_content == {"job_id": "job-1", "status": "running"}
+    assert result.structured_content == {
+        "job_id": VALID_JOB_ID,
+        "status": "running",
+    }
     validate(
         instance=result.structured_content,
         schema=tools["execute_shipments"].output_schema,
     )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "unsafe_result", "canary"),
+    [
+        (
+            "get_shipagent_status",
+            {"correlation_id": VALID_CORRELATION_ID},
+            {
+                "status": "ready",
+                "active_device_id": "https://private.invalid/device",
+                "capabilities": ["shipment_ingress"],
+            },
+            "https://private.invalid/device",
+        ),
+        (
+            "get_shipagent_status",
+            {"correlation_id": VALID_CORRELATION_ID},
+            {
+                "status": "ready",
+                "active_device_id": "sa_device_0123456789abcdef",
+                "capabilities": ["Bearer scalar-credential"],
+            },
+            "Bearer scalar-credential",
+        ),
+        (
+            "submit_one_off_shipment",
+            {"ingress_reference": VALID_INGRESS_ID},
+            {"input_reference": "Private Recipient at 17 Confidential Avenue"},
+            "Private Recipient",
+        ),
+        (
+            "validate_shipment_address",
+            {"input_reference": VALID_INPUT_ID},
+            {
+                "validation_artifact_id": "https://private.invalid/validation",
+                "valid": True,
+                "guidance_codes": ["no_action_required"],
+            },
+            "https://private.invalid/validation",
+        ),
+        (
+            "get_shipment_rates",
+            {"input_reference": VALID_INPUT_ID},
+            rate_result(service_code="https://private.invalid/service"),
+            "https://private.invalid/service",
+        ),
+        (
+            "get_shipment_rates",
+            {"input_reference": VALID_INPUT_ID},
+            rate_result(service_name="Private Recipient"),
+            "Private Recipient",
+        ),
+        (
+            "get_shipment_rates",
+            {"input_reference": VALID_INPUT_ID},
+            rate_result(total_charge="scalar-credential"),
+            "scalar-credential",
+        ),
+        (
+            "get_shipment_rates",
+            {"input_reference": VALID_INPUT_ID},
+            rate_result(currency_code="17 Confidential Avenue"),
+            "17 Confidential Avenue",
+        ),
+        (
+            "get_shipment_rates",
+            {"input_reference": VALID_INPUT_ID},
+            rate_result(estimated_delivery_date="https://private.invalid/date"),
+            "https://private.invalid/date",
+        ),
+        (
+            "get_shipment_rates",
+            {"input_reference": VALID_INPUT_ID},
+            {**rate_result(), "selected": "Bearer scalar-credential"},
+            "Bearer scalar-credential",
+        ),
+        (
+            "prepare_shipments",
+            {"input_reference": VALID_INPUT_ID},
+            {
+                "preview_id": "https://private.invalid/preview",
+                "summary": {"shipment_count": 1},
+            },
+            "https://private.invalid/preview",
+        ),
+        (
+            "prepare_shipments",
+            {"input_reference": VALID_INPUT_ID},
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "summary": {"shipment_count": 1_000_001},
+            },
+            None,
+        ),
+        (
+            "execute_shipments",
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+            },
+            {
+                "job_id": "https://private.invalid/job?token=scalar-credential",
+                "status": "running",
+            },
+            "https://private.invalid/job",
+        ),
+        (
+            "get_job_status",
+            {"job_id": VALID_JOB_ID},
+            {
+                "job_id": "Private Recipient at 17 Confidential Avenue",
+                "status": "completed",
+            },
+            "17 Confidential Avenue",
+        ),
+        (
+            "create_label_download",
+            {"job_id": VALID_JOB_ID},
+            {
+                "label_artifact_id": "https://private.invalid/label",
+                "status": "ready",
+            },
+            "https://private.invalid/label",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_real_mcp_rejects_canaries_in_every_scalar_family(
+    caplog,
+    tool_name,
+    arguments,
+    unsafe_result,
+    canary,
+):
+    async def handler(_arguments):
+        return unsafe_result
+
+    contract = exportable_mcp_tool(tool_name)
+    server = build_server(
+        tools=[contract],
+        tool_handlers={tool_name: handler},
+    )
+    caplog.set_level(logging.WARNING)
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool(tool_name, arguments)
+
+    assert str(exc_info.value) == "Tool result could not be safely returned"
+    if canary is not None:
+        assert canary not in f"{exc_info.value}\n{caplog.text}"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        (
+            "get_shipagent_status",
+            {"correlation_id": "https://private.invalid/correlation"},
+        ),
+        (
+            "submit_one_off_shipment",
+            {"ingress_reference": "Private Recipient at 17 Confidential Avenue"},
+        ),
+        (
+            "validate_shipment_address",
+            {"input_reference": "Bearer input-credential"},
+        ),
+        (
+            "get_shipment_rates",
+            {"input_reference": "https://private.invalid/input"},
+        ),
+        (
+            "prepare_shipments",
+            {"input_reference": "Private Recipient"},
+        ),
+        (
+            "execute_shipments",
+            {
+                "preview_id": "https://private.invalid/preview",
+                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+            },
+        ),
+        (
+            "execute_shipments",
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "confirmation_artifact_id": "Bearer confirmation-credential",
+            },
+        ),
+        (
+            "get_job_status",
+            {"job_id": "17 Confidential Avenue"},
+        ),
+        (
+            "create_label_download",
+            {"job_id": "https://private.invalid/job"},
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_real_mcp_rejects_canaries_in_every_input_identifier(
+    tool_name,
+    arguments,
+):
+    handler_called = False
+
+    async def handler(_arguments):
+        nonlocal handler_called
+        handler_called = True
+        return {}
+
+    contract = exportable_mcp_tool(tool_name)
+    server = build_server(
+        tools=[contract],
+        tool_handlers={tool_name: handler},
+    )
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool(tool_name, arguments)
+
+    assert handler_called is False
 
 
 @pytest.mark.parametrize(
@@ -126,7 +372,7 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
         (
             "privacy",
             {
-                "job_id": "job-1",
+                "job_id": VALID_JOB_ID,
                 "status": "running",
                 "address_line_1": "17 Confidential Avenue",
             },
@@ -167,8 +413,8 @@ async def test_hosted_mcp_projection_failures_are_provider_and_log_safe(
             await client.call_tool(
                 "execute_shipments",
                 {
-                    "preview_id": "preview-1",
-                    "confirmation_artifact_id": "sa_confirmation_artifact_1234",
+                    "preview_id": VALID_PREVIEW_ID,
+                    "confirmation_artifact_id": VALID_CONFIRMATION_ID,
                 },
             )
 
