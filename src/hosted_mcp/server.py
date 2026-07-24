@@ -10,6 +10,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool
 from fastmcp.tools.tool import ToolResult
+from jsonschema import validate
 from mcp.types import TextContent, ToolAnnotations
 
 from src.control_plane.result_projection import project_result
@@ -32,6 +33,18 @@ class BoundRegistryTool(Tool):
         object.__setattr__(self, "_handler", handler)
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
+        input_rejected = False
+        try:
+            validate(instance=arguments, schema=self._contract.input_schema)
+        except Exception:  # noqa: BLE001 - provider input is a fail-closed boundary.
+            input_rejected = True
+        if input_rejected:
+            logger.warning(
+                "Rejected provider input validation for tool %s",
+                self._contract.name,
+            )
+            raise ToolError(PROVIDER_RESULT_ERROR)
+
         result = self._handler(arguments)
         if inspect.isawaitable(result):
             result = await result

@@ -104,11 +104,19 @@ def _schema_dialect_violations(
         if schema.get("additionalProperties") is not False:
             yield _path_text((*prefix, "additionalProperties"))
     elif schema_type == "array":
+        if "maxItems" not in schema:
+            yield _path_text(prefix)
         items = schema.get("items")
         if not isinstance(items, dict):
             yield _path_text((*prefix, "items"))
         else:
             yield from _schema_dialect_violations(items, (*prefix, "items"))
+    elif schema_type == "string" and "enum" not in schema:
+        if not {"pattern", "minLength", "maxLength"} <= schema.keys():
+            yield _path_text(prefix)
+    elif isinstance(schema_type, str) and schema_type in {"integer", "number"}:
+        if not {"minimum", "maximum"} <= schema.keys():
+            yield _path_text(prefix)
 
 
 def _property_paths(

@@ -5,6 +5,13 @@ from src.control_plane.result_projection import project_result
 from src.registry.catalog import public_tools
 from src.registry.models import ToolContract
 
+VALID_DEVICE_ID = "sa_device_0123456789abcdef"
+VALID_INPUT_ID = "sa_input_0123456789abcdef"
+VALID_VALIDATION_ID = "sa_validation_0123456789abcdef"
+VALID_PREVIEW_ID = "sa_preview_0123456789abcdef"
+VALID_JOB_ID = "sa_job_0123456789abcdef"
+VALID_LABEL_ID = "sa_label_0123456789abcdef"
+
 
 def _contract(**overrides) -> ToolContract:
     base = {
@@ -216,22 +223,22 @@ def test_project_result_validates_against_schema():
             "get_shipagent_status",
             {
                 "status": "ready",
-                "active_device_id": "device-1",
-                "capabilities": ["shipments"],
+                "active_device_id": VALID_DEVICE_ID,
+                "capabilities": ["shipment_ingress"],
             },
         ),
         (
             "execute_shipments",
-            {"job_id": "job-1", "status": "running"},
+            {"job_id": VALID_JOB_ID, "status": "running"},
         ),
         (
             "get_job_status",
-            {"job_id": "job-1", "status": "completed"},
+            {"job_id": VALID_JOB_ID, "status": "completed"},
         ),
         (
             "create_label_download",
             {
-                "label_artifact_id": "sa_label_artifact_1234567890",
+                "label_artifact_id": VALID_LABEL_ID,
                 "status": "ready",
             },
         ),
@@ -253,6 +260,265 @@ def test_real_public_contract_rejects_data_smuggled_in_status(
     contract = next(tool for tool in public_tools() if tool.name == tool_name)
     unsafe_result = {**safe_result, "status": smuggled_status}
 
+    with pytest.raises(ValidationError):
+        project_result(contract, unsafe_result)
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "safe_result", "unsafe_result"),
+    [
+        (
+            "get_shipagent_status",
+            {
+                "status": "ready",
+                "active_device_id": VALID_DEVICE_ID,
+                "capabilities": ["shipment_ingress"],
+            },
+            {
+                "status": "ready",
+                "active_device_id": "https://private.invalid/device",
+                "capabilities": ["shipment_ingress"],
+            },
+        ),
+        (
+            "get_shipagent_status",
+            {
+                "status": "ready",
+                "active_device_id": VALID_DEVICE_ID,
+                "capabilities": ["shipment_ingress"],
+            },
+            {
+                "status": "ready",
+                "active_device_id": VALID_DEVICE_ID,
+                "capabilities": ["Bearer projection-credential"],
+            },
+        ),
+        (
+            "submit_one_off_shipment",
+            {"input_reference": VALID_INPUT_ID},
+            {"input_reference": "Private Recipient at 17 Confidential Avenue"},
+        ),
+        (
+            "validate_shipment_address",
+            {
+                "validation_artifact_id": VALID_VALIDATION_ID,
+                "valid": True,
+                "guidance_codes": ["no_action_required"],
+            },
+            {
+                "validation_artifact_id": "https://private.invalid/validation",
+                "valid": True,
+                "guidance_codes": ["no_action_required"],
+            },
+        ),
+        (
+            "get_shipment_rates",
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "UPS Ground",
+                        "total_charge": "12.34",
+                        "currency_code": "USD",
+                        "estimated_delivery_date": "2026-07-25",
+                    }
+                ],
+                "selected": "03",
+            },
+            {
+                "rates": [
+                    {
+                        "service_code": "https://private.invalid/service",
+                        "service_name": "UPS Ground",
+                        "total_charge": "12.34",
+                        "currency_code": "USD",
+                        "estimated_delivery_date": "2026-07-25",
+                    }
+                ],
+                "selected": "03",
+            },
+        ),
+        (
+            "get_shipment_rates",
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "UPS Ground",
+                        "total_charge": "12.34",
+                        "currency_code": "USD",
+                        "estimated_delivery_date": "2026-07-25",
+                    }
+                ],
+                "selected": "03",
+            },
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "Private Recipient",
+                        "total_charge": "12.34",
+                        "currency_code": "USD",
+                        "estimated_delivery_date": "2026-07-25",
+                    }
+                ],
+                "selected": "03",
+            },
+        ),
+        (
+            "get_shipment_rates",
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "UPS Ground",
+                        "total_charge": "12.34",
+                        "currency_code": "USD",
+                        "estimated_delivery_date": "2026-07-25",
+                    }
+                ],
+                "selected": "03",
+            },
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "UPS Ground",
+                        "total_charge": "credential=projection-token",
+                        "currency_code": "USD",
+                        "estimated_delivery_date": "2026-07-25",
+                    }
+                ],
+                "selected": "03",
+            },
+        ),
+        (
+            "get_shipment_rates",
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "UPS Ground",
+                        "total_charge": "12.34",
+                        "currency_code": "USD",
+                        "estimated_delivery_date": "2026-07-25",
+                    }
+                ],
+                "selected": "03",
+            },
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "UPS Ground",
+                        "total_charge": "12.34",
+                        "currency_code": "17 Confidential Avenue",
+                        "estimated_delivery_date": "2026-07-25",
+                    }
+                ],
+                "selected": "03",
+            },
+        ),
+        (
+            "get_shipment_rates",
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "UPS Ground",
+                        "total_charge": "12.34",
+                        "currency_code": "USD",
+                        "estimated_delivery_date": "2026-07-25",
+                    }
+                ],
+                "selected": "03",
+            },
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "UPS Ground",
+                        "total_charge": "12.34",
+                        "currency_code": "USD",
+                        "estimated_delivery_date": "https://private.invalid/date",
+                    }
+                ],
+                "selected": "03",
+            },
+        ),
+        (
+            "get_shipment_rates",
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "UPS Ground",
+                        "total_charge": "12.34",
+                        "currency_code": "USD",
+                    }
+                ],
+                "selected": "03",
+            },
+            {
+                "rates": [
+                    {
+                        "service_code": "03",
+                        "service_name": "UPS Ground",
+                        "total_charge": "12.34",
+                        "currency_code": "USD",
+                    }
+                ],
+                "selected": "Bearer projection-credential",
+            },
+        ),
+        (
+            "prepare_shipments",
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "summary": {"shipment_count": 1},
+            },
+            {
+                "preview_id": "Private Recipient at 17 Confidential Avenue",
+                "summary": {"shipment_count": 1},
+            },
+        ),
+        (
+            "prepare_shipments",
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "summary": {"shipment_count": 1},
+            },
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "summary": {"shipment_count": 1_000_001},
+            },
+        ),
+        (
+            "execute_shipments",
+            {"job_id": VALID_JOB_ID, "status": "running"},
+            {
+                "job_id": "https://private.invalid/job?token=projection-credential",
+                "status": "running",
+            },
+        ),
+        (
+            "create_label_download",
+            {"label_artifact_id": VALID_LABEL_ID, "status": "ready"},
+            {
+                "label_artifact_id": "Private Recipient at 17 Confidential Avenue",
+                "status": "ready",
+            },
+        ),
+    ],
+)
+def test_real_public_contract_rejects_canaries_in_every_scalar_family(
+    tool_name,
+    safe_result,
+    unsafe_result,
+):
+    contract = next(tool for tool in public_tools() if tool.name == tool_name)
+
+    assert project_result(contract, safe_result) == safe_result
     with pytest.raises(ValidationError):
         project_result(contract, unsafe_result)
 
