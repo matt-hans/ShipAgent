@@ -50,17 +50,14 @@ def _assert_closed_profile_schema_allowed(
         return True
 
     if isinstance(value, dict):
-        properties = schema.get("properties")
         additional_properties = schema.get("additionalProperties")
-        if properties is None:
-            return True
-
         if additional_properties is not False:
             location = "root" if not path else ".".join(path)
             raise ValueError(
                 f"aggregate profile schema at {location} requires additionalProperties=False"
             )
 
+        properties = schema.get("properties") or {}
         for key, nested in value.items():
             if key not in properties:
                 raise ValueError(f"aggregate result contains unexpected key: {key}")

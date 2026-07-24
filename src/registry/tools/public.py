@@ -149,7 +149,24 @@ PUBLIC_TOOLS = [
         ),
         object_schema(
             {
-                "rates": {"type": "array", "items": {"type": "object"}},
+                "rates": {
+                    "type": "array",
+                    "items": object_schema(
+                        {
+                            "service_code": {"type": "string"},
+                            "service_name": {"type": "string"},
+                            "total_charge": {"type": "string"},
+                            "currency_code": {"type": "string"},
+                            "estimated_delivery_date": {"type": "string"},
+                        },
+                        [
+                            "service_code",
+                            "service_name",
+                            "total_charge",
+                            "currency_code",
+                        ],
+                    ),
+                },
                 "selected": {"type": "string"},
             },
             ["rates", "selected"],

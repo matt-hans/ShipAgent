@@ -143,6 +143,30 @@
       "properties": {
         "rates": {
           "items": {
+            "additionalProperties": false,
+            "properties": {
+              "currency_code": {
+                "type": "string"
+              },
+              "estimated_delivery_date": {
+                "type": "string"
+              },
+              "service_code": {
+                "type": "string"
+              },
+              "service_name": {
+                "type": "string"
+              },
+              "total_charge": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "service_code",
+              "service_name",
+              "total_charge",
+              "currency_code"
+            ],
             "type": "object"
           },
           "type": "array"
