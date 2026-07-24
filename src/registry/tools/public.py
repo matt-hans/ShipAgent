@@ -28,6 +28,27 @@ PUBLIC_RELAY_PROVIDERS = [
     ProviderExport.generic_mcp,
 ]
 
+ADDRESS_VALIDATION_GUIDANCE_CODES = [
+    "no_action_required",
+    "postal_code_review_required",
+    "locality_review_required",
+    "region_review_required",
+    "recipient_review_required",
+    "destination_not_recognized",
+    "multiple_candidates",
+    "carrier_validation_unavailable",
+]
+
+
+def shipagent_reference_schema(description: str) -> dict[str, object]:
+    return {
+        "type": "string",
+        "description": description,
+        "pattern": r"^sa_[A-Za-z0-9_-]{20,124}$",
+        "minLength": 23,
+        "maxLength": 127,
+    }
+
 
 def public_tool(
     name: str,
@@ -104,17 +125,23 @@ PUBLIC_TOOLS = [
     public_tool(
         "submit_one_off_shipment",
         "Submit one off shipment",
-        "Create a single shipment ingress reference from caller-provided shipment content.",
+        "Register a ShipAgent-owned ingress artifact for one-off shipment workflows.",
         SideEffectClass.estimate,
         ["shipments:create"],
         object_schema(
             {
-                "shipment_payload": {"type": "string"},
+                "ingress_reference": shipagent_reference_schema(
+                    "Opaque reference minted by the authenticated ShipAgent ingress channel."
+                ),
             },
-            ["shipment_payload"],
+            ["ingress_reference"],
         ),
         object_schema(
-            {"input_reference": {"type": "string"}},
+            {
+                "input_reference": shipagent_reference_schema(
+                    "Opaque ShipAgent shipment input reference."
+                )
+            },
             ["input_reference"],
         ),
         provider_export_enabled=True,
@@ -127,16 +154,30 @@ PUBLIC_TOOLS = [
         ["address:validate"],
         object_schema(
             {
-                "input_reference": {
-                    "type": "string",
-                    "description": "Reference to a submitted ingress payload.",
-                },
+                "input_reference": shipagent_reference_schema(
+                    "Opaque ShipAgent shipment input reference."
+                ),
             },
             ["input_reference"],
         ),
         object_schema(
-            {"normalized_address": {"type": "string"}, "valid": {"type": "boolean"}},
-            ["normalized_address", "valid"],
+            {
+                "validation_artifact_id": shipagent_reference_schema(
+                    "Opaque ShipAgent validation artifact reference."
+                ),
+                "valid": {"type": "boolean"},
+                "guidance_codes": {
+                    "type": "array",
+                    "description": "Bounded redacted remediation categories.",
+                    "items": {
+                        "type": "string",
+                        "enum": ADDRESS_VALIDATION_GUIDANCE_CODES,
+                    },
+                    "maxItems": len(ADDRESS_VALIDATION_GUIDANCE_CODES),
+                    "uniqueItems": True,
+                },
+            },
+            ["validation_artifact_id", "valid", "guidance_codes"],
         ),
         provider_export_enabled=True,
     ),
@@ -147,7 +188,11 @@ PUBLIC_TOOLS = [
         SideEffectClass.estimate,
         ["shipments:rate"],
         object_schema(
-            {"input_reference": {"type": "string"}},
+            {
+                "input_reference": shipagent_reference_schema(
+                    "Opaque ShipAgent shipment input reference."
+                )
+            },
             ["input_reference"],
         ),
         object_schema(
@@ -185,7 +230,11 @@ PUBLIC_TOOLS = [
         SideEffectClass.estimate,
         ["shipments:preview"],
         object_schema(
-            {"input_reference": {"type": "string"}},
+            {
+                "input_reference": shipagent_reference_schema(
+                    "Opaque ShipAgent shipment input reference."
+                )
+            },
             ["input_reference"],
         ),
         object_schema(

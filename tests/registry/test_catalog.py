@@ -15,6 +15,15 @@ EXPECTED_PUBLIC = {
 }
 
 
+def iter_property_names(schema):
+    if not isinstance(schema, dict):
+        return
+    for name, child in schema.get("properties", {}).items():
+        yield name
+        yield from iter_property_names(child)
+    yield from iter_property_names(schema.get("items"))
+
+
 def test_public_catalog_has_expected_tools():
     assert {tool.name for tool in public_tools()} == EXPECTED_PUBLIC
 
@@ -73,6 +82,52 @@ def test_public_input_schemas_are_closed():
         assert tool.input_schema["additionalProperties"] is False
 
 
+def test_public_provider_schemas_never_expose_raw_customer_content_fields():
+    violations = []
+    for tool in public_tools():
+        for direction, schema in (
+            ("input", tool.input_schema),
+            ("output", tool.output_schema),
+        ):
+            for field_name in iter_property_names(schema):
+                tokens = set(field_name.lower().split("_"))
+                carries_raw_content = bool(tokens & {"payload", "address"}) or (
+                    "row" in tokens and not field_name.endswith("_count")
+                )
+                if carries_raw_content:
+                    violations.append(f"{tool.name}.{direction}.{field_name}")
+
+    assert violations == []
+
+
+def test_shipment_content_tools_accept_only_bounded_shipagent_references():
+    reference_fields = {
+        "submit_one_off_shipment": "ingress_reference",
+        "validate_shipment_address": "input_reference",
+        "get_shipment_rates": "input_reference",
+        "prepare_shipments": "input_reference",
+    }
+
+    for tool_name, field_name in reference_fields.items():
+        tool = next(tool for tool in public_tools() if tool.name == tool_name)
+        field_schema = tool.input_schema["properties"][field_name]
+        assert field_schema["pattern"].startswith("^sa_")
+        assert field_schema["maxLength"] <= 128
+
+
+def test_address_validation_returns_only_an_opaque_artifact_and_guidance_codes():
+    tool = next(
+        tool for tool in public_tools() if tool.name == "validate_shipment_address"
+    )
+    properties = tool.output_schema["properties"]
+
+    assert set(properties) == {"validation_artifact_id", "valid", "guidance_codes"}
+    assert properties["validation_artifact_id"]["pattern"].startswith("^sa_")
+    assert properties["guidance_codes"]["maxItems"] <= 8
+    assert properties["guidance_codes"]["uniqueItems"] is True
+    assert properties["guidance_codes"]["items"]["enum"]
+
+
 def test_prepare_tool_schema_is_strict():
     tool = next(tool for tool in public_tools() if tool.name == "prepare_shipments")
 
@@ -102,6 +157,8 @@ def test_submit_one_off_shipment_is_non_confirming_input_reference_entrypoint():
     assert tool.requires_confirmation is False
     assert tool.side_effect == "estimate"
     assert tool.prepare_tool is None
+    assert set(tool.input_schema["properties"]) == {"ingress_reference"}
+    assert set(tool.output_schema["properties"]) == {"input_reference"}
 
 
 def test_registry_loads_all_tools():
