@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
+_ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _NON_ALPHANUMERIC = re.compile(r"[^a-z0-9]+")
 
@@ -21,7 +22,8 @@ _SCHEMA_KEYWORDS_BY_TYPE = {
 
 
 def _field_tokens(value: str) -> set[str]:
-    snake_case = _CAMEL_CASE_BOUNDARY.sub("_", value).lower()
+    acronym_split = _ACRONYM_BOUNDARY.sub("_", value)
+    snake_case = _CAMEL_CASE_BOUNDARY.sub("_", acronym_split).lower()
     return {token for token in _NON_ALPHANUMERIC.split(snake_case) if token}
 
 
