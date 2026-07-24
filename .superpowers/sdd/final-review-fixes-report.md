@@ -762,3 +762,267 @@ run from the exact final formatted source.
 - Generated provider artifacts are unchanged.
 - No raw credential, canary, customer, or label fixture value is included in
   this report.
+
+# Round 5
+
+## Status and commits
+
+All six Round 5 blockers are implemented:
+
+- every exported provider scalar family is structurally bounded and covered at
+  the canonical projection and real MCP boundaries;
+- input, handler, and projection failures share one context-free,
+  provider-safe hosted MCP error path;
+- compact privacy names are derived from the same families as tokenized names;
+- HttpClient, native fetch, and EventSource transports share browser-session
+  state, expiry, and recovery;
+- browser CSRF tokens are cryptographically bound to one exact signed session
+  and retained only in frontend memory; and
+- hostile browser origins are rejected before authentication rate-limit
+  accounting.
+
+Round 5 commits:
+
+- `77d6e9b` — `docs: design round 5 security hardening`
+- `ed82903` — `fix(registry): bound provider-visible scalar families`
+- `4bf61ee` — `fix(hosted): sanitize all provider tool failures`
+- `3c74604` — `fix(registry): derive compact privacy compounds`
+- `fdf94de` — `fix(auth): bind csrf to browser sessions`
+- `1ec65cb` — `fix(frontend): share browser session transport expiry`
+- `94569fc` — `test(frontend): smoke session-aware native transport`
+
+The approved Round 3 browser-session design now records the Round 5
+session-bound CSRF, trusted-origin, provider-scalar, hosted-error, native-fetch,
+and EventSource extensions. The implementation plan records the vertical
+RED/GREEN order used for this round.
+
+## Finding 1 — Remaining provider scalars could smuggle sensitive text
+
+### RED
+
+The recursive exported-schema audit found unbounded identifiers, references,
+capability collections, service/rate fields, monetary values, delivery dates,
+counts, and arrays. Canonical `project_result()` calls and real
+`FastMCP Client(server)` calls could keep a valid status while substituting
+credential-, customer-, address-, or URL-shaped content into those other
+scalar families. Numeric over-range cases were also accepted.
+
+### GREEN
+
+- All ShipAgent-owned IDs use a family-specific prefix and a bounded opaque
+  body. Correlation, device, ingress, input, validation, preview, confirmation,
+  job, and label families are distinct.
+- Capabilities and address-guidance values are finite canonical enums.
+- UPS service codes and names are sourced from the existing centralized
+  carrier constants; the currency enum is sourced from the existing default
+  currency constant.
+- Money uses a bounded decimal grammar, delivery dates use a fixed ISO-date
+  grammar, numeric values have explicit minima/maxima, and every exported array
+  has an explicit maximum size.
+- The privacy/schema walker now enforces the scalar-bound proof recursively for
+  every exported input and output schema.
+- Projection and real MCP tests preserve valid surrounding values while
+  rejecting one adversarial scalar or out-of-range number at a time. The real
+  MCP boundary returns only the generic provider error.
+- OpenAI Apps, Claude public MCP, generic MCP, and canonical registry artifacts
+  were regenerated from the canonical registry source.
+
+## Finding 2 — Handler failures and exception context crossed the MCP boundary
+
+### RED
+
+Direct synchronous handler invocation and asynchronous handler awaiting could
+raise their original exceptions. Projection failures raised the generic error
+inside an `except` scope, retaining the rejected failure through
+`__context__`. Real MCP responses and captured logs therefore had paths to
+handler or rejected-result detail.
+
+### GREEN
+
+- Input validation, handler invocation/await, and result projection set only a
+  bounded failure category.
+- Logging and the generic `ToolError` occur after all `except` scopes. Both
+  `__cause__` and `__context__` are absent.
+- The warning contains only the canonical tool name and one of the bounded
+  input/handler/projection categories. It never interpolates arguments,
+  results, validator output, exception messages, or tracebacks.
+- Direct sync/async tests and real FastMCP calls scan provider responses,
+  exception links, and captured logs for every sensitive fixture category.
+
+## Finding 3 — Compact privacy aliases were incomplete
+
+### RED
+
+Lowercase, camel/acronym, and uppercase adjacent spellings for API-key and
+bearer material, customer content/rows, confirmation material, carrier
+exchange bodies, and label/document transfer content passed the public-schema
+privacy check. Token splitting alone could not establish their meaning.
+
+### GREEN
+
+- Credential, authorization-header, customer-content, customer-row,
+  confirmation, carrier-direction/content, and label/document-transfer
+  families are declared once.
+- Compact fragments and ordering variants are deterministically derived from
+  those same families, avoiding a second drifting alias list.
+- Lowercase, camel/acronym, and uppercase fixtures are rejected.
+- Legitimate bounded operational fields and opaque artifact identifiers remain
+  accepted, and privacy-only changes do not create artifact drift.
+
+## Finding 4 — Raw fetch and EventSource clients missed session expiry
+
+### RED
+
+A label PDF request returning 401 remained a local preview error, and
+EventSource failures could enter consumer reconnect behavior without restoring
+the shell gate. The common expiration signal was previously limited to Angular
+HttpClient responses.
+
+### GREEN
+
+- A shared browser transport owns credentialed native fetch, adds the current
+  CSRF token only to unsafe ShipAgent API requests, and expires the common
+  browser session on 401. Origin and API-base matching prevent token forwarding
+  to a different host with a similar path.
+- Label PDF loading uses that transport.
+- Shared conversation SSE and the dedicated job-progress EventSource use
+  credentialed connections. An error closes the source before one session
+  status check.
+- Confirmed unauthenticated status completes the observable and emits the
+  common expiry signal; it does not surface an ordinary consumer error or
+  schedule a reconnect. Authenticated status produces one ordinary stream
+  error.
+- Label-401, shared SSE, job-progress SSE, and shell lifecycle tests cover
+  blank-gate teardown and successful reauthentication across Native Federation
+  boundaries.
+
+## Finding 5 — Portable browser CSRF for Docker, Angular development, and Tauri
+
+### RED
+
+Origin-only cookie mutation checks could not support configured cross-origin
+Angular development and Tauri sidecar clients. The mutation matrix lacked a
+session-bound proof, and missing or invalid proof values did not provide the
+approved portable boundary.
+
+### GREEN
+
+- Successful session exchange creates an HMAC-SHA256 CSRF value over a
+  domain-separated message containing the complete signed browser session.
+  Authenticated status deterministically recovers the same bounded token.
+- Verification is length-bounded and uses constant-time comparison against the
+  exact current session and configured API key. A token from another session or
+  key fails.
+- Disabled/unauthenticated status and session clear return `csrf_token: null`.
+  The frontend stores authenticated tokens only in an injectable in-memory
+  signal, clears them on expiry/clear, and never writes them to persistent
+  storage.
+- Protected unsafe cookie-authenticated requests require a trusted exact
+  Origin and `X-CSRF-Token`. Valid API-key header callers remain exempt.
+- The shared origin policy accepts normalized same-origin Docker requests and
+  only explicitly configured Angular-development or Tauri origins. CORS exposes
+  the dedicated CSRF request header only to that allowlist.
+- Real onboarding mutations cover same-origin, configured development, Tauri,
+  hostile, missing-token, invalid-token, and API-key-exempt cases. Rejections
+  occur before route execution and leave persisted settings unchanged.
+
+## Finding 6 — Hostile origins poisoned authentication rate limiting
+
+### RED
+
+More than the authentication-failure limit of hostile-origin/bad-key requests
+could fill the shared loopback bucket. A following correct API-key request from
+the same client then received 429.
+
+### GREEN
+
+- Any present, untrusted browser Origin is rejected before client-IP lookup,
+  rate-limit lookup, or bad-key failure recording.
+- Trusted-origin and non-browser bad-key requests retain normal authentication
+  failure accounting.
+- The regression floods the middleware with hostile-origin failures, observes
+  403 for them, and then proves a correct API-key request from the same client
+  succeeds.
+
+## Real production non-HttpClient expiry smoke
+
+The final default Playwright smoke:
+
+1. Builds all seven frontend projects in production configuration and links all
+   four Native Federation remotes.
+2. Starts the real bundled FastAPI/static boundary with random runtime
+   credentials and a deterministic fake conversation provider.
+3. Authenticates, checks the HttpOnly/SameSite cookie, obtains the session-bound
+   CSRF token, and proves a direct page `fetch()` mutation succeeds only with
+   the dedicated header.
+4. Clears the session, restores the blank gate, and authenticates a second
+   distinct session.
+5. Loads real federated chat content, creates a real conversation and
+   EventSource, invalidates the exact browser cookie, and ends the controlled
+   stream.
+6. Observes an unauthenticated browser-session status check, gate restoration,
+   remote teardown, a blank transient input, no page reload, and no EventSource
+   reconnect.
+7. Authenticates a third session and observes a protected settings response
+   return 200.
+8. Proves the three CSRF tokens are distinct, then scans local/session storage
+   keys and values, request URLs, console output, rendered DOM, all observed
+   cookie values, and every emitted asset for both the random API key and every
+   CSRF token.
+
+The pre-fix smoke RED was the direct onboarding request returning 403 without
+CSRF. The final default build-and-smoke run passes with no browser console/page
+error allowance and no runtime credential found on any inspected surface.
+
+## Round 5 verification evidence
+
+- Fresh affected backend slice:
+  `../../.venv/bin/python -m pytest tests/api/test_browser_session.py tests/api/test_auth_middleware.py tests/api/test_main_config.py tests/hosted/test_hosted_mcp_registry.py tests/control_plane/test_result_projection.py tests/registry -q`
+  — **283 passed, 1 warning in 1.04s**.
+- Fresh broad backend suite:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not progress"`
+  — **3,483 passed, 21 skipped, 103 deselected, 4 warnings in 48.98s**.
+- Canonical provider regeneration produced no uncommitted change; artifact
+  drift — **1 passed**.
+- Frontend typecheck: all **6** configured project targets and the required
+  shared-state declaration build passed.
+- Frontend lint: all **6** configured targets passed with **0 errors** and the
+  existing **43 warnings**.
+- Frontend tests: all **6** configured targets passed, **132 tests** total:
+  shared state **41**, chat **58**, shell **30**, and one each for domain,
+  sidebar, and settings.
+- Final default production smoke: all **7** production builds passed, all
+  **4** remotes linked, and the real EventSource expiry/recovery/leak path
+  passed. Two hash-matched build tasks used valid Nx cache output.
+- `../../.venv/bin/python -m ruff check src/ tests/` — **All checks passed**.
+- Ruff format check over all **15** Python files changed in Round 5 — all
+  already formatted.
+- Prettier check over every changed frontend TypeScript/MJS file and
+  `node --check` over the smoke script passed.
+- `git diff --check 3fd6290..HEAD` reports no whitespace errors.
+
+## Round 5 self-review and remaining concerns
+
+- Requirement-by-requirement review and aggregate-diff review found no
+  remaining Round 5 blocker or regression to prior startup, migration,
+  confirmation, audit, privacy, browser-session, or artifact fixes.
+- Repository-wide Ruff format check still reports **251 pre-existing files**
+  outside the Round 5 change set. All 15 changed Python files are format-clean;
+  no unrelated repository-wide rewrite was performed.
+- The broad backend warnings remain the existing defusedxml deprecation,
+  unregistered extended pytest mark, and Alembic path-separator warnings.
+- Frontend lint retains the 43 existing template/native-output warnings.
+  Test/build output also retains existing Native Federation test-builder,
+  Angular extended-diagnostic/component-budget, unconnected Nx Cloud, and
+  outdated Nx agent-configuration notices; all required Nx commands exit zero.
+  Nx task history labels `shell:test` as flaky, while the current run passed all
+  **30** shell tests.
+- The host production smoke exercises emitted assets, real federation,
+  FastAPI, middleware, cookies, native EventSource behavior, and
+  reauthentication. It does not build a Docker image or launch a Tauri binary;
+  backend mutation tests cover configured Docker/dev/Tauri origins and frontend
+  unit tests cover Tauri-safe API scoping.
+- No dependency manifest changed, and no dependency installation or upgrade was
+  required.
+- No raw credential, CSRF, canary, customer, handler, carrier, or label fixture
+  value is reproduced in this report.
