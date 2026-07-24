@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -22,7 +22,10 @@ class CloudAccount(ControlPlaneBase):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     auth0_subject: Mapped[str] = mapped_column(String(255), unique=True)
     suspended: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
 
 
 class ProviderConnection(ControlPlaneBase):
@@ -36,6 +39,4 @@ class ProviderConnection(ControlPlaneBase):
     surface: Mapped[str] = mapped_column(String(64))
     scopes_text: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="active")
-    __table_args__ = (
-        UniqueConstraint("account_id", "client_id", "surface"),
-    )
+    __table_args__ = (UniqueConstraint("account_id", "client_id", "surface"),)

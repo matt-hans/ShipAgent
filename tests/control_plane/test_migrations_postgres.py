@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from src.control_plane.database_url import normalize_control_plane_database_url
 from src.control_plane.db import build_session_factory
 from src.control_plane.models import CloudAccount
 
@@ -35,15 +37,14 @@ def test_postgres_migration_uses_boolean_false_default(monkeypatch, capsys) -> N
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_alembic_runs_against_postgres_schema_control_plane() -> None:
-    database_url = os.environ.get("SHIPAGENT_TEST_DATABASE_URL")
-    if not database_url:
-        database_url = os.environ.get("SHIPAGENT_DATABASE_URL")
-    if not database_url:
+    configured_database_url = os.environ.get("SHIPAGENT_TEST_DATABASE_URL")
+    if not configured_database_url:
+        configured_database_url = os.environ.get("SHIPAGENT_DATABASE_URL")
+    if not configured_database_url:
         pytest.skip("No control-plane database URL configured")
-    if "postgresql+asyncpg://" not in database_url:
-        pytest.skip(
-            "Control-plane migration integration test requires asyncpg PostgreSQL URL"
-        )
+    database_url = normalize_control_plane_database_url(configured_database_url)
+    if not database_url.startswith("postgresql+asyncpg://"):
+        pytest.skip("Configured control-plane database is not PostgreSQL")
 
     try:
         from alembic.config import Config
@@ -62,7 +63,7 @@ async def test_alembic_runs_against_postgres_schema_control_plane() -> None:
             "SHIPAGENT_CONTROL_PLANE_SCHEMA"
         ),
     }
-    os.environ["SHIPAGENT_DATABASE_URL"] = database_url
+    os.environ["SHIPAGENT_DATABASE_URL"] = configured_database_url
     os.environ["SHIPAGENT_CONTROL_PLANE_SCHEMA"] = schema
 
     engine = create_async_engine(
@@ -70,11 +71,11 @@ async def test_alembic_runs_against_postgres_schema_control_plane() -> None:
         connect_args={"server_settings": {"search_path": schema}},
     )
     session_factory = build_session_factory(
-        database_url=database_url,
+        database_url=configured_database_url,
         control_plane_schema=schema,
     )
     try:
-        command.upgrade(alembic_cfg, "head")
+        await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
 
         expected = {"cloud_accounts", "provider_connections", "audit_events"}
         async with engine.connect() as connection:
@@ -91,6 +92,10 @@ async def test_alembic_runs_against_postgres_schema_control_plane() -> None:
             )
             actual = {row[0] for row in table_result}
             assert expected.issubset(actual)
+            revision = await connection.scalar(
+                text(f'SELECT version_num FROM "{schema}".alembic_version')
+            )
+            assert revision == "20260609_0001"
 
         async with session_factory() as session:
             account = CloudAccount(id=str(uuid.uuid4()), auth0_subject="subject-1")
