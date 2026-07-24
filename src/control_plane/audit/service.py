@@ -10,6 +10,7 @@ from src.control_plane.audit.models import ControlPlaneAuditEvent
 class ControlPlaneAuditService:
     """Redacted audit recorder for relay-control operations."""
 
+    _VERSION_MAX_LENGTH = 64
     _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
     _EVENT_TYPE_PATTERN = re.compile(r"^[a-z][a-z0-9_]*(?:[.:][a-z][a-z0-9_]*)*$")
     _VERSION_PATTERN = re.compile(
@@ -228,6 +229,10 @@ class ControlPlaneAuditService:
         for key, value in values.items():
             if key not in cls._ALLOWED_VERSIONS:
                 raise ValueError(f"disallowed version key: {key}")
+            if isinstance(value, str) and len(value) > cls._VERSION_MAX_LENGTH:
+                raise ValueError(
+                    f"version values must be at most {cls._VERSION_MAX_LENGTH} characters"
+                )
             if not isinstance(value, str) or not cls._VERSION_PATTERN.fullmatch(value):
                 raise ValueError("version values must use a bounded version code")
         return dict(values)

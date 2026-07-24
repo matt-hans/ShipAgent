@@ -167,6 +167,29 @@ async def test_record_rejects_invalid_versions(control_db, versions):
 
 
 @pytest.mark.parametrize(
+    "oversized_version",
+    [
+        f"1.{'9' * 65}.0",
+        f"1.0.0-{'a' * 65}",
+        f"1.0.0+{'b' * 65}",
+        f"{'1' * 22}.{'2' * 22}.{'3' * 22}",
+    ],
+    ids=["numeric", "prerelease", "build", "total"],
+)
+async def test_record_rejects_oversized_version_codes(
+    control_db,
+    oversized_version,
+):
+    with pytest.raises(ValueError, match="at most 64 characters"):
+        await ControlPlaneAuditService.record(
+            session=control_db,
+            event_type="prepare_shipments",
+            actor_id_hash=digest("actor-1"),
+            versions={"schema_version": oversized_version},
+        )
+
+
+@pytest.mark.parametrize(
     "unsafe_event_type",
     [
         "alice@example.com shipped to 123 Main St",
