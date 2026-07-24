@@ -24,6 +24,26 @@ def test_serve_default_port_zero():
     assert args.port == 0
 
 
+def test_bundled_serve_rejects_actual_public_bind_for_fake_local(monkeypatch):
+    import src.bundle_entry as bundle_entry
+
+    monkeypatch.setenv("SHIPAGENT_AUTH_MODE", "fake_local")
+    monkeypatch.setenv("SHIPAGENT_ENVIRONMENT", "local")
+    monkeypatch.delenv("SHIPAGENT_DATABASE_URL", raising=False)
+    monkeypatch.delenv("SHIPAGENT_REDIS_URL", raising=False)
+    monkeypatch.setattr(
+        bundle_entry.sys,
+        "argv",
+        ["shipagent-core", "serve", "--host", "0.0.0.0", "--port", "8080"],
+    )
+
+    with patch("uvicorn.Server.run") as server_run:
+        with pytest.raises(RuntimeError, match="loopback"):
+            bundle_entry.main()
+
+    server_run.assert_not_called()
+
+
 def test_default_command_is_serve():
     """No subcommand defaults to 'serve'."""
     with patch("sys.argv", ["shipagent-core"]):
