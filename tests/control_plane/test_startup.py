@@ -22,6 +22,23 @@ def test_validate_startup_security_raises_for_public_bind_host():
         validate_startup_security(mk_settings(bind_host="0.0.0.0"))
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"bind_host": "0.0.0.0"},
+        {"public_base_url": "https://relay.example.com"},
+        {"environment": Environment.production},
+    ],
+)
+def test_validate_startup_security_rejects_insecure_fake_local_without_runtime_urls(
+    overrides,
+):
+    with pytest.raises(RuntimeError, match="loopback"):
+        validate_startup_security(
+            mk_settings(database_url=None, redis_url=None, **overrides)
+        )
+
+
 def test_validate_startup_security_skips_when_runtime_urls_missing():
     validate_startup_security(
         mk_settings(database_url=None, redis_url=None),
