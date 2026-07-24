@@ -1,5 +1,8 @@
+import pytest
+
 from src.registry.catalog import load_registry, public_tools
 from src.registry.models import ProviderExport, SideEffectClass, ToolVisibility
+from src.registry.privacy import provider_schema_privacy_violations
 from src.registry.tools.public import public_tool
 from src.registry.tools.schema import object_schema
 
@@ -13,15 +16,6 @@ EXPECTED_PUBLIC = {
     "get_job_status",
     "create_label_download",
 }
-
-
-def iter_property_names(schema):
-    if not isinstance(schema, dict):
-        return
-    for name, child in schema.get("properties", {}).items():
-        yield name
-        yield from iter_property_names(child)
-    yield from iter_property_names(schema.get("items"))
 
 
 def test_public_catalog_has_expected_tools():
@@ -75,6 +69,9 @@ def test_execute_shipments_declares_prepare_tool_and_execution_gate():
     assert tool.prepare_tool == "prepare_shipments"
     assert tool.execution_target_required is True
     assert tool.confirmation_policy == "provider_and_shipagent"
+    confirmation_schema = tool.input_schema["properties"]["confirmation_artifact_id"]
+    assert confirmation_schema["pattern"].startswith("^sa_")
+    assert confirmation_schema["maxLength"] <= 128
 
 
 def test_public_input_schemas_are_closed():
@@ -82,22 +79,48 @@ def test_public_input_schemas_are_closed():
         assert tool.input_schema["additionalProperties"] is False
 
 
-def test_public_provider_schemas_never_expose_raw_customer_content_fields():
+def test_public_provider_schemas_never_expose_sensitive_content_fields():
     violations = []
     for tool in public_tools():
         for direction, schema in (
             ("input", tool.input_schema),
             ("output", tool.output_schema),
         ):
-            for field_name in iter_property_names(schema):
-                tokens = set(field_name.lower().split("_"))
-                carries_raw_content = bool(tokens & {"payload", "address"}) or (
-                    "row" in tokens and not field_name.endswith("_count")
-                )
-                if carries_raw_content:
-                    violations.append(f"{tool.name}.{direction}.{field_name}")
+            violations.extend(
+                f"{tool.name}.{direction}.{path}"
+                for path in provider_schema_privacy_violations(tool.name, schema)
+            )
 
     assert violations == []
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "field_name"),
+    [
+        ("create_label_download", "label_url"),
+        ("create_label_download", "document_bytes"),
+        ("create_label_download", "label_data"),
+        ("execute_shipments", "provider_credentials"),
+        ("execute_shipments", "confirmation_token"),
+        ("get_shipment_rates", "raw_carrier_request"),
+        ("get_shipment_rates", "carrier_response_body"),
+    ],
+)
+def test_public_provider_contract_rejects_sensitive_transport_fields(
+    tool_name,
+    field_name,
+):
+    with pytest.raises(ValueError, match="provider privacy"):
+        public_tool(
+            tool_name,
+            "Unsafe provider tool",
+            "A deliberately unsafe provider-visible contract used for validation.",
+            SideEffectClass.read,
+            ["tools:read"],
+            object_schema({}, []),
+            object_schema({field_name: {"type": "string"}}, [field_name]),
+            provider_export_enabled=True,
+        )
 
 
 def test_shipment_content_tools_accept_only_bounded_shipagent_references():
@@ -126,6 +149,15 @@ def test_address_validation_returns_only_an_opaque_artifact_and_guidance_codes()
     assert properties["guidance_codes"]["maxItems"] <= 8
     assert properties["guidance_codes"]["uniqueItems"] is True
     assert properties["guidance_codes"]["items"]["enum"]
+
+
+def test_label_download_returns_only_an_opaque_handoff_artifact():
+    tool = next(tool for tool in public_tools() if tool.name == "create_label_download")
+    properties = tool.output_schema["properties"]
+
+    assert set(properties) == {"label_artifact_id", "status"}
+    assert properties["label_artifact_id"]["pattern"].startswith("^sa_")
+    assert properties["label_artifact_id"]["maxLength"] <= 128
 
 
 def test_prepare_tool_schema_is_strict():

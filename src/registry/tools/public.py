@@ -264,9 +264,11 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "preview_id": {"type": "string"},
-                "confirmation_token": {"type": "string"},
+                "confirmation_artifact_id": shipagent_reference_schema(
+                    "Opaque confirmation artifact minted by an authenticated ShipAgent channel."
+                ),
             },
-            ["preview_id", "confirmation_token"],
+            ["preview_id", "confirmation_artifact_id"],
         ),
         object_schema(
             {"job_id": {"type": "string"}, "status": {"type": "string"}},
@@ -298,7 +300,7 @@ PUBLIC_TOOLS = [
     public_tool(
         "create_label_download",
         "Create label download",
-        "Create downloadable label artifacts for a completed shipment job.",
+        "Create an opaque label handoff for an authenticated ShipAgent-owned UI.",
         SideEffectClass.read,
         ["labels:read"],
         object_schema(
@@ -306,8 +308,13 @@ PUBLIC_TOOLS = [
             ["job_id"],
         ),
         object_schema(
-            {"download_url": {"type": "string"}, "status": {"type": "string"}},
-            ["download_url", "status"],
+            {
+                "label_artifact_id": shipagent_reference_schema(
+                    "Opaque label artifact resolved only by an authenticated ShipAgent channel."
+                ),
+                "status": {"type": "string"},
+            },
+            ["label_artifact_id", "status"],
         ),
         provider_export_enabled=True,
     ),

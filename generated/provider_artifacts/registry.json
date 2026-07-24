@@ -429,7 +429,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "confirmation_token": {
+          "confirmation_artifact_id": {
+            "description": "Opaque confirmation artifact minted by an authenticated ShipAgent channel.",
+            "maxLength": 127,
+            "minLength": 23,
+            "pattern": "^sa_[A-Za-z0-9_-]{20,124}$",
             "type": "string"
           },
           "preview_id": {
@@ -438,7 +442,7 @@
         },
         "required": [
           "preview_id",
-          "confirmation_token"
+          "confirmation_artifact_id"
         ],
         "type": "object"
       },
@@ -557,7 +561,7 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Create downloadable label artifacts for a completed shipment job.",
+      "description": "Create an opaque label handoff for an authenticated ShipAgent-owned UI.",
       "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
@@ -581,7 +585,11 @@
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "download_url": {
+          "label_artifact_id": {
+            "description": "Opaque label artifact resolved only by an authenticated ShipAgent channel.",
+            "maxLength": 127,
+            "minLength": 23,
+            "pattern": "^sa_[A-Za-z0-9_-]{20,124}$",
             "type": "string"
           },
           "status": {
@@ -589,7 +597,7 @@
           }
         },
         "required": [
-          "download_url",
+          "label_artifact_id",
           "status"
         ],
         "type": "object"

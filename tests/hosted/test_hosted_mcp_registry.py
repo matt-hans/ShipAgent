@@ -92,10 +92,14 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
     tools = await server.get_tools()
 
     result = await tools["execute_shipments"].run(
-        {"preview_id": "preview-1", "confirmation_token": "token-1"}
+        {
+            "preview_id": "preview-1",
+            "confirmation_artifact_id": "sa_confirmation_artifact_1234",
+        }
     )
 
     assert result.structured_content == {"job_id": "job-1", "status": "running"}
     validate(
-        instance=result.structured_content, schema=tools["execute_shipments"].output_schema
+        instance=result.structured_content,
+        schema=tools["execute_shipments"].output_schema,
     )
