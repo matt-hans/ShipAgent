@@ -8,9 +8,18 @@ import {
   HttpHandlerFn,
   HttpErrorResponse,
 } from '@angular/common/http';
+import { inject } from '@angular/core';
 import { throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { ApiError, ApiErrorBody } from './api.models';
+import { BrowserSessionState } from './browser-session.state';
+
+const BROWSER_SESSION_PATH = '/api/v1/auth/session';
+
+function isBrowserSessionFlow(url: string): boolean {
+  const path = url.split(/[?#]/, 1)[0].replace(/\/+$/, '');
+  return path.endsWith(BROWSER_SESSION_PATH);
+}
 
 /**
  * apiErrorInterceptor
@@ -22,9 +31,14 @@ export const apiErrorInterceptor: HttpInterceptorFn = (
   req: HttpRequest<unknown>,
   next: HttpHandlerFn,
 ) => {
+  const browserSession = inject(BrowserSessionState);
+
   return next(req).pipe(
     catchError((err: unknown) => {
       if (err instanceof HttpErrorResponse) {
+        if (err.status === 401 && !isBrowserSessionFlow(req.url)) {
+          browserSession.markExpired();
+        }
         const body = err.error as ApiErrorBody | null;
         // Support both standard shape { message: "..." } and
         // nested connection shape { error: { message: "..." } }

@@ -15,13 +15,18 @@ import {
   NgZone,
   OnInit,
   Type,
+  effect,
   inject,
   signal,
 } from '@angular/core';
 import { NgComponentOutlet } from '@angular/common';
 import { finalize } from 'rxjs';
 import { AppStore, SettingsStore } from '@shipagent/shared-state';
-import { ApiError, ApiService } from '@shipagent/shared-api';
+import {
+  ApiError,
+  ApiService,
+  BrowserSessionState,
+} from '@shipagent/shared-api';
 import type { BrowserSessionStatus } from '@shipagent/shared-types';
 import { RemoteLoaderService } from './remote-loader.service';
 import { ApiKeyGateComponent } from './api-key-gate/api-key-gate.component';
@@ -140,6 +145,7 @@ export class AppComponent implements OnInit {
   private readonly remoteLoader = inject(RemoteLoaderService);
   private readonly injector = inject(Injector);
   private readonly ngZone = inject(NgZone);
+  private readonly browserSession = inject(BrowserSessionState);
 
   protected readonly authState = signal<AuthState>('checking');
   protected readonly sessionRequired = signal(false);
@@ -158,6 +164,18 @@ export class AppComponent implements OnInit {
 
   private applicationInitialized = false;
   private settingsWatcherStarted = false;
+  private handledExpirationVersion = 0;
+
+  constructor() {
+    effect(() => {
+      const expirationVersion = this.browserSession.expirationVersion();
+      if (expirationVersion <= this.handledExpirationVersion) return;
+
+      this.handledExpirationVersion = expirationVersion;
+      this.sessionRequired.set(true);
+      this.requireAuthentication();
+    });
+  }
 
   ngOnInit(): void {
     this.checkBrowserSession();
@@ -197,9 +215,7 @@ export class AppComponent implements OnInit {
     this.sessionRequired.set(status.required);
     this.clearSessionFailed.set(false);
     if (status.required && !status.authenticated) {
-      this.applicationInitialized = false;
-      this.settingsStore.setAppSettings(null);
-      this.authState.set('required');
+      this.requireAuthentication();
       return;
     }
 
@@ -224,12 +240,20 @@ export class AppComponent implements OnInit {
       error: (error: unknown) => {
         this.applicationInitialized = false;
         if (error instanceof ApiError && error.statusCode === 401) {
-          this.authState.set('required');
+          this.requireAuthentication();
           return;
         }
         this.authState.set('error');
       },
     });
+  }
+
+  private requireAuthentication(): void {
+    this.applicationInitialized = false;
+    this.settingsStore.setAppSettings(null);
+    this.appStore.closeSettings();
+    this.clearSessionFailed.set(false);
+    this.authState.set('required');
   }
 
   private async loadChatRemote(): Promise<void> {

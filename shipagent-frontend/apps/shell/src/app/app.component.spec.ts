@@ -27,7 +27,11 @@ import { of, throwError } from 'rxjs';
 import { AppComponent } from './app.component';
 import { RemoteLoaderService } from './remote-loader.service';
 import { AppStore, SettingsStore, ConversationStore } from '@shipagent/shared-state';
-import { API_BASE_URL, ApiService } from '@shipagent/shared-api';
+import {
+  API_BASE_URL,
+  ApiService,
+  BrowserSessionState,
+} from '@shipagent/shared-api';
 import type {
   AppSettings,
   BrowserSessionStatus,
@@ -289,6 +293,58 @@ describe('AppComponent — shell integration', () => {
 
       expect(mockApi.createBrowserSession).toHaveBeenCalledWith('entered-again');
       expect(mockApi.getSettings).toHaveBeenCalledTimes(2);
+    });
+
+    it('restores a blank gate after protected 401 and supports re-authentication', async () => {
+      vi.mocked(mockApi.getBrowserSessionStatus).mockReturnValue(
+        of({ required: true, authenticated: true }),
+      );
+      const fixture = TestBed.createComponent(AppComponent);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const readyElement = fixture.nativeElement as HTMLElement;
+      expect(readyElement.querySelector('app-header')).toBeTruthy();
+      expect(readyElement.textContent).toContain('Chat');
+      expect(readyElement.textContent).toContain('Sidebar');
+
+      TestBed.inject(BrowserSessionState).markExpired();
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const expiredElement = fixture.nativeElement as HTMLElement;
+      const blankInput = expiredElement.querySelector(
+        'input[type="password"]',
+      ) as HTMLInputElement;
+      expect(blankInput).toBeTruthy();
+      expect(blankInput.value).toBe('');
+      expect(expiredElement.querySelector('app-header')).toBeNull();
+      expect(expiredElement.textContent).not.toContain('Chat');
+      expect(expiredElement.textContent).not.toContain('Sidebar');
+      expect(TestBed.inject(SettingsStore).appSettings()).toBeNull();
+
+      blankInput.value = 'replacement-key';
+      blankInput.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const unlock = expiredElement.querySelector(
+        'button[type="submit"]',
+      ) as HTMLButtonElement;
+      unlock.click();
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+
+      const reauthenticatedElement = fixture.nativeElement as HTMLElement;
+      expect(mockApi.createBrowserSession).toHaveBeenCalledWith('replacement-key');
+      expect(mockApi.getBrowserSessionStatus).toHaveBeenCalledTimes(2);
+      expect(mockApi.getSettings).toHaveBeenCalledTimes(2);
+      expect(reauthenticatedElement.querySelector('app-header')).toBeTruthy();
+      expect(reauthenticatedElement.querySelector('input[type="password"]')).toBeNull();
+      expect(reauthenticatedElement.textContent).toContain('Chat');
+      expect(reauthenticatedElement.textContent).toContain('Sidebar');
     });
   });
 
