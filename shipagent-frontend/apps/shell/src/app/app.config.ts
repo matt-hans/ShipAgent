@@ -11,12 +11,11 @@
  * sidecar port has been resolved, so it is NOT provided here.
  */
 import { ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
-import { provideHttpClient, withInterceptors } from '@angular/common/http';
-import { apiErrorInterceptor } from '@shipagent/shared-api';
+import { provideShipAgentHttpClient } from '@shipagent/shared-api';
 
 export const appConfig: ApplicationConfig = {
   providers: [
     provideZoneChangeDetection({ eventCoalescing: true }),
-    provideHttpClient(withInterceptors([apiErrorInterceptor])),
+    provideShipAgentHttpClient(),
   ],
 };

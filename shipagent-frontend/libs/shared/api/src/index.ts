@@ -8,5 +8,6 @@
 
 export { ApiService } from './api.service';
 export { API_BASE_URL } from './api-url.token';
-export { apiErrorInterceptor, apiAuthInterceptor, API_AUTH_KEY } from './api.interceptors';
+export { apiErrorInterceptor, apiAuthInterceptor } from './api.interceptors';
+export { provideShipAgentHttpClient } from './api.providers';
 export { ApiError, type ApiErrorBody, type PlatformActivationResponse } from './api.models';

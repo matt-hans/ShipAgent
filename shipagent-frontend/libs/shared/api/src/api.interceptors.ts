@@ -8,7 +8,6 @@ import {
   HttpHandlerFn,
   HttpErrorResponse,
 } from '@angular/common/http';
-import { inject } from '@angular/core';
 import { throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { ApiError, ApiErrorBody } from './api.models';
@@ -47,39 +46,13 @@ export const apiErrorInterceptor: HttpInterceptorFn = (
 /**
  * apiAuthInterceptor
  *
- * Adds the X-API-Key header when a key is configured.
- * Reads from the global SHIPAGENT_API_KEY environment injected at build time,
- * or falls back to a session-level key if available.
- *
- * No-op when no key is configured — allows anonymous access in dev mode.
+ * Lets the browser attach same-origin HttpOnly session cookies, and enables
+ * credentials for the Tauri sidecar URL. API keys are never sourced from
+ * frontend configuration or persistent browser state.
  */
 export const apiAuthInterceptor: HttpInterceptorFn = (
   req: HttpRequest<unknown>,
   next: HttpHandlerFn,
 ) => {
-  // Read API key from injected environment or skip.
-  // The key is only needed when the backend is configured with SHIPAGENT_API_KEY.
-  // The actual value is provided by the shell app via environment injection.
-  try {
-    const { SHIPAGENT_API_KEY } = inject(API_AUTH_KEY, { optional: true }) ?? {};
-    if (SHIPAGENT_API_KEY) {
-      const authReq = req.clone({
-        setHeaders: { 'X-API-Key': SHIPAGENT_API_KEY },
-      });
-      return next(authReq);
-    }
-  } catch {
-    // inject() called outside injection context — safe to ignore
-  }
-  return next(req);
+  return next(req.clone({ withCredentials: true }));
 };
-
-import { InjectionToken } from '@angular/core';
-
-/**
- * Optional injection token for the API auth key.
- * Provide this in the shell app when SHIPAGENT_API_KEY is configured.
- */
-export const API_AUTH_KEY = new InjectionToken<{ SHIPAGENT_API_KEY?: string }>(
-  'API_AUTH_KEY',
-);

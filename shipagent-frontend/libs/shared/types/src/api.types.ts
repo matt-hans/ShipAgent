@@ -10,6 +10,12 @@ export interface ErrorResponse {
   details: Record<string, unknown> | null;
 }
 
+/** Browser authentication state for API-key protected deployments. */
+export interface BrowserSessionStatus {
+  required: boolean;
+  authenticated: boolean;
+}
+
 /** Generic paginated response wrapper. */
 export interface PaginatedResponse<T> {
   items: T[];
