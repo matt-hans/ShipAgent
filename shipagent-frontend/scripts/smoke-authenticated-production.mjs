@@ -128,19 +128,43 @@ async function emittedFiles(directory) {
   return files;
 }
 
-async function assertKeyAbsentFromBundles(runtimeKey) {
-  const needle = Buffer.from(runtimeKey);
+async function assertSecretsAbsentFromBundles(secrets) {
+  const needles = secrets.map((secret) => Buffer.from(secret));
   for (const file of await emittedFiles(distRoot)) {
     const content = await readFile(file);
-    assert.equal(
-      content.includes(needle),
-      false,
-      `Runtime API key was found in emitted asset ${path.relative(
-        frontendRoot,
-        file
-      )}`
-    );
+    for (const needle of needles) {
+      assert.equal(
+        content.includes(needle),
+        false,
+        `A runtime browser credential was found in emitted asset ${path.relative(
+          frontendRoot,
+          file
+        )}`
+      );
+    }
   }
+}
+
+async function readAuthenticatedSession(page) {
+  const result = await page.evaluate(async () => {
+    const response = await fetch('/api/v1/auth/session', {
+      credentials: 'same-origin',
+    });
+    return {
+      status: response.status,
+      body: await response.json(),
+    };
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.required, true);
+  assert.equal(result.body.authenticated, true);
+  assert.equal(
+    typeof result.body.csrf_token === 'string' &&
+      /^v1\.[A-Za-z0-9_-]{43}$/.test(result.body.csrf_token),
+    true,
+    'Authenticated browser status did not return a valid CSRF token'
+  );
+  return result.body.csrf_token;
 }
 
 function waitForSettings(page) {
@@ -154,13 +178,13 @@ function waitForSettings(page) {
   });
 }
 
-function waitForProtectedUnauthorized(page) {
+function waitForEventSourceSessionCheck(page) {
   return page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
-      url.pathname.startsWith('/api/v1/') &&
-      url.pathname !== '/api/v1/auth/session' &&
-      response.status() === 401
+      url.pathname === '/api/v1/auth/session' &&
+      response.request().method() === 'GET' &&
+      response.status() === 200
     );
   });
 }
@@ -207,6 +231,7 @@ try {
         AGENT_AUDIT_ENABLED: 'false',
         DATABASE_URL: `sqlite:///${databasePath}`,
         FILTER_TOKEN_SECRET: filterTokenSecret,
+        SHIPAGENT_AGENT_RUNTIME: 'fake',
         SHIPAGENT_API_KEY: runtimeKey,
         SHIPAGENT_CREDENTIAL_KEY: credentialEncryptionKey,
         SHIPAGENT_DISABLE_DOCS: 'true',
@@ -226,24 +251,30 @@ try {
   const browserErrors = [];
   const browserMessages = [];
   const requestUrls = [];
-  let acceptingExpectedUnauthorizedErrors = false;
-  let expectedUnauthorizedErrorCount = 0;
+  const observedCookieValues = [];
+  const csrfTokens = new Set();
+  let pageLoadCount = 0;
+  let eventSourceRequestCount = 0;
+  page.on('load', () => {
+    pageLoadCount += 1;
+  });
   page.on('console', (message) => {
     const text = message.text();
     browserMessages.push(text);
     if (message.type() !== 'error') return;
-    if (
-      acceptingExpectedUnauthorizedErrors &&
-      text ===
-        'Failed to load resource: the server responded with a status of 401 (Unauthorized)'
-    ) {
-      expectedUnauthorizedErrorCount += 1;
-      return;
-    }
     browserErrors.push(text);
   });
   page.on('pageerror', (error) => browserErrors.push(error.message));
-  page.on('request', (request) => requestUrls.push(request.url()));
+  page.on('request', (request) => {
+    requestUrls.push(request.url());
+    const url = new URL(request.url());
+    if (
+      /^\/api\/v1\/conversations\/[^/]+\/stream$/.test(url.pathname) &&
+      request.method() === 'GET'
+    ) {
+      eventSourceRequestCount += 1;
+    }
+  });
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByLabel('Docker API key').waitFor({ state: 'visible' });
@@ -269,14 +300,20 @@ try {
   assert.equal(firstCookie.httpOnly, true);
   assert.equal(firstCookie.sameSite, 'Strict');
   assert.equal(firstCookie.value.includes(runtimeKey), false);
+  observedCookieValues.push(firstCookie.value);
+  const firstCsrfToken = await readAuthenticatedSession(page);
+  csrfTokens.add(firstCsrfToken);
 
-  const onboardingStatus = await page.evaluate(async () => {
+  const onboardingStatus = await page.evaluate(async (csrfToken) => {
     const response = await fetch('/api/v1/settings/onboarding/complete', {
       method: 'POST',
       credentials: 'same-origin',
+      headers: {
+        'X-CSRF-Token': csrfToken,
+      },
     });
     return response.status;
-  });
+  }, firstCsrfToken);
   assert.equal(onboardingStatus, 200);
   const reloadSettings = waitForSettings(page);
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -298,11 +335,77 @@ try {
   console.log(
     `authenticated retry settings request: ${retrySettingsResponse.status()}`
   );
+  const retryCsrfToken = await readAuthenticatedSession(page);
+  csrfTokens.add(retryCsrfToken);
 
   const activeCookie = (await context.cookies()).find(
     (cookie) => cookie.name === sessionCookieName
   );
   assert.ok(activeCookie, 'Browser session cookie was not recreated');
+  observedCookieValues.push(activeCookie.value);
+
+  const chatInput = page.locator('app-rich-chat-input textarea');
+  await chatInput.waitFor({ state: 'visible' });
+  assert.equal(
+    await page.locator('button[title="New chat"]').count(),
+    1,
+    'Federated chat content did not load before the expiry check'
+  );
+
+  const messagePath = /\/api\/v1\/conversations\/[^/]+\/messages(?:\?.*)?$/;
+  await page.route(messagePath, async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue();
+      return;
+    }
+    const url = new URL(route.request().url());
+    const sessionId = url.pathname.split('/').at(-2);
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'accepted',
+        session_id: sessionId,
+      }),
+    });
+  });
+
+  const conversationCreated = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === '/api/v1/conversations/' &&
+      response.request().method() === 'POST' &&
+      response.status() === 201
+    );
+  });
+  const eventSourceConnected = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      /^\/api\/v1\/conversations\/[^/]+\/stream$/.test(url.pathname) &&
+      response.request().method() === 'GET' &&
+      response.status() === 200
+    );
+  });
+  const simulatedBrowserMessage = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      messagePath.test(url.pathname) &&
+      response.request().method() === 'POST' &&
+      response.status() === 202
+    );
+  });
+  await chatInput.fill('Verify browser session stream expiry');
+  await chatInput.press('Enter');
+  const conversationResponse = await conversationCreated;
+  const conversation = await conversationResponse.json();
+  assert.equal(
+    typeof conversation.session_id === 'string' &&
+      conversation.session_id.length > 0,
+    true,
+    'Chat did not create a conversation for the EventSource smoke path'
+  );
+  await Promise.all([eventSourceConnected, simulatedBrowserMessage]);
+
   await context.addCookies([
     {
       name: activeCookie.name,
@@ -316,12 +419,27 @@ try {
     },
   ]);
 
-  const settingsButton = page.locator('button[title="Settings"]');
-  await settingsButton.waitFor({ state: 'visible' });
-  acceptingExpectedUnauthorizedErrors = true;
-  const expiredRequest = waitForProtectedUnauthorized(page);
-  await settingsButton.click();
-  const expiredResponse = await expiredRequest;
+  const pageLoadCountBeforeExpiry = pageLoadCount;
+  const sessionCheck = waitForEventSourceSessionCheck(page);
+  const agentMessageResponse = await fetch(
+    `${baseUrl}/api/v1/conversations/${conversation.session_id}/messages`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': runtimeKey,
+      },
+      body: JSON.stringify({
+        content: 'Complete the production EventSource smoke turn',
+      }),
+    }
+  );
+  assert.equal(agentMessageResponse.status, 202);
+  const sessionCheckResponse = await sessionCheck;
+  const sessionCheckBody = await sessionCheckResponse.json();
+  assert.equal(sessionCheckBody.required, true);
+  assert.equal(sessionCheckBody.authenticated, false);
+  assert.equal(sessionCheckBody.csrf_token, null);
   await page.getByLabel('Docker API key').waitFor({ state: 'visible' });
   assert.equal(
     await page.getByLabel('Docker API key').inputValue(),
@@ -333,56 +451,98 @@ try {
     0,
     'Authenticated shell remained visible after session expiry'
   );
-  console.log(
-    `invalidated session protected request: ${expiredResponse.status()}`
+  assert.equal(
+    await page.locator('app-rich-chat-input textarea').count(),
+    0,
+    'Federated chat content remained visible after session expiry'
   );
+  assert.equal(
+    pageLoadCount,
+    pageLoadCountBeforeExpiry,
+    'Session expiry reloaded the shell'
+  );
+  const eventSourceRequestsAtExpiry = eventSourceRequestCount;
+  await page.waitForTimeout(3_500);
+  assert.equal(
+    eventSourceRequestCount,
+    eventSourceRequestsAtExpiry,
+    'Expired EventSource entered a reconnect loop'
+  );
+  console.log(
+    `invalidated EventSource session status check: ${sessionCheckResponse.status()}`
+  );
+  await page.unroute(messagePath);
 
   const recoveredSettings = waitForSettings(page);
   await page.getByLabel('Docker API key').fill(runtimeKey);
   await page.getByRole('button', { name: 'Unlock ShipAgent' }).click();
   const recoveredSettingsResponse = await recoveredSettings;
-  acceptingExpectedUnauthorizedErrors = false;
   console.log(
     `authenticated recovery settings request: ${recoveredSettingsResponse.status()}`
   );
-  assert.ok(
-    expectedUnauthorizedErrorCount > 0,
-    'Browser did not observe the deliberate protected 401'
+  const recoveredCsrfToken = await readAuthenticatedSession(page);
+  csrfTokens.add(recoveredCsrfToken);
+  assert.equal(
+    csrfTokens.size,
+    3,
+    'Browser sessions did not receive distinct session-bound CSRF tokens'
   );
   await page
     .getByRole('button', { name: 'Clear API session' })
     .waitFor({ state: 'visible' });
+  observedCookieValues.push(
+    ...(await context.cookies()).map((cookie) => cookie.value)
+  );
 
-  const persistedKey = await page.evaluate((candidate) => {
+  const runtimeSecrets = [runtimeKey, ...csrfTokens];
+  const persistedSecret = await page.evaluate((candidates) => {
     const containsCandidate = (storage) => {
       for (let index = 0; index < storage.length; index += 1) {
         const key = storage.key(index) ?? '';
         const value = storage.getItem(key) ?? '';
-        if (key.includes(candidate) || value.includes(candidate)) return true;
+        if (
+          candidates.some(
+            (candidate) => key.includes(candidate) || value.includes(candidate)
+          )
+        ) {
+          return true;
+        }
       }
       return false;
     };
     return containsCandidate(localStorage) || containsCandidate(sessionStorage);
-  }, runtimeKey);
+  }, runtimeSecrets);
   assert.equal(
-    persistedKey,
+    persistedSecret,
     false,
-    'Runtime API key was persisted in browser storage'
+    'A runtime browser credential was persisted in browser storage'
   );
   assert.equal(
-    requestUrls.some((url) => url.includes(runtimeKey)),
+    observedCookieValues.some((value) =>
+      runtimeSecrets.some((secret) => value.includes(secret))
+    ),
     false,
-    'Runtime API key was exposed in a request URL'
+    'A runtime browser credential was embedded in a cookie value'
   );
   assert.equal(
-    browserMessages.some((message) => message.includes(runtimeKey)),
+    requestUrls.some((url) =>
+      runtimeSecrets.some((secret) => url.includes(secret))
+    ),
     false,
-    'Runtime API key was exposed in browser console output'
+    'A runtime browser credential was exposed in a request URL'
   );
   assert.equal(
-    (await page.content()).includes(runtimeKey),
+    browserMessages.some((message) =>
+      runtimeSecrets.some((secret) => message.includes(secret))
+    ),
     false,
-    'Runtime API key remained in the rendered document'
+    'A runtime browser credential was exposed in browser console output'
+  );
+  const renderedDocument = await page.content();
+  assert.equal(
+    runtimeSecrets.some((secret) => renderedDocument.includes(secret)),
+    false,
+    'A runtime browser credential remained in the rendered document'
   );
   assert.equal(
     await page
@@ -394,8 +554,10 @@ try {
   );
   assert.deepEqual(browserErrors, []);
 
-  await assertKeyAbsentFromBundles(runtimeKey);
-  console.log('runtime API key absent from production bundles');
+  await assertSecretsAbsentFromBundles(runtimeSecrets);
+  console.log(
+    'runtime API key and CSRF tokens absent from production surfaces'
+  );
 } finally {
   if (context) await context.close();
   if (browser) await browser.close();
