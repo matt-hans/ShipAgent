@@ -326,12 +326,21 @@ def test_public_provider_contract_rejects_schema_dialect_bypasses(schema):
     "field_name",
     [
         "api_key",
+        "apiKey",
+        "APIKey",
+        "xAPIKey",
         "access_key",
+        "accessKey",
         "auth_header",
+        "authHeader",
         "authorization_header",
+        "authorizationHeader",
         "bearer_value",
+        "bearerValue",
         "label_href",
+        "labelHref",
         "document_link",
+        "documentLink",
     ],
 )
 def test_public_provider_contract_rejects_sensitive_aliases(field_name):
