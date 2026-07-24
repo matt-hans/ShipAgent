@@ -14,6 +14,7 @@ export interface ErrorResponse {
 export interface BrowserSessionStatus {
   required: boolean;
   authenticated: boolean;
+  csrf_token: string | null;
 }
 
 /** Generic paginated response wrapper. */

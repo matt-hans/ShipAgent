@@ -12,14 +12,14 @@ import { inject } from '@angular/core';
 import { throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { ApiError, ApiErrorBody } from './api.models';
+import { API_BASE_URL } from './api-url.token';
 import { BrowserSessionState } from './browser-session.state';
-
-const BROWSER_SESSION_PATH = '/api/v1/auth/session';
-
-function isBrowserSessionFlow(url: string): boolean {
-  const path = url.split(/[?#]/, 1)[0].replace(/\/+$/, '');
-  return path.endsWith(BROWSER_SESSION_PATH);
-}
+import {
+  BROWSER_CSRF_HEADER,
+  isBrowserSessionFlow,
+  isShipAgentApiFlow,
+  isUnsafeHttpMethod,
+} from './browser-session-request';
 
 /**
  * apiErrorInterceptor
@@ -68,5 +68,16 @@ export const apiAuthInterceptor: HttpInterceptorFn = (
   req: HttpRequest<unknown>,
   next: HttpHandlerFn
 ) => {
-  return next(req.clone({ withCredentials: true }));
+  const browserSession = inject(BrowserSessionState);
+  const apiBaseUrl = inject(API_BASE_URL);
+  const csrfToken = browserSession.csrfToken();
+  const headers =
+    isUnsafeHttpMethod(req.method) &&
+    isShipAgentApiFlow(req.url, apiBaseUrl()) &&
+    !isBrowserSessionFlow(req.url) &&
+    csrfToken
+      ? req.headers.set(BROWSER_CSRF_HEADER, csrfToken)
+      : req.headers;
+
+  return next(req.clone({ withCredentials: true, headers }));
 };

@@ -13,17 +13,16 @@
  *   this.sse.connect(url).subscribe(event => { ... })
  */
 
-import { Injectable, NgZone, OnDestroy, signal } from '@angular/core';
+import { Injectable, NgZone, OnDestroy, inject, signal } from '@angular/core';
 import { Observable } from 'rxjs';
+import { BrowserSessionTransportService } from '@shipagent/shared-api';
 import type { RawSseEvent, SseConfig, SseConnectionState } from './sse.models';
 
 @Injectable()
 export class SseService implements OnDestroy {
-  private readonly ngZone: NgZone;
+  private readonly ngZone = inject(NgZone);
+  private readonly browserTransport = inject(BrowserSessionTransportService);
 
-  constructor(ngZone: NgZone) {
-    this.ngZone = ngZone;
-  }
   /** Current connection state as a signal. */
   readonly connectionState = signal<SseConnectionState>('disconnected');
 
@@ -32,7 +31,8 @@ export class SseService implements OnDestroy {
   /**
    * Connect to an SSE endpoint and return an Observable of parsed events.
    * Automatically handles ping events (skips them). Closes any existing
-   * connection before opening a new one.
+   * connection before opening a new one. Failed sources are closed before one
+   * browser-session check so expired sessions cannot enter a reconnect loop.
    *
    * @param url The SSE endpoint URL.
    * @param _config Optional connection configuration (reserved for future use).
@@ -45,7 +45,8 @@ export class SseService implements OnDestroy {
     return new Observable<RawSseEvent>((observer) => {
       this.connectionState.set('connecting');
 
-      const eventSource = new EventSource(url);
+      const eventSource = new EventSource(url, { withCredentials: true });
+      let handlingError = false;
       this.eventSource = eventSource;
 
       eventSource.onopen = () => {
@@ -99,14 +100,28 @@ export class SseService implements OnDestroy {
       };
 
       eventSource.onerror = () => {
-        this.ngZone.run(() => {
-          if (eventSource.readyState === EventSource.CLOSED) {
-            this.connectionState.set('error');
-            observer.error(new Error('SSE connection closed'));
-          } else if (eventSource.readyState === EventSource.CONNECTING) {
-            this.connectionState.set('connecting');
-          }
-        });
+        if (handlingError) return;
+        handlingError = true;
+        eventSource.close();
+        if (this.eventSource === eventSource) {
+          this.eventSource = null;
+        }
+        this.connectionState.set('disconnected');
+
+        void this.browserTransport
+          .confirmSessionAfterEventSourceError()
+          .then((sessionExpired) => {
+            this.ngZone.run(() => {
+              if (observer.closed) return;
+              if (sessionExpired) {
+                observer.complete();
+                return;
+              }
+
+              this.connectionState.set('error');
+              observer.error(new Error('SSE connection closed'));
+            });
+          });
       };
 
       // Teardown: called when the Observable is unsubscribed.

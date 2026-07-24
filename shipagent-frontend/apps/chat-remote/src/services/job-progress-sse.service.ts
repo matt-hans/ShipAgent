@@ -12,7 +12,10 @@
 
 import { Injectable, OnDestroy, inject, signal, computed } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
-import { ApiService } from '@shipagent/shared-api';
+import {
+  ApiService,
+  BrowserSessionTransportService,
+} from '@shipagent/shared-api';
 import { JobStore } from '@shipagent/shared-state';
 import type { JobStatus } from '@shipagent/shared-types';
 
@@ -57,6 +60,7 @@ const INITIAL_PROGRESS: JobProgressSnapshot = {
 @Injectable()
 export class JobProgressSseService implements OnDestroy {
   private readonly apiService = inject(ApiService);
+  private readonly browserTransport = inject(BrowserSessionTransportService);
   private readonly jobStore = inject(JobStore);
 
   /** Own EventSource instance — separate from the conversation SSE. */
@@ -114,7 +118,8 @@ export class JobProgressSseService implements OnDestroy {
     }
 
     const url = this.apiService.getJobProgressUrl(jobId);
-    const es = new EventSource(url);
+    const es = new EventSource(url, { withCredentials: true });
+    let handlingError = false;
     this.eventSource = es;
 
     es.onmessage = (event: MessageEvent) => {
@@ -140,9 +145,19 @@ export class JobProgressSseService implements OnDestroy {
     };
 
     es.onerror = () => {
-      if (es.readyState === EventSource.CLOSED) {
-        console.error('[JobProgressSseService] SSE connection closed');
+      if (handlingError) return;
+      handlingError = true;
+      es.close();
+      if (this.eventSource === es) {
+        this.eventSource = null;
       }
+      void this.browserTransport
+        .confirmSessionAfterEventSourceError()
+        .then((sessionExpired) => {
+          if (!sessionExpired) {
+            console.error('[JobProgressSseService] SSE connection closed');
+          }
+        });
     };
   }
 
@@ -193,7 +208,8 @@ export class JobProgressSseService implements OnDestroy {
           ...p,
           processed: p.successful + p.failed + 1,
           successful: p.successful + 1,
-          totalCostCents: p.totalCostCents + ((eventData['cost_cents'] as number) ?? 0),
+          totalCostCents:
+            p.totalCostCents + ((eventData['cost_cents'] as number) ?? 0),
           lastTrackingNumber: (eventData['tracking_number'] as string) ?? null,
           currentRow: null,
         }));
@@ -214,7 +230,8 @@ export class JobProgressSseService implements OnDestroy {
             {
               rowNumber: (eventData['row_number'] as number) ?? 0,
               errorCode: (eventData['error_code'] as string) ?? 'E-0000',
-              errorMessage: (eventData['error_message'] as string) ?? 'Unknown error',
+              errorMessage:
+                (eventData['error_message'] as string) ?? 'Unknown error',
             },
           ],
         }));
@@ -226,11 +243,14 @@ export class JobProgressSseService implements OnDestroy {
           status: 'completed',
           processed: (eventData['total_rows'] as number) ?? p.total,
           successful: (eventData['successful'] as number) ?? p.successful,
-          totalCostCents: (eventData['total_cost_cents'] as number) ?? p.totalCostCents,
+          totalCostCents:
+            (eventData['total_cost_cents'] as number) ?? p.totalCostCents,
           dutiesTaxesCents:
-            (eventData['duties_taxes_cents'] as number | undefined) ?? p.dutiesTaxesCents,
+            (eventData['duties_taxes_cents'] as number | undefined) ??
+            p.dutiesTaxesCents,
           internationalCount:
-            (eventData['international_row_count'] as number | undefined) ?? p.internationalCount,
+            (eventData['international_row_count'] as number | undefined) ??
+            p.internationalCount,
           currentRow: null,
         }));
         this.jobStore.incrementJobListVersion();
@@ -242,12 +262,16 @@ export class JobProgressSseService implements OnDestroy {
           status: 'failed',
           processed: (eventData['processed'] as number) ?? p.processed,
           dutiesTaxesCents:
-            (eventData['duties_taxes_cents'] as number | undefined) ?? p.dutiesTaxesCents,
+            (eventData['duties_taxes_cents'] as number | undefined) ??
+            p.dutiesTaxesCents,
           internationalCount:
-            (eventData['international_row_count'] as number | undefined) ?? p.internationalCount,
+            (eventData['international_row_count'] as number | undefined) ??
+            p.internationalCount,
           error: {
             code: (eventData['error_code'] as string) ?? 'E-0000',
-            message: (eventData['error_message'] as string) ?? 'Batch execution failed',
+            message:
+              (eventData['error_message'] as string) ??
+              'Batch execution failed',
           },
           currentRow: null,
         }));
