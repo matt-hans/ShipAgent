@@ -2,10 +2,12 @@
 
 import inspect
 import json
+import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool
 from fastmcp.tools.tool import ToolResult
 from mcp.types import TextContent, ToolAnnotations
@@ -16,6 +18,9 @@ from src.provider_adapters.mcp_projection import to_mcp_tool_descriptor
 from src.registry.models import ProviderExport, ToolContract
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]] | dict[str, Any]]
+logger = logging.getLogger(__name__)
+
+PROVIDER_RESULT_ERROR = "Tool result could not be safely returned"
 
 
 class BoundRegistryTool(Tool):
@@ -30,7 +35,14 @@ class BoundRegistryTool(Tool):
         result = self._handler(arguments)
         if inspect.isawaitable(result):
             result = await result
-        result = project_result(self._contract, result)
+        try:
+            result = project_result(self._contract, result)
+        except Exception:  # noqa: BLE001 - provider projection is a fail-closed boundary.
+            logger.warning(
+                "Rejected provider result projection for tool %s",
+                self._contract.name,
+            )
+            raise ToolError(PROVIDER_RESULT_ERROR) from None
         return ToolResult(
             content=[
                 TextContent(

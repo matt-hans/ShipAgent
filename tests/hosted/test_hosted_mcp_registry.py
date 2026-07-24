@@ -1,4 +1,8 @@
+import logging
+
 import pytest
+from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from jsonschema import validate
 
 from src.hosted_mcp.server import build_server
@@ -103,3 +107,85 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
         instance=result.structured_content,
         schema=tools["execute_shipments"].output_schema,
     )
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "unsafe_result"),
+    [
+        (
+            "schema",
+            {
+                "job_id": (
+                    "https://private.invalid/result?"
+                    "credential=projection-token customer=Private Recipient "
+                    "address=17 Confidential Avenue"
+                ),
+                "status": "projection-token",
+            },
+        ),
+        (
+            "privacy",
+            {
+                "job_id": "job-1",
+                "status": "running",
+                "address_line_1": "17 Confidential Avenue",
+            },
+        ),
+        (
+            "size",
+            {
+                "job_id": "https://private.invalid/result",
+                "status": "running",
+            },
+        ),
+        (
+            "projection",
+            ["projection-token", "Private Recipient"],
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_hosted_mcp_projection_failures_are_provider_and_log_safe(
+    caplog,
+    failure_mode,
+    unsafe_result,
+):
+    async def handler(arguments):
+        return unsafe_result
+
+    contract = exportable_mcp_tool("execute_shipments")
+    if failure_mode == "size":
+        contract = contract.model_copy(update={"max_result_bytes": 1})
+    server = build_server(
+        tools=[contract],
+        tool_handlers={"execute_shipments": handler},
+    )
+    caplog.set_level(logging.WARNING)
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool(
+                "execute_shipments",
+                {
+                    "preview_id": "preview-1",
+                    "confirmation_artifact_id": "sa_confirmation_artifact_1234",
+                },
+            )
+
+    assert str(exc_info.value) == "Tool result could not be safely returned"
+    hosted_logs = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "src.hosted_mcp.server"
+    ]
+    assert hosted_logs == [
+        "Rejected provider result projection for tool execute_shipments"
+    ]
+    provider_and_log_output = f"{exc_info.value}\n{caplog.text}"
+    for sensitive_value in (
+        "https://private.invalid/result",
+        "projection-token",
+        "Private Recipient",
+        "17 Confidential Avenue",
+    ):
+        assert sensitive_value not in provider_and_log_output
