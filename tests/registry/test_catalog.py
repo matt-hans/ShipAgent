@@ -61,6 +61,20 @@ def test_prepare_tool_schema_is_strict():
     assert "tenant_id" not in tool.input_schema["properties"]
 
 
+def test_rate_results_use_closed_provider_safe_items():
+    tool = next(tool for tool in public_tools() if tool.name == "get_shipment_rates")
+    item_schema = tool.output_schema["properties"]["rates"]["items"]
+
+    assert item_schema["additionalProperties"] is False
+    assert set(item_schema["properties"]) == {
+        "service_code",
+        "service_name",
+        "total_charge",
+        "currency_code",
+        "estimated_delivery_date",
+    }
+
+
 def test_submit_one_off_shipment_is_non_confirming_input_reference_entrypoint():
     tool = next(
         tool for tool in public_tools() if tool.name == "submit_one_off_shipment"

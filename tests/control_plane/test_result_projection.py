@@ -89,6 +89,22 @@ def test_project_result_enforces_closed_output_shape_for_aggregate_profile():
         project_result(contract, result)
 
 
+def test_project_result_rejects_open_object_schema_inside_array():
+    contract = _contract(
+        output_schema={
+            "type": "object",
+            "properties": {
+                "rates": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["rates"],
+            "additionalProperties": False,
+        }
+    )
+
+    with pytest.raises(ValueError, match="additionalProperties=False"):
+        project_result(contract, {"rates": [{"customer_payload": "private"}]})
+
+
 def test_project_result_skips_forbidden_check_for_non_aggregate_profile():
     contract = _contract(
         result_profile="provider_ingress_echo",
