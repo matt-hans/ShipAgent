@@ -33,7 +33,7 @@ def upgrade() -> None:
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("auth0_subject", sa.String(length=255), nullable=False),
         sa.Column(
-            "suspended", sa.Boolean(), nullable=False, server_default=sa.text("0")
+            "suspended", sa.Boolean(), nullable=False, server_default=sa.false()
         ),
         sa.Column(
             "created_at",
