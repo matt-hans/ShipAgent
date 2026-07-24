@@ -16,7 +16,9 @@ def validate_startup_security(settings: ControlPlaneSettings) -> None:
         return
 
     public_host = (
-        urlparse(str(settings.public_base_url)).hostname if settings.public_base_url else None
+        urlparse(str(settings.public_base_url)).hostname
+        if settings.public_base_url
+        else None
     )
     if (
         settings.environment != Environment.local

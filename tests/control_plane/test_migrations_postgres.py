@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -15,8 +16,9 @@ from src.control_plane.models import CloudAccount
 
 
 def test_postgres_migration_uses_boolean_false_default(monkeypatch, capsys) -> None:
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     root = Path(__file__).resolve().parents[2]
     config = Config(str(root / "alembic.ini"))
@@ -32,6 +34,33 @@ def test_postgres_migration_uses_boolean_false_default(monkeypatch, capsys) -> N
     normalized_sql = " ".join(sql.split())
     assert "suspended boolean default false not null" in normalized_sql
     assert "suspended boolean default 0 not null" not in normalized_sql
+
+
+def test_alembic_migrations_do_not_disable_application_loggers(
+    monkeypatch,
+) -> None:
+    from alembic.config import Config
+
+    from alembic import command
+
+    root = Path(__file__).resolve().parents[2]
+    config = Config(str(root / "alembic.ini"))
+    monkeypatch.setenv(
+        "SHIPAGENT_DATABASE_URL",
+        "postgresql+asyncpg://user:password@localhost/shipagent",
+    )
+    monkeypatch.setenv("SHIPAGENT_CONTROL_PLANE_SCHEMA", "shipagent_test")
+    application_logger = logging.getLogger("src.services.runtime_credentials")
+    previous_disabled = application_logger.disabled
+    application_logger.disabled = False
+
+    try:
+        command.upgrade(config, "head", sql=True)
+        disabled_after_migration = application_logger.disabled
+    finally:
+        application_logger.disabled = previous_disabled
+
+    assert disabled_after_migration is False
 
 
 @pytest.mark.integration

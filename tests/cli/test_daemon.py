@@ -37,7 +37,9 @@ class TestPidFile:
 
     def test_is_pid_alive_current_process(self):
         """Current process PID is alive when it matches daemon markers."""
-        mock_result = type("Result", (), {"stdout": "python -m shipagent daemon start"})()
+        mock_result = type(
+            "Result", (), {"stdout": "python -m shipagent daemon start"}
+        )()
         with patch("subprocess.run", return_value=mock_result):
             assert is_pid_alive(os.getpid()) is True
 
