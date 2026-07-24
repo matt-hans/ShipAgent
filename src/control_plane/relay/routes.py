@@ -9,10 +9,11 @@ from starlette.websockets import WebSocketDisconnect
 from src.control_plane.auth.context import get_authorization_context
 from src.control_plane.relay.invocations import RelayInvocationBroker
 from src.control_plane.relay.protocol import (
+    RelayAuthenticatedMessage,
+    RelayHandshakeToken,
     RelayHeartbeatFrame,
     RelayInvocationResultFrame,
     RelayProtocolModel,
-    RelaySignedHandshakeClaims,
 )
 from src.control_plane.relay.registry import (
     RelayDevice,
@@ -22,6 +23,8 @@ from src.control_plane.relay.registry import (
 
 RELAY_DEVICE_MANAGE_SCOPE = "relay:device:manage"
 RECENT_AUTH_WINDOW = timedelta(minutes=10)
+RELAY_POLICY_CLOSE_CODE = 1008
+RELAY_POLICY_CLOSE_REASON = "relay device policy changed"
 
 
 class RegisterRelayDeviceRequest(RelayProtocolModel):
@@ -54,6 +57,7 @@ class RelayDeviceResponse(RelayProtocolModel):
     account_id: str
     device_id: str
     fingerprint: str
+    key_version: int
     revoked: bool
     active: bool = False
 
@@ -82,6 +86,7 @@ def _device_response(device: RelayDevice) -> RelayDeviceResponse:
         account_id=device.account_id,
         device_id=device.device_id,
         fingerprint=device.fingerprint,
+        key_version=device.key_version,
         revoked=device.revoked,
         active=device.active,
     )
@@ -112,6 +117,7 @@ def build_relay_router(
     invocation_broker: RelayInvocationBroker | None = None,
 ) -> APIRouter:
     invocation_broker = invocation_broker or RelayInvocationBroker()
+    registry.bind_session_operation_guard(invocation_broker.session_operation_guard)
     router = APIRouter(prefix="/relay")
 
     @router.post("/devices/register", response_model=RelayDeviceResponse)
@@ -137,14 +143,26 @@ def build_relay_router(
 
     @router.post("/devices/{device_id}/set-active", response_model=RelayDeviceResponse)
     async def set_active_device(device_id: str) -> RelayDeviceResponse:
+        account_id = _require_relay_manage_account_id()
+
+        async def disconnect_replaced_device(transition) -> None:
+            if transition.replaced_device_id is not None:
+                await invocation_broker.disconnect_device(
+                    account_id=account_id,
+                    device_id=transition.replaced_device_id,
+                    code=RELAY_POLICY_CLOSE_CODE,
+                    reason=RELAY_POLICY_CLOSE_REASON,
+                )
+
         try:
-            device = await registry.set_active_device(
-                account_id=_require_relay_manage_account_id(),
+            transition = await registry.set_active_device_transition(
+                account_id=account_id,
                 device_id=device_id,
+                on_transition=disconnect_replaced_device,
             )
         except ValueError as exc:
             raise _relay_registry_http_error(exc) from exc
-        return _device_response(device)
+        return _device_response(transition.selected_device)
 
     @router.post("/devices/{device_id}/rotate-key", response_model=RelayDeviceResponse)
     async def rotate_key(
@@ -153,36 +171,68 @@ def build_relay_router(
     ) -> RelayDeviceResponse:
         account_id = _require_relay_manage_account_id()
         body = await _request_model(request, RotateRelayDeviceKeyRequest)
-        try:
-            device = await registry.rotate_key(
+        async with invocation_broker.session_operation_guard.hold(
+            account_id,
+            device_id,
+        ):
+            try:
+                device = await registry.rotate_key(
+                    account_id=account_id,
+                    device_id=device_id,
+                    public_key_pem=body.public_key_pem,
+                )
+            except ValueError as exc:
+                raise _relay_registry_http_error(exc) from exc
+            await invocation_broker.disconnect_device(
                 account_id=account_id,
                 device_id=device_id,
-                public_key_pem=body.public_key_pem,
+                code=RELAY_POLICY_CLOSE_CODE,
+                reason=RELAY_POLICY_CLOSE_REASON,
             )
-        except ValueError as exc:
-            raise _relay_registry_http_error(exc) from exc
         return _device_response(device)
 
     @router.post("/devices/{device_id}/revoke", response_model=RelayDeviceResponse)
     async def revoke_device(device_id: str) -> RelayDeviceResponse:
-        try:
-            device = await registry.revoke_device(
-                account_id=_require_relay_manage_account_id(),
+        account_id = _require_relay_manage_account_id()
+        async with invocation_broker.session_operation_guard.hold(
+            account_id,
+            device_id,
+        ):
+            try:
+                device = await registry.revoke_device(
+                    account_id=account_id,
+                    device_id=device_id,
+                )
+            except ValueError as exc:
+                raise _relay_registry_http_error(exc) from exc
+            await invocation_broker.disconnect_device(
+                account_id=account_id,
                 device_id=device_id,
+                code=RELAY_POLICY_CLOSE_CODE,
+                reason=RELAY_POLICY_CLOSE_REASON,
             )
-        except ValueError as exc:
-            raise _relay_registry_http_error(exc) from exc
         return _device_response(device)
 
     @router.post("/devices/{device_id}/unlink", response_model=RelayDeviceResponse)
     async def unlink_device(device_id: str) -> RelayDeviceResponse:
-        try:
-            device = await registry.unlink_device(
-                account_id=_require_relay_manage_account_id(),
+        account_id = _require_relay_manage_account_id()
+        async with invocation_broker.session_operation_guard.hold(
+            account_id,
+            device_id,
+        ):
+            try:
+                device = await registry.unlink_device(
+                    account_id=account_id,
+                    device_id=device_id,
+                )
+            except ValueError as exc:
+                raise _relay_registry_http_error(exc) from exc
+            await invocation_broker.disconnect_device(
+                account_id=account_id,
                 device_id=device_id,
+                code=RELAY_POLICY_CLOSE_CODE,
+                reason=RELAY_POLICY_CLOSE_REASON,
             )
-        except ValueError as exc:
-            raise _relay_registry_http_error(exc) from exc
         return _device_response(device)
 
     @router.websocket("/connect")
@@ -196,34 +246,49 @@ def build_relay_router(
                 device_id=hello.device_id,
             )
             await websocket.send_json(challenge.model_dump(mode="json"))
-            signed_claims = RelaySignedHandshakeClaims.model_validate(
+            handshake = RelayHandshakeToken.model_validate(
                 await websocket.receive_json()
             )
-            if signed_claims.claims.relay_session_id != challenge.relay_session_id:
-                raise ValueError("wrong challenge")
-            session = await registry.accept_handshake(signed_claims)
-            await websocket.send_json(
-                {
-                    "relay_session_id": session.relay_session_id,
-                    "execution_target_id": session.execution_target_id,
-                    "state": session.state.value,
-                }
+
+            async def register_accepted_session(session) -> None:
+                await invocation_broker.register(
+                    session.relay_session_id,
+                    websocket,
+                    account_id=session.account_id,
+                    device_id=session.device_id,
+                )
+
+            session = await registry.accept_handshake(
+                handshake,
+                challenge_relay_session_id=challenge.relay_session_id,
+                on_accepted=register_accepted_session,
             )
-            await invocation_broker.register(session.relay_session_id, websocket)
+            await websocket.send_json(
+                RelayAuthenticatedMessage(
+                    relay_session_id=session.relay_session_id,
+                    execution_target_id=session.execution_target_id,
+                    state=session.state,
+                ).model_dump(mode="json")
+            )
             while True:
                 payload = await websocket.receive_json()
                 frame_type = payload.get("type") if isinstance(payload, dict) else None
-                if frame_type == "heartbeat":
+                if frame_type == "relay.heartbeat":
                     heartbeat = RelayHeartbeatFrame.model_validate(payload)
-                    if heartbeat.relay_session_id != session.relay_session_id:
-                        raise ValueError("wrong heartbeat session")
+                    if (
+                        heartbeat.relay_session_id != session.relay_session_id
+                        or heartbeat.device_id != session.device_id
+                    ):
+                        raise ValueError("wrong heartbeat identity")
                     await registry.refresh_session(
                         session.account_id,
                         session.device_id,
                         session.relay_session_id,
+                        version=heartbeat.version,
+                        active_source_fingerprint=heartbeat.active_source_fingerprint,
                     )
                     continue
-                if frame_type == "invocation_result":
+                if frame_type == "relay.invocation_result":
                     result = RelayInvocationResultFrame.model_validate(payload)
                     if result.relay_session_id != session.relay_session_id:
                         raise ValueError("wrong invocation result session")
@@ -236,7 +301,10 @@ def build_relay_router(
             await websocket.close(code=1008)
         finally:
             if session is not None:
-                await invocation_broker.unregister(session.relay_session_id)
+                await invocation_broker.unregister(
+                    session.relay_session_id,
+                    connection=websocket,
+                )
                 await registry.disconnect_session(
                     session.account_id,
                     session.device_id,

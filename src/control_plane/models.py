@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -58,7 +59,9 @@ class RelayDevice(ControlPlaneBase):
     device_name: Mapped[str] = mapped_column(String(255))
     public_key_pem: Mapped[str] = mapped_column(Text)
     fingerprint: Mapped[str] = mapped_column(String(96))
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     active: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

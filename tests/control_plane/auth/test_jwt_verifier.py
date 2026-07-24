@@ -40,9 +40,7 @@ def test_claim_validation_parses_numeric_auth_time():
 
     principal = verifier.validate_claims(claims)
 
-    assert principal.auth_time == datetime.fromtimestamp(
-        1_714_050_000, tz=UTC
-    )
+    assert principal.auth_time == datetime.fromtimestamp(1_714_050_000, tz=UTC)
 
 
 def test_claim_validation_ignores_bool_auth_time():

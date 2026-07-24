@@ -3,8 +3,9 @@ import pytest
 from src.control_plane.relay.protocol import (
     RelayVersionMetadata,
     build_handshake_claims,
-    verify_handshake_signature,
+    verify_handshake_jwt,
 )
+from src.services import relay_key_service
 from src.services.relay_key_service import RelayKeyService
 
 
@@ -20,6 +21,16 @@ class InMemoryStore:
 
     def delete(self, key: str) -> None:
         self.values.pop(key, None)
+
+
+class FakeKeyringStore(InMemoryStore):
+    pass
+
+
+def test_relay_key_service_uses_keyring_store_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(relay_key_service, "KeyringStore", FakeKeyringStore)
+
+    assert RelayKeyService().generate_or_load_keypair().public_key_pem
 
 
 def test_generate_or_load_keypair_reloads_stored_keypair() -> None:
@@ -127,7 +138,7 @@ def test_keypair_repr_excludes_private_key_material() -> None:
     assert keypair.private_key_pem not in rendered
 
 
-def test_sign_handshake_claims_can_be_verified_with_public_key() -> None:
+def test_sign_handshake_jwt_can_be_verified_with_public_key() -> None:
     service = RelayKeyService(InMemoryStore())
     keypair = service.generate_or_load_keypair()
     claims = build_handshake_claims(
@@ -142,7 +153,6 @@ def test_sign_handshake_claims_can_be_verified_with_public_key() -> None:
         ),
     )
 
-    signed = service.sign_handshake_claims(claims)
+    token = service.sign_handshake_jwt(claims)
 
-    assert signed.claims == claims
-    verify_handshake_signature(signed, keypair.public_key_pem)
+    assert verify_handshake_jwt(token, keypair.public_key_pem) == claims

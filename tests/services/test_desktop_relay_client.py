@@ -9,12 +9,13 @@ import pytest
 
 from src.control_plane.relay.protocol import (
     RelayHandshakeChallenge,
+    RelayHandshakeToken,
+    RelayHeartbeatFrame,
     RelayInvocationEnvelope,
     RelayInvocationResultFrame,
-    RelaySignedHandshakeClaims,
     RelayVersionMetadata,
     relay_invocation_input_hash,
-    verify_handshake_signature,
+    verify_handshake_jwt,
 )
 from src.services.desktop_relay_client import (
     DesktopRelayClient,
@@ -81,7 +82,7 @@ class FailingHeartbeatConnection(FakeConnection):
         self.heartbeat_send_attempted = asyncio.Event()
 
     async def send_json(self, payload: dict[str, Any]) -> None:
-        if payload.get("type") == "heartbeat":
+        if payload.get("type") == "relay.heartbeat":
             self.heartbeat_send_attempted.set()
             raise RuntimeError("heartbeat send failed")
         await super().send_json(payload)
@@ -212,7 +213,7 @@ def relay_invocation_envelope(
 ) -> RelayInvocationEnvelope:
     invocation_arguments = arguments or {}
     return RelayInvocationEnvelope(
-        type="invocation",
+        type="relay.invoke",
         relay_session_id=relay_session_id,
         sequence=sequence,
         relay_invocation_id=relay_invocation_id,
@@ -226,7 +227,7 @@ def relay_invocation_envelope(
 
 
 @pytest.mark.asyncio
-async def test_start_sends_hello_and_signed_handshake_for_challenge() -> None:
+async def test_start_sends_hello_and_jwt_handshake_for_challenge() -> None:
     key_service = RelayKeyService(InMemoryStore())
     keypair = key_service.generate_or_load_keypair()
     challenge = RelayHandshakeChallenge(
@@ -257,14 +258,15 @@ async def test_start_sends_hello_and_signed_handshake_for_challenge() -> None:
 
     assert transport.urls == ["ws://relay.test/relay/connect"]
     assert connection.sent[0] == {"account_id": "acct-1", "device_id": "device-1"}
-    signed = RelaySignedHandshakeClaims.model_validate(connection.sent[1])
-    assert signed.claims.account_id == "acct-1"
-    assert signed.claims.device_id == "device-1"
-    assert signed.claims.relay_session_id == challenge.relay_session_id
-    assert signed.claims.nonce == challenge.nonce
-    assert signed.claims.version == VERSION
-    verify_handshake_signature(signed, keypair.public_key_pem)
+    handshake = RelayHandshakeToken.model_validate(connection.sent[1])
+    claims = verify_handshake_jwt(handshake, keypair.public_key_pem)
+    assert claims.account_id == "acct-1"
+    assert claims.device_id == "device-1"
+    assert claims.relay_session_id == challenge.relay_session_id
+    assert claims.nonce == challenge.nonce
+    assert claims.version == VERSION
     assert accepted.model_dump(mode="json") == {
+        "type": "relay.authenticated",
         "relay_session_id": challenge.relay_session_id,
         "execution_target_id": "relay:device-1",
         "state": "ready",
@@ -331,11 +333,56 @@ async def test_start_sends_session_bound_heartbeat_frames() -> None:
     await client.start()
     await sleep.release_next()
 
-    assert connection.sent[-1] == {
-        "type": "heartbeat",
-        "relay_session_id": challenge.relay_session_id,
-    }
+    heartbeat = RelayHeartbeatFrame.model_validate(connection.sent[-1])
+    assert heartbeat.relay_session_id == challenge.relay_session_id
+    assert heartbeat.device_id == "device-1"
+    assert heartbeat.version == VERSION
+    assert heartbeat.active_source_fingerprint is None
+    assert heartbeat.sent_at.tzinfo is not None
     assert sleep.intervals[0] == 30
+    await client.stop()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_uses_typed_frame_and_no_signing_key_as_source_identity() -> (
+    None
+):
+    key_service = RelayKeyService(InMemoryStore())
+    key_service.generate_or_load_keypair()
+    challenge = RelayHandshakeChallenge(
+        relay_session_id="relay-session-1",
+        nonce="nonce-1",
+    )
+    connection = FakeConnection(
+        [
+            challenge.model_dump(mode="json"),
+            {
+                "relay_session_id": challenge.relay_session_id,
+                "execution_target_id": "relay:device-1",
+                "state": "ready",
+            },
+        ]
+    )
+    sleep = ControlledSleep()
+    client = DesktopRelayClient(
+        relay_url="ws://relay.test/relay/connect",
+        account_id="acct-1",
+        device_id="device-1",
+        key_service=key_service,
+        version=VERSION,
+        transport=FakeTransport(connection),
+        heartbeat_interval_seconds=30,
+        sleep=sleep,
+    )
+
+    await client.start()
+    await sleep.release_next()
+
+    heartbeat = RelayHeartbeatFrame.model_validate(connection.sent[-1])
+    assert heartbeat.device_id == "device-1"
+    assert heartbeat.relay_session_id == challenge.relay_session_id
+    assert heartbeat.active_source_fingerprint is None
+    assert heartbeat.sent_at.tzinfo is not None
     await client.stop()
 
 
@@ -377,7 +424,7 @@ async def test_receive_loop_dispatches_get_shipagent_status_invocation() -> None
         result_payloads = [
             payload
             for payload in connection.sent
-            if payload.get("type") == "invocation_result"
+            if payload.get("type") == "relay.invocation_result"
         ]
         if result_payloads:
             break
@@ -439,7 +486,7 @@ async def test_receive_loop_rejects_unsupported_tool_with_sanitized_result() -> 
         result_payloads = [
             payload
             for payload in connection.sent
-            if payload.get("type") == "invocation_result"
+            if payload.get("type") == "relay.invocation_result"
         ]
         if result_payloads:
             break
@@ -495,7 +542,7 @@ async def test_receive_loop_rejects_expired_invocation_without_execution() -> No
         result_payloads = [
             payload
             for payload in connection.sent
-            if payload.get("type") == "invocation_result"
+            if payload.get("type") == "relay.invocation_result"
         ]
         if result_payloads:
             break
@@ -548,7 +595,7 @@ async def test_receive_loop_rejects_input_hash_mismatch_without_execution() -> N
         result_payloads = [
             payload
             for payload in connection.sent
-            if payload.get("type") == "invocation_result"
+            if payload.get("type") == "relay.invocation_result"
         ]
         if result_payloads:
             break
@@ -611,7 +658,7 @@ async def test_receive_loop_rejects_replayed_invocation_id_without_execution() -
         result_payloads = [
             payload
             for payload in connection.sent
-            if payload.get("type") == "invocation_result"
+            if payload.get("type") == "relay.invocation_result"
         ]
         if len(result_payloads) == 2:
             break
@@ -619,7 +666,8 @@ async def test_receive_loop_rejects_replayed_invocation_id_without_execution() -
     await client.stop()
 
     results = [
-        RelayInvocationResultFrame.model_validate(payload) for payload in result_payloads
+        RelayInvocationResultFrame.model_validate(payload)
+        for payload in result_payloads
     ]
     assert results[0].status == "ok"
     assert results[1].status == "error"
@@ -631,7 +679,9 @@ async def test_receive_loop_rejects_replayed_invocation_id_without_execution() -
 
 
 @pytest.mark.asyncio
-async def test_receive_loop_rejects_replayed_idempotency_key_without_execution() -> None:
+async def test_receive_loop_rejects_replayed_idempotency_key_without_execution() -> (
+    None
+):
     key_service = RelayKeyService(InMemoryStore())
     key_service.generate_or_load_keypair()
     challenge = RelayHandshakeChallenge(
@@ -677,7 +727,7 @@ async def test_receive_loop_rejects_replayed_idempotency_key_without_execution()
         result_payloads = [
             payload
             for payload in connection.sent
-            if payload.get("type") == "invocation_result"
+            if payload.get("type") == "relay.invocation_result"
         ]
         if len(result_payloads) == 2:
             break
@@ -685,7 +735,8 @@ async def test_receive_loop_rejects_replayed_idempotency_key_without_execution()
     await client.stop()
 
     results = [
-        RelayInvocationResultFrame.model_validate(payload) for payload in result_payloads
+        RelayInvocationResultFrame.model_validate(payload)
+        for payload in result_payloads
     ]
     assert results[0].status == "ok"
     assert results[1].status == "error"
@@ -743,7 +794,7 @@ async def test_receive_loop_rejects_non_increasing_sequence_without_execution() 
         result_payloads = [
             payload
             for payload in connection.sent
-            if payload.get("type") == "invocation_result"
+            if payload.get("type") == "relay.invocation_result"
         ]
         if len(result_payloads) == 2:
             break
@@ -751,7 +802,8 @@ async def test_receive_loop_rejects_non_increasing_sequence_without_execution() 
     await client.stop()
 
     results = [
-        RelayInvocationResultFrame.model_validate(payload) for payload in result_payloads
+        RelayInvocationResultFrame.model_validate(payload)
+        for payload in result_payloads
     ]
     assert results[0].status == "ok"
     assert results[1].status == "error"
@@ -799,7 +851,7 @@ async def test_receive_loop_rejects_wrong_session_invocation_and_stops() -> None
         result_payloads = [
             payload
             for payload in connection.sent
-            if payload.get("type") == "invocation_result"
+            if payload.get("type") == "relay.invocation_result"
         ]
         if result_payloads:
             break
@@ -875,7 +927,7 @@ async def test_receive_loop_resets_replay_state_for_new_relay_session() -> None:
         first_results = [
             payload
             for payload in first_connection.sent
-            if payload.get("type") == "invocation_result"
+            if payload.get("type") == "relay.invocation_result"
         ]
         if first_results:
             break
@@ -887,7 +939,7 @@ async def test_receive_loop_resets_replay_state_for_new_relay_session() -> None:
         second_results = [
             payload
             for payload in second_connection.sent
-            if payload.get("type") == "invocation_result"
+            if payload.get("type") == "relay.invocation_result"
         ]
         if second_results:
             break
@@ -1108,7 +1160,9 @@ async def test_concurrent_start_opens_only_one_connection_and_rejects_other() ->
     results = await asyncio.gather(*start_tasks, return_exceptions=True)
     opened_context_count = len(transport.connection_contexts)
     runtime_error_count = sum(isinstance(result, RuntimeError) for result in results)
-    successful_start_count = sum(not isinstance(result, BaseException) for result in results)
+    successful_start_count = sum(
+        not isinstance(result, BaseException) for result in results
+    )
     try:
         await client.stop()
         exit_counts = [context.exit_count for context in transport.connection_contexts]
@@ -1203,7 +1257,10 @@ async def test_start_rejects_accepted_session_mismatch_before_heartbeat() -> Non
     with pytest.raises(ValueError, match="relay session"):
         await client.start()
 
-    assert [payload.get("type") for payload in connection.sent] == [None, None]
+    assert [payload.get("type") for payload in connection.sent] == [
+        None,
+        "relay.authenticate",
+    ]
     assert transport.connection_context is not None
     assert transport.connection_context.exit_count == 1
 
@@ -1240,7 +1297,10 @@ async def test_start_rejects_non_ready_accepted_state_before_heartbeat() -> None
     with pytest.raises(ValueError, match="state"):
         await client.start()
 
-    assert [payload.get("type") for payload in connection.sent] == [None, None]
+    assert [payload.get("type") for payload in connection.sent] == [
+        None,
+        "relay.authenticate",
+    ]
     assert transport.connection_context is not None
     assert transport.connection_context.exit_count == 1
 
@@ -1277,7 +1337,10 @@ async def test_start_rejects_execution_target_mismatch_before_heartbeat() -> Non
     with pytest.raises(ValueError, match="execution target"):
         await client.start()
 
-    assert [payload.get("type") for payload in connection.sent] == [None, None]
+    assert [payload.get("type") for payload in connection.sent] == [
+        None,
+        "relay.authenticate",
+    ]
     assert transport.connection_context is not None
     assert transport.connection_context.exit_count == 1
 
@@ -1340,11 +1403,22 @@ async def test_websocket_relay_transport_exchanges_json_frames() -> None:
 
     transport = WebSocketRelayTransport(connect_factory=connect_factory)
 
-    async with transport.connect("ws://relay.test/relay/connect") as connection:
+    async with transport.connect("wss://relay.test/relay/connect") as connection:
         await connection.send_json({"hello": "relay"})
         received = await connection.receive_json()
 
-    assert connected_urls == ["ws://relay.test/relay/connect"]
+    assert connected_urls == ["wss://relay.test/relay/connect"]
     assert json.loads(raw_websocket.sent_text[0]) == {"hello": "relay"}
     assert received == {"accepted": True}
     assert raw_context.exit_count == 1
+
+
+def test_websocket_transport_rejects_public_plaintext_url() -> None:
+    with pytest.raises(ValueError, match="wss"):
+        WebSocketRelayTransport().connect("ws://relay.example/relay/connect")
+
+
+def test_websocket_transport_allows_explicit_loopback_development_url() -> None:
+    transport = WebSocketRelayTransport(allow_insecure_loopback=True)
+
+    assert transport.connect("ws://127.0.0.1:8080/relay/connect")
