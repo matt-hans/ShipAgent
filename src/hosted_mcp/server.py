@@ -33,29 +33,35 @@ class BoundRegistryTool(Tool):
         object.__setattr__(self, "_handler", handler)
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
-        input_rejected = False
+        failure_category: str | None = None
+        result: Any = None
         try:
             validate(instance=arguments, schema=self._contract.input_schema)
         except Exception:  # noqa: BLE001 - provider input is a fail-closed boundary.
-            input_rejected = True
-        if input_rejected:
+            failure_category = "input"
+
+        if failure_category is None:
+            try:
+                result = self._handler(arguments)
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception:  # noqa: BLE001 - provider handler is a safe boundary.
+                failure_category = "handler"
+
+        if failure_category is None:
+            try:
+                result = project_result(self._contract, result)
+            except Exception:  # noqa: BLE001 - projection is a safe boundary.
+                failure_category = "projection"
+
+        if failure_category is not None:
             logger.warning(
-                "Rejected provider input validation for tool %s",
+                "Provider tool failure for tool %s category=%s",
                 self._contract.name,
+                failure_category,
             )
             raise ToolError(PROVIDER_RESULT_ERROR)
 
-        result = self._handler(arguments)
-        if inspect.isawaitable(result):
-            result = await result
-        try:
-            result = project_result(self._contract, result)
-        except Exception:  # noqa: BLE001 - provider projection is a fail-closed boundary.
-            logger.warning(
-                "Rejected provider result projection for tool %s",
-                self._contract.name,
-            )
-            raise ToolError(PROVIDER_RESULT_ERROR) from None
         return ToolResult(
             content=[
                 TextContent(

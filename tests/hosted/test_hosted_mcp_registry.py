@@ -5,7 +5,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from jsonschema import validate
 
-from src.hosted_mcp.server import build_server
+from src.hosted_mcp.server import PROVIDER_RESULT_ERROR, build_server
 from src.provider_adapters.mcp_projection import to_mcp_tool_descriptor
 from src.registry.catalog import public_tools
 from src.registry.models import ProviderExport
@@ -355,6 +355,123 @@ async def test_real_mcp_rejects_canaries_in_every_input_identifier(
     assert handler_called is False
 
 
+@pytest.mark.parametrize("async_failure", [False, True])
+@pytest.mark.asyncio
+async def test_direct_handler_failures_have_no_provider_or_exception_leakage(
+    caplog,
+    async_failure,
+):
+    sensitive_failure = (
+        "handler credential and private recipient at confidential address"
+    )
+
+    def sync_handler(_arguments):
+        raise RuntimeError(sensitive_failure)
+
+    async def async_handler(_arguments):
+        raise RuntimeError(sensitive_failure)
+
+    handler = async_handler if async_failure else sync_handler
+    server = build_server(
+        tools=[exportable_mcp_tool("execute_shipments")],
+        tool_handlers={"execute_shipments": handler},
+    )
+    registered = (await server.get_tools())["execute_shipments"]
+    caplog.set_level(logging.WARNING)
+
+    with pytest.raises(ToolError) as exc_info:
+        await registered.run(
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+            }
+        )
+
+    assert str(exc_info.value) == PROVIDER_RESULT_ERROR
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "src.hosted_mcp.server"
+    ] == ["Provider tool failure for tool execute_shipments category=handler"]
+    assert sensitive_failure not in f"{exc_info.value}\n{caplog.text}"
+
+
+@pytest.mark.asyncio
+async def test_direct_projection_failure_has_no_exception_context(caplog):
+    async def handler(_arguments):
+        return {
+            "job_id": "projection credential and private recipient address",
+            "status": "running",
+        }
+
+    server = build_server(
+        tools=[exportable_mcp_tool("execute_shipments")],
+        tool_handlers={"execute_shipments": handler},
+    )
+    registered = (await server.get_tools())["execute_shipments"]
+    caplog.set_level(logging.WARNING)
+
+    with pytest.raises(ToolError) as exc_info:
+        await registered.run(
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+            }
+        )
+
+    assert str(exc_info.value) == PROVIDER_RESULT_ERROR
+    assert exc_info.value.__cause__ is None
+    assert exc_info.value.__context__ is None
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "src.hosted_mcp.server"
+    ] == ["Provider tool failure for tool execute_shipments category=projection"]
+    assert "private recipient address" not in f"{exc_info.value}\n{caplog.text}"
+
+
+@pytest.mark.parametrize("async_failure", [False, True])
+@pytest.mark.asyncio
+async def test_real_mcp_handler_failures_are_provider_and_log_safe(
+    caplog,
+    async_failure,
+):
+    sensitive_failure = "handler token with private customer and address"
+
+    def sync_handler(_arguments):
+        raise RuntimeError(sensitive_failure)
+
+    async def async_handler(_arguments):
+        raise RuntimeError(sensitive_failure)
+
+    handler = async_handler if async_failure else sync_handler
+    server = build_server(
+        tools=[exportable_mcp_tool("execute_shipments")],
+        tool_handlers={"execute_shipments": handler},
+    )
+    caplog.set_level(logging.WARNING)
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool(
+                "execute_shipments",
+                {
+                    "preview_id": VALID_PREVIEW_ID,
+                    "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+                },
+            )
+
+    assert str(exc_info.value) == PROVIDER_RESULT_ERROR
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "src.hosted_mcp.server"
+    ] == ["Provider tool failure for tool execute_shipments category=handler"]
+    assert sensitive_failure not in f"{exc_info.value}\n{caplog.text}"
+
+
 @pytest.mark.parametrize(
     ("failure_mode", "unsafe_result"),
     [
@@ -425,7 +542,7 @@ async def test_hosted_mcp_projection_failures_are_provider_and_log_safe(
         if record.name == "src.hosted_mcp.server"
     ]
     assert hosted_logs == [
-        "Rejected provider result projection for tool execute_shipments"
+        "Provider tool failure for tool execute_shipments category=projection"
     ]
     provider_and_log_output = f"{exc_info.value}\n{caplog.text}"
     for sensitive_value in (
