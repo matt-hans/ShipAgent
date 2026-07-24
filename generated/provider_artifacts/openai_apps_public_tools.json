@@ -33,6 +33,11 @@
           "type": "array"
         },
         "status": {
+          "enum": [
+            "ready",
+            "degraded",
+            "unavailable"
+          ],
           "type": "string"
         }
       },
@@ -323,6 +328,13 @@
           "type": "string"
         },
         "status": {
+          "enum": [
+            "queued",
+            "running",
+            "completed",
+            "failed",
+            "cancelled"
+          ],
           "type": "string"
         }
       },
@@ -362,6 +374,13 @@
           "type": "string"
         },
         "status": {
+          "enum": [
+            "queued",
+            "running",
+            "completed",
+            "failed",
+            "cancelled"
+          ],
           "type": "string"
         }
       },
@@ -404,6 +423,11 @@
           "type": "string"
         },
         "status": {
+          "enum": [
+            "pending",
+            "ready",
+            "unavailable"
+          ],
           "type": "string"
         }
       },

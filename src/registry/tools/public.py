@@ -39,6 +39,10 @@ ADDRESS_VALIDATION_GUIDANCE_CODES = [
     "carrier_validation_unavailable",
 ]
 
+SYSTEM_STATUS_CODES = ["ready", "degraded", "unavailable"]
+JOB_STATUS_CODES = ["queued", "running", "completed", "failed", "cancelled"]
+LABEL_STATUS_CODES = ["pending", "ready", "unavailable"]
+
 
 def shipagent_reference_schema(description: str) -> dict[str, object]:
     return {
@@ -114,7 +118,7 @@ PUBLIC_TOOLS = [
         ),
         object_schema(
             {
-                "status": {"type": "string"},
+                "status": {"type": "string", "enum": SYSTEM_STATUS_CODES},
                 "active_device_id": {"type": "string"},
                 "capabilities": {"type": "array", "items": {"type": "string"}},
             },
@@ -271,7 +275,10 @@ PUBLIC_TOOLS = [
             ["preview_id", "confirmation_artifact_id"],
         ),
         object_schema(
-            {"job_id": {"type": "string"}, "status": {"type": "string"}},
+            {
+                "job_id": {"type": "string"},
+                "status": {"type": "string", "enum": JOB_STATUS_CODES},
+            },
             ["job_id", "status"],
         ),
         requires_confirmation=True,
@@ -292,7 +299,10 @@ PUBLIC_TOOLS = [
             ["job_id"],
         ),
         object_schema(
-            {"job_id": {"type": "string"}, "status": {"type": "string"}},
+            {
+                "job_id": {"type": "string"},
+                "status": {"type": "string", "enum": JOB_STATUS_CODES},
+            },
             ["job_id", "status"],
         ),
         provider_export_enabled=True,
@@ -312,7 +322,7 @@ PUBLIC_TOOLS = [
                 "label_artifact_id": shipagent_reference_schema(
                     "Opaque label artifact resolved only by an authenticated ShipAgent channel."
                 ),
-                "status": {"type": "string"},
+                "status": {"type": "string", "enum": LABEL_STATUS_CODES},
             },
             ["label_artifact_id", "status"],
         ),

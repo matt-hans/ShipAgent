@@ -2,6 +2,7 @@ import pytest
 from jsonschema import ValidationError
 
 from src.control_plane.result_projection import project_result
+from src.registry.catalog import public_tools
 from src.registry.models import ToolContract
 
 
@@ -206,6 +207,54 @@ def test_project_result_validates_against_schema():
     )
     with pytest.raises(ValidationError):
         project_result(contract, {"count": "not-integer"})
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "safe_result"),
+    [
+        (
+            "get_shipagent_status",
+            {
+                "status": "ready",
+                "active_device_id": "device-1",
+                "capabilities": ["shipments"],
+            },
+        ),
+        (
+            "execute_shipments",
+            {"job_id": "job-1", "status": "running"},
+        ),
+        (
+            "get_job_status",
+            {"job_id": "job-1", "status": "completed"},
+        ),
+        (
+            "create_label_download",
+            {
+                "label_artifact_id": "sa_label_artifact_1234567890",
+                "status": "ready",
+            },
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "smuggled_status",
+    [
+        "https://labels.example/customer-label",
+        "Bearer credential-secret-value",
+        "Jane Doe, 742 Main Street",
+    ],
+)
+def test_real_public_contract_rejects_data_smuggled_in_status(
+    tool_name,
+    safe_result,
+    smuggled_status,
+):
+    contract = next(tool for tool in public_tools() if tool.name == tool_name)
+    unsafe_result = {**safe_result, "status": smuggled_status}
+
+    with pytest.raises(ValidationError):
+        project_result(contract, unsafe_result)
 
 
 def test_project_result_rejects_over_size_results():
