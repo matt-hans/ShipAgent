@@ -154,6 +154,17 @@ function waitForSettings(page) {
   });
 }
 
+function waitForProtectedUnauthorized(page) {
+  return page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname.startsWith('/api/v1/') &&
+      url.pathname !== '/api/v1/auth/session' &&
+      response.status() === 401
+    );
+  });
+}
+
 if (process.env.SHIPAGENT_SMOKE_SKIP_BUILD !== '1') {
   run(
     'npx',
@@ -207,9 +218,21 @@ try {
   const browserErrors = [];
   const browserMessages = [];
   const requestUrls = [];
+  let acceptingExpectedUnauthorizedErrors = false;
+  let expectedUnauthorizedErrorCount = 0;
   page.on('console', (message) => {
-    browserMessages.push(message.text());
-    if (message.type() === 'error') browserErrors.push(message.text());
+    const text = message.text();
+    browserMessages.push(text);
+    if (message.type() !== 'error') return;
+    if (
+      acceptingExpectedUnauthorizedErrors &&
+      text ===
+        'Failed to load resource: the server responded with a status of 401 (Unauthorized)'
+    ) {
+      expectedUnauthorizedErrorCount += 1;
+      return;
+    }
+    browserErrors.push(text);
   });
   page.on('pageerror', (error) => browserErrors.push(error.message));
   page.on('request', (request) => requestUrls.push(request.url()));
@@ -239,10 +262,14 @@ try {
   assert.equal(firstCookie.sameSite, 'Strict');
   assert.equal(firstCookie.value.includes(runtimeKey), false);
 
-  const onboarding = await page.request.post(
-    `${baseUrl}/api/v1/settings/onboarding/complete`
-  );
-  assert.equal(onboarding.status(), 200);
+  const onboardingStatus = await page.evaluate(async () => {
+    const response = await fetch('/api/v1/settings/onboarding/complete', {
+      method: 'POST',
+      credentials: 'same-origin',
+    });
+    return response.status;
+  });
+  assert.equal(onboardingStatus, 200);
   const reloadSettings = waitForSettings(page);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await reloadSettings;
@@ -263,6 +290,60 @@ try {
   console.log(
     `authenticated retry settings request: ${retrySettingsResponse.status()}`
   );
+
+  const activeCookie = (await context.cookies()).find(
+    (cookie) => cookie.name === sessionCookieName
+  );
+  assert.ok(activeCookie, 'Browser session cookie was not recreated');
+  await context.addCookies([
+    {
+      name: activeCookie.name,
+      value: 'invalid-browser-session',
+      domain: activeCookie.domain,
+      path: activeCookie.path,
+      expires: activeCookie.expires,
+      httpOnly: activeCookie.httpOnly,
+      secure: activeCookie.secure,
+      sameSite: activeCookie.sameSite,
+    },
+  ]);
+
+  const settingsButton = page.locator('button[title="Settings"]');
+  await settingsButton.waitFor({ state: 'visible' });
+  acceptingExpectedUnauthorizedErrors = true;
+  const expiredRequest = waitForProtectedUnauthorized(page);
+  await settingsButton.click();
+  const expiredResponse = await expiredRequest;
+  await page.getByLabel('Docker API key').waitFor({ state: 'visible' });
+  assert.equal(
+    await page.getByLabel('Docker API key').inputValue(),
+    '',
+    'Restored API-key gate retained transient input'
+  );
+  assert.equal(
+    await page.getByRole('button', { name: 'Clear API session' }).count(),
+    0,
+    'Authenticated shell remained visible after session expiry'
+  );
+  console.log(
+    `invalidated session protected request: ${expiredResponse.status()}`
+  );
+
+  const recoveredSettings = waitForSettings(page);
+  await page.getByLabel('Docker API key').fill(runtimeKey);
+  await page.getByRole('button', { name: 'Unlock ShipAgent' }).click();
+  const recoveredSettingsResponse = await recoveredSettings;
+  acceptingExpectedUnauthorizedErrors = false;
+  console.log(
+    `authenticated recovery settings request: ${recoveredSettingsResponse.status()}`
+  );
+  assert.ok(
+    expectedUnauthorizedErrorCount > 0,
+    'Browser did not observe the deliberate protected 401'
+  );
+  await page
+    .getByRole('button', { name: 'Clear API session' })
+    .waitFor({ state: 'visible' });
 
   const persistedKey = await page.evaluate((candidate) => {
     const containsCandidate = (storage) => {
