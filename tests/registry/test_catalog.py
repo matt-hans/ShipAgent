@@ -1,8 +1,7 @@
-import inspect
-
 from src.registry.catalog import load_registry, public_tools
 from src.registry.models import ProviderExport, SideEffectClass, ToolVisibility
 from src.registry.tools.public import public_tool
+from src.registry.tools.schema import object_schema
 
 EXPECTED_PUBLIC = {
     "get_shipagent_status",
@@ -34,9 +33,20 @@ def test_public_tools_are_tenant_safe_and_provider_exportable():
 
 
 def test_public_tool_requires_explicit_provider_export_opt_in():
-    signature = inspect.signature(public_tool)
+    # Omitting the argument exercises both the helper default and its forwarding
+    # into ToolContract; either a True default or a hard-coded True forwarding
+    # would make this contract observable as exportable and fail the assertion.
+    tool = public_tool(
+        "not_explicitly_exported",
+        "Not explicitly exported",
+        "A minimal public tool used to verify safe export defaults.",
+        SideEffectClass.read,
+        ["tools:read"],
+        object_schema({}, []),
+        object_schema({}, []),
+    )
 
-    assert signature.parameters["provider_export_enabled"].default is False
+    assert tool.provider_export_enabled is False
 
 
 def test_side_effecting_public_tools_require_confirmation():
