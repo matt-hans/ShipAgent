@@ -168,7 +168,15 @@ function waitForProtectedUnauthorized(page) {
 if (process.env.SHIPAGENT_SMOKE_SKIP_BUILD !== '1') {
   run(
     'npx',
-    ['nx', 'run-many', '-t', 'build', '--all', '--configuration=production'],
+    [
+      'nx',
+      'run-many',
+      '-t',
+      'build',
+      '--all',
+      '--configuration=production',
+      '--parallel=1',
+    ],
     frontendRoot
   );
   run('sh', ['./scripts/link-remotes.sh'], frontendRoot);
