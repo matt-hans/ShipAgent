@@ -43,6 +43,7 @@ from src.api.middleware.auth import (  # noqa: E402
 )
 from src.api.routes import (  # noqa: E402
     agent_audit,
+    auth_session,
     commands,
     connections,
     contacts,
@@ -903,6 +904,7 @@ async def shipagent_error_handler(
 
 
 # Include routers
+app.include_router(auth_session.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(logs.router, prefix="/api/v1")
 app.include_router(data_sources.router, prefix="/api/v1")
