@@ -2,12 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import {
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-} from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -73,9 +68,13 @@ function waitForBackendPort(backend) {
     backend.stderr.on('data', (chunk) => process.stderr.write(chunk));
     backend.once('error', (error) => finish(() => reject(error)));
     backend.once('exit', (code) => {
-      finish(() => reject(
-        new Error(`ShipAgent backend exited before startup with status ${code}`),
-      ));
+      finish(() =>
+        reject(
+          new Error(
+            `ShipAgent backend exited before startup with status ${code}`
+          )
+        )
+      );
     });
   });
 }
@@ -109,7 +108,7 @@ async function launchBrowser() {
     } catch (bundledError) {
       throw new AggregateError(
         [channelError, bundledError],
-        'No Playwright-compatible Chrome or Chromium installation was found',
+        'No Playwright-compatible Chrome or Chromium installation was found'
       );
     }
   }
@@ -121,7 +120,7 @@ async function emittedFiles(directory) {
   for (const entry of entries) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
-      files.push(...await emittedFiles(entryPath));
+      files.push(...(await emittedFiles(entryPath)));
     } else if (entry.isFile()) {
       files.push(entryPath);
     }
@@ -136,7 +135,10 @@ async function assertKeyAbsentFromBundles(runtimeKey) {
     assert.equal(
       content.includes(needle),
       false,
-      `Runtime API key was found in emitted asset ${path.relative(frontendRoot, file)}`,
+      `Runtime API key was found in emitted asset ${path.relative(
+        frontendRoot,
+        file
+      )}`
     );
   }
 }
@@ -145,9 +147,9 @@ function waitForSettings(page) {
   return page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
-      url.pathname === '/api/v1/settings'
-      && response.request().method() === 'GET'
-      && response.status() === 200
+      url.pathname === '/api/v1/settings' &&
+      response.request().method() === 'GET' &&
+      response.status() === 200
     );
   });
 }
@@ -155,15 +157,8 @@ function waitForSettings(page) {
 if (process.env.SHIPAGENT_SMOKE_SKIP_BUILD !== '1') {
   run(
     'npx',
-    [
-      'nx',
-      'run-many',
-      '-t',
-      'build',
-      '--all',
-      '--configuration=production',
-    ],
-    frontendRoot,
+    ['nx', 'run-many', '-t', 'build', '--all', '--configuration=production'],
+    frontendRoot
   );
   run('sh', ['./scripts/link-remotes.sh'], frontendRoot);
 }
@@ -171,7 +166,7 @@ if (process.env.SHIPAGENT_SMOKE_SKIP_BUILD !== '1') {
 const runtimeKey = randomBytes(48).toString('base64url');
 const filterTokenSecret = randomBytes(48).toString('base64url');
 const temporaryDirectory = await mkdtemp(
-  path.join(tmpdir(), 'shipagent-auth-smoke-'),
+  path.join(tmpdir(), 'shipagent-auth-smoke-')
 );
 const databasePath = path.join(temporaryDirectory, 'shipagent.db');
 const labelsPath = path.join(temporaryDirectory, 'labels');
@@ -184,15 +179,7 @@ let context;
 try {
   backend = spawn(
     python,
-    [
-      '-m',
-      'src.bundle_entry',
-      'serve',
-      '--host',
-      '127.0.0.1',
-      '--port',
-      '0',
-    ],
+    ['-m', 'src.bundle_entry', 'serve', '--host', '127.0.0.1', '--port', '0'],
     {
       cwd: repositoryRoot,
       env: {
@@ -207,7 +194,7 @@ try {
         UPS_LABELS_OUTPUT_DIR: labelsPath,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
-    },
+    }
   );
   const port = await waitForBackendPort(backend);
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -216,26 +203,34 @@ try {
   context = await browser.newContext();
   const page = await context.newPage();
   const browserErrors = [];
+  const browserMessages = [];
+  const requestUrls = [];
   page.on('console', (message) => {
+    browserMessages.push(message.text());
     if (message.type() === 'error') browserErrors.push(message.text());
   });
   page.on('pageerror', (error) => browserErrors.push(error.message));
+  page.on('request', (request) => requestUrls.push(request.url()));
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
   await page.getByLabel('Docker API key').waitFor({ state: 'visible' });
   assert.equal(
-    await page.locator('body').evaluate((body) => body.innerText.trim().length > 0),
-    true,
+    await page
+      .locator('body')
+      .evaluate((body) => body.innerText.trim().length > 0),
+    true
   );
 
   const firstSettings = waitForSettings(page);
   await page.getByLabel('Docker API key').fill(runtimeKey);
   await page.getByRole('button', { name: 'Unlock ShipAgent' }).click();
   const firstSettingsResponse = await firstSettings;
-  console.log(`authenticated settings request: ${firstSettingsResponse.status()}`);
+  console.log(
+    `authenticated settings request: ${firstSettingsResponse.status()}`
+  );
 
   const firstCookie = (await context.cookies()).find(
-    (cookie) => cookie.name === sessionCookieName,
+    (cookie) => cookie.name === sessionCookieName
   );
   assert.ok(firstCookie, 'Browser session cookie was not created');
   assert.equal(firstCookie.httpOnly, true);
@@ -243,7 +238,7 @@ try {
   assert.equal(firstCookie.value.includes(runtimeKey), false);
 
   const onboarding = await page.request.post(
-    `${baseUrl}/api/v1/settings/onboarding/complete`,
+    `${baseUrl}/api/v1/settings/onboarding/complete`
   );
   assert.equal(onboarding.status(), 200);
   const reloadSettings = waitForSettings(page);
@@ -253,9 +248,9 @@ try {
   await page.getByLabel('Docker API key').waitFor({ state: 'visible' });
   assert.equal(
     (await context.cookies()).some(
-      (cookie) => cookie.name === sessionCookieName,
+      (cookie) => cookie.name === sessionCookieName
     ),
-    false,
+    false
   );
   console.log('session cleared and gate restored');
 
@@ -264,22 +259,47 @@ try {
   await page.getByRole('button', { name: 'Unlock ShipAgent' }).click();
   const retrySettingsResponse = await retrySettings;
   console.log(
-    `authenticated retry settings request: ${retrySettingsResponse.status()}`,
+    `authenticated retry settings request: ${retrySettingsResponse.status()}`
   );
 
   const persistedKey = await page.evaluate((candidate) => {
-    const localValues = Object.values(localStorage);
-    const sessionValues = Object.values(sessionStorage);
-    return [...localValues, ...sessionValues].some(
-      (value) => String(value).includes(candidate),
-    );
+    const containsCandidate = (storage) => {
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index) ?? '';
+        const value = storage.getItem(key) ?? '';
+        if (key.includes(candidate) || value.includes(candidate)) return true;
+      }
+      return false;
+    };
+    return containsCandidate(localStorage) || containsCandidate(sessionStorage);
   }, runtimeKey);
-  assert.equal(persistedKey, false, 'Runtime API key was persisted in browser storage');
   assert.equal(
-    await page.locator(
-      '[data-nextjs-dialog], .vite-error-overlay, #webpack-dev-server-client-overlay',
-    ).count(),
-    0,
+    persistedKey,
+    false,
+    'Runtime API key was persisted in browser storage'
+  );
+  assert.equal(
+    requestUrls.some((url) => url.includes(runtimeKey)),
+    false,
+    'Runtime API key was exposed in a request URL'
+  );
+  assert.equal(
+    browserMessages.some((message) => message.includes(runtimeKey)),
+    false,
+    'Runtime API key was exposed in browser console output'
+  );
+  assert.equal(
+    (await page.content()).includes(runtimeKey),
+    false,
+    'Runtime API key remained in the rendered document'
+  );
+  assert.equal(
+    await page
+      .locator(
+        '[data-nextjs-dialog], .vite-error-overlay, #webpack-dev-server-client-overlay'
+      )
+      .count(),
+    0
   );
   assert.deepEqual(browserErrors, []);
 
