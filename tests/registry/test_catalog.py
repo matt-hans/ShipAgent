@@ -360,6 +360,48 @@ def test_public_provider_contract_rejects_sensitive_aliases(field_name):
         )
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "apikey",
+        "aPIkEY",
+        "APIKEY",
+        "accesskey",
+        "aCCESSkEY",
+        "ACCESSKEY",
+        "authheader",
+        "aUTHhEADER",
+        "AUTHHEADER",
+        "authorizationheader",
+        "aUTHORIZATIONhEADER",
+        "AUTHORIZATIONHEADER",
+        "labelhref",
+        "lABELhREF",
+        "LABELHREF",
+        "documentlink",
+        "dOCUMENTlINK",
+        "DOCUMENTLINK",
+    ],
+)
+def test_public_provider_contract_rejects_compact_sensitive_aliases(field_name):
+    schema = object_schema({field_name: {"type": "string"}}, [field_name])
+
+    assert provider_schema_privacy_violations("compact_alias_probe", schema) == [
+        field_name
+    ]
+    with pytest.raises(ValueError, match="provider privacy"):
+        public_tool(
+            "compact_alias_probe",
+            "Compact sensitive alias probe",
+            "A provider-visible compact naming alias validation fixture.",
+            SideEffectClass.read,
+            ["tools:read"],
+            object_schema({}, []),
+            schema,
+            provider_export_enabled=True,
+        )
+
+
 def test_shipment_content_tools_accept_only_bounded_shipagent_references():
     reference_fields = {
         "submit_one_off_shipment": "ingress_reference",
