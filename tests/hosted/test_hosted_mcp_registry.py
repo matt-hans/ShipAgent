@@ -139,6 +139,30 @@ async def test_real_mcp_round_trips_canonical_identifier_fixtures(
 
 
 @pytest.mark.asyncio
+async def test_real_mcp_round_trips_completed_with_warnings_job_status():
+    result = {
+        "job_id": VALID_JOB_ID,
+        "status": "completed_with_warnings",
+    }
+
+    async def handler(_arguments):
+        return result
+
+    server = build_server(
+        tools=[exportable_mcp_tool("get_job_status")],
+        tool_handlers={"get_job_status": handler},
+    )
+
+    async with Client(server) as client:
+        response = await client.call_tool(
+            "get_job_status",
+            {"job_id": VALID_JOB_ID},
+        )
+
+    assert response.structured_content == result
+
+
+@pytest.mark.asyncio
 async def test_hosted_mcp_server_does_not_register_unbound_catalog_tools():
     server = build_server()
     tools = await server.get_tools()

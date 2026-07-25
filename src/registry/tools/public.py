@@ -1,5 +1,6 @@
 from typing import Literal
 
+from src.job_status import PROVIDER_JOB_STATUS_CODES
 from src.registry.identifiers import ShipAgentIdFamily, shipagent_id_schema
 from src.registry.models import (
     AuditLevel,
@@ -43,7 +44,6 @@ ADDRESS_VALIDATION_GUIDANCE_CODES = [
 ]
 
 SYSTEM_STATUS_CODES = ["ready", "degraded", "unavailable"]
-JOB_STATUS_CODES = ["queued", "running", "completed", "failed", "cancelled"]
 LABEL_STATUS_CODES = ["pending", "ready", "unavailable"]
 SHIPAGENT_CAPABILITY_CODES = [
     "shipment_ingress",
@@ -339,7 +339,10 @@ PUBLIC_TOOLS = [
                     ShipAgentIdFamily.JOB,
                     "Opaque ShipAgent shipment job identifier.",
                 ),
-                "status": {"type": "string", "enum": JOB_STATUS_CODES},
+                "status": {
+                    "type": "string",
+                    "enum": list(PROVIDER_JOB_STATUS_CODES),
+                },
             },
             ["job_id", "status"],
         ),
@@ -371,7 +374,10 @@ PUBLIC_TOOLS = [
                     ShipAgentIdFamily.JOB,
                     "Opaque ShipAgent shipment job identifier.",
                 ),
-                "status": {"type": "string", "enum": JOB_STATUS_CODES},
+                "status": {
+                    "type": "string",
+                    "enum": list(PROVIDER_JOB_STATUS_CODES),
+                },
             },
             ["job_id", "status"],
         ),

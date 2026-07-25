@@ -416,6 +416,7 @@
             "queued",
             "running",
             "completed",
+            "completed_with_warnings",
             "failed",
             "cancelled"
           ],
@@ -469,6 +470,7 @@
             "queued",
             "running",
             "completed",
+            "completed_with_warnings",
             "failed",
             "cancelled"
           ],

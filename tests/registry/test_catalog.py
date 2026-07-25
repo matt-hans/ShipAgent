@@ -594,11 +594,25 @@ def test_label_download_returns_only_an_opaque_handoff_artifact():
         ("get_shipagent_status", ["ready", "degraded", "unavailable"]),
         (
             "execute_shipments",
-            ["queued", "running", "completed", "failed", "cancelled"],
+            [
+                "queued",
+                "running",
+                "completed",
+                "completed_with_warnings",
+                "failed",
+                "cancelled",
+            ],
         ),
         (
             "get_job_status",
-            ["queued", "running", "completed", "failed", "cancelled"],
+            [
+                "queued",
+                "running",
+                "completed",
+                "completed_with_warnings",
+                "failed",
+                "cancelled",
+            ],
         ),
         ("create_label_download", ["pending", "ready", "unavailable"]),
     ],
@@ -610,6 +624,16 @@ def test_public_status_outputs_are_bounded_enums(tool_name, expected_statuses):
         "type": "string",
         "enum": expected_statuses,
     }
+
+
+def test_public_job_status_schemas_follow_the_canonical_provider_mapping():
+    from src.job_status import PROVIDER_JOB_STATUS_CODES
+
+    for tool_name in ("execute_shipments", "get_job_status"):
+        tool = next(tool for tool in public_tools() if tool.name == tool_name)
+        assert tool.output_schema["properties"]["status"]["enum"] == list(
+            PROVIDER_JOB_STATUS_CODES
+        )
 
 
 def test_prepare_tool_schema_is_strict():
