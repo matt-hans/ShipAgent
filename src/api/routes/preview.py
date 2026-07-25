@@ -269,6 +269,7 @@ async def _execute_batch(
                 result["total_cost_cents"],
                 duties_taxes_cents=result.get("total_duties_taxes_cents", 0),
                 international_row_count=result.get("international_row_count", 0),
+                status=result.get("status", "completed"),
             )
         else:
             await observer.on_batch_failed(

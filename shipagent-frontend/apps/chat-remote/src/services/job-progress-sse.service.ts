@@ -17,7 +17,11 @@ import {
   BrowserSessionTransportService,
 } from '@shipagent/shared-api';
 import { JobStore } from '@shipagent/shared-state';
-import type { JobStatus } from '@shipagent/shared-types';
+import {
+  getJobTerminalState,
+  resolveJobTerminalStatus,
+  type JobStatus,
+} from '@shipagent/shared-types';
 
 /** Per-row failure detail. */
 export interface RowFailure {
@@ -87,11 +91,30 @@ export class JobProgressSseService implements OnDestroy {
   /** True while batch is actively running. */
   readonly isRunning = computed(() => this.progress().status === 'running');
 
-  /** True when batch completed successfully. */
-  readonly isComplete = computed(() => this.progress().status === 'completed');
+  /** Centralized terminal interpretation of the current backend status. */
+  readonly terminalState = computed(() =>
+    getJobTerminalState(this.progress().status)
+  );
 
-  /** True when batch failed. */
-  readonly isFailed = computed(() => this.progress().status === 'failed');
+  /** True when batch completed, including completion with warnings. */
+  readonly isComplete = computed(
+    () => this.terminalState()?.outcome === 'complete'
+  );
+
+  /** True when batch failed or was cancelled. */
+  readonly isFailed = computed(
+    () => this.terminalState()?.outcome === 'failed'
+  );
+
+  /** True when the completed batch carries explicit warnings. */
+  readonly hasWarnings = computed(
+    () => this.terminalState()?.hasWarnings ?? false
+  );
+
+  /** True when the batch was cancelled. */
+  readonly isCancelled = computed(
+    () => this.terminalState()?.cancelled ?? false
+  );
 
   ngOnDestroy(): void {
     this.disconnect();
@@ -116,18 +139,42 @@ export class JobProgressSseService implements OnDestroy {
       this.lifecycleAbortController.signal
     );
     if (!this.isCurrent(jobId, generation)) return;
-    if (status === 'completed' || status === 'failed') return;
+    if (status && getJobTerminalState(status)) return;
     this.openStream(jobId, generation);
   }
 
-  private openStream(jobId: string, generation: number): EventSource | null {
+  private openStream(
+    jobId: string,
+    generation: number,
+    reconcileAfterOpen?: AbortSignal
+  ): EventSource | null {
     if (!this.isCurrent(jobId, generation) || this.eventSource) return null;
 
     const es = new EventSource(this.apiService.getJobProgressUrl(jobId), {
       withCredentials: true,
     });
     let handlingError = false;
+    let reconciliationStarted = false;
     this.eventSource = es;
+
+    es.onopen = () => {
+      if (
+        !reconcileAfterOpen ||
+        reconciliationStarted ||
+        reconcileAfterOpen.aborted ||
+        this.eventSource !== es ||
+        !this.isCurrent(jobId, generation)
+      ) {
+        return;
+      }
+      reconciliationStarted = true;
+      void this.reconcileAfterSubscription(
+        jobId,
+        generation,
+        reconcileAfterOpen,
+        es
+      );
+    };
 
     es.onmessage = (event: MessageEvent) => {
       if (this.eventSource !== es || !this.isCurrent(jobId, generation)) return;
@@ -149,6 +196,9 @@ export class JobProgressSseService implements OnDestroy {
         if (this.handleEvent(envelope)) {
           this.progressRevision++;
           this.reconnectAttempts = 0;
+          if (this.terminalState()) {
+            this.stopTerminalStream(jobId, generation, es);
+          }
         }
       } catch {
         // Ignore parse errors.
@@ -198,7 +248,7 @@ export class JobProgressSseService implements OnDestroy {
 
     const status = await this.refreshSnapshot(jobId, generation, abortSignal);
     if (!this.isCurrent(jobId, generation)) return;
-    if (status === 'completed' || status === 'failed') {
+    if (status && getJobTerminalState(status)) {
       this.jobStore.incrementJobListVersion();
       return;
     }
@@ -208,15 +258,7 @@ export class JobProgressSseService implements OnDestroy {
     this.reconnectAttempts++;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      const replacementSource = this.openStream(jobId, generation);
-      if (replacementSource) {
-        void this.reconcileAfterSubscription(
-          jobId,
-          generation,
-          abortSignal,
-          replacementSource
-        );
-      }
+      this.openStream(jobId, generation, abortSignal);
     }, delay);
   }
 
@@ -237,7 +279,7 @@ export class JobProgressSseService implements OnDestroy {
     if (this.eventSource !== source || !this.isCurrent(jobId, generation)) {
       return;
     }
-    if (status === 'completed' || status === 'failed') {
+    if (status && getJobTerminalState(status)) {
       source.close();
       this.eventSource = null;
       this.jobStore.incrementJobListVersion();
@@ -293,6 +335,24 @@ export class JobProgressSseService implements OnDestroy {
     return (
       this.currentJobId === jobId && this.lifecycleGeneration === generation
     );
+  }
+
+  private stopTerminalStream(
+    jobId: string,
+    generation: number,
+    source: EventSource
+  ): void {
+    if (this.eventSource !== source || !this.isCurrent(jobId, generation)) {
+      return;
+    }
+    source.close();
+    this.eventSource = null;
+    this.lifecycleAbortController?.abort();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.jobStore.incrementJobListVersion();
   }
 
   // ---------------------------------------------------------------------------
@@ -366,7 +426,7 @@ export class JobProgressSseService implements OnDestroy {
       case 'batch_completed':
         this.progress.update((p) => ({
           ...p,
-          status: 'completed',
+          status: resolveJobTerminalStatus(eventData['status'], 'complete'),
           processed: (eventData['total_rows'] as number) ?? p.total,
           successful: (eventData['successful'] as number) ?? p.successful,
           totalCostCents:
@@ -379,13 +439,12 @@ export class JobProgressSseService implements OnDestroy {
             p.internationalCount,
           currentRow: null,
         }));
-        this.jobStore.incrementJobListVersion();
         return true;
 
       case 'batch_failed':
         this.progress.update((p) => ({
           ...p,
-          status: 'failed',
+          status: resolveJobTerminalStatus(eventData['status'], 'failed'),
           processed: (eventData['processed'] as number) ?? p.processed,
           dutiesTaxesCents:
             (eventData['duties_taxes_cents'] as number | undefined) ??
@@ -401,7 +460,6 @@ export class JobProgressSseService implements OnDestroy {
           },
           currentRow: null,
         }));
-        this.jobStore.incrementJobListVersion();
         return true;
 
       default:

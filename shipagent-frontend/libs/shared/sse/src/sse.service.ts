@@ -27,6 +27,8 @@ export class SseService implements OnDestroy {
   readonly connectionState = signal<SseConnectionState>('disconnected');
 
   private eventSource: EventSource | null = null;
+  private connectionGeneration = 0;
+  private connectionAbortController: AbortController | null = null;
 
   /**
    * Connect to an SSE endpoint and return an Observable of parsed events.
@@ -41,19 +43,40 @@ export class SseService implements OnDestroy {
   connect(url: string, _config?: SseConfig): Observable<RawSseEvent> {
     // Close any existing connection before opening a new one.
     this.disconnect();
+    const generation = this.connectionGeneration;
 
     return new Observable<RawSseEvent>((observer) => {
+      if (
+        generation !== this.connectionGeneration ||
+        this.connectionAbortController
+      ) {
+        observer.complete();
+        return;
+      }
+
       this.connectionState.set('connecting');
 
       const eventSource = new EventSource(url, { withCredentials: true });
+      const abortController = new AbortController();
       let handlingError = false;
       this.eventSource = eventSource;
+      this.connectionAbortController = abortController;
 
       eventSource.onopen = () => {
+        if (
+          !this.isCurrentConnection(generation, eventSource, abortController)
+        ) {
+          return;
+        }
         this.connectionState.set('connected');
       };
 
       eventSource.onmessage = (event: MessageEvent) => {
+        if (
+          !this.isCurrentConnection(generation, eventSource, abortController)
+        ) {
+          return;
+        }
         try {
           const rawData = event.data as string;
 
@@ -100,7 +123,12 @@ export class SseService implements OnDestroy {
       };
 
       eventSource.onerror = () => {
-        if (handlingError) return;
+        if (
+          handlingError ||
+          !this.isCurrentConnection(generation, eventSource, abortController)
+        ) {
+          return;
+        }
         handlingError = true;
         eventSource.close();
         if (this.eventSource === eventSource) {
@@ -109,10 +137,17 @@ export class SseService implements OnDestroy {
         this.connectionState.set('disconnected');
 
         void this.browserTransport
-          .confirmSessionAfterEventSourceError()
+          .confirmSessionAfterEventSourceError(abortController.signal, () =>
+            this.isCurrentGeneration(generation, abortController)
+          )
           .then((sessionExpired) => {
             this.ngZone.run(() => {
-              if (observer.closed) return;
+              if (
+                observer.closed ||
+                !this.isCurrentGeneration(generation, abortController)
+              ) {
+                return;
+              }
               if (sessionExpired) {
                 observer.complete();
                 return;
@@ -126,7 +161,7 @@ export class SseService implements OnDestroy {
 
       // Teardown: called when the Observable is unsubscribed.
       return () => {
-        this.disconnect();
+        this.disconnectGeneration(generation, eventSource, abortController);
       };
     });
   }
@@ -136,15 +171,56 @@ export class SseService implements OnDestroy {
    * Safe to call when no connection is active.
    */
   disconnect(): void {
+    this.connectionGeneration++;
+    this.connectionAbortController?.abort();
+    this.connectionAbortController = null;
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
-      this.connectionState.set('disconnected');
     }
+    this.connectionState.set('disconnected');
   }
 
   /** Angular lifecycle hook — ensures cleanup when the hosting component is destroyed. */
   ngOnDestroy(): void {
     this.disconnect();
+  }
+
+  private isCurrentGeneration(
+    generation: number,
+    abortController: AbortController
+  ): boolean {
+    return (
+      generation === this.connectionGeneration &&
+      this.connectionAbortController === abortController &&
+      !abortController.signal.aborted
+    );
+  }
+
+  private isCurrentConnection(
+    generation: number,
+    eventSource: EventSource,
+    abortController: AbortController
+  ): boolean {
+    return (
+      this.eventSource === eventSource &&
+      this.isCurrentGeneration(generation, abortController)
+    );
+  }
+
+  private disconnectGeneration(
+    generation: number,
+    eventSource: EventSource,
+    abortController: AbortController
+  ): void {
+    if (!this.isCurrentGeneration(generation, abortController)) return;
+    this.connectionGeneration++;
+    abortController.abort();
+    this.connectionAbortController = null;
+    if (this.eventSource === eventSource) {
+      eventSource.close();
+      this.eventSource = null;
+    }
+    this.connectionState.set('disconnected');
   }
 }
