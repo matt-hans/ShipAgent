@@ -38,14 +38,12 @@ export function canUseTauriIpc(
 /**
  * Compute the browser API base URL.
  *
- * Native Federation development has no proxy passthrough, so its fixed shell
- * origin uses the separately started development backend. Production shells,
- * including the Tauri sidecar reload, always use a relative same-origin URL.
+ * Browser development proxies relative API requests to the backend. Production
+ * shells, including FastAPI/Docker and the Tauri sidecar reload, serve the API
+ * from the same origin directly.
  */
 export function computeApiBaseUrl(
-  location: ShellBootstrapLocation = window.location
+  _location: ShellBootstrapLocation = window.location
 ): string {
-  return location.hostname === 'localhost' && location.port === '4200'
-    ? 'http://localhost:8000/api/v1'
-    : '/api/v1';
+  return '/api/v1';
 }

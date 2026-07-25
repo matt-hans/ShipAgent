@@ -298,10 +298,21 @@ AGENT_AUDIT_MAX_PAYLOAD_BYTES=16384
 
 3. **Start backend + frontend**
    ```bash
+   # Terminal 1: backend on http://localhost:8080
    ./scripts/start-backend.sh
+
+   # Terminal 2: shell on http://localhost:4200
    cd shipagent-frontend && npx nx serve shell
    ```
-   Open [http://localhost:4200](http://localhost:4200)
+   Open [http://localhost:4200](http://localhost:4200). The development shell
+   uses relative `/api/v1` URLs; its Nx/Vite proxy forwards `/api` to the
+   backend on port 8080, so local development does not require CORS.
+
+   To exercise both documented launchers and the proxy end to end:
+   ```bash
+   cd shipagent-frontend
+   npm run smoke:development-proxy
+   ```
 
 ### Runtime Policy
 
@@ -565,8 +576,11 @@ ruff format src/ tests/
 ```bash
 cd shipagent-frontend
 
-# Development server with HMR
+# Development server with HMR on port 4200; /api proxies to localhost:8080
 npx nx serve shell
+
+# Real backend + frontend development proxy smoke
+npm run smoke:development-proxy
 
 # Production build
 npx nx run-many -t build --all --configuration=production

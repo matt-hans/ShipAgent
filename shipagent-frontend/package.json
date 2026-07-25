@@ -3,7 +3,8 @@
   "version": "0.0.0",
   "license": "MIT",
   "scripts": {
-    "smoke:authenticated-production": "node scripts/smoke-authenticated-production.mjs"
+    "smoke:authenticated-production": "node scripts/smoke-authenticated-production.mjs",
+    "smoke:development-proxy": "node scripts/smoke-development-proxy.mjs"
   },
   "private": true,
   "devDependencies": {
