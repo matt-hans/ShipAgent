@@ -73,6 +73,7 @@ export class JobProgressSseService implements OnDestroy {
   private lifecycleAbortController: AbortController | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
+  private progressRevision = 0;
 
   /** Current progress snapshot. */
   readonly progress = signal<JobProgressSnapshot>({ ...INITIAL_PROGRESS });
@@ -106,6 +107,7 @@ export class JobProgressSseService implements OnDestroy {
     this.lifecycleAbortController = new AbortController();
     const generation = this.lifecycleGeneration;
     this.progress.set({ ...INITIAL_PROGRESS });
+    this.progressRevision = 0;
 
     // Fetch initial progress for crash recovery.
     const status = await this.refreshSnapshot(
@@ -118,20 +120,14 @@ export class JobProgressSseService implements OnDestroy {
     this.openStream(jobId, generation);
   }
 
-  private openStream(jobId: string, generation: number): void {
-    if (!this.isCurrent(jobId, generation) || this.eventSource) return;
+  private openStream(jobId: string, generation: number): EventSource | null {
+    if (!this.isCurrent(jobId, generation) || this.eventSource) return null;
 
     const es = new EventSource(this.apiService.getJobProgressUrl(jobId), {
       withCredentials: true,
     });
     let handlingError = false;
     this.eventSource = es;
-
-    es.onopen = () => {
-      if (this.eventSource === es && this.isCurrent(jobId, generation)) {
-        this.reconnectAttempts = 0;
-      }
-    };
 
     es.onmessage = (event: MessageEvent) => {
       if (this.eventSource !== es || !this.isCurrent(jobId, generation)) return;
@@ -150,7 +146,10 @@ export class JobProgressSseService implements OnDestroy {
         // Skip pings.
         if (eventType === 'ping') return;
 
-        this.handleEvent(envelope);
+        if (this.handleEvent(envelope)) {
+          this.progressRevision++;
+          this.reconnectAttempts = 0;
+        }
       } catch {
         // Ignore parse errors.
       }
@@ -164,6 +163,8 @@ export class JobProgressSseService implements OnDestroy {
       this.eventSource = null;
       void this.recoverFromError(jobId, generation);
     };
+
+    return es;
   }
 
   /** Disconnect the progress stream. */
@@ -207,14 +208,48 @@ export class JobProgressSseService implements OnDestroy {
     this.reconnectAttempts++;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.openStream(jobId, generation);
+      const replacementSource = this.openStream(jobId, generation);
+      if (replacementSource) {
+        void this.reconcileAfterSubscription(
+          jobId,
+          generation,
+          abortSignal,
+          replacementSource
+        );
+      }
     }, delay);
+  }
+
+  private async reconcileAfterSubscription(
+    jobId: string,
+    generation: number,
+    abortSignal: AbortSignal,
+    source: EventSource
+  ): Promise<void> {
+    const expectedRevision = this.progressRevision;
+    const status = await this.refreshSnapshot(
+      jobId,
+      generation,
+      abortSignal,
+      expectedRevision,
+      source
+    );
+    if (this.eventSource !== source || !this.isCurrent(jobId, generation)) {
+      return;
+    }
+    if (status === 'completed' || status === 'failed') {
+      source.close();
+      this.eventSource = null;
+      this.jobStore.incrementJobListVersion();
+    }
   }
 
   private async refreshSnapshot(
     jobId: string,
     generation: number,
-    abortSignal: AbortSignal
+    abortSignal: AbortSignal,
+    expectedRevision?: number,
+    expectedSource?: EventSource
   ): Promise<JobStatus | null> {
     if (abortSignal.aborted) return null;
     try {
@@ -224,20 +259,29 @@ export class JobProgressSseService implements OnDestroy {
           .pipe(takeUntil(fromEvent(abortSignal, 'abort')))
       );
       if (!this.isCurrent(jobId, generation)) return null;
-      this.progress.set({
+      if (
+        (expectedRevision !== undefined &&
+          this.progressRevision !== expectedRevision) ||
+        (expectedSource !== undefined && this.eventSource !== expectedSource)
+      ) {
+        return null;
+      }
+      this.progress.update((current) => ({
+        ...current,
         total: data.total_rows,
         processed: data.processed_rows,
         successful: data.successful_rows,
         failed: data.failed_rows,
         totalCostCents: data.total_cost_cents ?? 0,
-        dutiesTaxesCents: data.total_duties_taxes_cents ?? undefined,
-        internationalCount: data.international_row_count ?? undefined,
+        dutiesTaxesCents:
+          data.total_duties_taxes_cents === undefined
+            ? current.dutiesTaxesCents
+            : data.total_duties_taxes_cents ?? undefined,
+        internationalCount:
+          data.international_row_count ?? current.internationalCount,
         status: data.status,
-        error: null,
-        rowFailures: [],
-        currentRow: null,
-        lastTrackingNumber: null,
-      });
+      }));
+      this.progressRevision++;
       return data.status;
     } catch {
       // Non-critical — live SSE recovery remains bounded by its generation.
@@ -255,8 +299,8 @@ export class JobProgressSseService implements OnDestroy {
   // Event handlers
   // ---------------------------------------------------------------------------
 
-  private handleEvent(data: unknown): void {
-    if (!data || typeof data !== 'object') return;
+  private handleEvent(data: unknown): boolean {
+    if (!data || typeof data !== 'object') return false;
     const d = data as Record<string, unknown>;
 
     // Backend sends { event, data } envelope.
@@ -276,14 +320,14 @@ export class JobProgressSseService implements OnDestroy {
           error: null,
           rowFailures: [],
         }));
-        break;
+        return true;
 
       case 'row_started':
         this.progress.update((p) => ({
           ...p,
           currentRow: (eventData['row_number'] as number) ?? null,
         }));
-        break;
+        return true;
 
       case 'row_completed':
         this.progress.update((p) => ({
@@ -295,7 +339,7 @@ export class JobProgressSseService implements OnDestroy {
           lastTrackingNumber: (eventData['tracking_number'] as string) ?? null,
           currentRow: null,
         }));
-        break;
+        return true;
 
       case 'row_failed':
         this.progress.update((p) => ({
@@ -317,7 +361,7 @@ export class JobProgressSseService implements OnDestroy {
             },
           ],
         }));
-        break;
+        return true;
 
       case 'batch_completed':
         this.progress.update((p) => ({
@@ -336,7 +380,7 @@ export class JobProgressSseService implements OnDestroy {
           currentRow: null,
         }));
         this.jobStore.incrementJobListVersion();
-        break;
+        return true;
 
       case 'batch_failed':
         this.progress.update((p) => ({
@@ -358,10 +402,10 @@ export class JobProgressSseService implements OnDestroy {
           currentRow: null,
         }));
         this.jobStore.incrementJobListVersion();
-        break;
+        return true;
 
       default:
-        break;
+        return false;
     }
   }
 }

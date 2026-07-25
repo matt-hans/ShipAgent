@@ -1,6 +1,6 @@
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { Observable, of, throwError } from 'rxjs';
+import { Observable, Subject, of, throwError } from 'rxjs';
 import {
   API_BASE_URL,
   ApiService,
@@ -11,6 +11,7 @@ import { JobStore } from '@shipagent/shared-state';
 import { SseService } from '@shipagent/shared-sse';
 import type { BrowserSessionStatus } from '@shipagent/shared-types';
 import { ProgressDisplayComponent } from '../app/progress-display/progress-display.component';
+import { buildJobCompletionMetadata } from './job-completion-metadata';
 import { JobProgressSseService } from './job-progress-sse.service';
 
 class ControlledEventSource {
@@ -31,6 +32,11 @@ class ControlledEventSource {
   constructor(readonly url: string, init?: EventSourceInit) {
     this.withCredentials = init?.withCredentials ?? false;
     ControlledEventSource.instances.push(this);
+  }
+
+  emitOpen(): void {
+    this.readyState = ControlledEventSource.OPEN;
+    this.onopen?.(new Event('open'));
   }
 
   emitError(): void {
@@ -195,7 +201,7 @@ describe('session-aware EventSource transports', () => {
     await vi.runAllTimersAsync();
 
     expect(apiMock.getBrowserSessionStatus).toHaveBeenCalledTimes(1);
-    expect(apiMock.getJobProgress).toHaveBeenCalledTimes(2);
+    expect(apiMock.getJobProgress).toHaveBeenCalledTimes(3);
     expect(ControlledEventSource.instances).toHaveLength(2);
     expect(ControlledEventSource.instances[0].close).toHaveBeenCalledTimes(1);
     expect(ControlledEventSource.instances[1].url).toBe(
@@ -215,7 +221,7 @@ describe('session-aware EventSource transports', () => {
     await vi.runAllTimersAsync();
 
     expect(apiMock.getBrowserSessionStatus).toHaveBeenCalledTimes(1);
-    expect(apiMock.getJobProgress).toHaveBeenCalledTimes(2);
+    expect(apiMock.getJobProgress).toHaveBeenCalledTimes(3);
     expect(ControlledEventSource.instances).toHaveLength(2);
   });
 
@@ -315,6 +321,234 @@ describe('session-aware EventSource transports', () => {
     expect(ControlledEventSource.instances).toHaveLength(1);
   });
 
+  it('reconciles terminal progress after the replacement stream subscribes', async () => {
+    vi.useFakeTimers();
+    sessionStatus = {
+      required: true,
+      authenticated: true,
+      csrf_token: 'v1.still-valid',
+    };
+    const runningSnapshot = {
+      job_id: 'job-1',
+      status: 'running',
+      total_rows: 2,
+      processed_rows: 1,
+      successful_rows: 1,
+      failed_rows: 0,
+      total_cost_cents: 1200,
+    };
+    apiMock.getJobProgress
+      .mockReturnValueOnce(of(runningSnapshot))
+      .mockReturnValueOnce(of(runningSnapshot))
+      .mockImplementationOnce(() => {
+        expect(ControlledEventSource.instances).toHaveLength(2);
+        return of({
+          job_id: 'job-1',
+          status: 'completed',
+          total_rows: 2,
+          processed_rows: 2,
+          successful_rows: 2,
+          failed_rows: 0,
+          total_cost_cents: 2400,
+        });
+      });
+    const fixture = TestBed.createComponent(ProgressDisplayComponent);
+    const completed = vi.fn();
+    fixture.componentInstance.complete.subscribe(completed);
+    fixture.componentRef.setInput('jobId', 'job-1');
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+
+    ControlledEventSource.instances[0].emitError();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(apiMock.getJobProgress).toHaveBeenCalledTimes(2);
+    expect(ControlledEventSource.instances).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(250);
+    fixture.detectChanges();
+
+    expect(apiMock.getJobProgress).toHaveBeenCalledTimes(3);
+    expect(ControlledEventSource.instances).toHaveLength(2);
+    expect(ControlledEventSource.instances[1].close).toHaveBeenCalledTimes(1);
+    expect(fixture.componentInstance.progressService.progress().status).toBe(
+      'completed'
+    );
+    expect(completed).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let stale post-subscription reconciliation override a newer frame', async () => {
+    vi.useFakeTimers();
+    sessionStatus = {
+      required: true,
+      authenticated: true,
+      csrf_token: 'v1.still-valid',
+    };
+    const runningSnapshot = {
+      job_id: 'job-1',
+      status: 'running',
+      total_rows: 2,
+      processed_rows: 1,
+      successful_rows: 1,
+      failed_rows: 0,
+      total_cost_cents: 1200,
+    };
+    const reconciliation = new Subject<typeof runningSnapshot>();
+    apiMock.getJobProgress
+      .mockReturnValueOnce(of(runningSnapshot))
+      .mockReturnValueOnce(of(runningSnapshot))
+      .mockReturnValueOnce(reconciliation);
+    const progress = TestBed.inject(JobProgressSseService);
+    await progress.connectToJobProgress('job-1');
+
+    ControlledEventSource.instances[0].emitError();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(ControlledEventSource.instances).toHaveLength(2);
+
+    ControlledEventSource.instances[1].emitMessage({
+      event: 'row_completed',
+      data: {
+        job_id: 'job-1',
+        row_number: 2,
+        tracking_number: '1Z-CURRENT',
+        cost_cents: 1300,
+      },
+    });
+    reconciliation.next(runningSnapshot);
+    reconciliation.complete();
+    await Promise.resolve();
+
+    expect(progress.progress().processed).toBe(2);
+    expect(progress.progress().successful).toBe(2);
+    expect(progress.progress().totalCostCents).toBe(2500);
+    expect(progress.progress().lastTrackingNumber).toBe('1Z-CURRENT');
+  });
+
+  it('preserves event-only diagnostics through running and failed recovery snapshots', async () => {
+    vi.useFakeTimers();
+    sessionStatus = {
+      required: true,
+      authenticated: true,
+      csrf_token: 'v1.still-valid',
+    };
+    apiMock.getJobProgress
+      .mockReturnValueOnce(
+        of({
+          job_id: 'job-1',
+          status: 'running',
+          total_rows: 4,
+          processed_rows: 0,
+          successful_rows: 0,
+          failed_rows: 0,
+          total_cost_cents: 0,
+        })
+      )
+      .mockReturnValueOnce(
+        of({
+          job_id: 'job-1',
+          status: 'running',
+          total_rows: 4,
+          processed_rows: 2,
+          successful_rows: 1,
+          failed_rows: 1,
+          total_cost_cents: 1300,
+        })
+      )
+      .mockReturnValueOnce(
+        of({
+          job_id: 'job-1',
+          status: 'failed',
+          total_rows: 4,
+          processed_rows: 3,
+          successful_rows: 1,
+          failed_rows: 2,
+          total_cost_cents: 1300,
+        })
+      );
+    const fixture = TestBed.createComponent(ProgressDisplayComponent);
+    let emittedMetadata: Record<string, unknown> | undefined;
+    const failed = vi.fn(() => {
+      emittedMetadata = buildJobCompletionMetadata(
+        'job-1',
+        fixture.componentInstance.progressService.progress()
+      );
+    });
+    fixture.componentInstance.failed.subscribe(failed);
+    fixture.componentRef.setInput('jobId', 'job-1');
+    fixture.detectChanges();
+    await vi.advanceTimersByTimeAsync(0);
+    const source = ControlledEventSource.instances[0];
+
+    source.emitMessage({
+      event: 'row_completed',
+      data: {
+        job_id: 'job-1',
+        row_number: 1,
+        tracking_number: '1Z-PRIOR',
+        cost_cents: 1300,
+      },
+    });
+    source.emitMessage({
+      event: 'row_failed',
+      data: {
+        job_id: 'job-1',
+        row_number: 2,
+        error_code: 'E-ROW',
+        error_message: 'Recipient review required',
+      },
+    });
+    source.emitMessage({
+      event: 'row_started',
+      data: { job_id: 'job-1', row_number: 3 },
+    });
+    source.emitError();
+    await vi.runAllTimersAsync();
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance.progressService.progress()).toEqual({
+      total: 4,
+      processed: 3,
+      successful: 1,
+      failed: 2,
+      totalCostCents: 1300,
+      dutiesTaxesCents: undefined,
+      internationalCount: undefined,
+      status: 'failed',
+      error: {
+        code: 'E-ROW',
+        message: 'Recipient review required',
+      },
+      rowFailures: [
+        {
+          rowNumber: 2,
+          errorCode: 'E-ROW',
+          errorMessage: 'Recipient review required',
+        },
+      ],
+      currentRow: 3,
+      lastTrackingNumber: '1Z-PRIOR',
+    });
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(emittedMetadata).toMatchObject({
+      type: 'completion',
+      jobId: 'job-1',
+      completion: {
+        error: {
+          code: 'E-ROW',
+          message: 'Recipient review required',
+        },
+        rowFailures: [
+          {
+            rowNumber: 2,
+            errorCode: 'E-ROW',
+            errorMessage: 'Recipient review required',
+          },
+        ],
+        currentRow: 3,
+        lastTrackingNumber: '1Z-PRIOR',
+      },
+    });
+  });
+
   it('bounds repeated transient failures without duplicate streams or checks', async () => {
     vi.useFakeTimers();
     sessionStatus = {
@@ -334,13 +568,72 @@ describe('session-aware EventSource transports', () => {
     }
 
     expect(apiMock.getBrowserSessionStatus).toHaveBeenCalledTimes(4);
-    expect(apiMock.getJobProgress).toHaveBeenCalledTimes(5);
+    expect(apiMock.getJobProgress).toHaveBeenCalledTimes(8);
     expect(ControlledEventSource.instances).toHaveLength(4);
     expect(
       ControlledEventSource.instances.filter(
         (source) => source.readyState !== ControlledEventSource.CLOSED
       )
     ).toHaveLength(0);
+  });
+
+  it('does not reset the retry budget for repeated open then error handshakes', async () => {
+    vi.useFakeTimers();
+    sessionStatus = {
+      required: true,
+      authenticated: true,
+      csrf_token: 'v1.still-valid',
+    };
+    const progress = TestBed.inject(JobProgressSseService);
+    await progress.connectToJobProgress('job-1');
+
+    for (let failure = 0; failure < 4; failure++) {
+      const source = ControlledEventSource.instances.at(-1);
+      if (!source) throw new Error('Expected an active progress stream');
+      source.emitOpen();
+      source.emitError();
+      source.emitError();
+      await vi.advanceTimersByTimeAsync(10_000);
+    }
+
+    expect(ControlledEventSource.instances).toHaveLength(4);
+    expect(apiMock.getBrowserSessionStatus).toHaveBeenCalledTimes(4);
+    expect(apiMock.getJobProgress).toHaveBeenCalledTimes(8);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(
+      ControlledEventSource.instances.filter(
+        (source) => source.readyState !== ControlledEventSource.CLOSED
+      )
+    ).toHaveLength(0);
+  });
+
+  it('resets the retry budget after a meaningful progress frame', async () => {
+    vi.useFakeTimers();
+    sessionStatus = {
+      required: true,
+      authenticated: true,
+      csrf_token: 'v1.still-valid',
+    };
+    const progress = TestBed.inject(JobProgressSseService);
+    await progress.connectToJobProgress('job-1');
+
+    ControlledEventSource.instances[0].emitError();
+    await vi.advanceTimersByTimeAsync(10_000);
+    ControlledEventSource.instances[1].emitError();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    ControlledEventSource.instances[2].emitMessage({
+      event: 'row_started',
+      data: { job_id: 'job-1', row_number: 2 },
+    });
+    expect(progress.progress().currentRow).toBe(2);
+
+    ControlledEventSource.instances[2].emitError();
+    await vi.advanceTimersByTimeAsync(10_000);
+    ControlledEventSource.instances[3].emitError();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(ControlledEventSource.instances).toHaveLength(5);
   });
 
   it('cancels a stale session check when the active job changes', async () => {

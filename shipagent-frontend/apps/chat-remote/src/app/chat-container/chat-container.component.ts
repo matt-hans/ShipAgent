@@ -39,6 +39,7 @@ import { JobProgressSseService } from '../../services/job-progress-sse.service';
 import { EventProcessorService } from '../../services/event-processor.service';
 import { ChatActionsService } from '../../services/chat-actions.service';
 import { DomainCardBridgeService } from '../../services/domain-card-bridge.service';
+import { buildJobCompletionMetadata } from '../../services/job-completion-metadata';
 import { SseService } from '@shipagent/shared-sse';
 import { MessageListComponent } from '../message-list/message-list.component';
 import { ToolCallChipComponent } from '../tool-call-chip/tool-call-chip.component';
@@ -520,7 +521,7 @@ export class ChatContainerComponent implements OnInit {
     if (!progressService) return;
 
     const p = progressService.progress();
-    const metadata = this.buildCompletionMetadata(jobId, p);
+    const metadata = buildJobCompletionMetadata(jobId, p, this.lastJobName);
 
     this.conversationStore.appendMessage({
       id: `completion-${Date.now()}`,
@@ -575,7 +576,7 @@ export class ChatContainerComponent implements OnInit {
       role: 'system',
       content: '',
       timestamp: new Date().toISOString(),
-      metadata: this.buildCompletionMetadata(jobId, p),
+      metadata: buildJobCompletionMetadata(jobId, p, this.lastJobName),
     });
 
     this.executingJobId.set(null);
@@ -631,31 +632,4 @@ export class ChatContainerComponent implements OnInit {
       .replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
-  /**
-   * Build the completion metadata object from current progress state.
-   * Shared by handleProgressComplete() and handleProgressFailed().
-   */
-  private buildCompletionMetadata(jobId: string, progress: {
-    successful: number;
-    failed: number;
-    totalCostCents: number;
-    dutiesTaxesCents?: number;
-    internationalCount?: number;
-    rowFailures: unknown[];
-  }): Record<string, unknown> {
-    return {
-      type: 'completion',
-      jobId,
-      action: 'complete',
-      completion: {
-        jobName: this.lastJobName || undefined,
-        successful: progress.successful,
-        failed: progress.failed,
-        totalCostCents: progress.totalCostCents,
-        dutiesTaxesCents: progress.dutiesTaxesCents,
-        internationalCount: progress.internationalCount,
-        rowFailures: progress.rowFailures.length > 0 ? progress.rowFailures : undefined,
-      },
-    };
-  }
 }
