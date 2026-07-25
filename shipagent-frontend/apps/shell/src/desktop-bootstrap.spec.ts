@@ -92,7 +92,7 @@ describe('production desktop bootstrap', () => {
     ).toBe(false);
   });
 
-  it('preserves the Native Federation development backend fallback', () => {
+  it('uses the relative API URL through the Native Federation dev proxy', () => {
     expect(
       computeApiBaseUrl({
         protocol: 'http:',
@@ -100,6 +100,6 @@ describe('production desktop bootstrap', () => {
         port: '4200',
         replace: vi.fn(),
       })
-    ).toBe('http://localhost:8000/api/v1');
+    ).toBe('/api/v1');
   });
 });
