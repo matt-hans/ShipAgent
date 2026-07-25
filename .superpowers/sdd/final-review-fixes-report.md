@@ -1591,3 +1591,232 @@ GREEN:
 - No dependency or generated provider artifact changed. No API key, signed
   session, CSRF token, customer content, carrier content, or label data is
   reproduced in this report.
+
+# Round 9
+
+## Status and commits
+
+All four Round 9 findings are implemented. Provider-visible identifiers now use
+one centralized, server-minted, family-specific 32-lowercase-hex format. Job
+progress recovery now has a meaningful-frame retry reset, a hard handshake
+failure cap, post-subscription REST reconciliation with stale-result guards, and
+diagnostic-preserving snapshot merges.
+
+Round 9 implementation commits:
+
+- `99a52f3` — `fix(registry): require server-minted provider IDs`
+- `df0df55` — `fix(frontend): harden job progress recovery`
+- `1123fde` — `fix(audit): enforce canonical provider IDs`
+
+## Vertical TDD evidence
+
+### Exact server-minted provider identifiers
+
+RED:
+
+- The first mint/parse test failed during collection with
+  `ModuleNotFoundError: src.registry.identifiers`.
+- After introducing the identifier module, the whole-public-catalog schema scan
+  failed against the permissive 16–96-character public schemas.
+- Migrating schemas to the exact format exposed **18** stale positive fixtures
+  that still used 16-character bodies.
+- A provider-export admission regression test then failed with
+  `DID NOT RAISE`, proving a hand-written permissive `job_id` schema could still
+  bypass the canonical helper.
+
+GREEN:
+
+- `ShipAgentIdFamily` is the single registry of the **9** public families:
+  correlation, device, ingress, input, validation, preview, confirmation, job,
+  and label.
+- The shared helper emits exact
+  `^sa_<family>_[0-9a-f]{32}$` schemas with matching fixed `minLength` and
+  `maxLength`, mints values with cryptographic randomness, and parses only the
+  canonical representation.
+- Provider export admission recursively rejects known ID/reference fields that
+  do not use their registered family schema, as well as unregistered
+  provider-visible `*_id` and `*_reference` fields.
+- Catalog tests scan every input/output schema and prove all registered fields
+  use the exact helper. Positive tests mint and parse every family.
+- Direct result-projection and real FastMCP matrices cover all **9** families
+  against **6** correctly prefixed compact/base64 canary bodies: credential,
+  token, customer/name, recipient, address, and base64-encoded content. Invalid
+  inputs never reach handlers; invalid outputs return only the provider-safe
+  error and do not enter logs.
+- Real FastMCP round-trip fixtures exercise every public tool and every
+  canonical family occurrence.
+- All four provider artifacts were regenerated from the canonical registry and
+  now contain the exact patterns and fixed lengths.
+
+The required ownership check was evaluated separately from syntax validation.
+This branch has no production hosted public-tool handlers or backing reference
+store: the hosted registry is a contract/readiness boundary and the real MCP
+tests bind test handlers. FastMCP therefore enforces the exact syntax before
+dispatch, but there is no truthful tenant-ownership lookup to add yet. A future
+production handler must validate reference existence and authenticated tenant
+ownership at its service boundary.
+
+### Audit-boundary consistency addendum
+
+RED:
+
+- Aggregate self-review found that the control-plane audit allowlist still
+  recognized legacy variable-length `sa_*` bodies. Six new device/workflow
+  cases using 24- or 34-hex bodies all failed with `DID NOT RAISE`; the focused
+  result was **6 failed, 71 deselected**.
+
+GREEN:
+
+- Workflow IDs persisted in audit details now delegate to the same canonical
+  parser used by provider contracts. Internal account/connection identifiers
+  and UUIDs remain separate internal formats.
+- The 36-character audit `device_id` column remains an internal UUID field and
+  now rejects `sa_device_*` values instead of accepting a noncanonical body or
+  silently widening persistence without a migration.
+- Internal `sa_artifact_*`/`sa_document_*` values are fixed at 32 hex, while
+  public label and validation artifacts use their registered canonical
+  families.
+- The complete audit service suite is **76 passed**; the complete
+  control-plane suite is **193 passed, 1 skipped, 2 warnings**.
+
+### Retry budget no longer resets on handshake
+
+RED:
+
+- The repeated `open → error` test double-fired each error callback and expected
+  the initial stream plus at most three replacements. The old `onopen` reset
+  produced **5** sources instead of **4**; the focused result was
+  **1 failed, 68 passed**.
+- A follow-up test required a real progress frame to restore retry capacity.
+  Before implementing the meaningful-frame reset it saw **4** sources instead
+  of **5**; the focused result was **1 failed, 69 passed**.
+
+GREEN:
+
+- Opening a socket no longer changes the retry budget. Only a recognized,
+  non-ping progress event resets consecutive failures.
+- The handshake-loop test proves four failures produce only four total sources,
+  four session checks, eight snapshots, no live source, and no pending timer.
+- The meaningful-frame test proves an actual `row_started` event resets the
+  budget and permits a later bounded recovery sequence.
+
+### Post-subscription terminal reconciliation
+
+RED:
+
+- A component test returned `running` before the 250 ms backoff and
+  `completed` only after the replacement should have subscribed. The first
+  implementation made only **2** snapshot calls instead of the required
+  **3**; the focused result was **1 failed, 70 passed**.
+- A held post-subscription snapshot then overwrote a newer `row_completed`
+  frame, leaving `processed` at **1** instead of **2**; the focused result was
+  **1 failed, 71 passed**.
+
+GREEN:
+
+- Each bounded retry establishes its replacement EventSource first and then
+  requests an authoritative REST snapshot, closing the replacement immediately
+  when reconciliation observes `completed` or `failed`.
+- A per-job progress revision plus exact source/generation identity guards
+  prevent a delayed reconciliation from overwriting a newer SSE frame, another
+  source generation, a job switch, or a destroyed component.
+- The real `ProgressDisplayComponent` test proves a completion transition
+  during backoff emits completion once and closes the replacement stream.
+
+### Recovery preserves event-only diagnostics
+
+RED:
+
+- The terminal-failure recovery test first delivered row-completed,
+  row-failed, and row-started events, then applied running and failed REST
+  snapshots. The old replacement update erased `error`, `rowFailures`,
+  `currentRow`, and `lastTrackingNumber`; the focused result was
+  **1 failed, 72 passed**.
+- Extracting completion metadata into a directly testable helper first failed
+  because the module did not exist.
+
+GREEN:
+
+- REST reconciliation merges authoritative aggregate counts, cost, optional
+  international fields, and status into the current same-job signal while
+  preserving event-only diagnostics that the REST contract does not contain.
+- Diagnostics are reset explicitly only when a new job initializes or when an
+  SSE event actually supersedes them.
+- The shared completion-metadata builder is used by both success and failure
+  paths and carries `error`, `rowFailures`, `currentRow`, and
+  `lastTrackingNumber` into the persisted chat artifact.
+- The final chat suite is **73 passed** across **5** files.
+
+## Round 9 verification evidence
+
+- Final focused audit/provider/MCP/projection suite:
+  `../../.venv/bin/python -m pytest
+  tests/control_plane/audit/test_service.py
+  tests/registry/test_identifiers.py tests/registry/test_catalog.py
+  tests/provider_adapters/test_projections.py
+  tests/control_plane/test_result_projection.py
+  tests/hosted/test_hosted_mcp_registry.py
+  tests/registry/test_artifact_drift.py -q` — **456 passed in 1.94s**.
+- Fresh broad backend regression suite:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not
+  progress"` — **3,672 passed, 21 skipped, 103 deselected, 4 warnings in
+  51.34s**. The later audit addendum was revalidated by both the 76-test audit
+  suite and the complete 193-test control-plane suite.
+- Fresh uncached frontend typecheck matrix passed all **6** configured projects
+  and the required shared-state build.
+- Fresh uncached frontend lint matrix passed all **6** projects with **0
+  errors** and the unchanged **43 warnings**.
+- Fresh uncached frontend test matrix passed all **153 tests**: shared state
+  **41**, chat **73**, shell **36**, and one each for domain, sidebar, and
+  settings.
+- Fresh uncached production builds passed all **7** targets.
+- `npm run smoke:authenticated-production` rebuilt the production application,
+  physically staged all **4** remotes, loaded the real federation shell through
+  FastAPI, and passed authenticated settings, session clearing/restoration,
+  same-origin API, CSRF/session expiry, EventSource invalidation/recovery, and
+  cleanup checks with runtime secrets absent.
+- Desktop same-origin packaging plus artifact drift — **11 passed**.
+  Canonical provider regeneration produced zero uncommitted changes; the
+  standalone artifact drift test also passed.
+- `../../.venv/bin/python -m ruff check src tests` passed. Ruff format checks
+  passed over all **10** Round 9 Python files.
+- Prettier checks passed over the three fully modified/new job-progress service,
+  test, and metadata files. The small ChatContainer integration was
+  diff-reviewed without rewriting its unrelated pre-existing whole-file style.
+- `bash -n` passed for every repository shell script. `node --check` passed for
+  all three frontend MJS validation/smoke scripts.
+- `cargo fmt --check`, `cargo check --locked`, and `cargo test --locked`
+  passed; the Rust target currently has **0 tests**.
+- Provider regeneration, final artifact drift, and aggregate
+  `git diff --check` all passed with a clean worktree before this report commit.
+
+## Round 9 self-review and remaining concerns
+
+- Requirement-by-requirement review, implementation-diff review, and a search
+  for the removed permissive public-ID grammar found no remaining Round 9
+  blocker or regression to the prior provider privacy, MCP projection, auth,
+  CSRF, migration, Tauri, development proxy, audit, packaging, or SSE-expiry
+  fixes.
+- Public ID schemas intentionally validate syntax, not ownership. Ownership
+  cannot be truthfully tested until production hosted handlers and a
+  tenant-scoped reference store exist; that future service boundary remains a
+  release requirement when those handlers are implemented.
+- Retry recovery remains intentionally bounded to three replacement streams.
+  A handshake alone never signals stability; one recognized progress event
+  does. Every failed generation still performs the pre-backoff session/snapshot
+  checks, and every created replacement performs post-subscription
+  reconciliation.
+- Broad backend output retains the existing defusedxml deprecation,
+  unregistered `extended` pytest mark, and Alembic path-separator warnings.
+  Frontend output retains the existing 43 lint warnings and Native Federation,
+  Angular diagnostic/budget, Nx Cloud, and Nx agent-configuration notices. All
+  required commands exited zero.
+- Tauri's resource check required the exact temporary
+  `dist/shipagent-core` directory. It existed only for the locked Cargo checks
+  and was removed immediately afterward.
+- A complete PyInstaller bundle, Docker image, and packaged Tauri WebView were
+  not built. Static packaging contracts, all production frontend builds, and
+  the real production browser smoke cover the changed paths.
+- No dependency was added or upgraded. No API key, signed session, CSRF value,
+  credential canary, customer content, carrier content, or label data is
+  reproduced in this report.
