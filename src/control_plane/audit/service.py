@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 
@@ -18,23 +19,83 @@ class ControlPlaneAuditService:
         r"(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?"
         r"(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$"
     )
-    _OPAQUE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+    _UUID_GRAMMAR = (
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+        r"[0-9a-f]{4}-[0-9a-f]{12}"
+    )
+    _ID_PATTERNS = {
+        "account_id": re.compile(
+            rf"^(?:{_UUID_GRAMMAR}|sa_account_[0-9a-f]{{16,25}})$"
+        ),
+        "provider_connection_id": re.compile(
+            rf"^(?:{_UUID_GRAMMAR}|sa_connection_[0-9a-f]{{16,22}})$"
+        ),
+        "device_id": re.compile(rf"^(?:{_UUID_GRAMMAR}|sa_device_[0-9a-f]{{16,26}})$"),
+        "job_id": re.compile(rf"^(?:{_UUID_GRAMMAR}|sa_job_[0-9a-f]{{16,96}})$"),
+        "correlation_id": re.compile(
+            rf"^(?:{_UUID_GRAMMAR}|sa_correlation_[0-9a-f]{{16,96}})$"
+        ),
+        "preview_id": re.compile(
+            rf"^(?:{_UUID_GRAMMAR}|sa_preview_[0-9a-f]{{16,96}})$"
+        ),
+        "confirmation_id": re.compile(
+            rf"^(?:{_UUID_GRAMMAR}|sa_confirmation_[0-9a-f]{{16,96}})$"
+        ),
+        "artifact_id": re.compile(
+            rf"^(?:{_UUID_GRAMMAR}|"
+            r"sa_(?:artifact|document|label|validation)_[0-9a-f]{16,96})$"
+        ),
+    }
     _SENSITIVE_ID_MARKER = re.compile(
         r"(?:^|[._:-])"
         r"(?:bearer|password|secret|token|sk(?:[._:-](?:live|test|proj))?)"
         r"(?:$|[._:-])",
         re.IGNORECASE,
     )
+    _COMPACT_SENSITIVE_ID_MARKERS = frozenset(
+        {
+            "accesskey",
+            "address",
+            "apikey",
+            "authorization",
+            "bearer",
+            "clientsecret",
+            "credential",
+            "customer",
+            "email",
+            "firstname",
+            "fullname",
+            "lastname",
+            "name",
+            "password",
+            "phone",
+            "recipient",
+            "secret",
+            "sklive",
+            "skproj",
+            "sktest",
+            "street",
+            "token",
+        }
+    )
     _ID_MAX_LENGTHS = {
         "account_id": 36,
         "provider_connection_id": 36,
         "device_id": 36,
-        "job_id": 36,
+        "job_id": 128,
         "correlation_id": 128,
         "preview_id": 128,
         "confirmation_id": 128,
+        "artifact_id": 128,
     }
     _ALLOWED_HASHES = {"actor_id_hash", "request_hash", "response_hash", "preview_hash"}
+    _ALLOWED_EXTERNAL_IDS = {
+        "external_order_id",
+        "provider_reference",
+        "provider_subject",
+        "tracking_number",
+    }
+    _EXTERNAL_ID_MAX_LENGTH = 512
     _ALLOWED_COUNTS = {"count", "row_count", "attempt_count", "error_count"}
     _REASON_CODES = {
         "authorization_denied",
@@ -100,6 +161,7 @@ class ControlPlaneAuditService:
         provider_connection_id: str | None = None,
         device_id: str | None = None,
         ids: dict[str, str] | None = None,
+        external_ids: dict[str, str] | None = None,
         hashes: dict[str, str] | None = None,
         counts: dict[str, int] | None = None,
         safe_fields: dict[str, str] | None = None,
@@ -114,9 +176,11 @@ class ControlPlaneAuditService:
             "provider_connection_id",
         )
         device_id = cls._validate_optional_id(device_id, "device_id")
+        persisted_hashes = cls._validate_hashes(hashes or {})
+        persisted_hashes.update(cls._hash_external_ids(external_ids or {}))
         payload = {
             "ids": cls._validate_ids(ids or {}),
-            "hashes": cls._validate_hashes(hashes or {}),
+            "hashes": persisted_hashes,
             "counts": cls._validate_counts(counts or {}),
             "safe_fields": cls._validate_safe_fields(safe_fields or {}),
             "versions": cls._validate_versions(versions or {}),
@@ -146,6 +210,11 @@ class ControlPlaneAuditService:
 
     @classmethod
     async def cleanup_for_account(cls, session: AsyncSession, account_id: str) -> int:
+        account_id = cls._validate_id_value(
+            account_id,
+            key="account_id",
+            max_length=cls._ID_MAX_LENGTHS["account_id"],
+        )
         result = await session.execute(
             delete(ControlPlaneAuditEvent).where(
                 ControlPlaneAuditEvent.account_id == account_id
@@ -179,26 +248,52 @@ class ControlPlaneAuditService:
         return value
 
     @classmethod
+    def _hash_external_ids(cls, values: dict[str, str]) -> dict[str, str]:
+        persisted: dict[str, str] = {}
+        for key, value in values.items():
+            if key not in cls._ALLOWED_EXTERNAL_IDS:
+                raise ValueError(f"disallowed external ID key: {key}")
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > cls._EXTERNAL_ID_MAX_LENGTH
+                or any(
+                    ord(character) < 32 or ord(character) == 127 for character in value
+                )
+            ):
+                raise ValueError("external IDs must be bounded scalar values")
+            persisted[f"{key}_hash"] = hashlib.sha256(value.encode()).hexdigest()
+        return persisted
+
+    @classmethod
     def _validate_ids(cls, values: dict[str, str]) -> dict[str, str]:
         for key, value in values.items():
             if key not in cls._ID_MAX_LENGTHS:
                 raise ValueError(f"disallowed key: {key}")
             cls._validate_id_value(
                 value,
+                key=key,
                 max_length=cls._ID_MAX_LENGTHS[key],
             )
         return dict(values)
 
     @classmethod
-    def _validate_id_value(cls, value: str, *, max_length: int) -> str:
+    def _validate_id_value(cls, value: str, *, key: str, max_length: int) -> str:
+        pattern = cls._ID_PATTERNS[key]
         if (
             not isinstance(value, str)
             or len(value) > max_length
-            or not cls._OPAQUE_ID_PATTERN.fullmatch(value)
+            or not pattern.fullmatch(value)
             or cls._SENSITIVE_ID_MARKER.search(value)
+            or cls._contains_compact_sensitive_id_marker(value)
         ):
-            raise ValueError("ID values must be bounded opaque IDs")
+            raise ValueError(f"{key} must be a bounded canonical {key}")
         return value
+
+    @classmethod
+    def _contains_compact_sensitive_id_marker(cls, value: str) -> bool:
+        compact = re.sub(r"[^a-z0-9]", "", value.lower())
+        return any(marker in compact for marker in cls._COMPACT_SENSITIVE_ID_MARKERS)
 
     @classmethod
     def _validate_optional_id(cls, value: str | None, key: str) -> str | None:
@@ -206,6 +301,7 @@ class ControlPlaneAuditService:
             return None
         return cls._validate_id_value(
             value,
+            key=key,
             max_length=cls._ID_MAX_LENGTHS[key],
         )
 
