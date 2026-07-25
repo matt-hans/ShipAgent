@@ -451,6 +451,71 @@ def test_public_provider_contract_rejects_compact_sensitive_aliases(field_name):
 
 
 @pytest.mark.parametrize(
+    "field_name",
+    [
+        # Authentication-header family.
+        "headerauthorization",
+        "headerAuthorization",
+        "HEADERAUTHORIZATION",
+        # API/access-key family.
+        "keyapi",
+        "keyAPI",
+        "KEYAPI",
+        "keyaccess",
+        "keyAccess",
+        "KEYACCESS",
+        # Label/document transfer family.
+        "urllabel",
+        "URLLabel",
+        "URLLABEL",
+        "datadocument",
+        "dataDocument",
+        "DATADOCUMENT",
+        # Customer payload/address family.
+        "payloadcustomer",
+        "payloadCustomer",
+        "PAYLOADCUSTOMER",
+        "addresscustomer",
+        "addressCustomer",
+        "ADDRESSCUSTOMER",
+        # Carrier exchange family.
+        "bodyrequest",
+        "bodyRequest",
+        "BODYREQUEST",
+        # Token/secret family.
+        "valuetoken",
+        "valueToken",
+        "VALUETOKEN",
+        "valuesecret",
+        "valueSecret",
+        "VALUESECRET",
+    ],
+)
+def test_public_provider_contract_rejects_reversed_compact_sensitive_aliases(
+    field_name,
+):
+    schema = object_schema(
+        {field_name: bounded_test_string_schema()},
+        [field_name],
+    )
+
+    assert provider_schema_privacy_violations(
+        "reversed_compact_alias_probe", schema
+    ) == [field_name]
+    with pytest.raises(ValueError, match="provider privacy"):
+        public_tool(
+            "reversed_compact_alias_probe",
+            "Reversed compact sensitive alias probe",
+            "A provider-visible reversed compact naming alias validation fixture.",
+            SideEffectClass.read,
+            ["tools:read"],
+            object_schema({}, []),
+            schema,
+            provider_export_enabled=True,
+        )
+
+
+@pytest.mark.parametrize(
     ("field_name", "field_schema"),
     [
         (
