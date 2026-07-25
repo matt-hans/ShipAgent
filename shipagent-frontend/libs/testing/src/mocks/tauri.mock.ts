@@ -9,15 +9,13 @@
 declare global {
   interface Window {
     __TAURI__?: unknown;
-    __SHIPAGENT_PORT__?: number;
   }
 }
 
 /**
- * Simulate a Tauri environment by injecting __TAURI__ and optionally
- * setting the sidecar port.
+ * Simulate the trusted Tauri bootstrap origin and its start-sidecar command.
  *
- * @param port - Optional sidecar port to inject (defaults to 8000).
+ * @param port - Sidecar port returned by the native command (defaults to 8000).
  * @returns A cleanup function that removes the stubs when called.
  *
  * @example
@@ -30,22 +28,18 @@ declare global {
  */
 export function mockTauriEnvironment(port = 8000): () => void {
   const originalTauri = window.__TAURI__;
-  const originalPort = window.__SHIPAGENT_PORT__;
 
-  window.__TAURI__ = { version: '2.0.0-test' };
-  window.__SHIPAGENT_PORT__ = port;
+  window.__TAURI__ = {
+    core: {
+      invoke: createMockTauriInvoke({ start_sidecar: port }),
+    },
+  };
 
   return () => {
     if (originalTauri !== undefined) {
       window.__TAURI__ = originalTauri;
     } else {
       delete window.__TAURI__;
-    }
-
-    if (originalPort !== undefined) {
-      window.__SHIPAGENT_PORT__ = originalPort;
-    } else {
-      delete window.__SHIPAGENT_PORT__;
     }
   };
 }
@@ -56,7 +50,6 @@ export function mockTauriEnvironment(port = 8000): () => void {
  */
 export function clearTauriEnvironment(): void {
   delete window.__TAURI__;
-  delete window.__SHIPAGENT_PORT__;
 }
 
 /**
@@ -68,16 +61,18 @@ export function clearTauriEnvironment(): void {
  * @example
  * ```typescript
  * const invoke = createMockTauriInvoke({ start_sidecar: 8999 });
- * spyOn(window.__TAURI__ as any, 'invoke').and.callFake(invoke);
+ * window.__TAURI__ = { core: { invoke } };
  * ```
  */
 export function createMockTauriInvoke(
-  responses: Record<string, unknown> = {},
+  responses: Record<string, unknown> = {}
 ): (command: string, args?: unknown) => Promise<unknown> {
   return async (command: string) => {
     if (command in responses) {
       return responses[command];
     }
-    throw new Error(`Tauri mock: no response configured for command "${command}"`);
+    throw new Error(
+      `Tauri mock: no response configured for command "${command}"`
+    );
   };
 }

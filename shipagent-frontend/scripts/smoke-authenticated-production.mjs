@@ -13,6 +13,13 @@ const frontendRoot = path.resolve(scriptDirectory, '..');
 const repositoryRoot = path.resolve(frontendRoot, '..');
 const distRoot = path.join(frontendRoot, 'dist', 'apps');
 const sessionCookieName = 'shipagent_browser_session';
+const federationPaths = [
+  '/federation.manifest.json',
+  '/chat-remote/remoteEntry.json',
+  '/sidebar-remote/remoteEntry.json',
+  '/settings-remote/remoteEntry.json',
+  '/domain-remote/remoteEntry.json',
+];
 
 function run(command, args, cwd) {
   const result = spawnSync(command, args, {
@@ -277,6 +284,37 @@ try {
   });
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  assert.equal(
+    new URL(page.url()).origin,
+    new URL(baseUrl).origin,
+    'Production shell did not remain on the sidecar origin'
+  );
+  const federationResponses = await page.evaluate(async (paths) => {
+    return Promise.all(
+      paths.map(async (resourcePath) => {
+        const response = await fetch(resourcePath, {
+          credentials: 'same-origin',
+        });
+        return {
+          resourcePath,
+          status: response.status,
+          url: response.url,
+        };
+      })
+    );
+  }, federationPaths);
+  for (const response of federationResponses) {
+    assert.equal(
+      response.status,
+      200,
+      `Sidecar did not serve ${response.resourcePath}`
+    );
+    assert.equal(
+      new URL(response.url).origin,
+      new URL(baseUrl).origin,
+      `${response.resourcePath} was not loaded from the sidecar origin`
+    );
+  }
   await page.getByLabel('Docker API key').waitFor({ state: 'visible' });
   assert.equal(
     await page
@@ -532,6 +570,20 @@ try {
     'A runtime browser credential was exposed in a request URL'
   );
   assert.equal(
+    requestUrls
+      .filter((url) => new URL(url).pathname.startsWith('/api/v1'))
+      .every((url) => new URL(url).origin === new URL(baseUrl).origin),
+    true,
+    'A production API request escaped the shell/cookie sidecar origin'
+  );
+  assert.equal(
+    requestUrls.some((url) =>
+      decodeURIComponent(new URL(url).pathname).startsWith('/@shipagent/')
+    ),
+    false,
+    'The pre-federation bootstrap requested an unresolved workspace import'
+  );
+  assert.equal(
     browserMessages.some((message) =>
       runtimeSecrets.some((secret) => message.includes(secret))
     ),
@@ -556,7 +608,7 @@ try {
 
   await assertSecretsAbsentFromBundles(runtimeSecrets);
   console.log(
-    'runtime API key and CSRF tokens absent from production surfaces'
+    'same-origin sidecar shell/remotes/API passed with runtime secrets absent'
   );
 } finally {
   if (context) await context.close();
