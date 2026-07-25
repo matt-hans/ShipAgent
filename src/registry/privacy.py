@@ -4,6 +4,8 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
+from src.registry.identifiers import provider_schema_identifier_violations
+
 _ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 _NON_ALPHANUMERIC = re.compile(r"[^a-z0-9]+")
@@ -200,7 +202,10 @@ def provider_schema_privacy_violations(
 ) -> list[str]:
     """Return unsafe dialect or content paths in a provider-visible schema."""
     tool_tokens = _field_tokens(tool_name)
-    violations = list(_schema_dialect_violations(schema))
+    violations = [
+        *list(_schema_dialect_violations(schema)),
+        *provider_schema_identifier_violations(schema),
+    ]
 
     for path in _property_paths(schema):
         field_name = path[-1]

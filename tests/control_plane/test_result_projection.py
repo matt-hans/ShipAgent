@@ -3,14 +3,32 @@ from jsonschema import ValidationError
 
 from src.control_plane.result_projection import project_result
 from src.registry.catalog import public_tools
+from src.registry.identifiers import (
+    PROVIDER_VISIBLE_FIELD_FAMILIES,
+    PROVIDER_VISIBLE_ID_FAMILIES,
+    mint_shipagent_id,
+    shipagent_id_prefix,
+    shipagent_id_schema,
+)
 from src.registry.models import ToolContract
+from src.registry.tools.schema import object_schema
 
-VALID_DEVICE_ID = "sa_device_0123456789abcdef"
-VALID_INPUT_ID = "sa_input_0123456789abcdef"
-VALID_VALIDATION_ID = "sa_validation_0123456789abcdef"
-VALID_PREVIEW_ID = "sa_preview_0123456789abcdef"
-VALID_JOB_ID = "sa_job_0123456789abcdef"
-VALID_LABEL_ID = "sa_label_0123456789abcdef"
+VALID_HEX_BODY = "0123456789abcdef0123456789abcdef"
+VALID_DEVICE_ID = f"sa_device_{VALID_HEX_BODY}"
+VALID_INPUT_ID = f"sa_input_{VALID_HEX_BODY}"
+VALID_VALIDATION_ID = f"sa_validation_{VALID_HEX_BODY}"
+VALID_PREVIEW_ID = f"sa_preview_{VALID_HEX_BODY}"
+VALID_JOB_ID = f"sa_job_{VALID_HEX_BODY}"
+VALID_LABEL_ID = f"sa_label_{VALID_HEX_BODY}"
+
+PREFIXED_COMPACT_CANARY_BODIES = (
+    "ApiKeyLiveValue01",
+    "BearerTokenValue1",
+    "JaneDoeCustomer01",
+    "PrivateRecipient1",
+    "742MainStreetCity",
+    "QXBpS2V5TGl2ZVZhbHVl",
+)
 
 
 def _contract(**overrides) -> ToolContract:
@@ -519,6 +537,38 @@ def test_real_public_contract_rejects_canaries_in_every_scalar_family(
     contract = next(tool for tool in public_tools() if tool.name == tool_name)
 
     assert project_result(contract, safe_result) == safe_result
+    with pytest.raises(ValidationError):
+        project_result(contract, unsafe_result)
+
+
+@pytest.mark.parametrize("family", PROVIDER_VISIBLE_ID_FAMILIES)
+@pytest.mark.parametrize("canary_body", PREFIXED_COMPACT_CANARY_BODIES)
+def test_direct_projection_rejects_prefixed_compact_canaries_for_every_id_family(
+    family,
+    canary_body,
+):
+    field_name = next(
+        field_name
+        for field_name, field_family in PROVIDER_VISIBLE_FIELD_FAMILIES.items()
+        if field_family is family
+    )
+    contract = _contract(
+        output_schema=object_schema(
+            {
+                field_name: shipagent_id_schema(
+                    family,
+                    "Canonical provider-visible ShipAgent identifier.",
+                )
+            },
+            [field_name],
+        )
+    )
+    valid_result = {field_name: mint_shipagent_id(family)}
+    unsafe_result = {
+        field_name: f"{shipagent_id_prefix(family)}{canary_body}",
+    }
+
+    assert project_result(contract, valid_result) == valid_result
     with pytest.raises(ValidationError):
         project_result(contract, unsafe_result)
 

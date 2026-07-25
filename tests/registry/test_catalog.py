@@ -1,6 +1,7 @@
 import pytest
 
 from src.registry.catalog import load_registry, public_tools
+from src.registry.identifiers import ShipAgentIdFamily, shipagent_id_schema
 from src.registry.models import ProviderExport, SideEffectClass, ToolVisibility
 from src.registry.privacy import provider_schema_privacy_violations
 from src.registry.tools.public import public_tool
@@ -520,21 +521,17 @@ def test_public_provider_contract_rejects_reversed_compact_sensitive_aliases(
     [
         (
             "validationArtifactId",
-            {
-                "type": "string",
-                "pattern": r"^sa_validation_[A-Za-z0-9_-]{16,96}$",
-                "minLength": 30,
-                "maxLength": 110,
-            },
+            shipagent_id_schema(
+                ShipAgentIdFamily.VALIDATION,
+                "Canonical validation artifact identifier.",
+            ),
         ),
         (
             "confirmationArtifactId",
-            {
-                "type": "string",
-                "pattern": r"^sa_confirmation_[A-Za-z0-9_-]{16,96}$",
-                "minLength": 32,
-                "maxLength": 112,
-            },
+            shipagent_id_schema(
+                ShipAgentIdFamily.CONFIRMATION,
+                "Canonical confirmation artifact identifier.",
+            ),
         ),
         ("serviceCode", {"type": "string", "enum": ["03"]}),
         (

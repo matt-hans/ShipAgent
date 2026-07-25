@@ -1,6 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
+from src.registry.identifiers import ShipAgentIdFamily, shipagent_id_schema
 from src.registry.models import (
     AuditLevel,
     Availability,
@@ -11,6 +12,7 @@ from src.registry.models import (
     ToolContract,
     ToolVisibility,
 )
+from src.registry.tools.schema import object_schema
 
 
 def minimal_tool(**overrides):
@@ -31,32 +33,24 @@ def minimal_tool(**overrides):
         "provider_exports": [ProviderExport.openai, ProviderExport.generic_mcp],
         "audit_level": AuditLevel.basic,
         "result_sensitivity": ResultSensitivity.business,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "order_batch_id": {
-                    "type": "string",
-                    "pattern": r"^sa_order_[A-Za-z0-9_-]{16,96}$",
-                    "minLength": 25,
-                    "maxLength": 105,
-                }
+        "input_schema": object_schema(
+            {
+                "input_reference": shipagent_id_schema(
+                    ShipAgentIdFamily.INPUT,
+                    "Canonical shipment input reference.",
+                )
             },
-            "required": ["order_batch_id"],
-            "additionalProperties": False,
-        },
-        "output_schema": {
-            "type": "object",
-            "properties": {
-                "preview_id": {
-                    "type": "string",
-                    "pattern": r"^sa_preview_[A-Za-z0-9_-]{16,96}$",
-                    "minLength": 27,
-                    "maxLength": 107,
-                }
+            ["input_reference"],
+        ),
+        "output_schema": object_schema(
+            {
+                "preview_id": shipagent_id_schema(
+                    ShipAgentIdFamily.PREVIEW,
+                    "Canonical shipment preview identifier.",
+                )
             },
-            "required": ["preview_id"],
-            "additionalProperties": False,
-        },
+            ["preview_id"],
+        ),
     }
     data.update(overrides)
     return ToolContract.model_validate(data)

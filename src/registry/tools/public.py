@@ -1,5 +1,6 @@
 from typing import Literal
 
+from src.registry.identifiers import ShipAgentIdFamily, shipagent_id_schema
 from src.registry.models import (
     AuditLevel,
     Availability,
@@ -57,24 +58,8 @@ UPS_SERVICE_CODES = [code.value for code in ServiceCode]
 UPS_SERVICE_NAMES = list(SERVICE_CODE_NAMES.values())
 RATE_CURRENCY_CODES = [DEFAULT_CURRENCY_CODE]
 
-_OPAQUE_ID_BODY_MIN_LENGTH = 16
-_OPAQUE_ID_BODY_MAX_LENGTH = 96
 _MONEY_PATTERN = r"^(0|[1-9][0-9]{0,9})\.[0-9]{2}$"
 _ISO_DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
-
-
-def shipagent_id_schema(kind: str, description: str) -> dict[str, object]:
-    prefix = f"sa_{kind}_"
-    return {
-        "type": "string",
-        "description": description,
-        "pattern": (
-            rf"^{prefix}[A-Za-z0-9_-]"
-            rf"{{{_OPAQUE_ID_BODY_MIN_LENGTH},{_OPAQUE_ID_BODY_MAX_LENGTH}}}$"
-        ),
-        "minLength": len(prefix) + _OPAQUE_ID_BODY_MIN_LENGTH,
-        "maxLength": len(prefix) + _OPAQUE_ID_BODY_MAX_LENGTH,
-    }
 
 
 def public_tool(
@@ -133,7 +118,7 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "correlation_id": shipagent_id_schema(
-                    "correlation",
+                    ShipAgentIdFamily.CORRELATION,
                     "Opaque ShipAgent correlation identifier.",
                 )
             },
@@ -143,7 +128,7 @@ PUBLIC_TOOLS = [
             {
                 "status": {"type": "string", "enum": SYSTEM_STATUS_CODES},
                 "active_device_id": shipagent_id_schema(
-                    "device",
+                    ShipAgentIdFamily.DEVICE,
                     "Opaque ShipAgent execution device identifier.",
                 ),
                 "capabilities": {
@@ -169,7 +154,7 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "ingress_reference": shipagent_id_schema(
-                    "ingress",
+                    ShipAgentIdFamily.INGRESS,
                     "Opaque reference minted by the authenticated ShipAgent ingress channel.",
                 ),
             },
@@ -178,7 +163,8 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "input_reference": shipagent_id_schema(
-                    "input", "Opaque ShipAgent shipment input reference."
+                    ShipAgentIdFamily.INPUT,
+                    "Opaque ShipAgent shipment input reference.",
                 )
             },
             ["input_reference"],
@@ -194,7 +180,8 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "input_reference": shipagent_id_schema(
-                    "input", "Opaque ShipAgent shipment input reference."
+                    ShipAgentIdFamily.INPUT,
+                    "Opaque ShipAgent shipment input reference.",
                 ),
             },
             ["input_reference"],
@@ -202,7 +189,8 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "validation_artifact_id": shipagent_id_schema(
-                    "validation", "Opaque ShipAgent validation artifact reference."
+                    ShipAgentIdFamily.VALIDATION,
+                    "Opaque ShipAgent validation artifact reference.",
                 ),
                 "valid": {"type": "boolean"},
                 "guidance_codes": {
@@ -229,7 +217,8 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "input_reference": shipagent_id_schema(
-                    "input", "Opaque ShipAgent shipment input reference."
+                    ShipAgentIdFamily.INPUT,
+                    "Opaque ShipAgent shipment input reference.",
                 )
             },
             ["input_reference"],
@@ -294,7 +283,8 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "input_reference": shipagent_id_schema(
-                    "input", "Opaque ShipAgent shipment input reference."
+                    ShipAgentIdFamily.INPUT,
+                    "Opaque ShipAgent shipment input reference.",
                 )
             },
             ["input_reference"],
@@ -302,7 +292,7 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "preview_id": shipagent_id_schema(
-                    "preview",
+                    ShipAgentIdFamily.PREVIEW,
                     "Opaque ShipAgent shipment preview identifier.",
                 ),
                 "summary": {
@@ -333,11 +323,11 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "preview_id": shipagent_id_schema(
-                    "preview",
+                    ShipAgentIdFamily.PREVIEW,
                     "Opaque ShipAgent shipment preview identifier.",
                 ),
                 "confirmation_artifact_id": shipagent_id_schema(
-                    "confirmation",
+                    ShipAgentIdFamily.CONFIRMATION,
                     "Opaque confirmation artifact minted by an authenticated ShipAgent channel.",
                 ),
             },
@@ -346,7 +336,7 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "job_id": shipagent_id_schema(
-                    "job",
+                    ShipAgentIdFamily.JOB,
                     "Opaque ShipAgent shipment job identifier.",
                 ),
                 "status": {"type": "string", "enum": JOB_STATUS_CODES},
@@ -369,7 +359,7 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "job_id": shipagent_id_schema(
-                    "job",
+                    ShipAgentIdFamily.JOB,
                     "Opaque ShipAgent shipment job identifier.",
                 )
             },
@@ -378,7 +368,7 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "job_id": shipagent_id_schema(
-                    "job",
+                    ShipAgentIdFamily.JOB,
                     "Opaque ShipAgent shipment job identifier.",
                 ),
                 "status": {"type": "string", "enum": JOB_STATUS_CODES},
@@ -396,7 +386,7 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "job_id": shipagent_id_schema(
-                    "job",
+                    ShipAgentIdFamily.JOB,
                     "Opaque ShipAgent shipment job identifier.",
                 )
             },
@@ -405,7 +395,7 @@ PUBLIC_TOOLS = [
         object_schema(
             {
                 "label_artifact_id": shipagent_id_schema(
-                    "label",
+                    ShipAgentIdFamily.LABEL,
                     "Opaque label artifact resolved only by an authenticated ShipAgent channel.",
                 ),
                 "status": {"type": "string", "enum": LABEL_STATUS_CODES},
