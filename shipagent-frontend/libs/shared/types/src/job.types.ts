@@ -8,8 +8,79 @@ export type JobStatus =
   | 'running'
   | 'paused'
   | 'completed'
+  | 'completed_with_warnings'
   | 'failed'
   | 'cancelled';
+
+/** Terminal job statuses shared by REST, SSE, recovery, and UI handling. */
+export type JobTerminalStatus = Extract<
+  JobStatus,
+  'completed' | 'completed_with_warnings' | 'failed' | 'cancelled'
+>;
+
+/** UI-facing interpretation of a terminal backend job status. */
+export interface JobTerminalState {
+  status: JobTerminalStatus;
+  outcome: 'complete' | 'failed';
+  hasWarnings: boolean;
+  cancelled: boolean;
+  message: string;
+}
+
+const JOB_TERMINAL_STATES: Readonly<
+  Record<JobTerminalStatus, JobTerminalState>
+> = {
+  completed: {
+    status: 'completed',
+    outcome: 'complete',
+    hasWarnings: false,
+    cancelled: false,
+    message: 'Batch completed.',
+  },
+  completed_with_warnings: {
+    status: 'completed_with_warnings',
+    outcome: 'complete',
+    hasWarnings: true,
+    cancelled: false,
+    message: 'Batch completed with warnings.',
+  },
+  failed: {
+    status: 'failed',
+    outcome: 'failed',
+    hasWarnings: false,
+    cancelled: false,
+    message: 'Batch failed.',
+  },
+  cancelled: {
+    status: 'cancelled',
+    outcome: 'failed',
+    hasWarnings: false,
+    cancelled: true,
+    message: 'Batch cancelled. You can enter a new command.',
+  },
+};
+
+/** Return the centralized terminal interpretation, or null for active states. */
+export function getJobTerminalState(
+  status: JobStatus
+): JobTerminalState | null {
+  return JOB_TERMINAL_STATES[status as JobTerminalStatus] ?? null;
+}
+
+/** Resolve a reported terminal status without crossing completion/failure paths. */
+export function resolveJobTerminalStatus(
+  status: unknown,
+  outcome: JobTerminalState['outcome']
+): JobTerminalStatus {
+  const terminalState =
+    typeof status === 'string'
+      ? JOB_TERMINAL_STATES[status as JobTerminalStatus]
+      : undefined;
+  if (terminalState?.outcome === outcome) {
+    return terminalState.status;
+  }
+  return outcome === 'complete' ? 'completed' : 'failed';
+}
 
 /** Job execution mode values. */
 export type JobMode = 'confirm' | 'auto';
@@ -285,6 +356,10 @@ export interface BatchCompletedEvent {
   event: 'batch_completed';
   data: {
     job_id: string;
+    status?: Extract<
+      JobTerminalStatus,
+      'completed' | 'completed_with_warnings'
+    >;
     total_rows: number;
     successful: number;
     total_cost_cents: number;
@@ -298,6 +373,7 @@ export interface BatchFailedEvent {
   event: 'batch_failed';
   data: {
     job_id: string;
+    status?: Extract<JobTerminalStatus, 'failed' | 'cancelled'>;
     error_code: string;
     error_message: string;
     processed: number;

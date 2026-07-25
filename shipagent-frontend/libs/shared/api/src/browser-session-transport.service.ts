@@ -54,9 +54,10 @@ export class BrowserSessionTransportService {
   }
 
   async confirmSessionAfterEventSourceError(
-    abortSignal?: AbortSignal
+    abortSignal?: AbortSignal,
+    isCurrent: () => boolean = () => true
   ): Promise<boolean> {
-    if (abortSignal?.aborted) return false;
+    if (abortSignal?.aborted || !isCurrent()) return false;
     try {
       const statusRequest = this.apiService.getBrowserSessionStatus();
       const status = await firstValueFrom(
@@ -64,12 +65,13 @@ export class BrowserSessionTransportService {
           ? statusRequest.pipe(takeUntil(fromEvent(abortSignal, 'abort')))
           : statusRequest
       );
-      if (abortSignal?.aborted) return false;
-      this.browserSession.applySessionStatus(status);
+      if (abortSignal?.aborted || !isCurrent()) return false;
       if (status.required && !status.authenticated) {
+        this.browserSession.applySessionStatus(status);
         this.browserSession.markExpired();
         return true;
       }
+      this.browserSession.applySessionStatus(status);
       return false;
     } catch {
       return false;

@@ -31,7 +31,11 @@ import { FormsModule } from '@angular/forms';
 import { firstValueFrom } from 'rxjs';
 import { provideMarkdown } from 'ngx-markdown';
 import { AppStore, ConversationStore, DataSourceStore, JobStore, type SourceType } from '@shipagent/shared-state';
-import type { ColumnDataType, DataSourceType } from '@shipagent/shared-types';
+import type {
+  ColumnDataType,
+  DataSourceType,
+  JobTerminalState,
+} from '@shipagent/shared-types';
 import { ApiService } from '@shipagent/shared-api';
 import { ConversationSseService } from '../../services/conversation-sse.service';
 import { ConversationSessionService } from '../../services/conversation-session.service';
@@ -105,8 +109,8 @@ import { JobDetailOverlayComponent } from '../job-detail-overlay/job-detail-over
           (previewConfirm)="handleConfirmFromPreview($event)"
           (previewCancel)="handleCancelFromPreview($event)"
           (previewRefine)="handleRefine($event)"
-          (progressComplete)="handleProgressComplete()"
-          (progressFailed)="handleProgressFailed()"
+          (progressComplete)="handleProgressComplete($event)"
+          (progressFailed)="handleProgressFailed($event)"
           (viewLabels)="openLabelPreview($event)"
         />
 
@@ -513,7 +517,7 @@ export class ChatContainerComponent implements OnInit {
    * Handle batch execution completion — add completion artifact message.
    * Called by the ProgressDisplayComponent's (complete) output.
    */
-  handleProgressComplete(): void {
+  handleProgressComplete(_terminalState?: JobTerminalState): void {
     const jobId = this.executingJobId();
     if (!jobId) return;
 
@@ -563,7 +567,7 @@ export class ChatContainerComponent implements OnInit {
    * Handle batch execution failure — add completion artifact with failure data.
    * Called by the ProgressDisplayComponent's (failed) output.
    */
-  handleProgressFailed(): void {
+  handleProgressFailed(_terminalState?: JobTerminalState): void {
     const jobId = this.executingJobId();
     if (!jobId) return;
 

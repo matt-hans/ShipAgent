@@ -1,3 +1,4 @@
+import { getJobTerminalState } from '@shipagent/shared-types';
 import type { JobProgressSnapshot } from './job-progress-sse.service';
 
 /** Build the persisted chat artifact for a terminal job progress state. */
@@ -6,11 +7,18 @@ export function buildJobCompletionMetadata(
   progress: JobProgressSnapshot,
   jobName = ''
 ): Record<string, unknown> {
+  const terminalState = getJobTerminalState(progress.status);
+
   return {
     type: 'completion',
     jobId,
     action: 'complete',
     completion: {
+      status: progress.status,
+      outcome: terminalState?.outcome,
+      hasWarnings: terminalState?.hasWarnings ?? false,
+      cancelled: terminalState?.cancelled ?? false,
+      statusMessage: terminalState?.message,
       jobName: jobName || undefined,
       successful: progress.successful,
       failed: progress.failed,

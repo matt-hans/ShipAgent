@@ -15,12 +15,20 @@ import {
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormatCurrencyPipe, DownloadIconComponent } from '@shipagent/shared-ui';
-import type { ConversationMessage } from '@shipagent/shared-types';
+import type {
+  ConversationMessage,
+  JobTerminalStatus,
+} from '@shipagent/shared-types';
 
 const MAX_VISIBLE_REFINEMENTS = 3;
 
 /** Typed shape of the completion metadata from ConversationMessage. */
 interface CompletionMeta {
+  status?: JobTerminalStatus;
+  outcome?: 'complete' | 'failed';
+  hasWarnings?: boolean;
+  cancelled?: boolean;
+  statusMessage?: string;
   successful: number;
   failed: number;
   totalCostCents: number;
@@ -55,18 +63,24 @@ function parseRefinedName(name: string | undefined): {
     @if (meta && jobId) {
       <div class="card-premium p-4 space-y-3 border-l-4"
         [class.border-l-error]="allFailed"
-        [class.border-l-warning]="!allFailed && hasFailures"
-        [class.border-l-success]="!allFailed && !hasFailures"
+        [class.border-l-warning]="!allFailed && (hasFailures || hasWarnings || isCancelled)"
+        [class.border-l-success]="!allFailed && !hasFailures && !hasWarnings && !isCancelled"
       >
         <div class="flex justify-end">
           <span class="badge"
             [class.badge-error]="allFailed"
-            [class.badge-warning]="!allFailed && hasFailures"
-            [class.badge-success]="!allFailed && !hasFailures"
+            [class.badge-warning]="!allFailed && (hasFailures || hasWarnings || isCancelled)"
+            [class.badge-success]="!allFailed && !hasFailures && !hasWarnings && !isCancelled"
           >
             {{ badgeText }}
           </span>
         </div>
+
+        @if ((hasWarnings || isCancelled) && meta.statusMessage) {
+          <p class="text-xs font-mono text-warning">
+            {{ meta.statusMessage }}
+          </p>
+        }
 
         <!-- Job name with refinements -->
         <div class="space-y-1">
@@ -119,7 +133,7 @@ function parseRefinedName(name: string | undefined): {
         }
 
         <!-- Download labels -->
-        @if (!allFailed) {
+        @if (!allFailed && !isCancelled) {
           <button
             type="button"
             class="w-full btn-primary py-2 flex items-center justify-center gap-2 text-sm"
@@ -131,7 +145,7 @@ function parseRefinedName(name: string | undefined): {
         }
 
         <!-- Schedule pickup CTA -->
-        @if (!allFailed && meta.successful > 0) {
+        @if (!allFailed && !isCancelled && meta.successful > 0) {
           <button
             type="button"
             class="w-full btn-secondary py-2 flex items-center justify-center gap-2 text-sm card-domain-pickup border"
@@ -165,7 +179,17 @@ export class CompletionArtifactComponent {
     return !!this.meta && this.meta.failed > 0;
   }
 
+  get hasWarnings(): boolean {
+    return this.meta?.hasWarnings === true;
+  }
+
+  get isCancelled(): boolean {
+    return this.meta?.cancelled === true || this.meta?.status === 'cancelled';
+  }
+
   get badgeText(): string {
+    if (this.isCancelled) return 'CANCELLED';
+    if (this.hasWarnings) return 'COMPLETED WITH WARNINGS';
     return this.allFailed ? 'FAILED' : this.hasFailures ? 'PARTIAL' : 'COMPLETED';
   }
 

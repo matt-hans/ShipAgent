@@ -26,7 +26,10 @@ import {
 import { CommonModule, NgComponentOutlet } from '@angular/common';
 import { ApiService } from '@shipagent/shared-api';
 import { ConversationStore } from '@shipagent/shared-state';
-import type { ConversationMessage } from '@shipagent/shared-types';
+import type {
+  ConversationMessage,
+  JobTerminalState,
+} from '@shipagent/shared-types';
 import { DomainCardBridgeService } from '../../services/domain-card-bridge.service';
 import { JobProgressSseService } from '../../services/job-progress-sse.service';
 import { SystemMessageComponent } from '../messages/system-message.component';
@@ -130,8 +133,8 @@ interface DomainCardEntry {
         <div class="max-w-3xl mx-auto animate-fade-in">
           <app-progress-display
             [jobId]="executingJobId"
-            (complete)="progressComplete.emit()"
-            (failed)="progressFailed.emit()"
+            (complete)="progressComplete.emit($event)"
+            (failed)="progressFailed.emit($event)"
             (viewLabels)="viewLabels.emit($event)"
           />
         </div>
@@ -156,8 +159,8 @@ export class MessageListComponent implements AfterViewChecked, OnChanges {
   @Output() previewConfirm = new EventEmitter<Record<string, unknown>>();
   @Output() previewCancel = new EventEmitter<Record<string, unknown>>();
   @Output() previewRefine = new EventEmitter<string>();
-  @Output() progressComplete = new EventEmitter<void>();
-  @Output() progressFailed = new EventEmitter<void>();
+  @Output() progressComplete = new EventEmitter<JobTerminalState>();
+  @Output() progressFailed = new EventEmitter<JobTerminalState>();
   @Output() viewLabels = new EventEmitter<string>();
 
   private readonly domainCardBridge = inject(DomainCardBridgeService);

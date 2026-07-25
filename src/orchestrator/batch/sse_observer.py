@@ -6,7 +6,7 @@ to Server-Sent Events (SSE) connections for web clients.
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +163,7 @@ class SSEProgressObserver:
         total_cost_cents: int,
         duties_taxes_cents: int = 0,
         international_row_count: int = 0,
+        status: Literal["completed", "completed_with_warnings"] = "completed",
     ) -> None:
         """Handle batch completed event.
 
@@ -173,12 +174,14 @@ class SSEProgressObserver:
             total_cost_cents: Total cost of all shipments in cents.
             duties_taxes_cents: Total duties and taxes in cents.
             international_row_count: Number of international rows.
+            status: Canonical successful terminal job status.
         """
         await self._emit(
             job_id,
             "batch_completed",
             {
                 "job_id": job_id,
+                "status": status,
                 "total_rows": total_rows,
                 "successful": successful,
                 "total_cost_cents": total_cost_cents,
@@ -195,6 +198,7 @@ class SSEProgressObserver:
         processed: int,
         duties_taxes_cents: int = 0,
         international_row_count: int = 0,
+        status: Literal["failed", "cancelled"] = "failed",
     ) -> None:
         """Handle batch failed event.
 
@@ -205,12 +209,14 @@ class SSEProgressObserver:
             processed: Number of rows processed before failure.
             duties_taxes_cents: Total duties and taxes in cents.
             international_row_count: Number of international rows.
+            status: Canonical failed or cancelled terminal job status.
         """
         await self._emit(
             job_id,
             "batch_failed",
             {
                 "job_id": job_id,
+                "status": status,
                 "error_code": error_code,
                 "error_message": error_message,
                 "processed": processed,
