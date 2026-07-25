@@ -32,9 +32,7 @@ def upgrade() -> None:
         "cloud_accounts",
         sa.Column("id", sa.String(length=36), nullable=False),
         sa.Column("auth0_subject", sa.String(length=255), nullable=False),
-        sa.Column(
-            "suspended", sa.Boolean(), nullable=False, server_default=sa.false()
-        ),
+        sa.Column("suspended", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -94,5 +92,3 @@ def downgrade() -> None:
     op.drop_table("audit_events", schema=schema)
     op.drop_table("provider_connections", schema=schema)
     op.drop_table("cloud_accounts", schema=schema)
-    if context.get_context().dialect.name == "postgresql":
-        op.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
