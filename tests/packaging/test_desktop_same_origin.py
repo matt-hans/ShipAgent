@@ -8,6 +8,56 @@ from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 TAURI_ROOT = REPOSITORY_ROOT / "src-tauri"
+LINKER_PATH = REPOSITORY_ROOT / "shipagent-frontend" / "scripts" / "link-remotes.sh"
+REMOTE_NAMES = (
+    "chat-remote",
+    "sidebar-remote",
+    "settings-remote",
+    "domain-remote",
+)
+
+
+def _create_frontend_root(tmp_path: Path) -> Path:
+    frontend_root = tmp_path / "frontend"
+    shell_dist = frontend_root / "dist" / "apps" / "shell" / "browser"
+    shell_dist.mkdir(parents=True)
+    (shell_dist / "index.html").write_text("<app-root></app-root>")
+    return frontend_root
+
+
+def _remote_dist(frontend_root: Path, remote_name: str) -> Path:
+    return frontend_root / "dist" / "apps" / remote_name / "browser"
+
+
+def _write_valid_remote(
+    frontend_root: Path,
+    remote_name: str,
+    *,
+    include_chunk: bool = True,
+) -> dict:
+    remote_dist = _remote_dist(frontend_root, remote_name)
+    remote_dist.mkdir(parents=True, exist_ok=True)
+    chunk_name = f"{remote_name}.js"
+    manifest = {
+        "name": remote_name,
+        "exposes": [{"key": "./Remote", "outFileName": chunk_name}],
+        "shared": [],
+    }
+    (remote_dist / "remoteEntry.json").write_text(json.dumps(manifest))
+    if include_chunk:
+        (remote_dist / chunk_name).write_text("export const remote = true;")
+    return manifest
+
+
+def _run_linker(frontend_root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["sh", str(LINKER_PATH)],
+        cwd=REPOSITORY_ROOT,
+        env={**os.environ, "SHIPAGENT_FRONTEND_ROOT": str(frontend_root)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_tauri_bootstrap_can_reach_sidecar_without_remote_ipc_privilege():
@@ -34,43 +84,29 @@ def test_backend_bundler_links_remotes_before_pyinstaller():
 
 
 def test_remote_linker_stages_a_self_contained_production_shell(tmp_path):
-    linker_path = REPOSITORY_ROOT / "shipagent-frontend" / "scripts" / "link-remotes.sh"
-    linker = linker_path.read_text()
+    linker = LINKER_PATH.read_text()
     assert "SHIPAGENT_FRONTEND_ROOT" in linker
 
-    frontend_root = tmp_path / "frontend"
+    frontend_root = _create_frontend_root(tmp_path)
     shell_dist = frontend_root / "dist" / "apps" / "shell" / "browser"
-    shell_dist.mkdir(parents=True)
-    (shell_dist / "index.html").write_text("<app-root></app-root>")
 
-    remote_names = (
-        "chat-remote",
-        "sidebar-remote",
-        "settings-remote",
-        "domain-remote",
-    )
-    for remote_name in remote_names:
-        remote_dist = frontend_root / "dist" / "apps" / remote_name / "browser"
-        remote_dist.mkdir(parents=True)
-        (remote_dist / "remoteEntry.json").write_text(json.dumps({"name": remote_name}))
+    manifests = {
+        remote_name: _write_valid_remote(frontend_root, remote_name)
+        for remote_name in REMOTE_NAMES
+    }
 
-    result = subprocess.run(
-        ["sh", str(linker_path)],
-        cwd=REPOSITORY_ROOT,
-        env={**os.environ, "SHIPAGENT_FRONTEND_ROOT": str(frontend_root)},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _run_linker(frontend_root)
 
     assert result.returncode == 0, result.stderr
-    for remote_name in remote_names:
+    for remote_name in REMOTE_NAMES:
         staged_remote = shell_dist / remote_name
         assert staged_remote.is_dir()
         assert not staged_remote.is_symlink()
-        assert json.loads((staged_remote / "remoteEntry.json").read_text()) == {
-            "name": remote_name
-        }
+        assert (
+            json.loads((staged_remote / "remoteEntry.json").read_text())
+            == manifests[remote_name]
+        )
+        assert (staged_remote / f"{remote_name}.js").is_file()
 
 
 def test_pyinstaller_collects_the_self_contained_shell_at_the_runtime_path():
@@ -84,21 +120,90 @@ def test_pyinstaller_collects_the_self_contained_shell_at_the_runtime_path():
 
 
 def test_remote_linker_fails_when_a_required_remote_is_missing(tmp_path):
-    linker_path = REPOSITORY_ROOT / "shipagent-frontend" / "scripts" / "link-remotes.sh"
-    frontend_root = tmp_path / "frontend"
-    (frontend_root / "dist" / "apps" / "shell" / "browser").mkdir(parents=True)
+    frontend_root = _create_frontend_root(tmp_path)
 
     for remote_name in ("chat-remote", "sidebar-remote", "settings-remote"):
-        (frontend_root / "dist" / "apps" / remote_name / "browser").mkdir(parents=True)
+        _write_valid_remote(frontend_root, remote_name)
 
-    result = subprocess.run(
-        ["sh", str(linker_path)],
-        cwd=REPOSITORY_ROOT,
-        env={**os.environ, "SHIPAGENT_FRONTEND_ROOT": str(frontend_root)},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _run_linker(frontend_root)
 
     assert result.returncode != 0
     assert "domain-remote dist not found" in result.stdout
+
+
+def test_remote_linker_fails_when_a_remote_output_directory_is_empty(tmp_path):
+    frontend_root = _create_frontend_root(tmp_path)
+
+    for remote_name in REMOTE_NAMES:
+        remote_dist = _remote_dist(frontend_root, remote_name)
+        remote_dist.mkdir(parents=True)
+        if remote_name != "chat-remote":
+            _write_valid_remote(frontend_root, remote_name)
+
+    result = _run_linker(frontend_root)
+
+    assert result.returncode != 0
+    assert "chat-remote remoteEntry.json not found" in result.stdout
+
+
+def test_remote_linker_fails_when_a_remote_entry_is_malformed_json(tmp_path):
+    frontend_root = _create_frontend_root(tmp_path)
+
+    for remote_name in REMOTE_NAMES:
+        _write_valid_remote(frontend_root, remote_name)
+    (_remote_dist(frontend_root, "chat-remote") / "remoteEntry.json").write_text(
+        "<!doctype html><title>SPA fallback</title>"
+    )
+
+    result = _run_linker(frontend_root)
+
+    assert result.returncode != 0
+    assert "chat-remote remoteEntry.json is not valid JSON" in result.stderr
+
+
+def test_remote_linker_fails_when_remote_entry_has_no_exposed_chunk(tmp_path):
+    frontend_root = _create_frontend_root(tmp_path)
+
+    for remote_name in REMOTE_NAMES:
+        _write_valid_remote(frontend_root, remote_name)
+    (_remote_dist(frontend_root, "chat-remote") / "remoteEntry.json").write_text(
+        json.dumps({"name": "chat-remote"})
+    )
+
+    result = _run_linker(frontend_root)
+
+    assert result.returncode != 0
+    assert (
+        "chat-remote remoteEntry.json must expose at least one chunk" in result.stderr
+    )
+
+
+def test_remote_linker_fails_when_remote_entry_references_a_missing_chunk(tmp_path):
+    frontend_root = _create_frontend_root(tmp_path)
+
+    for remote_name in REMOTE_NAMES:
+        _write_valid_remote(
+            frontend_root,
+            remote_name,
+            include_chunk=remote_name != "chat-remote",
+        )
+
+    result = _run_linker(frontend_root)
+
+    assert result.returncode != 0
+    assert "chat-remote remoteEntry.json referenced chunk is missing" in result.stderr
+
+
+def test_remote_linker_fails_when_remote_entry_is_missing_from_nonempty_output(
+    tmp_path,
+):
+    frontend_root = _create_frontend_root(tmp_path)
+    for remote_name in REMOTE_NAMES:
+        _write_valid_remote(frontend_root, remote_name)
+    chat_dist = _remote_dist(frontend_root, "chat-remote")
+    (chat_dist / "remoteEntry.json").unlink()
+
+    result = _run_linker(frontend_root)
+
+    assert result.returncode != 0
+    assert "chat-remote remoteEntry.json not found" in result.stdout

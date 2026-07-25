@@ -13,12 +13,12 @@ const frontendRoot = path.resolve(scriptDirectory, '..');
 const repositoryRoot = path.resolve(frontendRoot, '..');
 const distRoot = path.join(frontendRoot, 'dist', 'apps');
 const sessionCookieName = 'shipagent_browser_session';
-const federationPaths = [
-  '/federation.manifest.json',
-  '/chat-remote/remoteEntry.json',
-  '/sidebar-remote/remoteEntry.json',
-  '/settings-remote/remoteEntry.json',
-  '/domain-remote/remoteEntry.json',
+const federationManifestPath = '/federation.manifest.json';
+const expectedRemoteNames = [
+  'chat-remote',
+  'sidebar-remote',
+  'settings-remote',
+  'domain-remote',
 ];
 
 function run(command, args, cwd) {
@@ -289,32 +289,103 @@ try {
     new URL(baseUrl).origin,
     'Production shell did not remain on the sidecar origin'
   );
-  const federationResponses = await page.evaluate(async (paths) => {
-    return Promise.all(
-      paths.map(async (resourcePath) => {
-        const response = await fetch(resourcePath, {
+  const federationAssets = await page.evaluate(
+    async ({ manifestPath, remoteNames }) => {
+      const require = (condition, message) => {
+        if (!condition) throw new Error(message);
+      };
+      const isHtml = (body) => /^\s*(?:<!doctype\s+html|<html\b)/i.test(body);
+      const fetchText = async (resourceUrl, kind) => {
+        const response = await fetch(resourceUrl, {
           credentials: 'same-origin',
         });
-        return {
-          resourcePath,
-          status: response.status,
-          url: response.url,
-        };
-      })
-    );
-  }, federationPaths);
-  for (const response of federationResponses) {
-    assert.equal(
-      response.status,
-      200,
-      `Sidecar did not serve ${response.resourcePath}`
-    );
-    assert.equal(
-      new URL(response.url).origin,
-      new URL(baseUrl).origin,
-      `${response.resourcePath} was not loaded from the sidecar origin`
-    );
-  }
+        const body = await response.text();
+        const contentType = response.headers.get('content-type') ?? '';
+        require(response.status === 200, `${kind} returned ${response.status}`);
+        require(new URL(response.url).origin ===
+          location.origin, `${kind} escaped the sidecar origin`);
+        require(!isHtml(body), `${kind} resolved to an HTML fallback`);
+        return { response, body, contentType };
+      };
+      const parseJson = (body, kind) => {
+        let value;
+        try {
+          value = JSON.parse(body);
+        } catch (error) {
+          throw new Error(`${kind} is not valid JSON`, { cause: error });
+        }
+        require(value !== null &&
+          typeof value === 'object' &&
+          !Array.isArray(value), `${kind} is not a JSON object`);
+        return value;
+      };
+
+      const rootAsset = await fetchText(manifestPath, 'federation manifest');
+      require(/^application\/json\b/i.test(
+        rootAsset.contentType
+      ), 'federation manifest did not use a JSON content type');
+      const rootManifest = parseJson(rootAsset.body, 'federation manifest');
+      const records = [];
+
+      for (const remoteName of remoteNames) {
+        const entryReference = rootManifest[remoteName];
+        require(typeof entryReference ===
+          'string', `federation manifest omitted ${remoteName}`);
+        const entryUrl = new URL(entryReference, location.href);
+        require(entryUrl.origin === location.origin &&
+          entryUrl.pathname ===
+            `/${remoteName}/remoteEntry.json`, `${remoteName} entry path is not canonical`);
+        const entryAsset = await fetchText(
+          entryUrl.href,
+          `${remoteName} entry`
+        );
+        require(/^application\/json\b/i.test(
+          entryAsset.contentType
+        ), `${remoteName} entry did not use a JSON content type`);
+        const entryManifest = parseJson(entryAsset.body, `${remoteName} entry`);
+        require(entryManifest.name ===
+          remoteName, `${remoteName} entry declared the wrong remote`);
+        require(Array.isArray(entryManifest.exposes) &&
+          entryManifest.exposes.length >
+            0, `${remoteName} entry did not expose a chunk`);
+
+        const referencedChunk = entryManifest.exposes[0]?.outFileName;
+        require(typeof referencedChunk === 'string' &&
+          /^[A-Za-z0-9_][A-Za-z0-9._-]*\.js$/.test(
+            referencedChunk
+          ), `${remoteName} entry referenced an invalid chunk`);
+        const chunkUrl = new URL(referencedChunk, entryUrl);
+        require(chunkUrl.origin === location.origin &&
+          chunkUrl.pathname.startsWith(
+            `/${remoteName}/`
+          ), `${remoteName} chunk escaped its staged directory`);
+        const chunkAsset = await fetchText(
+          chunkUrl.href,
+          `${remoteName} chunk`
+        );
+        require(/(?:java|ecma)script/i.test(
+          chunkAsset.contentType
+        ), `${remoteName} chunk did not use a JavaScript content type`);
+        require(chunkAsset.body.trim().length >
+          0, `${remoteName} chunk was empty`);
+        records.push({
+          remoteName,
+          entryPath: entryUrl.pathname,
+          chunkPath: chunkUrl.pathname,
+        });
+      }
+
+      return records;
+    },
+    {
+      manifestPath: federationManifestPath,
+      remoteNames: expectedRemoteNames,
+    }
+  );
+  assert.deepEqual(
+    federationAssets.map(({ remoteName }) => remoteName),
+    expectedRemoteNames
+  );
   await page.getByLabel('Docker API key').waitFor({ state: 'visible' });
   assert.equal(
     await page
