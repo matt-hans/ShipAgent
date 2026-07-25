@@ -2055,3 +2055,200 @@ GREEN:
   No API key, authenticated session value, CSRF token, credential canary,
   customer content, carrier content, or label data is reproduced in this
   report.
+
+# Round 11 final review fixes
+
+Status: all three findings in
+`.superpowers/sdd/final-review-round-11-findings.md` are fixed and verified.
+
+Implementation commits:
+
+- `29728c7 fix(security): fail closed on public listeners`
+- `391f827 fix(registry): export warning job status`
+- `f543802 fix(frontend): persist every terminal job artifact`
+
+## Round 11 TDD evidence and implementation
+
+### Public listeners require authentication that is actually installed
+
+RED:
+
+- A public bundled launch configured with `auth_mode=auth0` plus issuer and
+  audience strings did not raise when `SHIPAGENT_API_KEY` was absent.
+- A public bundled launch also accepted a configured API key below the
+  middleware's existing minimum strength.
+- These failures demonstrated that future-looking Auth0 configuration was
+  being treated as a launch posture even though there is no JWT/Auth0 request
+  verifier installed.
+
+GREEN:
+
+- `validate_startup_security()` now treats the exact listener bind host as the
+  security boundary. Every non-loopback host invokes the API middleware's
+  existing key-strength validator and requires a nonempty
+  `SHIPAGENT_API_KEY`.
+- The startup gate imports the same key resolver and strength validator used by
+  request middleware, so launch admission and actual request enforcement
+  cannot silently use different definitions of an effective key.
+- `auth_mode=auth0`, issuer strings, audience strings, and environment labels
+  do not count as request authentication. A future real JWT verifier must be
+  installed and explicitly wired before this policy can be relaxed.
+- The bundled server validates before constructing/running Uvicorn. The daemon
+  validates before importing Uvicorn, inspecting or writing a PID file, or
+  starting a process.
+- Missing, weak, and strong-key cases are covered for both public bundled and
+  daemon launches. Loopback keyless regressions remain usable, `fake_local`
+  remains restricted to local loopback operation, and the existing Docker
+  strong-key path remains green.
+- A real FastAPI lifespan/TestClient smoke starts in public production mode
+  with a strong key and calls `/api/v1/jobs`: the request without credentials
+  returns **401**, while the request carrying the configured key returns
+  **200**.
+- Focused startup, configuration, bundle, daemon, Docker, and real auth-route
+  coverage is included in the **461-test** combined Round 11 backend matrix.
+
+### Provider job status comes from one explicit canonical mapping
+
+RED:
+
+- A real hosted FastMCP call returning
+  `status="completed_with_warnings"` was rejected at the provider-safe result
+  projection boundary.
+- The first canonical-source tests failed because no neutral job-status module
+  or backend-to-provider mapping existed.
+- The deliberately unexported `paused` status initially leaked a raw mapping
+  lookup failure instead of explaining that the state is not provider-visible.
+- Moving the enum initially changed the established OpenAPI component name.
+  A regression test caught that compatibility change.
+- Before regeneration, the artifact drift test reported the expected status
+  enum deltas in all four generated provider artifacts.
+
+GREEN:
+
+- `src/job_status.py` is the canonical neutral module shared by the database
+  model and API schema. `JobStatusEnum` preserves the established OpenAPI
+  component name, and `JobStatus` remains the database/runtime alias.
+- `ProviderJobStatus` and the immutable
+  `BACKEND_TO_PROVIDER_JOB_STATUS` mapping make every exposed semantic
+  conversion explicit: backend `pending` becomes provider `queued`; running
+  and the four terminal states preserve their meanings.
+- `completed_with_warnings` is now a first-class provider-safe terminal value.
+  Backend `paused` remains intentionally unexported and the conversion helper
+  raises a specific `ValueError` for it.
+- Both public job output schemas derive their enum from the mapping; the old
+  registry-local status string list is removed.
+- A real FastMCP round trip now accepts and returns
+  `completed_with_warnings`, while the existing strict result projection still
+  rejects values outside the generated contract.
+- The OpenAI Apps, generic MCP, Claude remote MCP, and canonical registry
+  artifacts were regenerated from the canonical source. Regeneration is
+  idempotent and the drift test passes from a clean tree.
+
+### Every terminal chat outcome appends and persists the same artifact shape
+
+RED:
+
+- A component-level failed-job test reached the terminal handler but observed
+  **0** calls to `saveArtifact()`. The artifact existed only in the in-memory
+  conversation store and would disappear after history reload.
+
+GREEN:
+
+- `appendAndPersistTerminalArtifact()` is the single component path for
+  completed, completed-with-warnings, failed, and cancelled outcomes.
+- The helper builds metadata once, appends the system artifact, and invokes
+  `saveArtifact()` while the executing job identity is still active. Both
+  terminal handlers clear execution state only after that invocation.
+- Failure and cancellation preserve the shared terminal interpretation plus
+  recovered error, row-failure, current-row, last-tracking-number, cost, and
+  shipment-count diagnostics. Existing user-visible failed and cancelled
+  messages are retained.
+- Component tests use the real Angular signal stores and real internal chat
+  services, replacing only API and SSE system boundaries. They cover all four
+  terminal outcomes and assert the exact persisted failed/cancelled metadata.
+- A history-load test reconstructs persisted failed and cancelled system
+  artifacts, proving the metadata survives a conversation reload.
+- Persistence remains best-effort: synchronous and Observable failures emit
+  only a fixed generic warning, keep the already-appended in-memory artifact,
+  and clear the UI execution state immediately. Tests prove that credential,
+  recipient-row, and tracking canaries are absent from logs.
+- The focused chat suite is now **92 passed**, up from **86** before Round 11.
+
+## Round 11 verification evidence
+
+- Focused startup/auth, canonical-status, registry/model/projection,
+  hosted-MCP, bundle/daemon/Docker, and artifact matrix:
+  `../../.venv/bin/python -m pytest
+  tests/control_plane/test_startup.py tests/control_plane/test_config.py
+  tests/cli/test_daemon.py tests/test_bundle_entry.py
+  tests/test_docker_launch.py tests/api/test_auth_middleware.py
+  tests/test_job_status.py tests/registry/test_catalog.py
+  tests/registry/test_models.py
+  tests/provider_adapters/test_projections.py
+  tests/control_plane/test_result_projection.py
+  tests/hosted/test_hosted_mcp_registry.py
+  tests/registry/test_artifact_drift.py -q` —
+  **461 passed, 1 warning in 1.42s**.
+- Fresh broad backend regression suite:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not
+  progress"` — **3,712 passed, 21 skipped, 105 deselected, 4 warnings in
+  47.57s**.
+- Focused chat component/service suite — **92 passed**.
+- Fresh uncached frontend typecheck matrix passed all **6** configured
+  projects and the required shared-state build.
+- Fresh uncached frontend lint matrix passed all **6** projects with **0
+  errors** and the unchanged **43 warnings**.
+- Fresh uncached frontend test matrix passed all **172 tests**: shared state
+  **41**, chat **92**, shell **36**, and one each for domain, sidebar, and
+  settings.
+- Fresh uncached production builds passed all **7** targets.
+- `npm run smoke:authenticated-production` rebuilt the production application,
+  physically staged all **4** federation remotes, served the shell and API
+  through the real FastAPI same-origin boundary, and passed authenticated
+  settings, logout/gate restoration, re-authentication, EventSource session
+  invalidation/recovery, and cleanup checks with runtime secrets absent.
+- Desktop same-origin packaging plus artifact drift passed **11 tests**.
+- `../../.venv/bin/python -m ruff check src tests` passed. Targeted Ruff format
+  checks passed over all **10** fully formatted Round 11 Python files.
+- Prettier passed for the new component-level spec. The two small integrations
+  in pre-existing TypeScript files were diff-reviewed without unrelated
+  whole-file formatting churn.
+- `bash -n` passed for every tracked repository shell script. `node --check`
+  passed for every tracked MJS script.
+- `cargo fmt --check`, `cargo check --locked`, and `cargo test --locked`
+  passed; the Rust target currently has **0 tests**.
+- Canonical provider regeneration produced no subsequent worktree change. The
+  standalone artifact drift test, aggregate `git diff --check`, and clean-tree
+  checks all passed.
+
+## Round 11 self-review and remaining concerns
+
+- Requirement-by-requirement review, aggregate implementation-diff review, and
+  targeted searches for registry-local job status lists, append-only failure
+  artifacts, sensitive persistence logs, and Auth0-string launch bypasses found
+  no remaining Round 11 blocker.
+- Non-loopback launch admission intentionally requires the installed API-key
+  middleware today. Merely configuring Auth0 metadata remains insufficient;
+  supporting JWT-only public listeners requires a future explicit verifier and
+  a corresponding reviewed startup branch.
+- `paused` is deliberately a backend-only reconnect state rather than a
+  provider promise. Its explicit conversion failure prevents accidental schema
+  expansion.
+- Terminal artifact persistence is intentionally non-blocking and has no
+  automatic retry in this round. If persistence fails, the UI is never stuck
+  and no diagnostic payload is logged; the artifact remains visible for the
+  current in-memory session.
+- Broad output retains the existing defusedxml deprecation, unregistered
+  `extended` pytest mark, Alembic path-separator, frontend lint, Angular,
+  federation, Nx Cloud, and Nx agent-configuration warnings. All required
+  completed commands exited zero.
+- Tauri's resource check required the exact temporary
+  `dist/shipagent-core` directory. It existed only for the locked Cargo checks
+  and was removed immediately afterward.
+- A complete PyInstaller bundle, Docker image, and packaged Tauri WebView were
+  not built. Static packaging contracts, both launcher matrices, every
+  production frontend build, and the authenticated production browser smoke
+  cover the changed paths.
+- No dependency was added or upgraded. No API key, authenticated session value,
+  CSRF token, credential canary, customer row, carrier payload, tracking
+  canary, or label data is reproduced in this report.
