@@ -11,12 +11,12 @@ ACCOUNT_ID = "11111111-1111-4111-8111-111111111111"
 SECOND_ACCOUNT_ID = "22222222-2222-4222-8222-222222222222"
 PROVIDER_CONNECTION_ID = "33333333-3333-4333-8333-333333333333"
 DEVICE_ID = "44444444-4444-4444-8444-444444444444"
-JOB_ID = "sa_job_0123456789abcdef"
-SECOND_JOB_ID = "sa_job_fedcba9876543210"
-CORRELATION_ID = "sa_correlation_0123456789abcdef"
-PREVIEW_ID = "sa_preview_0123456789abcdef"
-CONFIRMATION_ID = "sa_confirmation_0123456789abcdef"
-ARTIFACT_ID = "sa_artifact_0123456789abcdef"
+JOB_ID = "sa_job_0123456789abcdef0123456789abcdef"
+SECOND_JOB_ID = "sa_job_fedcba9876543210fedcba9876543210"
+CORRELATION_ID = "sa_correlation_0123456789abcdef0123456789abcdef"
+PREVIEW_ID = "sa_preview_0123456789abcdef0123456789abcdef"
+CONFIRMATION_ID = "sa_confirmation_0123456789abcdef0123456789abcdef"
+ARTIFACT_ID = "sa_artifact_0123456789abcdef0123456789abcdef"
 
 
 def digest(value: str) -> str:
@@ -143,6 +143,36 @@ async def test_record_rejects_compact_workflow_ids(
         )
 
 
+@pytest.mark.parametrize(
+    ("field_name", "unsafe_value", "top_level"),
+    [
+        ("device_id", f"sa_device_{'61' * 12}", True),
+        ("job_id", f"sa_job_{'61' * 17}", False),
+        ("correlation_id", f"sa_correlation_{'61' * 17}", False),
+        ("preview_id", f"sa_preview_{'61' * 17}", False),
+        ("confirmation_id", f"sa_confirmation_{'61' * 17}", False),
+        ("artifact_id", f"sa_label_{'61' * 17}", False),
+    ],
+)
+async def test_record_rejects_noncanonical_provider_id_body_lengths(
+    control_db,
+    field_name,
+    unsafe_value,
+    top_level,
+):
+    kwargs = (
+        {field_name: unsafe_value} if top_level else {"ids": {field_name: unsafe_value}}
+    )
+
+    with pytest.raises(ValueError, match=f"canonical {field_name}"):
+        await ControlPlaneAuditService.record(
+            session=control_db,
+            event_type="prepare_shipments",
+            actor_id_hash=digest("actor-1"),
+            **kwargs,
+        )
+
+
 async def test_record_hashes_external_identifiers_before_persistence(control_db):
     external_ids = {
         "provider_subject": "auth0|external-user-123",
@@ -173,7 +203,6 @@ async def test_record_hashes_external_identifiers_before_persistence(control_db)
         ("provider_connection_id", PROVIDER_CONNECTION_ID),
         ("provider_connection_id", "sa_connection_0123456789abcdef"),
         ("device_id", DEVICE_ID),
-        ("device_id", "sa_device_0123456789abcdef"),
     ],
 )
 async def test_record_accepts_each_internal_entity_id_family(
@@ -200,7 +229,7 @@ async def test_record_accepts_each_internal_entity_id_family(
         ("preview_id", PREVIEW_ID),
         ("confirmation_id", CONFIRMATION_ID),
         ("artifact_id", ARTIFACT_ID),
-        ("artifact_id", "sa_label_0123456789abcdef"),
+        ("artifact_id", "sa_label_0123456789abcdef0123456789abcdef"),
     ],
 )
 async def test_record_accepts_each_workflow_id_family(

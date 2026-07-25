@@ -6,6 +6,7 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.control_plane.audit.models import ControlPlaneAuditEvent
+from src.registry.identifiers import ShipAgentIdFamily, parse_shipagent_id
 
 
 class ControlPlaneAuditService:
@@ -23,27 +24,20 @@ class ControlPlaneAuditService:
         r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
         r"[0-9a-f]{4}-[0-9a-f]{12}"
     )
-    _ID_PATTERNS = {
-        "account_id": re.compile(
-            rf"^(?:{_UUID_GRAMMAR}|sa_account_[0-9a-f]{{16,25}})$"
-        ),
-        "provider_connection_id": re.compile(
-            rf"^(?:{_UUID_GRAMMAR}|sa_connection_[0-9a-f]{{16,22}})$"
-        ),
-        "device_id": re.compile(rf"^(?:{_UUID_GRAMMAR}|sa_device_[0-9a-f]{{16,26}})$"),
-        "job_id": re.compile(rf"^(?:{_UUID_GRAMMAR}|sa_job_[0-9a-f]{{16,96}})$"),
-        "correlation_id": re.compile(
-            rf"^(?:{_UUID_GRAMMAR}|sa_correlation_[0-9a-f]{{16,96}})$"
-        ),
-        "preview_id": re.compile(
-            rf"^(?:{_UUID_GRAMMAR}|sa_preview_[0-9a-f]{{16,96}})$"
-        ),
-        "confirmation_id": re.compile(
-            rf"^(?:{_UUID_GRAMMAR}|sa_confirmation_[0-9a-f]{{16,96}})$"
-        ),
-        "artifact_id": re.compile(
-            rf"^(?:{_UUID_GRAMMAR}|"
-            r"sa_(?:artifact|document|label|validation)_[0-9a-f]{16,96})$"
+    _UUID_PATTERN = re.compile(rf"^{_UUID_GRAMMAR}$")
+    _INTERNAL_ID_PATTERNS = {
+        "account_id": re.compile(r"^sa_account_[0-9a-f]{16,25}$"),
+        "provider_connection_id": re.compile(r"^sa_connection_[0-9a-f]{16,22}$"),
+        "artifact_id": re.compile(r"^sa_(?:artifact|document)_[0-9a-f]{32}$"),
+    }
+    _PROVIDER_ID_FAMILIES = {
+        "job_id": (ShipAgentIdFamily.JOB,),
+        "correlation_id": (ShipAgentIdFamily.CORRELATION,),
+        "preview_id": (ShipAgentIdFamily.PREVIEW,),
+        "confirmation_id": (ShipAgentIdFamily.CONFIRMATION,),
+        "artifact_id": (
+            ShipAgentIdFamily.LABEL,
+            ShipAgentIdFamily.VALIDATION,
         ),
     }
     _SENSITIVE_ID_MARKER = re.compile(
@@ -279,16 +273,30 @@ class ControlPlaneAuditService:
 
     @classmethod
     def _validate_id_value(cls, value: str, *, key: str, max_length: int) -> str:
-        pattern = cls._ID_PATTERNS[key]
         if (
             not isinstance(value, str)
             or len(value) > max_length
-            or not pattern.fullmatch(value)
+            or not cls._is_canonical_id(value, key)
             or cls._SENSITIVE_ID_MARKER.search(value)
             or cls._contains_compact_sensitive_id_marker(value)
         ):
             raise ValueError(f"{key} must be a bounded canonical {key}")
         return value
+
+    @classmethod
+    def _is_canonical_id(cls, value: str, key: str) -> bool:
+        if cls._UUID_PATTERN.fullmatch(value):
+            return True
+
+        for family in cls._PROVIDER_ID_FAMILIES.get(key, ()):
+            try:
+                parse_shipagent_id(value, expected_family=family)
+            except ValueError:
+                continue
+            return True
+
+        internal_pattern = cls._INTERNAL_ID_PATTERNS.get(key)
+        return bool(internal_pattern and internal_pattern.fullmatch(value))
 
     @classmethod
     def _contains_compact_sensitive_id_marker(cls, value: str) -> bool:
