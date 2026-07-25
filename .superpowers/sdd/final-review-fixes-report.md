@@ -1820,3 +1820,238 @@ GREEN:
 - No dependency was added or upgraded. No API key, signed session, CSRF value,
   credential canary, customer content, carrier content, or label data is
   reproduced in this report.
+
+# Round 10 final review fixes
+
+## Status and commits
+
+All four Round 10 findings are fixed. There are no known Round 10 blockers.
+
+Round 10 implementation commits:
+
+- `e0c6fe6` — `fix(registry): reject identifier alias bypasses`
+- `becf6b0` — `fix(frontend): close terminal and stale SSE races`
+
+## Vertical TDD evidence
+
+### Replacement reconciliation starts only after EventSource `open`
+
+RED:
+
+- The replacement-subscription test asserted that the initial snapshot and
+  pre-retry recovery snapshot were the only two REST calls before
+  `emitOpen()`. The old implementation had already made a third call, so the
+  assertion failed with **expected 2, received 3**.
+- Repeating `emitOpen()` was included in the regression scenario so an
+  unguarded callback would start duplicate reconciliation.
+
+GREEN:
+
+- A replacement EventSource receives an `onopen` handler carrying the exact
+  source, job ID, lifecycle generation, and active abort signal.
+- Reconciliation starts from that handler only. A source-local
+  `reconciliationStarted` guard makes repeated open callbacks idempotent.
+- Initial streams do not perform an unnecessary post-open snapshot; only
+  bounded replacement streams reconcile after the server has accepted the
+  subscription.
+- `onopen` does not touch the retry counter. Only a recognized non-ping
+  progress frame restores retry capacity.
+- The regression test proves there are exactly two snapshots before open,
+  exactly one additional snapshot after two open callbacks, terminal
+  completion is recovered, the replacement closes, and completion emits once.
+- The delayed-reconciliation revision/source tests and repeated retry-budget
+  tests remain green.
+
+### Identifier admission covers normalized singular and plural aliases
+
+RED:
+
+- The camel/Pascal/acronym fixtures for `artifactId`,
+  `ArtifactReference`, and `artifactID` all failed with `DID NOT RAISE`.
+- Compact aliases including `artifactid` and `artifactreferences` also failed
+  with `DID NOT RAISE`.
+- A registered-family `job_ids` field using the canonical scalar schema instead
+  of an array failed with `DID NOT RAISE`.
+
+GREEN:
+
+- Property names are tokenized across snake case, camel case, Pascal case,
+  acronym boundaries, hyphens, dots, and other non-alphanumeric separators.
+- Singular/plural `id`, `ids`, `reference`, and `references` suffixes normalize
+  to the compact canonical field registry.
+- Compact spellings are fail-closed. The established boolean field `valid` is
+  the sole documented exception because its ordinary spelling happens to end
+  in `id`.
+- Unregistered identifier-like fields fail provider-export admission.
+  Registered aliases must use the exact canonical family schema, and plural
+  aliases must be arrays whose items use that exact schema.
+- The existing object/array visitor enforces the same rules recursively.
+- Adversarial tests cover snake, camel, Pascal, acronym, hyphen, dot, compact,
+  plural, nested-object, and nested-array cases. Positive fixtures cover
+  registered aliases and exact singular/plural family schemas.
+- Final identifier/catalog/artifact focused result: **186 passed**. Canonical
+  provider regeneration produced no changed artifact, and artifact drift
+  passed independently.
+
+### Warning and cancellation statuses are terminal on every progress path
+
+RED:
+
+- An initial `completed_with_warnings` snapshot left the component completion
+  spy at **0 calls**.
+- A live warning completion was collapsed to `completed`, losing the warning
+  outcome.
+- The warning and cancellation completion artifacts lacked explicit status,
+  outcome, warning/cancellation flags, and user-facing terminal messages.
+- The backend observer test initially failed because
+  `on_batch_completed(..., status="completed_with_warnings")` did not accept or
+  emit a status.
+
+GREEN:
+
+- The shared `JobStatus` union now matches the backend enum by including
+  `completed_with_warnings`.
+- `getJobTerminalState` is the single frontend classifier for completed,
+  completed-with-warnings, failed, and cancelled states.
+  `resolveJobTerminalStatus` accepts a reported live status only when it
+  belongs to that event's completion/failure outcome, preserving legacy frames
+  that omit status without allowing a mismatched frame to cross outcome paths.
+- Initial REST, pre-retry recovery, post-open reconciliation, and live SSE all
+  use the centralized classification. Warning completion follows the existing
+  completion output; cancellation follows the existing failure output with an
+  explicit cancellation message.
+- Any live terminal frame closes the exact source, aborts its lifecycle, clears
+  pending recovery, and refreshes the job list. Warning/cancellation snapshots
+  likewise stop stream creation or reconnection.
+- Backend live completion frames now include `completed` or
+  `completed_with_warnings`; failure frames can include `failed` or
+  `cancelled`. Preview execution forwards its canonical successful terminal
+  status.
+- Progress and completion-artifact components distinguish warning and
+  cancellation headers, badges, messages, and actions. Component outputs carry
+  the complete terminal interpretation, and persisted completion metadata
+  retains status, outcome, warning flag, cancellation flag, and message.
+- Tests cover initial snapshot, live frame, and missed-event recovery snapshot
+  for both new statuses, plus component output and persisted metadata.
+  Existing completed/failed recovery tests remain green.
+- Backend observer coverage is **2 passed**; the complete chat-remote suite is
+  **86 passed**.
+
+### Shared SSE cannot apply an old session check after teardown
+
+RED:
+
+- In the delayed-response scenario, replacing an errored old stream left its
+  browser-session request subscribed:
+  `oldStatusCheckCancelled` was **false**.
+- That demonstrated the old request could later apply an unauthenticated
+  response after a replacement session had been authenticated.
+
+GREEN:
+
+- Every shared SSE subscription owns a monotonically increasing generation and
+  an AbortController.
+- Unsubscribe, explicit disconnect, a replacement `connect`, and service
+  destruction abort the outstanding session confirmation even when the failed
+  EventSource itself is already null.
+- Open, message, error, async confirmation continuation, and teardown paths
+  require the exact generation/controller/source identity. Teardown from an
+  old Observable cannot close a newer source.
+- Browser session confirmation checks both cancellation and the supplied
+  current-generation predicate immediately before applying status or expiry.
+- The delayed old-stream test performs error, source replacement, expiry,
+  re-authentication with a new CSRF token, and delivery of the old
+  unauthenticated result. It proves the request was cancelled and the new token
+  and expiration generation remain unchanged.
+- Parameterized tests prove the same result for unsubscribe, disconnect, and
+  destruction. Stale source callbacks are also ignored.
+- Existing confirmed-expiry one-check/no-loop behavior and ordinary authenticated
+  error behavior remain green. The focused session-aware suite is **31 passed**.
+
+## Round 10 verification evidence
+
+- Focused backend provider/registry/model/projection/control-plane/hosted
+  boundary/artifact/observer/preview matrix:
+  `../../.venv/bin/python -m pytest
+  tests/registry/test_identifiers.py tests/registry/test_models.py
+  tests/registry/test_catalog.py tests/provider_adapters/test_projections.py
+  tests/control_plane/test_result_projection.py
+  tests/hosted/test_hosted_mcp_registry.py
+  tests/registry/test_artifact_drift.py
+  tests/orchestrator/batch/test_sse_observer.py tests/api/test_preview.py -q`
+  — **446 passed, 1 warning in 1.64s**.
+- Non-stream progress API fallback coverage:
+  `../../.venv/bin/python -m pytest tests/api/test_progress.py -q -k "not
+  stream"` — **4 passed, 3 deselected, 1 warning**.
+- Fresh broad backend regression suite:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not
+  progress"` — **3,696 passed, 21 skipped, 105 deselected, 4 warnings in
+  48.90s**.
+- Fresh uncached frontend typecheck matrix passed all **6** configured projects
+  and the required shared-state build.
+- Fresh uncached frontend lint matrix passed all **6** projects with **0
+  errors** and the unchanged **43 warnings**.
+- Fresh uncached frontend test matrix passed all **166 tests**: shared state
+  **41**, chat **86**, shell **36**, and one each for domain, sidebar, and
+  settings.
+- Fresh uncached production builds passed all **7** targets.
+- `npm run smoke:authenticated-production` rebuilt all production targets,
+  physically staged all **4** remotes, served the federation shell through
+  FastAPI, and passed authenticated settings, session clear/restore,
+  same-origin API, EventSource invalidation/recovery, retry authentication, and
+  cleanup checks with runtime secrets absent.
+- Provider artifacts were regenerated from the canonical registry and produced
+  no worktree changes. The standalone drift test passed.
+- Desktop same-origin packaging plus artifact drift passed **11 tests**.
+- `../../.venv/bin/python -m ruff check src tests` passed. Ruff format checks
+  passed over the four fully modified/new Round 10 Python files. The one-line
+  preview integration was diff-reviewed without rewriting that file's
+  unrelated pre-existing format differences.
+- Prettier checks passed over the six fully modified frontend service/type/test
+  files. The small integrations in four pre-existing component files were
+  diff-reviewed without whole-file formatting churn.
+- `bash -n` passed for every tracked repository shell script. `node --check`
+  passed for every tracked MJS script.
+- `cargo fmt --check`, `cargo check --locked`, and `cargo test --locked`
+  passed; the Rust target currently has **0 tests**.
+- Provider regeneration, final artifact drift, cached-diff checks, and
+  aggregate `git diff --check` all passed.
+
+## Round 10 self-review and remaining concerns
+
+- Requirement-by-requirement review, implementation-diff review, and targeted
+  searches for direct completed/failed comparisons in the changed progress
+  lifecycle found no remaining Round 10 blocker.
+- Replacement reconciliation is intentionally tied to the browser's `open`
+  callback. This is the earliest EventSource signal that the connection has
+  been established; exact identity and revision guards still discard stale
+  results if a newer frame or lifecycle wins the race.
+- Compact identifier detection is intentionally fail-closed. Ordinary compact
+  words ending in `id` require an explicit reviewed exception; only the
+  existing provider field `valid` is currently exempted.
+- Older live terminal frames remain compatible because missing status maps to
+  `completed` or `failed`. An invalid or cross-outcome status cannot turn a
+  failure frame into success or a completion frame into failure.
+- The synchronous TestClient tests that call an infinite SSE endpoint with
+  `client.get()` do not terminate, despite their comments saying they close
+  immediately. An aggregate focused attempt that included those existing tests
+  was stopped after approximately 85 seconds; it is not reported as a pass.
+  This repository's documented broad command excludes stream/SSE/progress
+  tests. The changed live contracts are covered by observer tests, 31
+  session-aware frontend tests, the full frontend matrix, and the real
+  authenticated production browser smoke.
+- Broad backend output retains the existing defusedxml deprecation,
+  unregistered `extended` pytest mark, and Alembic path-separator warnings.
+  Frontend output retains the existing 43 lint warnings and Angular,
+  federation, Nx Cloud, and Nx agent-configuration notices. All required
+  completed commands exited zero.
+- Tauri's resource check required the exact temporary
+  `dist/shipagent-core` directory. It existed only for the locked Cargo checks
+  and was removed immediately afterward.
+- A complete PyInstaller bundle, Docker image, and packaged Tauri WebView were
+  not built. Static packaging contracts, every production frontend build, and
+  the production browser smoke cover the changed paths.
+- No dependency was added or upgraded. No generated provider artifact changed.
+  No API key, authenticated session value, CSRF token, credential canary,
+  customer content, carrier content, or label data is reproduced in this
+  report.
