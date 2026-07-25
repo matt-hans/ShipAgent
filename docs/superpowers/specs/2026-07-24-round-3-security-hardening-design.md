@@ -332,3 +332,88 @@ compound generation covers X-API-key, authorization/bearer, customer content,
 confirmation material, carrier exchanges, and label/document transfer
 families across lower, camel/acronym, and uppercase spellings. Exact legitimate
 opaque identifier fields remain allowed.
+
+## Round 6 Tauri Same-Origin Extension
+
+### Production desktop handoff
+
+The packaged desktop application retains `SameSite=Strict` and makes the
+production browser session genuinely same-origin:
+
+1. Tauri initially loads only the trusted, bundled custom-protocol shell.
+2. Before Native Federation or Angular initializes, a shell-local bootstrap
+   invokes the native `start_sidecar` command. That command receives no API key
+   or browser credential and returns only the validated ephemeral loopback
+   port.
+3. The bootstrap uses `location.replace()` exactly once to navigate to
+   `http://127.0.0.1:<port>/`. Replacement avoids a custom-protocol history
+   entry that could re-enter the bootstrap.
+4. The sidecar serves the same production shell from that HTTP origin. The
+   location classifier does not treat loopback sidecar content as a bootstrap
+   origin, so reloads initialize the application without starting another
+   process or navigating again.
+5. The sidecar-served shell uses relative `/api/v1` URLs for Angular
+   `HttpClient`, native `fetch`, and `EventSource`. Session exchange, cookie
+   creation, protected reads, CSRF mutations, expiry checks, and recovery
+   therefore all share the shell's exact scheme, host, and port.
+
+The pre-federation bootstrap is a shell-local module with no mapped workspace
+imports. This is required because Native Federation installs mapped import
+resolution only after its initializer runs. Once the sidecar reload completes,
+federation initializes normally and the Angular bootstrap may import shared
+libraries.
+
+### Native capability boundary
+
+`withGlobalTauri` is enabled so trusted local bootstrap content can invoke the
+single registered sidecar command. The main-window capability is explicitly
+local and has no `remote` URL grant. Tauri therefore classifies the
+sidecar-served `http://127.0.0.1:<port>` document as remote content without IPC
+privilege. Frontend Tauri detection applies the same boundary, preventing
+updater or other native behavior from running on the sidecar origin even if a
+WebView exposes a global object there.
+
+No API key, signed session, CSRF token, or other credential crosses a Rust
+command, JavaScript/native bridge, URL, or persistent browser storage. The
+custom-protocol document does not authenticate or call API routes.
+
+Tauri development at `http://localhost:4200` does not perform the production
+handoff and retains the existing separately started
+`http://localhost:8000/api/v1` backend fallback. Ordinary FastAPI and Docker
+production shells continue to use relative `/api/v1`.
+
+### Static and package topology
+
+Production builds compile all frontend projects and then require all four
+federation remotes. The staging script copies each remote build into the shell
+directory and fails if any remote is absent. This produces one self-contained
+static tree containing:
+
+- the shell and federation manifest;
+- chat, sidebar, settings, and domain remote entries and chunks; and
+- the shared runtime chunks referenced by their import maps.
+
+PyInstaller collects that exact self-contained shell at
+`shipagent-frontend/dist/apps/shell/browser`, which is also the static path
+resolved by the frozen FastAPI application. Tauri bundles the resulting
+one-folder Python sidecar as a resource. Docker copies the same self-contained
+shell tree, so no runtime depends on build-directory symlinks outside the
+served root.
+
+### Round 6 verification additions
+
+- Registry tests cover reversed compact compounds in lower, mixed
+  camel/acronym, and uppercase forms for authentication headers, API/access
+  keys, label/document transfer, customer payload/address, carrier exchange,
+  and token/secret families.
+- Shell bootstrap tests cover the initial custom-protocol replacement,
+  pre-federation ordering, no-loop/no-IPC sidecar reload, relative production
+  API selection, and the development fallback.
+- Packaging tests cover the local-only Tauri capability, loopback reachability,
+  required remote staging, fail-closed missing remotes, bundler ordering, and
+  the frozen static runtime path.
+- The production-sidecar browser smoke loads the shell, manifest, and every
+  remote from one loopback origin; authenticates with the Strict HttpOnly
+  cookie; performs a CSRF mutation; expires and reauthenticates; exercises
+  EventSource recovery; rejects unresolved pre-federation imports; and scans
+  browser/static surfaces for the runtime API key and all CSRF tokens.
