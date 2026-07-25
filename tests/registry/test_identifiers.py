@@ -1,0 +1,78 @@
+import pytest
+
+from src.registry.catalog import public_tools
+from src.registry.identifiers import (
+    PROVIDER_VISIBLE_FIELD_FAMILIES,
+    PROVIDER_VISIBLE_ID_FAMILIES,
+    mint_shipagent_id,
+    parse_shipagent_id,
+    shipagent_id_pattern,
+    shipagent_id_prefix,
+)
+from src.registry.models import SideEffectClass
+from src.registry.tools.public import public_tool
+from src.registry.tools.schema import object_schema
+
+
+def test_server_minted_provider_identifiers_round_trip_for_every_family():
+    for family in PROVIDER_VISIBLE_ID_FAMILIES:
+        identifier = mint_shipagent_id(family)
+
+        parsed = parse_shipagent_id(identifier)
+
+        assert parsed.family is family
+        assert parsed.hex_body == identifier.removeprefix(f"sa_{family.value}_")
+        assert len(parsed.hex_body) == 32
+        assert parsed.hex_body == parsed.hex_body.lower()
+        assert all(character in "0123456789abcdef" for character in parsed.hex_body)
+
+
+def test_every_provider_visible_identifier_schema_uses_its_exact_family_format():
+    seen_fields: set[str] = set()
+
+    def assert_identifiers(schema: dict[str, object]) -> None:
+        if schema["type"] == "object":
+            properties = schema["properties"]
+            assert isinstance(properties, dict)
+            for field_name, field_schema in properties.items():
+                assert isinstance(field_name, str)
+                assert isinstance(field_schema, dict)
+                if field_name.endswith(("_id", "_reference")):
+                    family = PROVIDER_VISIBLE_FIELD_FAMILIES[field_name]
+                    prefix = shipagent_id_prefix(family)
+                    assert field_schema["pattern"] == shipagent_id_pattern(family)
+                    assert field_schema["minLength"] == len(prefix) + 32
+                    assert field_schema["maxLength"] == len(prefix) + 32
+                    seen_fields.add(field_name)
+                assert_identifiers(field_schema)
+        elif schema["type"] == "array":
+            items = schema["items"]
+            assert isinstance(items, dict)
+            assert_identifiers(items)
+
+    for contract in public_tools():
+        assert_identifiers(contract.input_schema)
+        assert_identifiers(contract.output_schema)
+
+    assert seen_fields == set(PROVIDER_VISIBLE_FIELD_FAMILIES)
+
+
+def test_public_provider_contract_rejects_handwritten_permissive_identifier_schema():
+    permissive_job_id = {
+        "type": "string",
+        "pattern": r"^sa_job_[A-Za-z0-9_-]{16,96}$",
+        "minLength": 23,
+        "maxLength": 103,
+    }
+
+    with pytest.raises(ValueError, match="provider privacy"):
+        public_tool(
+            "identifier_schema_probe",
+            "Identifier schema probe",
+            "A provider-visible contract used to verify canonical identifier schemas.",
+            SideEffectClass.read,
+            ["tools:read"],
+            object_schema({}, []),
+            object_schema({"job_id": permissive_job_id}, ["job_id"]),
+            provider_export_enabled=True,
+        )

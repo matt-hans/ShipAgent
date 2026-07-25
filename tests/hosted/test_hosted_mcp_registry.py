@@ -8,14 +8,28 @@ from jsonschema import validate
 from src.hosted_mcp.server import PROVIDER_RESULT_ERROR, build_server
 from src.provider_adapters.mcp_projection import to_mcp_tool_descriptor
 from src.registry.catalog import public_tools
+from src.registry.identifiers import ShipAgentIdFamily, shipagent_id_prefix
 from src.registry.models import ProviderExport
 
-VALID_CONFIRMATION_ID = "sa_confirmation_0123456789abcdef"
-VALID_CORRELATION_ID = "sa_correlation_0123456789abcdef"
-VALID_INGRESS_ID = "sa_ingress_0123456789abcdef"
-VALID_INPUT_ID = "sa_input_0123456789abcdef"
-VALID_JOB_ID = "sa_job_0123456789abcdef"
-VALID_PREVIEW_ID = "sa_preview_0123456789abcdef"
+VALID_HEX_BODY = "0123456789abcdef0123456789abcdef"
+VALID_CONFIRMATION_ID = f"sa_confirmation_{VALID_HEX_BODY}"
+VALID_CORRELATION_ID = f"sa_correlation_{VALID_HEX_BODY}"
+VALID_DEVICE_ID = f"sa_device_{VALID_HEX_BODY}"
+VALID_INGRESS_ID = f"sa_ingress_{VALID_HEX_BODY}"
+VALID_INPUT_ID = f"sa_input_{VALID_HEX_BODY}"
+VALID_JOB_ID = f"sa_job_{VALID_HEX_BODY}"
+VALID_LABEL_ID = f"sa_label_{VALID_HEX_BODY}"
+VALID_PREVIEW_ID = f"sa_preview_{VALID_HEX_BODY}"
+VALID_VALIDATION_ID = f"sa_validation_{VALID_HEX_BODY}"
+
+PREFIXED_COMPACT_CANARY_BODIES = (
+    "ApiKeyLiveValue01",
+    "BearerTokenValue1",
+    "JaneDoeCustomer01",
+    "PrivateRecipient1",
+    "742MainStreetCity",
+    "QXBpS2V5TGl2ZVZhbHVl",
+)
 
 
 def tool(name: str):
@@ -43,6 +57,85 @@ def rate_result(**overrides):
     }
     rate.update(overrides)
     return {"rates": [rate], "selected": "03"}
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "result"),
+    [
+        (
+            "get_shipagent_status",
+            {"correlation_id": VALID_CORRELATION_ID},
+            {
+                "status": "ready",
+                "active_device_id": VALID_DEVICE_ID,
+                "capabilities": ["shipment_ingress"],
+            },
+        ),
+        (
+            "submit_one_off_shipment",
+            {"ingress_reference": VALID_INGRESS_ID},
+            {"input_reference": VALID_INPUT_ID},
+        ),
+        (
+            "validate_shipment_address",
+            {"input_reference": VALID_INPUT_ID},
+            {
+                "validation_artifact_id": VALID_VALIDATION_ID,
+                "valid": True,
+                "guidance_codes": ["no_action_required"],
+            },
+        ),
+        (
+            "get_shipment_rates",
+            {"input_reference": VALID_INPUT_ID},
+            rate_result(),
+        ),
+        (
+            "prepare_shipments",
+            {"input_reference": VALID_INPUT_ID},
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "summary": {"shipment_count": 1},
+            },
+        ),
+        (
+            "execute_shipments",
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+            },
+            {"job_id": VALID_JOB_ID, "status": "running"},
+        ),
+        (
+            "get_job_status",
+            {"job_id": VALID_JOB_ID},
+            {"job_id": VALID_JOB_ID, "status": "completed"},
+        ),
+        (
+            "create_label_download",
+            {"job_id": VALID_JOB_ID},
+            {"label_artifact_id": VALID_LABEL_ID, "status": "ready"},
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_real_mcp_round_trips_canonical_identifier_fixtures(
+    tool_name,
+    arguments,
+    result,
+):
+    async def handler(_arguments):
+        return result
+
+    server = build_server(
+        tools=[exportable_mcp_tool(tool_name)],
+        tool_handlers={tool_name: handler},
+    )
+
+    async with Client(server) as client:
+        response = await client.call_tool(tool_name, arguments)
+
+    assert response.structured_content == result
 
 
 @pytest.mark.asyncio
@@ -149,7 +242,7 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
             {"correlation_id": VALID_CORRELATION_ID},
             {
                 "status": "ready",
-                "active_device_id": "sa_device_0123456789abcdef",
+                "active_device_id": VALID_DEVICE_ID,
                 "capabilities": ["Bearer scalar-credential"],
             },
             "Bearer scalar-credential",
@@ -353,6 +446,108 @@ async def test_real_mcp_rejects_canaries_in_every_input_identifier(
             await client.call_tool(tool_name, arguments)
 
     assert handler_called is False
+
+
+@pytest.mark.parametrize("family", list(ShipAgentIdFamily))
+@pytest.mark.parametrize("canary_body", PREFIXED_COMPACT_CANARY_BODIES)
+@pytest.mark.asyncio
+async def test_real_mcp_rejects_prefixed_compact_canaries_for_every_id_family(
+    caplog,
+    family,
+    canary_body,
+):
+    canary = f"{shipagent_id_prefix(family)}{canary_body}"
+    cases = {
+        ShipAgentIdFamily.CORRELATION: (
+            "get_shipagent_status",
+            {"correlation_id": canary},
+            {},
+            False,
+        ),
+        ShipAgentIdFamily.DEVICE: (
+            "get_shipagent_status",
+            {"correlation_id": VALID_CORRELATION_ID},
+            {
+                "status": "ready",
+                "active_device_id": canary,
+                "capabilities": ["shipment_ingress"],
+            },
+            True,
+        ),
+        ShipAgentIdFamily.INGRESS: (
+            "submit_one_off_shipment",
+            {"ingress_reference": canary},
+            {},
+            False,
+        ),
+        ShipAgentIdFamily.INPUT: (
+            "validate_shipment_address",
+            {"input_reference": canary},
+            {},
+            False,
+        ),
+        ShipAgentIdFamily.VALIDATION: (
+            "validate_shipment_address",
+            {"input_reference": VALID_INPUT_ID},
+            {
+                "validation_artifact_id": canary,
+                "valid": True,
+                "guidance_codes": ["no_action_required"],
+            },
+            True,
+        ),
+        ShipAgentIdFamily.PREVIEW: (
+            "execute_shipments",
+            {
+                "preview_id": canary,
+                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+            },
+            {},
+            False,
+        ),
+        ShipAgentIdFamily.CONFIRMATION: (
+            "execute_shipments",
+            {
+                "preview_id": VALID_PREVIEW_ID,
+                "confirmation_artifact_id": canary,
+            },
+            {},
+            False,
+        ),
+        ShipAgentIdFamily.JOB: (
+            "get_job_status",
+            {"job_id": canary},
+            {},
+            False,
+        ),
+        ShipAgentIdFamily.LABEL: (
+            "create_label_download",
+            {"job_id": VALID_JOB_ID},
+            {"label_artifact_id": canary, "status": "ready"},
+            True,
+        ),
+    }
+    tool_name, arguments, unsafe_result, handler_expected = cases[family]
+    handler_called = False
+
+    async def handler(_arguments):
+        nonlocal handler_called
+        handler_called = True
+        return unsafe_result
+
+    server = build_server(
+        tools=[exportable_mcp_tool(tool_name)],
+        tool_handlers={tool_name: handler},
+    )
+    caplog.set_level(logging.WARNING)
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as exc_info:
+            await client.call_tool(tool_name, arguments)
+
+    assert handler_called is handler_expected
+    assert str(exc_info.value) == PROVIDER_RESULT_ERROR
+    assert canary not in f"{exc_info.value}\n{caplog.text}"
 
 
 @pytest.mark.parametrize("async_failure", [False, True])
