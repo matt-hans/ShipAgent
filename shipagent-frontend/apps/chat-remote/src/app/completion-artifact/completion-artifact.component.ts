@@ -21,6 +21,12 @@ import type {
 } from '@shipagent/shared-types';
 
 const MAX_VISIBLE_REFINEMENTS = 3;
+type CompletionPresentation =
+  | 'completed'
+  | 'warning'
+  | 'partial'
+  | 'failed'
+  | 'cancelled';
 
 /** Typed shape of the completion metadata from ConversationMessage. */
 interface CompletionMeta {
@@ -29,6 +35,7 @@ interface CompletionMeta {
   hasWarnings?: boolean;
   cancelled?: boolean;
   statusMessage?: string;
+  error?: { code: string; message: string };
   successful: number;
   failed: number;
   totalCostCents: number;
@@ -76,10 +83,25 @@ function parseRefinedName(name: string | undefined): {
           </span>
         </div>
 
-        @if ((hasWarnings || isCancelled) && meta.statusMessage) {
-          <p class="text-xs font-mono text-warning">
-            {{ meta.statusMessage }}
-          </p>
+        @if ((allFailed || hasWarnings || isCancelled) && (meta.statusMessage || meta.error)) {
+          <div class="max-h-[100px] overflow-y-auto space-y-1">
+            @if (meta.statusMessage) {
+              <p class="text-xs font-mono"
+                [class.text-error]="allFailed"
+                [class.text-warning]="!allFailed"
+              >
+                {{ meta.statusMessage }}
+              </p>
+            }
+            @if (meta.error) {
+              <p class="text-xs font-mono"
+                [class.text-error]="allFailed"
+                [class.text-warning]="!allFailed"
+              >
+                {{ meta.error.code }}: {{ meta.error.message }}
+              </p>
+            }
+          </div>
         }
 
         <!-- Job name with refinements -->
@@ -133,7 +155,7 @@ function parseRefinedName(name: string | undefined): {
         }
 
         <!-- Download labels -->
-        @if (!allFailed && !isCancelled) {
+        @if (canUseSuccessfulActions) {
           <button
             type="button"
             class="w-full btn-primary py-2 flex items-center justify-center gap-2 text-sm"
@@ -145,7 +167,7 @@ function parseRefinedName(name: string | undefined): {
         }
 
         <!-- Schedule pickup CTA -->
-        @if (!allFailed && !isCancelled && meta.successful > 0) {
+        @if (canUseSuccessfulActions) {
           <button
             type="button"
             class="w-full btn-secondary py-2 flex items-center justify-center gap-2 text-sm card-domain-pickup border"
@@ -172,25 +194,36 @@ export class CompletionArtifactComponent {
   }
 
   get allFailed(): boolean {
-    return !!this.meta && this.meta.successful === 0 && this.meta.failed > 0;
+    return this.presentation === 'failed';
   }
 
   get hasFailures(): boolean {
-    return !!this.meta && this.meta.failed > 0;
+    return this.presentation === 'partial';
   }
 
   get hasWarnings(): boolean {
-    return this.meta?.hasWarnings === true;
+    return this.presentation === 'warning';
   }
 
   get isCancelled(): boolean {
-    return this.meta?.cancelled === true || this.meta?.status === 'cancelled';
+    return this.presentation === 'cancelled';
   }
 
   get badgeText(): string {
     if (this.isCancelled) return 'CANCELLED';
     if (this.hasWarnings) return 'COMPLETED WITH WARNINGS';
     return this.allFailed ? 'FAILED' : this.hasFailures ? 'PARTIAL' : 'COMPLETED';
+  }
+
+  get canUseSuccessfulActions(): boolean {
+    const meta = this.meta;
+    return (
+      !!meta &&
+      meta.successful > 0 &&
+      (this.presentation === 'completed' ||
+        this.presentation === 'warning' ||
+        this.presentation === 'partial')
+    );
   }
 
   get baseDisplay(): string {
@@ -211,8 +244,29 @@ export class CompletionArtifactComponent {
 
   downloadLabels(): void {
     const id = this.jobId;
-    if (id) {
+    if (id && this.canUseSuccessfulActions) {
       this.viewLabels.emit(id);
     }
+  }
+
+  private get presentation(): CompletionPresentation {
+    const meta = this.meta;
+    if (!meta) return 'completed';
+
+    if (meta.status === 'cancelled') return 'cancelled';
+    if (meta.status === 'failed') return 'failed';
+    if (meta.outcome === 'failed') {
+      return meta.cancelled === true ? 'cancelled' : 'failed';
+    }
+    if (meta.status === 'completed_with_warnings') return 'warning';
+    if (meta.status === 'completed') return 'completed';
+    if (meta.outcome === 'complete') {
+      return meta.hasWarnings === true ? 'warning' : 'completed';
+    }
+
+    if (meta.cancelled === true) return 'cancelled';
+    if (meta.hasWarnings === true) return 'warning';
+    if (meta.successful === 0 && meta.failed > 0) return 'failed';
+    return meta.failed > 0 ? 'partial' : 'completed';
   }
 }
