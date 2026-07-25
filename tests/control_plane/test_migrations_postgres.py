@@ -65,7 +65,7 @@ def test_alembic_migrations_do_not_disable_application_loggers(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_alembic_runs_against_postgres_schema_control_plane() -> None:
+async def test_alembic_downgrade_preserves_preexisting_postgres_schema() -> None:
     configured_database_url = os.environ.get("SHIPAGENT_TEST_DATABASE_URL")
     if not configured_database_url:
         configured_database_url = os.environ.get("SHIPAGENT_DATABASE_URL")
@@ -104,6 +104,17 @@ async def test_alembic_runs_against_postgres_schema_control_plane() -> None:
         control_plane_schema=schema,
     )
     try:
+        async with engine.begin() as connection:
+            await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+            await connection.execute(
+                text(f'CREATE TABLE "{schema}".sentinel (value text PRIMARY KEY)')
+            )
+            await connection.execute(
+                text(
+                    f"INSERT INTO \"{schema}\".sentinel (value) VALUES ('preserve-me')"
+                )
+            )
+
         await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
 
         expected = {"cloud_accounts", "provider_connections", "audit_events"}
@@ -134,6 +145,49 @@ async def test_alembic_runs_against_postgres_schema_control_plane() -> None:
             loaded = await session.get(CloudAccount, account.id)
             assert loaded is not None
             assert loaded.auth0_subject == "subject-1"
+
+        await asyncio.to_thread(command.downgrade, alembic_cfg, "base")
+
+        async with engine.connect() as connection:
+            sentinel_value = await connection.scalar(
+                text(f'SELECT value FROM "{schema}".sentinel')
+            )
+            assert sentinel_value == "preserve-me"
+
+            table_result = await connection.execute(
+                text(
+                    """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = :schema
+                          AND table_name IN (
+                            'cloud_accounts',
+                            'provider_connections',
+                            'audit_events'
+                          )
+                        """
+                ),
+                {"schema": schema},
+            )
+            assert {row[0] for row in table_result} == set()
+
+            index_count = await connection.scalar(
+                text(
+                    """
+                        SELECT count(*)
+                        FROM pg_indexes
+                        WHERE schemaname = :schema
+                          AND indexname LIKE 'ix_audit_events_%'
+                        """
+                ),
+                {"schema": schema},
+            )
+            assert index_count == 0
+
+            revision = await connection.scalar(
+                text(f'SELECT version_num FROM "{schema}".alembic_version')
+            )
+            assert revision is None
     finally:
         async with engine.connect() as connection:
             await connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
