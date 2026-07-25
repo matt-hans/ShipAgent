@@ -11,19 +11,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.job_status import JobStatusEnum
+
 # Enums for API validation
-
-
-class JobStatusEnum(str, Enum):
-    """Valid job status values for API requests."""
-
-    pending = "pending"
-    running = "running"
-    paused = "paused"
-    completed = "completed"
-    completed_with_warnings = "completed_with_warnings"
-    failed = "failed"
-    cancelled = "cancelled"
 
 
 class JobModeEnum(str, Enum):
