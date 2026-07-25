@@ -11,7 +11,7 @@
  */
 
 import { Injectable, OnDestroy, inject, signal, computed } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, fromEvent, takeUntil } from 'rxjs';
 import {
   ApiService,
   BrowserSessionTransportService,
@@ -57,6 +57,9 @@ const INITIAL_PROGRESS: JobProgressSnapshot = {
   lastTrackingNumber: null,
 };
 
+const RECONNECT_BASE_DELAY_MS = 250;
+const MAX_RECONNECT_ATTEMPTS = 3;
+
 @Injectable()
 export class JobProgressSseService implements OnDestroy {
   private readonly apiService = inject(ApiService);
@@ -65,6 +68,11 @@ export class JobProgressSseService implements OnDestroy {
 
   /** Own EventSource instance — separate from the conversation SSE. */
   private eventSource: EventSource | null = null;
+  private currentJobId: string | null = null;
+  private lifecycleGeneration = 0;
+  private lifecycleAbortController: AbortController | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
 
   /** Current progress snapshot. */
   readonly progress = signal<JobProgressSnapshot>({ ...INITIAL_PROGRESS });
@@ -94,35 +102,39 @@ export class JobProgressSseService implements OnDestroy {
    */
   async connectToJobProgress(jobId: string): Promise<void> {
     this.disconnect();
+    this.currentJobId = jobId;
+    this.lifecycleAbortController = new AbortController();
+    const generation = this.lifecycleGeneration;
     this.progress.set({ ...INITIAL_PROGRESS });
 
     // Fetch initial progress for crash recovery.
-    try {
-      const data = await firstValueFrom(this.apiService.getJobProgress(jobId));
-      this.progress.set({
-        total: data.total_rows,
-        processed: data.processed_rows,
-        successful: data.successful_rows,
-        failed: data.failed_rows,
-        totalCostCents: data.total_cost_cents ?? 0,
-        dutiesTaxesCents: data.total_duties_taxes_cents ?? undefined,
-        internationalCount: data.international_row_count ?? undefined,
-        status: data.status,
-        error: null,
-        rowFailures: [],
-        currentRow: null,
-        lastTrackingNumber: null,
-      });
-    } catch {
-      // Non-critical — live SSE will update.
-    }
+    const status = await this.refreshSnapshot(
+      jobId,
+      generation,
+      this.lifecycleAbortController.signal
+    );
+    if (!this.isCurrent(jobId, generation)) return;
+    if (status === 'completed' || status === 'failed') return;
+    this.openStream(jobId, generation);
+  }
 
-    const url = this.apiService.getJobProgressUrl(jobId);
-    const es = new EventSource(url, { withCredentials: true });
+  private openStream(jobId: string, generation: number): void {
+    if (!this.isCurrent(jobId, generation) || this.eventSource) return;
+
+    const es = new EventSource(this.apiService.getJobProgressUrl(jobId), {
+      withCredentials: true,
+    });
     let handlingError = false;
     this.eventSource = es;
 
+    es.onopen = () => {
+      if (this.eventSource === es && this.isCurrent(jobId, generation)) {
+        this.reconnectAttempts = 0;
+      }
+    };
+
     es.onmessage = (event: MessageEvent) => {
+      if (this.eventSource !== es || !this.isCurrent(jobId, generation)) return;
       try {
         const rawData = event.data as string;
         if (!rawData || rawData.trim() === '') return;
@@ -148,25 +160,95 @@ export class JobProgressSseService implements OnDestroy {
       if (handlingError) return;
       handlingError = true;
       es.close();
-      if (this.eventSource === es) {
-        this.eventSource = null;
-      }
-      void this.browserTransport
-        .confirmSessionAfterEventSourceError()
-        .then((sessionExpired) => {
-          if (!sessionExpired) {
-            console.error('[JobProgressSseService] SSE connection closed');
-          }
-        });
+      if (this.eventSource !== es || !this.isCurrent(jobId, generation)) return;
+      this.eventSource = null;
+      void this.recoverFromError(jobId, generation);
     };
   }
 
   /** Disconnect the progress stream. */
   disconnect(): void {
+    this.lifecycleGeneration++;
+    this.currentJobId = null;
+    this.reconnectAttempts = 0;
+    this.lifecycleAbortController?.abort();
+    this.lifecycleAbortController = null;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
     }
+  }
+
+  private async recoverFromError(
+    jobId: string,
+    generation: number
+  ): Promise<void> {
+    const abortSignal = this.lifecycleAbortController?.signal;
+    if (!abortSignal || abortSignal.aborted) return;
+    const sessionExpired =
+      await this.browserTransport.confirmSessionAfterEventSourceError(
+        abortSignal
+      );
+    if (sessionExpired || !this.isCurrent(jobId, generation)) return;
+
+    const status = await this.refreshSnapshot(jobId, generation, abortSignal);
+    if (!this.isCurrent(jobId, generation)) return;
+    if (status === 'completed' || status === 'failed') {
+      this.jobStore.incrementJobListVersion();
+      return;
+    }
+    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return;
+
+    const delay = RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempts;
+    this.reconnectAttempts++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.openStream(jobId, generation);
+    }, delay);
+  }
+
+  private async refreshSnapshot(
+    jobId: string,
+    generation: number,
+    abortSignal: AbortSignal
+  ): Promise<JobStatus | null> {
+    if (abortSignal.aborted) return null;
+    try {
+      const data = await firstValueFrom(
+        this.apiService
+          .getJobProgress(jobId)
+          .pipe(takeUntil(fromEvent(abortSignal, 'abort')))
+      );
+      if (!this.isCurrent(jobId, generation)) return null;
+      this.progress.set({
+        total: data.total_rows,
+        processed: data.processed_rows,
+        successful: data.successful_rows,
+        failed: data.failed_rows,
+        totalCostCents: data.total_cost_cents ?? 0,
+        dutiesTaxesCents: data.total_duties_taxes_cents ?? undefined,
+        internationalCount: data.international_row_count ?? undefined,
+        status: data.status,
+        error: null,
+        rowFailures: [],
+        currentRow: null,
+        lastTrackingNumber: null,
+      });
+      return data.status;
+    } catch {
+      // Non-critical — live SSE recovery remains bounded by its generation.
+      return null;
+    }
+  }
+
+  private isCurrent(jobId: string, generation: number): boolean {
+    return (
+      this.currentJobId === jobId && this.lifecycleGeneration === generation
+    );
   }
 
   // ---------------------------------------------------------------------------

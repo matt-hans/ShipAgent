@@ -1,5 +1,5 @@
 import { Injectable, inject } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
+import { firstValueFrom, fromEvent, takeUntil } from 'rxjs';
 import { ApiService } from './api.service';
 import { API_BASE_URL } from './api-url.token';
 import { BrowserSessionState } from './browser-session.state';
@@ -53,11 +53,18 @@ export class BrowserSessionTransportService {
     return response;
   }
 
-  async confirmSessionAfterEventSourceError(): Promise<boolean> {
+  async confirmSessionAfterEventSourceError(
+    abortSignal?: AbortSignal
+  ): Promise<boolean> {
+    if (abortSignal?.aborted) return false;
     try {
+      const statusRequest = this.apiService.getBrowserSessionStatus();
       const status = await firstValueFrom(
-        this.apiService.getBrowserSessionStatus()
+        abortSignal
+          ? statusRequest.pipe(takeUntil(fromEvent(abortSignal, 'abort')))
+          : statusRequest
       );
+      if (abortSignal?.aborted) return false;
       this.browserSession.applySessionStatus(status);
       if (status.required && !status.authenticated) {
         this.browserSession.markExpired();
