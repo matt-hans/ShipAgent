@@ -2252,3 +2252,160 @@ GREEN:
 - No dependency was added or upgraded. No API key, authenticated session value,
   CSRF token, credential canary, customer row, carrier payload, tracking
   canary, or label data is reproduced in this report.
+
+# Round 12 final review fix
+
+Status: the single terminal completion-artifact rendering finding in
+`.superpowers/sdd/final-review-round-12-findings.md` is fixed and verified.
+
+Implementation commit:
+
+- `fc2f169 fix(frontend): render terminal artifact outcomes safely`
+
+## Round 12 vertical TDD evidence and implementation
+
+### Persisted terminal artifacts render from canonical outcome/status
+
+RED:
+
+- The first restored-artifact component test supplied the persisted Round 11
+  shape with `status="failed"`, `outcome="failed"`, `successful=0`,
+  `failed=0`, `statusMessage`, and a batch-level `error`.
+- The focused chat run reported **92 passed and 1 failed**: the badge rendered
+  `COMPLETED` instead of `FAILED`. The same pre-fix card also had success
+  styling, omitted the persisted diagnostic, and exposed “View Labels.”
+
+GREEN:
+
+- `CompletionArtifactComponent` now derives one terminal presentation from the
+  canonical status first and canonical outcome second.
+- `cancelled`, `failed`, `completed_with_warnings`, and `completed` statuses
+  determine their terminal presentation regardless of row counts. A failed
+  outcome also fails closed if it conflicts with a success status.
+- Only artifacts with neither canonical field use the legacy warning/count
+  fallback: all failed, partial, or completed.
+- Failed zero-count artifacts now receive the red border and `FAILED` badge.
+  Cancelled artifacts retain their warning styling and `CANCELLED` badge.
+- A later canonical-precedence tracer deliberately supplied
+  `status="completed"` plus a nonzero failed row count. RED rendered `PARTIAL`;
+  GREEN rendered canonical `COMPLETED`, proving counts no longer override a
+  persisted terminal status.
+
+### Failed and cancelled diagnostics remain bounded and visible
+
+RED:
+
+- The restored zero-count failure did not render either its fixed
+  `statusMessage` or persisted batch-level error.
+
+GREEN:
+
+- Failed, warning, and cancelled presentations render their persisted terminal
+  message and batch error code/message inside a `max-h-[100px]` scrolling
+  diagnostic container.
+- The component renders only those bounded terminal fields. It does not add
+  current-row, tracking, raw request/response, label, or customer payload
+  fields to the artifact.
+- Rendering tests assert both failed diagnostic fields, both cancelled
+  diagnostic fields, the red failed presentation, preserved cancelled warning
+  presentation, and the bounded container.
+- Newly appended and history-reconstructed artifacts share the same completion
+  metadata contract and component path; the Round 11 reconstruction coverage
+  plus the restored Round 12 rendering fixture exercise that persisted shape.
+
+### Label and pickup actions fail closed
+
+RED:
+
+- A canonical completed artifact with zero successful shipments still rendered
+  “View Labels.” The tracer run reported **93 passed and 1 failed** and showed
+  the PDF action in the received DOM.
+
+GREEN:
+
+- `canUseSuccessfulActions` is the single predicate for both visible success
+  CTAs. It requires `successful > 0` and a completed, warning, or compatible
+  legacy partial presentation.
+- The `downloadLabels()` handler independently rechecks the same predicate, so
+  a hidden failed action cannot emit a job ID through a direct call.
+- A failed artifact with two successful rows remains `FAILED`, exposes neither
+  labels nor pickup, and the direct label handler emits nothing.
+- A warning completion with successful shipments retains the label button and
+  emits the expected job ID.
+- A canonical completion with successful shipments retains success styling and
+  labels. A canonical completion with zero successful shipments exposes no
+  label action.
+- A legacy partial artifact with successful rows still renders `PARTIAL` and
+  retains its compatible label action.
+
+Incremental GREEN checkpoints:
+
+- restored zero-count failure: **93 passed**;
+- zero-success action gate: **94 passed**;
+- failed partial-success policy: **95 passed**;
+- warning-completion label path: **96 passed**;
+- cancelled diagnostic path: **97 passed**;
+- legacy count fallback: **98 passed**;
+- canonical precedence and final focused suite: **99 passed**.
+
+## Round 12 verification evidence
+
+- Targeted chat typecheck passed.
+- Targeted chat lint passed with **0 errors** and the unchanged **4 warnings**.
+- Final focused completion-artifact/chat suite passed all **99 tests** across
+  **7 files**.
+- Fresh uncached frontend typecheck passed all **6** configured projects plus
+  the required shared-state build.
+- Fresh uncached frontend lint passed all **6** projects with **0 errors** and
+  the unchanged **43 warnings**.
+- Fresh uncached frontend tests passed all **179 tests**: shared state **41**,
+  chat **99**, shell **36**, and one each for domain, sidebar, and settings.
+- Fresh uncached production builds passed all **7** targets.
+- `npm run smoke:authenticated-production` staged all **4** federation remotes,
+  served the production shell and API through the real FastAPI same-origin
+  boundary, and passed authenticated settings, logout/gate restoration,
+  re-authentication, EventSource session invalidation/recovery, and cleanup
+  checks with runtime secrets absent.
+- Fresh broad backend regression suite:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not
+  progress"` — **3,712 passed, 21 skipped, 105 deselected, 4 warnings in
+  47.97s**.
+- Provider artifacts were regenerated from the canonical registry and produced
+  no diff. Desktop same-origin packaging plus artifact drift passed **11
+  tests**.
+- `../../.venv/bin/python -m ruff check src tests` passed.
+- Prettier passed for the new component rendering spec. The focused integration
+  in the pre-existing inline-template component was diff-reviewed without
+  unrelated whole-file formatting churn.
+- `bash -n` passed for every tracked shell script. `node --check` passed for
+  every tracked MJS file.
+- `cargo fmt --check`, `cargo check --locked`, and `cargo test --locked`
+  passed; the Rust target currently has **0 tests**.
+- Provider regeneration, generated-artifact diff, aggregate
+  `git diff --check`, and temporary Cargo-resource cleanup all passed.
+
+## Round 12 self-review and remaining concerns
+
+- Requirement-by-requirement review and searches for the old permissive label
+  condition found no remaining Round 12 blocker.
+- Canonical conflicts fail closed: `failed` status or outcome cannot acquire
+  success actions from positive row counts. Cancellation remains a distinct
+  non-success presentation.
+- The legacy fallback intentionally preserves partial-success label behavior
+  only when both canonical status and outcome are absent.
+- The diagnostic viewport is visually bounded; the stored error text remains
+  the backend-sanitized persisted value rather than a newly interpreted client
+  payload.
+- Broad output retains the existing defusedxml deprecation, unregistered
+  `extended` pytest mark, Alembic path-separator, frontend lint, Angular,
+  federation, Nx Cloud, and Nx agent-configuration warnings. All required
+  completed commands exited zero.
+- Tauri's resource check required the exact temporary
+  `dist/shipagent-core` directory. It existed only for the locked Cargo checks
+  and was removed immediately afterward.
+- A complete PyInstaller bundle, Docker image, and packaged Tauri WebView were
+  not built. Static packaging contracts, every production frontend build, and
+  the authenticated production browser smoke cover the changed path.
+- No dependency was added or upgraded. No API key, authenticated session value,
+  CSRF token, customer row, carrier payload, tracking number, or label data is
+  reproduced in this report.
