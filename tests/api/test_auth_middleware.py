@@ -50,6 +50,37 @@ def test_health_and_readyz_are_public(client: TestClient, monkeypatch):
     assert client.get("/readyz").status_code in {200, 503}
 
 
+def test_public_mode_startup_enforces_strong_key_on_real_protected_route(
+    test_db,
+    monkeypatch,
+):
+    from src.api.main import app
+    from src.db.connection import get_db
+
+    api_key = "p" * 64
+    monkeypatch.setenv("SHIPAGENT_AUTH_MODE", "auth0")
+    monkeypatch.setenv("SHIPAGENT_ENVIRONMENT", "production")
+    monkeypatch.setenv("SHIPAGENT_BIND_HOST", "0.0.0.0")
+    monkeypatch.setenv("SHIPAGENT_API_KEY", api_key)
+
+    def override_get_db():
+        yield test_db
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with TestClient(app) as public_client:
+            assert public_client.get("/api/v1/jobs").status_code == 401
+            assert (
+                public_client.get(
+                    "/api/v1/jobs",
+                    headers={"X-API-Key": api_key},
+                ).status_code
+                == 200
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+
 class TestApiKeyStrength:
     """Tests for API key minimum length validation (F-6)."""
 

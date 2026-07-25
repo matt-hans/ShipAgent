@@ -76,3 +76,75 @@ def test_start_daemon_rejects_actual_public_bind_for_fake_local(
 
     uvicorn_run.assert_not_called()
     assert not pid_file.exists()
+
+
+def test_start_daemon_rejects_public_auth0_config_without_api_key(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SHIPAGENT_AUTH_MODE", "auth0")
+    monkeypatch.setenv("SHIPAGENT_ENVIRONMENT", "production")
+    monkeypatch.setenv("SHIPAGENT_AUTH0_ISSUER", "https://issuer.example/")
+    monkeypatch.setenv("SHIPAGENT_AUTH0_AUDIENCE", "shipagent")
+    monkeypatch.delenv("SHIPAGENT_API_KEY", raising=False)
+    pid_file = tmp_path / "daemon.pid"
+
+    with patch("uvicorn.run") as uvicorn_run:
+        with pytest.raises(RuntimeError, match="SHIPAGENT_API_KEY"):
+            start_daemon(host="0.0.0.0", port=8080, pid_file=str(pid_file))
+
+    uvicorn_run.assert_not_called()
+    assert not pid_file.exists()
+
+
+def test_start_daemon_rejects_public_listener_with_weak_api_key(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SHIPAGENT_AUTH_MODE", "auth0")
+    monkeypatch.setenv("SHIPAGENT_API_KEY", "too-short")
+    pid_file = tmp_path / "daemon.pid"
+
+    with patch("uvicorn.run") as uvicorn_run:
+        with pytest.raises(ValueError, match="too short"):
+            start_daemon(host="0.0.0.0", port=8080, pid_file=str(pid_file))
+
+    uvicorn_run.assert_not_called()
+    assert not pid_file.exists()
+
+
+def test_start_daemon_accepts_public_listener_with_strong_api_key(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SHIPAGENT_AUTH_MODE", "auth0")
+    monkeypatch.setenv("SHIPAGENT_API_KEY", "s" * 64)
+    pid_file = tmp_path / "daemon.pid"
+
+    with patch("uvicorn.run") as uvicorn_run:
+        start_daemon(host="0.0.0.0", port=8080, pid_file=str(pid_file))
+
+    uvicorn_run.assert_called_once_with(
+        "src.api.main:app",
+        host="0.0.0.0",
+        port=8080,
+        workers=1,
+        log_level="info",
+        lifespan="on",
+    )
+    assert not pid_file.exists()
+
+
+def test_start_daemon_keeps_loopback_usable_without_api_key(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SHIPAGENT_AUTH_MODE", "auth0")
+    monkeypatch.delenv("SHIPAGENT_API_KEY", raising=False)
+    pid_file = tmp_path / "daemon.pid"
+
+    with patch("uvicorn.run") as uvicorn_run:
+        start_daemon(host="127.0.0.1", port=8080, pid_file=str(pid_file))
+
+    uvicorn_run.assert_called_once()
+    assert not pid_file.exists()
