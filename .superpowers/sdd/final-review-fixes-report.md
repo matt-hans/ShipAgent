@@ -1207,3 +1207,211 @@ declared explicitly.
 - No API key, signed session, CSRF token, customer content, carrier content,
   or label data is passed through the native bridge or reproduced in this
   report.
+
+# Round 7
+
+## Status and commits
+
+All four Round 7 findings are implemented:
+
+- downgrade removes only ShipAgent-owned control-plane tables and preserves a
+  pre-existing PostgreSQL schema;
+- browser development uses a relative API URL through the real Nx proxy to the
+  documented backend port;
+- audit identifiers use key-specific canonical families while external
+  identifiers are hashed before persistence; and
+- remote staging and the production smoke validate real federation manifests
+  and emitted chunks instead of accepting a 200 SPA fallback.
+
+Round 7 implementation commits:
+
+- `5f73abd` — `fix(control-plane): preserve schemas on migration downgrade`
+- `f1a15e8` — `fix(frontend): proxy relative dev API to port 8080`
+- `ae18474` — `fix(control-plane): enforce audit ID families`
+- `92a7113` — `fix(frontend): validate staged federation assets`
+
+## Finding 1 — Downgrade destroyed unrelated schema objects
+
+### RED
+
+The new live PostgreSQL upgrade-to-downgrade test first created a unique schema
+and sentinel table before Alembic ran. With the prior downgrade, the final
+sentinel query failed because `DROP SCHEMA ... CASCADE` removed the complete
+pre-existing schema, including the sentinel and Alembic state.
+
+### GREEN
+
+- Downgrade drops `audit_events`, `provider_connections`, and
+  `cloud_accounts` explicitly and no longer drops the configured schema.
+- The live test upgrades to `20260609_0001`, exercises the ORM against the
+  migrated schema, downgrades to `base`, and proves the sentinel row survives.
+- The same post-downgrade transaction proves all three ShipAgent tables and
+  their audit indexes are absent and the retained Alembic version table has no
+  active revision.
+- The test uses a unique schema and removes it only in test cleanup.
+
+## Finding 2 — Development API routing disagreed with the documented ports
+
+### RED
+
+The shell bootstrap unit test expected `/api/v1` at `localhost:4200` but
+received the hard-coded `http://localhost:8000/api/v1` fallback. The first real
+development smoke then launched the documented backend on 8080 and
+`npx nx serve shell` on 4200; the old proxy attempted port 8000 and returned a
+500 connection-refused response instead of backend JSON.
+
+### GREEN
+
+- Browser development, ordinary FastAPI/Docker production, and the
+  sidecar-served Tauri shell all use relative `/api/v1`.
+- The shell's Nx/Vite proxy forwards `/api` to `http://localhost:8080`, matching
+  `scripts/start-backend.sh` and the README. No broad CORS allowance is needed.
+- The backend launcher retains `.env` and the project virtualenv as defaults
+  while permitting explicit environment-file and Python paths for an isolated
+  smoke.
+- `smoke:development-proxy` invokes the exact documented backend and frontend
+  launchers, waits for both real servers, requests
+  `/api/v1/auth/session` through port 4200, and requires the expected JSON
+  contract.
+- The final smoke observed the proxied request at the backend on 8080 and shut
+  down both process groups cleanly.
+
+## Finding 3 — Audit opaque IDs admitted compact PII and credential text
+
+### RED
+
+The vertical audit tests initially showed four missing boundaries:
+
+- a compact person-like job identifier was accepted;
+- compact internal account/connection/device fixtures were accepted;
+- compact correlation/preview/confirmation fixtures were accepted; and
+- the recorder had no external-identifier hashing input.
+
+The expanded case matrix also covered mixed-case adjacent address, customer,
+recipient/name, API/access-key, bearer/token, client-secret, password, and
+`sk` credential marker families.
+
+### GREEN
+
+- Top-level account, provider-connection, and device identifiers accept only
+  canonical lowercase UUIDs or their explicit `sa_account_`,
+  `sa_connection_`, and `sa_device_` hexadecimal families.
+- Job, correlation, preview, confirmation, and artifact identifiers accept
+  canonical UUIDs or bounded family-specific ShipAgent prefixes. Artifact
+  subfamilies cover artifact, document, label, and validation identifiers.
+- Delimiter-insensitive, case-insensitive marker normalization rejects compact
+  customer/address/name and credential/token/secret families before
+  persistence.
+- External order, provider reference/subject, and tracking identifiers enter
+  through a separate bounded API and are persisted only as named SHA-256
+  digests.
+- Cleanup now validates its account identifier through the same canonical
+  grammar.
+- Legitimate fixtures were migrated to canonical values, with positive tests
+  for every internal and workflow family and negative tests for compact
+  privacy/credential forms.
+
+## Finding 4 — Federation packaging and smoke accepted SPA fallbacks
+
+### RED
+
+The new packaging probes initially demonstrated that the linker exited zero
+for an empty remote output, an HTML document named `remoteEntry.json`, a
+manifest without exposed chunks, and a manifest referencing a missing chunk.
+The prior browser smoke checked only status 200, which could not distinguish
+those assets from FastAPI's `index.html` fallback.
+
+### GREEN
+
+- A dedicated linker validator requires a regular, non-symlink JSON entry with
+  the expected remote name, at least one exposed chunk, a shared-chunk array,
+  safe JavaScript basenames, and regular emitted files for every referenced
+  exposed/shared chunk.
+- Exposed chunks must contain JavaScript content; all referenced chunks reject
+  HTML. The validator runs both before and after the physical copy into the
+  shell, preserving the self-contained runtime topology.
+- Negative packaging tests cover a missing remote, empty output, missing entry
+  in a non-empty output, malformed/HTML entry, missing exposes, and a dangling
+  chunk. The positive test proves manifests and chunks are physically staged,
+  while the existing PyInstaller runtime-path contract remains covered.
+- The production browser smoke parses the root federation manifest and each of
+  the chat, sidebar, settings, and domain entries. It requires same-origin JSON
+  responses, rejects HTML bodies, validates the declared remote name and
+  exposed chunk path, then fetches a non-empty same-origin JavaScript chunk for
+  every remote.
+- The final real run fetched chat's `ChatContainer`, sidebar's
+  `SidebarContent`, settings' `SettingsFlyout`, and domain's
+  `DomainCardRegistry` emitted chunks before completing the authenticated
+  sidecar flow.
+
+## Round 7 verification evidence
+
+- Focused live PostgreSQL migration coverage:
+  `SHIPAGENT_TEST_DATABASE_URL=<isolated PostgreSQL 17 URL>
+  ../../.venv/bin/python -m pytest
+  tests/control_plane/test_migrations_postgres.py -q` — **3 passed**, including
+  the pre-existing-schema upgrade/downgrade case.
+- Complete control-plane suite with the same live PostgreSQL URL configured:
+  `../../.venv/bin/python -m pytest tests/control_plane -q` — **135 passed,
+  4 warnings in 0.71s**.
+- Focused audit recorder suite — **71 passed in 0.29s**.
+- Desktop same-origin/packaging suite — **10 passed in 0.83s**.
+- Fresh broad backend suite:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not
+  progress"` — **3,553 passed, 21 skipped, 103 deselected, 4 warnings in
+  59.45s**.
+- Canonical provider regeneration produced no uncommitted change; artifact
+  drift — **1 passed in 0.26s**.
+- Fresh uncached frontend typecheck, lint, and test matrix passed all **6**
+  configured projects plus the required shared-state build. Tests totaled
+  **138**: shared state **41**, chat **58**, shell **36**, and one each for
+  domain, sidebar, and settings.
+- The real development smoke launched the documented backend on 8080 and
+  `nx serve shell` on 4200, then received authenticated-session JSON through
+  the relative frontend `/api/v1` path.
+- The final default production build-and-browser smoke passed all **7**
+  production builds, physically staged all **4** remotes, fetched and parsed
+  every entry plus an emitted JavaScript chunk, and completed the real
+  same-origin auth/CSRF/expiry/EventSource/recovery/leak flow.
+- `../../.venv/bin/python -m ruff check src/ tests/` passed. Ruff format checks
+  over all **5** Round 7 Python files passed.
+- Prettier checks over every changed frontend TypeScript, JSON, and MJS file
+  passed. `node --check` passed for all **3** Round 7 MJS scripts.
+- `cargo fmt --check`, `cargo check --locked`, and `cargo test --locked`
+  passed; the Rust target currently has **0 tests**.
+- Shell syntax checks passed for the backend launcher, backend bundler, and
+  remote linker. `git diff --check 73f08dd..HEAD` reports no whitespace
+  errors.
+
+## Round 7 self-review and remaining concerns
+
+- Requirement-by-requirement review and aggregate-diff review found no
+  remaining Round 7 blocker or regression to the prior migration, Tauri,
+  browser-session, CSRF, provider-privacy, MCP-sanitization, frontend-expiry,
+  artifact, or packaging fixes.
+- Docker Desktop's client is installed, but its daemon is unavailable. The
+  required migration test therefore used an isolated local PostgreSQL 17
+  server rather than a container; all live upgrade/downgrade assertions ran
+  against that server.
+- A complete PyInstaller backend bundle, Docker image, and packaged Tauri
+  WebView were not built. Static packaging tests cover the exact staging and
+  resource contracts, and the production smoke rebuilt the real frontend
+  outputs and served them through the actual FastAPI static boundary.
+- Tauri's resource check required the exact temporary
+  `dist/shipagent-core` directory. It existed only for the locked Cargo checks
+  and was removed immediately afterward; no backend placeholder remains.
+- Broad backend output retains the existing defusedxml deprecation,
+  unregistered `extended` pytest mark, and Alembic path-separator warnings.
+  Frontend lint retains the existing **43 warnings**; build/test output retains
+  the existing Native Federation builder, Angular diagnostic/budget, Nx Cloud,
+  and Nx agent-configuration notices. All required commands exited zero.
+- The repository README has broad pre-existing formatting drift outside the
+  frontend Prettier gate and was not subjected to an unrelated whole-file
+  rewrite. All changed executable frontend files are Prettier-clean, all
+  changed Python files are Ruff-format-clean, and the aggregate diff is
+  whitespace-clean.
+- No dependency manifest was changed beyond adding npm smoke command entries;
+  no dependency was installed or upgraded.
+- No database credential, API key, signed session, CSRF value, customer
+  fixture, external identifier, carrier content, or label data is reproduced
+  in this report.
