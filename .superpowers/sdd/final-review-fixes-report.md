@@ -1026,3 +1026,184 @@ error allowance and no runtime credential found on any inspected surface.
   required.
 - No raw credential, CSRF, canary, customer, handler, carrier, or label fixture
   value is reproduced in this report.
+
+# Round 6
+
+## Status and commits
+
+Both Round 6 blockers are implemented:
+
+- compact provider-schema privacy compounds are derived in both token orders
+  for every sensitive multi-token family; and
+- production Tauri retains the Strict browser-session cookie by handing the
+  trusted custom-protocol bootstrap to a sidecar-served, genuinely same-origin
+  shell before federation or Angular initializes.
+
+Round 6 implementation and design commits:
+
+- `a805dbc` — `fix(registry): reject reversed compact privacy aliases`
+- `1772833` — `fix(desktop): hand off Tauri shell to sidecar origin`
+- `20f34af` — `docs: specify Tauri same-origin handoff`
+
+The approved Round 3 security-hardening design now records the desktop
+handoff, local-only native capability boundary, self-contained static package
+topology, and Round 6 verification requirements.
+
+## Finding 1 — Reversed compact privacy compounds
+
+### RED
+
+The new lower-, camel/acronym-, and uppercase matrix initially produced
+**10 failures and 20 passes**. Concrete reversed compact names could bypass
+the provider privacy guard even though their tokenized equivalents were
+rejected. The probes covered:
+
+- authentication header (`headerauthorization`);
+- API and access keys (`keyapi`, `keyaccess`);
+- label/document transfer (`urllabel`, `datadocument`);
+- customer payload/address (`payloadcustomer`, `addresscustomer`);
+- carrier exchange (`bodyrequest`); and
+- token/secret values (`valuetoken`, `valuesecret`).
+
+### GREEN
+
+- Added one bidirectional compound generator and derived both orders from the
+  existing centralized token families.
+- Authentication headers, API/access keys, bearer values, label/document
+  transfer, carrier exchange, customer content/rows, confirmation material,
+  and token/secret values now use that generator.
+- Tokenized credential-key checks use the same centralized key qualifiers.
+- The complete case matrix now rejects schema construction at the canonical
+  privacy boundary while existing legitimate compound fields remain accepted.
+- Canonical provider artifact regeneration produces no change, and the drift
+  test remains clean.
+
+## Finding 2 — Tauri Strict cookie required a same-origin production shell
+
+### RED
+
+The vertical bootstrap tests first failed to compile because the repository had
+no handoff function, pre-federation startup coordinator, relative production
+API contract, or native-capability classifier. Packaging tests then failed
+because:
+
+- the trusted custom shell did not expose the supported Tauri global API;
+- the capability did not explicitly prove a local-only boundary;
+- the backend bundler omitted remote staging;
+- the linker could not be exercised against an isolated frontend root; and
+- PyInstaller collected a broader build directory instead of the exact
+  sidecar static runtime path.
+
+The first real production browser run exposed a further integration defect:
+the pre-federation entry point statically imported the mapped
+`@shipagent/shared-tauri` workspace library. The browser requested
+`/%40shipagent/shared-tauri`, FastAPI returned the SPA fallback document, and
+the authentication gate timed out after 30 seconds. Moving the handoff into a
+shell-local module made that mapped import impossible before federation
+initialization.
+
+The first native compile also exposed an undeclared direct `tokio` dependency
+for the existing timeout code. `cargo check` failed until the dependency was
+declared explicitly.
+
+### GREEN
+
+- The packaged `tauri:`/`http://tauri.localhost` bootstrap invokes only
+  `start_sidecar`, validates the returned ephemeral port, and uses
+  `location.replace("http://127.0.0.1:<port>/")`.
+- The handoff runs before federation and Angular. Its module is local to the
+  shell and has no mapped workspace import.
+- The sidecar reload is not classified as a packaged bootstrap origin, so it
+  performs no native invocation or replacement and initializes exactly once.
+- Production and ordinary FastAPI/Docker shells use relative `/api/v1`;
+  Native Federation development at `http://localhost:4200` retains the
+  `http://localhost:8000/api/v1` fallback.
+- The Tauri command accepts no secret and returns only the port. The main
+  capability is explicitly local and grants no remote URL IPC access.
+  Frontend native detection also rejects the sidecar HTTP origin.
+- Production bundling builds all projects, then requires and physically stages
+  all four remotes inside the shell tree. Missing remote output fails closed.
+- PyInstaller collects that exact self-contained tree at the frozen FastAPI
+  runtime path. The sidecar therefore serves the shell, federation manifest,
+  remote entries, chunks, API, cookie, native fetch, and EventSource from one
+  origin.
+- The production browser smoke explicitly fetches the manifest and all four
+  remote entries from the sidecar origin, rejects unresolved pre-federation
+  workspace imports, authenticates with the Strict HttpOnly cookie, mutates
+  with session-bound CSRF, expires and reauthenticates, exercises EventSource
+  recovery, and scans browser and emitted-static surfaces for the runtime API
+  key and all CSRF tokens.
+
+## Round 6 verification evidence
+
+- Focused compact-name and legitimate-compound registry slice:
+  `../../.venv/bin/python -m pytest tests/registry/test_catalog.py -q -k
+  'compact_sensitive_aliases or legitimate_compound'`
+  — **81 passed, 82 deselected**.
+- Shell tests — **36 passed**.
+- Desktop topology/packaging tests — **5 passed**.
+- Fresh affected backend/security/registry/package slice:
+  `../../.venv/bin/python -m pytest tests/registry
+  tests/packaging/test_desktop_same_origin.py
+  tests/api/test_browser_session.py tests/api/test_auth_middleware.py
+  tests/api/test_main_config.py tests/api/test_security_headers.py -q`
+  — **255 passed, 1 warning in 0.99s**.
+- Fresh broad backend suite:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not
+  progress"` — **3,518 passed, 21 skipped, 103 deselected, 4 warnings in
+  51.09s**.
+- Canonical provider regeneration produced no artifact change; artifact drift
+  — **1 passed in 0.24s**.
+- Frontend typecheck: all **6** configured targets plus the required
+  shared-state declaration build passed.
+- Frontend lint: all **6** configured targets passed with **0 errors** and the
+  existing **43 warnings**.
+- Frontend tests: all **6** configured targets passed, **138 tests** total:
+  shared state **41**, chat **58**, shell **36**, and one each for domain,
+  sidebar, and settings.
+- Final default production build-and-browser smoke: all **7** production builds
+  passed, all **4** remotes were physically staged, and the real same-origin
+  shell/manifest/remotes/auth/CSRF/expiry/EventSource/recovery/leak path passed.
+- `cargo fmt --check`, `cargo check --locked`, and `cargo test --locked` passed;
+  the Rust target currently has **0 tests**.
+- `../../.venv/bin/python -m ruff check src/ tests/` passed. Ruff format checks
+  over all Round 6 Python changes passed.
+- Prettier checks over every Round 6 TypeScript/MJS change, `node --check` over
+  the production smoke, and shell syntax checks over both modified packaging
+  scripts passed.
+- `git diff --check` reports no whitespace errors.
+
+## Round 6 self-review and remaining concerns
+
+- Requirement-by-requirement and aggregate-diff review found no remaining
+  Round 6 blocker or regression to prior startup, migration, confirmation,
+  audit, provider privacy, hosted MCP, browser session, CSRF, expiry, artifact,
+  or production-smoke fixes.
+- No `cargo-tauri` CLI is installed, and the complete PyInstaller
+  `dist/shipagent-core` resource was not available. An actual packaged Tauri
+  WebView therefore could not be built or launched in this environment.
+  Deterministic Tauri config/capability/package tests, locked Rust
+  compile/tests, and the real Chrome/FastAPI bundled-equivalent static path
+  provide the retained evidence required by the finding.
+- Tauri's compile-time resource check required an exact temporary placeholder
+  at the expected sidecar resource path. It was created only for the locked
+  Cargo checks and removed immediately afterward; no placeholder or `dist`
+  output remains.
+- The sidecar-served document intentionally has no remote-origin native
+  privilege. Consequently, the current Angular updater component does not run
+  after the production handoff. A future updater must be owned by trusted
+  local/native code rather than broadening sidecar-origin IPC access.
+- A full PyInstaller bundle and Docker image were not built. The packaging
+  tests exercise the exact collection/staging contracts, and the default
+  production browser smoke rebuilds all frontend projects and uses the actual
+  FastAPI static-serving code.
+- Broad backend warnings remain the existing defusedxml deprecation,
+  unregistered extended pytest mark, and Alembic path-separator warnings.
+  Frontend lint retains the existing 43 warnings; production build output
+  retains the existing Native Federation/Angular budget, Nx Cloud, and Nx
+  agent-configuration notices.
+- One direct `tokio` dependency was added to match the Rust source's existing
+  timeout use. No JavaScript or Python dependency was installed or upgraded.
+- No API key, signed session, CSRF token, customer content, carrier content,
+  or label data is passed through the native bridge or reproduced in this
+  report.
