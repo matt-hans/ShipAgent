@@ -29,6 +29,7 @@ echo "--- Building frontend ---"
 cd "$PROJECT_ROOT/shipagent-frontend"
 npm ci --prefer-offline --no-audit
 npx nx run-many -t build --all --configuration=production
+./scripts/link-remotes.sh
 cd "$PROJECT_ROOT"
 
 # 2. Run PyInstaller

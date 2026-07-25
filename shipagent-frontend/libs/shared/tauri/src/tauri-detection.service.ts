@@ -5,40 +5,32 @@
  * and exposes signals for reactive consumption.
  */
 
-import { Injectable, signal, computed } from '@angular/core';
+import { computed, Injectable, signal } from '@angular/core';
+import { canUseTauriIpc } from './port-resolver';
 
 /** Extends Window with Tauri-injected globals. */
 declare global {
   interface Window {
     __TAURI__?: unknown;
-    __SHIPAGENT_PORT__?: number;
   }
 }
 
 @Injectable({ providedIn: 'root' })
 export class TauriDetectionService {
   /**
-   * True when the app is running inside the Tauri desktop wrapper.
-   * Determined once at construction time — does not change during app lifetime.
+   * True only on a Tauri-local origin where native IPC is permitted.
+   *
+   * The production sidecar-served shell is deliberately false even if the
+   * WebView injects a Tauri global into remote content.
    */
-  readonly isTauri = signal(this.detectTauri());
+  readonly isTauri = signal(
+    canUseTauriIpc(window.location, window.__TAURI__ !== undefined)
+  );
 
   /**
-   * True when running as a bundled Tauri app (Tauri present + port injected).
-   * False in Vite dev mode even if TAURI globals are stubbed.
+   * True only during the packaged custom-protocol bootstrap.
    */
   readonly isBundled = computed(
-    () => this.isTauri() && window.__SHIPAGENT_PORT__ !== undefined,
+    () => this.isTauri() && window.location.port !== '4200'
   );
-
-  /**
-   * The dynamically assigned sidecar port, or null if not in Tauri mode.
-   */
-  readonly sidecarPort = signal<number | null>(
-    window.__SHIPAGENT_PORT__ ?? null,
-  );
-
-  private detectTauri(): boolean {
-    return typeof window !== 'undefined' && window.__TAURI__ !== undefined;
-  }
 }
