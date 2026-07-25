@@ -1415,3 +1415,179 @@ those assets from FastAPI's `index.html` fallback.
 - No database credential, API key, signed session, CSRF value, customer
   fixture, external identifier, carrier content, or label data is reproduced
   in this report.
+
+# Round 8
+
+## Status and commits
+
+The Round 8 job-progress SSE reliability finding is implemented. Authenticated
+or conservatively unconfirmed transient failures now refresh the authoritative
+REST progress snapshot and reconnect with bounded exponential backoff, while
+confirmed session expiry retains the shared expiry gate and no-loop behavior.
+
+Round 8 implementation commit:
+
+- `a5e4277` — `fix(frontend): recover job progress streams`
+
+## Vertical TDD evidence
+
+### Authenticated transient recovery
+
+RED:
+
+- The first new behavior test authenticated the browser session, failed the
+  active progress `EventSource`, advanced timers, and required a second REST
+  progress request followed by exactly one replacement stream.
+- The old service logged the closed connection and froze. The focused run
+  failed with `getJobProgress` expected **2** calls but receiving **1**; the
+  suite result was **1 failed, 58 passed**.
+
+GREEN:
+
+- Progress connections now have a job/lifecycle generation, one active source,
+  and a recovery path that closes the failed source, performs one session
+  check, refreshes `GET /jobs/{id}/progress`, and only then schedules a
+  replacement source.
+- The authenticated test proves one status check, two total snapshots
+  (initial plus recovery), one closed failed source, and one replacement source
+  using credentials.
+- A separate test makes the status endpoint fail transiently and proves the
+  conservative branch still attempts the authoritative snapshot and bounded
+  reconnect instead of freezing.
+
+### Missed terminal snapshot recovery
+
+RED:
+
+- A real `ProgressDisplayComponent` test started from a running snapshot,
+  failed SSE, returned `completed` from the recovery snapshot, and required the
+  component completion output without another stream.
+- The progress signal and output recovered, but the initial implementation
+  incorrectly opened a replacement stream. The focused run failed with **2**
+  sources instead of **1**; the suite result was **1 failed, 59 passed**.
+
+GREEN:
+
+- Snapshot refresh returns the authoritative status. Recovery stops before
+  scheduling when it observes `completed` or `failed`, updates the job-list
+  projection, and leaves the terminal progress signal available to the
+  component effects.
+- Component-level tests prove both completion and failure outputs fire exactly
+  once from missed terminal REST snapshots, with no terminal reconnect.
+- Initial page-refresh recovery also avoids opening a stream for a snapshot
+  already known to be completed or failed.
+
+### Bounded failures and no duplicate streams
+
+RED:
+
+- The repeated-failure test double-fired each failed source to exercise the
+  per-source error guard, then failed four consecutive stream generations.
+- The unbounded implementation created **5** sources where the test permitted
+  only the initial stream plus **3** reconnects; the suite result was
+  **1 failed, 61 passed**.
+
+GREEN:
+
+- Consecutive recovery uses delays of **250 ms**, **500 ms**, and **1,000 ms**
+  with a limit of **3** replacement attempts. A successfully opened source
+  resets the consecutive-failure budget.
+- Every failed generation still performs one status check and one authoritative
+  snapshot, including the exhausted generation so terminal state is not lost.
+- The repeated-failure test proves four failures cause four status checks, four
+  recovery snapshots, only four total sources, no active source after
+  exhaustion, and no duplicate effect from a repeated error callback.
+
+### Stale work cancellation and generation guards
+
+RED:
+
+- The job-change test held the failed generation's session-status Observable
+  open and switched jobs. Generation checks prevented a stale reopen, but the
+  underlying request remained subscribed; the run failed because its teardown
+  flag stayed `false` (**1 failed, 62 passed**).
+- A later stale-source test switched jobs, then delivered a terminal message
+  through the old closed source. The old handler changed the new job's status
+  to `completed` instead of leaving it `running` (**1 failed, 67 passed**).
+
+GREEN:
+
+- The shared browser-session confirmation accepts an optional abort signal.
+  Job lifecycle changes abort `takeUntil`-guarded status and snapshot
+  Observables, so their actual subscriptions are torn down rather than merely
+  ignored after resolution. Existing shared conversation SSE callers retain
+  the unchanged no-signal behavior.
+- Disconnect/job change and destruction abort pending status/snapshot work,
+  clear reconnect timers, close the source, reset attempts, and increment the
+  lifecycle generation.
+- Source message/error handlers verify both source identity and job generation.
+  Stale sources cannot update progress, start another session check, reset retry
+  state, or reopen a stream.
+- Behavioral tests separately prove cancellation of a pending status check on
+  job change, a pending snapshot on destroy, and scheduled timers on both job
+  change and destroy.
+
+### Confirmed expiry
+
+- The retained expiry test now additionally proves that the failed progress
+  source performs only its initial snapshot: one session check emits the shared
+  expiry signal, repeated error delivery does nothing, no recovery snapshot is
+  requested, and no replacement `EventSource` is created.
+
+## Round 8 verification evidence
+
+- Focused chat service/component suite:
+  `npx nx test chat-remote` — **68 passed** across **5** files. The Round 8
+  change adds **10** job-progress recovery behaviors to the previous **58**.
+- Fresh uncached frontend typecheck matrix:
+  `NX_SKIP_NX_CACHE=true npx nx run-many -t typecheck --all` — all **6**
+  configured projects and the required shared-state dependency build passed.
+- Fresh uncached frontend lint matrix:
+  `NX_SKIP_NX_CACHE=true npx nx run-many -t lint --all` — all **6** projects
+  passed with **0 errors** and the unchanged **43 warnings**.
+- Fresh uncached frontend test matrix:
+  `NX_SKIP_NX_CACHE=true npx nx run-many -t test --all` — all **6** projects
+  passed, **148 tests** total: shared state **41**, chat **68**, shell **36**,
+  and one each for domain, sidebar, and settings.
+- Fresh uncached frontend production builds:
+  `NX_SKIP_NX_CACHE=true npx nx run-many -t build --all
+  --configuration=production` — all **7** targets passed.
+- Default production browser smoke:
+  `npm run smoke:authenticated-production` — rebuilt the production targets,
+  physically staged all **4** remotes, fetched and parsed their real
+  federation entries and emitted chunks, and passed the same-origin
+  auth/CSRF/expiry/EventSource/recovery/cleanup flow through the actual FastAPI
+  static boundary.
+- Relevant packaging and provider checks:
+  `../../.venv/bin/python -m pytest
+  tests/packaging/test_desktop_same_origin.py
+  tests/registry/test_artifact_drift.py -q` — **11 passed**.
+- Fresh broad backend regression suite:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not
+  progress"` — **3,553 passed, 21 skipped, 103 deselected, 4 warnings in
+  51.68s**.
+- `../../.venv/bin/python -m ruff check src/ tests/`, Prettier checks over all
+  **3** changed TypeScript files, `node --check` over the production smoke, and
+  `git diff --check` all passed.
+
+## Round 8 self-review and remaining concerns
+
+- Requirement-by-requirement and aggregate-diff review found no remaining Round
+  8 blocker and no regression to the existing shared browser-session expiry,
+  credentialed EventSource, CSRF, same-origin, federation, packaging, provider,
+  migration, Tauri, or audit boundaries.
+- Recovery is intentionally bounded to three consecutive replacement streams.
+  A successful `open` event resets that budget; an indefinitely unhealthy
+  endpoint stops reconnecting after the final authoritative snapshot rather
+  than creating an endless browser loop.
+- A transient failure of both session confirmation and the progress snapshot
+  still consumes one bounded retry. A confirmed unauthenticated session always
+  stops immediately and emits the shared expiry signal.
+- Broad backend output retains the existing defusedxml deprecation,
+  unregistered `extended` pytest mark, and Alembic path-separator warnings.
+  Frontend lint retains the existing **43 warnings**; production build output
+  retains the existing Native Federation, Angular diagnostic/budget, Nx Cloud,
+  and Nx agent-configuration notices. All required commands exited zero.
+- No dependency or generated provider artifact changed. No API key, signed
+  session, CSRF token, customer content, carrier content, or label data is
+  reproduced in this report.
