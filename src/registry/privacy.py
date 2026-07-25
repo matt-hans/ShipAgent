@@ -13,6 +13,7 @@ _CUSTOMER_ROW_TOKENS = frozenset({"row", "rows"})
 _CREDENTIAL_TOKENS = frozenset(
     {"bearer", "credential", "credentials", "password", "secret", "token"}
 )
+_KEY_QUALIFIER_TOKENS = frozenset({"access", "api"})
 _AUTH_HEADER_TOKENS = frozenset(
     {"auth", "authentication", "authorization", "authorisation"}
 )
@@ -40,29 +41,39 @@ _CARRIER_CONTENT_TOKENS = frozenset({"body", "carrier", "data", "payload", "raw"
 _FORBIDDEN_COMPACT_SINGLE_TOKEN_FRAGMENTS = (
     _CUSTOMER_CONTENT_TOKENS | _CREDENTIAL_TOKENS
 )
-_FORBIDDEN_COMPACT_COMPOUND_FRAGMENTS = frozenset(
-    {"apikey", "accesskey", "bearervalue"}
-    | {f"{token}header" for token in _AUTH_HEADER_TOKENS}
-    | {
-        f"{content_kind}{transfer_kind}"
-        for content_kind in _TRANSFER_CONTENT_KINDS
-        for transfer_kind in _TRANSFER_TOKENS
-    }
-    | {
-        f"{direction}{content}"
-        for direction in _CARRIER_DIRECTIONS
-        for content in _CARRIER_CONTENT_TOKENS
-    }
-    | {
-        f"{content}{direction}"
-        for direction in _CARRIER_DIRECTIONS
-        for content in _CARRIER_CONTENT_TOKENS
-    }
-    | {
-        f"customer{content}"
-        for content in _CUSTOMER_CONTENT_TOKENS | _CUSTOMER_ROW_TOKENS
-    }
-    | {f"confirmation{content}" for content in ("artifact", "token")}
+
+
+def _bidirectional_compact_compounds(
+    first_tokens: frozenset[str],
+    second_tokens: frozenset[str],
+) -> frozenset[str]:
+    return frozenset(
+        {
+            compound
+            for first in first_tokens
+            for second in second_tokens
+            for compound in (f"{first}{second}", f"{second}{first}")
+        }
+    )
+
+
+_FORBIDDEN_COMPACT_COMPOUND_FRAGMENTS = frozenset().union(
+    _bidirectional_compact_compounds(_KEY_QUALIFIER_TOKENS, frozenset({"key"})),
+    _bidirectional_compact_compounds(_AUTH_HEADER_TOKENS, frozenset({"header"})),
+    _bidirectional_compact_compounds(frozenset({"bearer"}), frozenset({"value"})),
+    _bidirectional_compact_compounds(_TRANSFER_CONTENT_KINDS, _TRANSFER_TOKENS),
+    _bidirectional_compact_compounds(_CARRIER_DIRECTIONS, _CARRIER_CONTENT_TOKENS),
+    _bidirectional_compact_compounds(
+        frozenset({"customer"}),
+        _CUSTOMER_CONTENT_TOKENS | _CUSTOMER_ROW_TOKENS,
+    ),
+    _bidirectional_compact_compounds(
+        frozenset({"confirmation"}), frozenset({"artifact", "token"})
+    ),
+    _bidirectional_compact_compounds(
+        _CREDENTIAL_TOKENS & frozenset({"secret", "token"}),
+        frozenset({"value"}),
+    ),
 )
 
 _COMMON_SCHEMA_KEYWORDS = frozenset({"type", "description", "enum"})
@@ -201,8 +212,7 @@ def provider_schema_privacy_violations(
         )
         credential_or_token = (
             bool(tokens & _CREDENTIAL_TOKENS)
-            or {"api", "key"} <= tokens
-            or {"access", "key"} <= tokens
+            or any({qualifier, "key"} <= tokens for qualifier in _KEY_QUALIFIER_TOKENS)
             or ("header" in tokens and bool(tokens & _AUTH_HEADER_TOKENS))
         )
         label_or_document_transfer = bool(
