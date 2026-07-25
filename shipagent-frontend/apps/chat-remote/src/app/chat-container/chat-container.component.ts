@@ -39,7 +39,10 @@ import type {
 import { ApiService } from '@shipagent/shared-api';
 import { ConversationSseService } from '../../services/conversation-sse.service';
 import { ConversationSessionService } from '../../services/conversation-session.service';
-import { JobProgressSseService } from '../../services/job-progress-sse.service';
+import {
+  JobProgressSseService,
+  type JobProgressSnapshot,
+} from '../../services/job-progress-sse.service';
 import { EventProcessorService } from '../../services/event-processor.service';
 import { ChatActionsService } from '../../services/chat-actions.service';
 import { DomainCardBridgeService } from '../../services/domain-card-bridge.service';
@@ -237,6 +240,38 @@ export class ChatContainerComponent implements OnInit {
     this.showLabelPreview.set(false);
     this.labelPreviewUrl.set('');
     this.lastJobName = '';
+  }
+
+  /** Append and persist one provider-safe artifact for every terminal outcome. */
+  private appendAndPersistTerminalArtifact(
+    jobId: string,
+    progress: JobProgressSnapshot
+  ): void {
+    const metadata = buildJobCompletionMetadata(
+      jobId,
+      progress,
+      this.lastJobName
+    );
+    this.conversationStore.appendMessage({
+      id: `completion-${Date.now()}`,
+      role: 'system',
+      content: '',
+      timestamp: new Date().toISOString(),
+      metadata,
+    });
+
+    const sessionId = this.conversationStore.sessionId();
+    if (!sessionId) return;
+
+    try {
+      this.apiService.saveArtifact(sessionId, '', metadata).subscribe({
+        error: () => {
+          console.warn('Failed to persist terminal artifact.');
+        },
+      });
+    } catch {
+      console.warn('Failed to persist terminal artifact.');
+    }
   }
 
   /** Context-aware placeholder driven by current mode and data source state. */
@@ -525,22 +560,7 @@ export class ChatContainerComponent implements OnInit {
     if (!progressService) return;
 
     const p = progressService.progress();
-    const metadata = buildJobCompletionMetadata(jobId, p, this.lastJobName);
-
-    this.conversationStore.appendMessage({
-      id: `completion-${Date.now()}`,
-      role: 'system',
-      content: '',
-      timestamp: new Date().toISOString(),
-      metadata,
-    });
-
-    // Persist the artifact to the conversation DB.
-    const sid = this.conversationStore.sessionId();
-    if (sid) {
-      this.apiService.saveArtifact(sid, '', metadata)
-        .subscribe({ error: (e) => console.warn('Failed to save artifact:', e) });
-    }
+    this.appendAndPersistTerminalArtifact(jobId, p);
 
     // Auto-open label preview after successful batch.
     if (p.successful > 0 && jobId) {
@@ -575,13 +595,7 @@ export class ChatContainerComponent implements OnInit {
     if (!progressService) return;
 
     const p = progressService.progress();
-    this.conversationStore.appendMessage({
-      id: `completion-fail-${Date.now()}`,
-      role: 'system',
-      content: '',
-      timestamp: new Date().toISOString(),
-      metadata: buildJobCompletionMetadata(jobId, p, this.lastJobName),
-    });
+    this.appendAndPersistTerminalArtifact(jobId, p);
 
     this.executingJobId.set(null);
     this.lastJobName = '';
