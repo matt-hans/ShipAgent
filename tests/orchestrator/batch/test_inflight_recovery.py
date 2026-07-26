@@ -7,15 +7,17 @@ Covers the three-tier recovery system in BatchEngine.recover_in_flight_rows():
 """
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.errors.terminal_diagnostics import MAX_TERMINAL_ROW_NUMBER
 from src.services.batch_engine import MAX_RECOVERY_ATTEMPTS, BatchEngine
 
 
 def _make_inflight_row(
-    row_number: int = 1,
+    row_number: Any = 1,
     ups_tracking_number: str | None = None,
     ups_shipment_id: str | None = None,
     label_path: str | None = None,
@@ -327,10 +329,41 @@ class TestInFlightRecovery:
                     "attempt_count": MAX_RECOVERY_ATTEMPTS,
                 }
             ],
+            "omitted_detail_count": 0,
         }
         assert marker not in repr(result)
         assert marker not in row.error_message
         assert marker not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_recovery_omits_and_counts_every_invalid_row_number(
+        self,
+        engine: BatchEngine,
+    ) -> None:
+        rows = [
+            _make_inflight_row(row_number=row_number)
+            for row_number in (
+                True,
+                "7",
+                1.5,
+                0,
+                -1,
+                MAX_TERMINAL_ROW_NUMBER + 1,
+            )
+        ]
+
+        result = await engine.recover_in_flight_rows(
+            job_id="job-abc",
+            rows=rows,
+        )
+
+        assert result == {
+            "recovered": 0,
+            "needs_review": len(rows),
+            "unresolved": 0,
+            "details": [],
+            "omitted_detail_count": len(rows),
+        }
 
     @pytest.mark.asyncio
     async def test_recovery_report_includes_all_details(
