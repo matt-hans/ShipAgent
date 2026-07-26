@@ -2409,3 +2409,84 @@ Incremental GREEN checkpoints:
 - No dependency was added or upgraded. No API key, authenticated session value,
   CSRF token, customer row, carrier payload, tracking number, or label data is
   reproduced in this report.
+
+## Round 13 — terminal failure diagnostics
+
+### Contract and enforcement
+
+- Added a single backend-owned terminal-diagnostic contract with an error-code
+  allowlist, explicit category, fixed category-mapped safe message, bounded
+  positive row number, and a maximum of 20 retained row diagnostics.
+- The safe contract is now applied before row/job persistence, REST progress
+  projection, observer/SSE transport, frontend state, completion-artifact
+  serialization, conversation history, and export.
+- Completion artifacts reject non-canonical diagnostics, unknown codes,
+  additional diagnostic properties, malformed rows, oversized arrays, invalid
+  counts, and the retired camel-case failure fields. Direct persistence applies
+  the same validator as a defense-in-depth boundary.
+- Historical completion artifacts are projected to the safe nested contract at
+  read time. That compatibility fallback intentionally discards legacy text and
+  never revives a raw diagnostic field.
+- Failure overflow is represented only as `omitted_failure_count`; neither the
+  backend nor chat client retains more than 20 individual terminal rows.
+
+### TDD evidence
+
+RED:
+
+- The first observer tracer showed the prior flat event still carrying a raw
+  provider error string. The new test required the nested safe diagnostic and
+  failed before the projector/observer implementation.
+- The REST tracer initially failed with no `row_failures` contract.
+- Unsafe completion metadata was initially accepted by both the request schema
+  and direct persistence service.
+- The 21st observer failure initially still emitted a diagnostic rather than an
+  omission count.
+- The broad backend matrix exposed two stale tests that asserted raw persisted
+  failure prose. Both were changed to assert the fixed safe code/message
+  contract instead.
+
+GREEN:
+
+- Observer, REST, schema, direct-service, history, overflow, and serialization
+  canaries now pass. Coverage includes a legacy stored artifact containing a
+  raw diagnostic string and verifies that the history API serializes only the
+  projected safe shape.
+- Chat state consumes only nested safe diagnostics, completion persistence
+  stores snake-case safe rows plus the omission count, and the completion UI
+  renders the fixed message and bounded omitted-row summary.
+
+### Round 13 verification evidence
+
+- Focused terminal contract suites: **39 passed, 4 deselected**.
+- Batch engine suite: **23 passed**. Related preview, executor, and
+  conversation suites: **59 passed**.
+- Fresh broad backend regression suite:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not
+  progress"` — **3,722 passed, 21 skipped, 110 deselected, 4 warnings in
+  47.86s**.
+- Fresh chat-remote rerun: **100 passed across 7 files**; targeted chat
+  typecheck passed.
+- Fresh uncached Nx typecheck passed all configured projects; lint passed with
+  **0 errors** and the existing **39 warnings**; all-project tests and all
+  production builds passed.
+- `npm run smoke:authenticated-production` completed its same-origin sidecar
+  shell/remotes/API success check with runtime secrets absent and clean server
+  shutdown.
+- Provider artifact regeneration and drift test passed; full Ruff and Ruff
+  format checks passed; Prettier passed for all changed TypeScript files;
+  `git diff --check` and `bash -n` for all tracked shell scripts passed.
+- `cargo fmt --check`, `cargo check --locked`, and `cargo test --locked`
+  passed; the Rust target currently has **0 tests**.
+
+### Round 13 self-review and remaining concerns
+
+- The contract deliberately maps unknown or internal error codes to the
+  generic system category, preserving a usable diagnostic without trusting
+  provider text.
+- The existing frontend lint/Angular/federation/Nx warnings and backend
+  third-party deprecation, unregistered test-marker, and Alembic warnings are
+  unchanged; all required commands completed successfully.
+- No dependency was added or upgraded. No raw carrier response, recipient or
+  address field, authentication value, tracking number, or label content is
+  reproduced in this report.
