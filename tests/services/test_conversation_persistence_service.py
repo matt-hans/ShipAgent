@@ -43,7 +43,9 @@ class TestCreateSession:
     def test_stores_context_data(self, svc, db_session):
         ctx = {"data_source_id": "abc", "agent_source_hash": "xyz"}
         sess = svc.create_session(
-            session_id="test-3", mode="batch", context_data=ctx,
+            session_id="test-3",
+            mode="batch",
+            context_data=ctx,
         )
         loaded = json.loads(sess.context_data)
         assert loaded["data_source_id"] == "abc"
@@ -68,7 +70,9 @@ class TestSaveMessage:
         svc.create_session(session_id="s1", mode="batch")
         metadata = {"action": "preview", "jobId": "j1"}
         msg = svc.save_message(
-            "s1", role="system", content="Preview ready",
+            "s1",
+            role="system",
+            content="Preview ready",
             message_type=MessageType.system_artifact.value,
             metadata=metadata,
         )
@@ -76,10 +80,40 @@ class TestSaveMessage:
         loaded = json.loads(msg.metadata_json)
         assert loaded["jobId"] == "j1"
 
+    def test_rejects_unsafe_completion_diagnostics_when_service_is_called_directly(
+        self, svc
+    ):
+        svc.create_session(session_id="s1", mode="batch")
+
+        with pytest.raises(ValueError, match="Completion artifact diagnostics"):
+            svc.save_message(
+                "s1",
+                role="assistant",
+                content="",
+                message_type=MessageType.system_artifact.value,
+                metadata={
+                    "type": "completion",
+                    "completion": {
+                        "successful": 0,
+                        "failed": 1,
+                        "totalCostCents": 0,
+                        "row_failures": [
+                            {
+                                "row_number": 1,
+                                "error_code": "E-3003",
+                                "error_category": "ups_api",
+                                "message": "The carrier could not process this shipment.",
+                                "request_body": "recipient=Jane Doe",
+                            }
+                        ],
+                    },
+                },
+            )
+
     def test_updates_session_updated_at(self, svc, db_session):
         svc.create_session(session_id="s1", mode="batch")
         svc.save_message("s1", role="user", content="test")
-        sess = db_session.get(ConversationSession,"s1")
+        sess = db_session.get(ConversationSession, "s1")
         assert sess.updated_at is not None
 
 
@@ -128,12 +162,64 @@ class TestGetSessionWithMessages:
         result = svc.get_session_with_messages("nonexistent")
         assert result is None
 
+    def test_history_projects_legacy_raw_completion_diagnostics_to_safe_fallback(
+        self, svc, db_session
+    ):
+        raw_carrier_text = "recipient=Jane Doe address=1 Main token=secret"
+        svc.create_session(session_id="s1", mode="batch")
+        svc.save_message(
+            "s1",
+            role="assistant",
+            content="",
+            message_type=MessageType.system_artifact.value,
+            metadata={"type": "preview_ready", "preview": {}},
+        )
+        # Simulate a pre-Round-13 row that bypassed the new write boundary.
+        from src.db.models import ConversationMessage
+
+        message = db_session.query(ConversationMessage).first()
+        message.metadata_json = json.dumps(
+            {
+                "type": "completion",
+                "jobId": "job-1",
+                "completion": {
+                    "successful": 0,
+                    "failed": 1,
+                    "rowFailures": [
+                        {
+                            "rowNumber": 3,
+                            "errorCode": "E-3003",
+                            "errorMessage": raw_carrier_text,
+                        }
+                    ],
+                    "lastTrackingNumber": raw_carrier_text,
+                },
+            }
+        )
+        db_session.commit()
+
+        result = svc.get_session_with_messages("s1")
+
+        metadata = result["messages"][0]["metadata"]
+        completion = metadata["completion"]
+        assert completion["row_failures"] == [
+            {
+                "row_number": 3,
+                "error_code": "E-3003",
+                "error_category": "ups_api",
+                "message": "The carrier could not process this shipment.",
+            }
+        ]
+        assert completion["omitted_failure_count"] == 0
+        assert "lastTrackingNumber" not in completion
+        assert raw_carrier_text not in repr(result)
+
 
 class TestUpdateTitle:
     def test_updates_title(self, svc, db_session):
         svc.create_session(session_id="s1", mode="batch")
         svc.update_session_title("s1", "Ground Batch - Q3")
-        sess = db_session.get(ConversationSession,"s1")
+        sess = db_session.get(ConversationSession, "s1")
         assert sess.title == "Ground Batch - Q3"
 
 
@@ -141,7 +227,7 @@ class TestUpdateContext:
     def test_updates_context(self, svc, db_session):
         svc.create_session(session_id="s1", mode="batch")
         svc.update_session_context("s1", {"source": "new.csv"})
-        sess = db_session.get(ConversationSession,"s1")
+        sess = db_session.get(ConversationSession, "s1")
         loaded = json.loads(sess.context_data)
         assert loaded["source"] == "new.csv"
 
@@ -150,7 +236,7 @@ class TestSoftDelete:
     def test_soft_deletes(self, svc, db_session):
         svc.create_session(session_id="s1", mode="batch")
         svc.soft_delete_session("s1")
-        sess = db_session.get(ConversationSession,"s1")
+        sess = db_session.get(ConversationSession, "s1")
         assert sess.is_active is False
 
 

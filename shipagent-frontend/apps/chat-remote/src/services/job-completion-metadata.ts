@@ -26,10 +26,9 @@ export function buildJobCompletionMetadata(
       dutiesTaxesCents: progress.dutiesTaxesCents,
       internationalCount: progress.internationalCount,
       error: progress.error ?? undefined,
-      rowFailures:
+      row_failures:
         progress.rowFailures.length > 0 ? progress.rowFailures : undefined,
-      currentRow: progress.currentRow ?? undefined,
-      lastTrackingNumber: progress.lastTrackingNumber ?? undefined,
+      omitted_failure_count: progress.omittedFailureCount,
     },
   };
 }

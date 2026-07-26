@@ -4,9 +4,11 @@ Defines the request/response contracts for the agent-driven SSE
 conversation flow that replaces the legacy command endpoint.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from src.errors.terminal_diagnostics import validate_completion_artifact_diagnostics
 
 # UPS document type code → human-readable label mapping.
 DOCUMENT_TYPE_LABELS: dict[str, str] = {
@@ -128,3 +130,11 @@ class SaveArtifactRequest(BaseModel):
 
     content: str = Field(default="", description="Optional text content")
     metadata: dict = Field(..., description="Artifact metadata (action, payload, etc.)")
+
+    @field_validator("metadata")
+    @classmethod
+    def _validate_completion_diagnostics(
+        cls, metadata: dict[str, Any]
+    ) -> dict[str, Any]:
+        validate_completion_artifact_diagnostics(metadata)
+        return metadata

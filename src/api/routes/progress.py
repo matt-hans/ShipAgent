@@ -13,7 +13,8 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from src.db.connection import get_db
-from src.db.models import Job
+from src.db.models import Job, JobRow, RowStatus
+from src.errors.terminal_diagnostics import project_terminal_row_diagnostics
 from src.orchestrator.batch import SSEProgressObserver
 
 router = APIRouter(tags=["progress"])
@@ -58,10 +59,12 @@ async def _event_generator(
                 # addEventListener() on the frontend, but the hook uses the
                 # generic onmessage handler instead.
                 yield {
-                    "data": json.dumps({
-                        "event": event["event"],
-                        "data": event["data"],
-                    }),
+                    "data": json.dumps(
+                        {
+                            "event": event["event"],
+                            "data": event["data"],
+                        }
+                    ),
                 }
             except TimeoutError:
                 # Send ping to keep connection alive
@@ -137,6 +140,19 @@ def get_progress(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    failed_rows = (
+        db.query(JobRow.row_number, JobRow.error_code)
+        .filter(
+            JobRow.job_id == job_id,
+            JobRow.status.in_((RowStatus.failed.value, RowStatus.needs_review.value)),
+        )
+        .order_by(JobRow.row_number)
+        .all()
+    )
+    row_failures, omitted_failure_count = project_terminal_row_diagnostics(
+        (row.row_number, row.error_code) for row in failed_rows
+    )
+
     return {
         "job_id": str(job.id),
         "status": job.status,
@@ -147,4 +163,6 @@ def get_progress(
         "total_cost_cents": job.total_cost_cents,
         "total_duties_taxes_cents": job.total_duties_taxes_cents,
         "international_row_count": job.international_row_count,
+        "row_failures": [failure.model_dump(mode="json") for failure in row_failures],
+        "omitted_failure_count": omitted_failure_count,
     }

@@ -52,6 +52,7 @@ async def get_shipper_for_job(job: Job) -> dict:
 
     # Tier 2: env-based shipper when local data source is active
     from src.services.gateway_provider import get_data_gateway
+
     gw = await get_data_gateway()
     source_info = await gw.get_source_info()
     if source_info is not None:
@@ -64,11 +65,22 @@ async def get_shipper_for_job(job: Job) -> dict:
         shopify_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
         if shopify_token and shopify_domain:
             from src.services.gateway_provider import get_external_sources_client
+
             ext = await get_external_sources_client()
             connections = await ext.list_connections()
             shopify_connected = any(
-                (c.get("platform") if isinstance(c, dict) else getattr(c, "platform", None)) == "shopify"
-                and (c.get("status") if isinstance(c, dict) else getattr(c, "status", None)) == "connected"
+                (
+                    c.get("platform")
+                    if isinstance(c, dict)
+                    else getattr(c, "platform", None)
+                )
+                == "shopify"
+                and (
+                    c.get("status")
+                    if isinstance(c, dict)
+                    else getattr(c, "status", None)
+                )
+                == "connected"
                 for c in connections.get("connections", [])
             )
             if not shopify_connected:
@@ -83,7 +95,10 @@ async def get_shipper_for_job(job: Job) -> dict:
                 if shop_result.get("success"):
                     shop_info = shop_result.get("shop", {})
                     if shop_info:
-                        logger.info("Using shipper from Shopify store: %s", shop_info.get("name"))
+                        logger.info(
+                            "Using shipper from Shopify store: %s",
+                            shop_info.get("name"),
+                        )
                         return build_shipper(shop_info)
     except Exception as e:
         logger.warning("Failed to get shop info from Shopify: %s", e)
@@ -161,7 +176,9 @@ async def execute_batch(
         )
 
     logger.info("Batch execution using UPS environment=%s", ups_creds.environment)
-    account_number = ups_creds.account_number or os.environ.get("UPS_ACCOUNT_NUMBER", "")
+    account_number = ups_creds.account_number or os.environ.get(
+        "UPS_ACCOUNT_NUMBER", ""
+    )
 
     try:
         async with UPSMCPClient(
@@ -222,7 +239,8 @@ async def execute_batch(
             .all()
         )
         intl_count = sum(
-            1 for r in intl_rows
+            1
+            for r in intl_rows
             if r.destination_country not in (DEFAULT_ORIGIN_COUNTRY, "PR")
         )
         intl_duties = sum(r.duties_taxes_cents or 0 for r in intl_rows)
@@ -235,10 +253,14 @@ async def execute_batch(
         if failed == 0 and wb_status in ("error", "partial"):
             final_status = "completed_with_warnings"
             wb_msg = write_back.get("message", "Write-back failed")
-            job.error_message = f"Shipments succeeded but write-back {wb_status}: {wb_msg}"
+            job.error_message = (
+                f"Shipments succeeded but write-back {wb_status}: {wb_msg}"
+            )
             logger.warning(
                 "Job %s completed with write-back %s: %s",
-                job_id, wb_status, wb_msg,
+                job_id,
+                wb_status,
+                wb_msg,
             )
         elif failed == 0:
             final_status = "completed"
@@ -258,7 +280,11 @@ async def execute_batch(
         logger.info(
             "Batch execution complete for job %s: %d successful, %d failed, "
             "$%.2f total, %d international rows",
-            job_id, successful, failed, total_cost / 100, intl_count,
+            job_id,
+            successful,
+            failed,
+            total_cost / 100,
+            intl_count,
         )
         DecisionAuditService.log_event(
             run_id=run_id,
@@ -286,20 +312,22 @@ async def execute_batch(
             "total_duties_taxes_cents": intl_duties,
         }
 
-    except Exception as e:
-        logger.exception("Batch execution failed for job %s: %s", job_id, e)
+    except Exception:
+        logger.error("Batch execution failed for job %s", job_id)
         DecisionAuditService.log_event(
             run_id=run_id,
             phase="error",
             event_name="execution.batch.failed",
             actor="system",
-            payload={"job_id": job_id, "error": str(e)},
+            payload={"job_id": job_id, "error_code": "E-4001"},
         )
         # Update job to failed status
         job = db_session.query(Job).filter(Job.id == job_id).first()
         if job and job.status == "running":
             job.status = "failed"
             job.error_code = "E-4001"
-            job.error_message = str(e)
+            job.error_message = (
+                "The row could not be processed because of a system error."
+            )
             db_session.commit()
         raise
