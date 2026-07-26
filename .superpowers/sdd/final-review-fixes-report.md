@@ -2490,3 +2490,180 @@ GREEN:
 - No dependency was added or upgraded. No raw carrier response, recipient or
   address field, authentication value, tracking number, or label content is
   reproduced in this report.
+
+## Round 14 — durable terminal-boundary closure
+
+Status: all four Round 14 findings are implemented and verified in
+`60f2d2a fix: close round 14 diagnostic boundaries`.
+
+### Completion artifacts are closed, reconciled, and safe on replay
+
+- Completion metadata now has a strict typed envelope and payload. It accepts
+  only the completion artifact type, canonical UUID job identifier, fixed
+  action and job display name, terminal status/outcome/boolean/message
+  mappings, bounded counts and costs, and the existing bounded safe diagnostic
+  shapes. Unknown properties and malformed cross-field combinations fail
+  closed.
+- Completion validation is selected by `metadata.type` for every message type.
+  Completion content must be empty at both request-schema and direct-service
+  boundaries.
+- Persistence looks up the referenced terminal job and rebuilds completion
+  status, counts, costs, international totals, and safe diagnostics from
+  persisted authoritative job/row state. Caller-owned terminal values are
+  validated at ingress but are not the stored authority.
+- History and export blank legacy completion content. Legacy metadata is
+  reconstructed from a small safe allowlist with bounded numeric projection,
+  canonical terminal mappings, canonical diagnostics, and no arbitrary
+  identity, display, command, or scalar passthrough.
+- The frontend metadata builder matches the closed contract, including empty
+  completion content and the fixed completion display identity.
+
+### Recovery and write-back diagnostics are safe across storage, results,
+logs, and REST
+
+- Batch write-back projects gateway failures and exceptions to fixed action,
+  canonical code, and bounded success/failure counts. Provider error arrays and
+  exception text are neither returned nor logged.
+- Crash recovery stores only canonical row error code/message pairs. Recovery
+  results and logs contain bounded structured actions/codes/counts and omit
+  carrier references, internal replay keys, raw exceptions, artifact paths,
+  and provider response details.
+- Executor terminal write-back failures now persist the canonical system
+  diagnostic instead of raw nested gateway data.
+- Startup recovery logging uses fixed structured action/code/count fields and
+  cannot interpolate the recovery payload or exception.
+- Job and row response schemas project legacy stored error pairs through the
+  same safe terminal diagnostic contract before ordinary REST serialization.
+- Interrupted-job review and resume prompting no longer carry persisted carrier
+  references or raw row error text. Review output retains only bounded row
+  number, status, canonical code, and omission accounting.
+
+### Progress and terminal artifacts share one authoritative row projection
+
+- Added one row-state projection shared by REST progress and completion
+  persistence. It derives total, processed, successful, failed/needs-review,
+  cost, duties/taxes, international, retained-failure, and omitted-failure
+  values from one persisted snapshot.
+- With persisted rows present, stored job aggregates cannot override row truth.
+  The no-row compatibility path bounds legacy aggregates and represents every
+  failed row as omitted, preserving
+  `failed == retained failures + omitted_failure_count`.
+- Executor updates reconcile persisted aggregates from row state after
+  progress and terminal transitions, so resumed work cannot reset prior
+  recovery outcomes to run-local counters.
+- Job creation rejects non-integer, non-positive, out-of-range, and duplicate
+  row numbers before storage.
+- End-to-end tests exercise actual crash recovery followed by cancellation or
+  resume, REST progress projection, and completion artifact persistence.
+
+### Malformed row diagnostics and SSE omission accounting are total
+
+- The row projector returns an omission for booleans, non-integers, zero,
+  negative values, and values beyond the supported row-number range. It never
+  delegates malformed legacy input to Pydantic.
+- REST projection safely counts malformed legacy failure rows as omitted while
+  retaining valid rows.
+- The observer tracks retained and omitted failures independently for each job
+  and emits cumulative retained/omitted counts on every failure event.
+- The chat SSE consumer treats those values as cumulative snapshots, tolerates
+  missed events, deduplicates/caps retained rows, and derives an exact failed
+  total. A recovered `batch_started` snapshot preserves prior processed and
+  terminal counts rather than resetting them.
+
+### Round 14 TDD evidence
+
+RED:
+
+- Completion ingress accepted caller-controlled content, alternate message
+  types, forged terminal scalars, and incomplete metadata; direct persistence
+  and legacy history/export also retained unsafe completion values.
+- Write-back exception/partial paths returned or logged untrusted detail;
+  recovery stored raw exception prose and returned carrier/replay references;
+  startup and ordinary job/row projection could replay legacy raw diagnostic
+  text.
+- A recovered needs-review row appeared in REST diagnostics while the parent
+  aggregate still reported zero failures. Resume then reset the result to
+  run-local counts and could report a completed job.
+- Row values of zero, negative one, and above the supported maximum raised
+  validation errors. Repeated invalid SSE failures emitted separate omission
+  values of one, and a missed frontend event undercounted the terminal failure
+  total.
+- Recovered `batch_started` reset a non-zero processed snapshot to zero.
+  Recovery review/prompt tests also demonstrated raw stored values reaching
+  their old output shapes.
+
+GREEN:
+
+- Closed-schema, direct-persistence, authoritative-reconciliation, history,
+  export, and compatibility coverage passed with fixed safe shapes.
+- Adversarial write-back, recovery, startup-log, executor-storage, job REST,
+  row REST, review, and prompt coverage passed without the artificial marker
+  appearing in storage, results, logs, or serialized output.
+- Crash-recovery/cancel and crash-recovery/resume cross-layer tests both pass
+  through REST and artifact save with exact count invariants.
+- Malformed projector/legacy DB tests, cumulative observer tests, missed-event
+  frontend tests, and recovered-snapshot tests all pass.
+
+Only explicitly artificial safe test markers were introduced for leak
+assertions. The tests and this report contain no real credential, customer,
+carrier, shipment, or label canary.
+
+### Round 14 verification evidence
+
+- Focused completion schema/persistence/history/export coverage passed
+  **68 backend tests**.
+- Focused recovery/write-back/startup/job-response coverage passed **51
+  tests**.
+- Focused row-boundary/projector coverage passed **11 tests**; executor
+  coverage passed **4 tests**; the two crash-recovery cross-layer scenarios
+  passed.
+- Recovery/review/observer coverage passed **24 tests**.
+- The consolidated non-stream Round 14 matrix passed **176 tests, 5
+  deselected**. A first run that included the known synchronous
+  `TestClient` streaming case stopped making progress at 60 tests and was
+  interrupted; the equivalent non-stream suites and observer/SSE unit
+  coverage completed normally.
+- Fresh broad backend regression:
+  `../../.venv/bin/python -m pytest -q -k "not stream and not sse and not
+  progress"` — **3,780 passed, 21 skipped, 115 deselected, 4 warnings in
+  47.40s**.
+- Fresh all-project frontend typecheck passed. Lint passed with **0 errors**
+  and the existing **43 warnings**.
+- Fresh all-project frontend tests passed all **183 tests**: shared state
+  **41**, chat **103**, shell **36**, and one each for domain, sidebar, and
+  settings. All **7** production build targets passed.
+- A final post-format chat rerun passed all **103 tests** and targeted
+  typecheck.
+- `npm run smoke:authenticated-production` rebuilt and staged all **4**
+  remotes, exercised the production same-origin shell/API, authenticated
+  settings, logout and gate restoration, re-authentication, EventSource
+  invalidation/recovery, and clean shutdown with runtime secrets absent.
+- Provider artifacts regenerated without a generated diff; the standalone
+  artifact drift test passed.
+- Full Ruff lint passed. Ruff format verification passed for all **21**
+  changed Python files. The optional repository-wide format audit also
+  identified **234 pre-existing out-of-scope files** that the current Ruff
+  version would reformat; those unrelated files were not changed.
+- Prettier passed for all changed TypeScript files. `git diff --check`,
+  `bash -n` for every tracked shell script, and `node --check` for every
+  tracked MJS script passed.
+- `cargo fmt --check`, `cargo check --locked`, and `cargo test --locked`
+  passed; the Rust target currently has **0 tests**. The exact temporary
+  `dist/shipagent-core` resource directory was removed afterward.
+- No dependency or generated provider artifact changed.
+
+### Round 14 self-review and remaining concerns
+
+- Requirement-by-requirement diff review found no remaining Round 14 blocker.
+  Recovery and write-back diagnostics share the terminal safe-code projection,
+  while the new authoritative progress projection is shared by REST,
+  reconciliation, and completion persistence.
+- Ordinary successful row responses continue to expose their intended shipment
+  result fields; only legacy diagnostic slots are canonicalized. Recovery
+  reports and logs do not reproduce those operational values.
+- The existing synchronous streaming-test behavior, backend third-party
+  warnings, frontend lint/Angular/federation/Nx warnings, and Nx Cloud
+  connection warning are unchanged.
+- No dependency was added or upgraded. No raw carrier response, recipient or
+  address value, authentication value, tracking number, replay key, or label
+  content is reproduced in this report.
