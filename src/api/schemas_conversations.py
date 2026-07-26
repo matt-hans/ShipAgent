@@ -6,7 +6,7 @@ conversation flow that replaces the legacy command endpoint.
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.errors.terminal_diagnostics import validate_completion_artifact_diagnostics
 
@@ -138,3 +138,9 @@ class SaveArtifactRequest(BaseModel):
     ) -> dict[str, Any]:
         validate_completion_artifact_diagnostics(metadata)
         return metadata
+
+    @model_validator(mode="after")
+    def _validate_completion_content(self) -> "SaveArtifactRequest":
+        if self.metadata.get("type") == "completion" and self.content != "":
+            raise ValueError("Completion artifact content must be empty.")
+        return self

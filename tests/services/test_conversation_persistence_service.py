@@ -6,7 +6,15 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from src.db.models import Base, ConversationSession, MessageType
+from src.db.models import (
+    Base,
+    ConversationSession,
+    Job,
+    JobRow,
+    JobStatus,
+    MessageType,
+    RowStatus,
+)
 from src.services.conversation_persistence_service import (
     ConversationPersistenceService,
 )
@@ -109,6 +117,151 @@ class TestSaveMessage:
                     },
                 },
             )
+
+    def test_direct_persistence_cannot_bypass_completion_validation_with_text_type(
+        self, svc
+    ):
+        svc.create_session(session_id="s1", mode="batch")
+
+        with pytest.raises(ValueError, match="Completion artifact diagnostics"):
+            svc.save_message(
+                "s1",
+                role="assistant",
+                content="",
+                message_type=MessageType.text.value,
+                metadata={
+                    "type": "completion",
+                    "completion": {
+                        "successful": 0,
+                        "failed": 0,
+                        "totalCostCents": 0,
+                        "omitted_failure_count": 0,
+                        "unexpected_scalar": "UNSAFE_SCALAR_MARKER",
+                    },
+                },
+            )
+
+    def test_direct_persistence_rejects_completion_content_for_any_message_type(
+        self, svc
+    ):
+        svc.create_session(session_id="s1", mode="batch")
+
+        with pytest.raises(ValueError, match="content must be empty"):
+            svc.save_message(
+                "s1",
+                role="assistant",
+                content="NONEMPTY_COMPLETION_CONTENT",
+                message_type=MessageType.error.value,
+                metadata={
+                    "type": "completion",
+                    "jobId": "11111111-1111-4111-8111-111111111111",
+                    "action": "complete",
+                    "completion": {
+                        "status": "completed",
+                        "outcome": "complete",
+                        "hasWarnings": False,
+                        "cancelled": False,
+                        "statusMessage": "Batch completed.",
+                        "successful": 0,
+                        "failed": 0,
+                        "totalCostCents": 0,
+                        "omitted_failure_count": 0,
+                    },
+                },
+            )
+
+    def test_direct_persistence_reconciles_completion_from_authoritative_job_state(
+        self, svc, db_session
+    ):
+        job_id = "11111111-1111-4111-8111-111111111111"
+        svc.create_session(session_id="s1", mode="batch")
+        db_session.add(
+            Job(
+                id=job_id,
+                name="Stored job display text",
+                original_command="Stored command text",
+                status=JobStatus.completed.value,
+                total_rows=2,
+                processed_rows=2,
+                successful_rows=2,
+                failed_rows=0,
+                total_cost_cents=450,
+            )
+        )
+        db_session.add_all(
+            [
+                JobRow(
+                    job_id=job_id,
+                    row_number=row_number,
+                    row_checksum=f"{row_number:064x}",
+                    status=RowStatus.completed.value,
+                    cost_cents=225,
+                )
+                for row_number in (1, 2)
+            ]
+        )
+        db_session.commit()
+
+        msg = svc.save_message(
+            "s1",
+            role="assistant",
+            content="",
+            message_type=MessageType.text.value,
+            metadata={
+                "type": "completion",
+                "jobId": job_id,
+                "action": "complete",
+                "completion": {
+                    "status": "failed",
+                    "outcome": "failed",
+                    "hasWarnings": False,
+                    "cancelled": False,
+                    "statusMessage": "Batch failed.",
+                    "successful": 0,
+                    "failed": 1,
+                    "totalCostCents": 0,
+                    "error": {
+                        "error_code": "E-4001",
+                        "error_category": "system",
+                        "message": (
+                            "The row could not be processed because of a system error."
+                        ),
+                    },
+                    "row_failures": [
+                        {
+                            "row_number": 1,
+                            "error_code": "E-4001",
+                            "error_category": "system",
+                            "message": (
+                                "The row could not be processed because of a system error."
+                            ),
+                        }
+                    ],
+                    "omitted_failure_count": 0,
+                },
+            },
+        )
+
+        assert json.loads(msg.metadata_json) == {
+            "type": "completion",
+            "jobId": job_id,
+            "action": "complete",
+            "completion": {
+                "status": "completed",
+                "outcome": "complete",
+                "hasWarnings": False,
+                "cancelled": False,
+                "statusMessage": "Batch completed.",
+                "jobName": "Shipping batch",
+                "successful": 2,
+                "failed": 0,
+                "totalCostCents": 450,
+                "dutiesTaxesCents": 0,
+                "internationalCount": 0,
+                "row_failures": [],
+                "omitted_failure_count": 0,
+            },
+        }
 
     def test_updates_session_updated_at(self, svc, db_session):
         svc.create_session(session_id="s1", mode="batch")
@@ -214,6 +367,71 @@ class TestGetSessionWithMessages:
         assert "lastTrackingNumber" not in completion
         assert raw_carrier_text not in repr(result)
 
+    def test_history_blanks_legacy_completion_content_and_projects_unsafe_scalars(
+        self, svc, db_session
+    ):
+        marker = "UNSAFE_LEGACY_SCALAR"
+        job_id = "11111111-1111-4111-8111-111111111111"
+        svc.create_session(session_id="s1", mode="batch")
+        message = svc.save_message("s1", role="assistant", content="placeholder")
+        message.content = marker
+        message.metadata_json = json.dumps(
+            {
+                "type": "completion",
+                "jobId": job_id,
+                "action": "complete",
+                "completion": {
+                    "status": marker,
+                    "outcome": {"value": marker},
+                    "hasWarnings": marker,
+                    "cancelled": 1,
+                    "statusMessage": marker,
+                    "jobName": marker,
+                    "command": marker,
+                    "successful": marker,
+                    "failed": 1,
+                    "totalCostCents": marker,
+                    "dutiesTaxesCents": -1,
+                    "internationalCount": 2_147_483_648,
+                    "error": marker,
+                    "rowFailures": marker,
+                },
+            }
+        )
+        db_session.commit()
+
+        result = svc.get_session_with_messages("s1")
+
+        assert result["messages"][0]["content"] == ""
+        assert result["messages"][0]["metadata"] == {
+            "type": "completion",
+            "jobId": job_id,
+            "action": "complete",
+            "completion": {
+                "status": "failed",
+                "outcome": "failed",
+                "hasWarnings": False,
+                "cancelled": False,
+                "statusMessage": "Batch failed.",
+                "jobName": "Shipping batch",
+                "successful": 0,
+                "failed": 1,
+                "totalCostCents": 0,
+                "dutiesTaxesCents": 0,
+                "internationalCount": 0,
+                "error": {
+                    "error_code": "E-4001",
+                    "error_category": "system",
+                    "message": (
+                        "The row could not be processed because of a system error."
+                    ),
+                },
+                "row_failures": [],
+                "omitted_failure_count": 1,
+            },
+        }
+        assert marker not in repr(result)
+
 
 class TestUpdateTitle:
     def test_updates_title(self, svc, db_session):
@@ -258,6 +476,48 @@ class TestExport:
         export = svc.export_session_json("s1")
         assert export["session"]["id"] == "s1"
         assert len(export["messages"]) == 2
+
+    def test_export_projects_legacy_completion_content_and_scalars(
+        self, svc, db_session
+    ):
+        marker = "UNSAFE_EXPORT_SCALAR"
+        svc.create_session(session_id="s1", mode="batch")
+        message = svc.save_message("s1", role="assistant", content="placeholder")
+        message.content = marker
+        message.metadata_json = json.dumps(
+            {
+                "type": "completion",
+                "jobId": "11111111-1111-4111-8111-111111111111",
+                "completion": {
+                    "status": marker,
+                    "successful": marker,
+                    "failed": 0,
+                    "jobName": marker,
+                    "command": marker,
+                },
+            }
+        )
+        db_session.commit()
+
+        export = svc.export_session_json("s1")
+
+        assert export["messages"][0]["content"] == ""
+        assert export["messages"][0]["metadata"]["completion"] == {
+            "status": "completed",
+            "outcome": "complete",
+            "hasWarnings": False,
+            "cancelled": False,
+            "statusMessage": "Batch completed.",
+            "jobName": "Shipping batch",
+            "successful": 0,
+            "failed": 0,
+            "totalCostCents": 0,
+            "dutiesTaxesCents": 0,
+            "internationalCount": 0,
+            "row_failures": [],
+            "omitted_failure_count": 0,
+        }
+        assert marker not in repr(export)
 
     def test_export_missing_returns_none(self, svc, db_session):
         assert svc.export_session_json("nope") is None

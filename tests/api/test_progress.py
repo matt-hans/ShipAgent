@@ -10,7 +10,10 @@ from sqlalchemy.orm import Session
 
 from src.api.routes.progress import _event_generator, sse_observer
 from src.db.models import Job, JobRow, JobStatus, RowStatus
-from src.errors.terminal_diagnostics import MAX_TERMINAL_ROW_DIAGNOSTICS
+from src.errors.terminal_diagnostics import (
+    MAX_TERMINAL_ROW_DIAGNOSTICS,
+    MAX_TERMINAL_ROW_NUMBER,
+)
 
 
 class TestProgressFallback:
@@ -102,6 +105,99 @@ class TestProgressFallback:
         assert response.json()["omitted_failure_count"] == 0
         assert raw_carrier_text not in response.text
 
+    def test_progress_derives_counts_from_authoritative_recovered_row_state(
+        self,
+        client: TestClient,
+        test_db: Session,
+    ) -> None:
+        job = Job(
+            name="Recovered progress",
+            original_command="Run the recovered progress fixture",
+            status=JobStatus.cancelled.value,
+            total_rows=2,
+            processed_rows=0,
+            successful_rows=0,
+            failed_rows=0,
+        )
+        test_db.add(job)
+        test_db.flush()
+        test_db.add_all(
+            [
+                JobRow(
+                    job_id=job.id,
+                    row_number=1,
+                    row_checksum="1" * 64,
+                    status=RowStatus.completed.value,
+                    cost_cents=125,
+                ),
+                JobRow(
+                    job_id=job.id,
+                    row_number=2,
+                    row_checksum="2" * 64,
+                    status=RowStatus.needs_review.value,
+                    error_code="E-3001",
+                    error_message="UNSAFE_STALE_RECOVERY_DETAIL",
+                ),
+            ]
+        )
+        test_db.commit()
+
+        response = client.get(f"/api/v1/jobs/{job.id}/progress")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["processed_rows"] == 2
+        assert payload["successful_rows"] == 1
+        assert payload["failed_rows"] == 1
+        assert payload["total_cost_cents"] == 125
+        assert payload["failed_rows"] == (
+            len(payload["row_failures"]) + payload["omitted_failure_count"]
+        )
+        assert "UNSAFE_STALE_RECOVERY_DETAIL" not in response.text
+
+    def test_progress_omits_malformed_legacy_row_numbers_without_500(
+        self,
+        client: TestClient,
+        test_db: Session,
+    ) -> None:
+        job = Job(
+            name="Malformed legacy rows",
+            original_command="Run the malformed row fixture",
+            status=JobStatus.failed.value,
+            total_rows=3,
+            processed_rows=0,
+            failed_rows=0,
+        )
+        test_db.add(job)
+        test_db.flush()
+        for index, row_number in enumerate(
+            (0, -1, MAX_TERMINAL_ROW_NUMBER + 1),
+            start=1,
+        ):
+            test_db.add(
+                JobRow(
+                    job_id=job.id,
+                    row_number=row_number,
+                    row_checksum=f"{index:064x}",
+                    status=RowStatus.failed.value,
+                    error_code="E-4001",
+                    error_message="UNSAFE_MALFORMED_ROW_DETAIL",
+                )
+            )
+        test_db.commit()
+
+        response = client.get(f"/api/v1/jobs/{job.id}/progress")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["failed_rows"] == 3
+        assert payload["row_failures"] == []
+        assert payload["omitted_failure_count"] == 3
+        assert payload["failed_rows"] == (
+            len(payload["row_failures"]) + payload["omitted_failure_count"]
+        )
+        assert "UNSAFE_MALFORMED_ROW_DETAIL" not in response.text
+
     def test_progress_caps_row_diagnostics_and_reports_omitted_count(
         self, client: TestClient, test_db: Session
     ):
@@ -134,6 +230,9 @@ class TestProgressFallback:
         data = response.json()
         assert len(data["row_failures"]) == MAX_TERMINAL_ROW_DIAGNOSTICS
         assert data["omitted_failure_count"] == 2
+        assert data["failed_rows"] == (
+            len(data["row_failures"]) + data["omitted_failure_count"]
+        )
         assert "oversized-token" not in response.text
 
     def test_progress_completed_job(self, client: TestClient, test_db: Session):

@@ -13,7 +13,10 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.db.models import Job, JobRow, JobStatus, RowStatus
-from src.errors.terminal_diagnostics import project_terminal_diagnostic
+from src.errors.terminal_diagnostics import (
+    MAX_TERMINAL_ROW_NUMBER,
+    project_terminal_diagnostic,
+)
 
 
 class InvalidStateTransition(Exception):
@@ -321,6 +324,19 @@ class JobService:
         job = self.get_job(job_id)
         if job is None:
             raise ValueError(f"Job not found: {job_id}")
+
+        seen_row_numbers: set[int] = set()
+        for data in row_data:
+            row_number = data.get("row_number")
+            if (
+                isinstance(row_number, bool)
+                or not isinstance(row_number, int)
+                or row_number < 1
+                or row_number > MAX_TERMINAL_ROW_NUMBER
+                or row_number in seen_row_numbers
+            ):
+                raise ValueError("row_number must be a unique bounded positive integer")
+            seen_row_numbers.add(row_number)
 
         rows = []
         for data in row_data:

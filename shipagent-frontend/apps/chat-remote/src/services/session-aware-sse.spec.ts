@@ -649,6 +649,31 @@ describe('session-aware EventSource transports', () => {
     }
   );
 
+  it('serializes the live completion payload without caller-owned display text', () => {
+    const metadata = buildJobCompletionMetadata(
+      '11111111-1111-4111-8111-111111111111',
+      {
+        total: 1,
+        processed: 1,
+        successful: 1,
+        failed: 0,
+        totalCostCents: 100,
+        dutiesTaxesCents: undefined,
+        internationalCount: undefined,
+        status: 'completed',
+        error: null,
+        rowFailures: [],
+        omittedFailureCount: 0,
+        currentRow: null,
+        lastTrackingNumber: null,
+      },
+      'CALLER_CONTROLLED_DISPLAY'
+    );
+
+    expect(metadata).not.toHaveProperty('completion.jobName');
+    expect(metadata).not.toHaveProperty('completion.command');
+  });
+
   it('emits completion from a missed terminal snapshot without reopening the stream', async () => {
     vi.useFakeTimers();
     sessionStatus = {
@@ -989,6 +1014,93 @@ describe('session-aware EventSource transports', () => {
         omitted_failure_count: 0,
       },
     });
+  });
+
+  it('consumes cumulative SSE failure accounting after missed omission events', async () => {
+    const progress = TestBed.inject(JobProgressSseService);
+    await progress.connectToJobProgress('job-1');
+    const source = ControlledEventSource.instances[0];
+
+    source.emitMessage({
+      event: 'row_failed',
+      data: {
+        job_id: 'job-1',
+        retained_failure_count: 0,
+        omitted_failure_count: 2,
+      },
+    });
+    source.emitMessage({
+      event: 'row_failed',
+      data: {
+        job_id: 'job-1',
+        retained_failure_count: 1,
+        omitted_failure_count: 2,
+        diagnostic: {
+          row_number: 3,
+          error_code: 'E-3001',
+          error_category: 'ups_api',
+          message: 'The carrier could not process this shipment.',
+        },
+      },
+    });
+
+    const snapshot = progress.progress();
+    expect(snapshot.failed).toBe(3);
+    expect(snapshot.processed).toBe(3);
+    expect(snapshot.rowFailures).toHaveLength(1);
+    expect(snapshot.omittedFailureCount).toBe(2);
+
+    const completion = buildJobCompletionMetadata(
+      '11111111-1111-4111-8111-111111111111',
+      {
+        ...snapshot,
+        status: 'failed',
+      }
+    )['completion'] as Record<string, unknown>;
+    expect(completion['failed']).toBe(
+      (completion['row_failures'] as unknown[]).length +
+        (completion['omitted_failure_count'] as number)
+    );
+  });
+
+  it('preserves recovered failures when a resumed batch starts', async () => {
+    apiMock.getJobProgress.mockReturnValue(
+      of({
+        job_id: 'job-1',
+        status: 'running',
+        total_rows: 2,
+        processed_rows: 1,
+        successful_rows: 0,
+        failed_rows: 1,
+        total_cost_cents: 0,
+        row_failures: [
+          {
+            row_number: 1,
+            error_code: 'E-4001',
+            error_category: 'system',
+            message:
+              'The row could not be processed because of a system error.',
+          },
+        ],
+        omitted_failure_count: 0,
+      })
+    );
+    const progress = TestBed.inject(JobProgressSseService);
+    await progress.connectToJobProgress('job-1');
+
+    ControlledEventSource.instances[0].emitMessage({
+      event: 'batch_started',
+      data: {
+        job_id: 'job-1',
+        total_rows: 2,
+      },
+    });
+
+    const snapshot = progress.progress();
+    expect(snapshot.processed).toBe(1);
+    expect(snapshot.failed).toBe(1);
+    expect(snapshot.rowFailures).toHaveLength(1);
+    expect(snapshot.omittedFailureCount).toBe(0);
   });
 
   it('bounds repeated transient failures without duplicate streams or checks', async () => {

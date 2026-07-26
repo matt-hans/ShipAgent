@@ -61,6 +61,8 @@ async def test_row_failure_projects_raw_carrier_text_to_safe_diagnostic():
         "event": "row_failed",
         "data": {
             "job_id": "job-1",
+            "retained_failure_count": 1,
+            "omitted_failure_count": 0,
             "diagnostic": {
                 "row_number": 7,
                 "error_code": "E-3003",
@@ -89,5 +91,52 @@ async def test_row_failure_stream_caps_safe_diagnostics_and_reports_omission():
     assert all("diagnostic" in event["data"] for event in events[:-1])
     assert events[-1]["data"] == {
         "job_id": "job-1",
+        "retained_failure_count": MAX_TERMINAL_ROW_DIAGNOSTICS,
         "omitted_failure_count": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_row_failure_stream_emits_cumulative_retained_and_omitted_counts():
+    observer = SSEProgressObserver()
+    queue = observer.subscribe("job-cumulative")
+    await observer.on_batch_started("job-cumulative", total_rows=3)
+    await queue.get()
+
+    await observer.on_row_failed(
+        "job-cumulative",
+        row_number=0,
+        error_code="E-4001",
+        error_message="UNSAFE_ROW_FAILURE_DETAIL",
+    )
+    await observer.on_row_failed(
+        "job-cumulative",
+        row_number=-1,
+        error_code="E-4001",
+        error_message="UNSAFE_ROW_FAILURE_DETAIL",
+    )
+    await observer.on_row_failed(
+        "job-cumulative",
+        row_number=1,
+        error_code="E-3001",
+        error_message="UNSAFE_ROW_FAILURE_DETAIL",
+    )
+
+    first = await queue.get()
+    second = await queue.get()
+    third = await queue.get()
+
+    assert first["data"] == {
+        "job_id": "job-cumulative",
+        "retained_failure_count": 0,
+        "omitted_failure_count": 1,
+    }
+    assert second["data"] == {
+        "job_id": "job-cumulative",
+        "retained_failure_count": 0,
+        "omitted_failure_count": 2,
+    }
+    assert third["data"]["retained_failure_count"] == 1
+    assert third["data"]["omitted_failure_count"] == 2
+    assert third["data"]["diagnostic"]["row_number"] == 1
+    assert "UNSAFE_ROW_FAILURE_DETAIL" not in repr((first, second, third))
