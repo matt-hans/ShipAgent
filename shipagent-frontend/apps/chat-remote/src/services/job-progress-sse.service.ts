@@ -75,6 +75,9 @@ export class JobProgressSseService implements OnDestroy {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private progressRevision = 0;
+  private observerFailureRunBaseline: number | null = null;
+  private observerRetainedFailureCount: number | null = null;
+  private observerOmittedFailureCount: number | null = null;
 
   /** Current progress snapshot. */
   readonly progress = signal<JobProgressSnapshot>({ ...INITIAL_PROGRESS });
@@ -128,6 +131,7 @@ export class JobProgressSseService implements OnDestroy {
     const generation = this.lifecycleGeneration;
     this.progress.set({ ...INITIAL_PROGRESS });
     this.progressRevision = 0;
+    this.resetObserverFailureAccounting();
 
     // Fetch initial progress for crash recovery.
     const status = await this.refreshSnapshot(
@@ -219,6 +223,7 @@ export class JobProgressSseService implements OnDestroy {
     this.lifecycleGeneration++;
     this.currentJobId = null;
     this.reconnectAttempts = 0;
+    this.resetObserverFailureAccounting();
     this.lifecycleAbortController?.abort();
     this.lifecycleAbortController = null;
     if (this.reconnectTimer) {
@@ -355,6 +360,12 @@ export class JobProgressSseService implements OnDestroy {
     this.jobStore.incrementJobListVersion();
   }
 
+  private resetObserverFailureAccounting(): void {
+    this.observerFailureRunBaseline = null;
+    this.observerRetainedFailureCount = null;
+    this.observerOmittedFailureCount = null;
+  }
+
   // ---------------------------------------------------------------------------
   // Event handlers
   // ---------------------------------------------------------------------------
@@ -369,6 +380,9 @@ export class JobProgressSseService implements OnDestroy {
 
     switch (eventType) {
       case 'batch_started':
+        this.observerFailureRunBaseline = this.progress().failed;
+        this.observerRetainedFailureCount = 0;
+        this.observerOmittedFailureCount = 0;
         this.progress.update((p) => ({
           ...p,
           total: (eventData['total_rows'] as number) ?? p.total,
@@ -415,6 +429,21 @@ export class JobProgressSseService implements OnDestroy {
             ? rawOmittedFailureCount
             : undefined;
         if (!diagnostic && omittedFailureCount === undefined) return false;
+        if (
+          retainedFailureCount !== undefined &&
+          omittedFailureCount !== undefined
+        ) {
+          const observerCountersReset =
+            (this.observerRetainedFailureCount !== null &&
+              retainedFailureCount < this.observerRetainedFailureCount) ||
+            (this.observerOmittedFailureCount !== null &&
+              omittedFailureCount < this.observerOmittedFailureCount);
+          if (observerCountersReset) {
+            this.observerFailureRunBaseline = this.progress().failed;
+          }
+          this.observerRetainedFailureCount = retainedFailureCount;
+          this.observerOmittedFailureCount = omittedFailureCount;
+        }
         const error: SafeTerminalDiagnostic | null = diagnostic
           ? {
               error_code: diagnostic.error_code,
@@ -442,11 +471,19 @@ export class JobProgressSseService implements OnDestroy {
           const cumulativeFailed =
             (retainedFailureCount ?? rowFailures.length) +
             (omittedFailureCount ?? nextOmitted);
-          const legacyFailed =
-            retainedFailureCount === undefined ? p.failed + 1 : p.failed;
+          const runRelativeFailed =
+            this.observerFailureRunBaseline !== null &&
+            retainedFailureCount !== undefined &&
+            omittedFailureCount !== undefined
+              ? this.observerFailureRunBaseline +
+                retainedFailureCount +
+                omittedFailureCount
+              : 0;
+          const eventFailed = p.failed + 1;
           const failed = Math.max(
             cumulativeFailed,
-            legacyFailed,
+            runRelativeFailed,
+            eventFailed,
             rowFailures.length + nextOmitted
           );
           nextOmitted = Math.max(nextOmitted, failed - rowFailures.length);

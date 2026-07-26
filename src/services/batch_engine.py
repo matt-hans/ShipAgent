@@ -23,7 +23,11 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
-from src.errors.terminal_diagnostics import project_terminal_diagnostic
+from src.errors.terminal_diagnostics import (
+    MAX_TERMINAL_COUNT,
+    project_terminal_diagnostic,
+    project_terminal_row_diagnostic,
+)
 from src.services.errors import UPSServiceError
 from src.services.gateway_provider import get_data_gateway, get_external_sources_client
 from src.services.idempotency import generate_idempotency_key
@@ -1333,6 +1337,7 @@ class BatchEngine:
         needs_review = 0
         unresolved = 0
         details: list[dict[str, Any]] = []
+        omitted_detail_count = 0
 
         def _safe_row_error(row: Any, error_code: str) -> None:
             diagnostic = project_terminal_diagnostic(error_code)
@@ -1345,21 +1350,46 @@ class BatchEngine:
             *,
             error_code: str | None = None,
             attempt_count: int | None = None,
-        ) -> dict[str, Any]:
+        ) -> dict[str, Any] | None:
+            nonlocal omitted_detail_count
+            diagnostic = project_terminal_row_diagnostic(
+                row.row_number,
+                error_code,
+            )
+            if diagnostic is None:
+                omitted_detail_count = min(
+                    omitted_detail_count + 1,
+                    MAX_TERMINAL_COUNT,
+                )
+                return None
             detail: dict[str, Any] = {
-                "row_number": row.row_number,
+                "row_number": diagnostic.row_number,
                 "action": action,
             }
             if error_code is not None:
-                detail["error_code"] = project_terminal_diagnostic(
-                    error_code
-                ).error_code
+                detail["error_code"] = diagnostic.error_code
             if attempt_count is not None:
                 detail["attempt_count"] = max(
                     0,
                     min(attempt_count, MAX_RECOVERY_ATTEMPTS),
                 )
             return detail
+
+        def _record_detail(
+            row: Any,
+            action: str,
+            *,
+            error_code: str | None = None,
+            attempt_count: int | None = None,
+        ) -> None:
+            detail = _detail(
+                row,
+                action,
+                error_code=error_code,
+                attempt_count=attempt_count,
+            )
+            if detail is not None:
+                details.append(detail)
 
         for row in in_flight:
             if row.ups_tracking_number:
@@ -1390,12 +1420,10 @@ class BatchEngine:
                             _safe_row_error(row, "E-4001")
                             self._db.commit()
                             needs_review += 1
-                            details.append(
-                                _detail(
-                                    row,
-                                    "needs_review",
-                                    error_code="E-4001",
-                                )
+                            _record_detail(
+                                row,
+                                "needs_review",
+                                error_code="E-4001",
                             )
                         else:
                             # All artifacts present — safe to complete
@@ -1406,19 +1434,17 @@ class BatchEngine:
                             row.processed_at = datetime.now(UTC).isoformat()
                             self._db.commit()
                             recovered += 1
-                            details.append(_detail(row, "recovered"))
+                            _record_detail(row, "recovered")
                     else:
                         # UPS doesn't recognize this tracking number
                         row.status = "needs_review"
                         _safe_row_error(row, "E-3001")
                         self._db.commit()
                         needs_review += 1
-                        details.append(
-                            _detail(
-                                row,
-                                "needs_review",
-                                error_code="E-3001",
-                            )
+                        _record_detail(
+                            row,
+                            "needs_review",
+                            error_code="E-3001",
                         )
                 except Exception:
                     # Tier 3: Lookup failed — escalation policy
@@ -1428,25 +1454,21 @@ class BatchEngine:
                         row.status = "needs_review"
                         self._db.commit()
                         needs_review += 1
-                        details.append(
-                            _detail(
-                                row,
-                                "needs_review",
-                                error_code="E-3001",
-                                attempt_count=row.recovery_attempt_count,
-                            )
+                        _record_detail(
+                            row,
+                            "needs_review",
+                            error_code="E-3001",
+                            attempt_count=row.recovery_attempt_count,
                         )
                     else:
                         # Below limit — leave in_flight for next startup pass
                         self._db.commit()
                         unresolved += 1
-                        details.append(
-                            _detail(
-                                row,
-                                "unresolved",
-                                error_code="E-3001",
-                                attempt_count=row.recovery_attempt_count,
-                            )
+                        _record_detail(
+                            row,
+                            "unresolved",
+                            error_code="E-3001",
+                            attempt_count=row.recovery_attempt_count,
                         )
             else:
                 # Tier 2: No tracking info — ambiguous, mark for operator
@@ -1454,12 +1476,10 @@ class BatchEngine:
                 _safe_row_error(row, "E-4001")
                 self._db.commit()
                 needs_review += 1
-                details.append(
-                    _detail(
-                        row,
-                        "needs_review",
-                        error_code="E-4001",
-                    )
+                _record_detail(
+                    row,
+                    "needs_review",
+                    error_code="E-4001",
                 )
 
         logger.info(
@@ -1475,4 +1495,5 @@ class BatchEngine:
             "needs_review": needs_review,
             "unresolved": unresolved,
             "details": details,
+            "omitted_detail_count": omitted_detail_count,
         }

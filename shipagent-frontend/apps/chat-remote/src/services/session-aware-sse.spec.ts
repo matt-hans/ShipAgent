@@ -1103,6 +1103,65 @@ describe('session-aware EventSource transports', () => {
     expect(snapshot.omittedFailureCount).toBe(0);
   });
 
+  it.each([true, false])(
+    'adds run-relative failures at the REST retention cap when the resumed batch_started event is observed=%s',
+    async (batchStartedObserved) => {
+      apiMock.getJobProgress.mockReturnValue(
+        of({
+          job_id: 'job-1',
+          status: 'running',
+          total_rows: 21,
+          processed_rows: 20,
+          successful_rows: 0,
+          failed_rows: 20,
+          total_cost_cents: 0,
+          row_failures: Array.from({ length: 20 }, (_, index) => ({
+            row_number: index + 1,
+            error_code: 'E-4001',
+            error_category: 'system',
+            message:
+              'The row could not be processed because of a system error.',
+          })),
+          omitted_failure_count: 0,
+        })
+      );
+      const progress = TestBed.inject(JobProgressSseService);
+      await progress.connectToJobProgress('job-1');
+      const source = ControlledEventSource.instances[0];
+
+      if (batchStartedObserved) {
+        source.emitMessage({
+          event: 'batch_started',
+          data: {
+            job_id: 'job-1',
+            total_rows: 21,
+          },
+        });
+      }
+      source.emitMessage({
+        event: 'row_failed',
+        data: {
+          job_id: 'job-1',
+          retained_failure_count: 1,
+          omitted_failure_count: 0,
+          diagnostic: {
+            row_number: 21,
+            error_code: 'E-4001',
+            error_category: 'system',
+            message:
+              'The row could not be processed because of a system error.',
+          },
+        },
+      });
+
+      const snapshot = progress.progress();
+      expect(snapshot.failed).toBe(21);
+      expect(snapshot.processed).toBe(21);
+      expect(snapshot.rowFailures).toHaveLength(20);
+      expect(snapshot.omittedFailureCount).toBe(1);
+    }
+  );
+
   it('bounds repeated transient failures without duplicate streams or checks', async () => {
     vi.useFakeTimers();
     sessionStatus = {
