@@ -50,7 +50,7 @@ class TestBatchEngineExecute:
         engine = BatchEngine(
             ups_service=mock_ups_service,
             db_session=mock_db_session,
-            account_number="ABC123",
+            account_number="SAFE_TEST_ACCOUNT",
         )
 
         rows = [
@@ -306,6 +306,7 @@ class TestBatchEngineExecute:
         mock_db_session,
     ):
         """Write-back failure is reported without mutating shipment outcome counts."""
+        unsafe_detail = "UNSAFE_PARTIAL_WRITE_BACK_DETAIL"
         engine = BatchEngine(
             ups_service=mock_ups_service,
             db_session=mock_db_session,
@@ -352,7 +353,7 @@ class TestBatchEngineExecute:
             mock_gw.write_back_batch.return_value = {
                 "success_count": 0,
                 "failure_count": 1,
-                "errors": [{"row_number": 1, "error": "write failed"}],
+                "errors": [{"row_number": 1, "error": unsafe_detail}],
             }
             mock_get_gw.return_value = mock_gw
 
@@ -364,7 +365,79 @@ class TestBatchEngineExecute:
 
         assert result["successful"] == 1
         assert result["failed"] == 0
-        assert result["write_back"]["status"] == "partial"
+        assert result["write_back"] == {
+            "status": "partial",
+            "action": "write_back",
+            "error_code": "E-4001",
+            "success_count": 0,
+            "failure_count": 1,
+        }
+        assert unsafe_detail not in repr(result)
+
+    async def test_write_back_exception_returns_and_logs_only_safe_diagnostics(
+        self,
+        mock_ups_service,
+        mock_db_session,
+        caplog,
+    ):
+        marker = "UNSAFE_WRITE_BACK_DETAIL"
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="ABC123",
+        )
+        row = MagicMock(
+            id="row-1",
+            row_number=1,
+            status="pending",
+            order_data=json.dumps(
+                {
+                    "ship_to_name": "Example",
+                    "ship_to_address1": "Example",
+                    "ship_to_city": "Example",
+                    "ship_to_state": "CA",
+                    "ship_to_postal_code": "00000",
+                    "weight": 2.0,
+                }
+            ),
+            cost_cents=0,
+        )
+        shipper = {
+            "name": "Example",
+            "addressLine1": "Example",
+            "city": "Example",
+            "stateProvinceCode": "CA",
+            "postalCode": "00000",
+            "countryCode": "US",
+        }
+
+        with patch(
+            "src.services.batch_engine.get_data_gateway",
+            new_callable=AsyncMock,
+        ) as mock_get_gw:
+            mock_gw = AsyncMock()
+            mock_gw.get_source_info.return_value = {
+                "active": True,
+                "source_type": "csv",
+            }
+            mock_gw.write_back_batch.side_effect = RuntimeError(marker)
+            mock_get_gw.return_value = mock_gw
+
+            result = await engine.execute(
+                job_id="job-1",
+                rows=[row],
+                shipper=shipper,
+            )
+
+        assert result["write_back"] == {
+            "status": "error",
+            "action": "write_back",
+            "error_code": "E-4001",
+            "success_count": 0,
+            "failure_count": 1,
+        }
+        assert marker not in repr(result)
+        assert marker not in caplog.text
 
 
 class TestBatchEnginePreview:

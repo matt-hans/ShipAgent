@@ -5,7 +5,7 @@ import type { JobProgressSnapshot } from './job-progress-sse.service';
 export function buildJobCompletionMetadata(
   jobId: string,
   progress: JobProgressSnapshot,
-  jobName = ''
+  _jobName = ''
 ): Record<string, unknown> {
   const terminalState = getJobTerminalState(progress.status);
 
@@ -19,7 +19,6 @@ export function buildJobCompletionMetadata(
       hasWarnings: terminalState?.hasWarnings ?? false,
       cancelled: terminalState?.cancelled ?? false,
       statusMessage: terminalState?.message,
-      jobName: jobName || undefined,
       successful: progress.successful,
       failed: progress.failed,
       totalCostCents: progress.totalCostCents,

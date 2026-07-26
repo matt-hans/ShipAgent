@@ -12,19 +12,40 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from src.errors.terminal_diagnostics import (
+    project_terminal_diagnostic,
     sanitize_completion_artifact_metadata,
     validate_completion_artifact_diagnostics,
 )
+from src.services.job_progress_projection import project_authoritative_job_progress
 
 logger = logging.getLogger(__name__)
 
 from src.db.models import (  # noqa: E402
     ConversationMessage,
     ConversationSession,
+    Job,
+    JobRow,
     MessageType,
     generate_uuid,
     utc_now_iso,
 )
+
+_TERMINAL_COMPLETION_STATE: dict[str, tuple[str, bool, bool, str]] = {
+    "completed": ("complete", False, False, "Batch completed."),
+    "completed_with_warnings": (
+        "complete",
+        True,
+        False,
+        "Batch completed with warnings.",
+    ),
+    "failed": ("failed", False, False, "Batch failed."),
+    "cancelled": (
+        "failed",
+        False,
+        True,
+        "Batch cancelled. You can enter a new command.",
+    ),
+}
 
 
 def _safe_json_loads(raw: str | None, label: str, entity_id: str) -> Any | None:
@@ -102,8 +123,12 @@ class ConversationPersistenceService:
         Returns:
             The created ConversationMessage.
         """
-        if message_type == MessageType.system_artifact.value and metadata is not None:
+        if metadata is not None:
             validate_completion_artifact_diagnostics(metadata)
+            if metadata.get("type") == "completion" and content != "":
+                raise ValueError("Completion artifact content must be empty.")
+            if metadata.get("type") == "completion":
+                metadata = self._authoritative_completion_metadata(metadata["jobId"])
 
         # Compute next sequence number.
         # Note: For SQLite with single-writer semantics, SELECT+INSERT
@@ -135,6 +160,59 @@ class ConversationPersistenceService:
 
         self._db.commit()
         return msg
+
+    def _authoritative_completion_metadata(
+        self,
+        job_id: str,
+    ) -> dict[str, Any]:
+        """Build completion metadata only from persisted terminal job state."""
+        job = self._db.get(Job, job_id)
+        if job is None:
+            raise ValueError("Completion artifact job was not found.")
+        terminal_state = _TERMINAL_COMPLETION_STATE.get(job.status)
+        if terminal_state is None:
+            raise ValueError("Completion artifact job is not terminal.")
+
+        rows = (
+            self._db.query(JobRow)
+            .filter(JobRow.job_id == job_id)
+            .order_by(JobRow.row_number)
+            .all()
+        )
+        progress = project_authoritative_job_progress(job, rows)
+        outcome, has_warnings, cancelled, status_message = terminal_state
+        completion: dict[str, Any] = {
+            "status": job.status,
+            "outcome": outcome,
+            "hasWarnings": has_warnings,
+            "cancelled": cancelled,
+            "statusMessage": status_message,
+            "jobName": "Shipping batch",
+            "successful": progress.successful_rows,
+            "failed": progress.failed_rows,
+            "totalCostCents": progress.total_cost_cents,
+            "dutiesTaxesCents": progress.total_duties_taxes_cents,
+            "internationalCount": progress.international_row_count,
+            "row_failures": progress.row_failures_json(),
+            "omitted_failure_count": progress.omitted_failure_count,
+        }
+        if job.error_code is not None and job.status in {
+            "completed_with_warnings",
+            "failed",
+            "cancelled",
+        }:
+            completion["error"] = project_terminal_diagnostic(
+                job.error_code
+            ).model_dump(mode="json")
+
+        result = {
+            "type": "completion",
+            "jobId": job_id,
+            "action": "complete",
+            "completion": completion,
+        }
+        validate_completion_artifact_diagnostics(result)
+        return result
 
     def list_sessions(
         self,
@@ -230,15 +308,23 @@ class ConversationPersistenceService:
 
         messages = []
         for m in query.all():
+            raw_metadata = _safe_json_loads(
+                m.metadata_json,
+                "metadata_json",
+                m.id,
+            )
+            metadata = sanitize_completion_artifact_metadata(raw_metadata)
+            is_completion = (
+                isinstance(raw_metadata, dict)
+                and raw_metadata.get("type") == "completion"
+            )
             messages.append(
                 {
                     "id": m.id,
                     "role": m.role,
                     "message_type": m.message_type,
-                    "content": m.content,
-                    "metadata": sanitize_completion_artifact_metadata(
-                        _safe_json_loads(m.metadata_json, "metadata_json", m.id)
-                    ),
+                    "content": "" if is_completion else m.content,
+                    "metadata": metadata,
                     "sequence": m.sequence,
                     "created_at": m.created_at,
                 }

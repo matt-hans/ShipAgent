@@ -7,7 +7,6 @@ Tests cover:
 - Duplicate shipment warnings
 """
 
-
 import pytest
 
 from src.db.models import JobStatus, RowStatus
@@ -154,7 +153,7 @@ class TestCheckInterruptedJobs:
         assert result.total_rows == 200
         assert result.remaining_rows == 153  # 200 - 47
         assert result.last_row_number == 47
-        assert result.last_tracking_number == "1Z222"
+        assert result.last_tracking_number is None
 
     def test_finds_interrupted_job_with_error(self) -> None:
         """Test includes error info when job crashed with error."""
@@ -167,7 +166,7 @@ class TestCheckInterruptedJobs:
             processed_rows=48,
             successful_rows=47,
             error_code="E-3001",
-            error_message="UPS API timeout",
+            error_message="UNSAFE_INTERRUPTED_JOB_DETAIL",
         )
         job_service.add_job(job)
 
@@ -175,7 +174,8 @@ class TestCheckInterruptedJobs:
 
         assert result is not None
         assert result.error_code == "E-3001"
-        assert result.error_message == "UPS API timeout"
+        assert result.error_message == "The carrier could not process this shipment."
+        assert "UNSAFE_INTERRUPTED_JOB_DETAIL" not in repr(result)
 
     def test_no_completed_rows(self) -> None:
         """Test handles job with no completed rows."""
@@ -210,7 +210,7 @@ class TestGetRecoveryPrompt:
             total_rows=200,
             remaining_rows=153,
             last_row_number=47,
-            last_tracking_number="1Z999AA10123456784",
+            last_tracking_number="UNSAFE_PROMPT_TRACKING_REFERENCE",
         )
 
         prompt = get_recovery_prompt(info)
@@ -219,7 +219,7 @@ class TestGetRecoveryPrompt:
         assert "47/200" in prompt
         assert "153 rows" in prompt
         assert "Row 47" in prompt
-        assert "1Z999AA10123456784" in prompt
+        assert "UNSAFE_PROMPT_TRACKING_REFERENCE" not in prompt
         assert "[resume]" in prompt
         assert "[restart]" in prompt
         assert "[cancel]" in prompt
@@ -233,13 +233,14 @@ class TestGetRecoveryPrompt:
             total_rows=200,
             remaining_rows=153,
             error_code="E-3001",
-            error_message="UPS API timeout",
+            error_message="UNSAFE_PROMPT_ERROR_DETAIL",
         )
 
         prompt = get_recovery_prompt(info)
 
         assert "E-3001" in prompt
-        assert "UPS API timeout" in prompt
+        assert "The carrier could not process this shipment." in prompt
+        assert "UNSAFE_PROMPT_ERROR_DETAIL" not in prompt
         assert "retry from the failed row" in prompt
 
     def test_prompt_no_completed_rows(self) -> None:
@@ -269,9 +270,7 @@ class TestHandleRecoveryChoice:
         job = MockJob("job-123", status="running")
         job_service.add_job(job)
 
-        result = handle_recovery_choice(
-            RecoveryChoice.RESUME, "job-123", job_service
-        )
+        result = handle_recovery_choice(RecoveryChoice.RESUME, "job-123", job_service)
 
         assert result["action"] == "resume"
         assert result["job_id"] == "job-123"
@@ -289,9 +288,7 @@ class TestHandleRecoveryChoice:
         ]
         job_service.add_job(job, completed_rows)
 
-        result = handle_recovery_choice(
-            RecoveryChoice.RESTART, "job-123", job_service
-        )
+        result = handle_recovery_choice(RecoveryChoice.RESTART, "job-123", job_service)
 
         assert result["action"] == "restart"
         assert result["job_id"] == "job-123"
@@ -307,9 +304,7 @@ class TestHandleRecoveryChoice:
         job = MockJob("job-123", status="running")
         job_service.add_job(job, [])
 
-        result = handle_recovery_choice(
-            RecoveryChoice.RESTART, "job-123", job_service
-        )
+        result = handle_recovery_choice(RecoveryChoice.RESTART, "job-123", job_service)
 
         assert result["completed_rows_with_tracking"] == 0
 
@@ -319,28 +314,23 @@ class TestHandleRecoveryChoice:
         job = MockJob("job-123", status="running")
         job_service.add_job(job)
 
-        result = handle_recovery_choice(
-            RecoveryChoice.CANCEL, "job-123", job_service
-        )
+        result = handle_recovery_choice(RecoveryChoice.CANCEL, "job-123", job_service)
 
         assert result["action"] == "cancel"
         assert result["job_id"] == "job-123"
         assert "cancelled" in result["message"].lower()
         # Verify status was updated
-        assert (("job-123", JobStatus.cancelled) in job_service.update_status_calls)
+        assert ("job-123", JobStatus.cancelled) in job_service.update_status_calls
 
     def test_handle_restart_job_not_found(self) -> None:
         """Test restart raises ValueError when job not found."""
         job_service = MockJobService()
 
         with pytest.raises(ValueError, match="not found"):
-            handle_recovery_choice(
-                RecoveryChoice.RESTART, "nonexistent", job_service
-            )
-
+            handle_recovery_choice(RecoveryChoice.RESTART, "nonexistent", job_service)
 
     def test_handle_review_returns_detailed_report(self) -> None:
-        """Test REVIEW returns per-row detail for needs_review and in_flight rows."""
+        """REVIEW returns only safe bounded per-row recovery diagnostics."""
         job_service = MockJobService()
         job = MockJob("job-123", status="running", total_rows=5)
         rows = [
@@ -351,19 +341,21 @@ class TestHandleRecoveryChoice:
             MockJobRow("r5", "job-123", 5, "pending"),
         ]
         # Add Phase 8 attributes to the needs_review and in_flight rows
-        rows[1].error_message = "Ambiguous transport error"
-        rows[1].ups_tracking_number = "1Z002"
-        rows[1].ups_shipment_id = "SHIP002"
-        rows[1].idempotency_key = "job-123:2:abc"
+        rows[1].error_message = "UNSAFE_REVIEW_ERROR_DETAIL"
+        rows[1].ups_tracking_number = "UNSAFE_REVIEW_REFERENCE"
+        rows[1].ups_shipment_id = "UNSAFE_REVIEW_SHIPMENT_REFERENCE"
+        rows[1].idempotency_key = "UNSAFE_REVIEW_IDEMPOTENCY_REFERENCE"
 
         rows[2].recovery_attempt_count = 1
-        rows[2].ups_tracking_number = "1Z003"
-        rows[2].idempotency_key = "job-123:3:def"
+        rows[2].ups_tracking_number = "UNSAFE_INFLIGHT_REFERENCE"
+        rows[2].idempotency_key = "UNSAFE_INFLIGHT_IDEMPOTENCY_REFERENCE"
 
         job_service.add_job(job, rows)
 
         result = handle_recovery_choice(
-            RecoveryChoice.REVIEW, "job-123", job_service,
+            RecoveryChoice.REVIEW,
+            "job-123",
+            job_service,
         )
 
         assert result["action"] == "review"
@@ -373,12 +365,21 @@ class TestHandleRecoveryChoice:
         # Verify needs_review row details
         nr_row = next(r for r in result["rows"] if r["status"] == "needs_review")
         assert nr_row["row_number"] == 2
-        assert nr_row["error_message"] == "Ambiguous transport error"
-        assert nr_row["idempotency_key"] == "job-123:2:abc"
+        assert nr_row["error_code"] == "E-4001"
+        assert set(nr_row) == {"row_number", "status", "error_code"}
         # Verify in_flight row details
         if_row = next(r for r in result["rows"] if r["status"] == "in_flight")
         assert if_row["row_number"] == 3
-        assert if_row["idempotency_key"] == "job-123:3:def"
+        assert if_row["recovery_attempt_count"] == 1
+        assert set(if_row) == {
+            "row_number",
+            "status",
+            "recovery_attempt_count",
+        }
+        assert "UNSAFE_REVIEW_REFERENCE" not in repr(result)
+        assert "UNSAFE_REVIEW_SHIPMENT_REFERENCE" not in repr(result)
+        assert "UNSAFE_REVIEW_IDEMPOTENCY_REFERENCE" not in repr(result)
+        assert "UNSAFE_REVIEW_ERROR_DETAIL" not in repr(result)
 
     def test_handle_review_is_read_only(self) -> None:
         """Test REVIEW does not modify any row status."""
@@ -398,7 +399,9 @@ class TestHandleRecoveryChoice:
         job_service.add_job(job, rows)
 
         handle_recovery_choice(
-            RecoveryChoice.REVIEW, "job-123", job_service,
+            RecoveryChoice.REVIEW,
+            "job-123",
+            job_service,
         )
 
         # No status changes should have occurred

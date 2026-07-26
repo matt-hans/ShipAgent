@@ -307,8 +307,11 @@ def _reap_orphan_pending_jobs(job_service: object) -> int:
     cutoff = datetime.now(UTC) - timedelta(hours=max_age_hours)
     try:
         pending_jobs = js.list_jobs(status=JobStatus.pending, limit=500)
-    except Exception as e:
-        logger.warning("Failed listing pending jobs for orphan reaper: %s", e)
+    except Exception:
+        logger.warning(
+            "orphan_job_reaper_failed action=list_jobs "
+            "error_code=E-4001 failure_count=1"
+        )
         return 0
 
     deleted = 0
@@ -325,8 +328,11 @@ def _reap_orphan_pending_jobs(job_service: object) -> int:
         try:
             if js.delete_job(job.id):
                 deleted += 1
-        except Exception as e:
-            logger.warning("Failed deleting orphan pending job %s: %s", job.id, e)
+        except Exception:
+            logger.warning(
+                "orphan_job_reaper_failed action=delete_job "
+                "error_code=E-4001 failure_count=1"
+            )
     return deleted
 
 
@@ -354,8 +360,11 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
         deleted_orphans = _reap_orphan_pending_jobs(js)
         if deleted_orphans:
             logger.info("Orphan pending jobs reaped: %d", deleted_orphans)
-    except Exception as e:
-        logger.warning("Orphan pending job reaper failed (non-blocking): %s", e)
+    except Exception:
+        logger.warning(
+            "startup_recovery_failed action=reap_orphans "
+            "error_code=E-4001 failure_count=1"
+        )
 
     # 1. Find interrupted jobs (running or paused)
     interrupted: list = []
@@ -379,10 +388,11 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
         try:
             ups_client = UPSMCPClient()
             await ups_client.connect()
-        except Exception as e:
+        except Exception:
             logger.warning(
-                "UPS MCP unavailable for recovery (rows stay in_flight): %s",
-                e,
+                "startup_recovery_failed action=connect_carrier "
+                "error_code=E-3001 failure_count=%d",
+                len(jobs_needing_recovery),
             )
             ups_client = None
 
@@ -398,23 +408,17 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
                     rows,
                 )
                 logger.info(
-                    "Job %s recovery: %d recovered, %d needs_review, %d unresolved",
-                    job.id,
+                    "startup_recovery_complete action=recovery recovered=%d "
+                    "needs_review=%d unresolved=%d",
                     recovery_result["recovered"],
                     recovery_result["needs_review"],
                     recovery_result["unresolved"],
                 )
-                if recovery_result.get("details"):
-                    logger.warning(
-                        "Rows requiring operator review for job %s: %s",
-                        job.id,
-                        recovery_result["details"],
-                    )
-            except Exception as e:
+            except Exception:
                 logger.error(
-                    "Recovery failed for job %s (non-blocking): %s",
-                    job.id,
-                    e,
+                    "startup_recovery_failed action=recovery "
+                    "error_code=E-4001 failure_count=%d",
+                    len(rows),
                 )
 
         # Clean up the temporary UPS client
@@ -429,8 +433,11 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
         orphans = BatchEngine.cleanup_staging(js)
         if orphans:
             logger.info("Cleaned up %d orphaned staging labels", orphans)
-    except Exception as e:
-        logger.error("Staging cleanup failed (non-blocking): %s", e)
+    except Exception:
+        logger.error(
+            "startup_recovery_failed action=cleanup_staging "
+            "error_code=E-4001 failure_count=1"
+        )
 
 
 @asynccontextmanager
@@ -592,8 +599,10 @@ async def lifespan(app: FastAPI):
         with get_db_context() as db:
             js = JobService(db)
             await run_startup_recovery(db, js)
-    except Exception as e:
-        logger.error("Startup recovery failed (non-blocking): %s", e)
+    except Exception:
+        logger.error(
+            "startup_recovery_failed action=recovery error_code=E-4001 failure_count=1"
+        )
 
     # Start watchdog if configured
     config_path = os.environ.get("SHIPAGENT_CONFIG_PATH")

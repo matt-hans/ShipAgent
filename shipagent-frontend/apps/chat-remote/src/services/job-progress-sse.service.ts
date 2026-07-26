@@ -373,13 +373,7 @@ export class JobProgressSseService implements OnDestroy {
           ...p,
           total: (eventData['total_rows'] as number) ?? p.total,
           status: 'running',
-          processed: 0,
-          successful: 0,
-          failed: 0,
-          totalCostCents: 0,
-          error: null,
-          rowFailures: [],
-          omittedFailureCount: 0,
+          currentRow: null,
         }));
         return true;
 
@@ -406,9 +400,21 @@ export class JobProgressSseService implements OnDestroy {
         const diagnostic = eventData['diagnostic'] as
           | SafeTerminalRowDiagnostic
           | undefined;
-        const omittedFailureCount = eventData['omitted_failure_count'];
-        if (!diagnostic && typeof omittedFailureCount !== 'number')
-          return false;
+        const rawRetainedFailureCount = eventData['retained_failure_count'];
+        const rawOmittedFailureCount = eventData['omitted_failure_count'];
+        const retainedFailureCount =
+          typeof rawRetainedFailureCount === 'number' &&
+          Number.isSafeInteger(rawRetainedFailureCount) &&
+          rawRetainedFailureCount >= 0
+            ? Math.min(rawRetainedFailureCount, 20)
+            : undefined;
+        const omittedFailureCount =
+          typeof rawOmittedFailureCount === 'number' &&
+          Number.isSafeInteger(rawOmittedFailureCount) &&
+          rawOmittedFailureCount >= 0
+            ? rawOmittedFailureCount
+            : undefined;
+        if (!diagnostic && omittedFailureCount === undefined) return false;
         const error: SafeTerminalDiagnostic | null = diagnostic
           ? {
               error_code: diagnostic.error_code,
@@ -416,20 +422,45 @@ export class JobProgressSseService implements OnDestroy {
               message: diagnostic.message,
             }
           : null;
-        this.progress.update((p) => ({
-          ...p,
-          processed: p.successful + p.failed + 1,
-          failed: p.failed + 1,
-          currentRow: null,
-          error: error ?? p.error,
-          rowFailures: diagnostic
-            ? [...p.rowFailures.slice(0, 19), diagnostic]
-            : p.rowFailures,
-          omittedFailureCount:
-            typeof omittedFailureCount === 'number'
-              ? Math.max(p.omittedFailureCount, omittedFailureCount)
-              : p.omittedFailureCount + (p.rowFailures.length >= 20 ? 1 : 0),
-        }));
+        this.progress.update((p) => {
+          const alreadyRetained =
+            diagnostic !== undefined &&
+            p.rowFailures.some(
+              (failure) => failure.row_number === diagnostic.row_number
+            );
+          const canRetain =
+            diagnostic !== undefined &&
+            !alreadyRetained &&
+            p.rowFailures.length < 20;
+          const rowFailures = canRetain
+            ? [...p.rowFailures, diagnostic]
+            : p.rowFailures;
+          let nextOmitted = Math.max(
+            p.omittedFailureCount,
+            omittedFailureCount ?? p.omittedFailureCount
+          );
+          const cumulativeFailed =
+            (retainedFailureCount ?? rowFailures.length) +
+            (omittedFailureCount ?? nextOmitted);
+          const legacyFailed =
+            retainedFailureCount === undefined ? p.failed + 1 : p.failed;
+          const failed = Math.max(
+            cumulativeFailed,
+            legacyFailed,
+            rowFailures.length + nextOmitted
+          );
+          nextOmitted = Math.max(nextOmitted, failed - rowFailures.length);
+
+          return {
+            ...p,
+            processed: p.successful + failed,
+            failed,
+            currentRow: null,
+            error: error ?? p.error,
+            rowFailures,
+            omittedFailureCount: nextOmitted,
+          };
+        });
         return true;
       }
 

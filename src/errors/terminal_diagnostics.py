@@ -1,7 +1,8 @@
 """Safe terminal diagnostics for failed batch rows."""
 
+import re
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -19,33 +20,24 @@ _SAFE_MESSAGES: dict[ErrorCategory, str] = {
     ErrorCategory.SYSTEM: "The row could not be processed because of a system error.",
     ErrorCategory.AUTH: "The carrier connection could not authenticate.",
 }
-_SAFE_TERMINAL_STATUS_MESSAGES = frozenset(
-    {
-        "Batch completed.",
+_TERMINAL_COMPLETION_MAPPINGS: dict[str, tuple[str, bool, bool, str]] = {
+    "completed": ("complete", False, False, "Batch completed."),
+    "completed_with_warnings": (
+        "complete",
+        True,
+        False,
         "Batch completed with warnings.",
-        "Batch failed.",
-        "Batch cancelled. You can enter a new command.",
-    }
-)
-_COMPLETION_METADATA_KEYS = frozenset({"type", "jobId", "action", "completion"})
-_COMPLETION_KEYS = frozenset(
-    {
-        "status",
-        "outcome",
-        "hasWarnings",
-        "cancelled",
-        "statusMessage",
-        "jobName",
-        "command",
-        "successful",
+    ),
+    "failed": ("failed", False, False, "Batch failed."),
+    "cancelled": (
         "failed",
-        "totalCostCents",
-        "dutiesTaxesCents",
-        "internationalCount",
-        "error",
-        "row_failures",
-        "omitted_failure_count",
-    }
+        False,
+        True,
+        "Batch cancelled. You can enter a new command.",
+    ),
+}
+_CANONICAL_JOB_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 
 
@@ -88,6 +80,84 @@ class SafeTerminalRowDiagnostic(SafeTerminalDiagnostic):
     row_number: int = Field(ge=1, le=MAX_TERMINAL_ROW_NUMBER)
 
 
+class CompletionArtifactPayload(BaseModel):
+    """Closed terminal completion payload accepted at persistence ingress."""
+
+    status: Literal[
+        "completed",
+        "completed_with_warnings",
+        "failed",
+        "cancelled",
+    ]
+    outcome: Literal["complete", "failed"]
+    has_warnings: bool = Field(alias="hasWarnings")
+    cancelled: bool
+    status_message: str = Field(alias="statusMessage")
+    job_name: Literal["Shipping batch"] | None = Field(
+        default=None,
+        alias="jobName",
+    )
+    successful: int = Field(ge=0, le=MAX_TERMINAL_COUNT)
+    failed: int = Field(ge=0, le=MAX_TERMINAL_COUNT)
+    total_cost_cents: int = Field(
+        ge=0,
+        le=MAX_TERMINAL_COUNT,
+        alias="totalCostCents",
+    )
+    duties_taxes_cents: int = Field(
+        default=0,
+        ge=0,
+        le=MAX_TERMINAL_COUNT,
+        alias="dutiesTaxesCents",
+    )
+    international_count: int = Field(
+        default=0,
+        ge=0,
+        le=MAX_TERMINAL_COUNT,
+        alias="internationalCount",
+    )
+    error: SafeTerminalDiagnostic | None = None
+    row_failures: list[SafeTerminalRowDiagnostic] = Field(
+        default_factory=list,
+        max_length=MAX_TERMINAL_ROW_DIAGNOSTICS,
+    )
+    omitted_failure_count: int = Field(ge=0, le=MAX_TERMINAL_COUNT)
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    @model_validator(mode="after")
+    def _matches_terminal_state_and_counts(self) -> "CompletionArtifactPayload":
+        expected = _TERMINAL_COMPLETION_MAPPINGS[self.status]
+        if (
+            self.outcome,
+            self.has_warnings,
+            self.cancelled,
+            self.status_message,
+        ) != expected:
+            raise ValueError("Completion terminal fields are not canonical.")
+        if self.failed != len(self.row_failures) + self.omitted_failure_count:
+            raise ValueError("Completion failure counts are inconsistent.")
+        if self.international_count > self.successful:
+            raise ValueError("Completion international count is inconsistent.")
+        return self
+
+
+class CompletionArtifactMetadata(BaseModel):
+    """Closed metadata envelope for a completion artifact."""
+
+    artifact_type: Literal["completion"] = Field(alias="type")
+    job_id: str = Field(
+        alias="jobId",
+        min_length=36,
+        max_length=36,
+        pattern=_CANONICAL_JOB_ID.pattern,
+    )
+    action: Literal["complete"]
+    completion: CompletionArtifactPayload
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
 def project_terminal_diagnostic(error_code: Any) -> SafeTerminalDiagnostic:
     """Project any internal failure code to the canonical safe contract."""
     canonical_code = canonical_terminal_error_code(error_code)
@@ -104,7 +174,12 @@ def project_terminal_row_diagnostic(
     error_code: Any,
 ) -> SafeTerminalRowDiagnostic | None:
     """Project a row failure or omit it when its row index is invalid."""
-    if isinstance(row_number, bool) or not isinstance(row_number, int):
+    if (
+        isinstance(row_number, bool)
+        or not isinstance(row_number, int)
+        or row_number < 1
+        or row_number > MAX_TERMINAL_ROW_NUMBER
+    ):
         return None
     diagnostic = project_terminal_diagnostic(error_code)
     return SafeTerminalRowDiagnostic(row_number=row_number, **diagnostic.model_dump())
@@ -126,57 +201,24 @@ def project_terminal_row_diagnostics(
 
 
 def validate_completion_artifact_diagnostics(metadata: dict[str, Any]) -> None:
-    """Validate the safe diagnostic subset of a frontend completion artifact."""
+    """Validate the complete closed frontend completion-artifact contract."""
     if metadata.get("type") != "completion":
         return
-    if set(metadata) - _COMPLETION_METADATA_KEYS:
-        raise ValueError("Completion artifact diagnostics are invalid.")
-    completion = metadata.get("completion")
-    if not isinstance(completion, dict):
-        raise ValueError("Completion artifact diagnostics are invalid.")
-    if set(completion) - _COMPLETION_KEYS:
-        raise ValueError("Completion artifact diagnostics are invalid.")
-    if "rowFailures" in completion or "omittedFailureCount" in completion:
-        raise ValueError("Completion artifact diagnostics are invalid.")
-
-    raw_failures = completion.get("row_failures", [])
-    if (
-        not isinstance(raw_failures, list)
-        or len(raw_failures) > MAX_TERMINAL_ROW_DIAGNOSTICS
-    ):
-        raise ValueError("Completion artifact diagnostics are invalid.")
     try:
-        for raw_failure in raw_failures:
-            SafeTerminalRowDiagnostic.model_validate(raw_failure)
+        CompletionArtifactMetadata.model_validate(metadata)
     except ValidationError:
         raise ValueError("Completion artifact diagnostics are invalid.") from None
 
-    omitted_failure_count = completion.get("omitted_failure_count", 0)
-    failed = completion.get("failed", 0)
-    if (
-        isinstance(omitted_failure_count, bool)
-        or not isinstance(omitted_failure_count, int)
-        or omitted_failure_count < 0
-        or omitted_failure_count > MAX_TERMINAL_COUNT
-        or isinstance(failed, bool)
-        or not isinstance(failed, int)
-        or failed < 0
-        or failed > MAX_TERMINAL_COUNT
-        or failed != len(raw_failures) + omitted_failure_count
-    ):
-        raise ValueError("Completion artifact diagnostics are invalid.")
 
-    if "error" in completion and completion["error"] is not None:
-        try:
-            SafeTerminalDiagnostic.model_validate(completion["error"])
-        except ValidationError:
-            raise ValueError("Completion artifact diagnostics are invalid.") from None
-    status_message = completion.get("statusMessage")
+def _bounded_legacy_count(value: Any) -> int | None:
     if (
-        status_message is not None
-        and status_message not in _SAFE_TERMINAL_STATUS_MESSAGES
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+        or value > MAX_TERMINAL_COUNT
     ):
-        raise ValueError("Completion artifact diagnostics are invalid.")
+        return None
+    return value
 
 
 def sanitize_completion_artifact_metadata(metadata: Any) -> Any:
@@ -185,32 +227,85 @@ def sanitize_completion_artifact_metadata(metadata: Any) -> Any:
         return metadata
     raw_completion = metadata.get("completion")
     if not isinstance(raw_completion, dict):
-        return {"type": "completion", "completion": {}}
+        raw_completion = {}
 
-    completion: dict[str, Any] = {}
-    for key in (
-        "status",
-        "outcome",
-        "hasWarnings",
-        "cancelled",
-        "successful",
-        "failed",
-        "totalCostCents",
-        "dutiesTaxesCents",
-        "internationalCount",
-    ):
-        value = raw_completion.get(key)
-        if isinstance(value, bool) or isinstance(value, (int, str)):
-            completion[key] = value
-    for key in ("jobName", "command"):
-        value = raw_completion.get(key)
-        if isinstance(value, str) and len(value) <= 255:
-            completion[key] = value
-    status_message = raw_completion.get("statusMessage")
-    if status_message in _SAFE_TERMINAL_STATUS_MESSAGES:
-        completion["statusMessage"] = status_message
+    try:
+        parsed = CompletionArtifactMetadata.model_validate(metadata)
+    except ValidationError:
+        parsed = None
+    if parsed is not None:
+        return parsed.model_dump(mode="json", by_alias=True, exclude_none=True)
 
     raw_error = raw_completion.get("error")
+    raw_failures = raw_completion.get("row_failures")
+    if raw_failures is None:
+        raw_failures = raw_completion.get("rowFailures", [])
+    failure_inputs: list[tuple[Any, Any]] = []
+    if isinstance(raw_failures, list):
+        for raw_failure in raw_failures:
+            if isinstance(raw_failure, dict):
+                failure_inputs.append(
+                    (
+                        raw_failure.get(
+                            "row_number",
+                            raw_failure.get("rowNumber"),
+                        ),
+                        raw_failure.get(
+                            "error_code",
+                            raw_failure.get("errorCode"),
+                        ),
+                    )
+                )
+            else:
+                failure_inputs.append((None, None))
+    diagnostics, projected_omitted = project_terminal_row_diagnostics(failure_inputs)
+    explicit_omitted = (
+        _bounded_legacy_count(raw_completion.get("omitted_failure_count")) or 0
+    )
+    observed_failure_count = min(
+        MAX_TERMINAL_COUNT,
+        len(diagnostics) + projected_omitted + explicit_omitted,
+    )
+    failed_count = max(
+        _bounded_legacy_count(raw_completion.get("failed")) or 0,
+        observed_failure_count,
+    )
+    omitted_failure_count = failed_count - len(diagnostics)
+    successful = _bounded_legacy_count(raw_completion.get("successful")) or 0
+    total_cost_cents = _bounded_legacy_count(raw_completion.get("totalCostCents")) or 0
+    duties_taxes_cents = (
+        _bounded_legacy_count(raw_completion.get("dutiesTaxesCents")) or 0
+    )
+    international_count = min(
+        successful,
+        _bounded_legacy_count(raw_completion.get("internationalCount")) or 0,
+    )
+
+    status = raw_completion.get("status")
+    if status not in _TERMINAL_COMPLETION_MAPPINGS:
+        status = "failed" if failed_count > 0 or raw_error is not None else "completed"
+    if status == "completed" and failed_count > 0:
+        status = "failed"
+    outcome, has_warnings, cancelled, status_message = _TERMINAL_COMPLETION_MAPPINGS[
+        status
+    ]
+    completion: dict[str, Any] = {
+        "status": status,
+        "outcome": outcome,
+        "hasWarnings": has_warnings,
+        "cancelled": cancelled,
+        "statusMessage": status_message,
+        "jobName": "Shipping batch",
+        "successful": successful,
+        "failed": failed_count,
+        "totalCostCents": total_cost_cents,
+        "dutiesTaxesCents": duties_taxes_cents,
+        "internationalCount": international_count,
+        "row_failures": [
+            diagnostic.model_dump(mode="json") for diagnostic in diagnostics
+        ],
+        "omitted_failure_count": omitted_failure_count,
+    }
     if raw_error is not None:
         raw_code = raw_error.get("error_code") if isinstance(raw_error, dict) else None
         if raw_code is None and isinstance(raw_error, dict):
@@ -219,40 +314,12 @@ def sanitize_completion_artifact_metadata(metadata: Any) -> Any:
             mode="json"
         )
 
-    raw_failures = raw_completion.get("row_failures")
-    if raw_failures is None:
-        raw_failures = raw_completion.get("rowFailures", [])
-    diagnostics: list[SafeTerminalRowDiagnostic] = []
-    if isinstance(raw_failures, list):
-        for raw_failure in raw_failures:
-            if not isinstance(raw_failure, dict):
-                continue
-            try:
-                diagnostic = SafeTerminalRowDiagnostic.model_validate(raw_failure)
-            except ValidationError:
-                diagnostic = project_terminal_row_diagnostic(
-                    raw_failure.get("row_number", raw_failure.get("rowNumber")),
-                    raw_failure.get("error_code", raw_failure.get("errorCode")),
-                )
-            if (
-                diagnostic is not None
-                and len(diagnostics) < MAX_TERMINAL_ROW_DIAGNOSTICS
-            ):
-                diagnostics.append(diagnostic)
-    if diagnostics:
-        completion["row_failures"] = [d.model_dump(mode="json") for d in diagnostics]
-
-    failed = raw_completion.get("failed")
-    failed_count = (
-        failed
-        if isinstance(failed, int) and not isinstance(failed, bool) and failed >= 0
-        else len(diagnostics)
-    )
-    completion["omitted_failure_count"] = max(0, failed_count - len(diagnostics))
-
-    result: dict[str, Any] = {"type": "completion", "completion": completion}
-    if isinstance(metadata.get("jobId"), str) and len(metadata["jobId"]) <= 128:
+    result: dict[str, Any] = {
+        "type": "completion",
+        "action": "complete",
+        "completion": completion,
+    }
+    job_id = metadata.get("jobId")
+    if isinstance(job_id, str) and _CANONICAL_JOB_ID.fullmatch(job_id):
         result["jobId"] = metadata["jobId"]
-    if metadata.get("action") == "complete":
-        result["action"] = "complete"
     return result

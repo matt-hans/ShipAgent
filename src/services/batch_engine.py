@@ -62,6 +62,13 @@ def _dollars_to_cents(amount: str) -> int:
     return int(Decimal(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) * 100)
 
 
+def _bounded_write_back_count(value: Any, upper_bound: int) -> int:
+    """Project an untrusted gateway count to the current bounded batch size."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, min(value, upper_bound))
+
+
 # Default labels output directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_LABELS_DIR = PROJECT_ROOT / "labels"
@@ -854,10 +861,23 @@ class BatchEngine:
                             successful_write_back_updates,
                         )
 
-                    # Normalize gateway result to include a status key
-                    failures = gw_result.get("failure_count", 0)
-                    gw_result["status"] = "partial" if failures > 0 else "success"
-                    write_back_result = gw_result
+                    update_count = len(successful_write_back_updates)
+                    failures = _bounded_write_back_count(
+                        gw_result.get("failure_count"),
+                        update_count,
+                    )
+                    successes = _bounded_write_back_count(
+                        gw_result.get("success_count"),
+                        update_count - failures,
+                    )
+                    write_back_result = {
+                        "status": "partial" if failures > 0 else "success",
+                        "action": "write_back",
+                        "success_count": successes,
+                        "failure_count": failures,
+                    }
+                    if failures > 0:
+                        write_back_result["error_code"] = "E-4001"
 
                     # Mark durable queue tasks as completed
                     if failures == 0:
@@ -877,24 +897,17 @@ class BatchEngine:
                         if ok_rows:
                             mark_rows_completed(self._db, job_id, ok_rows)
                     logger.info(
-                        (
-                            "Batch write-back finished: job_id=%s success=%s "
-                            "failures=%s status=%s source=%s"
-                        ),
-                        job_id,
-                        write_back_result.get("success_count"),
-                        write_back_result.get("failure_count"),
+                        "batch_write_back_finished action=write_back "
+                        "success_count=%d failure_count=%d status=%s",
+                        successes,
+                        failures,
                         write_back_result["status"],
-                        source_type,
                     )
                     if failures > 0:
                         logger.warning(
-                            (
-                                "Batch write-back had failures: "
-                                "job_id=%s success=%s failures=%s"
-                            ),
-                            job_id,
-                            write_back_result.get("success_count"),
+                            "batch_write_back_partial action=write_back "
+                            "error_code=E-4001 success_count=%d failure_count=%d",
+                            successes,
                             failures,
                         )
                 else:
@@ -902,18 +915,19 @@ class BatchEngine:
                         "status": "skipped",
                         "message": "No active source connected for write-back.",
                     }
-            except Exception as wb_err:
+            except Exception:
+                failure_count = len(successful_write_back_updates)
                 write_back_result = {
                     "status": "error",
-                    "message": str(wb_err),
+                    "action": "write_back",
+                    "error_code": "E-4001",
+                    "success_count": 0,
+                    "failure_count": failure_count,
                 }
                 logger.warning(
-                    (
-                        "Batch write-back raised after shipment processing: "
-                        "job_id=%s error=%s (recovery: replay_write_back_from_job)"
-                    ),
-                    job_id,
-                    wb_err,
+                    "batch_write_back_failed action=write_back "
+                    "error_code=E-4001 failure_count=%d",
+                    failure_count,
                 )
 
         return {
@@ -1299,8 +1313,7 @@ class BatchEngine:
 
         Tier 2 (no tracking info): Cannot determine if UPS created shipment.
             Mark needs_review immediately (never auto-retry — prevents
-            duplicate shipments). Include idempotency_key in report for
-            operator to check UPS Quantum View.
+            duplicate shipments).
 
         Tier 3 (UPS lookup fails): Network/API error during track_package.
             Increment recovery_attempt_count. After MAX_RECOVERY_ATTEMPTS
@@ -1320,6 +1333,33 @@ class BatchEngine:
         needs_review = 0
         unresolved = 0
         details: list[dict[str, Any]] = []
+
+        def _safe_row_error(row: Any, error_code: str) -> None:
+            diagnostic = project_terminal_diagnostic(error_code)
+            row.error_code = diagnostic.error_code
+            row.error_message = diagnostic.message
+
+        def _detail(
+            row: Any,
+            action: str,
+            *,
+            error_code: str | None = None,
+            attempt_count: int | None = None,
+        ) -> dict[str, Any]:
+            detail: dict[str, Any] = {
+                "row_number": row.row_number,
+                "action": action,
+            }
+            if error_code is not None:
+                detail["error_code"] = project_terminal_diagnostic(
+                    error_code
+                ).error_code
+            if attempt_count is not None:
+                detail["attempt_count"] = max(
+                    0,
+                    min(attempt_count, MAX_RECOVERY_ATTEMPTS),
+                )
+            return detail
 
         for row in in_flight:
             if row.ups_tracking_number:
@@ -1347,112 +1387,84 @@ class BatchEngine:
 
                         if missing_artifacts:
                             row.status = "needs_review"
-                            row.error_message = (
-                                f"Shipment verified at UPS ({returned_number}) but "
-                                f"missing artifacts: {', '.join(missing_artifacts)}"
-                            )
+                            _safe_row_error(row, "E-4001")
                             self._db.commit()
                             needs_review += 1
                             details.append(
-                                {
-                                    "row_number": row.row_number,
-                                    "action": "needs_review",
-                                    "reason": f"UPS confirmed but missing: {', '.join(missing_artifacts)}",
-                                    "tracking_number": returned_number,
-                                    "idempotency_key": row.idempotency_key,
-                                }
+                                _detail(
+                                    row,
+                                    "needs_review",
+                                    error_code="E-4001",
+                                )
                             )
                         else:
                             # All artifacts present — safe to complete
                             row.tracking_number = returned_number
                             row.status = "completed"
+                            row.error_code = None
+                            row.error_message = None
                             row.processed_at = datetime.now(UTC).isoformat()
                             self._db.commit()
                             recovered += 1
-                            details.append(
-                                {
-                                    "row_number": row.row_number,
-                                    "action": "recovered",
-                                    "tracking_number": returned_number,
-                                }
-                            )
+                            details.append(_detail(row, "recovered"))
                     else:
                         # UPS doesn't recognize this tracking number
                         row.status = "needs_review"
-                        row.error_message = (
-                            f"UPS returned empty tracking for stored number "
-                            f"'{row.ups_tracking_number}'"
-                        )
+                        _safe_row_error(row, "E-3001")
                         self._db.commit()
                         needs_review += 1
                         details.append(
-                            {
-                                "row_number": row.row_number,
-                                "action": "needs_review",
-                                "reason": "UPS returned invalid for stored tracking number",
-                                "ups_tracking_number": row.ups_tracking_number,
-                                "idempotency_key": row.idempotency_key,
-                            }
+                            _detail(
+                                row,
+                                "needs_review",
+                                error_code="E-3001",
+                            )
                         )
-                except Exception as e:
+                except Exception:
                     # Tier 3: Lookup failed — escalation policy
                     row.recovery_attempt_count += 1
+                    _safe_row_error(row, "E-3001")
                     if row.recovery_attempt_count >= MAX_RECOVERY_ATTEMPTS:
                         row.status = "needs_review"
-                        row.error_message = (
-                            f"UPS lookup failed {row.recovery_attempt_count} times "
-                            f"(last error: {e}) — escalated for manual resolution"
-                        )
                         self._db.commit()
                         needs_review += 1
                         details.append(
-                            {
-                                "row_number": row.row_number,
-                                "action": "needs_review",
-                                "reason": (
-                                    f"Escalated after {row.recovery_attempt_count} "
-                                    f"failed lookups"
-                                ),
-                                "idempotency_key": row.idempotency_key,
-                            }
+                            _detail(
+                                row,
+                                "needs_review",
+                                error_code="E-3001",
+                                attempt_count=row.recovery_attempt_count,
+                            )
                         )
                     else:
                         # Below limit — leave in_flight for next startup pass
                         self._db.commit()
                         unresolved += 1
                         details.append(
-                            {
-                                "row_number": row.row_number,
-                                "action": "unresolved",
-                                "reason": (
-                                    f"UPS lookup failed "
-                                    f"({row.recovery_attempt_count}/{MAX_RECOVERY_ATTEMPTS}): {e}"
-                                ),
-                                "idempotency_key": row.idempotency_key,
-                            }
+                            _detail(
+                                row,
+                                "unresolved",
+                                error_code="E-3001",
+                                attempt_count=row.recovery_attempt_count,
+                            )
                         )
             else:
                 # Tier 2: No tracking info — ambiguous, mark for operator
                 row.status = "needs_review"
-                row.error_message = (
-                    "No UPS tracking number stored — cannot verify programmatically. "
-                    "Check UPS Quantum View using idempotency key."
-                )
+                _safe_row_error(row, "E-4001")
                 self._db.commit()
                 needs_review += 1
                 details.append(
-                    {
-                        "row_number": row.row_number,
-                        "action": "needs_review",
-                        "reason": "No ups_tracking_number — cannot verify programmatically",
-                        "idempotency_key": row.idempotency_key,
-                    }
+                    _detail(
+                        row,
+                        "needs_review",
+                        error_code="E-4001",
+                    )
                 )
 
         logger.info(
-            "In-flight recovery complete: job_id=%s recovered=%d "
+            "inflight_recovery_complete action=recovery recovered=%d "
             "needs_review=%d unresolved=%d",
-            job_id,
             recovered,
             needs_review,
             unresolved,
