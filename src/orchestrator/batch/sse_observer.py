@@ -8,6 +8,12 @@ import asyncio
 import logging
 from typing import Any, Literal
 
+from src.errors.terminal_diagnostics import (
+    MAX_TERMINAL_ROW_DIAGNOSTICS,
+    project_terminal_diagnostic,
+    project_terminal_row_diagnostic,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +30,7 @@ class SSEProgressObserver:
     def __init__(self) -> None:
         """Initialize observer with empty subscription map."""
         self._queues: dict[str, asyncio.Queue[dict[str, Any]]] = {}
+        self._row_failure_counts: dict[str, int] = {}
 
     def subscribe(self, job_id: str) -> asyncio.Queue[dict[str, Any]]:
         """Create a queue for SSE events for a specific job.
@@ -84,6 +91,7 @@ class SSEProgressObserver:
             job_id: Unique identifier for the batch job.
             total_rows: Total number of rows in the batch.
         """
+        self._row_failure_counts[job_id] = 0
         await self._emit(
             job_id,
             "batch_started",
@@ -144,14 +152,33 @@ class SSEProgressObserver:
             error_code: Error code from the error registry.
             error_message: Human-readable error description.
         """
+        failure_count = self._row_failure_counts.get(job_id, 0) + 1
+        self._row_failure_counts[job_id] = failure_count
+        if failure_count > MAX_TERMINAL_ROW_DIAGNOSTICS:
+            await self._emit(
+                job_id,
+                "row_failed",
+                {
+                    "job_id": job_id,
+                    "omitted_failure_count": failure_count
+                    - MAX_TERMINAL_ROW_DIAGNOSTICS,
+                },
+            )
+            return
+        diagnostic = project_terminal_row_diagnostic(row_number, error_code)
+        if diagnostic is None:
+            await self._emit(
+                job_id,
+                "row_failed",
+                {"job_id": job_id, "omitted_failure_count": 1},
+            )
+            return
         await self._emit(
             job_id,
             "row_failed",
             {
                 "job_id": job_id,
-                "row_number": row_number,
-                "error_code": error_code,
-                "error_message": error_message,
+                "diagnostic": diagnostic.model_dump(mode="json"),
             },
         )
 
@@ -211,14 +238,14 @@ class SSEProgressObserver:
             international_row_count: Number of international rows.
             status: Canonical failed or cancelled terminal job status.
         """
+        diagnostic = project_terminal_diagnostic(error_code)
         await self._emit(
             job_id,
             "batch_failed",
             {
                 "job_id": job_id,
                 "status": status,
-                "error_code": error_code,
-                "error_message": error_message,
+                "diagnostic": diagnostic.model_dump(mode="json"),
                 "processed": processed,
                 "duties_taxes_cents": duties_taxes_cents,
                 "international_row_count": international_row_count,

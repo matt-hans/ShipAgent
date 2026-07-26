@@ -21,7 +21,10 @@ import {
   Injector,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { FormatCurrencyPipe, DownloadIconComponent } from '@shipagent/shared-ui';
+import {
+  FormatCurrencyPipe,
+  DownloadIconComponent,
+} from '@shipagent/shared-ui';
 import type { JobTerminalState } from '@shipagent/shared-types';
 import { JobProgressSseService } from '../../services/job-progress-sse.service';
 
@@ -127,13 +130,13 @@ import { JobProgressSseService } from '../../services/job-progress-sse.service';
             {{ progressService.progress().rowFailures.length }} row{{ progressService.progress().rowFailures.length !== 1 ? 's' : '' }} failed:
           </p>
           <div class="max-h-[120px] overflow-y-auto space-y-1">
-            @for (failure of progressService.progress().rowFailures; track failure.rowNumber) {
+            @for (failure of progressService.progress().rowFailures; track failure.row_number) {
               <div class="p-2 rounded bg-error/10 border border-error/20 flex items-start gap-2">
                 <span class="text-[10px] font-mono text-error/70 flex-shrink-0 mt-px">
-                  Row {{ failure.rowNumber }}
+                  Row {{ failure.row_number }}
                 </span>
                 <span class="text-[10px] font-mono text-error/90 break-all">
-                  {{ failure.errorMessage }}
+                  {{ failure.message }}
                 </span>
               </div>
             }
@@ -141,11 +144,17 @@ import { JobProgressSseService } from '../../services/job-progress-sse.service';
         </div>
       }
 
+      @if (progressService.progress().omittedFailureCount > 0) {
+        <p class="text-[10px] font-mono text-error/70">
+          +{{ progressService.progress().omittedFailureCount }} additional row failure{{ progressService.progress().omittedFailureCount === 1 ? '' : 's' }} not shown
+        </p>
+      }
+
       <!-- Batch-level error (when no per-row details) -->
       @if (progressService.isFailed() && progressService.progress().error && progressService.progress().rowFailures.length === 0) {
         <div class="p-3 rounded-lg bg-error/10 border border-error/30">
           <p class="text-xs font-mono text-error">
-            {{ progressService.progress().error!.code }}: {{ progressService.progress().error!.message }}
+            {{ progressService.progress().error!.error_code }}: {{ progressService.progress().error!.message }}
           </p>
         </div>
       }
@@ -206,20 +215,26 @@ export class ProgressDisplayComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   private setupCompletionEffects(): void {
-    effect(() => {
-      const terminalState = this.progressService.terminalState();
-      if (terminalState?.outcome === 'complete' && !this.completeFired) {
-        this.completeFired = true;
-        this.complete.emit(terminalState);
-      }
-    }, { injector: this.injector });
+    effect(
+      () => {
+        const terminalState = this.progressService.terminalState();
+        if (terminalState?.outcome === 'complete' && !this.completeFired) {
+          this.completeFired = true;
+          this.complete.emit(terminalState);
+        }
+      },
+      { injector: this.injector }
+    );
 
-    effect(() => {
-      const terminalState = this.progressService.terminalState();
-      if (terminalState?.outcome === 'failed' && !this.failFired) {
-        this.failFired = true;
-        this.failed.emit(terminalState);
-      }
-    }, { injector: this.injector });
+    effect(
+      () => {
+        const terminalState = this.progressService.terminalState();
+        if (terminalState?.outcome === 'failed' && !this.failFired) {
+          this.failFired = true;
+          this.failed.emit(terminalState);
+        }
+      },
+      { injector: this.injector }
+    );
   }
 }

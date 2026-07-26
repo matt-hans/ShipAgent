@@ -93,6 +93,18 @@ export type RowStatus =
   | 'failed'
   | 'skipped';
 
+/** Backend-owned safe terminal diagnostic projected before REST/SSE/history. */
+export interface SafeTerminalDiagnostic {
+  error_code: string;
+  error_category: 'data' | 'validation' | 'ups_api' | 'system' | 'auth';
+  message: string;
+}
+
+/** The only row-level detail allowed in terminal completion metadata. */
+export interface SafeTerminalRowDiagnostic extends SafeTerminalDiagnostic {
+  row_number: number;
+}
+
 /** Monetary entry in a charge breakdown (e.g., transportation, duties). */
 export interface ChargeBreakdownEntry {
   monetaryValue: string;
@@ -309,6 +321,8 @@ export interface JobProgress {
   total_cost_cents: number | null;
   total_duties_taxes_cents?: number | null;
   international_row_count?: number;
+  row_failures?: SafeTerminalRowDiagnostic[];
+  omitted_failure_count?: number;
 }
 
 /** SSE event when batch starts. */
@@ -345,9 +359,8 @@ export interface RowFailedEvent {
   event: 'row_failed';
   data: {
     job_id: string;
-    row_number: number;
-    error_code: string;
-    error_message: string;
+    diagnostic?: SafeTerminalRowDiagnostic;
+    omitted_failure_count?: number;
   };
 }
 
@@ -374,8 +387,7 @@ export interface BatchFailedEvent {
   data: {
     job_id: string;
     status?: Extract<JobTerminalStatus, 'failed' | 'cancelled'>;
-    error_code: string;
-    error_message: string;
+    diagnostic: SafeTerminalDiagnostic;
     processed: number;
     duties_taxes_cents?: number;
     international_row_count?: number;

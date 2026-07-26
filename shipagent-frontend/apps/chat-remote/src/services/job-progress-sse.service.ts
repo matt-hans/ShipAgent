@@ -21,14 +21,9 @@ import {
   getJobTerminalState,
   resolveJobTerminalStatus,
   type JobStatus,
+  type SafeTerminalDiagnostic,
+  type SafeTerminalRowDiagnostic,
 } from '@shipagent/shared-types';
-
-/** Per-row failure detail. */
-export interface RowFailure {
-  rowNumber: number;
-  errorCode: string;
-  errorMessage: string;
-}
 
 /** Snapshot of batch execution progress. */
 export interface JobProgressSnapshot {
@@ -40,8 +35,9 @@ export interface JobProgressSnapshot {
   dutiesTaxesCents: number | undefined;
   internationalCount: number | undefined;
   status: JobStatus;
-  error: { code: string; message: string } | null;
-  rowFailures: RowFailure[];
+  error: SafeTerminalDiagnostic | null;
+  rowFailures: SafeTerminalRowDiagnostic[];
+  omittedFailureCount: number;
   currentRow: number | null;
   lastTrackingNumber: string | null;
 }
@@ -57,6 +53,7 @@ const INITIAL_PROGRESS: JobProgressSnapshot = {
   status: 'pending',
   error: null,
   rowFailures: [],
+  omittedFailureCount: 0,
   currentRow: null,
   lastTrackingNumber: null,
 };
@@ -321,6 +318,9 @@ export class JobProgressSseService implements OnDestroy {
             : data.total_duties_taxes_cents ?? undefined,
         internationalCount:
           data.international_row_count ?? current.internationalCount,
+        rowFailures: data.row_failures ?? current.rowFailures,
+        omittedFailureCount:
+          data.omitted_failure_count ?? current.omittedFailureCount,
         status: data.status,
       }));
       this.progressRevision++;
@@ -379,6 +379,7 @@ export class JobProgressSseService implements OnDestroy {
           totalCostCents: 0,
           error: null,
           rowFailures: [],
+          omittedFailureCount: 0,
         }));
         return true;
 
@@ -401,27 +402,36 @@ export class JobProgressSseService implements OnDestroy {
         }));
         return true;
 
-      case 'row_failed':
+      case 'row_failed': {
+        const diagnostic = eventData['diagnostic'] as
+          | SafeTerminalRowDiagnostic
+          | undefined;
+        const omittedFailureCount = eventData['omitted_failure_count'];
+        if (!diagnostic && typeof omittedFailureCount !== 'number')
+          return false;
+        const error: SafeTerminalDiagnostic | null = diagnostic
+          ? {
+              error_code: diagnostic.error_code,
+              error_category: diagnostic.error_category,
+              message: diagnostic.message,
+            }
+          : null;
         this.progress.update((p) => ({
           ...p,
           processed: p.successful + p.failed + 1,
           failed: p.failed + 1,
           currentRow: null,
-          error: {
-            code: (eventData['error_code'] as string) ?? 'E-0000',
-            message: (eventData['error_message'] as string) ?? 'Unknown error',
-          },
-          rowFailures: [
-            ...p.rowFailures,
-            {
-              rowNumber: (eventData['row_number'] as number) ?? 0,
-              errorCode: (eventData['error_code'] as string) ?? 'E-0000',
-              errorMessage:
-                (eventData['error_message'] as string) ?? 'Unknown error',
-            },
-          ],
+          error: error ?? p.error,
+          rowFailures: diagnostic
+            ? [...p.rowFailures.slice(0, 19), diagnostic]
+            : p.rowFailures,
+          omittedFailureCount:
+            typeof omittedFailureCount === 'number'
+              ? Math.max(p.omittedFailureCount, omittedFailureCount)
+              : p.omittedFailureCount + (p.rowFailures.length >= 20 ? 1 : 0),
         }));
         return true;
+      }
 
       case 'batch_completed':
         this.progress.update((p) => ({
@@ -452,12 +462,9 @@ export class JobProgressSseService implements OnDestroy {
           internationalCount:
             (eventData['international_row_count'] as number | undefined) ??
             p.internationalCount,
-          error: {
-            code: (eventData['error_code'] as string) ?? 'E-0000',
-            message:
-              (eventData['error_message'] as string) ??
-              'Batch execution failed',
-          },
+          error:
+            (eventData['diagnostic'] as SafeTerminalDiagnostic | undefined) ??
+            p.error,
           currentRow: null,
         }));
         return true;

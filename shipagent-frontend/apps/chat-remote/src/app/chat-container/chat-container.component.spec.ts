@@ -58,14 +58,20 @@ function failedProgress(): JobProgressSnapshot {
     dutiesTaxesCents: 315,
     internationalCount: 1,
     status: 'failed',
-    error: { code: 'BATCH_RECOVERED', message: 'Recovered terminal failure' },
+    error: {
+      error_code: 'E-4001',
+      error_category: 'system',
+      message: 'The row could not be processed because of a system error.',
+    },
     rowFailures: [
       {
-        rowNumber: 3,
-        errorCode: 'ROW_RECOVERED',
-        errorMessage: 'Recovered row diagnostic',
+        row_number: 3,
+        error_code: 'E-3003',
+        error_category: 'ups_api',
+        message: 'The carrier could not process this shipment.',
       },
     ],
+    omittedFailureCount: 0,
     currentRow: 4,
     lastTrackingNumber: '1ZRECOVERED',
   };
@@ -76,8 +82,9 @@ function cancelledProgress(): JobProgressSnapshot {
     ...failedProgress(),
     status: 'cancelled',
     error: {
-      code: 'CANCELLED_RECOVERED',
-      message: 'Cancellation recovered from job history',
+      error_code: 'E-4001',
+      error_category: 'system',
+      message: 'The row could not be processed because of a system error.',
     },
     currentRow: 2,
     lastTrackingNumber: '1ZBEFORECANCEL',
@@ -177,9 +184,8 @@ describe('ChatContainerComponent terminal artifact persistence', () => {
         cancelled: false,
         statusMessage: 'Batch failed.',
         error: progress.error,
-        rowFailures: progress.rowFailures,
-        currentRow: 4,
-        lastTrackingNumber: '1ZRECOVERED',
+        row_failures: progress.rowFailures,
+        omitted_failure_count: 0,
       },
     });
     expect(component.executingJobId()).toBeNull();
@@ -217,9 +223,8 @@ describe('ChatContainerComponent terminal artifact persistence', () => {
         cancelled: true,
         statusMessage: 'Batch cancelled. You can enter a new command.',
         error: progress.error,
-        rowFailures: progress.rowFailures,
-        currentRow: 2,
-        lastTrackingNumber: '1ZBEFORECANCEL',
+        row_failures: progress.rowFailures,
+        omitted_failure_count: 0,
       },
     });
     expect(component.executingJobId()).toBeNull();

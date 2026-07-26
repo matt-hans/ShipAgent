@@ -44,8 +44,9 @@ describe('CompletionArtifactComponent terminal rendering', () => {
         outcome: 'failed',
         statusMessage: 'Batch failed.',
         error: {
-          code: 'BATCH_RESTORED',
-          message: 'The recovered batch could not be completed.',
+          error_code: 'E-4001',
+          error_category: 'system',
+          message: 'The row could not be processed because of a system error.',
         },
       })
     );
@@ -63,7 +64,7 @@ describe('CompletionArtifactComponent terminal rendering', () => {
     ).toBe(true);
     expect(element.textContent).toContain('Batch failed.');
     expect(element.textContent).toContain(
-      'BATCH_RESTORED: The recovered batch could not be completed.'
+      'E-4001: The row could not be processed because of a system error.'
     );
     expect(element.textContent).not.toContain('View Labels');
   });
@@ -158,8 +159,9 @@ describe('CompletionArtifactComponent terminal rendering', () => {
         cancelled: true,
         statusMessage: 'Batch cancelled. You can enter a new command.',
         error: {
-          code: 'CANCELLED_RESTORED',
-          message: 'Execution stopped before the batch completed.',
+          error_code: 'E-4001',
+          error_category: 'system',
+          message: 'The row could not be processed because of a system error.',
         },
         successful: 2,
         failed: 0,
@@ -179,10 +181,42 @@ describe('CompletionArtifactComponent terminal rendering', () => {
       'Batch cancelled. You can enter a new command.'
     );
     expect(element.textContent).toContain(
-      'CANCELLED_RESTORED: Execution stopped before the batch completed.'
+      'E-4001: The row could not be processed because of a system error.'
     );
     expect(element.textContent).not.toContain('View Labels');
     expect(element.textContent).not.toContain('Schedule Pickup');
+  });
+
+  it('renders only safe bounded row diagnostics and the omitted summary', () => {
+    const fixture = TestBed.createComponent(CompletionArtifactComponent);
+    fixture.componentRef.setInput(
+      'message',
+      completionMessage({
+        status: 'completed_with_warnings',
+        outcome: 'complete',
+        hasWarnings: true,
+        successful: 1,
+        failed: 3,
+        totalCostCents: 1200,
+        row_failures: [
+          {
+            row_number: 2,
+            error_code: 'E-3003',
+            error_category: 'ups_api',
+            message: 'The carrier could not process this shipment.',
+          },
+        ],
+        omitted_failure_count: 2,
+      })
+    );
+
+    fixture.detectChanges();
+
+    const text = (fixture.nativeElement as HTMLElement).textContent ?? '';
+    expect(text).toContain('Row 2');
+    expect(text).toContain('The carrier could not process this shipment.');
+    expect(text).toContain('+2 additional row failures not shown');
+    expect(text).not.toContain('recipient=');
   });
 
   it('preserves row-count fallback and labels for a legacy partial artifact', () => {

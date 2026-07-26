@@ -23,6 +23,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
+from src.errors.terminal_diagnostics import project_terminal_diagnostic
 from src.services.errors import UPSServiceError
 from src.services.gateway_provider import get_data_gateway, get_external_sources_client
 from src.services.idempotency import generate_idempotency_key
@@ -59,6 +60,7 @@ def _dollars_to_cents(amount: str) -> int:
         Integer cents value.
     """
     return int(Decimal(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) * 100)
+
 
 # Default labels output directory
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -151,7 +153,9 @@ class BatchEngine:
             logger.warning("Invalid %s=%r, defaulting to %.1f", env_key, raw, default)
             return default
         if value <= 0:
-            logger.warning("Non-positive %s=%r, defaulting to %.1f", env_key, raw, default)
+            logger.warning(
+                "Non-positive %s=%r, defaulting to %.1f", env_key, raw, default
+            )
             return default
         return value
 
@@ -179,13 +183,17 @@ class BatchEngine:
         """
         started_at = datetime.now(UTC)
         # Use same concurrency setting as execute for consistent performance.
-        max_concurrent = getattr(self, "_batch_concurrency", None) or self._resolve_concurrency()
+        max_concurrent = (
+            getattr(self, "_batch_concurrency", None) or self._resolve_concurrency()
+        )
         semaphore = asyncio.Semaphore(max_concurrent)
         rate_timeout_s = self._resolve_timeout_seconds(
-            "BATCH_PREVIEW_RATE_TIMEOUT_SECONDS", 8.0,
+            "BATCH_PREVIEW_RATE_TIMEOUT_SECONDS",
+            8.0,
         )
         commodity_timeout_s = self._resolve_timeout_seconds(
-            "BATCH_COMMODITY_PREFETCH_TIMEOUT_SECONDS", 3.0,
+            "BATCH_COMMODITY_PREFETCH_TIMEOUT_SECONDS",
+            3.0,
         )
 
         preview_rows: list[dict[str, Any]] = []
@@ -193,7 +201,10 @@ class BatchEngine:
         row_durations: list[float] = []
 
         commodity_cache = await self._prefetch_commodities(
-            rows, shipper, service_code, commodity_timeout_s,
+            rows,
+            shipper,
+            service_code,
+            commodity_timeout_s,
         )
 
         async def _rate_row(row: Any) -> tuple[dict[str, Any], int, float]:
@@ -208,27 +219,47 @@ class BatchEngine:
                     order_data = self._parse_order_data(row)
 
                     # International validation (preview)
-                    dest_country = order_data.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
-                    eff_service = service_code or order_data.get("service_code", ServiceCode.GROUND.value)
+                    dest_country = order_data.get(
+                        "ship_to_country", DEFAULT_ORIGIN_COUNTRY
+                    )
+                    eff_service = service_code or order_data.get(
+                        "service_code", ServiceCode.GROUND.value
+                    )
                     origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
-                    eff_service = upgrade_to_international(eff_service, origin_country, dest_country)
-                    requirements = get_requirements(origin_country, dest_country, eff_service)
+                    eff_service = upgrade_to_international(
+                        eff_service, origin_country, dest_country
+                    )
+                    requirements = get_requirements(
+                        origin_country, dest_country, eff_service
+                    )
 
                     if requirements.not_shippable_reason:
                         raise ValueError(requirements.not_shippable_reason)
 
                     # Hydrate commodities from cache if needed
-                    if requirements.requires_commodities and not order_data.get("commodities"):
-                        oid = str(order_data.get("order_id") or order_data.get("order_number") or "")
+                    if requirements.requires_commodities and not order_data.get(
+                        "commodities"
+                    ):
+                        oid = str(
+                            order_data.get("order_id")
+                            or order_data.get("order_number")
+                            or ""
+                        )
                         if oid and oid in commodity_cache:
                             order_data["commodities"] = commodity_cache[oid]
 
                     # Enrich order_data with shipper defaults and field aliases
-                    enrich_order_data_for_international(order_data, shipper, requirements)
+                    enrich_order_data_for_international(
+                        order_data, shipper, requirements
+                    )
 
-                    if requirements.is_international or requirements.requires_invoice_line_total:
+                    if (
+                        requirements.is_international
+                        or requirements.requires_invoice_line_total
+                    ):
                         validation_errors = validate_international_readiness(
-                            order_data, requirements,
+                            order_data,
+                            requirements,
                         )
                         if validation_errors:
                             raise ValueError(
@@ -405,7 +436,9 @@ class BatchEngine:
         Returns:
             Dict with successful, failed, total_cost_cents counts
         """
-        max_concurrent = getattr(self, "_batch_concurrency", None) or self._resolve_concurrency()
+        max_concurrent = (
+            getattr(self, "_batch_concurrency", None) or self._resolve_concurrency()
+        )
         semaphore = asyncio.Semaphore(max_concurrent)
         # Serialize writes because this engine uses one shared SQLAlchemy Session
         # across concurrent tasks; it also protects SQLite from write contention.
@@ -413,7 +446,8 @@ class BatchEngine:
         db_lock = asyncio.Lock()
         counters_lock = asyncio.Lock()
         commodity_timeout_s = self._resolve_timeout_seconds(
-            "BATCH_COMMODITY_PREFETCH_TIMEOUT_SECONDS", 3.0,
+            "BATCH_COMMODITY_PREFETCH_TIMEOUT_SECONDS",
+            3.0,
         )
 
         successful = 0
@@ -424,7 +458,10 @@ class BatchEngine:
         pending_rows = [r for r in rows if r.status == "pending"]
 
         exec_commodity_cache = await self._prefetch_commodities(
-            pending_rows, shipper, service_code, commodity_timeout_s,
+            pending_rows,
+            shipper,
+            service_code,
+            commodity_timeout_s,
         )
 
         async def _process_row(row: Any) -> None:
@@ -449,27 +486,47 @@ class BatchEngine:
                     order_data = self._parse_order_data(row)
 
                     # International validation (execute)
-                    dest_country = order_data.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
-                    eff_service = service_code or order_data.get("service_code", ServiceCode.GROUND.value)
+                    dest_country = order_data.get(
+                        "ship_to_country", DEFAULT_ORIGIN_COUNTRY
+                    )
+                    eff_service = service_code or order_data.get(
+                        "service_code", ServiceCode.GROUND.value
+                    )
                     origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
-                    eff_service = upgrade_to_international(eff_service, origin_country, dest_country)
-                    requirements = get_requirements(origin_country, dest_country, eff_service)
+                    eff_service = upgrade_to_international(
+                        eff_service, origin_country, dest_country
+                    )
+                    requirements = get_requirements(
+                        origin_country, dest_country, eff_service
+                    )
 
                     if requirements.not_shippable_reason:
                         raise ValueError(requirements.not_shippable_reason)
 
                     # Hydrate commodities from cache if needed
-                    if requirements.requires_commodities and not order_data.get("commodities"):
-                        oid = str(order_data.get("order_id") or order_data.get("order_number") or "")
+                    if requirements.requires_commodities and not order_data.get(
+                        "commodities"
+                    ):
+                        oid = str(
+                            order_data.get("order_id")
+                            or order_data.get("order_number")
+                            or ""
+                        )
                         if oid and oid in exec_commodity_cache:
                             order_data["commodities"] = exec_commodity_cache[oid]
 
                     # Enrich order_data with shipper defaults and field aliases
-                    enrich_order_data_for_international(order_data, shipper, requirements)
+                    enrich_order_data_for_international(
+                        order_data, shipper, requirements
+                    )
 
-                    if requirements.is_international or requirements.requires_invoice_line_total:
+                    if (
+                        requirements.is_international
+                        or requirements.requires_invoice_line_total
+                    ):
                         validation_errors = validate_international_readiness(
-                            order_data, requirements,
+                            order_data,
+                            requirements,
                         )
                         if validation_errors:
                             raise ValueError(
@@ -482,9 +539,13 @@ class BatchEngine:
                     from src.services.ups_payload_builder import (
                         apply_compatibility_corrections,
                     )
-                    domestic_issues = apply_compatibility_corrections(order_data, eff_service)
+
+                    domestic_issues = apply_compatibility_corrections(
+                        order_data, eff_service
+                    )
                     domestic_errors = [
-                        i for i in domestic_issues
+                        i
+                        for i in domestic_issues
                         if i.severity == "error" and not i.auto_corrected
                     ]
                     if domestic_errors:
@@ -518,7 +579,9 @@ class BatchEngine:
 
                     # Generate idempotency key for exactly-once semantics
                     idem_key = generate_idempotency_key(
-                        job_id, row.row_number, row_checksum,
+                        job_id,
+                        row.row_number,
+                        row_checksum,
                     )
 
                     # PHASE 1: Mark in-flight BEFORE UPS call
@@ -551,33 +614,35 @@ class BatchEngine:
                         ups_call_succeeded = True
                     except UPSServiceError as e:
                         # Hard rejection — no shipment created. Safe to mark failed.
+                        diagnostic = project_terminal_diagnostic(e.code)
                         async with db_lock:
                             row.status = "failed"
-                            row.error_code = e.code
-                            row.error_message = str(e)
+                            row.error_code = diagnostic.error_code
+                            row.error_message = diagnostic.message
                             self._db.commit()
                         raise
-                    except MCPConnectionError as e:
+                    except MCPConnectionError:
                         # Could not reach MCP server. No side effect. Safe to fail.
+                        diagnostic = project_terminal_diagnostic("E-3001")
                         async with db_lock:
                             row.status = "failed"
-                            row.error_code = "E-3001"
-                            row.error_message = str(e)
+                            row.error_code = diagnostic.error_code
+                            row.error_message = diagnostic.message
                             self._db.commit()
                         raise
-                    except Exception as e:
+                    except Exception:
                         # Ambiguous transport failure — UPS may have acted.
                         logger.error(
-                            "Ambiguous transport failure for row %d (job %s): %s [%s]. "
+                            "Ambiguous transport failure for row %d (job %s). "
                             "UPS may have created a shipment.",
-                            row.row_number, job_id, e, type(e).__name__,
+                            row.row_number,
+                            job_id,
                         )
                         async with db_lock:
                             row.status = "needs_review"
-                            row.error_message = (
-                                f"Ambiguous transport error during create_shipment: "
-                                f"{type(e).__name__}: {e}"
-                            )
+                            diagnostic = project_terminal_diagnostic("E-4001")
+                            row.error_code = diagnostic.error_code
+                            row.error_message = diagnostic.message
                             self._db.commit()
                         raise
 
@@ -587,10 +652,13 @@ class BatchEngine:
                     # create a duplicate. Use "needs_review" instead.
                     try:
                         tracking_numbers = result.get("trackingNumbers", [])
-                        tracking_number = tracking_numbers[0] if tracking_numbers else ""
+                        tracking_number = (
+                            tracking_numbers[0] if tracking_numbers else ""
+                        )
                         if not tracking_number or "XXXX" in tracking_number:
                             tracking_number = result.get(
-                                "shipmentIdentificationNumber", tracking_number,
+                                "shipmentIdentificationNumber",
+                                tracking_number,
                             )
 
                         # Save label to staging directory (not final path yet)
@@ -688,17 +756,20 @@ class BatchEngine:
                             cost_cents,
                         )
 
-                    except Exception as post_e:
+                    except Exception:
                         # Post-UPS failure: shipment exists at UPS.
                         # Mark needs_review — NEVER failed.
                         logger.error(
-                            "Post-UPS failure for row %d (job %s): %s. "
+                            "Post-UPS failure for row %d (job %s). "
                             "Shipment may exist at UPS — marking needs_review.",
-                            row.row_number, job_id, post_e,
+                            row.row_number,
+                            job_id,
                         )
                         async with db_lock:
                             row.status = "needs_review"
-                            row.error_message = f"Post-UPS error: {post_e}"
+                            diagnostic = project_terminal_diagnostic("E-4001")
+                            row.error_code = diagnostic.error_code
+                            row.error_message = diagnostic.message
                             if hasattr(result, "get"):
                                 row.ups_shipment_id = result.get(
                                     "shipmentIdentificationNumber",
@@ -716,12 +787,17 @@ class BatchEngine:
                     # Only mark 'failed' for pre-UPS cases where inner handlers
                     # haven't already set a terminal status.
                     if not ups_call_succeeded:
+                        diagnostic = project_terminal_diagnostic(
+                            getattr(e, "code", "E-4001")
+                        )
                         async with db_lock:
                             if row.status in ("pending", "in_flight"):
                                 row.status = "failed"
-                                row.error_code = getattr(e, "code", "E-4001")
-                                row.error_message = str(e)
+                                row.error_code = diagnostic.error_code
+                                row.error_message = diagnostic.message
                                 self._db.commit()
+                    else:
+                        diagnostic = project_terminal_diagnostic("E-4001")
 
                     async with counters_lock:
                         failed += 1
@@ -731,11 +807,13 @@ class BatchEngine:
                             "row_failed",
                             job_id=job_id,
                             row_number=row.row_number,
-                            error_code=getattr(e, "code", "E-4001"),
-                            error_message=str(e),
+                            error_code=diagnostic.error_code,
+                            error_message=diagnostic.message,
                         )
 
-                    logger.error("Row %d failed: %s", row.row_number, e)
+                    logger.error(
+                        "Row %d failed with %s", row.row_number, diagnostic.error_code
+                    )
 
         # Process all rows concurrently (bounded by semaphore)
         await asyncio.gather(*[_process_row(row) for row in pending_rows])
@@ -758,12 +836,18 @@ class BatchEngine:
 
                     # Route to external platform or local file write-back
                     if source_type in (
-                        "shopify", "amazon", "woocommerce", "sap", "oracle",
+                        "shopify",
+                        "amazon",
+                        "woocommerce",
+                        "sap",
+                        "oracle",
                     ):
                         ext = await get_external_sources_client()
                         gw_result = await self._write_back_external(
-                            ext, source_type,
-                            successful_write_back_updates, rows,
+                            ext,
+                            source_type,
+                            successful_write_back_updates,
+                            rows,
                         )
                     else:
                         gw_result = await gw.write_back_batch(
@@ -772,9 +856,7 @@ class BatchEngine:
 
                     # Normalize gateway result to include a status key
                     failures = gw_result.get("failure_count", 0)
-                    gw_result["status"] = (
-                        "partial" if failures > 0 else "success"
-                    )
+                    gw_result["status"] = "partial" if failures > 0 else "success"
                     write_back_result = gw_result
 
                     # Mark durable queue tasks as completed
@@ -788,7 +870,8 @@ class BatchEngine:
                             if "row_number" in e
                         }
                         ok_rows = [
-                            rn for rn in successful_write_back_updates
+                            rn
+                            for rn in successful_write_back_updates
                             if rn not in failed_rows
                         ]
                         if ok_rows:
@@ -875,35 +958,43 @@ class BatchEngine:
             row = row_map.get(row_number)
             if not row:
                 failures += 1
-                errors.append({
-                    "row_number": row_number,
-                    "error": f"Row {row_number} not found in job rows",
-                })
+                errors.append(
+                    {
+                        "row_number": row_number,
+                        "error": f"Row {row_number} not found in job rows",
+                    }
+                )
                 continue
 
             if not row.order_data:
                 failures += 1
-                errors.append({
-                    "row_number": row_number,
-                    "error": "Missing order_data on row",
-                })
+                errors.append(
+                    {
+                        "row_number": row_number,
+                        "error": "Missing order_data on row",
+                    }
+                )
                 continue
             try:
                 order_data = json.loads(row.order_data)
             except (json.JSONDecodeError, TypeError):
                 failures += 1
-                errors.append({
-                    "row_number": row_number,
-                    "error": "Malformed order_data JSON on row",
-                })
+                errors.append(
+                    {
+                        "row_number": row_number,
+                        "error": "Malformed order_data JSON on row",
+                    }
+                )
                 continue
             order_id = order_data.get("order_id")
             if not order_id:
                 failures += 1
-                errors.append({
-                    "row_number": row_number,
-                    "error": "Missing order_id in order_data",
-                })
+                errors.append(
+                    {
+                        "row_number": row_number,
+                        "error": "Missing order_id in order_data",
+                    }
+                )
                 continue
 
             try:
@@ -917,16 +1008,20 @@ class BatchEngine:
                     success += 1
                 else:
                     failures += 1
-                    errors.append({
-                        "row_number": row_number,
-                        "error": result.get("error", "Unknown platform error"),
-                    })
+                    errors.append(
+                        {
+                            "row_number": row_number,
+                            "error": result.get("error", "Unknown platform error"),
+                        }
+                    )
             except Exception as e:
                 failures += 1
-                errors.append({
-                    "row_number": row_number,
-                    "error": str(e),
-                })
+                errors.append(
+                    {
+                        "row_number": row_number,
+                        "error": str(e),
+                    }
+                )
 
         return {
             "success_count": success,
@@ -951,7 +1046,9 @@ class BatchEngine:
         try:
             return json.loads(row.order_data)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid order_data JSON on row {row.row_number}: {e}") from e
+            raise ValueError(
+                f"Invalid order_data JSON on row {row.row_number}: {e}"
+            ) from e
 
     async def _prefetch_commodities(
         self,
@@ -981,14 +1078,19 @@ class BatchEngine:
                 od = self._parse_order_data(r)
                 dest_country = od.get("ship_to_country", DEFAULT_ORIGIN_COUNTRY)
                 eff_service = service_code or od.get(
-                    "service_code", ServiceCode.GROUND.value,
+                    "service_code",
+                    ServiceCode.GROUND.value,
                 )
                 origin_country = shipper.get("countryCode", DEFAULT_ORIGIN_COUNTRY)
                 eff_service = upgrade_to_international(
-                    eff_service, origin_country, dest_country,
+                    eff_service,
+                    origin_country,
+                    dest_country,
                 )
                 requirements = get_requirements(
-                    origin_country, dest_country, eff_service,
+                    origin_country,
+                    dest_country,
+                    eff_service,
                 )
                 if requirements.requires_commodities and not od.get("commodities"):
                     oid = od.get("order_id") or od.get("order_number")
@@ -1018,7 +1120,8 @@ class BatchEngine:
         return {}
 
     async def _get_commodities_bulk(
-        self, order_ids: list[int | str],
+        self,
+        order_ids: list[int | str],
     ) -> dict[int | str, list[dict]]:
         """Fetch commodities for orders via the data source gateway.
 
@@ -1250,13 +1353,15 @@ class BatchEngine:
                             )
                             self._db.commit()
                             needs_review += 1
-                            details.append({
-                                "row_number": row.row_number,
-                                "action": "needs_review",
-                                "reason": f"UPS confirmed but missing: {', '.join(missing_artifacts)}",
-                                "tracking_number": returned_number,
-                                "idempotency_key": row.idempotency_key,
-                            })
+                            details.append(
+                                {
+                                    "row_number": row.row_number,
+                                    "action": "needs_review",
+                                    "reason": f"UPS confirmed but missing: {', '.join(missing_artifacts)}",
+                                    "tracking_number": returned_number,
+                                    "idempotency_key": row.idempotency_key,
+                                }
+                            )
                         else:
                             # All artifacts present — safe to complete
                             row.tracking_number = returned_number
@@ -1264,11 +1369,13 @@ class BatchEngine:
                             row.processed_at = datetime.now(UTC).isoformat()
                             self._db.commit()
                             recovered += 1
-                            details.append({
-                                "row_number": row.row_number,
-                                "action": "recovered",
-                                "tracking_number": returned_number,
-                            })
+                            details.append(
+                                {
+                                    "row_number": row.row_number,
+                                    "action": "recovered",
+                                    "tracking_number": returned_number,
+                                }
+                            )
                     else:
                         # UPS doesn't recognize this tracking number
                         row.status = "needs_review"
@@ -1278,13 +1385,15 @@ class BatchEngine:
                         )
                         self._db.commit()
                         needs_review += 1
-                        details.append({
-                            "row_number": row.row_number,
-                            "action": "needs_review",
-                            "reason": "UPS returned invalid for stored tracking number",
-                            "ups_tracking_number": row.ups_tracking_number,
-                            "idempotency_key": row.idempotency_key,
-                        })
+                        details.append(
+                            {
+                                "row_number": row.row_number,
+                                "action": "needs_review",
+                                "reason": "UPS returned invalid for stored tracking number",
+                                "ups_tracking_number": row.ups_tracking_number,
+                                "idempotency_key": row.idempotency_key,
+                            }
+                        )
                 except Exception as e:
                     # Tier 3: Lookup failed — escalation policy
                     row.recovery_attempt_count += 1
@@ -1296,28 +1405,32 @@ class BatchEngine:
                         )
                         self._db.commit()
                         needs_review += 1
-                        details.append({
-                            "row_number": row.row_number,
-                            "action": "needs_review",
-                            "reason": (
-                                f"Escalated after {row.recovery_attempt_count} "
-                                f"failed lookups"
-                            ),
-                            "idempotency_key": row.idempotency_key,
-                        })
+                        details.append(
+                            {
+                                "row_number": row.row_number,
+                                "action": "needs_review",
+                                "reason": (
+                                    f"Escalated after {row.recovery_attempt_count} "
+                                    f"failed lookups"
+                                ),
+                                "idempotency_key": row.idempotency_key,
+                            }
+                        )
                     else:
                         # Below limit — leave in_flight for next startup pass
                         self._db.commit()
                         unresolved += 1
-                        details.append({
-                            "row_number": row.row_number,
-                            "action": "unresolved",
-                            "reason": (
-                                f"UPS lookup failed "
-                                f"({row.recovery_attempt_count}/{MAX_RECOVERY_ATTEMPTS}): {e}"
-                            ),
-                            "idempotency_key": row.idempotency_key,
-                        })
+                        details.append(
+                            {
+                                "row_number": row.row_number,
+                                "action": "unresolved",
+                                "reason": (
+                                    f"UPS lookup failed "
+                                    f"({row.recovery_attempt_count}/{MAX_RECOVERY_ATTEMPTS}): {e}"
+                                ),
+                                "idempotency_key": row.idempotency_key,
+                            }
+                        )
             else:
                 # Tier 2: No tracking info — ambiguous, mark for operator
                 row.status = "needs_review"
@@ -1327,17 +1440,22 @@ class BatchEngine:
                 )
                 self._db.commit()
                 needs_review += 1
-                details.append({
-                    "row_number": row.row_number,
-                    "action": "needs_review",
-                    "reason": "No ups_tracking_number — cannot verify programmatically",
-                    "idempotency_key": row.idempotency_key,
-                })
+                details.append(
+                    {
+                        "row_number": row.row_number,
+                        "action": "needs_review",
+                        "reason": "No ups_tracking_number — cannot verify programmatically",
+                        "idempotency_key": row.idempotency_key,
+                    }
+                )
 
         logger.info(
             "In-flight recovery complete: job_id=%s recovered=%d "
             "needs_review=%d unresolved=%d",
-            job_id, recovered, needs_review, unresolved,
+            job_id,
+            recovered,
+            needs_review,
+            unresolved,
         )
 
         return {

@@ -637,6 +637,7 @@ describe('session-aware EventSource transports', () => {
         status,
         error: null,
         rowFailures: [],
+        omittedFailureCount: 0,
         currentRow: null,
         lastTrackingNumber: null,
       });
@@ -923,9 +924,12 @@ describe('session-aware EventSource transports', () => {
       event: 'row_failed',
       data: {
         job_id: 'job-1',
-        row_number: 2,
-        error_code: 'E-ROW',
-        error_message: 'Recipient review required',
+        diagnostic: {
+          row_number: 2,
+          error_code: 'E-3003',
+          error_category: 'ups_api',
+          message: 'The carrier could not process this shipment.',
+        },
       },
     });
     source.emitMessage({
@@ -948,16 +952,19 @@ describe('session-aware EventSource transports', () => {
       internationalCount: undefined,
       status: 'failed',
       error: {
-        code: 'E-ROW',
-        message: 'Recipient review required',
+        error_code: 'E-3003',
+        error_category: 'ups_api',
+        message: 'The carrier could not process this shipment.',
       },
       rowFailures: [
         {
-          rowNumber: 2,
-          errorCode: 'E-ROW',
-          errorMessage: 'Recipient review required',
+          row_number: 2,
+          error_code: 'E-3003',
+          error_category: 'ups_api',
+          message: 'The carrier could not process this shipment.',
         },
       ],
+      omittedFailureCount: 0,
       currentRow: 3,
       lastTrackingNumber: '1Z-PRIOR',
     });
@@ -967,18 +974,19 @@ describe('session-aware EventSource transports', () => {
       jobId: 'job-1',
       completion: {
         error: {
-          code: 'E-ROW',
-          message: 'Recipient review required',
+          error_code: 'E-3003',
+          error_category: 'ups_api',
+          message: 'The carrier could not process this shipment.',
         },
-        rowFailures: [
+        row_failures: [
           {
-            rowNumber: 2,
-            errorCode: 'E-ROW',
-            errorMessage: 'Recipient review required',
+            row_number: 2,
+            error_code: 'E-3003',
+            error_category: 'ups_api',
+            message: 'The carrier could not process this shipment.',
           },
         ],
-        currentRow: 3,
-        lastTrackingNumber: '1Z-PRIOR',
+        omitted_failure_count: 0,
       },
     });
   });

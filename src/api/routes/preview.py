@@ -31,7 +31,6 @@ from src.services.ups_service_codes import (
     ServiceCode,
     resolve_service_code,
 )
-from src.utils.redaction import sanitize_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -181,9 +180,7 @@ def get_job_preview(job_id: str, db: Session = Depends(get_db)) -> BatchPreviewR
     # Compute preview integrity hash from all row checksums (TOCTOU protection).
     # Uses "|" delimiter with row_number prefix to prevent collision (CWE-345):
     # e.g. ["ab","cd"] vs ["abc","d"] would collide with plain join.
-    checksum_concat = "|".join(
-        f"{r.row_number}:{r.row_checksum}" for r in rows
-    )
+    checksum_concat = "|".join(f"{r.row_number}:{r.row_checksum}" for r in rows)
     preview_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
     job.preview_hash = preview_hash
     db.commit()
@@ -280,11 +277,9 @@ async def _execute_batch(
                 duties_taxes_cents=result.get("total_duties_taxes_cents", 0),
                 international_row_count=result.get("international_row_count", 0),
             )
-    except Exception as e:
-        logger.exception("Background batch execution failed for job %s: %s", job_id, e)
-        await observer.on_batch_failed(
-            job_id, "E-4001", sanitize_error_message(str(e)), 0
-        )
+    except Exception:
+        logger.error("Background batch execution failed for job %s", job_id)
+        await observer.on_batch_failed(job_id, "E-4001", "Batch execution failed.", 0)
     finally:
         db.close()
 
@@ -303,8 +298,8 @@ async def _execute_batch_safe(
     """
     try:
         await _execute_batch(job_id, selected_service_code=selected_service_code)
-    except Exception as e:
-        logger.exception("Background batch execution failed for job %s: %s", job_id, e)
+    except Exception:
+        logger.error("Background batch execution failed for job %s", job_id)
         # Update job to failed status
         from src.db.connection import get_db as get_db_session
 
@@ -314,8 +309,8 @@ async def _execute_batch_safe(
             if job and job.status == "running":
                 job.status = "failed"
                 job.error_code = "E-4001"
-                job.error_message = sanitize_error_message(
-                    f"Background task error: {e}"
+                job.error_message = (
+                    "The row could not be processed because of a system error."
                 )
                 db.commit()
         finally:
@@ -377,9 +372,7 @@ async def confirm_job(
         .order_by(JobRow.row_number)
         .all()
     )
-    checksum_concat = "|".join(
-        f"{r.row_number}:{r.row_checksum}" for r in current_rows
-    )
+    checksum_concat = "|".join(f"{r.row_number}:{r.row_checksum}" for r in current_rows)
     current_hash = hashlib.sha256(checksum_concat.encode()).hexdigest()
     if current_hash != job.preview_hash:
         raise HTTPException(

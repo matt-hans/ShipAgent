@@ -11,6 +11,11 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from src.errors.terminal_diagnostics import (
+    sanitize_completion_artifact_metadata,
+    validate_completion_artifact_diagnostics,
+)
+
 logger = logging.getLogger(__name__)
 
 from src.db.models import (  # noqa: E402
@@ -97,6 +102,9 @@ class ConversationPersistenceService:
         Returns:
             The created ConversationMessage.
         """
+        if message_type == MessageType.system_artifact.value and metadata is not None:
+            validate_completion_artifact_diagnostics(metadata)
+
         # Compute next sequence number.
         # Note: For SQLite with single-writer semantics, SELECT+INSERT
         # is safe within a single transaction. If migrating to Postgres with
@@ -150,35 +158,45 @@ class ConversationPersistenceService:
         """
         from sqlalchemy import func
 
-        query = self._db.query(
-            ConversationSession.id,
-            ConversationSession.title,
-            ConversationSession.mode,
-            ConversationSession.context_data,
-            ConversationSession.created_at,
-            ConversationSession.updated_at,
-            func.count(ConversationMessage.id).label("message_count"),
-        ).outerjoin(ConversationMessage).group_by(ConversationSession.id)
+        query = (
+            self._db.query(
+                ConversationSession.id,
+                ConversationSession.title,
+                ConversationSession.mode,
+                ConversationSession.context_data,
+                ConversationSession.created_at,
+                ConversationSession.updated_at,
+                func.count(ConversationMessage.id).label("message_count"),
+            )
+            .outerjoin(ConversationMessage)
+            .group_by(ConversationSession.id)
+        )
 
         if active_only:
             query = query.filter(ConversationSession.is_active == True)  # noqa: E712
 
-        query = query.order_by(
-            ConversationSession.updated_at.desc().nullslast(),
-            ConversationSession.created_at.desc(),
-        ).offset(offset).limit(limit)
+        query = (
+            query.order_by(
+                ConversationSession.updated_at.desc().nullslast(),
+                ConversationSession.created_at.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
 
         results = []
         for row in query.all():
-            results.append({
-                "id": row[0],
-                "title": row[1],
-                "mode": row[2],
-                "context_data": _safe_json_loads(row[3], "context_data", row[0]),
-                "created_at": row[4],
-                "updated_at": row[5],
-                "message_count": row[6],
-            })
+            results.append(
+                {
+                    "id": row[0],
+                    "title": row[1],
+                    "mode": row[2],
+                    "context_data": _safe_json_loads(row[3], "context_data", row[0]),
+                    "created_at": row[4],
+                    "updated_at": row[5],
+                    "message_count": row[6],
+                }
+            )
         return results
 
     def get_session_with_messages(
@@ -212,15 +230,19 @@ class ConversationPersistenceService:
 
         messages = []
         for m in query.all():
-            messages.append({
-                "id": m.id,
-                "role": m.role,
-                "message_type": m.message_type,
-                "content": m.content,
-                "metadata": _safe_json_loads(m.metadata_json, "metadata_json", m.id),
-                "sequence": m.sequence,
-                "created_at": m.created_at,
-            })
+            messages.append(
+                {
+                    "id": m.id,
+                    "role": m.role,
+                    "message_type": m.message_type,
+                    "content": m.content,
+                    "metadata": sanitize_completion_artifact_metadata(
+                        _safe_json_loads(m.metadata_json, "metadata_json", m.id)
+                    ),
+                    "sequence": m.sequence,
+                    "created_at": m.created_at,
+                }
+            )
 
         context = _safe_json_loads(session.context_data, "context_data", session.id)
 
@@ -364,9 +386,7 @@ class ConversationPersistenceService:
         self._db.commit()
         return True
 
-    def export_session_json(
-        self, session_id: str
-    ) -> dict[str, Any] | None:
+    def export_session_json(self, session_id: str) -> dict[str, Any] | None:
         """Export a full session with all messages as JSON.
 
         Args:
