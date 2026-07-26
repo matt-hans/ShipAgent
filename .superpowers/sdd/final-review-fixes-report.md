@@ -2667,3 +2667,75 @@ carrier, shipment, or label canary.
 - No dependency was added or upgraded. No raw carrier response, recipient or
   address value, authentication value, tracking number, replay key, or label
   content is reproduced in this report.
+
+## Round 14 residual review closure
+
+Implementation: `5ade622 fix: close round 14 residual diagnostics`.
+
+### Recovery result row-number projection
+
+- `BatchEngine.recover_in_flight_rows` now sends every public recovery-detail
+  row number through `project_terminal_row_diagnostic`.
+- Boolean, non-integer, zero, negative, and above-maximum legacy row numbers
+  are never copied into the recovery result. Their details are omitted while
+  the recovery state totals still reflect the rows that were processed.
+- The result always includes `omitted_detail_count`. It increments once per
+  invalid omitted detail and saturates at `MAX_TERMINAL_COUNT`.
+
+RED:
+
+- `../../.venv/bin/python -m pytest
+  tests/orchestrator/batch/test_inflight_recovery.py -q -k
+  invalid_row_number` failed because all six malformed values were returned in
+  `details` and no omission accounting existed.
+
+GREEN:
+
+- The same focused test passed after projecting the row number and recording
+  bounded omissions.
+- The complete in-flight recovery file then passed all **12 tests** after its
+  existing exact safe-result assertion was updated for the always-present
+  zero omission count.
+
+### REST baseline and run-relative SSE failure accounting
+
+- The chat progress consumer now records the persisted failure baseline when a
+  resumed `batch_started` event resets observer counters.
+- It detects later retained/omitted counter decreases as another observer-run
+  reset and establishes a new baseline without discarding the persisted job
+  totals.
+- Every newly delivered `row_failed` event advances the global failure total,
+  while cumulative retained/omitted values still recover missed events.
+  Failure rows remain capped at 20; any additional global failures are
+  represented by `omittedFailureCount`.
+- The focused regression starts from a REST snapshot with 20 retained failures
+  and observer counters reset to retained 1 / omitted 0. It covers both an
+  observed and a missed resumed `batch_started` event. In both cases the next
+  failure produces `failed == processed == 21`, retains 20 rows, and reports
+  one omission.
+
+RED:
+
+- `npx nx test chat-remote` failed the new capped-baseline regression with
+  `failed === 20` instead of 21; the new row was neither retained nor counted
+  as omitted.
+
+GREEN:
+
+- The final chat-remote run passed all **105 tests across 7 files**, including
+  both parameterized reset-marker cases.
+
+### Residual verification evidence
+
+- Focused adjacent backend recovery, execution-determinism, startup recovery,
+  recovery-progress/artifact, and batch-engine in-flight suites:
+  **44 passed** with the existing defusedxml deprecation warning.
+- Targeted Ruff lint passed; Ruff format verification reported both changed
+  Python files already formatted.
+- Chat-remote test: **105 passed**. Targeted typecheck passed.
+- Chat-remote lint passed with **0 errors** and the existing **4 unrelated
+  output-name warnings**.
+- Prettier verification passed for both changed TypeScript files.
+- `git diff --check` and the staged diff check passed.
+- No dependency, generated artifact, provider contract, migration, secret, or
+  real shipping/customer value changed. No merge or push was performed.
