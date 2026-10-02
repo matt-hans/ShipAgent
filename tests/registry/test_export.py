@@ -10,7 +10,6 @@ GENERATED_REGISTRY_SNAPSHOT = (
 )
 EXPECTED_TOOL_NAMES = [
     "get_shipagent_status",
-    "submit_one_off_shipment",
     "validate_shipment_address",
     "get_shipment_rates",
     "prepare_shipments",

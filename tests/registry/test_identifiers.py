@@ -57,7 +57,13 @@ def test_every_provider_visible_identifier_schema_uses_its_exact_family_format()
 
     # The relay status tool replaced active_device_id with executionTarget.state, so
     # the registered device field is reserved until a public tool exposes it again.
-    reserved_unused_fields = {"active_device_id"}
+    # ingress_reference is reserved for the ingress guard; confirmation_artifact_id
+    # is no longer in any public contract (ADR 0003: opaque Approval Request only).
+    reserved_unused_fields = {
+        "active_device_id",
+        "ingress_reference",
+        "confirmation_artifact_id",
+    }
     assert seen_fields == set(PROVIDER_VISIBLE_FIELD_FAMILIES) - reserved_unused_fields
 
 

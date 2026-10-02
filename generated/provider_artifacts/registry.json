@@ -112,75 +112,6 @@
     {
       "audit_level": "basic",
       "auth_scopes": [
-        "shipments:create"
-      ],
-      "availability": [
-        "hosted",
-        "local"
-      ],
-      "confirmation_policy": null,
-      "contract_version": "1.0.0",
-      "description": "Register a ShipAgent-owned ingress artifact for one-off shipment workflows.",
-      "execution_target_required": false,
-      "hosted_readiness": "ready",
-      "implementation_status": "implemented",
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "ingress_reference": {
-            "description": "Opaque reference minted by the authenticated ShipAgent ingress channel.",
-            "maxLength": 43,
-            "minLength": 43,
-            "pattern": "^sa_ingress_[0-9a-f]{32}$",
-            "type": "string"
-          }
-        },
-        "required": [
-          "ingress_reference"
-        ],
-        "type": "object"
-      },
-      "max_result_bytes": 65536,
-      "max_sync_seconds": 30,
-      "minimum_capabilities": {},
-      "name": "submit_one_off_shipment",
-      "notes": "",
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "input_reference": {
-            "description": "Opaque ShipAgent shipment input reference.",
-            "maxLength": 41,
-            "minLength": 41,
-            "pattern": "^sa_input_[0-9a-f]{32}$",
-            "type": "string"
-          }
-        },
-        "required": [
-          "input_reference"
-        ],
-        "type": "object"
-      },
-      "prepare_tool": null,
-      "provider_export_enabled": false,
-      "provider_exports": [
-        "openai_apps_public",
-        "claude_remote_mcp_public",
-        "generic_mcp"
-      ],
-      "rate_limit_class": "default",
-      "requires_confirmation": false,
-      "result_profile": "aggregate",
-      "result_sensitivity": "business",
-      "side_effect": "estimate",
-      "tenant_safe": true,
-      "title": "Submit one off shipment",
-      "ui_resource": null,
-      "visibility": "public"
-    },
-    {
-      "audit_level": "basic",
-      "auth_scopes": [
         "address:validate"
       ],
       "availability": [
@@ -458,6 +389,13 @@
       "output_schema": {
         "additionalProperties": false,
         "properties": {
+          "approval_request_id": {
+            "description": "Opaque Approval Request reference; carries no execution authority.",
+            "maxLength": 52,
+            "minLength": 52,
+            "pattern": "^sa_approval_request_[0-9a-f]{32}$",
+            "type": "string"
+          },
           "preview_id": {
             "description": "Opaque ShipAgent shipment preview identifier.",
             "maxLength": 43,
@@ -521,11 +459,11 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "confirmation_artifact_id": {
-            "description": "Opaque confirmation artifact minted by an authenticated ShipAgent channel.",
-            "maxLength": 48,
-            "minLength": 48,
-            "pattern": "^sa_confirmation_[0-9a-f]{32}$",
+          "approval_request_id": {
+            "description": "Opaque Approval Request reference returned by prepare_shipments.",
+            "maxLength": 52,
+            "minLength": 52,
+            "pattern": "^sa_approval_request_[0-9a-f]{32}$",
             "type": "string"
           },
           "preview_id": {
@@ -538,7 +476,7 @@
         },
         "required": [
           "preview_id",
-          "confirmation_artifact_id"
+          "approval_request_id"
         ],
         "type": "object"
       },
