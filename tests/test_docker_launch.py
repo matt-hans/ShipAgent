@@ -1,4 +1,5 @@
 import sys
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -54,3 +55,16 @@ def test_documented_docker_environment_starts_authenticated_public_launcher(
         bundle_entry.main()
 
     server_run.assert_called_once()
+
+
+def test_sqlalchemy_dependency_installs_asyncio_support():
+    """SQLAlchemy 2.1+ no longer pulls greenlet unless the asyncio extra is requested."""
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    sqlalchemy = [
+        dep
+        for dep in pyproject["project"]["dependencies"]
+        if dep.replace(" ", "").lower().startswith("sqlalchemy")
+    ]
+
+    assert len(sqlalchemy) == 1
+    assert "[asyncio]" in sqlalchemy[0].replace(" ", "").lower()
