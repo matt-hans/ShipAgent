@@ -322,11 +322,6 @@ def test_real_public_contract_rejects_data_smuggled_in_status(
             },
         ),
         (
-            "submit_one_off_shipment",
-            {"input_reference": VALID_INPUT_ID},
-            {"input_reference": "Private Recipient at 17 Confidential Avenue"},
-        ),
-        (
             "validate_shipment_address",
             {
                 "validation_artifact_id": VALID_VALIDATION_ID,

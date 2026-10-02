@@ -4,6 +4,7 @@ import inspect
 import json
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from fastmcp import FastMCP
@@ -16,6 +17,11 @@ from mcp.types import TextContent, ToolAnnotations
 from src.control_plane.auth.context import (
     AuthorizationContext,
     get_authorization_context,
+)
+from src.control_plane.execution_grants import (
+    ExecutionGrantAuthority,
+    ExecutionGrantError,
+    ExecutionGrantReservation,
 )
 from src.control_plane.request_controls import (
     RequestControlError,
@@ -43,12 +49,14 @@ class BoundRegistryTool(Tool):
         contract: ToolContract,
         handler: ToolHandler,
         request_controls: RequestControls | None = None,
+        execution_grants: ExecutionGrantAuthority | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         object.__setattr__(self, "_contract", contract)
         object.__setattr__(self, "_handler", handler)
         object.__setattr__(self, "_request_controls", request_controls)
+        object.__setattr__(self, "_execution_grants", execution_grants)
 
     @staticmethod
     def _context_missing_error() -> "ToolAuthorizationError":
@@ -74,6 +82,102 @@ class BoundRegistryTool(Tool):
             message=err.message,
             retry_after_seconds=err.retry_after_seconds,
         )
+
+    @staticmethod
+    def _grant_unavailable_error() -> "ToolAuthorizationError":
+        return ToolAuthorizationError(
+            code="execution_grant_unavailable",
+            message="approval could not be verified; prepare and approve again",
+        )
+
+    @staticmethod
+    def _grant_invalid_error() -> "ToolAuthorizationError":
+        return ToolAuthorizationError(
+            code="execution_grant_invalid",
+            message="approval does not match this request; prepare and approve again",
+        )
+
+    async def _reserve_execution_grant(
+        self,
+        context: AuthorizationContext,
+        arguments: dict[str, Any],
+    ) -> ExecutionGrantReservation:
+        """Reserve the server-side grant for a confirming tool or fail closed.
+
+        Authority comes only from the server-side grant resolved through the
+        opaque Approval Request reference; model arguments and history never
+        grant it. A reservation that does not exactly match the caller and the
+        requested preview is released and rejected.
+        """
+        authority = getattr(self, "_execution_grants", None)
+        approval_request_id = arguments.get("approval_request_id")
+        if (
+            authority is None
+            or self._contract.prepare_tool is None
+            or not isinstance(approval_request_id, str)
+        ):
+            raise self._grant_unavailable_error()
+        try:
+            reservation = await authority.reserve(
+                context=context,
+                tool_name=self._contract.name,
+                prepare_tool=self._contract.prepare_tool,
+                approval_request_id=approval_request_id,
+            )
+        except ExecutionGrantError as err:
+            raise ToolAuthorizationError(
+                code=err.denial.value,
+                message="approval required before execution; prepare and approve again",
+            ) from err
+        except Exception as err:  # noqa: BLE001 - grant lookup is a fail-closed boundary.
+            raise self._grant_unavailable_error() from err
+        if not self._binding_matches(reservation, context, arguments):
+            await self._release_quietly(reservation)
+            raise self._grant_invalid_error()
+        return reservation
+
+    @staticmethod
+    def _binding_matches(
+        reservation: ExecutionGrantReservation,
+        context: AuthorizationContext,
+        arguments: dict[str, Any],
+    ) -> bool:
+        """Check the grant binds this caller, this preview and a live purchase."""
+        binding = reservation.binding
+        required = (
+            binding.execution_target_id,
+            binding.policy,
+            binding.amount,
+            binding.currency_code,
+            binding.idempotency_key,
+        )
+        return (
+            binding.account_id == context.account_id
+            and binding.provider_connection_id == context.provider_connection_id
+            and binding.preview_id == arguments.get("preview_id")
+            and binding.expires_at > datetime.now(UTC)
+            and all(required)
+        )
+
+    async def _release_quietly(self, reservation: ExecutionGrantReservation) -> None:
+        """Release a reservation without masking the primary failure."""
+        try:
+            await reservation.release()
+        except Exception:  # noqa: BLE001 - release is best effort; expiry bounds it.
+            logger.error(
+                "Execution grant release failed for tool %s", self._contract.name
+            )
+
+    async def _consume_after_acceptance(
+        self, reservation: ExecutionGrantReservation
+    ) -> None:
+        """Consume the grant once the target accepted; never hide the acceptance."""
+        try:
+            await reservation.consume()
+        except Exception:  # noqa: BLE001 - accepted work must still be reported.
+            logger.error(
+                "Execution grant consume failed for tool %s", self._contract.name
+            )
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
         context = get_authorization_context()
@@ -104,12 +208,23 @@ class BoundRegistryTool(Tool):
                 except RequestControlError as err:
                     raise self._loop_guard_or_rate_limit_error(err) from err
 
+            reservation: ExecutionGrantReservation | None = None
+            if self._contract.requires_confirmation:
+                reservation = await self._reserve_execution_grant(context, arguments)
+
+            accepted = False
             try:
                 result = self._handler(context, arguments)
                 if inspect.isawaitable(result):
                     result = await result
+                accepted = True
             except Exception:  # noqa: BLE001 - provider handler is a safe boundary.
                 failure_category = "handler"
+            finally:
+                if reservation is not None and not accepted:
+                    await self._release_quietly(reservation)
+            if accepted and reservation is not None:
+                await self._consume_after_acceptance(reservation)
 
         if failure_category is None:
             try:
@@ -140,6 +255,7 @@ def build_server(
     tool_handlers: Mapping[str, ToolHandler] | None = None,
     tools: Iterable[ToolContract] | None = None,
     request_controls: RequestControls | None = None,
+    execution_grants: ExecutionGrantAuthority | None = None,
 ) -> FastMCP:
     server = FastMCP("ShipAgentHosted")
     handlers = tool_handlers or {}
@@ -159,6 +275,7 @@ def build_server(
                 contract=tool,
                 handler=handler,
                 request_controls=request_controls,
+                execution_grants=execution_grants,
             )
         )
     return server
