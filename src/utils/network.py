@@ -24,3 +24,19 @@ def is_loopback_host(host: str | None) -> bool:
     if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
         address = address.ipv4_mapped
     return address.is_loopback
+
+
+def is_non_loopback_peer(address: tuple | None) -> bool:
+    """Return True if an ASGI ``(host, port)`` tuple holds a non-loopback IP.
+
+    Non-IP hosts (in-process test clients), missing addresses and Unix-socket
+    values are not network peers and return False.
+    """
+    if not address:
+        return False
+    value = str(address[0]).strip().strip("[]").split("%", 1)[0]
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return not is_loopback_host(value)
