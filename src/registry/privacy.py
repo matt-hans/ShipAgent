@@ -1,10 +1,67 @@
-"""Provider-visible registry privacy invariants."""
+"""Provider-visible registry privacy invariants.
+
+Visibility follows ADR 0007 (origin-based provider redaction): content the user
+supplied through the provider conversation may be echoed back, locally imported
+rows and address samples never are, and credentials, raw carrier payloads and
+label bytes are never provider-visible. A contract opts a field into the
+permitted classes explicitly (``provider_originated_fields`` /
+``signed_download_fields``); everything else stays fail-closed.
+"""
 
 import re
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
+from enum import StrEnum
 from typing import Any
 
 from src.registry.identifiers import provider_schema_identifier_violations
+
+MAX_SIGNED_DOWNLOAD_TTL_SECONDS = 300
+MAX_SIGNED_DOWNLOAD_URL_LENGTH = 2048
+EXPIRES_IN_FIELD = "expires_in_seconds"
+
+
+class DataOrigin(StrEnum):
+    """Where a provider-visible value came from (ADR 0007)."""
+
+    provider_supplied = "provider_supplied"
+    local_import = "local_import"
+
+
+# Canonical sensitive-key vocabularies shared by the registry, request controls
+# and result projection.
+CREDENTIAL_ARGUMENT_KEYS = frozenset(
+    {
+        "secret",
+        "api_secret",
+        "api_key",
+        "access_token",
+        "token",
+        "password",
+        "provider_file_url",
+        "file_url",
+    }
+)
+# Never provider-visible, regardless of data origin or result profile.
+ALWAYS_FORBIDDEN_RESULT_KEYS = frozenset(
+    {
+        "account_number",
+        "credentials",
+        "label_bytes",
+        "raw_response",
+        "request_body",
+        "local_path",
+    }
+)
+# Locally imported rows and per-recipient samples; aggregate results only.
+LOCAL_DATA_RESULT_KEYS = frozenset(
+    {
+        "rows",
+        "preview_rows",
+        "sample_rows",
+        "address_line_1",
+        "recipient_name",
+    }
+)
 
 _ACRONYM_BOUNDARY = re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])")
 _CAMEL_CASE_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
@@ -20,20 +77,11 @@ _AUTH_HEADER_TOKENS = frozenset(
     {"auth", "authentication", "authorization", "authorisation"}
 )
 _TRANSFER_CONTENT_KINDS = frozenset({"document", "label"})
-_TRANSFER_TOKENS = frozenset(
-    {
-        "base64",
-        "bytes",
-        "content",
-        "data",
-        "download",
-        "href",
-        "link",
-        "payload",
-        "uri",
-        "url",
-    }
-)
+# Byte-carrying transfer tokens are never permitted for labels or documents.
+_TRANSFER_BYTE_TOKENS = frozenset({"base64", "bytes", "content", "data", "payload"})
+# Pointer tokens may carry a declared short-lived signed download URL.
+_TRANSFER_URL_TOKENS = frozenset({"download", "href", "link", "uri", "url"})
+_TRANSFER_TOKENS = _TRANSFER_BYTE_TOKENS | _TRANSFER_URL_TOKENS
 _CARRIER_DIRECTIONS = frozenset({"request", "response"})
 _CARRIER_CONTENT_TOKENS = frozenset({"body", "carrier", "data", "payload", "raw"})
 
@@ -63,7 +111,7 @@ _FORBIDDEN_COMPACT_COMPOUND_FRAGMENTS = frozenset().union(
     _bidirectional_compact_compounds(_KEY_QUALIFIER_TOKENS, frozenset({"key"})),
     _bidirectional_compact_compounds(_AUTH_HEADER_TOKENS, frozenset({"header"})),
     _bidirectional_compact_compounds(frozenset({"bearer"}), frozenset({"value"})),
-    _bidirectional_compact_compounds(_TRANSFER_CONTENT_KINDS, _TRANSFER_TOKENS),
+    _bidirectional_compact_compounds(_TRANSFER_CONTENT_KINDS, _TRANSFER_BYTE_TOKENS),
     _bidirectional_compact_compounds(_CARRIER_DIRECTIONS, _CARRIER_CONTENT_TOKENS),
     _bidirectional_compact_compounds(
         frozenset({"customer"}),
@@ -76,6 +124,10 @@ _FORBIDDEN_COMPACT_COMPOUND_FRAGMENTS = frozenset().union(
         _CREDENTIAL_TOKENS & frozenset({"secret", "token"}),
         frozenset({"value"}),
     ),
+)
+
+_URL_TRANSFER_COMPACT_FRAGMENTS = _bidirectional_compact_compounds(
+    _TRANSFER_CONTENT_KINDS, _TRANSFER_URL_TOKENS
 )
 
 _COMMON_SCHEMA_KEYWORDS = frozenset({"type", "description", "enum"})
@@ -105,9 +157,16 @@ def _path_text(path: tuple[str, ...]) -> str:
     return ".".join(path) if path else "schema"
 
 
-def _has_forbidden_compact_fragment(compact_name: str) -> bool:
+def _has_forbidden_compact_fragment(
+    compact_name: str,
+    *,
+    provider_originated: bool = False,
+    signed_download: bool = False,
+) -> bool:
     if compact_name == "confirmationartifactid":
         return False
+    if provider_originated:
+        compact_name = compact_name.replace("address", "")
 
     has_customer_row = compact_name.endswith(tuple(_CUSTOMER_ROW_TOKENS))
     return (
@@ -119,6 +178,12 @@ def _has_forbidden_compact_fragment(compact_name: str) -> bool:
         or any(
             fragment in compact_name
             for fragment in _FORBIDDEN_COMPACT_COMPOUND_FRAGMENTS
+        )
+        or (
+            not signed_download
+            and any(
+                fragment in compact_name for fragment in _URL_TRANSFER_COMPACT_FRAGMENTS
+            )
         )
     )
 
@@ -199,8 +264,17 @@ def _property_paths(
 def provider_schema_privacy_violations(
     tool_name: str,
     schema: dict[str, Any],
+    *,
+    provider_originated: Collection[str] = (),
+    signed_downloads: Collection[str] = (),
 ) -> list[str]:
-    """Return unsafe dialect or content paths in a provider-visible schema."""
+    """Return unsafe dialect or content paths in a provider-visible schema.
+
+    ``provider_originated`` lifts only the customer-address check for the named
+    dotted paths (ADR 0007 provider-supplied echo). ``signed_downloads`` lifts
+    only the label/document URL check; byte-carrying fields, credentials, rows
+    and raw carrier exchanges stay forbidden for every path.
+    """
     tool_tokens = _field_tokens(tool_name)
     violations = [
         *list(_schema_dialect_violations(schema)),
@@ -208,11 +282,17 @@ def provider_schema_privacy_violations(
     ]
 
     for path in _property_paths(schema):
+        dotted = ".".join(path)
+        echo = dotted in provider_originated
+        signed = dotted in signed_downloads
         field_name = path[-1]
         tokens = _field_tokens(field_name)
         compact_name = _compact_field_name(field_name)
+        content_tokens = (
+            _CUSTOMER_CONTENT_TOKENS - {"address"} if echo else _CUSTOMER_CONTENT_TOKENS
+        )
         is_row_count = "row" in tokens and "count" in tokens
-        raw_customer_content = bool(tokens & _CUSTOMER_CONTENT_TOKENS) or (
+        raw_customer_content = bool(tokens & content_tokens) or (
             bool(tokens & _CUSTOMER_ROW_TOKENS) and not is_row_count
         )
         credential_or_token = (
@@ -220,9 +300,10 @@ def provider_schema_privacy_violations(
             or any({qualifier, "key"} <= tokens for qualifier in _KEY_QUALIFIER_TOKENS)
             or ("header" in tokens and bool(tokens & _AUTH_HEADER_TOKENS))
         )
+        transfer_tokens = _TRANSFER_BYTE_TOKENS if signed else _TRANSFER_TOKENS
         label_or_document_transfer = bool(
             (tokens | tool_tokens) & _TRANSFER_CONTENT_KINDS
-        ) and bool(tokens & _TRANSFER_TOKENS)
+        ) and bool(tokens & transfer_tokens)
         raw_carrier_exchange = bool(tokens & _CARRIER_DIRECTIONS) and bool(
             tokens & _CARRIER_CONTENT_TOKENS
         )
@@ -231,8 +312,10 @@ def provider_schema_privacy_violations(
             or credential_or_token
             or label_or_document_transfer
             or raw_carrier_exchange
-            or _has_forbidden_compact_fragment(compact_name)
+            or _has_forbidden_compact_fragment(
+                compact_name, provider_originated=echo, signed_download=signed
+            )
         ):
-            violations.append(".".join(path))
+            violations.append(dotted)
 
     return list(dict.fromkeys(violations))

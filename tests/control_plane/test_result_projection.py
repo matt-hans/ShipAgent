@@ -584,3 +584,114 @@ def test_project_result_rejects_over_size_results():
 
     with pytest.raises(ValueError, match="exceeds contract size"):
         project_result(contract, large)
+
+
+_ORIGIN_CANARY = "742 Canary Provider Way"
+
+
+def _echo_contract():
+    return _contract(
+        result_profile="provider_ingress_echo",
+        provider_originated_fields=["address_text"],
+        output_schema={
+            "type": "object",
+            "properties": {"address_text": {"type": "string"}},
+            "required": [],
+            "additionalProperties": False,
+        },
+    )
+
+
+def test_provider_originated_echo_requires_provider_origin_metadata():
+    from src.registry.privacy import DataOrigin
+
+    contract = _echo_contract()
+    result = {"address_text": _ORIGIN_CANARY}
+
+    assert (
+        project_result(
+            contract,
+            result,
+            field_origins={"address_text": DataOrigin.provider_supplied},
+        )
+        == result
+    )
+    for origins in (None, {}, {"address_text": DataOrigin.local_import}):
+        with pytest.raises(ValueError, match="origin"):
+            project_result(contract, result, field_origins=origins)
+
+
+def test_origin_error_never_echoes_the_value():
+    with pytest.raises(ValueError) as excinfo:
+        project_result(_echo_contract(), {"address_text": _ORIGIN_CANARY})
+    assert _ORIGIN_CANARY not in str(excinfo.value)
+
+
+def test_absent_provider_originated_field_needs_no_origin():
+    assert project_result(_echo_contract(), {}) == {}
+
+
+@pytest.mark.parametrize("profile", ["provider_ingress_echo", "artifact_action"])
+@pytest.mark.parametrize(
+    "key",
+    ["label_bytes", "credentials", "account_number", "raw_response", "request_body"],
+)
+def test_never_visible_keys_rejected_in_every_profile(profile, key):
+    contract = _contract(
+        result_profile=profile,
+        output_schema={
+            "type": "object",
+            "properties": {key: {"type": "string"}},
+            "required": [key],
+            "additionalProperties": False,
+        },
+    )
+    with pytest.raises(ValueError, match="forbidden"):
+        project_result(contract, {key: "canary-value"})
+
+
+def _label_contract():
+    return _contract(
+        result_profile="artifact_action",
+        signed_download_fields=["download_url"],
+        output_schema={
+            "type": "object",
+            "properties": {
+                "download_url": {
+                    "type": "string",
+                    "pattern": "^https://",
+                    "maxLength": 2048,
+                },
+                "expires_in_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300,
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    )
+
+
+def test_signed_download_url_must_be_plain_https_without_credentials():
+    contract = _label_contract()
+    good = {
+        "download_url": "https://relay.example.invalid/d/opaque?sig=canary",
+        "expires_in_seconds": 120,
+    }
+    assert project_result(contract, good) == good
+    for bad in (
+        "http://relay.example.invalid/d/x",
+        "file:///labels/canary.pdf",
+        "data:application/pdf;base64,Q0FOQVJZ",
+    ):
+        with pytest.raises(ValidationError):
+            project_result(contract, {"download_url": bad})
+    for bad in (
+        "https://user:pw@relay.example.invalid/d/x",
+        "https://relay.example.invalid/d/x#frag",
+        "https:///nohost",
+    ):
+        with pytest.raises(ValueError, match="signed download"):
+            project_result(contract, {"download_url": bad})

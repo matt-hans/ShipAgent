@@ -11,7 +11,13 @@ from src.registry.models import (
     ToolContract,
     ToolVisibility,
 )
+from src.registry.privacy import (
+    EXPIRES_IN_FIELD,
+    MAX_SIGNED_DOWNLOAD_TTL_SECONDS,
+    MAX_SIGNED_DOWNLOAD_URL_LENGTH,
+)
 from src.registry.tools.schema import object_schema
+from src.registry.vocabulary import SHIPAGENT_CAPABILITY_CODES
 from src.services.ups_constants import DEFAULT_CURRENCY_CODE
 from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
 
@@ -45,22 +51,13 @@ ADDRESS_VALIDATION_GUIDANCE_CODES = [
 # Relay execution target states; mirrors RelayTargetState in the control plane.
 EXECUTION_TARGET_STATE_CODES = ["ready", "offline", "update_required"]
 LABEL_STATUS_CODES = ["pending", "ready", "unavailable"]
-SHIPAGENT_CAPABILITY_CODES = [
-    "shipment_ingress",
-    "address_validation",
-    "rate_shopping",
-    "shipment_preview",
-    "shipment_execution",
-    "job_status",
-    "label_handoff",
-    # Tool-name capabilities the relay execution target reports today.
-    "get_shipagent_status",
-    "rate_shipment",
-]
 UPS_SERVICE_CODES = [code.value for code in ServiceCode]
 UPS_SERVICE_NAMES = list(SERVICE_CODE_NAMES.values())
 RATE_CURRENCY_CODES = [DEFAULT_CURRENCY_CODE]
 
+PROVIDER_ECHO_TEXT_PATTERN = r"^[^\\x00-\\x1f]{1,500}$"
+PROVIDER_ECHO_TEXT_MAX_LENGTH = 500
+SIGNED_LABEL_URL_PATTERN = r"^https://[^\\s]{1,2040}$"
 MONEY_PATTERN = r"^(0|[1-9][0-9]{0,9})\.[0-9]{2}$"
 _ISO_DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 
@@ -82,6 +79,9 @@ def public_tool(
     result_profile: str | None = None,
     prepare_tool: str | None = None,
     execution_target_required: bool = False,
+    provider_originated_fields: list[str] | None = None,
+    signed_download_fields: list[str] | None = None,
+    notes: str = "",
 ) -> ToolContract:
     confirmation = confirmation_policy if requires_confirmation else None
     return ToolContract(
@@ -108,6 +108,9 @@ def public_tool(
         result_profile=result_profile or "aggregate",
         prepare_tool=prepare_tool,
         execution_target_required=execution_target_required,
+        provider_originated_fields=provider_originated_fields or [],
+        signed_download_fields=signed_download_fields or [],
+        notes=notes,
     )
 
 
@@ -140,7 +143,7 @@ PUBLIC_TOOLS = [
                             "type": "array",
                             "items": {
                                 "type": "string",
-                                "enum": SHIPAGENT_CAPABILITY_CODES,
+                                "enum": list(SHIPAGENT_CAPABILITY_CODES),
                             },
                             "maxItems": len(SHIPAGENT_CAPABILITY_CODES),
                             "uniqueItems": True,
@@ -175,6 +178,16 @@ PUBLIC_TOOLS = [
                     "Opaque ShipAgent validation artifact reference.",
                 ),
                 "valid": {"type": "boolean"},
+                "address_text": {
+                    "type": "string",
+                    "description": (
+                        "Echo of address text the user supplied through the "
+                        "provider conversation; never imported-source data."
+                    ),
+                    "pattern": PROVIDER_ECHO_TEXT_PATTERN,
+                    "minLength": 1,
+                    "maxLength": PROVIDER_ECHO_TEXT_MAX_LENGTH,
+                },
                 "guidance_codes": {
                     "type": "array",
                     "description": "Bounded redacted remediation categories.",
@@ -187,6 +200,14 @@ PUBLIC_TOOLS = [
                 },
             },
             ["validation_artifact_id", "valid", "guidance_codes"],
+        ),
+        result_profile="provider_ingress_echo",
+        provider_originated_fields=["address_text"],
+        notes=(
+            "ADR 0007: address_text may only be set when the validated input "
+            "originated in the provider conversation. Imported-source inputs "
+            "must omit it; project_result fails closed without provider_supplied "
+            "origin metadata."
         ),
     ),
     public_tool(
@@ -367,7 +388,7 @@ PUBLIC_TOOLS = [
     public_tool(
         "create_label_download",
         "Create label download",
-        "Create an opaque label handoff for an authenticated ShipAgent-owned UI.",
+        "Create a short-lived signed label download reference for the account.",
         SideEffectClass.read,
         ["labels:read"],
         object_schema(
@@ -386,8 +407,32 @@ PUBLIC_TOOLS = [
                     "Opaque label artifact resolved only by an authenticated ShipAgent channel.",
                 ),
                 "status": {"type": "string", "enum": LABEL_STATUS_CODES},
+                "download_url": {
+                    "type": "string",
+                    "description": (
+                        "Short-lived signed download URL; label bytes never "
+                        "pass through the provider."
+                    ),
+                    "pattern": SIGNED_LABEL_URL_PATTERN,
+                    "minLength": 9,
+                    "maxLength": MAX_SIGNED_DOWNLOAD_URL_LENGTH,
+                },
+                EXPIRES_IN_FIELD: {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_SIGNED_DOWNLOAD_TTL_SECONDS,
+                },
             },
             ["label_artifact_id", "status"],
+        ),
+        result_profile="artifact_action",
+        signed_download_fields=["download_url"],
+        notes=(
+            "ADR 0007 obligations for any future implementation: the URL is "
+            "minted by the Execution Target flow, single-use, and bound to an "
+            "Auth0 browser session of the same Cloud Account; possession alone "
+            "is not authorization. Bytes stream desktop-to-browser with no "
+            "cloud persistence. Only ready labels carry download_url."
         ),
     ),
 ]
