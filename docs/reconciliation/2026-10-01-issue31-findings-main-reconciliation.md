@@ -206,6 +206,13 @@ issue #31 itself (LOOP-PR49-REVIEW1 S2/ST6):
   `python -m src.bundle_entry serve --host 0.0.0.0`, so the container goes
   through the same listener gate as the desktop launchers (see #48 for the
   direct-`uvicorn` bypass that remains).
+- `.github/workflows/docker.yml` (**not yet changed; required follow-up**): the
+  smoke job runs `docker run` without `SHIPAGENT_API_KEY`, so the container now
+  exits on `0.0.0.0` with `RuntimeError: Non-loopback listeners require
+  SHIPAGENT_API_KEY authentication` (CI run 36958568974, after the lockfile
+  fix). The smoke job must pass a per-run generated, masked key
+  (`openssl rand -hex 32`); the gate must not be weakened and no key may be
+  committed. Pushing workflow files needs a token with `workflow` scope.
 - `scripts/start-backend.sh`: honours `SHIPAGENT_ENV_FILE` (default `.env`) and
   `SHIPAGENT_PYTHON` (default `.venv/bin/python`).
 - `scripts/bundle_backend.sh`: runs `shipagent-frontend/scripts/link-remotes.sh`
