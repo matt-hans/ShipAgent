@@ -15,6 +15,17 @@ from src.utils.runtime import get_default_port
 
 logger = logging.getLogger(__name__)
 
+# The daemon is recognised by what it runs, never by the repository path it
+# happens to live under (any process started from a ShipAgent checkout would
+# otherwise look like a daemon and block `daemon start`).
+_DAEMON_EXECUTABLES = frozenset({"shipagent", "shipagent-core", "uvicorn"})
+_DAEMON_MODULES = frozenset(
+    {"shipagent", "uvicorn", "src.api.main", "src.bundle_entry", "src.cli.main"}
+)
+# Launcher positions that may name the daemon: the executable itself, or the
+# script after an interpreter (`python /path/bin/shipagent ...`).
+_LAUNCHER_TOKEN_COUNT = 2
+
 
 def write_pid_file(pid_file: str, pid: int) -> None:
     """Write the current process PID to a file.
@@ -57,12 +68,32 @@ def remove_pid_file(pid_file: str) -> None:
         path.unlink()
 
 
+def is_daemon_command(cmdline: str) -> bool:
+    """Return True if a process command line is a ShipAgent daemon launcher.
+
+    Args:
+        cmdline: Full command line as reported by ``ps -o command=``.
+
+    Returns:
+        True when the launcher executable/script or ``-m`` module is a known
+        ShipAgent server entry point; paths of unrelated processes never match.
+    """
+    tokens = cmdline.split()
+    launchers = tokens[:_LAUNCHER_TOKEN_COUNT]
+    if any(t.rsplit("/", 1)[-1].lower() in _DAEMON_EXECUTABLES for t in launchers):
+        return True
+    return any(
+        flag == "-m" and module.lower() in _DAEMON_MODULES
+        for flag, module in zip(tokens, tokens[1:], strict=False)
+    )
+
+
 def is_pid_alive(pid: int) -> bool:
     """Check if a process with the given PID is running.
 
     Uses os.kill(pid, 0) for existence check, then verifies the process
-    command line contains 'shipagent' or 'uvicorn' to avoid targeting
-    a reused PID from an unrelated process.
+    command line is a ShipAgent daemon launcher (see ``is_daemon_command``)
+    to avoid targeting a reused PID from an unrelated process.
 
     Args:
         pid: Process ID to check.
@@ -85,10 +116,7 @@ def is_pid_alive(pid: int) -> bool:
             text=True,
             timeout=2,
         )
-        cmdline = result.stdout.strip().lower()
-        return any(
-            marker in cmdline for marker in ["shipagent", "uvicorn", "src.api.main"]
-        )
+        return is_daemon_command(result.stdout.strip())
     except Exception:
         # If ps fails, fall back to existence-only
         return True

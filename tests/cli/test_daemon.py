@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from src.cli.daemon import (
+    is_daemon_command,
     is_pid_alive,
     read_pid_file,
     remove_pid_file,
@@ -148,3 +149,34 @@ def test_start_daemon_keeps_loopback_usable_without_api_key(
 
     uvicorn_run.assert_called_once()
     assert not pid_file.exists()
+
+
+class TestDaemonCommandDetection:
+    """is_daemon_command identifies the daemon by command, not by repo path."""
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            "/opt/venv/bin/python /opt/venv/bin/shipagent daemon start",
+            "/Users/dev/ShipAgent/.venv/bin/shipagent daemon start --port 8000",
+            "/Applications/ShipAgent.app/Contents/MacOS/shipagent-core serve",
+            "/usr/bin/python3 -m src.bundle_entry serve --host 127.0.0.1",
+            "/usr/bin/python3 -m uvicorn src.api.main:app --port 8000",
+            "/opt/venv/bin/uvicorn src.api.main:app --port 8000",
+        ],
+    )
+    def test_daemon_commands_match(self, cmdline):
+        assert is_daemon_command(cmdline) is True
+
+    @pytest.mark.parametrize(
+        "cmdline",
+        [
+            "",
+            "/Users/dev/ShipAgent/.venv/bin/python -m pytest tests/ -q",
+            "/Users/dev/Programming/ShipAgent/.venv/bin/python -m pytest /Users/dev/Programming/ShipAgent",
+            "vim /Users/dev/ShipAgent/src/cli/daemon.py",
+            "/bin/zsh -c cd /Users/dev/ShipAgent && ls",
+        ],
+    )
+    def test_unrelated_processes_in_the_repo_path_do_not_match(self, cmdline):
+        assert is_daemon_command(cmdline) is False
