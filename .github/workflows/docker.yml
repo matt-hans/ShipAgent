@@ -28,8 +28,13 @@ jobs:
 
       - name: Start container
         run: |
+          # Non-loopback listeners require a 32+ char SHIPAGENT_API_KEY; use a
+          # throwaway key generated for this run (never a committed secret).
+          SMOKE_API_KEY="$(openssl rand -hex 32)"
+          echo "::add-mask::${SMOKE_API_KEY}"
           docker run -d --name shipagent-smoke \
             -p 18000:8080 \
+            -e SHIPAGENT_API_KEY="${SMOKE_API_KEY}" \
             -e ANTHROPIC_API_KEY=test-key \
             -e UPS_CLIENT_ID=test-id \
             -e UPS_CLIENT_SECRET=test-secret \
