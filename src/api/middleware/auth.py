@@ -144,6 +144,11 @@ def validate_api_key_strength() -> None:
         )
 
 
+def is_strong_api_key(key: str) -> bool:
+    """Return True if ``key`` meets the minimum API key length."""
+    return len(key) >= _MIN_API_KEY_LENGTH
+
+
 def get_expected_api_key() -> str:
     """Return configured API key; empty string means auth disabled."""
     return os.environ.get("SHIPAGENT_API_KEY", "").strip()

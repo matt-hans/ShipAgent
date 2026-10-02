@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, suppress
@@ -26,6 +25,7 @@ from src.control_plane.relay.protocol import (
 )
 from src.registry.vocabulary import RELAY_TOOL_CAPABILITIES
 from src.services.relay_key_service import RelayKeyService
+from src.utils.network import is_loopback_host
 
 
 class RelayClientConnection(Protocol):
@@ -114,19 +114,10 @@ class WebSocketRelayTransport:
         if not (
             self._allow_insecure_loopback
             and parsed_url.scheme == "ws"
-            and _is_loopback_host(parsed_url.hostname)
+            and is_loopback_host(parsed_url.hostname)
         ):
             raise ValueError("relay transport requires wss://")
         return WebSocketRelayConnectionContext(url, self._connect_factory)
-
-
-def _is_loopback_host(host: str | None) -> bool:
-    if host is None:
-        return False
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 def default_relay_version_metadata() -> RelayVersionMetadata:
