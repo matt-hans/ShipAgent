@@ -60,7 +60,9 @@ PID=$!
 # Wait up to 15 seconds for the SHIPAGENT_PORT= protocol line
 for i in $(seq 1 30); do
     if [ -f "$BINARY_DIR/.smoke_stdout" ]; then
-        SMOKE_PORT=$(grep -o 'SHIPAGENT_PORT=[0-9]*' "$BINARY_DIR/.smoke_stdout" | head -1 | cut -d= -f2)
+        # No match yet is expected while the sidecar starts; `|| true` keeps
+        # `set -e -o pipefail` from aborting the wait loop (and orphaning $PID).
+        SMOKE_PORT=$(grep -o 'SHIPAGENT_PORT=[0-9]*' "$BINARY_DIR/.smoke_stdout" | head -1 | cut -d= -f2 || true)
         if [ -n "$SMOKE_PORT" ]; then
             break
         fi
