@@ -48,3 +48,44 @@ flowchart TD
     EngineExec -->|write tasks/source updates| WriteBack[write_back_worker and gateways]
     EngineExec -->|write progress/final status| Jobs
 ```
+
+## Execution Grant Gate (Issue #46, ADR 0003/0008)
+
+**Purpose:** `BoundRegistryTool.run` (`src/hosted_mcp/server.py`) fails closed for
+every confirming tool. The only public one is `execute_shipments`.
+
+**Contract removal note (2026-10-02):** `submit_one_off_shipment` is removed from
+the public catalog. One-off, local-source and batch purchases all use
+`prepare_shipments → execute_shipments(preview_id, approval_request_id)`. Rollback:
+revert PR #50; no data migrations, no handlers or exports were enabled.
+
+**Flow:** `reserve` → handler → `consume` | `release` | `hold_for_reconciliation`.
+
+| Outcome | Reservation |
+|---|---|
+| Handler returns | consumed (one-time) |
+| Handler raises `PreAcceptFailure` (provably before the target accepted) | released, one retry allowed |
+| Any other exception or cancellation | held non-reusable; replay denied `reconciliation_pending` until reconciled by idempotency key |
+| Malformed or mismatched binding | released, call denied `execution_grant_invalid` |
+| No authority, bad reference, authority error | denied `execution_grant_unavailable` |
+
+**Caller obligations** (`src/control_plane/execution_grants.py`):
+
+- *Authority* (`ExecutionGrantAuthority.reserve`, no store exists yet): exclusively reserve; compare
+  target, policy, amount, currency and payload against the live approved preview
+  and reject any drift, including a lower amount; deny a second reservation.
+- *Handler*: register only via `build_server(confirmed_tool_handlers=...)`
+  (`(context, arguments, binding)`); invoke the bound Execution Target with the
+  binding's idempotency key and approved amount; raise `PreAcceptFailure` only
+  when nothing could have been accepted. Plain `tool_handlers` entries for a
+  confirming tool raise `ValueError` at `build_server`.
+- *Gate* checks what needs no live data: account, Provider Connection, preview,
+  expiry (timezone-aware), policy equal to the tool's `confirmation_policy`,
+  amount (`MONEY_PATTERN`, positive), currency (`RATE_CURRENCY_CODES`), identity fields.
+
+**Logging:** reserve, denial, hold, release and consume failures log tool name,
+denial code and exception type only, never identifiers, amounts or messages.
+
+**Status:** no grant store, approval page, connector, non-status handler or
+provider export is enabled. `confirmation_artifact_id` and the `INGRESS` family
+remain reserved with no tool consumer.

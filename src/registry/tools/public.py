@@ -61,7 +61,7 @@ UPS_SERVICE_CODES = [code.value for code in ServiceCode]
 UPS_SERVICE_NAMES = list(SERVICE_CODE_NAMES.values())
 RATE_CURRENCY_CODES = [DEFAULT_CURRENCY_CODE]
 
-_MONEY_PATTERN = r"^(0|[1-9][0-9]{0,9})\.[0-9]{2}$"
+MONEY_PATTERN = r"^(0|[1-9][0-9]{0,9})\.[0-9]{2}$"
 _ISO_DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 
 
@@ -220,7 +220,7 @@ PUBLIC_TOOLS = [
                             },
                             "total_charge": {
                                 "type": "string",
-                                "pattern": _MONEY_PATTERN,
+                                "pattern": MONEY_PATTERN,
                                 "minLength": 4,
                                 "maxLength": 13,
                             },
