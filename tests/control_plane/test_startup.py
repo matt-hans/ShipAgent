@@ -67,3 +67,28 @@ def test_desktop_listener_still_requires_api_key_on_public_bind(monkeypatch):
         validated_listener_host("0.0.0.0")
     monkeypatch.setenv("SHIPAGENT_API_KEY", "s" * 64)
     assert validated_listener_host("0.0.0.0") == "0.0.0.0"
+
+
+def test_launcher_validation_leaves_no_process_global_state(monkeypatch):
+    """A launcher's validation must not poison later app lifespans (issue #48).
+
+    The launcher validates and binds before the app starts; the app lifespan
+    gates only its own configuration, so a stale launcher host can never make an
+    unrelated lifespan (another test, a restarted app) fail.
+    """
+    from src.control_plane import startup
+
+    monkeypatch.setenv("SHIPAGENT_API_KEY", "s" * 64)
+    startup.validated_listener_host("0.0.0.0")
+    monkeypatch.delenv("SHIPAGENT_API_KEY", raising=False)
+    monkeypatch.delenv("SHIPAGENT_BIND_HOST", raising=False)
+    startup.validate_effective_listener_security()  # must not raise
+
+
+def test_lifespan_gate_rejects_configured_public_bind_without_key(monkeypatch):
+    from src.control_plane import startup
+
+    monkeypatch.delenv("SHIPAGENT_API_KEY", raising=False)
+    monkeypatch.setenv("SHIPAGENT_BIND_HOST", "0.0.0.0")
+    with pytest.raises(RuntimeError, match="SHIPAGENT_API_KEY"):
+        startup.validate_effective_listener_security()

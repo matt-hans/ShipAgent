@@ -24,20 +24,10 @@ from src.cli.protocol import (
     SourceSchemaColumn,
     SubmitResult,
 )
+from src.utils.network import is_loopback_host
 from src.utils.runtime import get_default_port
 
 logger = logging.getLogger(__name__)
-
-def _is_local_host(hostname: str) -> bool:
-    """Return True if hostname resolves to a loopback address."""
-    import ipaddress
-
-    if hostname in ("localhost",):
-        return True
-    try:
-        return ipaddress.ip_address(hostname).is_loopback
-    except ValueError:
-        return False
 
 
 def _reject_insecure_credential_transport(base_url: str) -> None:
@@ -48,7 +38,7 @@ def _reject_insecure_credential_transport(base_url: str) -> None:
     if parsed.scheme == "https":
         return
     host = (parsed.hostname or "").lower()
-    if _is_local_host(host):
+    if is_loopback_host(host):
         return
     raise ShipAgentClientError(
         f"Refusing to send platform credentials over plain HTTP to "
