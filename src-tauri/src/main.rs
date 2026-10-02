@@ -111,9 +111,17 @@ async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
 }
 
 fn main() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+    let context = tauri::generate_context!();
+    // The updater plugin requires `plugins.updater` (signing pubkey + endpoints)
+    // in tauri.conf.json; registering it without that config aborts startup.
+    // Auto-update stays off until a real Ed25519 key is provisioned.
+    let updater_configured = context.config().plugins.0.contains_key("updater");
+
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
+    if updater_configured {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    builder
         .manage(BackendProcess(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![start_sidecar])
         .setup(|_app| {
@@ -121,6 +129,6 @@ fn main() {
             // navigates to the returned loopback origin.
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running ShipAgent");
 }
