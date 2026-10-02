@@ -195,6 +195,7 @@ ShipAgent is moving toward a canonical workflow/tool registry. Public app-store 
 2. **Create env file**
    ```bash
    cp .env.example .env
+   printf '\nSHIPAGENT_API_KEY=%s\n' "$(openssl rand -hex 32)" >> .env
    ```
 
 3. **Edit `.env` and set required credentials**
@@ -203,6 +204,12 @@ ShipAgent is moving toward a canonical workflow/tool registry. Public app-store 
    - `UPS_CLIENT_SECRET`
    - `UPS_ACCOUNT_NUMBER`
    - `FILTER_TOKEN_SECRET` (required; 64 hex chars recommended)
+   - Keep the generated `SHIPAGENT_API_KEY`; clients send it as `X-API-Key`
+
+   Compose loads `docker.env` after `.env`. This switches the container from
+   loopback-only `fake_local` to its authenticated public-listener mode while
+   keeping the published port bound to `127.0.0.1`. Compose refuses to start
+   when `SHIPAGENT_API_KEY` is missing.
 
 4. **Start ShipAgent**
    ```bash
@@ -210,7 +217,7 @@ ShipAgent is moving toward a canonical workflow/tool registry. Public app-store 
    ```
 
 5. **Open the app**
-   - [http://localhost:8000](http://localhost:8000)
+   - [http://localhost:8080](http://localhost:8080)
 
 6. **Use CLI from host without pip**
    ```bash
@@ -229,6 +236,7 @@ UPS_CLIENT_ID=your_client_id
 UPS_CLIENT_SECRET=your_client_secret
 UPS_ACCOUNT_NUMBER=your_account_number
 FILTER_TOKEN_SECRET=replace-with-64-char-hex-secret   # openssl rand -hex 32
+SHIPAGENT_API_KEY=replace-with-64-char-hex-secret    # openssl rand -hex 32
 
 # =============================================================================
 # Optional — Orchestration
@@ -261,9 +269,8 @@ AGENT_AUDIT_RETENTION_DAYS=30
 AGENT_AUDIT_MAX_PAYLOAD_BYTES=16384
 
 # =============================================================================
-# Optional — API Hardening
+# Optional — API Hardening (API key is required for Docker)
 # =============================================================================
-# SHIPAGENT_API_KEY=your_api_key              # Protect /api/* with X-API-Key (min 32 chars)
 # ALLOWED_ORIGINS=http://localhost:4200        # CORS allowlist
 # SHIPAGENT_TRUST_PROXY=true                  # Trust X-Forwarded-For header
 
@@ -291,10 +298,21 @@ AGENT_AUDIT_MAX_PAYLOAD_BYTES=16384
 
 3. **Start backend + frontend**
    ```bash
+   # Terminal 1: backend on http://localhost:8080
    ./scripts/start-backend.sh
+
+   # Terminal 2: shell on http://localhost:4200
    cd shipagent-frontend && npx nx serve shell
    ```
-   Open [http://localhost:4200](http://localhost:4200)
+   Open [http://localhost:4200](http://localhost:4200). The development shell
+   uses relative `/api/v1` URLs; its Nx/Vite proxy forwards `/api` to the
+   backend on port 8080, so local development does not require CORS.
+
+   To exercise both documented launchers and the proxy end to end:
+   ```bash
+   cd shipagent-frontend
+   npm run smoke:development-proxy
+   ```
 
 ### Runtime Policy
 
@@ -558,8 +576,11 @@ ruff format src/ tests/
 ```bash
 cd shipagent-frontend
 
-# Development server with HMR
+# Development server with HMR on port 4200; /api proxies to localhost:8080
 npx nx serve shell
+
+# Real backend + frontend development proxy smoke
+npm run smoke:development-proxy
 
 # Production build
 npx nx run-many -t build --all --configuration=production

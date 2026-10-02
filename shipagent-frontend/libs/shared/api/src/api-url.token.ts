@@ -1,8 +1,7 @@
 /**
  * API_BASE_URL InjectionToken
  *
- * Provides the API base URL as an Angular Signal, allowing dynamic
- * updates when the Tauri sidecar port is discovered at runtime.
+ * Provides the API base URL as an Angular Signal.
  *
  * Usage in providers:
  * ```typescript
@@ -12,8 +11,8 @@
  * // In Vite dev mode (proxied):
  * { provide: API_BASE_URL, useFactory: () => signal('/api/v1') }
  *
- * // In Tauri mode (resolved dynamically):
- * { provide: API_BASE_URL, useFactory: () => signal(`http://127.0.0.1:${port}/api/v1`) }
+ * // In production web and the sidecar-served Tauri shell:
+ * { provide: API_BASE_URL, useFactory: () => signal('/api/v1') }
  * ```
  */
 

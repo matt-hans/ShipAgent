@@ -1,6 +1,7 @@
 {
   "identifier": "default",
   "description": "Default permissions",
+  "local": true,
   "windows": ["main"],
   "permissions": [
     "core:default",

@@ -25,11 +25,8 @@ def test_relay_execution_tools_are_projected_safely():
     generic_names = {tool["name"] for tool in generic}
     openai_names = {tool["name"] for tool in openai_public}
 
+    # ADR 0003: generic MCP hosts remain status/preview-only; only tools with a
+    # relay handler and advertised scope are exported by default.
     assert generic_names == {"get_shipagent_status"}
     assert "execute_shipments" not in generic_names
-
-    if "execute_shipments" in openai_names:
-        public_tool = next(
-            tool for tool in openai_public if tool["name"] == "execute_shipments"
-        )
-        assert public_tool["annotations"]["openWorldHint"] is True
+    assert openai_names == {"get_shipagent_status"}

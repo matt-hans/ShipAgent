@@ -10,7 +10,10 @@
       "additionalProperties": false,
       "properties": {
         "correlation_id": {
-          "description": "Opaque client correlation identifier.",
+          "description": "Opaque ShipAgent correlation identifier.",
+          "maxLength": 47,
+          "minLength": 47,
+          "pattern": "^sa_correlation_[0-9a-f]{32}$",
           "type": "string"
         }
       },
@@ -28,15 +31,22 @@
           "properties": {
             "capabilities": {
               "items": {
+                "enum": [
+                  "shipment_ingress",
+                  "address_validation",
+                  "rate_shopping",
+                  "shipment_preview",
+                  "shipment_execution",
+                  "job_status",
+                  "label_handoff",
+                  "get_shipagent_status",
+                  "rate_shipment"
+                ],
                 "type": "string"
               },
-              "type": "array"
-            },
-            "message": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "maxItems": 9,
+              "type": "array",
+              "uniqueItems": true
             },
             "state": {
               "enum": [
@@ -45,19 +55,11 @@
                 "update_required"
               ],
               "type": "string"
-            },
-            "target_id": {
-              "type": [
-                "string",
-                "null"
-              ]
             }
           },
           "required": [
             "state",
-            "target_id",
-            "capabilities",
-            "message"
+            "capabilities"
           ],
           "type": "object"
         },

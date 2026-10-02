@@ -13,26 +13,28 @@
  *   this.sse.connect(url).subscribe(event => { ... })
  */
 
-import { Injectable, NgZone, OnDestroy, signal } from '@angular/core';
+import { Injectable, NgZone, OnDestroy, inject, signal } from '@angular/core';
 import { Observable } from 'rxjs';
+import { BrowserSessionTransportService } from '@shipagent/shared-api';
 import type { RawSseEvent, SseConfig, SseConnectionState } from './sse.models';
 
 @Injectable()
 export class SseService implements OnDestroy {
-  private readonly ngZone: NgZone;
+  private readonly ngZone = inject(NgZone);
+  private readonly browserTransport = inject(BrowserSessionTransportService);
 
-  constructor(ngZone: NgZone) {
-    this.ngZone = ngZone;
-  }
   /** Current connection state as a signal. */
   readonly connectionState = signal<SseConnectionState>('disconnected');
 
   private eventSource: EventSource | null = null;
+  private connectionGeneration = 0;
+  private connectionAbortController: AbortController | null = null;
 
   /**
    * Connect to an SSE endpoint and return an Observable of parsed events.
    * Automatically handles ping events (skips them). Closes any existing
-   * connection before opening a new one.
+   * connection before opening a new one. Failed sources are closed before one
+   * browser-session check so expired sessions cannot enter a reconnect loop.
    *
    * @param url The SSE endpoint URL.
    * @param _config Optional connection configuration (reserved for future use).
@@ -41,18 +43,40 @@ export class SseService implements OnDestroy {
   connect(url: string, _config?: SseConfig): Observable<RawSseEvent> {
     // Close any existing connection before opening a new one.
     this.disconnect();
+    const generation = this.connectionGeneration;
 
     return new Observable<RawSseEvent>((observer) => {
+      if (
+        generation !== this.connectionGeneration ||
+        this.connectionAbortController
+      ) {
+        observer.complete();
+        return;
+      }
+
       this.connectionState.set('connecting');
 
-      const eventSource = new EventSource(url);
+      const eventSource = new EventSource(url, { withCredentials: true });
+      const abortController = new AbortController();
+      let handlingError = false;
       this.eventSource = eventSource;
+      this.connectionAbortController = abortController;
 
       eventSource.onopen = () => {
+        if (
+          !this.isCurrentConnection(generation, eventSource, abortController)
+        ) {
+          return;
+        }
         this.connectionState.set('connected');
       };
 
       eventSource.onmessage = (event: MessageEvent) => {
+        if (
+          !this.isCurrentConnection(generation, eventSource, abortController)
+        ) {
+          return;
+        }
         try {
           const rawData = event.data as string;
 
@@ -99,19 +123,45 @@ export class SseService implements OnDestroy {
       };
 
       eventSource.onerror = () => {
-        this.ngZone.run(() => {
-          if (eventSource.readyState === EventSource.CLOSED) {
-            this.connectionState.set('error');
-            observer.error(new Error('SSE connection closed'));
-          } else if (eventSource.readyState === EventSource.CONNECTING) {
-            this.connectionState.set('connecting');
-          }
-        });
+        if (
+          handlingError ||
+          !this.isCurrentConnection(generation, eventSource, abortController)
+        ) {
+          return;
+        }
+        handlingError = true;
+        eventSource.close();
+        if (this.eventSource === eventSource) {
+          this.eventSource = null;
+        }
+        this.connectionState.set('disconnected');
+
+        void this.browserTransport
+          .confirmSessionAfterEventSourceError(abortController.signal, () =>
+            this.isCurrentGeneration(generation, abortController)
+          )
+          .then((sessionExpired) => {
+            this.ngZone.run(() => {
+              if (
+                observer.closed ||
+                !this.isCurrentGeneration(generation, abortController)
+              ) {
+                return;
+              }
+              if (sessionExpired) {
+                observer.complete();
+                return;
+              }
+
+              this.connectionState.set('error');
+              observer.error(new Error('SSE connection closed'));
+            });
+          });
       };
 
       // Teardown: called when the Observable is unsubscribed.
       return () => {
-        this.disconnect();
+        this.disconnectGeneration(generation, eventSource, abortController);
       };
     });
   }
@@ -121,15 +171,56 @@ export class SseService implements OnDestroy {
    * Safe to call when no connection is active.
    */
   disconnect(): void {
+    this.connectionGeneration++;
+    this.connectionAbortController?.abort();
+    this.connectionAbortController = null;
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
-      this.connectionState.set('disconnected');
     }
+    this.connectionState.set('disconnected');
   }
 
   /** Angular lifecycle hook — ensures cleanup when the hosting component is destroyed. */
   ngOnDestroy(): void {
     this.disconnect();
+  }
+
+  private isCurrentGeneration(
+    generation: number,
+    abortController: AbortController
+  ): boolean {
+    return (
+      generation === this.connectionGeneration &&
+      this.connectionAbortController === abortController &&
+      !abortController.signal.aborted
+    );
+  }
+
+  private isCurrentConnection(
+    generation: number,
+    eventSource: EventSource,
+    abortController: AbortController
+  ): boolean {
+    return (
+      this.eventSource === eventSource &&
+      this.isCurrentGeneration(generation, abortController)
+    );
+  }
+
+  private disconnectGeneration(
+    generation: number,
+    eventSource: EventSource,
+    abortController: AbortController
+  ): void {
+    if (!this.isCurrentGeneration(generation, abortController)) return;
+    this.connectionGeneration++;
+    abortController.abort();
+    this.connectionAbortController = null;
+    if (this.eventSource === eventSource) {
+      eventSource.close();
+      this.eventSource = null;
+    }
+    this.connectionState.set('disconnected');
   }
 }

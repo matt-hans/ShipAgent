@@ -8,5 +8,12 @@
 
 export { ApiService } from './api.service';
 export { API_BASE_URL } from './api-url.token';
-export { apiErrorInterceptor, apiAuthInterceptor, API_AUTH_KEY } from './api.interceptors';
-export { ApiError, type ApiErrorBody, type PlatformActivationResponse } from './api.models';
+export { apiErrorInterceptor, apiAuthInterceptor } from './api.interceptors';
+export { provideShipAgentHttpClient } from './api.providers';
+export { BrowserSessionState } from './browser-session.state';
+export { BrowserSessionTransportService } from './browser-session-transport.service';
+export {
+  ApiError,
+  type ApiErrorBody,
+  type PlatformActivationResponse,
+} from './api.models';

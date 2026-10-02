@@ -1,6 +1,7 @@
 import ipaddress
 from urllib.parse import urlparse
 
+from src.api.middleware.auth import get_expected_api_key, validate_api_key_strength
 from src.control_plane.config import AuthMode, ControlPlaneSettings, Environment
 
 
@@ -12,16 +13,36 @@ def _is_loopback_host(value: str) -> bool:
 
 
 def validate_startup_security(settings: ControlPlaneSettings) -> None:
-    if settings.auth_mode != AuthMode.fake_local:
-        return
+    if settings.auth_mode == AuthMode.fake_local:
+        public_host = (
+            urlparse(str(settings.public_base_url)).hostname
+            if settings.public_base_url
+            else None
+        )
+        if (
+            settings.environment != Environment.local
+            or not _is_loopback_host(settings.bind_host)
+            or (public_host is not None and not _is_loopback_host(public_host))
+        ):
+            raise RuntimeError("fake_local auth is restricted to loopback local mode")
 
-    public_host = (
-        urlparse(str(settings.public_base_url)).hostname if settings.public_base_url else None
-    )
-    if (
-        settings.environment != Environment.local
-        or not _is_loopback_host(settings.bind_host)
-        or (public_host is not None and not _is_loopback_host(public_host))
-    ):
-        raise RuntimeError("fake_local auth is restricted to loopback local mode")
 
+def validate_desktop_listener_security(bind_host: str) -> None:
+    """Require a strong SHIPAGENT_API_KEY when the desktop API binds non-loopback.
+
+    Desktop/API-key auth only; hosted Auth0 control-plane startup does not call this.
+    """
+    if not _is_loopback_host(bind_host):
+        validate_api_key_strength()
+        if not get_expected_api_key():
+            raise RuntimeError(
+                "Non-loopback listeners require SHIPAGENT_API_KEY authentication"
+            )
+
+
+def validated_listener_host(host: str) -> str:
+    """Validate and return the exact host a server launcher will bind."""
+    settings = ControlPlaneSettings(bind_host=host)
+    validate_startup_security(settings)
+    validate_desktop_listener_security(settings.bind_host)
+    return settings.bind_host

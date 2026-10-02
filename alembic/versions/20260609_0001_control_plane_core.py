@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import sqlalchemy as sa
 
 from alembic import op
@@ -20,7 +22,7 @@ def _schema() -> str | None:
     if op.get_context().dialect.name == "sqlite":
         return None
     runtime_section = context.config.get_section("alembic:runtime") or {}
-    return runtime_section.get(
+    return os.environ.get("SHIPAGENT_CONTROL_PLANE_SCHEMA") or runtime_section.get(
         "shipagent_control_plane_schema",
         "shipagent_private",
     )
@@ -54,7 +56,9 @@ def upgrade() -> None:
         sa.Column("client_id", sa.String(length=255), nullable=False),
         sa.Column("surface", sa.String(length=64), nullable=False),
         sa.Column("scopes_text", sa.Text(), nullable=False, server_default=""),
-        sa.Column("status", sa.String(length=32), nullable=False, server_default="active"),
+        sa.Column(
+            "status", sa.String(length=32), nullable=False, server_default="active"
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.ForeignKeyConstraint(
             ["account_id"],

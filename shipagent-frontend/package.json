@@ -2,7 +2,10 @@
   "name": "@org/source",
   "version": "0.0.0",
   "license": "MIT",
-  "scripts": {},
+  "scripts": {
+    "smoke:authenticated-production": "node scripts/smoke-authenticated-production.mjs",
+    "smoke:development-proxy": "node scripts/smoke-development-proxy.mjs"
+  },
   "private": true,
   "devDependencies": {
     "@angular-devkit/build-angular": "~21.2.0",
@@ -30,6 +33,7 @@
     "eslint-config-prettier": "^10.0.0",
     "jsdom": "^27.1.0",
     "nx": "22.6.1",
+    "playwright": "1.58.2",
     "prettier": "^2.6.2",
     "tslib": "^2.3.0",
     "typescript": "~5.9.2",

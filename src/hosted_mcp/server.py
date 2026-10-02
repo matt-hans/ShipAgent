@@ -2,12 +2,15 @@
 
 import inspect
 import json
+import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.tools import Tool
 from fastmcp.tools.tool import ToolResult
+from jsonschema import validate
 from mcp.types import TextContent, ToolAnnotations
 
 from src.control_plane.auth.context import (
@@ -28,6 +31,9 @@ ToolHandler = Callable[
     [AuthorizationContext, dict[str, Any]],
     Awaitable[dict[str, Any]] | dict[str, Any],
 ]
+logger = logging.getLogger(__name__)
+
+PROVIDER_RESULT_ERROR = "Tool result could not be safely returned"
 
 
 class BoundRegistryTool(Tool):
@@ -78,24 +84,47 @@ class BoundRegistryTool(Tool):
         if missing:
             raise self._missing_scopes_error(sorted(missing))
 
-        request_controls = getattr(self, "_request_controls", None)
-        if request_controls is not None:
+        failure_category: str | None = None
+        result: Any = None
+        try:
+            validate(instance=arguments, schema=self._contract.input_schema)
+        except Exception:  # noqa: BLE001 - provider input is a fail-closed boundary.
+            failure_category = "input"
+
+        if failure_category is None:
+            request_controls = getattr(self, "_request_controls", None)
+            if request_controls is not None:
+                try:
+                    await request_controls.require_allowed(
+                        connection_id=context.provider_connection_id,
+                        tool_name=self._contract.name,
+                        rate_limit_class=self._contract.rate_limit_class,
+                        arguments_hash=hash_arguments(arguments),
+                    )
+                except RequestControlError as err:
+                    raise self._loop_guard_or_rate_limit_error(err) from err
+
             try:
-                arguments_hash = hash_arguments(arguments)
-                await request_controls.require_allowed(
-                    connection_id=context.provider_connection_id,
-                    tool_name=self._contract.name,
-                    rate_limit_class=self._contract.rate_limit_class,
-                    arguments_hash=arguments_hash,
-                )
-            except RequestControlError as err:
-                raise self._loop_guard_or_rate_limit_error(err) from err
+                result = self._handler(context, arguments)
+                if inspect.isawaitable(result):
+                    result = await result
+            except Exception:  # noqa: BLE001 - provider handler is a safe boundary.
+                failure_category = "handler"
 
-        result = self._handler(context, arguments)
-        if inspect.isawaitable(result):
-            result = await result
+        if failure_category is None:
+            try:
+                result = project_result(self._contract, result)
+            except Exception:  # noqa: BLE001 - projection is a safe boundary.
+                failure_category = "projection"
 
-        result = project_result(self._contract, result)
+        if failure_category is not None:
+            logger.warning(
+                "Provider tool failure for tool %s category=%s",
+                self._contract.name,
+                failure_category,
+            )
+            raise ToolError(PROVIDER_RESULT_ERROR)
+
         return ToolResult(
             content=[
                 TextContent(

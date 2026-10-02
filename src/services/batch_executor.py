@@ -15,8 +15,13 @@ from collections.abc import Callable, Coroutine
 from typing import Any
 
 from src.db.models import Job, JobRow, RowStatus
+from src.errors.terminal_diagnostics import project_terminal_diagnostic
 from src.services.batch_engine import BatchEngine
 from src.services.decision_audit_service import DecisionAuditService
+from src.services.job_progress_projection import (
+    AuthoritativeJobProgress,
+    project_authoritative_job_progress,
+)
 from src.services.ups_mcp_client import UPSMCPClient
 
 logger = logging.getLogger(__name__)
@@ -52,6 +57,7 @@ async def get_shipper_for_job(job: Job) -> dict:
 
     # Tier 2: env-based shipper when local data source is active
     from src.services.gateway_provider import get_data_gateway
+
     gw = await get_data_gateway()
     source_info = await gw.get_source_info()
     if source_info is not None:
@@ -64,11 +70,22 @@ async def get_shipper_for_job(job: Job) -> dict:
         shopify_domain = os.environ.get("SHOPIFY_STORE_DOMAIN")
         if shopify_token and shopify_domain:
             from src.services.gateway_provider import get_external_sources_client
+
             ext = await get_external_sources_client()
             connections = await ext.list_connections()
             shopify_connected = any(
-                (c.get("platform") if isinstance(c, dict) else getattr(c, "platform", None)) == "shopify"
-                and (c.get("status") if isinstance(c, dict) else getattr(c, "status", None)) == "connected"
+                (
+                    c.get("platform")
+                    if isinstance(c, dict)
+                    else getattr(c, "platform", None)
+                )
+                == "shopify"
+                and (
+                    c.get("status")
+                    if isinstance(c, dict)
+                    else getattr(c, "status", None)
+                )
+                == "connected"
                 for c in connections.get("connections", [])
             )
             if not shopify_connected:
@@ -83,7 +100,10 @@ async def get_shipper_for_job(job: Job) -> dict:
                 if shop_result.get("success"):
                     shop_info = shop_result.get("shop", {})
                     if shop_info:
-                        logger.info("Using shipper from Shopify store: %s", shop_info.get("name"))
+                        logger.info(
+                            "Using shipper from Shopify store: %s",
+                            shop_info.get("name"),
+                        )
                         return build_shipper(shop_info)
     except Exception as e:
         logger.warning("Failed to get shop info from Shopify: %s", e)
@@ -128,8 +148,6 @@ async def execute_batch(
     """
     from datetime import UTC, datetime
 
-    from src.services.ups_constants import DEFAULT_ORIGIN_COUNTRY
-
     job = db_session.query(Job).filter(Job.id == job_id).first()
     if not job:
         raise ValueError(f"Job not found: {job_id}")
@@ -149,6 +167,23 @@ async def execute_batch(
         .all()
     )
 
+    def _sync_authoritative_progress() -> AuthoritativeJobProgress:
+        all_rows = (
+            db_session.query(JobRow)
+            .filter(JobRow.job_id == job_id)
+            .order_by(JobRow.row_number)
+            .all()
+        )
+        progress = project_authoritative_job_progress(job, all_rows)
+        job.total_rows = progress.total_rows
+        job.processed_rows = progress.processed_rows
+        job.successful_rows = progress.successful_rows
+        job.failed_rows = progress.failed_rows
+        job.total_cost_cents = progress.total_cost_cents
+        job.total_duties_taxes_cents = progress.total_duties_taxes_cents or None
+        job.international_row_count = progress.international_row_count
+        return progress
+
     shipper = await get_shipper_for_job(job)
 
     # Resolve UPS credentials via runtime adapter (DB priority, env fallback)
@@ -161,7 +196,9 @@ async def execute_batch(
         )
 
     logger.info("Batch execution using UPS environment=%s", ups_creds.environment)
-    account_number = ups_creds.account_number or os.environ.get("UPS_ACCOUNT_NUMBER", "")
+    account_number = ups_creds.account_number or os.environ.get(
+        "UPS_ACCOUNT_NUMBER", ""
+    )
 
     try:
         async with UPSMCPClient(
@@ -176,23 +213,8 @@ async def execute_batch(
                 account_number=account_number,
             )
 
-            # Wrap progress callback to update job counters
-            successful = 0
-            failed = 0
-            total_cost = 0
-
             async def _progress_adapter(event_type: str, **kwargs) -> None:
-                nonlocal successful, failed, total_cost
-                if event_type == "row_completed":
-                    successful += 1
-                    total_cost += kwargs.get("cost_cents", 0)
-                elif event_type == "row_failed":
-                    failed += 1
-
-                job.processed_rows = successful + failed
-                job.successful_rows = successful
-                job.failed_rows = failed
-                job.total_cost_cents = total_cost
+                _sync_authoritative_progress()
                 db_session.commit()
 
                 if on_progress:
@@ -208,24 +230,12 @@ async def execute_batch(
             )
 
         # --- Final status + aggregation (owned here, not by callers) ---
-        successful = result["successful"]
-        failed = result["failed"]
-        total_cost = result["total_cost_cents"]
-
-        # Aggregate international row-level data onto job
-        intl_rows = (
-            db_session.query(JobRow)
-            .filter(
-                JobRow.job_id == job_id,
-                JobRow.destination_country.isnot(None),
-            )
-            .all()
-        )
-        intl_count = sum(
-            1 for r in intl_rows
-            if r.destination_country not in (DEFAULT_ORIGIN_COUNTRY, "PR")
-        )
-        intl_duties = sum(r.duties_taxes_cents or 0 for r in intl_rows)
+        progress = _sync_authoritative_progress()
+        successful = progress.successful_rows
+        failed = progress.failed_rows
+        total_cost = progress.total_cost_cents
+        intl_count = progress.international_row_count
+        intl_duties = progress.total_duties_taxes_cents
 
         # Final job update — status, counters, timestamps.
         # Surface write-back failures so users know tracking numbers
@@ -234,23 +244,28 @@ async def execute_batch(
         wb_status = write_back.get("status", "skipped")
         if failed == 0 and wb_status in ("error", "partial"):
             final_status = "completed_with_warnings"
-            wb_msg = write_back.get("message", "Write-back failed")
-            job.error_message = f"Shipments succeeded but write-back {wb_status}: {wb_msg}"
+            diagnostic = project_terminal_diagnostic("E-4001")
+            job.error_code = diagnostic.error_code
+            job.error_message = diagnostic.message
+            raw_failure_count = write_back.get("failure_count")
+            failure_count = (
+                raw_failure_count
+                if isinstance(raw_failure_count, int)
+                and not isinstance(raw_failure_count, bool)
+                and 0 <= raw_failure_count <= successful
+                else 1
+            )
             logger.warning(
-                "Job %s completed with write-back %s: %s",
-                job_id, wb_status, wb_msg,
+                "batch_execution_warning action=write_back "
+                "error_code=%s failure_count=%d",
+                diagnostic.error_code,
+                failure_count,
             )
         elif failed == 0:
             final_status = "completed"
         else:
             final_status = "failed"
 
-        job.processed_rows = successful + failed
-        job.successful_rows = successful
-        job.failed_rows = failed
-        job.total_cost_cents = total_cost
-        job.international_row_count = intl_count
-        job.total_duties_taxes_cents = intl_duties if intl_duties > 0 else None
         job.status = final_status
         job.completed_at = datetime.now(UTC).isoformat()
         db_session.commit()
@@ -258,7 +273,11 @@ async def execute_batch(
         logger.info(
             "Batch execution complete for job %s: %d successful, %d failed, "
             "$%.2f total, %d international rows",
-            job_id, successful, failed, total_cost / 100, intl_count,
+            job_id,
+            successful,
+            failed,
+            total_cost / 100,
+            intl_count,
         )
         DecisionAuditService.log_event(
             run_id=run_id,
@@ -286,20 +305,22 @@ async def execute_batch(
             "total_duties_taxes_cents": intl_duties,
         }
 
-    except Exception as e:
-        logger.exception("Batch execution failed for job %s: %s", job_id, e)
+    except Exception:
+        logger.error("Batch execution failed for job %s", job_id)
         DecisionAuditService.log_event(
             run_id=run_id,
             phase="error",
             event_name="execution.batch.failed",
             actor="system",
-            payload={"job_id": job_id, "error": str(e)},
+            payload={"job_id": job_id, "error_code": "E-4001"},
         )
         # Update job to failed status
         job = db_session.query(Job).filter(Job.id == job_id).first()
         if job and job.status == "running":
             job.status = "failed"
             job.error_code = "E-4001"
-            job.error_message = str(e)
+            job.error_message = (
+                "The row could not be processed because of a system error."
+            )
             db_session.commit()
         raise

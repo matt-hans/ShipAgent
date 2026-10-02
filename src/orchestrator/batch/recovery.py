@@ -10,6 +10,11 @@ Per CONTEXT.md Decision 3:
 from enum import Enum
 
 from src.db.models import JobStatus, RowStatus
+from src.errors.terminal_diagnostics import (
+    MAX_TERMINAL_COUNT,
+    project_terminal_diagnostic,
+    project_terminal_row_diagnostic,
+)
 from src.orchestrator.batch.models import InterruptedJobInfo
 from src.services.job_service import JobService
 
@@ -51,20 +56,22 @@ def check_interrupted_jobs(job_service: JobService) -> InterruptedJobInfo | None
     # Get last completed row info
     completed_rows = job_service.get_rows(job.id, status=RowStatus.completed)
     last_row_info = None
-    last_tracking = None
     if completed_rows:
         last = completed_rows[-1]
-        last_row_info = last.row_number
-        last_tracking = last.tracking_number
+        projected_last = project_terminal_row_diagnostic(last.row_number, "E-4001")
+        if projected_last is not None:
+            last_row_info = projected_last.row_number
 
     # Count in_flight and needs_review rows for Phase 8 recovery
     all_rows = job_service.get_rows(job.id)
-    in_flight_count = sum(
-        1 for r in all_rows if r.status == RowStatus.in_flight.value
-    )
+    in_flight_count = sum(1 for r in all_rows if r.status == RowStatus.in_flight.value)
     needs_review_count = sum(
         1 for r in all_rows if r.status == RowStatus.needs_review.value
     )
+
+    diagnostic = None
+    if job.error_code is not None or job.error_message is not None:
+        diagnostic = project_terminal_diagnostic(job.error_code)
 
     return InterruptedJobInfo(
         job_id=job.id,
@@ -73,9 +80,9 @@ def check_interrupted_jobs(job_service: JobService) -> InterruptedJobInfo | None
         total_rows=total,
         remaining_rows=remaining,
         last_row_number=last_row_info,
-        last_tracking_number=last_tracking,
-        error_code=job.error_code,
-        error_message=job.error_message,
+        last_tracking_number=None,
+        error_code=diagnostic.error_code if diagnostic is not None else None,
+        error_message=diagnostic.message if diagnostic is not None else None,
         in_flight_count=in_flight_count,
         needs_review_count=needs_review_count,
     )
@@ -99,35 +106,40 @@ def get_recovery_prompt(info: InterruptedJobInfo) -> str:
         "",
     ]
 
-    if info.last_row_number and info.last_tracking_number:
-        lines.append(
-            f"Last completed: Row {info.last_row_number} (tracking: {info.last_tracking_number})"
-        )
+    if info.last_row_number:
+        lines.append(f"Last completed: Row {info.last_row_number}")
 
     lines.append(f"Remaining: {info.remaining_rows} rows")
 
-    if info.error_code and info.error_message:
-        lines.extend([
-            "",
-            f"Last error: {info.error_code}: {info.error_message}",
-            "Resume will retry from the failed row.",
-        ])
+    if info.error_code or info.error_message:
+        diagnostic = project_terminal_diagnostic(info.error_code)
+        lines.extend(
+            [
+                "",
+                f"Last error: {diagnostic.error_code}: {diagnostic.message}",
+                "Resume will retry from the failed row.",
+            ]
+        )
 
     if info.in_flight_count > 0 or info.needs_review_count > 0:
-        lines.extend([
-            "",
-            f"Rows requiring attention: {info.in_flight_count} in-flight, "
-            f"{info.needs_review_count} needs review",
-        ])
+        lines.extend(
+            [
+                "",
+                f"Rows requiring attention: {info.in_flight_count} in-flight, "
+                f"{info.needs_review_count} needs review",
+            ]
+        )
 
-    lines.extend([
-        "",
-        "Options:",
-        "  [resume]  - Continue from where it stopped",
-        "  [restart] - Start over from the beginning (may create duplicates!)",
-        "  [cancel]  - Abandon this job",
-        "  [review]  - Inspect needs_review/in_flight rows before deciding",
-    ])
+    lines.extend(
+        [
+            "",
+            "Options:",
+            "  [resume]  - Continue from where it stopped",
+            "  [restart] - Start over from the beginning (may create duplicates!)",
+            "  [cancel]  - Abandon this job",
+            "  [review]  - Inspect needs_review/in_flight rows before deciding",
+        ]
+    )
 
     return "\n".join(lines)
 
@@ -167,8 +179,7 @@ def handle_recovery_choice(
         # Get all rows and count completed ones with tracking
         all_rows = job_service.get_rows(job_id)
         completed_count = sum(
-            1 for r in all_rows
-            if r.status == RowStatus.completed.value
+            1 for r in all_rows if r.status == RowStatus.completed.value
         )
 
         # Return warning about duplicates
@@ -199,41 +210,53 @@ def handle_recovery_choice(
         needs_review_rows = [
             r for r in all_rows if r.status == RowStatus.needs_review.value
         ]
-        in_flight_rows = [
-            r for r in all_rows if r.status == RowStatus.in_flight.value
-        ]
+        in_flight_rows = [r for r in all_rows if r.status == RowStatus.in_flight.value]
 
         review_details: list[dict] = []
+        omitted_row_count = 0
         for r in needs_review_rows:
-            review_details.append({
-                "row_number": r.row_number,
-                "status": "needs_review",
-                "error_message": r.error_message or "",
-                "ups_tracking_number": getattr(r, "ups_tracking_number", "") or "",
-                "ups_shipment_id": getattr(r, "ups_shipment_id", "") or "",
-                "idempotency_key": getattr(r, "idempotency_key", "") or "",
-            })
+            diagnostic = project_terminal_row_diagnostic(
+                r.row_number,
+                getattr(r, "error_code", None),
+            )
+            if diagnostic is None:
+                omitted_row_count += 1
+                continue
+            review_details.append(
+                {
+                    "row_number": diagnostic.row_number,
+                    "status": "needs_review",
+                    "error_code": diagnostic.error_code,
+                }
+            )
         for r in in_flight_rows:
-            review_details.append({
-                "row_number": r.row_number,
-                "status": "in_flight",
-                "recovery_attempt_count": getattr(r, "recovery_attempt_count", 0),
-                "ups_tracking_number": getattr(r, "ups_tracking_number", "") or "",
-                "idempotency_key": getattr(r, "idempotency_key", "") or "",
-            })
+            diagnostic = project_terminal_row_diagnostic(r.row_number, "E-4001")
+            if diagnostic is None:
+                omitted_row_count += 1
+                continue
+            raw_attempt_count = getattr(r, "recovery_attempt_count", 0)
+            attempt_count = (
+                raw_attempt_count
+                if isinstance(raw_attempt_count, int)
+                and not isinstance(raw_attempt_count, bool)
+                and 0 <= raw_attempt_count <= MAX_TERMINAL_COUNT
+                else 0
+            )
+            review_details.append(
+                {
+                    "row_number": diagnostic.row_number,
+                    "status": "in_flight",
+                    "recovery_attempt_count": attempt_count,
+                }
+            )
 
         return {
             "action": "review",
             "job_id": job_id,
             "needs_review_count": len(needs_review_rows),
             "in_flight_count": len(in_flight_rows),
+            "omitted_row_count": omitted_row_count,
             "rows": review_details,
-            "message": (
-                f"{len(needs_review_rows)} rows need review, "
-                f"{len(in_flight_rows)} rows still in-flight. "
-                "Use idempotency keys to look up shipments in UPS Quantum View. "
-                "After resolving, choose RESUME to continue or CANCEL to abort."
-            ),
         }
 
     else:

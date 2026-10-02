@@ -7,4 +7,4 @@
  */
 
 export { TauriDetectionService } from './tauri-detection.service';
-export { resolveSidecarPort, computeApiBaseUrl } from './port-resolver';
+export { canUseTauriIpc, computeApiBaseUrl } from './port-resolver';

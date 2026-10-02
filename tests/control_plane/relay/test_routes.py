@@ -56,6 +56,8 @@ from src.hosted_mcp.server import build_server as real_build_server
 from src.services.desktop_relay_client import DesktopRelayClient
 from src.services.relay_key_service import RelayKeyService
 
+STATUS_CORRELATION_ID = "sa_correlation_0123456789abcdef0123456789abcdef"
+
 
 class InMemoryKeyStore:
     def __init__(self) -> None:
@@ -555,7 +557,9 @@ async def _run_status_tool(server) -> dict[str, object]:
     )
     token = set_authorization_context(context)
     try:
-        result = await tools["get_shipagent_status"].run({"correlation_id": "corr-1"})
+        result = await tools["get_shipagent_status"].run(
+            {"correlation_id": STATUS_CORRELATION_ID}
+        )
     finally:
         clear_authorization_context(token)
     return result.structured_content
@@ -564,7 +568,7 @@ async def _run_status_tool(server) -> dict[str, object]:
 async def _run_status_tool_over_http(
     base_url: str,
     *,
-    correlation_id: str = "corr-1",
+    correlation_id: str = STATUS_CORRELATION_ID,
 ) -> dict[str, object]:
     async with FastMCPClient(
         f"{base_url}/mcp/",
@@ -602,7 +606,7 @@ async def _poll_status_tool_over_http(
         try:
             last_status = await _run_status_tool_over_http(
                 base_url,
-                correlation_id=f"poll-{expected_state}-{attempt}",
+                correlation_id=STATUS_CORRELATION_ID,
             )
             execution_target = last_status.get("executionTarget")
             if (
@@ -1846,18 +1850,14 @@ def test_desktop_relay_client_connection_makes_hosted_status_ready(
             "status": "ready",
             "executionTarget": {
                 "state": "ready",
-                "target_id": f"relay:{device_id}",
                 "capabilities": ["rate_shipment", "get_shipagent_status"],
-                "message": None,
             },
         }
         assert offline_status == {
             "status": "offline",
             "executionTarget": {
                 "state": "offline",
-                "target_id": None,
                 "capabilities": [],
-                "message": "No active execution target connected.",
             },
         }
 
@@ -1910,9 +1910,7 @@ def test_hosted_status_returns_offline_when_only_stale_redis_liveness_remains(
             "status": "offline",
             "executionTarget": {
                 "state": "offline",
-                "target_id": None,
                 "capabilities": [],
-                "message": "No active execution target connected.",
             },
         }
 
@@ -1958,16 +1956,14 @@ def test_desktop_relay_process_makes_hosted_http_status_ready_then_offline(
             "state": "ready",
         }
         ready_status = asyncio.run(
-            _run_status_tool_over_http(base_url, correlation_id="ready-status")
+            _run_status_tool_over_http(base_url, correlation_id=STATUS_CORRELATION_ID)
         )
 
         assert ready_status == {
             "status": "ready",
             "executionTarget": {
                 "state": "ready",
-                "target_id": f"relay:{device_id}",
                 "capabilities": ["rate_shipment", "get_shipagent_status"],
-                "message": None,
             },
         }
 
@@ -1984,9 +1980,7 @@ def test_desktop_relay_process_makes_hosted_http_status_ready_then_offline(
             "status": "offline",
             "executionTarget": {
                 "state": "offline",
-                "target_id": None,
                 "capabilities": [],
-                "message": "No active execution target connected.",
             },
         }
     finally:
@@ -2017,16 +2011,14 @@ def test_control_plane_app_injected_loopback_status_over_mcp_http(
         _wait_for_http_server(base_url)
 
         status = asyncio.run(
-            _run_status_tool_over_http(base_url, correlation_id="loopback-status")
+            _run_status_tool_over_http(base_url, correlation_id=STATUS_CORRELATION_ID)
         )
 
         assert status == {
             "status": "ready",
             "executionTarget": {
                 "state": "ready",
-                "target_id": "loopback-target",
                 "capabilities": ["rate_shipment", "get_shipagent_status"],
-                "message": None,
             },
         }
     finally:

@@ -141,14 +141,17 @@ class TestInternationalPreviewValidation:
     @pytest.mark.asyncio
     async def test_preview_unsupported_lane_marks_error(self, engine):
         """Preview for unsupported international lane produces rate_error."""
-        row = self._make_row(1, {
-            "ship_to_name": "Test",
-            "ship_to_country": "GB",
-            "ship_to_address1": "1 High St",
-            "ship_to_city": "London",
-            "ship_to_zip": "SW1A 1AA",
-            "weight": "5",
-        })
+        row = self._make_row(
+            1,
+            {
+                "ship_to_name": "Test",
+                "ship_to_country": "GB",
+                "ship_to_address1": "1 High St",
+                "ship_to_city": "London",
+                "ship_to_zip": "SW1A 1AA",
+                "weight": "5",
+            },
+        )
         result = await engine.preview(
             job_id="test-job",
             rows=[row],
@@ -165,15 +168,18 @@ class TestInternationalPreviewValidation:
     async def test_preview_disabled_lane_marks_error(self, engine, monkeypatch):
         """Preview for disabled lane (kill switch) produces rate_error."""
         monkeypatch.delenv("INTERNATIONAL_ENABLED_LANES", raising=False)
-        row = self._make_row(1, {
-            "ship_to_name": "Test",
-            "ship_to_country": "CA",
-            "ship_to_address1": "123 Maple",
-            "ship_to_city": "Toronto",
-            "ship_to_state": "ON",
-            "ship_to_zip": "M5V 1A1",
-            "weight": "5",
-        })
+        row = self._make_row(
+            1,
+            {
+                "ship_to_name": "Test",
+                "ship_to_country": "CA",
+                "ship_to_address1": "123 Maple",
+                "ship_to_city": "Toronto",
+                "ship_to_state": "ON",
+                "ship_to_zip": "M5V 1A1",
+                "weight": "5",
+            },
+        )
         result = await engine.preview(
             job_id="test-job",
             rows=[row],
@@ -187,15 +193,18 @@ class TestInternationalPreviewValidation:
     @pytest.mark.asyncio
     async def test_preview_domestic_row_skips_international_validation(self, engine):
         """Domestic rows skip international validation and rate normally."""
-        row = self._make_row(1, {
-            "ship_to_name": "Test",
-            "ship_to_country": "US",
-            "ship_to_address1": "123 Main St",
-            "ship_to_city": "Austin",
-            "ship_to_state": "TX",
-            "ship_to_zip": "73301",
-            "weight": "5",
-        })
+        row = self._make_row(
+            1,
+            {
+                "ship_to_name": "Test",
+                "ship_to_country": "US",
+                "ship_to_address1": "123 Main St",
+                "ship_to_city": "Austin",
+                "ship_to_state": "TX",
+                "ship_to_zip": "73301",
+                "weight": "5",
+            },
+        )
         result = await engine.preview(
             job_id="test-job",
             rows=[row],
@@ -242,14 +251,17 @@ class TestInternationalExecuteValidation:
     @pytest.mark.asyncio
     async def test_execute_unsupported_lane_fails_row(self, engine):
         """Execution for unsupported lane fails the row with error code."""
-        row = self._make_row(1, {
-            "ship_to_name": "Test",
-            "ship_to_country": "GB",
-            "ship_to_address1": "1 High St",
-            "ship_to_city": "London",
-            "ship_to_zip": "SW1A 1AA",
-            "weight": "5",
-        })
+        row = self._make_row(
+            1,
+            {
+                "ship_to_name": "Test",
+                "ship_to_country": "GB",
+                "ship_to_address1": "1 High St",
+                "ship_to_city": "London",
+                "ship_to_zip": "SW1A 1AA",
+                "weight": "5",
+            },
+        )
         result = await engine.execute(
             job_id="test-job",
             rows=[row],
@@ -260,7 +272,11 @@ class TestInternationalExecuteValidation:
         assert result["failed"] == 1
         assert result["successful"] == 0
         assert row.status == "failed"
-        assert "not enabled" in row.error_message.lower()
+        assert row.error_code == "E-4001"
+        assert (
+            row.error_message
+            == "The row could not be processed because of a system error."
+        )
 
     @pytest.mark.asyncio
     async def test_execute_stores_destination_country(self, engine):
@@ -270,26 +286,34 @@ class TestInternationalExecuteValidation:
             "labelData": [],
             "totalCharges": {"monetaryValue": "50.00"},
         }
-        row = self._make_row(1, {
-            "ship_to_name": "Test",
-            "ship_to_country": "CA",
-            "ship_to_address1": "123 Maple",
-            "ship_to_city": "Toronto",
-            "ship_to_state": "ON",
-            "ship_to_zip": "M5V 1A1",
-            "ship_to_attention_name": "Test Attn",
-            "ship_to_phone": "4165551234",
-            "shipper_attention_name": "Shipper Attn",
-            "shipper_phone": "5125559999",
-            "shipment_description": "Electronics",
-            "invoice_currency_code": "USD",
-            "invoice_monetary_value": "999.00",
-            "weight": "5",
-            "commodities": [
-                {"description": "Laptop", "commodity_code": "847130",
-                 "origin_country": "US", "quantity": 1, "unit_value": "999.00"},
-            ],
-        })
+        row = self._make_row(
+            1,
+            {
+                "ship_to_name": "Test",
+                "ship_to_country": "CA",
+                "ship_to_address1": "123 Maple",
+                "ship_to_city": "Toronto",
+                "ship_to_state": "ON",
+                "ship_to_zip": "M5V 1A1",
+                "ship_to_attention_name": "Test Attn",
+                "ship_to_phone": "4165551234",
+                "shipper_attention_name": "Shipper Attn",
+                "shipper_phone": "5125559999",
+                "shipment_description": "Electronics",
+                "invoice_currency_code": "USD",
+                "invoice_monetary_value": "999.00",
+                "weight": "5",
+                "commodities": [
+                    {
+                        "description": "Laptop",
+                        "commodity_code": "847130",
+                        "origin_country": "US",
+                        "quantity": 1,
+                        "unit_value": "999.00",
+                    },
+                ],
+            },
+        )
         with patch.dict("os.environ", {"INTERNATIONAL_ENABLED_LANES": "US-CA,US-MX"}):
             result = await engine.execute(
                 job_id="test-job",

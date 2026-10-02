@@ -51,8 +51,8 @@ def test_gemini_function_declaration_has_parameters():
     ("tool_name", "read_only", "destructive", "open_world", "consequential"),
     [
         ("get_shipagent_status", True, False, False, False),
-        ("submit_one_off_shipment", False, False, True, True),
-        ("validate_shipment_address", True, False, False, False),
+        ("submit_one_off_shipment", True, False, True, False),
+        ("validate_shipment_address", True, False, True, False),
         ("get_shipment_rates", True, False, True, False),
         ("prepare_shipments", True, False, True, False),
         ("execute_shipments", False, False, True, True),
@@ -99,19 +99,35 @@ def test_exportable_tools_filters_by_provider_and_export_safety_gates():
         }
     )
     disabled = base_tool.model_copy(
-        update={**exportable_update, "name": "disabled", "provider_export_enabled": False}
+        update={
+            **exportable_update,
+            "name": "disabled",
+            "provider_export_enabled": False,
+        }
     )
     planned = base_tool.model_copy(
-        update={**exportable_update, "name": "planned", "implementation_status": "planned"}
+        update={
+            **exportable_update,
+            "name": "planned",
+            "implementation_status": "planned",
+        }
     )
     not_ready = base_tool.model_copy(
-        update={**exportable_update, "name": "not_ready", "hosted_readiness": "not_ready"}
+        update={
+            **exportable_update,
+            "name": "not_ready",
+            "hosted_readiness": "not_ready",
+        }
     )
     unsafe = base_tool.model_copy(
         update={**exportable_update, "name": "unsafe", "tenant_safe": False}
     )
     private = base_tool.model_copy(
-        update={**exportable_update, "name": "private", "visibility": ToolVisibility.private}
+        update={
+            **exportable_update,
+            "name": "private",
+            "visibility": ToolVisibility.private,
+        }
     )
 
     exported = exportable_tools(
@@ -154,9 +170,9 @@ def test_projection_input_schemas_do_not_alias_registry_schemas(
     descriptor = projection(contract)
     schema = schema_at(descriptor, schema_path)
 
-    schema["properties"]["order_batch_id"]["type"] = "integer"
+    schema["properties"]["input_reference"]["type"] = "integer"
 
-    assert contract.input_schema["properties"]["order_batch_id"]["type"] == "string"
+    assert contract.input_schema["properties"]["input_reference"]["type"] == "string"
 
 
 @pytest.mark.parametrize(

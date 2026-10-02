@@ -11,17 +11,19 @@
  */
 
 import { Injectable, OnDestroy, inject, signal, computed } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
-import { ApiService } from '@shipagent/shared-api';
+import { firstValueFrom, fromEvent, takeUntil } from 'rxjs';
+import {
+  ApiService,
+  BrowserSessionTransportService,
+} from '@shipagent/shared-api';
 import { JobStore } from '@shipagent/shared-state';
-import type { JobStatus } from '@shipagent/shared-types';
-
-/** Per-row failure detail. */
-export interface RowFailure {
-  rowNumber: number;
-  errorCode: string;
-  errorMessage: string;
-}
+import {
+  getJobTerminalState,
+  resolveJobTerminalStatus,
+  type JobStatus,
+  type SafeTerminalDiagnostic,
+  type SafeTerminalRowDiagnostic,
+} from '@shipagent/shared-types';
 
 /** Snapshot of batch execution progress. */
 export interface JobProgressSnapshot {
@@ -33,8 +35,9 @@ export interface JobProgressSnapshot {
   dutiesTaxesCents: number | undefined;
   internationalCount: number | undefined;
   status: JobStatus;
-  error: { code: string; message: string } | null;
-  rowFailures: RowFailure[];
+  error: SafeTerminalDiagnostic | null;
+  rowFailures: SafeTerminalRowDiagnostic[];
+  omittedFailureCount: number;
   currentRow: number | null;
   lastTrackingNumber: string | null;
 }
@@ -50,17 +53,31 @@ const INITIAL_PROGRESS: JobProgressSnapshot = {
   status: 'pending',
   error: null,
   rowFailures: [],
+  omittedFailureCount: 0,
   currentRow: null,
   lastTrackingNumber: null,
 };
 
+const RECONNECT_BASE_DELAY_MS = 250;
+const MAX_RECONNECT_ATTEMPTS = 3;
+
 @Injectable()
 export class JobProgressSseService implements OnDestroy {
   private readonly apiService = inject(ApiService);
+  private readonly browserTransport = inject(BrowserSessionTransportService);
   private readonly jobStore = inject(JobStore);
 
   /** Own EventSource instance — separate from the conversation SSE. */
   private eventSource: EventSource | null = null;
+  private currentJobId: string | null = null;
+  private lifecycleGeneration = 0;
+  private lifecycleAbortController: AbortController | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private progressRevision = 0;
+  private observerFailureRunBaseline: number | null = null;
+  private observerRetainedFailureCount: number | null = null;
+  private observerOmittedFailureCount: number | null = null;
 
   /** Current progress snapshot. */
   readonly progress = signal<JobProgressSnapshot>({ ...INITIAL_PROGRESS });
@@ -74,11 +91,30 @@ export class JobProgressSseService implements OnDestroy {
   /** True while batch is actively running. */
   readonly isRunning = computed(() => this.progress().status === 'running');
 
-  /** True when batch completed successfully. */
-  readonly isComplete = computed(() => this.progress().status === 'completed');
+  /** Centralized terminal interpretation of the current backend status. */
+  readonly terminalState = computed(() =>
+    getJobTerminalState(this.progress().status)
+  );
 
-  /** True when batch failed. */
-  readonly isFailed = computed(() => this.progress().status === 'failed');
+  /** True when batch completed, including completion with warnings. */
+  readonly isComplete = computed(
+    () => this.terminalState()?.outcome === 'complete'
+  );
+
+  /** True when batch failed or was cancelled. */
+  readonly isFailed = computed(
+    () => this.terminalState()?.outcome === 'failed'
+  );
+
+  /** True when the completed batch carries explicit warnings. */
+  readonly hasWarnings = computed(
+    () => this.terminalState()?.hasWarnings ?? false
+  );
+
+  /** True when the batch was cancelled. */
+  readonly isCancelled = computed(
+    () => this.terminalState()?.cancelled ?? false
+  );
 
   ngOnDestroy(): void {
     this.disconnect();
@@ -90,34 +126,59 @@ export class JobProgressSseService implements OnDestroy {
    */
   async connectToJobProgress(jobId: string): Promise<void> {
     this.disconnect();
+    this.currentJobId = jobId;
+    this.lifecycleAbortController = new AbortController();
+    const generation = this.lifecycleGeneration;
     this.progress.set({ ...INITIAL_PROGRESS });
+    this.progressRevision = 0;
+    this.resetObserverFailureAccounting();
 
     // Fetch initial progress for crash recovery.
-    try {
-      const data = await firstValueFrom(this.apiService.getJobProgress(jobId));
-      this.progress.set({
-        total: data.total_rows,
-        processed: data.processed_rows,
-        successful: data.successful_rows,
-        failed: data.failed_rows,
-        totalCostCents: data.total_cost_cents ?? 0,
-        dutiesTaxesCents: data.total_duties_taxes_cents ?? undefined,
-        internationalCount: data.international_row_count ?? undefined,
-        status: data.status,
-        error: null,
-        rowFailures: [],
-        currentRow: null,
-        lastTrackingNumber: null,
-      });
-    } catch {
-      // Non-critical — live SSE will update.
-    }
+    const status = await this.refreshSnapshot(
+      jobId,
+      generation,
+      this.lifecycleAbortController.signal
+    );
+    if (!this.isCurrent(jobId, generation)) return;
+    if (status && getJobTerminalState(status)) return;
+    this.openStream(jobId, generation);
+  }
 
-    const url = this.apiService.getJobProgressUrl(jobId);
-    const es = new EventSource(url);
+  private openStream(
+    jobId: string,
+    generation: number,
+    reconcileAfterOpen?: AbortSignal
+  ): EventSource | null {
+    if (!this.isCurrent(jobId, generation) || this.eventSource) return null;
+
+    const es = new EventSource(this.apiService.getJobProgressUrl(jobId), {
+      withCredentials: true,
+    });
+    let handlingError = false;
+    let reconciliationStarted = false;
     this.eventSource = es;
 
+    es.onopen = () => {
+      if (
+        !reconcileAfterOpen ||
+        reconciliationStarted ||
+        reconcileAfterOpen.aborted ||
+        this.eventSource !== es ||
+        !this.isCurrent(jobId, generation)
+      ) {
+        return;
+      }
+      reconciliationStarted = true;
+      void this.reconcileAfterSubscription(
+        jobId,
+        generation,
+        reconcileAfterOpen,
+        es
+      );
+    };
+
     es.onmessage = (event: MessageEvent) => {
+      if (this.eventSource !== es || !this.isCurrent(jobId, generation)) return;
       try {
         const rawData = event.data as string;
         if (!rawData || rawData.trim() === '') return;
@@ -133,33 +194,184 @@ export class JobProgressSseService implements OnDestroy {
         // Skip pings.
         if (eventType === 'ping') return;
 
-        this.handleEvent(envelope);
+        if (this.handleEvent(envelope)) {
+          this.progressRevision++;
+          this.reconnectAttempts = 0;
+          if (this.terminalState()) {
+            this.stopTerminalStream(jobId, generation, es);
+          }
+        }
       } catch {
         // Ignore parse errors.
       }
     };
 
     es.onerror = () => {
-      if (es.readyState === EventSource.CLOSED) {
-        console.error('[JobProgressSseService] SSE connection closed');
-      }
+      if (handlingError) return;
+      handlingError = true;
+      es.close();
+      if (this.eventSource !== es || !this.isCurrent(jobId, generation)) return;
+      this.eventSource = null;
+      void this.recoverFromError(jobId, generation);
     };
+
+    return es;
   }
 
   /** Disconnect the progress stream. */
   disconnect(): void {
+    this.lifecycleGeneration++;
+    this.currentJobId = null;
+    this.reconnectAttempts = 0;
+    this.resetObserverFailureAccounting();
+    this.lifecycleAbortController?.abort();
+    this.lifecycleAbortController = null;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
     }
   }
 
+  private async recoverFromError(
+    jobId: string,
+    generation: number
+  ): Promise<void> {
+    const abortSignal = this.lifecycleAbortController?.signal;
+    if (!abortSignal || abortSignal.aborted) return;
+    const sessionExpired =
+      await this.browserTransport.confirmSessionAfterEventSourceError(
+        abortSignal
+      );
+    if (sessionExpired || !this.isCurrent(jobId, generation)) return;
+
+    const status = await this.refreshSnapshot(jobId, generation, abortSignal);
+    if (!this.isCurrent(jobId, generation)) return;
+    if (status && getJobTerminalState(status)) {
+      this.jobStore.incrementJobListVersion();
+      return;
+    }
+    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return;
+
+    const delay = RECONNECT_BASE_DELAY_MS * 2 ** this.reconnectAttempts;
+    this.reconnectAttempts++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.openStream(jobId, generation, abortSignal);
+    }, delay);
+  }
+
+  private async reconcileAfterSubscription(
+    jobId: string,
+    generation: number,
+    abortSignal: AbortSignal,
+    source: EventSource
+  ): Promise<void> {
+    const expectedRevision = this.progressRevision;
+    const status = await this.refreshSnapshot(
+      jobId,
+      generation,
+      abortSignal,
+      expectedRevision,
+      source
+    );
+    if (this.eventSource !== source || !this.isCurrent(jobId, generation)) {
+      return;
+    }
+    if (status && getJobTerminalState(status)) {
+      source.close();
+      this.eventSource = null;
+      this.jobStore.incrementJobListVersion();
+    }
+  }
+
+  private async refreshSnapshot(
+    jobId: string,
+    generation: number,
+    abortSignal: AbortSignal,
+    expectedRevision?: number,
+    expectedSource?: EventSource
+  ): Promise<JobStatus | null> {
+    if (abortSignal.aborted) return null;
+    try {
+      const data = await firstValueFrom(
+        this.apiService
+          .getJobProgress(jobId)
+          .pipe(takeUntil(fromEvent(abortSignal, 'abort')))
+      );
+      if (!this.isCurrent(jobId, generation)) return null;
+      if (
+        (expectedRevision !== undefined &&
+          this.progressRevision !== expectedRevision) ||
+        (expectedSource !== undefined && this.eventSource !== expectedSource)
+      ) {
+        return null;
+      }
+      this.progress.update((current) => ({
+        ...current,
+        total: data.total_rows,
+        processed: data.processed_rows,
+        successful: data.successful_rows,
+        failed: data.failed_rows,
+        totalCostCents: data.total_cost_cents ?? 0,
+        dutiesTaxesCents:
+          data.total_duties_taxes_cents === undefined
+            ? current.dutiesTaxesCents
+            : data.total_duties_taxes_cents ?? undefined,
+        internationalCount:
+          data.international_row_count ?? current.internationalCount,
+        rowFailures: data.row_failures ?? current.rowFailures,
+        omittedFailureCount:
+          data.omitted_failure_count ?? current.omittedFailureCount,
+        status: data.status,
+      }));
+      this.progressRevision++;
+      return data.status;
+    } catch {
+      // Non-critical — live SSE recovery remains bounded by its generation.
+      return null;
+    }
+  }
+
+  private isCurrent(jobId: string, generation: number): boolean {
+    return (
+      this.currentJobId === jobId && this.lifecycleGeneration === generation
+    );
+  }
+
+  private stopTerminalStream(
+    jobId: string,
+    generation: number,
+    source: EventSource
+  ): void {
+    if (this.eventSource !== source || !this.isCurrent(jobId, generation)) {
+      return;
+    }
+    source.close();
+    this.eventSource = null;
+    this.lifecycleAbortController?.abort();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.jobStore.incrementJobListVersion();
+  }
+
+  private resetObserverFailureAccounting(): void {
+    this.observerFailureRunBaseline = null;
+    this.observerRetainedFailureCount = null;
+    this.observerOmittedFailureCount = null;
+  }
+
   // ---------------------------------------------------------------------------
   // Event handlers
   // ---------------------------------------------------------------------------
 
-  private handleEvent(data: unknown): void {
-    if (!data || typeof data !== 'object') return;
+  private handleEvent(data: unknown): boolean {
+    if (!data || typeof data !== 'object') return false;
     const d = data as Record<string, unknown>;
 
     // Backend sends { event, data } envelope.
@@ -168,94 +380,165 @@ export class JobProgressSseService implements OnDestroy {
 
     switch (eventType) {
       case 'batch_started':
+        this.observerFailureRunBaseline = this.progress().failed;
+        this.observerRetainedFailureCount = 0;
+        this.observerOmittedFailureCount = 0;
         this.progress.update((p) => ({
           ...p,
           total: (eventData['total_rows'] as number) ?? p.total,
           status: 'running',
-          processed: 0,
-          successful: 0,
-          failed: 0,
-          totalCostCents: 0,
-          error: null,
-          rowFailures: [],
+          currentRow: null,
         }));
-        break;
+        return true;
 
       case 'row_started':
         this.progress.update((p) => ({
           ...p,
           currentRow: (eventData['row_number'] as number) ?? null,
         }));
-        break;
+        return true;
 
       case 'row_completed':
         this.progress.update((p) => ({
           ...p,
           processed: p.successful + p.failed + 1,
           successful: p.successful + 1,
-          totalCostCents: p.totalCostCents + ((eventData['cost_cents'] as number) ?? 0),
+          totalCostCents:
+            p.totalCostCents + ((eventData['cost_cents'] as number) ?? 0),
           lastTrackingNumber: (eventData['tracking_number'] as string) ?? null,
           currentRow: null,
         }));
-        break;
+        return true;
 
-      case 'row_failed':
-        this.progress.update((p) => ({
-          ...p,
-          processed: p.successful + p.failed + 1,
-          failed: p.failed + 1,
-          currentRow: null,
-          error: {
-            code: (eventData['error_code'] as string) ?? 'E-0000',
-            message: (eventData['error_message'] as string) ?? 'Unknown error',
-          },
-          rowFailures: [
-            ...p.rowFailures,
-            {
-              rowNumber: (eventData['row_number'] as number) ?? 0,
-              errorCode: (eventData['error_code'] as string) ?? 'E-0000',
-              errorMessage: (eventData['error_message'] as string) ?? 'Unknown error',
-            },
-          ],
-        }));
-        break;
+      case 'row_failed': {
+        const diagnostic = eventData['diagnostic'] as
+          | SafeTerminalRowDiagnostic
+          | undefined;
+        const rawRetainedFailureCount = eventData['retained_failure_count'];
+        const rawOmittedFailureCount = eventData['omitted_failure_count'];
+        const retainedFailureCount =
+          typeof rawRetainedFailureCount === 'number' &&
+          Number.isSafeInteger(rawRetainedFailureCount) &&
+          rawRetainedFailureCount >= 0
+            ? Math.min(rawRetainedFailureCount, 20)
+            : undefined;
+        const omittedFailureCount =
+          typeof rawOmittedFailureCount === 'number' &&
+          Number.isSafeInteger(rawOmittedFailureCount) &&
+          rawOmittedFailureCount >= 0
+            ? rawOmittedFailureCount
+            : undefined;
+        if (!diagnostic && omittedFailureCount === undefined) return false;
+        if (
+          retainedFailureCount !== undefined &&
+          omittedFailureCount !== undefined
+        ) {
+          const observerCountersReset =
+            (this.observerRetainedFailureCount !== null &&
+              retainedFailureCount < this.observerRetainedFailureCount) ||
+            (this.observerOmittedFailureCount !== null &&
+              omittedFailureCount < this.observerOmittedFailureCount);
+          if (observerCountersReset) {
+            this.observerFailureRunBaseline = this.progress().failed;
+          }
+          this.observerRetainedFailureCount = retainedFailureCount;
+          this.observerOmittedFailureCount = omittedFailureCount;
+        }
+        const error: SafeTerminalDiagnostic | null = diagnostic
+          ? {
+              error_code: diagnostic.error_code,
+              error_category: diagnostic.error_category,
+              message: diagnostic.message,
+            }
+          : null;
+        this.progress.update((p) => {
+          const alreadyRetained =
+            diagnostic !== undefined &&
+            p.rowFailures.some(
+              (failure) => failure.row_number === diagnostic.row_number
+            );
+          const canRetain =
+            diagnostic !== undefined &&
+            !alreadyRetained &&
+            p.rowFailures.length < 20;
+          const rowFailures = canRetain
+            ? [...p.rowFailures, diagnostic]
+            : p.rowFailures;
+          let nextOmitted = Math.max(
+            p.omittedFailureCount,
+            omittedFailureCount ?? p.omittedFailureCount
+          );
+          const cumulativeFailed =
+            (retainedFailureCount ?? rowFailures.length) +
+            (omittedFailureCount ?? nextOmitted);
+          const runRelativeFailed =
+            this.observerFailureRunBaseline !== null &&
+            retainedFailureCount !== undefined &&
+            omittedFailureCount !== undefined
+              ? this.observerFailureRunBaseline +
+                retainedFailureCount +
+                omittedFailureCount
+              : 0;
+          const eventFailed = p.failed + 1;
+          const failed = Math.max(
+            cumulativeFailed,
+            runRelativeFailed,
+            eventFailed,
+            rowFailures.length + nextOmitted
+          );
+          nextOmitted = Math.max(nextOmitted, failed - rowFailures.length);
+
+          return {
+            ...p,
+            processed: p.successful + failed,
+            failed,
+            currentRow: null,
+            error: error ?? p.error,
+            rowFailures,
+            omittedFailureCount: nextOmitted,
+          };
+        });
+        return true;
+      }
 
       case 'batch_completed':
         this.progress.update((p) => ({
           ...p,
-          status: 'completed',
+          status: resolveJobTerminalStatus(eventData['status'], 'complete'),
           processed: (eventData['total_rows'] as number) ?? p.total,
           successful: (eventData['successful'] as number) ?? p.successful,
-          totalCostCents: (eventData['total_cost_cents'] as number) ?? p.totalCostCents,
+          totalCostCents:
+            (eventData['total_cost_cents'] as number) ?? p.totalCostCents,
           dutiesTaxesCents:
-            (eventData['duties_taxes_cents'] as number | undefined) ?? p.dutiesTaxesCents,
+            (eventData['duties_taxes_cents'] as number | undefined) ??
+            p.dutiesTaxesCents,
           internationalCount:
-            (eventData['international_row_count'] as number | undefined) ?? p.internationalCount,
+            (eventData['international_row_count'] as number | undefined) ??
+            p.internationalCount,
           currentRow: null,
         }));
-        this.jobStore.incrementJobListVersion();
-        break;
+        return true;
 
       case 'batch_failed':
         this.progress.update((p) => ({
           ...p,
-          status: 'failed',
+          status: resolveJobTerminalStatus(eventData['status'], 'failed'),
           processed: (eventData['processed'] as number) ?? p.processed,
           dutiesTaxesCents:
-            (eventData['duties_taxes_cents'] as number | undefined) ?? p.dutiesTaxesCents,
+            (eventData['duties_taxes_cents'] as number | undefined) ??
+            p.dutiesTaxesCents,
           internationalCount:
-            (eventData['international_row_count'] as number | undefined) ?? p.internationalCount,
-          error: {
-            code: (eventData['error_code'] as string) ?? 'E-0000',
-            message: (eventData['error_message'] as string) ?? 'Batch execution failed',
-          },
+            (eventData['international_row_count'] as number | undefined) ??
+            p.internationalCount,
+          error:
+            (eventData['diagnostic'] as SafeTerminalDiagnostic | undefined) ??
+            p.error,
           currentRow: null,
         }));
-        this.jobStore.incrementJobListVersion();
-        break;
+        return true;
 
       default:
-        break;
+        return false;
     }
   }
 }

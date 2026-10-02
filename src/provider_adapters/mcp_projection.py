@@ -5,6 +5,7 @@ from src.registry.models import SideEffectClass, ToolContract
 
 EXTERNAL_AUTH_SCOPE_PREFIXES = (
     "accounts:",
+    "address:",
     "stores:",
     "shipments:",
     "tracking:",

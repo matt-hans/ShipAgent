@@ -7,15 +7,17 @@ Covers the three-tier recovery system in BatchEngine.recover_in_flight_rows():
 """
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.errors.terminal_diagnostics import MAX_TERMINAL_ROW_NUMBER
 from src.services.batch_engine import MAX_RECOVERY_ATTEMPTS, BatchEngine
 
 
 def _make_inflight_row(
-    row_number: int = 1,
+    row_number: Any = 1,
     ups_tracking_number: str | None = None,
     ups_shipment_id: str | None = None,
     label_path: str | None = None,
@@ -43,12 +45,16 @@ def _make_track_response(tracking_number: str = "1Z999AA10000000001") -> dict:
     """Create a mock UPS track_package response."""
     return {
         "trackResponse": {
-            "shipment": [{
-                "package": [{
-                    "trackingNumber": tracking_number,
-                    "activity": [{"status": {"description": "Delivered"}}],
-                }],
-            }],
+            "shipment": [
+                {
+                    "package": [
+                        {
+                            "trackingNumber": tracking_number,
+                            "activity": [{"status": {"description": "Delivered"}}],
+                        }
+                    ],
+                }
+            ],
         },
     }
 
@@ -57,11 +63,15 @@ def _make_empty_track_response() -> dict:
     """Create a mock UPS track_package response with no tracking number."""
     return {
         "trackResponse": {
-            "shipment": [{
-                "package": [{
-                    "trackingNumber": "",
-                }],
-            }],
+            "shipment": [
+                {
+                    "package": [
+                        {
+                            "trackingNumber": "",
+                        }
+                    ],
+                }
+            ],
         },
     }
 
@@ -85,7 +95,9 @@ class TestInFlightRecovery:
 
     @pytest.mark.asyncio
     async def test_recovery_tier1_completes_with_verified_artifacts(
-        self, engine: BatchEngine, tmp_path: Path,
+        self,
+        engine: BatchEngine,
+        tmp_path: Path,
     ) -> None:
         """Tier 1: Row has tracking, UPS confirms, artifacts present → completed."""
         # Create a real label file on disk
@@ -101,7 +113,8 @@ class TestInFlightRecovery:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-abc", rows=[row],
+            job_id="job-abc",
+            rows=[row],
         )
 
         assert result["recovered"] == 1
@@ -112,7 +125,8 @@ class TestInFlightRecovery:
 
     @pytest.mark.asyncio
     async def test_recovery_tier1_needs_review_if_label_missing(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Tier 1: UPS confirms but label file missing → needs_review."""
         row = _make_inflight_row(
@@ -122,17 +136,23 @@ class TestInFlightRecovery:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-abc", rows=[row],
+            job_id="job-abc",
+            rows=[row],
         )
 
         assert result["needs_review"] == 1
         assert result["recovered"] == 0
         assert row.status == "needs_review"
-        assert "label_path" in row.error_message
+        assert row.error_code == "E-4001"
+        assert row.error_message == (
+            "The row could not be processed because of a system error."
+        )
 
     @pytest.mark.asyncio
     async def test_recovery_tier1_needs_review_if_cost_missing(
-        self, engine: BatchEngine, tmp_path: Path,
+        self,
+        engine: BatchEngine,
+        tmp_path: Path,
     ) -> None:
         """Tier 1: UPS confirms but cost_cents is None → needs_review."""
         label_dir = tmp_path / "labels"
@@ -147,16 +167,21 @@ class TestInFlightRecovery:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-abc", rows=[row],
+            job_id="job-abc",
+            rows=[row],
         )
 
         assert result["needs_review"] == 1
         assert row.status == "needs_review"
-        assert "cost_cents" in row.error_message
+        assert row.error_code == "E-4001"
+        assert row.error_message == (
+            "The row could not be processed because of a system error."
+        )
 
     @pytest.mark.asyncio
     async def test_recovery_tier1_needs_review_if_ups_rejects(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Tier 1: Row has tracking but UPS returns empty → needs_review."""
         engine._ups.track_package = AsyncMock(
@@ -170,16 +195,19 @@ class TestInFlightRecovery:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-abc", rows=[row],
+            job_id="job-abc",
+            rows=[row],
         )
 
         assert result["needs_review"] == 1
         assert row.status == "needs_review"
-        assert "empty tracking" in row.error_message.lower() or "invalid" in row.error_message.lower()
+        assert row.error_code == "E-3001"
+        assert row.error_message == "The carrier could not process this shipment."
 
     @pytest.mark.asyncio
     async def test_recovery_tier2_marks_needs_review_no_tracking(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Tier 2: No ups_tracking_number → needs_review immediately."""
         row = _make_inflight_row(
@@ -187,24 +215,30 @@ class TestInFlightRecovery:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-abc", rows=[row],
+            job_id="job-abc",
+            rows=[row],
         )
 
         assert result["needs_review"] == 1
         assert result["recovered"] == 0
         assert result["unresolved"] == 0
         assert row.status == "needs_review"
-        assert "idempotency" in row.error_message.lower() or "quantum" in row.error_message.lower()
+        assert row.error_code == "E-4001"
+        assert row.error_message == (
+            "The row could not be processed because of a system error."
+        )
 
     @pytest.mark.asyncio
     async def test_recovery_tier2_never_auto_retries(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Tier 2: Rows without tracking are NEVER reset to pending."""
         row = _make_inflight_row(ups_tracking_number=None)
 
         await engine.recover_in_flight_rows(
-            job_id="job-abc", rows=[row],
+            job_id="job-abc",
+            rows=[row],
         )
 
         # Must be needs_review, never pending (which would enable auto-retry)
@@ -213,7 +247,8 @@ class TestInFlightRecovery:
 
     @pytest.mark.asyncio
     async def test_recovery_tier3_leaves_in_flight_below_max(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Tier 3: track_package fails, below max attempts → stays in_flight."""
         engine._ups.track_package = AsyncMock(
@@ -226,7 +261,8 @@ class TestInFlightRecovery:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-abc", rows=[row],
+            job_id="job-abc",
+            rows=[row],
         )
 
         assert result["unresolved"] == 1
@@ -236,7 +272,8 @@ class TestInFlightRecovery:
 
     @pytest.mark.asyncio
     async def test_recovery_tier3_escalates_after_max_attempts(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Tier 3: track_package fails at max attempts → needs_review."""
         engine._ups.track_package = AsyncMock(
@@ -249,17 +286,90 @@ class TestInFlightRecovery:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-abc", rows=[row],
+            job_id="job-abc",
+            rows=[row],
         )
 
         assert result["needs_review"] == 1
         assert result["unresolved"] == 0
         assert row.status == "needs_review"
-        assert "escalated" in row.error_message.lower()
+        assert row.error_code == "E-3001"
+        assert row.error_message == "The carrier could not process this shipment."
+
+    @pytest.mark.asyncio
+    async def test_recovery_persists_returns_and_logs_only_safe_diagnostics(
+        self,
+        engine: BatchEngine,
+        caplog,
+    ) -> None:
+        marker = "UNSAFE_RECOVERY_DETAIL"
+        engine._ups.track_package = AsyncMock(side_effect=RuntimeError(marker))
+        row = _make_inflight_row(
+            ups_tracking_number="UNSAFE_STORED_REFERENCE",
+            idempotency_key="UNSAFE_STORED_KEY",
+            recovery_attempt_count=MAX_RECOVERY_ATTEMPTS - 1,
+        )
+
+        result = await engine.recover_in_flight_rows(
+            job_id="job-abc",
+            rows=[row],
+        )
+
+        assert row.error_code == "E-3001"
+        assert row.error_message == "The carrier could not process this shipment."
+        assert result == {
+            "recovered": 0,
+            "needs_review": 1,
+            "unresolved": 0,
+            "details": [
+                {
+                    "row_number": 1,
+                    "action": "needs_review",
+                    "error_code": "E-3001",
+                    "attempt_count": MAX_RECOVERY_ATTEMPTS,
+                }
+            ],
+            "omitted_detail_count": 0,
+        }
+        assert marker not in repr(result)
+        assert marker not in row.error_message
+        assert marker not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_recovery_omits_and_counts_every_invalid_row_number(
+        self,
+        engine: BatchEngine,
+    ) -> None:
+        rows = [
+            _make_inflight_row(row_number=row_number)
+            for row_number in (
+                True,
+                "7",
+                1.5,
+                0,
+                -1,
+                MAX_TERMINAL_ROW_NUMBER + 1,
+            )
+        ]
+
+        result = await engine.recover_in_flight_rows(
+            job_id="job-abc",
+            rows=rows,
+        )
+
+        assert result == {
+            "recovered": 0,
+            "needs_review": len(rows),
+            "unresolved": 0,
+            "details": [],
+            "omitted_detail_count": len(rows),
+        }
 
     @pytest.mark.asyncio
     async def test_recovery_report_includes_all_details(
-        self, engine: BatchEngine, tmp_path: Path,
+        self,
+        engine: BatchEngine,
+        tmp_path: Path,
     ) -> None:
         """Recovery returns structured report with per-row details."""
         # Create label for row 1
@@ -285,7 +395,8 @@ class TestInFlightRecovery:
         row3.status = "completed"
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-abc", rows=[row1, row2, row3],
+            job_id="job-abc",
+            rows=[row1, row2, row3],
         )
 
         assert result["recovered"] == 1
@@ -297,11 +408,13 @@ class TestInFlightRecovery:
         # Row 2 should be needs_review
         r2_detail = next(d for d in result["details"] if d["row_number"] == 2)
         assert r2_detail["action"] == "needs_review"
-        assert "idempotency_key" in r2_detail
+        assert r2_detail["error_code"] == "E-4001"
+        assert set(r2_detail) == {"row_number", "action", "error_code"}
 
     @pytest.mark.asyncio
     async def test_recovery_skips_non_inflight_rows(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Only in_flight rows are processed; pending/completed/failed are skipped."""
         rows = [
@@ -314,7 +427,8 @@ class TestInFlightRecovery:
             rows.append(r)
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-abc", rows=rows,
+            job_id="job-abc",
+            rows=rows,
         )
 
         # Only the one in_flight row should be processed

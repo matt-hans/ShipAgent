@@ -6,7 +6,13 @@ to Server-Sent Events (SSE) connections for web clients.
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, Literal
+
+from src.errors.terminal_diagnostics import (
+    MAX_TERMINAL_ROW_DIAGNOSTICS,
+    project_terminal_diagnostic,
+    project_terminal_row_diagnostic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +30,8 @@ class SSEProgressObserver:
     def __init__(self) -> None:
         """Initialize observer with empty subscription map."""
         self._queues: dict[str, asyncio.Queue[dict[str, Any]]] = {}
+        self._retained_row_failure_counts: dict[str, int] = {}
+        self._omitted_row_failure_counts: dict[str, int] = {}
 
     def subscribe(self, job_id: str) -> asyncio.Queue[dict[str, Any]]:
         """Create a queue for SSE events for a specific job.
@@ -84,6 +92,8 @@ class SSEProgressObserver:
             job_id: Unique identifier for the batch job.
             total_rows: Total number of rows in the batch.
         """
+        self._retained_row_failure_counts[job_id] = 0
+        self._omitted_row_failure_counts[job_id] = 0
         await self._emit(
             job_id,
             "batch_started",
@@ -144,15 +154,27 @@ class SSEProgressObserver:
             error_code: Error code from the error registry.
             error_message: Human-readable error description.
         """
+        retained = self._retained_row_failure_counts.get(job_id, 0)
+        omitted = self._omitted_row_failure_counts.get(job_id, 0)
+        diagnostic = project_terminal_row_diagnostic(row_number, error_code)
+        if diagnostic is None or retained >= MAX_TERMINAL_ROW_DIAGNOSTICS:
+            omitted += 1
+            diagnostic = None
+        else:
+            retained += 1
+        self._retained_row_failure_counts[job_id] = retained
+        self._omitted_row_failure_counts[job_id] = omitted
+        data: dict[str, Any] = {
+            "job_id": job_id,
+            "retained_failure_count": retained,
+            "omitted_failure_count": omitted,
+        }
+        if diagnostic is not None:
+            data["diagnostic"] = diagnostic.model_dump(mode="json")
         await self._emit(
             job_id,
             "row_failed",
-            {
-                "job_id": job_id,
-                "row_number": row_number,
-                "error_code": error_code,
-                "error_message": error_message,
-            },
+            data,
         )
 
     async def on_batch_completed(
@@ -163,6 +185,7 @@ class SSEProgressObserver:
         total_cost_cents: int,
         duties_taxes_cents: int = 0,
         international_row_count: int = 0,
+        status: Literal["completed", "completed_with_warnings"] = "completed",
     ) -> None:
         """Handle batch completed event.
 
@@ -173,12 +196,14 @@ class SSEProgressObserver:
             total_cost_cents: Total cost of all shipments in cents.
             duties_taxes_cents: Total duties and taxes in cents.
             international_row_count: Number of international rows.
+            status: Canonical successful terminal job status.
         """
         await self._emit(
             job_id,
             "batch_completed",
             {
                 "job_id": job_id,
+                "status": status,
                 "total_rows": total_rows,
                 "successful": successful,
                 "total_cost_cents": total_cost_cents,
@@ -186,6 +211,8 @@ class SSEProgressObserver:
                 "international_row_count": international_row_count,
             },
         )
+        self._retained_row_failure_counts.pop(job_id, None)
+        self._omitted_row_failure_counts.pop(job_id, None)
 
     async def on_batch_failed(
         self,
@@ -195,6 +222,7 @@ class SSEProgressObserver:
         processed: int,
         duties_taxes_cents: int = 0,
         international_row_count: int = 0,
+        status: Literal["failed", "cancelled"] = "failed",
     ) -> None:
         """Handle batch failed event.
 
@@ -205,16 +233,20 @@ class SSEProgressObserver:
             processed: Number of rows processed before failure.
             duties_taxes_cents: Total duties and taxes in cents.
             international_row_count: Number of international rows.
+            status: Canonical failed or cancelled terminal job status.
         """
+        diagnostic = project_terminal_diagnostic(error_code)
         await self._emit(
             job_id,
             "batch_failed",
             {
                 "job_id": job_id,
-                "error_code": error_code,
-                "error_message": error_message,
+                "status": status,
+                "diagnostic": diagnostic.model_dump(mode="json"),
                 "processed": processed,
                 "duties_taxes_cents": duties_taxes_cents,
                 "international_row_count": international_row_count,
             },
         )
+        self._retained_row_failure_counts.pop(job_id, None)
+        self._omitted_row_failure_counts.pop(job_id, None)
