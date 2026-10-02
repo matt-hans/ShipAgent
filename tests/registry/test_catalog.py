@@ -113,7 +113,16 @@ def test_public_provider_schemas_never_expose_sensitive_content_fields():
         ):
             violations.extend(
                 f"{tool.name}.{direction}.{path}"
-                for path in provider_schema_privacy_violations(tool.name, schema)
+                for path in provider_schema_privacy_violations(
+                    tool.name,
+                    schema,
+                    provider_originated=(
+                        tool.provider_originated_fields if direction == "output" else ()
+                    ),
+                    signed_downloads=(
+                        tool.signed_download_fields if direction == "output" else ()
+                    ),
+                )
             )
 
     assert violations == []
@@ -580,24 +589,39 @@ def test_shipment_content_tools_accept_only_bounded_shipagent_references():
         assert field_schema["maxLength"] <= 128
 
 
-def test_address_validation_returns_only_an_opaque_artifact_and_guidance_codes():
+def test_address_validation_returns_artifact_codes_and_declared_provider_echo():
     tool = next(
         tool for tool in public_tools() if tool.name == "validate_shipment_address"
     )
     properties = tool.output_schema["properties"]
 
-    assert set(properties) == {"validation_artifact_id", "valid", "guidance_codes"}
+    assert set(properties) == {
+        "validation_artifact_id",
+        "valid",
+        "address_text",
+        "guidance_codes",
+    }
+    assert tool.provider_originated_fields == ["address_text"]
+    assert "address_text" not in tool.output_schema["required"]
     assert properties["validation_artifact_id"]["pattern"].startswith("^sa_")
     assert properties["guidance_codes"]["maxItems"] <= 8
     assert properties["guidance_codes"]["uniqueItems"] is True
     assert properties["guidance_codes"]["items"]["enum"]
 
 
-def test_label_download_returns_only_an_opaque_handoff_artifact():
+def test_label_download_returns_opaque_reference_and_short_lived_signed_url():
     tool = next(tool for tool in public_tools() if tool.name == "create_label_download")
     properties = tool.output_schema["properties"]
 
-    assert set(properties) == {"label_artifact_id", "status"}
+    assert set(properties) == {
+        "label_artifact_id",
+        "status",
+        "download_url",
+        "expires_in_seconds",
+    }
+    assert tool.signed_download_fields == ["download_url"]
+    assert properties["download_url"]["pattern"].startswith("^https://")
+    assert properties["expires_in_seconds"]["maximum"] <= 300
     assert properties["label_artifact_id"]["pattern"].startswith("^sa_")
     assert properties["label_artifact_id"]["maxLength"] <= 128
 

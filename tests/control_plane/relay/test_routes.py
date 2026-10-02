@@ -1850,7 +1850,7 @@ def test_desktop_relay_client_connection_makes_hosted_status_ready(
             "status": "ready",
             "executionTarget": {
                 "state": "ready",
-                "capabilities": ["rate_shipment", "get_shipagent_status"],
+                "capabilities": ["get_shipagent_status", "rate_shipment"],
             },
         }
         assert offline_status == {
@@ -1963,7 +1963,7 @@ def test_desktop_relay_process_makes_hosted_http_status_ready_then_offline(
             "status": "ready",
             "executionTarget": {
                 "state": "ready",
-                "capabilities": ["rate_shipment", "get_shipagent_status"],
+                "capabilities": ["get_shipagent_status", "rate_shipment"],
             },
         }
 
