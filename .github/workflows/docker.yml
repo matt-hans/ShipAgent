@@ -79,8 +79,8 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m venv .venv
-          .venv/bin/pip install pydantic jsonschema
-          .venv/bin/pip install --no-deps -e .
+          # Registry modules import src.services constants, which load the DB stack.
+          .venv/bin/pip install -e .
 
       - name: Verify provider artifacts
         run: |
