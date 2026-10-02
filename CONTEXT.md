@@ -41,9 +41,10 @@ is uncertain, requiring human reconciliation before any retry.
 _Avoid_: Failed when carrier side effects are ambiguous
 
 **Label Download Reference**:
-An opaque, short-lived reference that permits one authenticated Cloud Account
-to download label artifacts without making label bytes provider-visible.
-_Avoid_: Public label URL, signed URL
+An opaque, short-lived reference, delivered to the provider as a signed
+download URL (ADR 0007), that permits one authenticated Cloud Account to
+download label artifacts once without making label bytes provider-visible.
+_Avoid_: Public label URL, bearer link
 
 **Job Reference**:
 An opaque provider-visible reference for one execution job, used to poll status
