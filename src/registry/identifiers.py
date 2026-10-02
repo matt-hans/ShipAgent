@@ -24,15 +24,18 @@ class ShipAgentIdFamily(StrEnum):
 
 PROVIDER_VISIBLE_ID_FAMILIES = tuple(ShipAgentIdFamily)
 
+PREVIEW_ID_FIELD = "preview_id"
+APPROVAL_REQUEST_ID_FIELD = "approval_request_id"
+
 PROVIDER_VISIBLE_FIELD_FAMILIES = {
     "correlation_id": ShipAgentIdFamily.CORRELATION,
     "active_device_id": ShipAgentIdFamily.DEVICE,
     "ingress_reference": ShipAgentIdFamily.INGRESS,
     "input_reference": ShipAgentIdFamily.INPUT,
     "validation_artifact_id": ShipAgentIdFamily.VALIDATION,
-    "preview_id": ShipAgentIdFamily.PREVIEW,
+    PREVIEW_ID_FIELD: ShipAgentIdFamily.PREVIEW,
     "confirmation_artifact_id": ShipAgentIdFamily.CONFIRMATION,
-    "approval_request_id": ShipAgentIdFamily.APPROVAL_REQUEST,
+    APPROVAL_REQUEST_ID_FIELD: ShipAgentIdFamily.APPROVAL_REQUEST,
     "job_id": ShipAgentIdFamily.JOB,
     "label_artifact_id": ShipAgentIdFamily.LABEL,
 }

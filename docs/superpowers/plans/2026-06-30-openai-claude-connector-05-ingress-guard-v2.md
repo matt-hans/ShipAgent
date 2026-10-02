@@ -1,5 +1,15 @@
 # Ingress Guard v2 Implementation Plan
 
+> **Superseded in part (2026-10-02, Issue #46 / PR #50).** The public execute
+> contract is now `execute_shipments(preview_id, approval_request_id)` with the
+> opaque `approval_request_id` (`ShipAgentIdFamily.APPROVAL_REQUEST`).
+> `submit_one_off_shipment`, `approval_request_ref`, a model-supplied
+> `idempotency_key` and `confirmation_artifact_id` references below are
+> historical; the idempotency key lives server-side in the Execution Grant
+> binding. Confirming handlers register through
+> `build_server(confirmed_tool_handlers=...)` and receive the binding. See
+> `docs/components/shipagent-shipment-execution.md`. Body left unedited as history.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the provider ingress guard v2 for OpenAI/Claude connector calls: canonical input hashing, duplicate-call collapse, in-flight coalescing, semantic loop breaking, terminal `repeated_tool_call` envelopes, and `max_result_bytes` enforcement.

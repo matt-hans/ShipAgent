@@ -1,5 +1,7 @@
 """BoundRegistryTool.run fails closed for confirming tools (ADR 0003/0008)."""
 
+import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,6 +15,7 @@ from src.control_plane.auth.context import (
 from src.control_plane.execution_grants import (
     ExecutionGrantDenial,
     ExecutionGrantError,
+    PreAcceptFailure,
 )
 from src.hosted_mcp.server import (
     PROVIDER_RESULT_ERROR,
@@ -20,9 +23,11 @@ from src.hosted_mcp.server import (
     build_server,
 )
 from src.registry.catalog import public_tools
-from src.registry.models import ProviderExport
+from src.registry.models import ProviderExport, SideEffectClass
+from src.registry.tools.public import RATE_CURRENCY_CODES
 from tests.control_plane.execution_grant_fakes import (
     FakeExecutionGrantAuthority,
+    GrantState,
     make_binding,
 )
 
@@ -65,16 +70,21 @@ def execute_contract():
 
 
 class RecordingHandler:
-    """Handler that records invocations and returns a fixed result."""
+    """Confirmed handler that records the binding it was handed."""
 
-    def __init__(self, fail: bool = False) -> None:
-        self.calls: list[dict] = []
+    def __init__(self, fail: Exception | None = None, gate=None) -> None:
+        """Optionally raise ``fail`` or wait on ``gate`` before returning."""
+        self.calls: list[tuple[dict, object]] = []
         self.fail = fail
+        self.gate = gate
 
-    async def __call__(self, _context, arguments):
-        self.calls.append(arguments)
-        if self.fail:
-            raise RuntimeError("target rejected before accepting")
+    async def __call__(self, _context, arguments, binding):
+        """Record the call, then fail, wait or return a fixed result."""
+        self.calls.append((arguments, binding))
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.fail is not None:
+            raise self.fail
         return {"job_id": JOB_ID, "status": "running"}
 
 
@@ -82,20 +92,32 @@ async def bound_execute(handler, authority):
     """Build a server with execute_shipments bound and return its tool."""
     server = build_server(
         tools=[execute_contract()],
-        tool_handlers={"execute_shipments": handler},
+        confirmed_tool_handlers={"execute_shipments": handler},
         execution_grants=authority,
     )
     return (await server.get_tools())["execute_shipments"]
 
 
-async def test_confirming_tool_without_grant_authority_fails_closed(context):
+def approved(context, **overrides):
+    """Return an authority with one approved request for ``context``."""
+    return FakeExecutionGrantAuthority(
+        approved={APPROVAL_ID: make_binding(context, PREVIEW_ID, **overrides)}
+    )
+
+
+async def test_default_build_server_fails_closed_for_execute(context):
+    """Mutation guard: no authority wired means no handler call, ever."""
     handler = RecordingHandler()
-    tool = await bound_execute(handler, None)
+    server = build_server(
+        tools=[execute_contract()],
+        confirmed_tool_handlers={"execute_shipments": handler},
+    )
+    tool = (await server.get_tools())["execute_shipments"]
 
     with pytest.raises(ToolAuthorizationError) as exc:
         await tool.run(EXECUTE_ARGS)
 
-    assert exc.value.code == "execution_grant_unavailable"
+    assert exc.value.code == ExecutionGrantDenial.GRANT_UNAVAILABLE
     assert handler.calls == []
 
 
@@ -114,6 +136,7 @@ async def test_unapproved_request_never_reaches_handler(context):
             "tool_name": "execute_shipments",
             "prepare_tool": "prepare_shipments",
             "approval_request_id": APPROVAL_ID,
+            "preview_id": PREVIEW_ID,
         }
     ]
 
@@ -141,36 +164,127 @@ async def test_authority_crash_fails_closed_without_leaking_detail(context):
     with pytest.raises(ToolAuthorizationError) as exc:
         await tool.run(EXECUTE_ARGS)
 
-    assert exc.value.code == "execution_grant_unavailable"
+    assert exc.value.code == ExecutionGrantDenial.GRANT_UNAVAILABLE
     assert "hunter2" not in str(exc.value)
     assert handler.calls == []
 
 
-async def test_approved_request_runs_handler_and_consumes_once(context):
+async def test_approved_request_hands_server_owned_binding_to_handler(context):
     handler = RecordingHandler()
-    authority = FakeExecutionGrantAuthority(
-        approved={APPROVAL_ID: make_binding(context, PREVIEW_ID)}
-    )
+    authority = approved(context)
     tool = await bound_execute(handler, authority)
 
     result = await tool.run(EXECUTE_ARGS)
 
     assert result.structured_content == {"job_id": JOB_ID, "status": "running"}
-    assert handler.calls == [EXECUTE_ARGS]
+    [(arguments, binding)] = handler.calls
+    assert arguments == EXECUTE_ARGS
+    assert binding is authority.approved[APPROVAL_ID]
     assert authority.events == ["reserve", "consume"]
+    assert authority.state[APPROVAL_ID] == GrantState.CONSUMED
 
 
-async def test_handler_failure_releases_reservation_without_consuming(context):
-    handler = RecordingHandler(fail=True)
-    authority = FakeExecutionGrantAuthority(
-        approved={APPROVAL_ID: make_binding(context, PREVIEW_ID)}
-    )
-    tool = await bound_execute(handler, authority)
+async def test_provable_pre_accept_failure_releases_and_allows_one_retry(context):
+    authority = approved(context)
+    failing = RecordingHandler(fail=PreAcceptFailure("target offline"))
+    tool = await bound_execute(failing, authority)
 
     with pytest.raises(ToolError, match=PROVIDER_RESULT_ERROR):
         await tool.run(EXECUTE_ARGS)
 
     assert authority.events == ["reserve", "release"]
+    assert APPROVAL_ID not in authority.state
+
+    working = RecordingHandler()
+    tool = await bound_execute(working, authority)
+    await tool.run(EXECUTE_ARGS)
+
+    assert len(working.calls) == 1
+    assert authority.state[APPROVAL_ID] == GrantState.CONSUMED
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("timeout after send"), TimeoutError(), ValueError("unknown")],
+)
+async def test_ambiguous_failure_holds_reservation_and_blocks_replay(context, failure):
+    authority = approved(context)
+    handler = RecordingHandler(fail=failure)
+    tool = await bound_execute(handler, authority)
+
+    with pytest.raises(ToolError, match=PROVIDER_RESULT_ERROR):
+        await tool.run(EXECUTE_ARGS)
+
+    assert authority.events == ["reserve", "hold"]
+    assert authority.state[APPROVAL_ID] == GrantState.HELD
+
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+
+    assert exc.value.code == ExecutionGrantDenial.RECONCILIATION_PENDING
+    assert len(handler.calls) == 1
+
+
+async def test_cancellation_holds_reservation_and_propagates(context):
+    authority = approved(context)
+    handler = RecordingHandler(gate=asyncio.Event())
+    tool = await bound_execute(handler, authority)
+
+    task = asyncio.ensure_future(tool.run(EXECUTE_ARGS))
+    while not handler.calls:
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert authority.events == ["reserve", "hold"]
+    assert authority.state[APPROVAL_ID] == GrantState.HELD
+
+    retry = RecordingHandler()
+    tool = await bound_execute(retry, authority)
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+    assert exc.value.code == ExecutionGrantDenial.RECONCILIATION_PENDING
+    assert retry.calls == []
+
+
+async def test_hold_failure_is_logged_and_original_failure_still_raised(
+    context, caplog
+):
+    authority = approved(context)
+    tool = await bound_execute(RecordingHandler(fail=RuntimeError("boom")), authority)
+    original = authority.reserve
+
+    async def reserve(**kwargs):
+        reservation = await original(**kwargs)
+
+        async def broken_hold():
+            raise RuntimeError("store down password=hunter2")
+
+        reservation.hold_for_reconciliation = broken_hold
+        return reservation
+
+    authority.reserve = reserve
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(ToolError, match=PROVIDER_RESULT_ERROR):
+            await tool.run(EXECUTE_ARGS)
+
+    assert "hold failed" in caplog.text
+    assert "hunter2" not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+class _NoBinding:
+    """Reservation stub with no binding at all."""
+
+    def __init__(self) -> None:
+        """Track release calls."""
+        self.released = 0
+
+    async def release(self) -> None:
+        """Record release."""
+        self.released += 1
 
 
 @pytest.mark.parametrize(
@@ -180,34 +294,96 @@ async def test_handler_failure_releases_reservation_without_consuming(context):
         {"provider_connection_id": "pc-other"},
         {"preview_id": OTHER_PREVIEW_ID},
         {"expires_at": datetime.now(UTC) - timedelta(seconds=1)},
+        {"expires_at": datetime.now() + timedelta(minutes=5)},  # noqa: DTZ005 naive
+        {"expires_at": "2099-01-01T00:00:00Z"},
+        {"expires_at": None},
         {"execution_target_id": ""},
+        {"execution_target_id": 7},
         {"amount": ""},
+        {"amount": "-5.00"},
+        {"amount": "0.00"},
+        {"amount": "12.3"},
+        {"amount": "twelve"},
+        {"amount": 12.34},
         {"currency_code": ""},
+        {"currency_code": "XXX"},
+        {"currency_code": "usd"},
+        {"policy": ""},
+        {"policy": "garbage"},
+        {"policy": "provider_only"},
         {"idempotency_key": ""},
+        {"idempotency_key": None},
     ],
 )
-async def test_mismatched_or_incomplete_binding_fails_closed_and_releases(
+async def test_mismatched_or_malformed_binding_is_denied_and_released(
     context, override
 ):
     handler = RecordingHandler()
-    authority = FakeExecutionGrantAuthority(
-        approved={APPROVAL_ID: make_binding(context, PREVIEW_ID, **override)}
-    )
+    authority = approved(context, **override)
     tool = await bound_execute(handler, authority)
 
     with pytest.raises(ToolAuthorizationError) as exc:
         await tool.run(EXECUTE_ARGS)
 
-    assert exc.value.code == "execution_grant_invalid"
+    assert exc.value.code == ExecutionGrantDenial.GRANT_INVALID
     assert handler.calls == []
     assert authority.events == ["reserve", "release"]
 
 
+@pytest.mark.parametrize("binding", [None, "not-a-binding", object()])
+async def test_reservation_without_valid_binding_is_denied_and_cleaned_up(
+    context, binding
+):
+    handler = RecordingHandler()
+    stub = _NoBinding()
+    stub.binding = binding
+    authority = FakeExecutionGrantAuthority()
+
+    async def reserve(**_kwargs):
+        return stub
+
+    authority.reserve = reserve
+    tool = await bound_execute(handler, authority)
+
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+
+    assert exc.value.code == ExecutionGrantDenial.GRANT_INVALID
+    assert handler.calls == []
+    assert stub.released == 1
+
+
+async def test_reservation_missing_binding_attribute_is_denied(context):
+    handler = RecordingHandler()
+    stub = _NoBinding()
+    authority = FakeExecutionGrantAuthority()
+
+    async def reserve(**_kwargs):
+        return stub
+
+    authority.reserve = reserve
+    tool = await bound_execute(handler, authority)
+
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+
+    assert exc.value.code == ExecutionGrantDenial.GRANT_INVALID
+    assert stub.released == 1
+    assert handler.calls == []
+
+
+async def test_validation_accepts_only_canonical_currency_codes(context):
+    for code in RATE_CURRENCY_CODES:
+        handler = RecordingHandler()
+        authority = approved(context, currency_code=code)
+        tool = await bound_execute(handler, authority)
+        await tool.run(EXECUTE_ARGS)
+        assert len(handler.calls) == 1
+
+
 async def test_authority_cannot_be_satisfied_by_model_supplied_flags(context):
     handler = RecordingHandler()
-    authority = FakeExecutionGrantAuthority(
-        approved={APPROVAL_ID: make_binding(context, PREVIEW_ID)}
-    )
+    authority = approved(context)
     tool = await bound_execute(handler, authority)
 
     for extra in ("confirmed", "approved", "execution_grant", "confirmation_token"):
@@ -231,36 +407,119 @@ async def test_grant_for_another_approval_request_is_not_accepted(context):
     assert handler.calls == []
 
 
+async def test_replay_after_consume_is_denied_with_exactly_one_effect(context):
+    handler = RecordingHandler()
+    authority = approved(context)
+    tool = await bound_execute(handler, authority)
+
+    await tool.run(EXECUTE_ARGS)
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+
+    assert exc.value.code == ExecutionGrantDenial.GRANT_CONSUMED
+    assert len(handler.calls) == 1
+    assert authority.events == ["reserve", "consume"]
+
+
+async def test_concurrent_calls_produce_exactly_one_effect(context):
+    gate = asyncio.Event()
+    handler = RecordingHandler(gate=gate)
+    authority = approved(context)
+    tool = await bound_execute(handler, authority)
+
+    first = asyncio.ensure_future(tool.run(EXECUTE_ARGS))
+    while not handler.calls:
+        await asyncio.sleep(0)
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+    gate.set()
+    await first
+
+    assert exc.value.code == ExecutionGrantDenial.GRANT_IN_USE
+    assert len(handler.calls) == 1
+    assert authority.events == ["reserve", "consume"]
+
+
 async def test_consume_failure_after_acceptance_is_logged_not_hidden(context, caplog):
     handler = RecordingHandler()
-    authority = FakeExecutionGrantAuthority(
-        approved={APPROVAL_ID: make_binding(context, PREVIEW_ID)}
-    )
-
-    class _BrokenConsume:
-        def __init__(self, inner):
-            self.binding = inner.binding
-
-        async def consume(self):
-            raise RuntimeError("store unavailable")
-
-        async def release(self):
-            raise AssertionError("must not release after acceptance")
-
+    authority = approved(context)
     original = authority.reserve
 
     async def reserve(**kwargs):
-        return _BrokenConsume(await original(**kwargs))
+        reservation = await original(**kwargs)
+
+        async def broken_consume():
+            raise RuntimeError("store unavailable")
+
+        reservation.consume = broken_consume
+        return reservation
 
     authority.reserve = reserve
     tool = await bound_execute(handler, authority)
 
-    with caplog.at_level("ERROR"):
+    with caplog.at_level(logging.ERROR):
         result = await tool.run(EXECUTE_ARGS)
 
     assert result.structured_content == {"job_id": JOB_ID, "status": "running"}
     assert "grant consume failed" in caplog.text
     assert "store unavailable" not in caplog.text
+    assert "release" not in authority.events
+
+
+async def test_grant_audit_logs_carry_codes_not_identifiers(context, caplog):
+    authority = approved(context, amount="-5.00")
+    tool = await bound_execute(RecordingHandler(), authority)
+
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(ToolAuthorizationError):
+            await tool.run(EXECUTE_ARGS)
+
+    assert ExecutionGrantDenial.GRANT_INVALID.value in caplog.text
+    assert "execute_shipments" in caplog.text
+    assert APPROVAL_ID not in caplog.text
+    assert "-5.00" not in caplog.text
+
+
+def test_registration_rejects_confirming_tool_in_plain_handlers():
+    async def plain(_context, _arguments):
+        return {}
+
+    with pytest.raises(ValueError, match="confirmed_tool_handlers"):
+        build_server(
+            tools=[execute_contract()],
+            tool_handlers={"execute_shipments": plain},
+        )
+
+
+def test_registration_rejects_confirmed_handler_for_non_confirming_tool():
+    contract = next(t for t in public_tools() if t.name == "get_shipagent_status")
+    contract = contract.model_copy(
+        update={
+            "implementation_status": "implemented",
+            "hosted_readiness": "ready",
+            "provider_export_enabled": True,
+            "provider_exports": [ProviderExport.generic_mcp],
+        }
+    )
+
+    with pytest.raises(ValueError, match="does not require confirmation"):
+        build_server(
+            tools=[contract],
+            confirmed_tool_handlers={"get_shipagent_status": RecordingHandler()},
+        )
+
+
+def test_registration_rejects_mutating_tool_that_skipped_confirmation():
+    unsafe = execute_contract().model_copy(
+        update={"requires_confirmation": False, "prepare_tool": None}
+    )
+    assert unsafe.side_effect == SideEffectClass.purchase
+
+    async def plain(_context, _arguments):
+        return {}
+
+    with pytest.raises(ValueError, match="requires confirmation"):
+        build_server(tools=[unsafe], tool_handlers={"execute_shipments": plain})
 
 
 async def test_non_confirming_tools_do_not_touch_grant_authority(context):

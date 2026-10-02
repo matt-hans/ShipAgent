@@ -42,25 +42,42 @@ def make_binding(
 
 @dataclass
 class FakeReservation:
-    """Reservation handed back by the fake authority."""
+    """Reservation handed back by the fake authority; mutates its parent state."""
 
     binding: ExecutionGrantBinding
-    events: list[str]
+    approval_request_id: str
+    authority: "FakeExecutionGrantAuthority"
 
     async def consume(self) -> None:
-        """Record one-time consumption."""
-        self.events.append("consume")
+        """Mark the grant terminally consumed (one-time)."""
+        self.authority.events.append("consume")
+        self.authority.state[self.approval_request_id] = GrantState.CONSUMED
 
     async def release(self) -> None:
-        """Record release of the reservation."""
-        self.events.append("release")
+        """Return the grant to reusable after a provable pre-accept failure."""
+        self.authority.events.append("release")
+        self.authority.state.pop(self.approval_request_id, None)
+
+    async def hold_for_reconciliation(self) -> None:
+        """Keep the grant non-reusable until accepted work is reconciled."""
+        self.authority.events.append("hold")
+        self.authority.state[self.approval_request_id] = GrantState.HELD
+
+
+class GrantState:
+    """Terminal/in-flight states tracked by the stateful fake."""
+
+    RESERVED = "reserved"
+    CONSUMED = "consumed"
+    HELD = "held"
 
 
 @dataclass
 class FakeExecutionGrantAuthority:
-    """Approved-request registry keyed by opaque Approval Request reference."""
+    """Stateful approved-request registry: exclusive reserve, terminal consume."""
 
     approved: dict[str, ExecutionGrantBinding] = field(default_factory=dict)
+    state: dict[str, str] = field(default_factory=dict)
     calls: list[dict[str, str]] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
     fail_with: Exception | None = None
@@ -72,13 +89,15 @@ class FakeExecutionGrantAuthority:
         tool_name: str,
         prepare_tool: str,
         approval_request_id: str,
+        preview_id: str,
     ) -> FakeReservation:
-        """Reserve the approved grant or raise ``ExecutionGrantError``."""
+        """Reserve exclusively or raise ``ExecutionGrantError``."""
         self.calls.append(
             {
                 "tool_name": tool_name,
                 "prepare_tool": prepare_tool,
                 "approval_request_id": approval_request_id,
+                "preview_id": preview_id,
             }
         )
         if self.fail_with is not None:
@@ -86,8 +105,16 @@ class FakeExecutionGrantAuthority:
         binding = self.approved.get(approval_request_id)
         if binding is None:
             raise ExecutionGrantError(ExecutionGrantDenial.APPROVAL_PENDING)
+        current = self.state.get(approval_request_id)
+        if current == GrantState.CONSUMED:
+            raise ExecutionGrantError(ExecutionGrantDenial.GRANT_CONSUMED)
+        if current == GrantState.HELD:
+            raise ExecutionGrantError(ExecutionGrantDenial.RECONCILIATION_PENDING)
+        if current == GrantState.RESERVED:
+            raise ExecutionGrantError(ExecutionGrantDenial.GRANT_IN_USE)
+        self.state[approval_request_id] = GrantState.RESERVED
         self.events.append("reserve")
-        return FakeReservation(binding=binding, events=self.events)
+        return FakeReservation(binding, approval_request_id, self)
 
 
 def approved_authority(
