@@ -12,6 +12,14 @@ import { inject } from '@angular/core';
 import { throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import { ApiError, ApiErrorBody } from './api.models';
+import { API_BASE_URL } from './api-url.token';
+import { BrowserSessionState } from './browser-session.state';
+import {
+  BROWSER_CSRF_HEADER,
+  isBrowserSessionFlow,
+  isShipAgentApiFlow,
+  isUnsafeHttpMethod,
+} from './browser-session-request';
 
 /**
  * apiErrorInterceptor
@@ -21,11 +29,16 @@ import { ApiError, ApiErrorBody } from './api.models';
  */
 export const apiErrorInterceptor: HttpInterceptorFn = (
   req: HttpRequest<unknown>,
-  next: HttpHandlerFn,
+  next: HttpHandlerFn
 ) => {
+  const browserSession = inject(BrowserSessionState);
+
   return next(req).pipe(
     catchError((err: unknown) => {
       if (err instanceof HttpErrorResponse) {
+        if (err.status === 401 && !isBrowserSessionFlow(req.url)) {
+          browserSession.markExpired();
+        }
         const body = err.error as ApiErrorBody | null;
         // Support both standard shape { message: "..." } and
         // nested connection shape { error: { message: "..." } }
@@ -40,46 +53,31 @@ export const apiErrorInterceptor: HttpInterceptorFn = (
         return throwError(() => new ApiError(err.status, body, message));
       }
       return throwError(() => err);
-    }),
+    })
   );
 };
 
 /**
  * apiAuthInterceptor
  *
- * Adds the X-API-Key header when a key is configured.
- * Reads from the global SHIPAGENT_API_KEY environment injected at build time,
- * or falls back to a session-level key if available.
- *
- * No-op when no key is configured — allows anonymous access in dev mode.
+ * Lets the browser attach same-origin HttpOnly session cookies, and enables
+ * credentials for the Tauri sidecar URL. API keys are never sourced from
+ * frontend configuration or persistent browser state.
  */
 export const apiAuthInterceptor: HttpInterceptorFn = (
   req: HttpRequest<unknown>,
-  next: HttpHandlerFn,
+  next: HttpHandlerFn
 ) => {
-  // Read API key from injected environment or skip.
-  // The key is only needed when the backend is configured with SHIPAGENT_API_KEY.
-  // The actual value is provided by the shell app via environment injection.
-  try {
-    const { SHIPAGENT_API_KEY } = inject(API_AUTH_KEY, { optional: true }) ?? {};
-    if (SHIPAGENT_API_KEY) {
-      const authReq = req.clone({
-        setHeaders: { 'X-API-Key': SHIPAGENT_API_KEY },
-      });
-      return next(authReq);
-    }
-  } catch {
-    // inject() called outside injection context — safe to ignore
-  }
-  return next(req);
+  const browserSession = inject(BrowserSessionState);
+  const apiBaseUrl = inject(API_BASE_URL);
+  const csrfToken = browserSession.csrfToken();
+  const headers =
+    isUnsafeHttpMethod(req.method) &&
+    isShipAgentApiFlow(req.url, apiBaseUrl()) &&
+    !isBrowserSessionFlow(req.url) &&
+    csrfToken
+      ? req.headers.set(BROWSER_CSRF_HEADER, csrfToken)
+      : req.headers;
+
+  return next(req.clone({ withCredentials: true, headers }));
 };
-
-import { InjectionToken } from '@angular/core';
-
-/**
- * Optional injection token for the API auth key.
- * Provide this in the shell app when SHIPAGENT_API_KEY is configured.
- */
-export const API_AUTH_KEY = new InjectionToken<{ SHIPAGENT_API_KEY?: string }>(
-  'API_AUTH_KEY',
-);

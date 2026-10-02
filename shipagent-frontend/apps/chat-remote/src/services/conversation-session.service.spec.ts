@@ -338,6 +338,74 @@ describe('ConversationSessionService', () => {
       expect(messages[0].metadata?.['jobId']).toBe('job-456');
     });
 
+    it('should reconstruct persisted failed and cancelled terminal artifacts', async () => {
+      const failedMetadata = {
+        type: 'completion',
+        jobId: 'job-failed',
+        action: 'complete',
+        completion: {
+          status: 'failed',
+          outcome: 'failed',
+          cancelled: false,
+          statusMessage: 'Batch failed.',
+          error: { code: 'BATCH_RECOVERED', message: 'Recovered failure' },
+          rowFailures: [
+            {
+              rowNumber: 3,
+              errorCode: 'ROW_RECOVERED',
+              errorMessage: 'Recovered row failure',
+            },
+          ],
+          currentRow: 4,
+          lastTrackingNumber: '1ZRECOVERED',
+        },
+      };
+      const cancelledMetadata = {
+        type: 'completion',
+        jobId: 'job-cancelled',
+        action: 'complete',
+        completion: {
+          status: 'cancelled',
+          outcome: 'failed',
+          cancelled: true,
+          statusMessage: 'Batch cancelled. You can enter a new command.',
+          error: {
+            code: 'CANCELLED_RECOVERED',
+            message: 'Recovered cancellation',
+          },
+          currentRow: 2,
+          lastTrackingNumber: '1ZBEFORECANCEL',
+        },
+      };
+      const persistedMessages = [
+        {
+          id: 'art-failed',
+          role: 'assistant' as const,
+          content: '',
+          created_at: '2026-01-01T00:00:00Z',
+          metadata: failedMetadata,
+          message_type: 'system_artifact' as const,
+          sequence: 1,
+        },
+        {
+          id: 'art-cancelled',
+          role: 'assistant' as const,
+          content: '',
+          created_at: '2026-01-01T00:00:01Z',
+          metadata: cancelledMetadata,
+          message_type: 'system_artifact' as const,
+          sequence: 2,
+        },
+      ];
+
+      await service.loadSession('session-terminal', 'batch', persistedMessages);
+
+      const messages = conversationStore.messages();
+      expect(messages).toHaveLength(2);
+      expect(messages[0].metadata).toEqual(failedMetadata);
+      expect(messages[1].metadata).toEqual(cancelledMetadata);
+    });
+
     it('should handle null metadata gracefully', async () => {
       const persistedMessages = [
         {

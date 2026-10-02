@@ -12,6 +12,9 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  EventEmitter,
+  Input,
+  Output,
   inject,
 } from '@angular/core';
 import { AppStore, ConversationStore } from '@shipagent/shared-state';
@@ -38,6 +41,18 @@ import { ShipAgentLogoComponent } from '@shipagent/shared-ui';
 
         <!-- Right side: interactive shipping toggle -->
         <div class="flex items-center gap-3">
+          @if (showApiSessionControl) {
+            <button
+              type="button"
+              aria-label="Clear API session"
+              [disabled]="clearingApiSession"
+              (click)="clearApiSession.emit()"
+              class="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-wait disabled:opacity-60"
+            >
+              {{ clearingApiSession ? 'Locking…' : 'Lock session' }}
+            </button>
+          }
+
           <div class="flex items-center gap-2">
             <label
               for="interactive-shipping-toggle"
@@ -76,6 +91,10 @@ import { ShipAgentLogoComponent } from '@shipagent/shared-ui';
 export class HeaderComponent {
   protected readonly conversationStore = inject(ConversationStore);
   protected readonly appStore = inject(AppStore);
+
+  @Input() showApiSessionControl = false;
+  @Input() clearingApiSession = false;
+  @Output() readonly clearApiSession = new EventEmitter<void>();
 
   /** Toggle interactive shipping mode. */
   onToggleInteractiveShipping(): void {

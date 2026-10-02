@@ -9,21 +9,12 @@ from datetime import date
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from src.errors.terminal_diagnostics import project_terminal_diagnostic
+from src.job_status import JobStatusEnum
 
 # Enums for API validation
-
-
-class JobStatusEnum(str, Enum):
-    """Valid job status values for API requests."""
-
-    pending = "pending"
-    running = "running"
-    paused = "paused"
-    completed = "completed"
-    completed_with_warnings = "completed_with_warnings"
-    failed = "failed"
-    cancelled = "cancelled"
 
 
 class JobModeEnum(str, Enum):
@@ -51,7 +42,25 @@ class JobUpdate(BaseModel):
     status: JobStatusEnum
 
 
-class JobRowResponse(BaseModel):
+class _SafeDiagnosticResponse(BaseModel):
+    """Project legacy stored errors to the closed public diagnostic contract."""
+
+    error_code: str | None
+    error_message: str | None
+
+    @model_validator(mode="after")
+    def _project_safe_diagnostic(self) -> "_SafeDiagnosticResponse":
+        if self.error_code is None and self.error_message is None:
+            return self
+        diagnostic = project_terminal_diagnostic(self.error_code)
+        self.error_code = diagnostic.error_code
+        self.error_message = diagnostic.message
+        return self
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class JobRowResponse(_SafeDiagnosticResponse):
     """Response schema for a job row."""
 
     id: str
@@ -65,8 +74,6 @@ class JobRowResponse(BaseModel):
     destination_country: str | None = None
     duties_taxes_cents: int | None = None
     charge_breakdown: dict | None = None
-    error_code: str | None
-    error_message: str | None
     created_at: str
     processed_at: str | None
 
@@ -86,7 +93,7 @@ class JobRowResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class JobResponse(BaseModel):
+class JobResponse(_SafeDiagnosticResponse):
     """Response schema for a job."""
 
     id: str
@@ -103,9 +110,6 @@ class JobResponse(BaseModel):
     total_cost_cents: int | None
     total_duties_taxes_cents: int | None = None
     international_row_count: int = 0
-
-    error_code: str | None
-    error_message: str | None
 
     created_at: str
     started_at: str | None
@@ -265,9 +269,7 @@ class DataSourceImportRequest(BaseModel):
     )
     delimiter: str = Field(",", description="CSV delimiter character")
     sheet: str | None = Field(None, description="Excel sheet name (default: first)")
-    connection_string: str | None = Field(
-        None, description="Database connection URL"
-    )
+    connection_string: str | None = Field(None, description="Database connection URL")
     query: str | None = Field(None, description="SQL query for database import")
     row_key_columns: list[str] | None = Field(
         None,
@@ -366,7 +368,9 @@ class BulkDeleteRequest(BaseModel):
 class ContactCreate(BaseModel):
     """Request schema for creating a contact."""
 
-    handle: str | None = Field(None, max_length=100, description="@mention slug (auto-generated if omitted)")
+    handle: str | None = Field(
+        None, max_length=100, description="@mention slug (auto-generated if omitted)"
+    )
     display_name: str = Field(..., min_length=1, max_length=200)
     attention_name: str | None = Field(None, max_length=200)
     company: str | None = Field(None, max_length=200)
@@ -461,7 +465,9 @@ class ContactListResponse(BaseModel):
 class CommandCreate(BaseModel):
     """Request schema for creating a custom command."""
 
-    name: str = Field(..., min_length=1, max_length=100, description="Command slug without /")
+    name: str = Field(
+        ..., min_length=1, max_length=100, description="Command slug without /"
+    )
     body: str = Field(..., min_length=1, description="Instruction text")
     description: str | None = None
 

@@ -20,7 +20,10 @@
         "additionalProperties": false,
         "properties": {
           "correlation_id": {
-            "description": "Opaque client correlation identifier.",
+            "description": "Opaque ShipAgent correlation identifier.",
+            "maxLength": 47,
+            "minLength": 47,
+            "pattern": "^sa_correlation_[0-9a-f]{32}$",
             "type": "string"
           }
         },
@@ -42,15 +45,22 @@
             "properties": {
               "capabilities": {
                 "items": {
+                  "enum": [
+                    "shipment_ingress",
+                    "address_validation",
+                    "rate_shopping",
+                    "shipment_preview",
+                    "shipment_execution",
+                    "job_status",
+                    "label_handoff",
+                    "get_shipagent_status",
+                    "rate_shipment"
+                  ],
                   "type": "string"
                 },
-                "type": "array"
-              },
-              "message": {
-                "type": [
-                  "string",
-                  "null"
-                ]
+                "maxItems": 9,
+                "type": "array",
+                "uniqueItems": true
               },
               "state": {
                 "enum": [
@@ -59,19 +69,11 @@
                   "update_required"
                 ],
                 "type": "string"
-              },
-              "target_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
               }
             },
             "required": [
               "state",
-              "target_id",
-              "capabilities",
-              "message"
+              "capabilities"
             ],
             "type": "object"
           },
@@ -108,7 +110,7 @@
       "visibility": "public"
     },
     {
-      "audit_level": "full",
+      "audit_level": "basic",
       "auth_scopes": [
         "shipments:create"
       ],
@@ -118,25 +120,23 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Create a single shipment execution job from an already-validated payload.",
-      "execution_target_required": true,
+      "description": "Register a ShipAgent-owned ingress artifact for one-off shipment workflows.",
+      "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "destination_city": {
-            "type": "string"
-          },
-          "origin_city": {
-            "type": "string"
-          },
-          "preview_id": {
+          "ingress_reference": {
+            "description": "Opaque reference minted by the authenticated ShipAgent ingress channel.",
+            "maxLength": 43,
+            "minLength": 43,
+            "pattern": "^sa_ingress_[0-9a-f]{32}$",
             "type": "string"
           }
         },
         "required": [
-          "preview_id"
+          "ingress_reference"
         ],
         "type": "object"
       },
@@ -148,20 +148,20 @@
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "job_id": {
-            "type": "string"
-          },
-          "status": {
+          "input_reference": {
+            "description": "Opaque ShipAgent shipment input reference.",
+            "maxLength": 41,
+            "minLength": 41,
+            "pattern": "^sa_input_[0-9a-f]{32}$",
             "type": "string"
           }
         },
         "required": [
-          "job_id",
-          "status"
+          "input_reference"
         ],
         "type": "object"
       },
-      "prepare_tool": "prepare_shipments",
+      "prepare_tool": null,
       "provider_export_enabled": false,
       "provider_exports": [
         "openai_apps_public",
@@ -169,13 +169,13 @@
         "generic_mcp"
       ],
       "rate_limit_class": "default",
-      "requires_confirmation": true,
+      "requires_confirmation": false,
       "result_profile": "aggregate",
       "result_sensitivity": "business",
-      "side_effect": "purchase",
+      "side_effect": "estimate",
       "tenant_safe": true,
       "title": "Submit one off shipment",
-      "ui_resource": "ui://shipagent/confirmation.html",
+      "ui_resource": null,
       "visibility": "public"
     },
     {
@@ -196,13 +196,16 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "address_text": {
-            "description": "Address text in free form.",
+          "input_reference": {
+            "description": "Opaque ShipAgent shipment input reference.",
+            "maxLength": 41,
+            "minLength": 41,
+            "pattern": "^sa_input_[0-9a-f]{32}$",
             "type": "string"
           }
         },
         "required": [
-          "address_text"
+          "input_reference"
         ],
         "type": "object"
       },
@@ -214,16 +217,40 @@
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "normalized_address": {
-            "type": "string"
+          "guidance_codes": {
+            "description": "Bounded redacted remediation categories.",
+            "items": {
+              "enum": [
+                "no_action_required",
+                "postal_code_review_required",
+                "locality_review_required",
+                "region_review_required",
+                "recipient_review_required",
+                "destination_not_recognized",
+                "multiple_candidates",
+                "carrier_validation_unavailable"
+              ],
+              "type": "string"
+            },
+            "maxItems": 8,
+            "type": "array",
+            "uniqueItems": true
           },
           "valid": {
             "type": "boolean"
+          },
+          "validation_artifact_id": {
+            "description": "Opaque ShipAgent validation artifact reference.",
+            "maxLength": 46,
+            "minLength": 46,
+            "pattern": "^sa_validation_[0-9a-f]{32}$",
+            "type": "string"
           }
         },
         "required": [
-          "normalized_address",
-          "valid"
+          "validation_artifact_id",
+          "valid",
+          "guidance_codes"
         ],
         "type": "object"
       },
@@ -262,12 +289,16 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "shipment_id": {
+          "input_reference": {
+            "description": "Opaque ShipAgent shipment input reference.",
+            "maxLength": 41,
+            "minLength": 41,
+            "pattern": "^sa_input_[0-9a-f]{32}$",
             "type": "string"
           }
         },
         "required": [
-          "shipment_id"
+          "input_reference"
         ],
         "type": "object"
       },
@@ -281,11 +312,87 @@
         "properties": {
           "rates": {
             "items": {
+              "additionalProperties": false,
+              "properties": {
+                "currency_code": {
+                  "enum": [
+                    "USD"
+                  ],
+                  "type": "string"
+                },
+                "estimated_delivery_date": {
+                  "maxLength": 10,
+                  "minLength": 10,
+                  "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+                  "type": "string"
+                },
+                "service_code": {
+                  "enum": [
+                    "01",
+                    "02",
+                    "03",
+                    "07",
+                    "08",
+                    "11",
+                    "12",
+                    "13",
+                    "14",
+                    "54",
+                    "59",
+                    "65"
+                  ],
+                  "type": "string"
+                },
+                "service_name": {
+                  "enum": [
+                    "UPS Next Day Air",
+                    "UPS 2nd Day Air",
+                    "UPS Ground",
+                    "UPS Worldwide Express",
+                    "UPS Worldwide Expedited",
+                    "UPS Standard",
+                    "UPS 3 Day Select",
+                    "UPS Next Day Air Saver",
+                    "UPS Next Day Air Early",
+                    "UPS Worldwide Express Plus",
+                    "UPS 2nd Day Air A.M.",
+                    "UPS Worldwide Saver"
+                  ],
+                  "type": "string"
+                },
+                "total_charge": {
+                  "maxLength": 13,
+                  "minLength": 4,
+                  "pattern": "^(0|[1-9][0-9]{0,9})\\.[0-9]{2}$",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "service_code",
+                "service_name",
+                "total_charge",
+                "currency_code"
+              ],
               "type": "object"
             },
+            "maxItems": 12,
             "type": "array"
           },
           "selected": {
+            "enum": [
+              "01",
+              "02",
+              "03",
+              "07",
+              "08",
+              "11",
+              "12",
+              "13",
+              "14",
+              "54",
+              "59",
+              "65"
+            ],
             "type": "string"
           }
         },
@@ -330,12 +437,16 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "order_batch_id": {
+          "input_reference": {
+            "description": "Opaque ShipAgent shipment input reference.",
+            "maxLength": 41,
+            "minLength": 41,
+            "pattern": "^sa_input_[0-9a-f]{32}$",
             "type": "string"
           }
         },
         "required": [
-          "order_batch_id"
+          "input_reference"
         ],
         "type": "object"
       },
@@ -348,9 +459,24 @@
         "additionalProperties": false,
         "properties": {
           "preview_id": {
+            "description": "Opaque ShipAgent shipment preview identifier.",
+            "maxLength": 43,
+            "minLength": 43,
+            "pattern": "^sa_preview_[0-9a-f]{32}$",
             "type": "string"
           },
           "summary": {
+            "additionalProperties": false,
+            "properties": {
+              "shipment_count": {
+                "maximum": 1000000,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "shipment_count"
+            ],
             "type": "object"
           }
         },
@@ -395,16 +521,24 @@
       "input_schema": {
         "additionalProperties": false,
         "properties": {
-          "confirmation_token": {
+          "confirmation_artifact_id": {
+            "description": "Opaque confirmation artifact minted by an authenticated ShipAgent channel.",
+            "maxLength": 48,
+            "minLength": 48,
+            "pattern": "^sa_confirmation_[0-9a-f]{32}$",
             "type": "string"
           },
           "preview_id": {
+            "description": "Opaque ShipAgent shipment preview identifier.",
+            "maxLength": 43,
+            "minLength": 43,
+            "pattern": "^sa_preview_[0-9a-f]{32}$",
             "type": "string"
           }
         },
         "required": [
           "preview_id",
-          "confirmation_token"
+          "confirmation_artifact_id"
         ],
         "type": "object"
       },
@@ -417,9 +551,21 @@
         "additionalProperties": false,
         "properties": {
           "job_id": {
+            "description": "Opaque ShipAgent shipment job identifier.",
+            "maxLength": 39,
+            "minLength": 39,
+            "pattern": "^sa_job_[0-9a-f]{32}$",
             "type": "string"
           },
           "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "completed_with_warnings",
+              "failed",
+              "cancelled"
+            ],
             "type": "string"
           }
         },
@@ -465,7 +611,10 @@
         "additionalProperties": false,
         "properties": {
           "job_id": {
-            "description": "ShipAgent job identifier.",
+            "description": "Opaque ShipAgent shipment job identifier.",
+            "maxLength": 39,
+            "minLength": 39,
+            "pattern": "^sa_job_[0-9a-f]{32}$",
             "type": "string"
           }
         },
@@ -483,9 +632,21 @@
         "additionalProperties": false,
         "properties": {
           "job_id": {
+            "description": "Opaque ShipAgent shipment job identifier.",
+            "maxLength": 39,
+            "minLength": 39,
+            "pattern": "^sa_job_[0-9a-f]{32}$",
             "type": "string"
           },
           "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "completed_with_warnings",
+              "failed",
+              "cancelled"
+            ],
             "type": "string"
           }
         },
@@ -523,7 +684,7 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Create downloadable label artifacts for a completed shipment job.",
+      "description": "Create an opaque label handoff for an authenticated ShipAgent-owned UI.",
       "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
@@ -531,6 +692,10 @@
         "additionalProperties": false,
         "properties": {
           "job_id": {
+            "description": "Opaque ShipAgent shipment job identifier.",
+            "maxLength": 39,
+            "minLength": 39,
+            "pattern": "^sa_job_[0-9a-f]{32}$",
             "type": "string"
           }
         },
@@ -547,15 +712,24 @@
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "download_url": {
+          "label_artifact_id": {
+            "description": "Opaque label artifact resolved only by an authenticated ShipAgent channel.",
+            "maxLength": 41,
+            "minLength": 41,
+            "pattern": "^sa_label_[0-9a-f]{32}$",
             "type": "string"
           },
           "status": {
+            "enum": [
+              "pending",
+              "ready",
+              "unavailable"
+            ],
             "type": "string"
           }
         },
         "required": [
-          "download_url",
+          "label_artifact_id",
           "status"
         ],
         "type": "object"

@@ -1,5 +1,7 @@
 from typing import Literal
 
+from src.job_status import PROVIDER_JOB_STATUS_CODES
+from src.registry.identifiers import ShipAgentIdFamily, shipagent_id_schema
 from src.registry.models import (
     AuditLevel,
     Availability,
@@ -10,6 +12,8 @@ from src.registry.models import (
     ToolVisibility,
 )
 from src.registry.tools.schema import object_schema
+from src.services.ups_constants import DEFAULT_CURRENCY_CODE
+from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
 
 FIRST_SLICE_TOOL_NAMES = (
     "get_shipagent_status",
@@ -27,6 +31,39 @@ PUBLIC_RELAY_PROVIDERS = [
     ProviderExport.claude_remote_mcp_public,
     ProviderExport.generic_mcp,
 ]
+
+ADDRESS_VALIDATION_GUIDANCE_CODES = [
+    "no_action_required",
+    "postal_code_review_required",
+    "locality_review_required",
+    "region_review_required",
+    "recipient_review_required",
+    "destination_not_recognized",
+    "multiple_candidates",
+    "carrier_validation_unavailable",
+]
+
+# Relay execution target states; mirrors RelayTargetState in the control plane.
+EXECUTION_TARGET_STATE_CODES = ["ready", "offline", "update_required"]
+LABEL_STATUS_CODES = ["pending", "ready", "unavailable"]
+SHIPAGENT_CAPABILITY_CODES = [
+    "shipment_ingress",
+    "address_validation",
+    "rate_shopping",
+    "shipment_preview",
+    "shipment_execution",
+    "job_status",
+    "label_handoff",
+    # Tool-name capabilities the relay execution target reports today.
+    "get_shipagent_status",
+    "rate_shipment",
+]
+UPS_SERVICE_CODES = [code.value for code in ServiceCode]
+UPS_SERVICE_NAMES = list(SERVICE_CODE_NAMES.values())
+RATE_CURRENCY_CODES = [DEFAULT_CURRENCY_CODE]
+
+_MONEY_PATTERN = r"^(0|[1-9][0-9]{0,9})\.[0-9]{2}$"
+_ISO_DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 
 
 def public_tool(
@@ -47,11 +84,7 @@ def public_tool(
     prepare_tool: str | None = None,
     execution_target_required: bool = False,
 ) -> ToolContract:
-    confirmation = (
-        confirmation_policy
-        if requires_confirmation
-        else None
-    )
+    confirmation = confirmation_policy if requires_confirmation else None
     return ToolContract(
         name=name,
         title=title,
@@ -88,38 +121,33 @@ PUBLIC_TOOLS = [
         ["shipagent.status"],
         object_schema(
             {
-                "correlation_id": {
-                    "type": "string",
-                    "description": "Opaque client correlation identifier.",
-                }
+                "correlation_id": shipagent_id_schema(
+                    ShipAgentIdFamily.CORRELATION,
+                    "Opaque ShipAgent correlation identifier.",
+                )
             },
             ["correlation_id"],
         ),
         object_schema(
             {
-                "status": {
-                    "type": "string",
-                    "enum": ["ready", "offline", "update_required"],
-                },
+                "status": {"type": "string", "enum": EXECUTION_TARGET_STATE_CODES},
                 "executionTarget": object_schema(
                     {
                         "state": {
                             "type": "string",
-                            "enum": ["ready", "offline", "update_required"],
+                            "enum": EXECUTION_TARGET_STATE_CODES,
                         },
-                        "target_id": {"type": ["string", "null"]},
                         "capabilities": {
                             "type": "array",
-                            "items": {"type": "string"},
+                            "items": {
+                                "type": "string",
+                                "enum": SHIPAGENT_CAPABILITY_CODES,
+                            },
+                            "maxItems": len(SHIPAGENT_CAPABILITY_CODES),
+                            "uniqueItems": True,
                         },
-                        "message": {"type": ["string", "null"]},
                     },
-                    [
-                        "state",
-                        "target_id",
-                        "capabilities",
-                        "message",
-                    ],
+                    ["state", "capabilities"],
                 ),
             },
             ["status", "executionTarget"],
@@ -129,25 +157,27 @@ PUBLIC_TOOLS = [
     public_tool(
         "submit_one_off_shipment",
         "Submit one off shipment",
-        "Create a single shipment execution job from an already-validated payload.",
-        SideEffectClass.purchase,
+        "Register a ShipAgent-owned ingress artifact for one-off shipment workflows.",
+        SideEffectClass.estimate,
         ["shipments:create"],
         object_schema(
             {
-                "preview_id": {"type": "string"},
-                "origin_city": {"type": "string"},
-                "destination_city": {"type": "string"},
+                "ingress_reference": shipagent_id_schema(
+                    ShipAgentIdFamily.INGRESS,
+                    "Opaque reference minted by the authenticated ShipAgent ingress channel.",
+                ),
             },
-            ["preview_id"],
+            ["ingress_reference"],
         ),
         object_schema(
-            {"job_id": {"type": "string"}, "status": {"type": "string"}},
-            ["job_id", "status"],
+            {
+                "input_reference": shipagent_id_schema(
+                    ShipAgentIdFamily.INPUT,
+                    "Opaque ShipAgent shipment input reference.",
+                )
+            },
+            ["input_reference"],
         ),
-        requires_confirmation=True,
-        ui_resource="ui://shipagent/confirmation.html",
-        prepare_tool="prepare_shipments",
-        execution_target_required=True,
     ),
     public_tool(
         "validate_shipment_address",
@@ -157,16 +187,32 @@ PUBLIC_TOOLS = [
         ["address:validate"],
         object_schema(
             {
-                "address_text": {
-                    "type": "string",
-                    "description": "Address text in free form.",
-                }
+                "input_reference": shipagent_id_schema(
+                    ShipAgentIdFamily.INPUT,
+                    "Opaque ShipAgent shipment input reference.",
+                ),
             },
-            ["address_text"],
+            ["input_reference"],
         ),
         object_schema(
-            {"normalized_address": {"type": "string"}, "valid": {"type": "boolean"}},
-            ["normalized_address", "valid"],
+            {
+                "validation_artifact_id": shipagent_id_schema(
+                    ShipAgentIdFamily.VALIDATION,
+                    "Opaque ShipAgent validation artifact reference.",
+                ),
+                "valid": {"type": "boolean"},
+                "guidance_codes": {
+                    "type": "array",
+                    "description": "Bounded redacted remediation categories.",
+                    "items": {
+                        "type": "string",
+                        "enum": ADDRESS_VALIDATION_GUIDANCE_CODES,
+                    },
+                    "maxItems": len(ADDRESS_VALIDATION_GUIDANCE_CODES),
+                    "uniqueItems": True,
+                },
+            },
+            ["validation_artifact_id", "valid", "guidance_codes"],
         ),
     ),
     public_tool(
@@ -176,13 +222,58 @@ PUBLIC_TOOLS = [
         SideEffectClass.estimate,
         ["shipments:rate"],
         object_schema(
-            {"shipment_id": {"type": "string"}},
-            ["shipment_id"],
+            {
+                "input_reference": shipagent_id_schema(
+                    ShipAgentIdFamily.INPUT,
+                    "Opaque ShipAgent shipment input reference.",
+                )
+            },
+            ["input_reference"],
         ),
         object_schema(
             {
-                "rates": {"type": "array", "items": {"type": "object"}},
-                "selected": {"type": "string"},
+                "rates": {
+                    "type": "array",
+                    "items": object_schema(
+                        {
+                            "service_code": {
+                                "type": "string",
+                                "enum": UPS_SERVICE_CODES,
+                            },
+                            "service_name": {
+                                "type": "string",
+                                "enum": UPS_SERVICE_NAMES,
+                            },
+                            "total_charge": {
+                                "type": "string",
+                                "pattern": _MONEY_PATTERN,
+                                "minLength": 4,
+                                "maxLength": 13,
+                            },
+                            "currency_code": {
+                                "type": "string",
+                                "enum": RATE_CURRENCY_CODES,
+                            },
+                            "estimated_delivery_date": {
+                                "type": "string",
+                                "pattern": _ISO_DATE_PATTERN,
+                                "minLength": 10,
+                                "maxLength": 10,
+                            },
+                        },
+                        [
+                            "service_code",
+                            "service_name",
+                            "total_charge",
+                            "currency_code",
+                        ],
+                    ),
+                    "maxItems": len(UPS_SERVICE_CODES),
+                },
+                "selected": {
+                    "type": "string",
+                    "enum": UPS_SERVICE_CODES,
+                },
             },
             ["rates", "selected"],
         ),
@@ -196,11 +287,33 @@ PUBLIC_TOOLS = [
         SideEffectClass.estimate,
         ["shipments:preview"],
         object_schema(
-            {"order_batch_id": {"type": "string"}},
-            ["order_batch_id"],
+            {
+                "input_reference": shipagent_id_schema(
+                    ShipAgentIdFamily.INPUT,
+                    "Opaque ShipAgent shipment input reference.",
+                )
+            },
+            ["input_reference"],
         ),
         object_schema(
-            {"preview_id": {"type": "string"}, "summary": {"type": "object"}},
+            {
+                "preview_id": shipagent_id_schema(
+                    ShipAgentIdFamily.PREVIEW,
+                    "Opaque ShipAgent shipment preview identifier.",
+                ),
+                "summary": {
+                    "type": "object",
+                    "properties": {
+                        "shipment_count": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 1_000_000,
+                        },
+                    },
+                    "required": ["shipment_count"],
+                    "additionalProperties": False,
+                },
+            },
             ["preview_id", "summary"],
         ),
         ui_resource="ui://shipagent/preview.html",
@@ -213,11 +326,29 @@ PUBLIC_TOOLS = [
         SideEffectClass.purchase,
         ["shipments:execute"],
         object_schema(
-            {"preview_id": {"type": "string"}, "confirmation_token": {"type": "string"}},
-            ["preview_id", "confirmation_token"],
+            {
+                "preview_id": shipagent_id_schema(
+                    ShipAgentIdFamily.PREVIEW,
+                    "Opaque ShipAgent shipment preview identifier.",
+                ),
+                "confirmation_artifact_id": shipagent_id_schema(
+                    ShipAgentIdFamily.CONFIRMATION,
+                    "Opaque confirmation artifact minted by an authenticated ShipAgent channel.",
+                ),
+            },
+            ["preview_id", "confirmation_artifact_id"],
         ),
         object_schema(
-            {"job_id": {"type": "string"}, "status": {"type": "string"}},
+            {
+                "job_id": shipagent_id_schema(
+                    ShipAgentIdFamily.JOB,
+                    "Opaque ShipAgent shipment job identifier.",
+                ),
+                "status": {
+                    "type": "string",
+                    "enum": list(PROVIDER_JOB_STATUS_CODES),
+                },
+            },
             ["job_id", "status"],
         ),
         requires_confirmation=True,
@@ -233,27 +364,52 @@ PUBLIC_TOOLS = [
         SideEffectClass.read,
         ["jobs:read"],
         object_schema(
-            {"job_id": {"type": "string", "description": "ShipAgent job identifier."}},
+            {
+                "job_id": shipagent_id_schema(
+                    ShipAgentIdFamily.JOB,
+                    "Opaque ShipAgent shipment job identifier.",
+                )
+            },
             ["job_id"],
         ),
         object_schema(
-            {"job_id": {"type": "string"}, "status": {"type": "string"}},
+            {
+                "job_id": shipagent_id_schema(
+                    ShipAgentIdFamily.JOB,
+                    "Opaque ShipAgent shipment job identifier.",
+                ),
+                "status": {
+                    "type": "string",
+                    "enum": list(PROVIDER_JOB_STATUS_CODES),
+                },
+            },
             ["job_id", "status"],
         ),
     ),
     public_tool(
         "create_label_download",
         "Create label download",
-        "Create downloadable label artifacts for a completed shipment job.",
+        "Create an opaque label handoff for an authenticated ShipAgent-owned UI.",
         SideEffectClass.read,
         ["labels:read"],
         object_schema(
-            {"job_id": {"type": "string"}},
+            {
+                "job_id": shipagent_id_schema(
+                    ShipAgentIdFamily.JOB,
+                    "Opaque ShipAgent shipment job identifier.",
+                )
+            },
             ["job_id"],
         ),
         object_schema(
-            {"download_url": {"type": "string"}, "status": {"type": "string"}},
-            ["download_url", "status"],
+            {
+                "label_artifact_id": shipagent_id_schema(
+                    ShipAgentIdFamily.LABEL,
+                    "Opaque label artifact resolved only by an authenticated ShipAgent channel.",
+                ),
+                "status": {"type": "string", "enum": LABEL_STATUS_CODES},
+            },
+            ["label_artifact_id", "status"],
         ),
     ),
 ]

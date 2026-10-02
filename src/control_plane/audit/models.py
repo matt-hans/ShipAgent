@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import String, Text
+from sqlalchemy import DateTime, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.control_plane.models import ControlPlaneBase
@@ -24,5 +24,8 @@ class ControlPlaneAuditEvent(ControlPlaneBase):
     device_id: Mapped[str | None] = mapped_column(String(36))
     actor_id_hash: Mapped[str] = mapped_column(String(64))
     details_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(default=utc_now, index=True)
-
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        index=True,
+    )

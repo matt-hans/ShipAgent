@@ -10,11 +10,9 @@
 // Our PyInstaller one-folder build produces a directory, so we bundle it
 // as a Tauri resource and resolve the executable path at runtime.
 //
-// CSP NOTE: tauri.conf.json uses `connect-src 'self' http://127.0.0.1:*`
-// because the backend binds to an OS-assigned port (--port 0). The wildcard
-// port is required since we don't know the port at build time. This is safe
-// for a desktop app: the frontend only runs locally, there is no remote code
-// execution vector, and all connections are to localhost.
+// The trusted custom-protocol bootstrap invokes `start_sidecar`, then replaces
+// itself with the shell served at `http://127.0.0.1:<port>/`. That reload uses
+// relative API URLs and receives no remote-origin Tauri capability.
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -32,7 +30,8 @@ struct BackendProcess(Mutex<Option<CommandChild>>);
 async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
     // Resolve the absolute path to the executable inside the resource directory.
     // Tauri copies the one-folder build to Resources/backend-dist/ at bundle time.
-    let resource_path = app.path()
+    let resource_path = app
+        .path()
         .resource_dir()
         .map_err(|e| format!("Failed to resolve resource dir: {e}"))?
         .join("backend-dist")
@@ -45,9 +44,12 @@ async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
         ));
     }
 
-    let path_str = resource_path
-        .to_str()
-        .ok_or_else(|| format!("Resource path contains invalid UTF-8: {}", resource_path.display()))?;
+    let path_str = resource_path.to_str().ok_or_else(|| {
+        format!(
+            "Resource path contains invalid UTF-8: {}",
+            resource_path.display()
+        )
+    })?;
 
     let shell = app.shell();
 
@@ -68,37 +70,35 @@ async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
     use tauri_plugin_shell::process::CommandEvent;
     use tokio::time::{timeout, Duration};
 
-    let port_result = timeout(
-        Duration::from_secs(SIDECAR_TIMEOUT_SECS),
-        async {
-            while let Some(event) = rx.recv().await {
-                match event {
-                    CommandEvent::Stdout(line) => {
-                        let text = String::from_utf8_lossy(&line);
-                        // Check for startup failure signal
-                        if text.starts_with("SHIPAGENT_ERROR=") {
-                            return Err(format!("Backend startup failed: {}", text.trim()));
-                        }
-                        if let Some(p) = text.strip_prefix("SHIPAGENT_PORT=") {
-                            if let Ok(port) = p.trim().parse::<u16>() {
-                                return Ok(port);
-                            }
+    let port_result = timeout(Duration::from_secs(SIDECAR_TIMEOUT_SECS), async {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) => {
+                    let text = String::from_utf8_lossy(&line);
+                    // Check for startup failure signal
+                    if text.starts_with("SHIPAGENT_ERROR=") {
+                        return Err(format!("Backend startup failed: {}", text.trim()));
+                    }
+                    if let Some(p) = text.strip_prefix("SHIPAGENT_PORT=") {
+                        if let Ok(port) = p.trim().parse::<u16>() {
+                            return Ok(port);
                         }
                     }
-                    CommandEvent::Error(e) => {
-                        // CommandEvent::Error may be stderr lines or I/O errors.
-                        // Don't treat as fatal — uvicorn logs go to stderr.
-                        eprintln!("Backend process event: {e}");
-                    }
-                    CommandEvent::Terminated(payload) => {
-                        return Err(format!("Backend exited early: {:?}", payload.code));
-                    }
-                    _ => {}
                 }
+                CommandEvent::Error(e) => {
+                    // CommandEvent::Error may be stderr lines or I/O errors.
+                    // Don't treat as fatal — uvicorn logs go to stderr.
+                    eprintln!("Backend process event: {e}");
+                }
+                CommandEvent::Terminated(payload) => {
+                    return Err(format!("Backend exited early: {:?}", payload.code));
+                }
+                _ => {}
             }
-            Err("Backend stdout closed without reporting a port".to_string())
         }
-    ).await;
+        Err("Backend stdout closed without reporting a port".to_string())
+    })
+    .await;
 
     match port_result {
         Ok(Ok(port)) => Ok(port),
@@ -117,8 +117,8 @@ fn main() {
         .manage(BackendProcess(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![start_sidecar])
         .setup(|_app| {
-            // The frontend JS calls `invoke('start_sidecar')` on load and
-            // sets `window.__SHIPAGENT_PORT__` with the returned port.
+            // The trusted bootstrap calls `invoke('start_sidecar')` once and
+            // navigates to the returned loopback origin.
             Ok(())
         })
         .run(tauri::generate_context!())

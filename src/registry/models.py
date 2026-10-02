@@ -4,6 +4,8 @@ from typing import Any, Literal
 from jsonschema import SchemaError, validators
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from src.registry.privacy import provider_schema_privacy_violations
+
 
 class ToolVisibility(StrEnum):
     public = "public"
@@ -76,9 +78,9 @@ class ToolContract(BaseModel):
     notes: str = ""
     prepare_tool: str | None = None
     execution_target_required: bool = False
-    result_profile: Literal[
-        "aggregate", "provider_ingress_echo", "artifact_action"
-    ] = "aggregate"
+    result_profile: Literal["aggregate", "provider_ingress_echo", "artifact_action"] = (
+        "aggregate"
+    )
     max_sync_seconds: int = Field(default=30, ge=1, le=300)
     max_result_bytes: int = Field(default=65536, ge=1024)
     minimum_capabilities: dict[str, str] = Field(default_factory=dict)
@@ -121,6 +123,18 @@ class ToolContract(BaseModel):
                 raise ValueError("public exported tools must be tenant_safe")
             if self.hosted_readiness != "ready":
                 raise ValueError("public exported tools must be hosted-ready")
+            privacy_violations = [
+                f"{direction}.{path}"
+                for direction, schema in (
+                    ("input", self.input_schema),
+                    ("output", self.output_schema),
+                )
+                for path in provider_schema_privacy_violations(self.name, schema)
+            ]
+            if privacy_violations:
+                raise ValueError(
+                    "provider privacy violation: " + ", ".join(privacy_violations)
+                )
         if (
             self.side_effect
             in {

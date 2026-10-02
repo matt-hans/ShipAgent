@@ -13,6 +13,10 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.db.models import Job, JobRow, JobStatus, RowStatus
+from src.errors.terminal_diagnostics import (
+    MAX_TERMINAL_ROW_NUMBER,
+    project_terminal_diagnostic,
+)
 
 
 class InvalidStateTransition(Exception):
@@ -33,7 +37,9 @@ class InvalidStateTransition(Exception):
         self.current_state = current_state
         self.attempted_state = attempted_state
         self.allowed_transitions = allowed_transitions
-        allowed_str = ", ".join(s.value for s in allowed_transitions) or "none (terminal)"
+        allowed_str = (
+            ", ".join(s.value for s in allowed_transitions) or "none (terminal)"
+        )
         super().__init__(
             f"Cannot transition from '{current_state.value}' to '{attempted_state.value}'. "
             f"Allowed transitions: {allowed_str}"
@@ -290,8 +296,9 @@ class JobService:
         if job is None:
             raise ValueError(f"Job not found: {job_id}")
 
-        job.error_code = error_code
-        job.error_message = error_message
+        diagnostic = project_terminal_diagnostic(error_code)
+        job.error_code = diagnostic.error_code
+        job.error_message = diagnostic.message
         job.updated_at = _utc_now_iso()
         self.db.commit()
         self.db.refresh(job)
@@ -317,6 +324,19 @@ class JobService:
         job = self.get_job(job_id)
         if job is None:
             raise ValueError(f"Job not found: {job_id}")
+
+        seen_row_numbers: set[int] = set()
+        for data in row_data:
+            row_number = data.get("row_number")
+            if (
+                isinstance(row_number, bool)
+                or not isinstance(row_number, int)
+                or row_number < 1
+                or row_number > MAX_TERMINAL_ROW_NUMBER
+                or row_number in seen_row_numbers
+            ):
+                raise ValueError("row_number must be a unique bounded positive integer")
+            seen_row_numbers.add(row_number)
 
         rows = []
         for data in row_data:
@@ -467,8 +487,9 @@ class JobService:
 
         now = _utc_now_iso()
         row.status = RowStatus.failed.value
-        row.error_code = error_code
-        row.error_message = error_message
+        diagnostic = project_terminal_diagnostic(error_code)
+        row.error_code = diagnostic.error_code
+        row.error_message = diagnostic.message
         row.processed_at = now
 
         # Update job counts
@@ -594,10 +615,7 @@ class JobService:
 
         # pending_count excludes needs_review and in_flight
         pending_count = (
-            job.total_rows
-            - job.processed_rows
-            - needs_review_count
-            - in_flight_count
+            job.total_rows - job.processed_rows - needs_review_count - in_flight_count
         )
 
         # Calculate total cost from successful rows

@@ -18,7 +18,7 @@ Evidence: `tests/services/conversation_runtime/test_tool_catalog.py`, `tests/orc
 
 - Runtime `WorkflowToolDefinition` instances and `ProviderToolDeclaration` objects consumed by neutral providers.
 - Claude SDK `SdkMcpTool` objects and in-process orchestrator MCP server registrations.
-- Provider artifacts: `registry.json`, `generic_mcp_tools.json`, `openai_apps_tools.json`, `microsoft_openapi_operations.json`, and `gemini_functions.json`.
+- Provider artifacts: `registry.json`, `generic_mcp_tools.json`, `claude_remote_mcp_public_tools.json`, `openai_apps_public_tools.json`, `openai_apps_tools.json`, `microsoft_openapi_operations.json`, and `gemini_functions.json`.
 - Hosted FastMCP `BoundRegistryTool` instances with structured content and JSON text results.
 - Provider-specific descriptor fields such as MCP annotations, OpenAI `_meta.ui.resourceUri`, Gemini parameter objects, and Microsoft OpenAPI operations.
 
@@ -28,6 +28,8 @@ Evidence: `tests/services/conversation_runtime/test_tool_catalog.py`, `tests/orc
 - `_side_effect_for()` requires explicit side-effect metadata for every workflow tool; missing metadata raises.
 - Provider export filtering includes only tools enabled for the requested `ProviderExport` and, for public exports, registry validators enforce implementation, tenant safety, hosted readiness, and confirmation for side-effecting tools.
 - Projection logic branches on side-effect classes to set read-only/destructive/open-world hints and attaches UI metadata only when a tool declares a UI resource.
+- `BoundRegistryTool.run` (`src/registry/tools/public.py`) enforces, in order: Auth0 `AuthorizationContext` required, scope check (`ToolAuthorizationError`), input JSON-schema validation (generic `ToolError`), request controls (rate limit / loop detection, surfaced as `ToolAuthorizationError`), handler `(context, arguments)`, `project_result`, and a generic fail-closed `ToolError` for any handler or projection failure.
+- Only `get_shipagent_status` has `provider_export_enabled=True`. The remaining public contracts (address validation, rate, prepare/execute shipments, job status, label handoff) keep hardened schemas but are not exported until relay handlers and reviewed per-provider profiles exist (ADR 0003). The provider-visible status schema uses the relay states `ready | offline | update_required` and omits `target_id` and free-text `message`; `project_status_for_provider` in `src/hosted_mcp/execution_target_handlers.py` strips them.
 - Artifact generation iterates every export target and writes stable sorted JSON; drift tests compare generated output to checked-in artifacts.
 
 ## Mermaid (internal flow)

@@ -13,8 +13,9 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from src.db.connection import get_db
-from src.db.models import Job
+from src.db.models import Job, JobRow
 from src.orchestrator.batch import SSEProgressObserver
+from src.services.job_progress_projection import project_authoritative_job_progress
 
 router = APIRouter(tags=["progress"])
 
@@ -58,10 +59,12 @@ async def _event_generator(
                 # addEventListener() on the frontend, but the hook uses the
                 # generic onmessage handler instead.
                 yield {
-                    "data": json.dumps({
-                        "event": event["event"],
-                        "data": event["data"],
-                    }),
+                    "data": json.dumps(
+                        {
+                            "event": event["event"],
+                            "data": event["data"],
+                        }
+                    ),
                 }
             except TimeoutError:
                 # Send ping to keep connection alive
@@ -137,14 +140,24 @@ def get_progress(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    rows = (
+        db.query(JobRow)
+        .filter(JobRow.job_id == job_id)
+        .order_by(JobRow.row_number)
+        .all()
+    )
+    progress = project_authoritative_job_progress(job, rows)
+
     return {
         "job_id": str(job.id),
         "status": job.status,
-        "total_rows": job.total_rows,
-        "processed_rows": job.processed_rows,
-        "successful_rows": job.successful_rows,
-        "failed_rows": job.failed_rows,
-        "total_cost_cents": job.total_cost_cents,
-        "total_duties_taxes_cents": job.total_duties_taxes_cents,
-        "international_row_count": job.international_row_count,
+        "total_rows": progress.total_rows,
+        "processed_rows": progress.processed_rows,
+        "successful_rows": progress.successful_rows,
+        "failed_rows": progress.failed_rows,
+        "total_cost_cents": progress.total_cost_cents,
+        "total_duties_taxes_cents": progress.total_duties_taxes_cents,
+        "international_row_count": progress.international_row_count,
+        "row_failures": progress.row_failures_json(),
+        "omitted_failure_count": progress.omitted_failure_count,
     }

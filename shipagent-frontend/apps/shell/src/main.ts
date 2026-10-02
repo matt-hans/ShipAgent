@@ -1,7 +1,10 @@
 import 'zone.js';
 import { initFederation } from '@angular-architects/native-federation';
+import { handoffToSidecarShell } from './desktop-handoff';
+import { startShell } from './shell-startup';
 
-initFederation('/federation.manifest.json')
-  .catch(err => console.error(err))
-  .then(() => import('./bootstrap'))
-  .catch(err => console.error(err));
+startShell({
+  handoffToSidecar: handoffToSidecarShell,
+  initializeFederation: () => initFederation('/federation.manifest.json'),
+  bootstrapAngular: () => import('./bootstrap'),
+}).catch((error) => console.error(error));

@@ -59,6 +59,9 @@ def main() -> None:
 
     if command == "serve":
         serve_args = parse_serve_args(sys.argv[2:])
+        from src.control_plane.startup import validated_listener_host
+
+        host = validated_listener_host(serve_args.host)
         import uvicorn
 
         # Use a custom server class to print the actual port after binding.
@@ -82,7 +85,7 @@ def main() -> None:
 
         config = uvicorn.Config(
             "src.api.main:app",
-            host=serve_args.host,
+            host=host,
             port=serve_args.port,
             workers=1,
             log_level="info",

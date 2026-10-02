@@ -50,7 +50,7 @@ class TestBatchEngineExecute:
         engine = BatchEngine(
             ups_service=mock_ups_service,
             db_session=mock_db_session,
-            account_number="ABC123",
+            account_number="SAFE_TEST_ACCOUNT",
         )
 
         rows = [
@@ -142,8 +142,9 @@ class TestBatchEngineExecute:
         """Test UPS errors are recorded per row without stopping batch."""
         from src.services.errors import UPSServiceError
 
+        raw_carrier_text = "request recipient=Jane Doe address=1 Main token=secret"
         mock_ups_service.create_shipment = AsyncMock(
-            side_effect=UPSServiceError(code="E-3003", message="Address invalid")
+            side_effect=UPSServiceError(code="E-3003", message=raw_carrier_text)
         )
 
         engine = BatchEngine(
@@ -180,14 +181,19 @@ class TestBatchEngineExecute:
             "countryCode": "US",
         }
 
+        on_progress = AsyncMock()
         result = await engine.execute(
             job_id="job-1",
             rows=rows,
             shipper=shipper,
+            on_progress=on_progress,
         )
 
         assert result["failed"] == 1
         assert result["successful"] == 0
+        assert rows[0].error_code == "E-3003"
+        assert rows[0].error_message == "The carrier could not process this shipment."
+        assert raw_carrier_text not in repr(on_progress.await_args_list)
 
     async def test_batch_write_back_persists_successful_subset(
         self,
@@ -268,7 +274,10 @@ class TestBatchEngineExecute:
             new_callable=AsyncMock,
         ) as mock_get_gw:
             mock_gw = AsyncMock()
-            mock_gw.get_source_info.return_value = {"active": True, "source_type": "csv"}
+            mock_gw.get_source_info.return_value = {
+                "active": True,
+                "source_type": "csv",
+            }
             mock_gw.write_back_batch.return_value = {
                 "success_count": 1,
                 "failure_count": 0,
@@ -297,6 +306,7 @@ class TestBatchEngineExecute:
         mock_db_session,
     ):
         """Write-back failure is reported without mutating shipment outcome counts."""
+        unsafe_detail = "UNSAFE_PARTIAL_WRITE_BACK_DETAIL"
         engine = BatchEngine(
             ups_service=mock_ups_service,
             db_session=mock_db_session,
@@ -336,11 +346,14 @@ class TestBatchEngineExecute:
             new_callable=AsyncMock,
         ) as mock_get_gw:
             mock_gw = AsyncMock()
-            mock_gw.get_source_info.return_value = {"active": True, "source_type": "csv"}
+            mock_gw.get_source_info.return_value = {
+                "active": True,
+                "source_type": "csv",
+            }
             mock_gw.write_back_batch.return_value = {
                 "success_count": 0,
                 "failure_count": 1,
-                "errors": [{"row_number": 1, "error": "write failed"}],
+                "errors": [{"row_number": 1, "error": unsafe_detail}],
             }
             mock_get_gw.return_value = mock_gw
 
@@ -352,7 +365,79 @@ class TestBatchEngineExecute:
 
         assert result["successful"] == 1
         assert result["failed"] == 0
-        assert result["write_back"]["status"] == "partial"
+        assert result["write_back"] == {
+            "status": "partial",
+            "action": "write_back",
+            "error_code": "E-4001",
+            "success_count": 0,
+            "failure_count": 1,
+        }
+        assert unsafe_detail not in repr(result)
+
+    async def test_write_back_exception_returns_and_logs_only_safe_diagnostics(
+        self,
+        mock_ups_service,
+        mock_db_session,
+        caplog,
+    ):
+        marker = "UNSAFE_WRITE_BACK_DETAIL"
+        engine = BatchEngine(
+            ups_service=mock_ups_service,
+            db_session=mock_db_session,
+            account_number="ABC123",
+        )
+        row = MagicMock(
+            id="row-1",
+            row_number=1,
+            status="pending",
+            order_data=json.dumps(
+                {
+                    "ship_to_name": "Example",
+                    "ship_to_address1": "Example",
+                    "ship_to_city": "Example",
+                    "ship_to_state": "CA",
+                    "ship_to_postal_code": "00000",
+                    "weight": 2.0,
+                }
+            ),
+            cost_cents=0,
+        )
+        shipper = {
+            "name": "Example",
+            "addressLine1": "Example",
+            "city": "Example",
+            "stateProvinceCode": "CA",
+            "postalCode": "00000",
+            "countryCode": "US",
+        }
+
+        with patch(
+            "src.services.batch_engine.get_data_gateway",
+            new_callable=AsyncMock,
+        ) as mock_get_gw:
+            mock_gw = AsyncMock()
+            mock_gw.get_source_info.return_value = {
+                "active": True,
+                "source_type": "csv",
+            }
+            mock_gw.write_back_batch.side_effect = RuntimeError(marker)
+            mock_get_gw.return_value = mock_gw
+
+            result = await engine.execute(
+                job_id="job-1",
+                rows=[row],
+                shipper=shipper,
+            )
+
+        assert result["write_back"] == {
+            "status": "error",
+            "action": "write_back",
+            "error_code": "E-4001",
+            "success_count": 0,
+            "failure_count": 1,
+        }
+        assert marker not in repr(result)
+        assert marker not in caplog.text
 
 
 class TestBatchEnginePreview:
@@ -774,25 +859,27 @@ class TestBatchEngineExternalWriteBack:
         rows = [self._make_row(1, order_id="SHP-1001")]
 
         mock_gw = AsyncMock()
-        mock_gw.get_source_info = AsyncMock(
-            return_value={"source_type": "shopify"}
-        )
+        mock_gw.get_source_info = AsyncMock(return_value={"source_type": "shopify"})
         mock_gw.write_back_batch = AsyncMock()
 
         mock_ext = AsyncMock()
-        mock_ext.update_tracking = AsyncMock(
-            return_value={"success": True}
-        )
+        mock_ext.update_tracking = AsyncMock(return_value={"success": True})
 
-        with patch(
-            "src.services.batch_engine.get_data_gateway",
-            new_callable=AsyncMock, return_value=mock_gw,
-        ), patch(
-            "src.services.batch_engine.get_external_sources_client",
-            new_callable=AsyncMock, return_value=mock_ext,
+        with (
+            patch(
+                "src.services.batch_engine.get_data_gateway",
+                new_callable=AsyncMock,
+                return_value=mock_gw,
+            ),
+            patch(
+                "src.services.batch_engine.get_external_sources_client",
+                new_callable=AsyncMock,
+                return_value=mock_ext,
+            ),
         ):
             result = await engine.execute(
-                job_id="job-ext-1", rows=rows,
+                job_id="job-ext-1",
+                rows=rows,
                 shipper=self._make_shipper(),
                 write_back_enabled=True,
             )
@@ -814,24 +901,26 @@ class TestBatchEngineExternalWriteBack:
         rows = [self._make_row(1, order_id="SHOP-42")]
 
         mock_gw = AsyncMock()
-        mock_gw.get_source_info = AsyncMock(
-            return_value={"source_type": "shopify"}
-        )
+        mock_gw.get_source_info = AsyncMock(return_value={"source_type": "shopify"})
 
         mock_ext = AsyncMock()
-        mock_ext.update_tracking = AsyncMock(
-            return_value={"success": True}
-        )
+        mock_ext.update_tracking = AsyncMock(return_value={"success": True})
 
-        with patch(
-            "src.services.batch_engine.get_data_gateway",
-            new_callable=AsyncMock, return_value=mock_gw,
-        ), patch(
-            "src.services.batch_engine.get_external_sources_client",
-            new_callable=AsyncMock, return_value=mock_ext,
+        with (
+            patch(
+                "src.services.batch_engine.get_data_gateway",
+                new_callable=AsyncMock,
+                return_value=mock_gw,
+            ),
+            patch(
+                "src.services.batch_engine.get_external_sources_client",
+                new_callable=AsyncMock,
+                return_value=mock_ext,
+            ),
         ):
             await engine.execute(
-                job_id="job-ext-2", rows=rows,
+                job_id="job-ext-2",
+                rows=rows,
                 shipper=self._make_shipper(),
                 write_back_enabled=True,
             )
@@ -854,22 +943,26 @@ class TestBatchEngineExternalWriteBack:
         rows = [self._make_row(1, order_id=None)]
 
         mock_gw = AsyncMock()
-        mock_gw.get_source_info = AsyncMock(
-            return_value={"source_type": "woocommerce"}
-        )
+        mock_gw.get_source_info = AsyncMock(return_value={"source_type": "woocommerce"})
 
         mock_ext = AsyncMock()
         mock_ext.update_tracking = AsyncMock()
 
-        with patch(
-            "src.services.batch_engine.get_data_gateway",
-            new_callable=AsyncMock, return_value=mock_gw,
-        ), patch(
-            "src.services.batch_engine.get_external_sources_client",
-            new_callable=AsyncMock, return_value=mock_ext,
+        with (
+            patch(
+                "src.services.batch_engine.get_data_gateway",
+                new_callable=AsyncMock,
+                return_value=mock_gw,
+            ),
+            patch(
+                "src.services.batch_engine.get_external_sources_client",
+                new_callable=AsyncMock,
+                return_value=mock_ext,
+            ),
         ):
             result = await engine.execute(
-                job_id="job-ext-3", rows=rows,
+                job_id="job-ext-3",
+                rows=rows,
                 shipper=self._make_shipper(),
                 write_back_enabled=True,
             )
@@ -890,25 +983,27 @@ class TestBatchEngineExternalWriteBack:
         rows = [self._make_row(1, order_id="AMZ-1001")]
 
         mock_gw = AsyncMock()
-        mock_gw.get_source_info = AsyncMock(
-            return_value={"source_type": "amazon"}
-        )
+        mock_gw.get_source_info = AsyncMock(return_value={"source_type": "amazon"})
         mock_gw.write_back_batch = AsyncMock()
 
         mock_ext = AsyncMock()
-        mock_ext.update_tracking = AsyncMock(
-            return_value={"success": True}
-        )
+        mock_ext.update_tracking = AsyncMock(return_value={"success": True})
 
-        with patch(
-            "src.services.batch_engine.get_data_gateway",
-            new_callable=AsyncMock, return_value=mock_gw,
-        ), patch(
-            "src.services.batch_engine.get_external_sources_client",
-            new_callable=AsyncMock, return_value=mock_ext,
+        with (
+            patch(
+                "src.services.batch_engine.get_data_gateway",
+                new_callable=AsyncMock,
+                return_value=mock_gw,
+            ),
+            patch(
+                "src.services.batch_engine.get_external_sources_client",
+                new_callable=AsyncMock,
+                return_value=mock_ext,
+            ),
         ):
             result = await engine.execute(
-                job_id="job-amz-1", rows=rows,
+                job_id="job-amz-1",
+                rows=rows,
                 shipper=self._make_shipper(),
                 write_back_enabled=True,
             )
@@ -942,10 +1037,12 @@ class TestBatchEngineExternalWriteBack:
 
         with patch(
             "src.services.batch_engine.get_data_gateway",
-            new_callable=AsyncMock, return_value=mock_gw,
+            new_callable=AsyncMock,
+            return_value=mock_gw,
         ):
             result = await engine.execute(
-                job_id="job-local-1", rows=rows,
+                job_id="job-local-1",
+                rows=rows,
                 shipper=self._make_shipper(),
                 write_back_enabled=True,
             )
@@ -1006,6 +1103,7 @@ class TestDomesticValidation:
     def test_letter_with_ground_detected(self):
         """Shared validation detects Letter+Ground incompatibility."""
         from src.services.ups_payload_builder import apply_compatibility_corrections
+
         order_data = {"packaging_type": "01"}
         apply_compatibility_corrections(order_data, "03")
         # Should auto-correct packaging
@@ -1015,6 +1113,7 @@ class TestDomesticValidation:
     def test_overweight_letter_not_auto_corrected(self):
         """Overweight Letter is not auto-correctable — returns hard error."""
         from src.services.ups_payload_builder import apply_compatibility_corrections
+
         order_data = {"packaging_type": "01", "weight": "5.0"}
         issues = apply_compatibility_corrections(order_data, "01")
         errors = [i for i in issues if i.severity == "error" and not i.auto_corrected]
@@ -1107,15 +1206,17 @@ class TestBatchEngineValidationIntegration:
             account_number="TEST123",
         )
 
-        row = self._make_row({
-            "ship_to_name": "Alice",
-            "ship_to_address1": "100 Broadway",
-            "ship_to_city": "New York",
-            "ship_to_state": "NY",
-            "ship_to_postal_code": "10001",
-            "weight": 0.5,
-            "packaging_type": "01",  # UPS Letter — incompatible with Ground
-        })
+        row = self._make_row(
+            {
+                "ship_to_name": "Alice",
+                "ship_to_address1": "100 Broadway",
+                "ship_to_city": "New York",
+                "ship_to_state": "NY",
+                "ship_to_postal_code": "10001",
+                "weight": 0.5,
+                "packaging_type": "01",  # UPS Letter — incompatible with Ground
+            }
+        )
 
         result = await engine.execute(
             job_id="job-validation-1",
@@ -1144,15 +1245,17 @@ class TestBatchEngineValidationIntegration:
             account_number="TEST123",
         )
 
-        row = self._make_row({
-            "ship_to_name": "Bob",
-            "ship_to_address1": "200 Main St",
-            "ship_to_city": "Chicago",
-            "ship_to_state": "IL",
-            "ship_to_postal_code": "60601",
-            "weight": 5.0,
-            "packaging_type": "01",  # UPS Letter — max 1.1 lbs
-        })
+        row = self._make_row(
+            {
+                "ship_to_name": "Bob",
+                "ship_to_address1": "200 Main St",
+                "ship_to_city": "Chicago",
+                "ship_to_state": "IL",
+                "ship_to_postal_code": "60601",
+                "weight": 5.0,
+                "packaging_type": "01",  # UPS Letter — max 1.1 lbs
+            }
+        )
 
         result = await engine.execute(
             job_id="job-validation-2",

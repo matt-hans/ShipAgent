@@ -26,6 +26,8 @@ from sqlalchemy.orm import (
     relationship,
 )
 
+from src.job_status import JobStatus
+
 
 def generate_uuid() -> str:
     """Generate a UUID4 string for primary keys."""
@@ -38,23 +40,6 @@ def utc_now_iso() -> str:
 
 
 # Enums matching the database schema constraints
-
-
-class JobStatus(str, Enum):
-    """Status values for batch shipping jobs.
-
-    Lifecycle: pending -> running -> completed/failed/cancelled
-               running -> paused -> running (on reconnect)
-               running -> completed_with_warnings (write-back failure)
-    """
-
-    pending = "pending"
-    running = "running"
-    paused = "paused"
-    completed = "completed"
-    completed_with_warnings = "completed_with_warnings"
-    failed = "failed"
-    cancelled = "cancelled"
 
 
 class RowStatus(str, Enum):
@@ -151,7 +136,7 @@ class Job(Base):
         name: User-provided job name
         description: Optional job description
         original_command: The natural language command that created this job
-        status: Current job status (pending, running, paused, completed, failed, cancelled)
+        status: Current canonical job lifecycle status
         mode: Execution mode (confirm = wait for approval, auto = immediate)
         total_rows: Total number of rows to process
         processed_rows: Number of rows processed so far

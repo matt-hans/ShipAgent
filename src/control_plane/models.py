@@ -32,7 +32,10 @@ class CloudAccount(ControlPlaneBase):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     auth0_subject: Mapped[str] = mapped_column(String(255), unique=True)
     suspended: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
 
 
 class ProviderConnection(ControlPlaneBase):

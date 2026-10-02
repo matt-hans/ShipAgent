@@ -23,15 +23,17 @@ def _make_row(
     row.status = status
     row.row_checksum = row_checksum
     row.job_id = job_id
-    row.order_data = json.dumps({
-        "ship_to_name": "John Doe",
-        "ship_to_address1": "123 Main St",
-        "ship_to_city": "Los Angeles",
-        "ship_to_state": "CA",
-        "ship_to_postal_code": "90001",
-        "ship_to_country": "US",
-        "weight": 2.0,
-    })
+    row.order_data = json.dumps(
+        {
+            "ship_to_name": "John Doe",
+            "ship_to_address1": "123 Main St",
+            "ship_to_city": "Los Angeles",
+            "ship_to_state": "CA",
+            "ship_to_postal_code": "90001",
+            "ship_to_country": "US",
+            "weight": 2.0,
+        }
+    )
     row.idempotency_key = None
     row.ups_shipment_id = None
     row.ups_tracking_number = None
@@ -81,7 +83,9 @@ class TestInFlightStateMachine:
 
     @pytest.mark.asyncio
     async def test_row_transitions_to_in_flight_before_ups_call(
-        self, engine: BatchEngine, tmp_path: Path,
+        self,
+        engine: BatchEngine,
+        tmp_path: Path,
     ) -> None:
         """Row status is 'in_flight' with idempotency_key set BEFORE create_shipment."""
         row = _make_row()
@@ -95,12 +99,19 @@ class TestInFlightStateMachine:
 
         engine._ups.create_shipment = capture_status
 
-        shipper = {"name": "S", "addressLine1": "A", "city": "C",
-                   "stateProvinceCode": "CA", "postalCode": "90001",
-                   "countryCode": "US"}
+        shipper = {
+            "name": "S",
+            "addressLine1": "A",
+            "city": "C",
+            "stateProvinceCode": "CA",
+            "postalCode": "90001",
+            "countryCode": "US",
+        }
 
         await engine.execute(
-            job_id="job-test-1234", rows=[row], shipper=shipper,
+            job_id="job-test-1234",
+            rows=[row],
+            shipper=shipper,
         )
 
         assert statuses_at_ups_call[0] == "in_flight"
@@ -109,16 +120,24 @@ class TestInFlightStateMachine:
 
     @pytest.mark.asyncio
     async def test_row_transitions_to_completed_after_ups_success(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """After successful create_shipment, row is 'completed'."""
         row = _make_row()
-        shipper = {"name": "S", "addressLine1": "A", "city": "C",
-                   "stateProvinceCode": "CA", "postalCode": "90001",
-                   "countryCode": "US"}
+        shipper = {
+            "name": "S",
+            "addressLine1": "A",
+            "city": "C",
+            "stateProvinceCode": "CA",
+            "postalCode": "90001",
+            "countryCode": "US",
+        }
 
         await engine.execute(
-            job_id="job-test-1234", rows=[row], shipper=shipper,
+            job_id="job-test-1234",
+            rows=[row],
+            shipper=shipper,
         )
 
         assert row.status == "completed"
@@ -129,19 +148,27 @@ class TestInFlightStateMachine:
 
     @pytest.mark.asyncio
     async def test_row_transitions_to_failed_on_ups_hard_rejection(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """UPSServiceError (hard rejection) marks row 'failed'."""
         engine._ups.create_shipment = AsyncMock(
             side_effect=UPSServiceError(code="E-3001", message="Invalid address"),
         )
         row = _make_row()
-        shipper = {"name": "S", "addressLine1": "A", "city": "C",
-                   "stateProvinceCode": "CA", "postalCode": "90001",
-                   "countryCode": "US"}
+        shipper = {
+            "name": "S",
+            "addressLine1": "A",
+            "city": "C",
+            "stateProvinceCode": "CA",
+            "postalCode": "90001",
+            "countryCode": "US",
+        }
 
         await engine.execute(
-            job_id="job-test-1234", rows=[row], shipper=shipper,
+            job_id="job-test-1234",
+            rows=[row],
+            shipper=shipper,
         )
 
         assert row.status == "failed"
@@ -149,81 +176,118 @@ class TestInFlightStateMachine:
 
     @pytest.mark.asyncio
     async def test_mcp_connection_error_marks_row_failed(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """MCPConnectionError marks row 'failed' (no side effect possible)."""
         engine._ups.create_shipment = AsyncMock(
             side_effect=MCPConnectionError("ups-mcp", "Server unreachable"),
         )
         row = _make_row()
-        shipper = {"name": "S", "addressLine1": "A", "city": "C",
-                   "stateProvinceCode": "CA", "postalCode": "90001",
-                   "countryCode": "US"}
+        shipper = {
+            "name": "S",
+            "addressLine1": "A",
+            "city": "C",
+            "stateProvinceCode": "CA",
+            "postalCode": "90001",
+            "countryCode": "US",
+        }
 
         await engine.execute(
-            job_id="job-test-1234", rows=[row], shipper=shipper,
+            job_id="job-test-1234",
+            rows=[row],
+            shipper=shipper,
         )
 
         assert row.status == "failed"
 
     @pytest.mark.asyncio
     async def test_transport_timeout_marks_needs_review(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Generic transport error (TimeoutError) marks row 'needs_review'."""
         engine._ups.create_shipment = AsyncMock(
             side_effect=TimeoutError("Connection timed out"),
         )
         row = _make_row()
-        shipper = {"name": "S", "addressLine1": "A", "city": "C",
-                   "stateProvinceCode": "CA", "postalCode": "90001",
-                   "countryCode": "US"}
+        shipper = {
+            "name": "S",
+            "addressLine1": "A",
+            "city": "C",
+            "stateProvinceCode": "CA",
+            "postalCode": "90001",
+            "countryCode": "US",
+        }
 
         await engine.execute(
-            job_id="job-test-1234", rows=[row], shipper=shipper,
+            job_id="job-test-1234",
+            rows=[row],
+            shipper=shipper,
         )
 
         assert row.status == "needs_review"
-        assert "Ambiguous" in (row.error_message or "")
+        assert row.error_code == "E-4001"
+        assert (
+            row.error_message
+            == "The row could not be processed because of a system error."
+        )
 
     @pytest.mark.asyncio
     async def test_pre_phase1_error_marks_pending_row_failed(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Parse/validation error before in_flight commit marks row 'failed'."""
         row = _make_row()
         row.order_data = "{{invalid json"
-        shipper = {"name": "S", "addressLine1": "A", "city": "C",
-                   "stateProvinceCode": "CA", "postalCode": "90001",
-                   "countryCode": "US"}
+        shipper = {
+            "name": "S",
+            "addressLine1": "A",
+            "city": "C",
+            "stateProvinceCode": "CA",
+            "postalCode": "90001",
+            "countryCode": "US",
+        }
 
         await engine.execute(
-            job_id="job-test-1234", rows=[row], shipper=shipper,
+            job_id="job-test-1234",
+            rows=[row],
+            shipper=shipper,
         )
 
         assert row.status == "failed"
 
     @pytest.mark.asyncio
     async def test_ups_call_succeeded_always_bound(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """ups_call_succeeded is initialized at top — never causes UnboundLocalError."""
         # Trigger an error BEFORE the UPS call
         row = _make_row()
         row.order_data = "{{invalid"
-        shipper = {"name": "S", "addressLine1": "A", "city": "C",
-                   "stateProvinceCode": "CA", "postalCode": "90001",
-                   "countryCode": "US"}
+        shipper = {
+            "name": "S",
+            "addressLine1": "A",
+            "city": "C",
+            "stateProvinceCode": "CA",
+            "postalCode": "90001",
+            "countryCode": "US",
+        }
 
         # Should not raise UnboundLocalError
         result = await engine.execute(
-            job_id="job-test-1234", rows=[row], shipper=shipper,
+            job_id="job-test-1234",
+            rows=[row],
+            shipper=shipper,
         )
         assert result["failed"] == 1
 
     @pytest.mark.asyncio
     async def test_pending_to_completed_must_go_through_in_flight(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Row goes through in_flight before reaching completed."""
         row = _make_row()
@@ -256,12 +320,19 @@ class TestInFlightStateMachine:
 
         type(row).__setattr__ = tracking_setattr
 
-        shipper = {"name": "S", "addressLine1": "A", "city": "C",
-                   "stateProvinceCode": "CA", "postalCode": "90001",
-                   "countryCode": "US"}
+        shipper = {
+            "name": "S",
+            "addressLine1": "A",
+            "city": "C",
+            "stateProvinceCode": "CA",
+            "postalCode": "90001",
+            "countryCode": "US",
+        }
         try:
             await engine.execute(
-                job_id="job-test-1234", rows=[row], shipper=shipper,
+                job_id="job-test-1234",
+                rows=[row],
+                shipper=shipper,
             )
         finally:
             type(row).__setattr__ = original_setattr

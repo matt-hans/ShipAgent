@@ -10,10 +10,11 @@
  */
 
 import { Injectable, inject } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
+import { Observable, tap } from 'rxjs';
 import { API_BASE_URL } from './api-url.token';
 import type { PlatformActivationResponse } from './api.models';
+import { BrowserSessionState } from './browser-session.state';
 
 // Types
 import type {
@@ -48,6 +49,7 @@ import type {
   ValidateConnectionResult,
   // Settings
   AppSettings,
+  BrowserSessionStatus,
   CredentialStatus,
   // Contacts
   Contact,
@@ -65,10 +67,42 @@ import type {
 export class ApiService {
   private readonly http = inject(HttpClient);
   private readonly apiBaseUrl = inject(API_BASE_URL);
+  private readonly browserSession = inject(BrowserSessionState);
 
   /** Resolve the current base URL from the signal. */
   private get baseUrl(): string {
     return this.apiBaseUrl();
+  }
+
+  // ===========================================================================
+  // BROWSER AUTHENTICATION
+  // ===========================================================================
+
+  /** Get browser session state without exposing credential details. */
+  getBrowserSessionStatus(): Observable<BrowserSessionStatus> {
+    return this.http
+      .get<BrowserSessionStatus>(`${this.baseUrl}/auth/session`)
+      .pipe(tap((status) => this.browserSession.applySessionStatus(status)));
+  }
+
+  /** Exchange a transient user-entered API key for an HttpOnly session. */
+  createBrowserSession(apiKey: string): Observable<BrowserSessionStatus> {
+    return this.http
+      .post<BrowserSessionStatus>(
+        `${this.baseUrl}/auth/session`,
+        {},
+        {
+          headers: new HttpHeaders({ 'X-API-Key': apiKey }),
+        }
+      )
+      .pipe(tap((status) => this.browserSession.applySessionStatus(status)));
+  }
+
+  /** Clear the browser-managed API session cookie. */
+  clearBrowserSession(): Observable<BrowserSessionStatus> {
+    return this.http
+      .delete<BrowserSessionStatus>(`${this.baseUrl}/auth/session`)
+      .pipe(tap((status) => this.browserSession.applySessionStatus(status)));
   }
 
   // ===========================================================================
@@ -78,12 +112,12 @@ export class ApiService {
   /**
    * Create a new conversation session.
    */
-  createConversation(
-    options?: { interactive_shipping?: boolean },
-  ): Observable<CreateConversationResponse> {
+  createConversation(options?: {
+    interactive_shipping?: boolean;
+  }): Observable<CreateConversationResponse> {
     return this.http.post<CreateConversationResponse>(
       `${this.baseUrl}/conversations/`,
-      options ?? {},
+      options ?? {}
     );
   }
 
@@ -92,11 +126,11 @@ export class ApiService {
    */
   sendMessage(
     sessionId: string,
-    content: string,
+    content: string
   ): Observable<SendMessageResponse> {
     return this.http.post<SendMessageResponse>(
       `${this.baseUrl}/conversations/${sessionId}/messages`,
-      { content },
+      { content }
     );
   }
 
@@ -107,7 +141,7 @@ export class ApiService {
     const params = new HttpParams().set('active_only', String(activeOnly));
     return this.http.get<ChatSessionSummary[]>(
       `${this.baseUrl}/conversations/`,
-      { params },
+      { params }
     );
   }
 
@@ -117,7 +151,7 @@ export class ApiService {
   getConversationMessages(
     sessionId: string,
     limit?: number,
-    offset = 0,
+    offset = 0
   ): Observable<SessionDetail> {
     let params = new HttpParams().set('offset', String(offset));
     if (limit !== undefined) {
@@ -125,7 +159,7 @@ export class ApiService {
     }
     return this.http.get<SessionDetail>(
       `${this.baseUrl}/conversations/${sessionId}/messages`,
-      { params },
+      { params }
     );
   }
 
@@ -133,9 +167,7 @@ export class ApiService {
    * Delete (soft-delete) a single conversation session.
    */
   deleteConversation(sessionId: string): Observable<void> {
-    return this.http.delete<void>(
-      `${this.baseUrl}/conversations/${sessionId}`,
-    );
+    return this.http.delete<void>(`${this.baseUrl}/conversations/${sessionId}`);
   }
 
   /**
@@ -144,21 +176,17 @@ export class ApiService {
   deleteAllConversations(): Observable<{ deleted: number }> {
     return this.http.post<{ deleted: number }>(
       `${this.baseUrl}/conversations/bulk-delete`,
-      {},
+      {}
     );
   }
 
   /**
    * Update a conversation session's title.
    */
-  renameConversation(
-    sessionId: string,
-    title: string,
-  ): Observable<void> {
-    return this.http.patch<void>(
-      `${this.baseUrl}/conversations/${sessionId}`,
-      { title },
-    );
+  renameConversation(sessionId: string, title: string): Observable<void> {
+    return this.http.patch<void>(`${this.baseUrl}/conversations/${sessionId}`, {
+      title,
+    });
   }
 
   /**
@@ -166,10 +194,9 @@ export class ApiService {
    * Returns a Blob for download.
    */
   exportConversation(sessionId: string): Observable<Blob> {
-    return this.http.get(
-      `${this.baseUrl}/conversations/${sessionId}/export`,
-      { responseType: 'blob' },
-    );
+    return this.http.get(`${this.baseUrl}/conversations/${sessionId}/export`, {
+      responseType: 'blob',
+    });
   }
 
   /**
@@ -178,11 +205,11 @@ export class ApiService {
   saveArtifact(
     sessionId: string,
     content: string,
-    metadata: Record<string, unknown>,
+    metadata: Record<string, unknown>
   ): Observable<void> {
     return this.http.post<void>(
       `${this.baseUrl}/conversations/${sessionId}/artifacts`,
-      { content, metadata },
+      { content, metadata }
     );
   }
 
@@ -201,7 +228,7 @@ export class ApiService {
     sessionId: string,
     file: File,
     documentType: string,
-    notes?: string,
+    notes?: string
   ): Observable<UploadDocumentResponse> {
     const formData = new FormData();
     formData.append('file', file);
@@ -209,7 +236,7 @@ export class ApiService {
     if (notes) formData.append('notes', notes);
     return this.http.post<UploadDocumentResponse>(
       `${this.baseUrl}/conversations/${sessionId}/upload-document`,
-      formData,
+      formData
     );
   }
 
@@ -227,8 +254,10 @@ export class ApiService {
     name?: string;
   }): Observable<JobListResponse> {
     let httpParams = new HttpParams();
-    if (params?.limit) httpParams = httpParams.set('limit', String(params.limit));
-    if (params?.offset) httpParams = httpParams.set('offset', String(params.offset));
+    if (params?.limit)
+      httpParams = httpParams.set('limit', String(params.limit));
+    if (params?.offset)
+      httpParams = httpParams.set('offset', String(params.offset));
     if (params?.status) httpParams = httpParams.set('status', params.status);
     if (params?.name) httpParams = httpParams.set('name', params.name);
     return this.http.get<JobListResponse>(`${this.baseUrl}/jobs`, {
@@ -256,7 +285,7 @@ export class ApiService {
   confirmJob(
     jobId: string,
     writeBackEnabled = true,
-    selectedServiceCode?: string,
+    selectedServiceCode?: string
   ): Observable<ConfirmResponse> {
     const payload: Record<string, unknown> = {
       write_back_enabled: writeBackEnabled,
@@ -266,7 +295,7 @@ export class ApiService {
     }
     return this.http.post<ConfirmResponse>(
       `${this.baseUrl}/jobs/${jobId}/confirm`,
-      payload,
+      payload
     );
   }
 
@@ -299,9 +328,7 @@ export class ApiService {
    * Get current job progress (non-SSE polling fallback).
    */
   getJobProgress(jobId: string): Observable<JobProgress> {
-    return this.http.get<JobProgress>(
-      `${this.baseUrl}/jobs/${jobId}/progress`,
-    );
+    return this.http.get<JobProgress>(`${this.baseUrl}/jobs/${jobId}/progress`);
   }
 
   /**
@@ -334,11 +361,11 @@ export class ApiService {
    * Import a local data source (CSV, Excel, or Database).
    */
   importDataSource(
-    config: DataSourceImportRequest,
+    config: DataSourceImportRequest
   ): Observable<DataSourceImportResponse> {
     return this.http.post<DataSourceImportResponse>(
       `${this.baseUrl}/data-sources/import`,
-      config,
+      config
     );
   }
 
@@ -350,7 +377,7 @@ export class ApiService {
     formData.append('file', file);
     return this.http.post<DataSourceImportResponse>(
       `${this.baseUrl}/data-sources/upload`,
-      formData,
+      formData
     );
   }
 
@@ -358,10 +385,7 @@ export class ApiService {
    * Disconnect the currently connected data source.
    */
   disconnectDataSource(): Observable<void> {
-    return this.http.post<void>(
-      `${this.baseUrl}/data-sources/disconnect`,
-      {},
-    );
+    return this.http.post<void>(`${this.baseUrl}/data-sources/disconnect`, {});
   }
 
   /**
@@ -369,7 +393,7 @@ export class ApiService {
    */
   getDataSourceStatus(): Observable<DataSourceStatusResponse> {
     return this.http.get<DataSourceStatusResponse>(
-      `${this.baseUrl}/data-sources/status`,
+      `${this.baseUrl}/data-sources/status`
     );
   }
 
@@ -380,12 +404,14 @@ export class ApiService {
   /**
    * List all saved data sources, ordered by most recently used.
    */
-  getSavedSources(sourceType?: string): Observable<SavedDataSourceListResponse> {
+  getSavedSources(
+    sourceType?: string
+  ): Observable<SavedDataSourceListResponse> {
     let params = new HttpParams();
     if (sourceType) params = params.set('source_type', sourceType);
     return this.http.get<SavedDataSourceListResponse>(
       `${this.baseUrl}/saved-sources`,
-      { params },
+      { params }
     );
   }
 
@@ -394,14 +420,23 @@ export class ApiService {
    */
   reconnectSavedSource(
     sourceId: string,
-    connectionString?: string,
-  ): Observable<{ status: string; source_type: string; row_count: number; column_count: number; columns?: { name: string; type: string; nullable: boolean }[] }> {
+    connectionString?: string
+  ): Observable<{
+    status: string;
+    source_type: string;
+    row_count: number;
+    column_count: number;
+    columns?: { name: string; type: string; nullable: boolean }[];
+  }> {
     const body: Record<string, unknown> = { source_id: sourceId };
     if (connectionString) body['connection_string'] = connectionString;
-    return this.http.post<{ status: string; source_type: string; row_count: number; column_count: number; columns?: { name: string; type: string; nullable: boolean }[] }>(
-      `${this.baseUrl}/saved-sources/reconnect`,
-      body,
-    );
+    return this.http.post<{
+      status: string;
+      source_type: string;
+      row_count: number;
+      column_count: number;
+      columns?: { name: string; type: string; nullable: boolean }[];
+    }>(`${this.baseUrl}/saved-sources/reconnect`, body);
   }
 
   /**
@@ -415,11 +450,11 @@ export class ApiService {
    * Delete multiple saved data sources.
    */
   bulkDeleteSavedSources(
-    sourceIds: string[],
+    sourceIds: string[]
   ): Observable<{ status: string; count: number }> {
     return this.http.post<{ status: string; count: number }>(
       `${this.baseUrl}/saved-sources/bulk-delete`,
-      { source_ids: sourceIds },
+      { source_ids: sourceIds }
     );
   }
 
@@ -433,40 +468,34 @@ export class ApiService {
   connectPlatform(
     platform: PlatformType,
     credentials: Record<string, unknown>,
-    storeUrl?: string,
+    storeUrl?: string
   ): Observable<ConnectPlatformResponse> {
     return this.http.post<ConnectPlatformResponse>(
       `${this.baseUrl}/platforms/${platform}/connect`,
-      { credentials, store_url: storeUrl },
+      { credentials, store_url: storeUrl }
     );
   }
 
   /**
    * Disconnect from an external platform.
    */
-  disconnectPlatform(
-    platform: PlatformType,
-  ): Observable<{ success: boolean }> {
+  disconnectPlatform(platform: PlatformType): Observable<{ success: boolean }> {
     return this.http.post<{ success: boolean }>(
       `${this.baseUrl}/platforms/${platform}/disconnect`,
-      {},
+      {}
     );
   }
 
   /**
    * Check Shopify credentials from environment variables.
    */
+  getPlatformEnvStatus(platform: 'shopify'): Observable<ShopifyEnvStatus>;
+  getPlatformEnvStatus(platform: 'amazon'): Observable<AmazonEnvStatus>;
   getPlatformEnvStatus(
-    platform: 'shopify',
-  ): Observable<ShopifyEnvStatus>;
-  getPlatformEnvStatus(
-    platform: 'amazon',
-  ): Observable<AmazonEnvStatus>;
-  getPlatformEnvStatus(
-    platform: string,
+    platform: string
   ): Observable<ShopifyEnvStatus | AmazonEnvStatus> {
     return this.http.get<ShopifyEnvStatus | AmazonEnvStatus>(
-      `${this.baseUrl}/platforms/${platform}/env-status`,
+      `${this.baseUrl}/platforms/${platform}/env-status`
     );
   }
 
@@ -475,7 +504,7 @@ export class ApiService {
    */
   getPlatformOrders(
     platform: PlatformType,
-    filters?: OrderFilters,
+    filters?: OrderFilters
   ): Observable<ListOrdersResponse> {
     let params = new HttpParams();
     if (filters?.status) params = params.set('status', filters.status);
@@ -485,7 +514,7 @@ export class ApiService {
     if (filters?.offset) params = params.set('offset', String(filters.offset));
     return this.http.get<ListOrdersResponse>(
       `${this.baseUrl}/platforms/${platform}/orders`,
-      { params },
+      { params }
     );
   }
 
@@ -494,7 +523,7 @@ export class ApiService {
    */
   getPlatformConnections(): Observable<ListConnectionsResponse> {
     return this.http.get<ListConnectionsResponse>(
-      `${this.baseUrl}/platforms/connections`,
+      `${this.baseUrl}/platforms/connections`
     );
   }
 
@@ -515,10 +544,12 @@ export class ApiService {
   /**
    * Activate a platform as the active data source.
    */
-  private activatePlatform(platform: string): Observable<PlatformActivationResponse> {
+  private activatePlatform(
+    platform: string
+  ): Observable<PlatformActivationResponse> {
     return this.http.post<PlatformActivationResponse>(
       `${this.baseUrl}/platforms/${platform}/activate`,
-      {},
+      {}
     );
   }
 
@@ -526,10 +557,10 @@ export class ApiService {
    * Test connection to a platform.
    */
   testPlatformConnection(
-    platform: PlatformType,
+    platform: PlatformType
   ): Observable<{ success: boolean; status: string }> {
     return this.http.get<{ success: boolean; status: string }>(
-      `${this.baseUrl}/platforms/${platform}/test`,
+      `${this.baseUrl}/platforms/${platform}/test`
     );
   }
 
@@ -542,7 +573,7 @@ export class ApiService {
    */
   listProviderConnections(): Observable<ProviderConnectionInfo[]> {
     return this.http.get<ProviderConnectionInfo[]>(
-      `${this.baseUrl}/connections/`,
+      `${this.baseUrl}/connections/`
     );
   }
 
@@ -550,10 +581,10 @@ export class ApiService {
    * Get a single connection by key.
    */
   getProviderConnection(
-    connectionKey: string,
+    connectionKey: string
   ): Observable<ProviderConnectionInfo> {
     return this.http.get<ProviderConnectionInfo>(
-      `${this.baseUrl}/connections/${encodeURIComponent(connectionKey)}`,
+      `${this.baseUrl}/connections/${encodeURIComponent(connectionKey)}`
     );
   }
 
@@ -562,11 +593,11 @@ export class ApiService {
    */
   saveProviderCredentials(
     provider: string,
-    payload: SaveProviderRequest,
+    payload: SaveProviderRequest
   ): Observable<{ connection_key: string; is_new: boolean }> {
     return this.http.post<{ connection_key: string; is_new: boolean }>(
       `${this.baseUrl}/connections/${encodeURIComponent(provider)}/save`,
-      payload,
+      payload
     );
   }
 
@@ -574,10 +605,10 @@ export class ApiService {
    * Delete a connection by key.
    */
   deleteProviderConnection(
-    connectionKey: string,
+    connectionKey: string
   ): Observable<{ deleted: boolean }> {
     return this.http.delete<{ deleted: boolean }>(
-      `${this.baseUrl}/connections/${encodeURIComponent(connectionKey)}`,
+      `${this.baseUrl}/connections/${encodeURIComponent(connectionKey)}`
     );
   }
 
@@ -586,11 +617,13 @@ export class ApiService {
    * Note: returns 422 for invalid creds (not a fatal error).
    */
   validateProviderConnection(
-    connectionKey: string,
+    connectionKey: string
   ): Observable<ValidateConnectionResult> {
     return this.http.post<ValidateConnectionResult>(
-      `${this.baseUrl}/connections/${encodeURIComponent(connectionKey)}/validate`,
-      {},
+      `${this.baseUrl}/connections/${encodeURIComponent(
+        connectionKey
+      )}/validate`,
+      {}
     );
   }
 
@@ -598,11 +631,13 @@ export class ApiService {
    * Disconnect a connection (preserves credentials, clears runtime state).
    */
   disconnectProvider(
-    connectionKey: string,
+    connectionKey: string
   ): Observable<ProviderConnectionInfo> {
     return this.http.post<ProviderConnectionInfo>(
-      `${this.baseUrl}/connections/${encodeURIComponent(connectionKey)}/disconnect`,
-      {},
+      `${this.baseUrl}/connections/${encodeURIComponent(
+        connectionKey
+      )}/disconnect`,
+      {}
     );
   }
 
@@ -639,7 +674,7 @@ export class ApiService {
    */
   getCredentialStatus(): Observable<CredentialStatus> {
     return this.http.get<CredentialStatus>(
-      `${this.baseUrl}/settings/credentials/status`,
+      `${this.baseUrl}/settings/credentials/status`
     );
   }
 
@@ -649,7 +684,7 @@ export class ApiService {
   completeOnboarding(): Observable<void> {
     return this.http.post<void>(
       `${this.baseUrl}/settings/onboarding/complete`,
-      {},
+      {}
     );
   }
 
@@ -669,8 +704,10 @@ export class ApiService {
     let httpParams = new HttpParams();
     if (params?.search) httpParams = httpParams.set('search', params.search);
     if (params?.tag) httpParams = httpParams.set('tag', params.tag);
-    if (params?.limit) httpParams = httpParams.set('limit', String(params.limit));
-    if (params?.offset) httpParams = httpParams.set('offset', String(params.offset));
+    if (params?.limit)
+      httpParams = httpParams.set('limit', String(params.limit));
+    if (params?.offset)
+      httpParams = httpParams.set('offset', String(params.offset));
     return this.http.get<ContactListResponse>(`${this.baseUrl}/contacts`, {
       params: httpParams,
     });
@@ -681,7 +718,7 @@ export class ApiService {
    */
   getContactByHandle(handle: string): Observable<Contact> {
     return this.http.get<Contact>(
-      `${this.baseUrl}/contacts/by-handle/${handle}`,
+      `${this.baseUrl}/contacts/by-handle/${handle}`
     );
   }
 
@@ -698,7 +735,7 @@ export class ApiService {
   updateContact(contactId: string, data: ContactUpdate): Observable<Contact> {
     return this.http.patch<Contact>(
       `${this.baseUrl}/contacts/${contactId}`,
-      data,
+      data
     );
   }
 
@@ -728,8 +765,10 @@ export class ApiService {
     offset?: number;
   }): Observable<CommandListResponse> {
     let httpParams = new HttpParams();
-    if (params?.limit) httpParams = httpParams.set('limit', String(params.limit));
-    if (params?.offset) httpParams = httpParams.set('offset', String(params.offset));
+    if (params?.limit)
+      httpParams = httpParams.set('limit', String(params.limit));
+    if (params?.offset)
+      httpParams = httpParams.set('offset', String(params.offset));
     return this.http.get<CommandListResponse>(`${this.baseUrl}/commands`, {
       params: httpParams,
     });
@@ -747,11 +786,11 @@ export class ApiService {
    */
   updateCommand(
     commandId: string,
-    data: CommandUpdate,
+    data: CommandUpdate
   ): Observable<CustomCommand> {
     return this.http.patch<CustomCommand>(
       `${this.baseUrl}/commands/${commandId}`,
-      data,
+      data
     );
   }
 

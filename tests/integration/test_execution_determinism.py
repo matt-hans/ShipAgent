@@ -44,15 +44,17 @@ def _make_row(
     row.status = status
     row.row_checksum = row_checksum
     row.job_id = job_id
-    row.order_data = json.dumps({
-        "ship_to_name": "E2E Test",
-        "ship_to_address1": "100 Test Blvd",
-        "ship_to_city": "Los Angeles",
-        "ship_to_state": "CA",
-        "ship_to_postal_code": "90001",
-        "ship_to_country": "US",
-        "weight": 2.0,
-    })
+    row.order_data = json.dumps(
+        {
+            "ship_to_name": "E2E Test",
+            "ship_to_address1": "100 Test Blvd",
+            "ship_to_city": "Los Angeles",
+            "ship_to_state": "CA",
+            "ship_to_postal_code": "90001",
+            "ship_to_country": "US",
+            "weight": 2.0,
+        }
+    )
     row.idempotency_key = idempotency_key
     row.ups_shipment_id = ups_shipment_id
     row.ups_tracking_number = ups_tracking_number
@@ -88,12 +90,16 @@ def _make_track_response(tracking: str = "1Z999AA10000000001") -> dict:
     """Create a mock UPS track_package response."""
     return {
         "trackResponse": {
-            "shipment": [{
-                "package": [{
-                    "trackingNumber": tracking,
-                    "activity": [{"status": {"description": "In Transit"}}],
-                }],
-            }],
+            "shipment": [
+                {
+                    "package": [
+                        {
+                            "trackingNumber": tracking,
+                            "activity": [{"status": {"description": "In Transit"}}],
+                        }
+                    ],
+                }
+            ],
         },
     }
 
@@ -128,7 +134,9 @@ class TestCrashSafeExecution:
 
     @pytest.mark.asyncio
     async def test_crash_after_ups_call_with_artifacts_recovers(
-        self, engine: BatchEngine, tmp_path: Path,
+        self,
+        engine: BatchEngine,
+        tmp_path: Path,
     ) -> None:
         """Simulate: create_shipment succeeds → tracking stored → label promoted
         → crash before final commit. Recovery: Tier 1 → completed."""
@@ -148,7 +156,8 @@ class TestCrashSafeExecution:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-e2e-001", rows=[row],
+            job_id="job-e2e-001",
+            rows=[row],
         )
 
         assert result["recovered"] == 1
@@ -157,7 +166,8 @@ class TestCrashSafeExecution:
 
     @pytest.mark.asyncio
     async def test_crash_after_ups_call_without_label_needs_review(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Simulate: create_shipment succeeds → tracking stored → crash before
         label promote. Recovery: Tier 1 → needs_review (missing label)."""
@@ -170,16 +180,21 @@ class TestCrashSafeExecution:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-e2e-001", rows=[row],
+            job_id="job-e2e-001",
+            rows=[row],
         )
 
         assert result["needs_review"] == 1
         assert row.status == "needs_review"
-        assert "label_path" in row.error_message
+        assert row.error_code == "E-4001"
+        assert row.error_message == (
+            "The row could not be processed because of a system error."
+        )
 
     @pytest.mark.asyncio
     async def test_crash_without_tracking_marks_needs_review(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Simulate: crash before tracking stored. Recovery: Tier 2 →
         needs_review. Never auto-retried."""
@@ -190,7 +205,8 @@ class TestCrashSafeExecution:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-e2e-001", rows=[row],
+            job_id="job-e2e-001",
+            rows=[row],
         )
 
         assert result["needs_review"] == 1
@@ -199,7 +215,8 @@ class TestCrashSafeExecution:
 
     @pytest.mark.asyncio
     async def test_crash_before_ups_call_marks_needs_review(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Simulate: row in_flight → crash before create_shipment. Recovery:
         Tier 2 (no tracking) → needs_review."""
@@ -210,14 +227,16 @@ class TestCrashSafeExecution:
         )
 
         await engine.recover_in_flight_rows(
-            job_id="job-e2e-001", rows=[row],
+            job_id="job-e2e-001",
+            rows=[row],
         )
 
         assert row.status == "needs_review"
 
     @pytest.mark.asyncio
     async def test_tier3_escalation_after_max_attempts(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """Track_package fails on MAX_RECOVERY_ATTEMPTS consecutive startups
         → escalated to needs_review."""
@@ -233,16 +252,19 @@ class TestCrashSafeExecution:
         )
 
         result = await engine.recover_in_flight_rows(
-            job_id="job-e2e-001", rows=[row],
+            job_id="job-e2e-001",
+            rows=[row],
         )
 
         assert result["needs_review"] == 1
         assert row.status == "needs_review"
-        assert "escalated" in row.error_message.lower()
+        assert row.error_code == "E-3001"
+        assert row.error_message == "The carrier could not process this shipment."
 
     @pytest.mark.asyncio
     async def test_needs_review_rows_never_auto_retried(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """needs_review is terminal. Resume execution skips these rows."""
         row_needs_review = _make_row(row_number=1, status="needs_review")
@@ -261,7 +283,8 @@ class TestCrashSafeExecution:
 
     @pytest.mark.asyncio
     async def test_concurrent_rows_maintain_independent_state(
-        self, engine: BatchEngine,
+        self,
+        engine: BatchEngine,
     ) -> None:
         """With concurrency, each row has independent state. One row failing
         doesn't affect others."""
@@ -279,7 +302,9 @@ class TestCrashSafeExecution:
         rows = [_make_row(row_number=i) for i in range(1, 4)]
 
         result = await engine.execute(
-            job_id="job-e2e-001", rows=rows, shipper=SHIPPER,
+            job_id="job-e2e-001",
+            rows=rows,
+            shipper=SHIPPER,
         )
 
         # 2 succeeded, 1 failed — independent
@@ -297,7 +322,6 @@ class TestWriteBackDurability:
         """Enqueue tasks, then process them — verifies full cycle."""
         db = MagicMock()
         tasks: list[WriteBackTask] = []
-
 
         def capture_add(task):
             tasks.append(task)
@@ -354,14 +378,19 @@ class TestLabelAtomicity:
     """Prove label staging + promote is atomic and crash-safe."""
 
     def test_label_promoted_before_db_commit(
-        self, engine: BatchEngine, tmp_path: Path,
+        self,
+        engine: BatchEngine,
+        tmp_path: Path,
     ) -> None:
         """Label is moved from staging to final path. After promote:
         label at final path, staging file gone."""
         label_b64 = base64.b64encode(b"%PDF-1.4 atomic test").decode()
 
         staging_path = engine._save_label_staged(
-            "1Z999", label_b64, job_id="job-label", row_number=1,
+            "1Z999",
+            label_b64,
+            job_id="job-label",
+            row_number=1,
         )
         assert "/staging/" in staging_path
         assert os.path.exists(staging_path)
@@ -372,14 +401,19 @@ class TestLabelAtomicity:
         assert "/staging/" not in final_path
 
     def test_crash_after_promote_before_commit_preserves_label(
-        self, engine: BatchEngine, tmp_path: Path,
+        self,
+        engine: BatchEngine,
+        tmp_path: Path,
     ) -> None:
         """If crash after promote but before DB commit: label exists at final
         path, row is still in_flight. Recovery handles the row."""
         label_b64 = base64.b64encode(b"%PDF-1.4 crash test").decode()
 
         staging_path = engine._save_label_staged(
-            "1Z999", label_b64, job_id="job-crash", row_number=1,
+            "1Z999",
+            label_b64,
+            job_id="job-crash",
+            row_number=1,
         )
         final_path = engine._promote_label(staging_path)
 
@@ -389,7 +423,9 @@ class TestLabelAtomicity:
         assert content == b"%PDF-1.4 crash test"
 
     def test_orphaned_staging_cleaned_only_for_resolved_jobs(
-        self, engine: BatchEngine, tmp_path: Path,
+        self,
+        engine: BatchEngine,
+        tmp_path: Path,
     ) -> None:
         """Staging labels removed only for jobs where all rows are
         completed/failed/skipped. Jobs with in_flight/needs_review
@@ -398,10 +434,16 @@ class TestLabelAtomicity:
 
         # Create staging files for two jobs
         engine._save_label_staged(
-            "1Z001", label_b64, job_id="resolved-job", row_number=1,
+            "1Z001",
+            label_b64,
+            job_id="resolved-job",
+            row_number=1,
         )
         engine._save_label_staged(
-            "1Z002", label_b64, job_id="unresolved-job", row_number=1,
+            "1Z002",
+            label_b64,
+            job_id="unresolved-job",
+            row_number=1,
         )
 
         resolved_dir = Path(engine._labels_dir) / "staging" / "resolved-job"
@@ -427,7 +469,8 @@ class TestLabelAtomicity:
         mock_js.get_rows = get_rows
 
         count = BatchEngine.cleanup_staging(
-            mock_js, labels_dir=str(tmp_path / "labels"),
+            mock_js,
+            labels_dir=str(tmp_path / "labels"),
         )
 
         assert count == 1  # Only resolved-job's label removed

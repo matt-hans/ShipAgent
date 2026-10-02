@@ -36,6 +36,8 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
+from src.api.browser_origins import parse_allowed_origins  # noqa: E402
+from src.api.browser_session import BROWSER_CSRF_HEADER  # noqa: E402
 from src.api.middleware.auth import (  # noqa: E402
     get_expected_api_key,
     maybe_require_api_key,
@@ -43,6 +45,7 @@ from src.api.middleware.auth import (  # noqa: E402
 )
 from src.api.routes import (  # noqa: E402
     agent_audit,
+    auth_session,
     commands,
     connections,
     contacts,
@@ -57,6 +60,11 @@ from src.api.routes import (  # noqa: E402
     saved_data_sources,
     settings,
 )
+from src.control_plane.config import ControlPlaneSettings  # noqa: E402
+from src.control_plane.startup import (  # noqa: E402
+    validate_desktop_listener_security,
+    validate_startup_security,
+)
 from src.db.connection import init_db  # noqa: E402
 from src.db.models import JobStatus  # noqa: E402
 from src.errors import ShipAgentError  # noqa: E402
@@ -67,7 +75,14 @@ from src.utils.redaction import sanitize_error_message  # noqa: E402
 # Frontend build directory — Angular Module Federation (Phase 9)
 # In Docker: Dockerfile copies dist/apps/shell/browser to ./shipagent-frontend/dist/apps/shell/browser
 # In dev: Angular build outputs to shipagent-frontend/dist/apps/shell/browser
-FRONTEND_DIR = Path(__file__).parent.parent.parent / "shipagent-frontend" / "dist" / "apps" / "shell" / "browser"
+FRONTEND_DIR = (
+    Path(__file__).parent.parent.parent
+    / "shipagent-frontend"
+    / "dist"
+    / "apps"
+    / "shell"
+    / "browser"
+)
 logger = logging.getLogger(__name__)
 
 # Module-level state for health endpoint and watchdog
@@ -77,10 +92,7 @@ _watchdog_service = None  # Set by watchdog startup in lifespan
 
 def _parse_allowed_origins() -> list[str]:
     """Parse comma-separated CORS allowlist from ALLOWED_ORIGINS env var."""
-    raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
-    if not raw:
-        return []
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return parse_allowed_origins()
 
 
 async def _process_watched_file(file_path: str, config) -> None:
@@ -282,6 +294,14 @@ def _parse_iso_timestamp(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _safe_job_ref(job_id: object) -> str:
+    """Return a log-safe job reference: canonical UUID text, else ``unknown``."""
+    try:
+        return str(uuid.UUID(str(job_id)))
+    except (ValueError, AttributeError, TypeError):
+        return "unknown"
+
+
 def _reap_orphan_pending_jobs(job_service: object) -> int:
     """Delete stale pending jobs with zero rows (crash leftovers)."""
     from src.services.job_service import JobService
@@ -298,8 +318,11 @@ def _reap_orphan_pending_jobs(job_service: object) -> int:
     cutoff = datetime.now(UTC) - timedelta(hours=max_age_hours)
     try:
         pending_jobs = js.list_jobs(status=JobStatus.pending, limit=500)
-    except Exception as e:
-        logger.warning("Failed listing pending jobs for orphan reaper: %s", e)
+    except Exception:
+        logger.warning(
+            "orphan_job_reaper_failed action=list_jobs "
+            "error_code=E-4001 failure_count=1"
+        )
         return 0
 
     deleted = 0
@@ -316,8 +339,12 @@ def _reap_orphan_pending_jobs(job_service: object) -> int:
         try:
             if js.delete_job(job.id):
                 deleted += 1
-        except Exception as e:
-            logger.warning("Failed deleting orphan pending job %s: %s", job.id, e)
+        except Exception:
+            logger.warning(
+                "orphan_job_reaper_failed action=delete_job job_id=%s "
+                "error_code=E-4001 failure_count=1",
+                _safe_job_ref(job.id),
+            )
     return deleted
 
 
@@ -345,8 +372,11 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
         deleted_orphans = _reap_orphan_pending_jobs(js)
         if deleted_orphans:
             logger.info("Orphan pending jobs reaped: %d", deleted_orphans)
-    except Exception as e:
-        logger.warning("Orphan pending job reaper failed (non-blocking): %s", e)
+    except Exception:
+        logger.warning(
+            "startup_recovery_failed action=reap_orphans "
+            "error_code=E-4001 failure_count=1"
+        )
 
     # 1. Find interrupted jobs (running or paused)
     interrupted: list = []
@@ -370,10 +400,11 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
         try:
             ups_client = UPSMCPClient()
             await ups_client.connect()
-        except Exception as e:
+        except Exception:
             logger.warning(
-                "UPS MCP unavailable for recovery (rows stay in_flight): %s",
-                e,
+                "startup_recovery_failed action=connect_carrier "
+                "error_code=E-3001 failure_count=%d",
+                len(jobs_needing_recovery),
             )
             ups_client = None
 
@@ -389,23 +420,19 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
                     rows,
                 )
                 logger.info(
-                    "Job %s recovery: %d recovered, %d needs_review, %d unresolved",
-                    job.id,
+                    "startup_recovery_complete action=recovery job_id=%s "
+                    "recovered=%d needs_review=%d unresolved=%d",
+                    _safe_job_ref(job.id),
                     recovery_result["recovered"],
                     recovery_result["needs_review"],
                     recovery_result["unresolved"],
                 )
-                if recovery_result.get("details"):
-                    logger.warning(
-                        "Rows requiring operator review for job %s: %s",
-                        job.id,
-                        recovery_result["details"],
-                    )
-            except Exception as e:
+            except Exception:
                 logger.error(
-                    "Recovery failed for job %s (non-blocking): %s",
-                    job.id,
-                    e,
+                    "startup_recovery_failed action=recovery job_id=%s "
+                    "error_code=E-4001 failure_count=%d",
+                    _safe_job_ref(job.id),
+                    len(rows),
                 )
 
         # Clean up the temporary UPS client
@@ -420,8 +447,11 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
         orphans = BatchEngine.cleanup_staging(js)
         if orphans:
             logger.info("Cleaned up %d orphaned staging labels", orphans)
-    except Exception as e:
-        logger.error("Staging cleanup failed (non-blocking): %s", e)
+    except Exception:
+        logger.error(
+            "startup_recovery_failed action=cleanup_staging "
+            "error_code=E-4001 failure_count=1"
+        )
 
 
 @asynccontextmanager
@@ -436,6 +466,9 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     _startup_time = _time.time()
     validate_api_key_strength()  # Fail fast on weak API keys (F-6)
+    _listener_settings = ControlPlaneSettings()
+    validate_startup_security(_listener_settings)
+    validate_desktop_listener_security(_listener_settings.bind_host)
 
     # Create data/log/label directories (no-op in dev, creates platformdirs in bundled)
     from src.utils.paths import ensure_dirs_exist
@@ -468,9 +501,7 @@ async def lifespan(app: FastAPI):
                 _generated_fts = _secrets.token_hex(32)
                 _kr_store.set("FILTER_TOKEN_SECRET", _generated_fts)
                 # CRITICAL: Never log the secret value — only log the event.
-                logger.info(
-                    "Auto-generated FILTER_TOKEN_SECRET and stored in keychain"
-                )
+                logger.info("Auto-generated FILTER_TOKEN_SECRET and stored in keychain")
             else:
                 os.environ["FILTER_TOKEN_SECRET"] = _existing_fts
                 logger.info("Loaded FILTER_TOKEN_SECRET from keychain")
@@ -482,15 +513,15 @@ async def lifespan(app: FastAPI):
             _fts_path = get_data_dir() / ".filter_token_secret"
             if _fts_path.exists():
                 _generated_fts = _fts_path.read_text().strip()
-                logger.info(
-                    "Loaded FILTER_TOKEN_SECRET from fallback file"
-                )
+                logger.info("Loaded FILTER_TOKEN_SECRET from fallback file")
             else:
                 _generated_fts = _secrets.token_hex(32)
                 try:
                     # Use os.open with restricted mode to avoid a brief
                     # window where the file is world-readable.
-                    fd = os.open(str(_fts_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                    fd = os.open(
+                        str(_fts_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600
+                    )
                     with os.fdopen(fd, "w") as f:
                         f.write(_generated_fts)
                     logger.warning(
@@ -584,8 +615,10 @@ async def lifespan(app: FastAPI):
         with get_db_context() as db:
             js = JobService(db)
             await run_startup_recovery(db, js)
-    except Exception as e:
-        logger.error("Startup recovery failed (non-blocking): %s", e)
+    except Exception:
+        logger.error(
+            "startup_recovery_failed action=recovery error_code=E-4001 failure_count=1"
+        )
 
     # Start watchdog if configured
     config_path = os.environ.get("SHIPAGENT_CONFIG_PATH")
@@ -674,7 +707,12 @@ if allowed_origins:
         allow_origins=allowed_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+        allow_headers=[
+            "Content-Type",
+            "Authorization",
+            "X-API-Key",
+            BROWSER_CSRF_HEADER,
+        ],
     )
 
 # ---------------------------------------------------------------------------
@@ -695,12 +733,14 @@ _RATE_LIMIT_WINDOW_SECONDS = 60  # sliding window duration
 
 # Exact paths subject to rate limiting (session/resource creation endpoints).
 # Uses exact match to avoid rate-limiting sub-paths like /conversations/{id}/messages.
-_RATE_LIMITED_PATHS = frozenset({
-    "/api/v1/conversations",
-    "/api/v1/conversations/",
-    "/api/v1/data-sources/import",
-    "/api/v1/data-sources/upload",
-})
+_RATE_LIMITED_PATHS = frozenset(
+    {
+        "/api/v1/conversations",
+        "/api/v1/conversations/",
+        "/api/v1/data-sources/import",
+        "/api/v1/data-sources/upload",
+    }
+)
 
 
 @app.middleware("http")
@@ -754,7 +794,9 @@ _SIZE_EXEMPT_SUFFIXES = ("/upload-document",)
 
 def _is_size_exempt(path: str) -> bool:
     """Check if path is exempt from request body size enforcement."""
-    return path.startswith(_SIZE_EXEMPT_PREFIXES) or path.endswith(_SIZE_EXEMPT_SUFFIXES)
+    return path.startswith(_SIZE_EXEMPT_PREFIXES) or path.endswith(
+        _SIZE_EXEMPT_SUFFIXES
+    )
 
 
 @app.middleware("http")
@@ -878,9 +920,7 @@ async def shipagent_error_handler(
         JSONResponse with error details.
     """
     # Redact details to prevent internal information leakage (M-3, CWE-209)
-    safe_details = (
-        sanitize_error_message(str(exc.details)) if exc.details else None
-    )
+    safe_details = sanitize_error_message(str(exc.details)) if exc.details else None
     return JSONResponse(
         status_code=400,
         content={
@@ -893,6 +933,7 @@ async def shipagent_error_handler(
 
 
 # Include routers
+app.include_router(auth_session.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(logs.router, prefix="/api/v1")
 app.include_router(data_sources.router, prefix="/api/v1")
@@ -1136,12 +1177,34 @@ if FRONTEND_DIR.exists():
         # Serve only files with known-safe static extensions (CWE-552).
         # Prevents the catch-all from exposing sensitive dotfiles (.env, .htaccess)
         # or unexpected file types that may land in the dist directory.
-        _ALLOWED_STATIC_EXTENSIONS = frozenset({
-            ".html", ".css", ".js", ".mjs", ".jsx", ".ts", ".tsx",
-            ".json", ".map", ".svg", ".png", ".jpg", ".jpeg", ".gif",
-            ".ico", ".webp", ".woff", ".woff2", ".ttf", ".eot",
-            ".pdf", ".txt", ".xml", ".webmanifest",
-        })
+        _ALLOWED_STATIC_EXTENSIONS = frozenset(
+            {
+                ".html",
+                ".css",
+                ".js",
+                ".mjs",
+                ".jsx",
+                ".ts",
+                ".tsx",
+                ".json",
+                ".map",
+                ".svg",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".ico",
+                ".webp",
+                ".woff",
+                ".woff2",
+                ".ttf",
+                ".eot",
+                ".pdf",
+                ".txt",
+                ".xml",
+                ".webmanifest",
+            }
+        )
         requested_file = FRONTEND_DIR / full_path
         if (
             requested_file.exists()

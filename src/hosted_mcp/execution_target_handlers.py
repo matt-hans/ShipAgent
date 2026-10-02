@@ -7,6 +7,18 @@ from src.control_plane.execution_targets import ExecutionTarget, TargetToolReque
 from src.hosted_mcp.server import ToolHandler
 
 
+def project_status_for_provider(status: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a target status to provider-visible fields (no target id or free text)."""
+    target = status["executionTarget"]
+    return {
+        "status": status["status"],
+        "executionTarget": {
+            "state": target["state"],
+            "capabilities": list(target["capabilities"]),
+        },
+    }
+
+
 def build_execution_target_tool_handlers(
     execution_target: ExecutionTarget,
 ) -> dict[str, ToolHandler]:
@@ -14,7 +26,7 @@ def build_execution_target_tool_handlers(
         context: AuthorizationContext,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        return await execution_target.invoke(
+        status = await execution_target.invoke(
             TargetToolRequest(
                 account_id=context.account_id,
                 provider_connection_id=context.provider_connection_id,
@@ -26,5 +38,6 @@ def build_execution_target_tool_handlers(
                 ),
             )
         )
+        return project_status_for_provider(status)
 
     return {"get_shipagent_status": get_shipagent_status}
