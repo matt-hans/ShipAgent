@@ -61,7 +61,10 @@ from src.api.routes import (  # noqa: E402
     settings,
 )
 from src.control_plane.config import ControlPlaneSettings  # noqa: E402
-from src.control_plane.startup import validate_startup_security  # noqa: E402
+from src.control_plane.startup import (  # noqa: E402
+    validate_desktop_listener_security,
+    validate_startup_security,
+)
 from src.db.connection import init_db  # noqa: E402
 from src.db.models import JobStatus  # noqa: E402
 from src.errors import ShipAgentError  # noqa: E402
@@ -452,7 +455,9 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     _startup_time = _time.time()
     validate_api_key_strength()  # Fail fast on weak API keys (F-6)
-    validate_startup_security(ControlPlaneSettings())
+    _listener_settings = ControlPlaneSettings()
+    validate_startup_security(_listener_settings)
+    validate_desktop_listener_security(_listener_settings.bind_host)
 
     # Create data/log/label directories (no-op in dev, creates platformdirs in bundled)
     from src.utils.paths import ensure_dirs_exist

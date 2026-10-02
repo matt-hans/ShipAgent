@@ -26,7 +26,13 @@ def validate_startup_security(settings: ControlPlaneSettings) -> None:
         ):
             raise RuntimeError("fake_local auth is restricted to loopback local mode")
 
-    if not _is_loopback_host(settings.bind_host):
+
+def validate_desktop_listener_security(bind_host: str) -> None:
+    """Require a strong SHIPAGENT_API_KEY when the desktop API binds non-loopback.
+
+    Desktop/API-key auth only; hosted Auth0 control-plane startup does not call this.
+    """
+    if not _is_loopback_host(bind_host):
         validate_api_key_strength()
         if not get_expected_api_key():
             raise RuntimeError(
@@ -38,4 +44,5 @@ def validated_listener_host(host: str) -> str:
     """Validate and return the exact host a server launcher will bind."""
     settings = ControlPlaneSettings(bind_host=host)
     validate_startup_security(settings)
+    validate_desktop_listener_security(settings.bind_host)
     return settings.bind_host
