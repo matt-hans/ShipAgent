@@ -12,6 +12,24 @@ mutations or live carrier calls were made.
 Merge commit: `9b993e0` (parents `ad86359`, `a4a4bd1`). No history rewritten.
 Reproduce the diff: `git diff origin/main...HEAD`.
 
+Scope: this is a **reviewable integration candidate** for #31, not the #32
+validated baseline. Baseline blockers: #42-#45 (implemented here, dispositions
+below), #46, #47 and #48 (open, unresolved).
+
+## Preservation and publication of the findings branch
+
+The preserved findings commits **were published** in phase 1 (an earlier
+review note saying they were not published was wrong).
+
+| Ref | SHA | Evidence |
+|---|---|---|
+| `origin/codex/provider-contracts-control-plane-foundation-findings` before | `bde0e0b79fe04e4439c2b71bcb0d075668ba494f` | ancestor of local tip |
+| same ref after phase-1 plain push (fast-forward, no force) | `ad86359a31e5fbbd5e89e0648f77d59b000fdab4` | `git ls-remote origin refs/heads/codex/provider-contracts-control-plane-foundation-findings` re-run at delivery returns this SHA |
+| local findings worktree tip | `ad86359a31e5fbbd5e89e0648f77d59b000fdab4` | equal to remote |
+
+Local backup refs (`refs/backup/issue31/*`) and the bundle are local-only
+recovery aids and were not pushed.
+
 ## Scope decisions by follow-up
 
 | Issue | Scope | Outcome |
@@ -91,6 +109,94 @@ Phase 6 follow-up issues: #46 (dormant tool contracts vs ADR 0003/0008, `BoundRe
   `benchmark_regression_check.py`, `test_pipeline.py`), outside the documented
   `src/ tests/` lint scope.
 
+## Frontend / Tauri duplicate and superseded assessment
+
+Method: `git diff --stat ab77b2f..ad86359 -- shipagent-frontend src-tauri`
+(findings side) against `git diff --stat ab77b2f..origin/main` for the same
+paths (main side), plus a grep for `relay|auth0` under
+`shipagent-frontend/apps`, `shipagent-frontend/libs` and `src-tauri/src`.
+
+Result: main changed **zero** frontend or `src-tauri` files since the
+merge-base, and nothing in those trees references relay or Auth0. There is no
+file-level overlap, so there is nothing superseded or duplicated by main; all
+56 findings-side files were retained unchanged by the merge. Main's only
+desktop-adjacent change is Python (`src/services/desktop_relay_client.py`,
+`src/services/relay_key_service.py`), which no frontend code consumes yet.
+
+| Area (findings-only files) | Retained because |
+|---|---|
+| Browser session / API transport: `libs/shared/api/src/browser-session-request.ts`, `browser-session-transport.service.ts`, `browser-session.state.ts`, `api.interceptors.ts`, `api.service.ts`; shell `api-key-gate/`, `desktop-handoff.ts`, `shell-startup.ts`, `bootstrap.ts`, `app.component.ts` | Pair with backend `src/api/browser_session.py`, `routes/auth_session.py`, `middleware/auth.py` (also findings-only). Dropping one half would break the session handshake. |
+| Progress/SSE: `libs/shared/sse/src/sse.service.ts`, `chat-remote/src/services/job-progress-sse.service.ts`, `session-aware-sse.spec.ts`, `libs/shared/types/src/job.types.ts` | Pair with `src/services/job_progress_projection.py` and `routes/progress.py` (findings-only). Main did not touch progress. |
+| Completion UI: `chat-remote/.../completion-artifact.component.ts`, `label-preview-modal.component.ts`, `chat-container.component.ts`, `job-completion-metadata.ts` | Findings-only UI hardening with specs; no main counterpart. |
+| Tauri port/detection: `libs/shared/tauri/src/port-resolver.ts`, `tauri-detection.service.ts`; `src-tauri/src/main.rs`, `tauri.conf.json`, `capabilities/default.json`, `Cargo.toml`/`Cargo.lock` | Findings-only; main.rs hunk is a custom-protocol bootstrap plus rustfmt churn. |
+| Smoke/validate scripts: `shipagent-frontend/scripts/smoke-authenticated-production.mjs`, `smoke-development-proxy.mjs`, `validate-remote-entry.mjs`, `link-remotes.sh` | Findings-only tooling; not executed in this phase (see limits). |
+
+Deferred / not verified (reasons):
+
+- **Tauri was not built or run.** `cargo tauri build` and desktop startup were
+  not executed; `src-tauri` is reviewed by diff only. Desktop packaging and
+  startup validation belongs to #32 acceptance.
+- Frontend dependencies were installed with `npm ci --ignore-scripts` (a plain
+  `npm ci` stalled in lifecycle scripts), so postinstall-dependent behavior is
+  unverified. The three smoke scripts above were not run.
+- No claim is made that the 56 files were line-by-line reviewed; evidence is
+  the typecheck/lint/test/build results under Validation plus the pairing
+  analysis above.
+
+## Review coverage and limits
+
+Three review rounds ran as separate parallel Sonnet 5.5 agents (Standards and
+Spec axes), recorded outside the repo in `REVIEW-phase5*.md` and
+`REVIEW-phase7.md`:
+
+- Phase 5 (HEAD `559c1d3`): 11 standards rows (S1-S11) and 15 spec rows
+  (P1-P4, B1-B3, C1-C7, V1). Phase 6 dispositioned all 26:
+  3 defects fixed with red-first tests, 2 issues filed (#46, #47), the rest
+  false positives, judgement calls, or deliberately not actioned.
+- Phase 7 (HEAD `f9b9ec8`): 0 hard standards violations, about 10 judgement
+  items, 4 spec gaps (nothing published, no PR, #45 validation incomplete,
+  frontend/Tauri assessment thin) and one residual listener-gate gap.
+
+**Limits.** The review is a sample, not a full audit. The standards agent
+sampled by grep/stat rather than reading all 155 changed files; the spec agent
+ran no tests; the orchestrator did not re-verify every cited line. The review
+agents are not independent evidence of correctness for the 83 preserved
+hardening commits. The `.claude/rules/*` files exist only untracked in the
+main checkout and were not imposed (the docstring finding stays a false
+positive).
+
+**Inherited listener-gate gap (#48).** `src/api/main.py` `lifespan` calls
+`validate_desktop_listener_security(ControlPlaneSettings().bind_host)`, which
+reads `SHIPAGENT_BIND_HOST`, not the host uvicorn binds, so
+`uvicorn src.api.main:app --host 0.0.0.0` skips the non-loopback API-key gate.
+Launchers (`daemon`, `bundle_entry`) pass the real host and are covered. Not
+introduced by the merge; tracked as **#48**, a blocker for #32.
+
+## Tracked evidence directory
+
+`.superpowers/sdd/final-review-fixes-report.md` and
+`.superpowers/sdd/final-review-round-14-findings.md` are tracked on purpose as
+preserved findings-branch review evidence even though `.gitignore` lists
+`.superpowers/*` (they were force-added on the findings branch; `a4a4bd1` has
+none). A regex scan (API-key, cloud-key, token and private-key patterns) over
+`.superpowers/` found no secrets. They are historical reports, not proof of
+merged correctness.
+
+## Alembic `search_path` check (mixed-case schema)
+
+Question raised in review: `alembic/env.py` passes the unquoted schema as
+asyncpg `server_settings.search_path`, whereas `src/control_plane/db.py` now
+quotes it. Verified on a disposable PostgreSQL 14 (local `initdb`, port
+55434, removed afterwards) with `SHIPAGENT_CONTROL_PLANE_SCHEMA=MixedCase`:
+online `alembic upgrade head` created `alembic_version`, `cloud_accounts`,
+`provider_connections`, `audit_events`, `relay_devices` all in schema
+`"MixedCase"` (none in a folded lowercase schema), head `20260723_0003`;
+`downgrade base` also ran. **Not a real gap:** the connect-time value only
+seeds a harmless lowercase path, and `_run` immediately issues the quoted
+`SET search_path TO "MixedCase"` before any migration or version-table access.
+No code change. (The `db.py` quoting remains necessary because runtime
+sessions have no such follow-up `SET`.)
+
 ## Defects fixed in phase 6 (review findings, each reproduced first)
 
 - Hosted Auth0 startup required the desktop API key on non-loopback bind (above).
@@ -130,6 +236,7 @@ classification; summary below.
 
 ## Rollback
 
-The branch is unpushed. `git reset --hard ad86359` restores the pre-merge
-findings tip (requires authorization). Or revert merge `9b993e0` with
-`git revert -m 1`.
+Do not rewrite history once the branch is published. Revert through a PR:
+`git revert -m 1 9b993e0` (merge) and/or the phase-6 fix commits (`24b543a`,
+`5e21a0c`, `00415a4`). The pre-merge findings tip `ad86359` stays on
+`origin/codex/provider-contracts-control-plane-foundation-findings`.
