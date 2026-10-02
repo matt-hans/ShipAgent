@@ -24,6 +24,7 @@ from src.control_plane.relay.protocol import (
     build_handshake_claims,
     relay_invocation_input_hash,
 )
+from src.registry.vocabulary import RELAY_TOOL_CAPABILITIES
 from src.services.relay_key_service import RelayKeyService
 
 
@@ -133,7 +134,7 @@ def default_relay_version_metadata() -> RelayVersionMetadata:
         shipagent_core_version="0.1.0",
         registry_contract_version="registry-v1",
         ups_boundary_contract_version="ups-v1",
-        capabilities=["rate_shipment", "get_shipagent_status"],
+        capabilities=list(RELAY_TOOL_CAPABILITIES),
     )
 
 

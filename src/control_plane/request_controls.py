@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from src.control_plane.redis_keys import RedisKey
+from src.registry.privacy import CREDENTIAL_ARGUMENT_KEYS
 
 DEFAULT_WINDOW_SECONDS = 60
 LOOP_DETECTION_LIMIT = 3
@@ -39,18 +40,7 @@ def _canonicalize_argument_value(value):
     return value
 
 
-_SENSITIVE_ARGUMENT_KEYS = frozenset(
-    {
-        "secret",
-        "api_secret",
-        "api_key",
-        "access_token",
-        "token",
-        "password",
-        "provider_file_url",
-        "file_url",
-    }
-)
+_SENSITIVE_ARGUMENT_KEYS = CREDENTIAL_ARGUMENT_KEYS
 
 
 def hash_arguments(arguments: Mapping[str, object]) -> str:
@@ -138,7 +128,11 @@ class RequestControls:
             str(minute_bucket),
         )
 
-        count = int(await self.redis.eval(self._RATE_LIMIT_LUA, 1, key, str(limit), str(DEFAULT_WINDOW_SECONDS)))
+        count = int(
+            await self.redis.eval(
+                self._RATE_LIMIT_LUA, 1, key, str(limit), str(DEFAULT_WINDOW_SECONDS)
+            )
+        )
         if count > limit:
             elapsed = int(self._now() % DEFAULT_WINDOW_SECONDS)
             raise RequestControlError(

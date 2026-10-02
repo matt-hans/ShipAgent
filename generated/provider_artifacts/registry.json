@@ -99,11 +99,13 @@
         "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "provider_originated_fields": [],
       "rate_limit_class": "default",
       "requires_confirmation": false,
       "result_profile": "aggregate",
       "result_sensitivity": "business",
       "side_effect": "read",
+      "signed_download_fields": [],
       "tenant_safe": true,
       "title": "Get shipagent status",
       "ui_resource": null,
@@ -144,10 +146,17 @@
       "max_sync_seconds": 30,
       "minimum_capabilities": {},
       "name": "validate_shipment_address",
-      "notes": "",
+      "notes": "ADR 0007: address_text may only be set when the validated input originated in the provider conversation. Imported-source inputs must omit it; project_result fails closed without provider_supplied origin metadata.",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
+          "address_text": {
+            "description": "Echo of address text the user supplied through the provider conversation; never imported-source data.",
+            "maxLength": 500,
+            "minLength": 1,
+            "pattern": "^[^\\\\x00-\\\\x1f]{1,500}$",
+            "type": "string"
+          },
           "guidance_codes": {
             "description": "Bounded redacted remediation categories.",
             "items": {
@@ -192,11 +201,15 @@
         "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "provider_originated_fields": [
+        "address_text"
+      ],
       "rate_limit_class": "default",
       "requires_confirmation": false,
-      "result_profile": "aggregate",
+      "result_profile": "provider_ingress_echo",
       "result_sensitivity": "business",
       "side_effect": "estimate",
+      "signed_download_fields": [],
       "tenant_safe": true,
       "title": "Validate shipment address",
       "ui_resource": null,
@@ -340,11 +353,13 @@
         "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "provider_originated_fields": [],
       "rate_limit_class": "default",
       "requires_confirmation": false,
       "result_profile": "aggregate",
       "result_sensitivity": "business",
       "side_effect": "estimate",
+      "signed_download_fields": [],
       "tenant_safe": true,
       "title": "Get shipment rates",
       "ui_resource": "ui://shipagent/rates.html",
@@ -431,11 +446,13 @@
         "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "provider_originated_fields": [],
       "rate_limit_class": "default",
       "requires_confirmation": false,
       "result_profile": "aggregate",
       "result_sensitivity": "business",
       "side_effect": "estimate",
+      "signed_download_fields": [],
       "tenant_safe": true,
       "title": "Prepare shipments",
       "ui_resource": "ui://shipagent/preview.html",
@@ -520,11 +537,13 @@
         "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "provider_originated_fields": [],
       "rate_limit_class": "default",
       "requires_confirmation": true,
       "result_profile": "aggregate",
       "result_sensitivity": "business",
       "side_effect": "purchase",
+      "signed_download_fields": [],
       "tenant_safe": true,
       "title": "Execute shipments",
       "ui_resource": "ui://shipagent/confirmation.html",
@@ -601,11 +620,13 @@
         "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "provider_originated_fields": [],
       "rate_limit_class": "default",
       "requires_confirmation": false,
       "result_profile": "aggregate",
       "result_sensitivity": "business",
       "side_effect": "read",
+      "signed_download_fields": [],
       "tenant_safe": true,
       "title": "Get job status",
       "ui_resource": null,
@@ -622,7 +643,7 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Create an opaque label handoff for an authenticated ShipAgent-owned UI.",
+      "description": "Create a short-lived signed label download reference for the account.",
       "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
@@ -646,10 +667,22 @@
       "max_sync_seconds": 30,
       "minimum_capabilities": {},
       "name": "create_label_download",
-      "notes": "",
+      "notes": "ADR 0007 obligations for any future implementation: the URL is minted by the Execution Target flow, single-use, and bound to an Auth0 browser session of the same Cloud Account; possession alone is not authorization. Bytes stream desktop-to-browser with no cloud persistence. Only ready labels carry download_url.",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
+          "download_url": {
+            "description": "Short-lived signed download URL; label bytes never pass through the provider.",
+            "maxLength": 2048,
+            "minLength": 9,
+            "pattern": "^https://[^\\\\s]{1,2040}$",
+            "type": "string"
+          },
+          "expires_in_seconds": {
+            "maximum": 300,
+            "minimum": 1,
+            "type": "integer"
+          },
           "label_artifact_id": {
             "description": "Opaque label artifact resolved only by an authenticated ShipAgent channel.",
             "maxLength": 41,
@@ -679,11 +712,15 @@
         "claude_remote_mcp_public",
         "generic_mcp"
       ],
+      "provider_originated_fields": [],
       "rate_limit_class": "default",
       "requires_confirmation": false,
-      "result_profile": "aggregate",
+      "result_profile": "artifact_action",
       "result_sensitivity": "business",
       "side_effect": "read",
+      "signed_download_fields": [
+        "download_url"
+      ],
       "tenant_safe": true,
       "title": "Create label download",
       "ui_resource": null,
@@ -741,11 +778,13 @@
       "provider_exports": [
         "generic_mcp"
       ],
+      "provider_originated_fields": [],
       "rate_limit_class": "default",
       "requires_confirmation": true,
       "result_profile": "aggregate",
       "result_sensitivity": "confidential",
       "side_effect": "external_mutation",
+      "signed_download_fields": [],
       "tenant_safe": false,
       "title": "Raw UPS tool",
       "ui_resource": null,
