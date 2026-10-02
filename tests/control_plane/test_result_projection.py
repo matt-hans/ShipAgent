@@ -584,3 +584,239 @@ def test_project_result_rejects_over_size_results():
 
     with pytest.raises(ValueError, match="exceeds contract size"):
         project_result(contract, large)
+
+
+_ORIGIN_CANARY = "742 Canary Provider Way"
+
+
+def _echo_contract():
+    return _contract(
+        result_profile="provider_ingress_echo",
+        provider_originated_fields=["address_text"],
+        output_schema={
+            "type": "object",
+            "properties": {"address_text": {"type": "string"}},
+            "required": [],
+            "additionalProperties": False,
+        },
+    )
+
+
+def test_provider_originated_echo_requires_provider_origin_metadata():
+    from src.registry.privacy import DataOrigin
+
+    contract = _echo_contract()
+    result = {"address_text": _ORIGIN_CANARY}
+
+    assert (
+        project_result(
+            contract,
+            result,
+            field_origins={"address_text": DataOrigin.provider_supplied},
+        )
+        == result
+    )
+    for origins in (None, {}, {"address_text": DataOrigin.local_import}):
+        with pytest.raises(ValueError, match="origin"):
+            project_result(contract, result, field_origins=origins)
+
+
+def test_origin_error_never_echoes_the_value():
+    with pytest.raises(ValueError) as excinfo:
+        project_result(_echo_contract(), {"address_text": _ORIGIN_CANARY})
+    assert _ORIGIN_CANARY not in str(excinfo.value)
+
+
+def test_absent_provider_originated_field_needs_no_origin():
+    assert project_result(_echo_contract(), {}) == {}
+
+
+@pytest.mark.parametrize("profile", ["provider_ingress_echo", "artifact_action"])
+@pytest.mark.parametrize(
+    "key",
+    ["label_bytes", "credentials", "account_number", "raw_response", "request_body"],
+)
+def test_never_visible_keys_rejected_in_every_profile(profile, key):
+    contract = _contract(
+        result_profile=profile,
+        output_schema={
+            "type": "object",
+            "properties": {key: {"type": "string"}},
+            "required": [key],
+            "additionalProperties": False,
+        },
+    )
+    with pytest.raises(ValueError, match="forbidden"):
+        project_result(contract, {key: "canary-value"})
+
+
+def _label_contract():
+    return _contract(
+        result_profile="artifact_action",
+        signed_download_fields=["download_url"],
+        output_schema={
+            "type": "object",
+            "properties": {
+                "download_url": {
+                    "type": "string",
+                    "pattern": "^https://",
+                    "maxLength": 2048,
+                },
+                "expires_in_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300,
+                },
+                "status": {"type": "string"},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    )
+
+
+def test_signed_download_url_must_be_plain_https_without_credentials():
+    contract = _label_contract()
+    good = {
+        "download_url": "https://relay.example.invalid/d/opaque?sig=canary",
+        "expires_in_seconds": 120,
+        "status": "ready",
+    }
+    assert project_result(contract, good) == good
+    for bad in (
+        "http://relay.example.invalid/d/x",
+        "file:///labels/canary.pdf",
+        "data:application/pdf;base64,Q0FOQVJZ",
+    ):
+        with pytest.raises(ValidationError):
+            project_result(
+                contract,
+                {"download_url": bad, "status": "ready", "expires_in_seconds": 60},
+            )
+    for bad in (
+        "https://user:pw@relay.example.invalid/d/x",
+        "https://relay.example.invalid/d/x#frag",
+        "https:///nohost",
+    ):
+        with pytest.raises(ValueError, match="signed download"):
+            project_result(
+                contract,
+                {"download_url": bad, "status": "ready", "expires_in_seconds": 60},
+            )
+
+
+# --- PR #52 review fixes: real registry contracts, realistic values -----------
+
+
+def _registry_contract(name: str) -> ToolContract:
+    return next(t for t in public_tools() if t.name == name)
+
+
+def _provider_origin():
+    from src.registry.privacy import DataOrigin
+
+    return {"address_text": DataOrigin.provider_supplied}
+
+
+def _address_result(text: str) -> dict:
+    return {
+        "validation_artifact_id": VALID_VALIDATION_ID,
+        "valid": True,
+        "guidance_codes": [],
+        "address_text": text,
+    }
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["123 Main St", "Maple Road", "742 Evergreen Terrace, Springfield, IL 62704"],
+)
+def test_real_address_contract_accepts_realistic_provider_echo(text):
+    contract = _registry_contract("validate_shipment_address")
+    result = _address_result(text)
+    assert project_result(contract, result, field_origins=_provider_origin()) == result
+
+
+@pytest.mark.parametrize(
+    "text", ["12 Main\x00St", "12 Main\tSt", "12 Main\nSt", "12 Main St\n"]
+)
+def test_real_address_contract_rejects_control_characters(text):
+    contract = _registry_contract("validate_shipment_address")
+    with pytest.raises((ValueError, ValidationError)):
+        project_result(
+            contract, _address_result(text), field_origins=_provider_origin()
+        )
+
+
+def test_echo_origin_must_be_a_data_origin_not_a_string():
+    contract = _registry_contract("validate_shipment_address")
+    with pytest.raises(ValueError, match="origin"):
+        project_result(
+            contract,
+            _address_result("123 Main St"),
+            field_origins={"address_text": "provider_supplied"},
+        )
+
+
+def _label_result(**overrides) -> dict:
+    result = {
+        "label_artifact_id": VALID_LABEL_ID,
+        "status": "ready",
+        "download_url": "https://dl.example.com/labels/a.pdf?sig=abc123&exp=1893456000",
+        "expires_in_seconds": 120,
+    }
+    result.update(overrides)
+    return {k: v for k, v in result.items() if v is not None}
+
+
+def test_real_label_contract_accepts_realistic_signed_url():
+    contract = _registry_contract("create_label_download")
+    result = _label_result()
+    assert project_result(contract, result) == result
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://dl.example.com/a b.pdf?sig=abc",
+        "https://dl.example.com/a.pdf?sig=abc\n",
+        "https://dl.example.com/a.pdf\t?sig=abc",
+        "https://dl.example.com/a.pdf\x00?sig=abc",
+        "https://dl.example.com/a.pdf\x7f",
+    ],
+)
+def test_real_label_contract_rejects_whitespace_and_control_in_url(url):
+    contract = _registry_contract("create_label_download")
+    with pytest.raises((ValueError, ValidationError)):
+        project_result(contract, _label_result(download_url=url))
+
+
+def test_real_label_contract_requires_expiry_with_url():
+    contract = _registry_contract("create_label_download")
+    with pytest.raises((ValueError, ValidationError)):
+        project_result(contract, _label_result(expires_in_seconds=None))
+
+
+@pytest.mark.parametrize("status", ["pending", "unavailable"])
+def test_real_label_contract_allows_url_only_when_ready(status):
+    contract = _registry_contract("create_label_download")
+    with pytest.raises((ValueError, ValidationError)):
+        project_result(contract, _label_result(status=status))
+
+
+def test_real_label_contract_allows_not_ready_without_url():
+    contract = _registry_contract("create_label_download")
+    result = _label_result(status="pending", download_url=None, expires_in_seconds=None)
+    assert project_result(contract, result) == result
+
+
+def test_synthetic_label_contract_enforces_expiry_and_ready_status():
+    contract = _label_contract()
+    url = "https://relay.example.invalid/d/opaque?sig=canary"
+    with pytest.raises((ValueError, ValidationError)):
+        project_result(contract, {"download_url": url, "status": "ready"})
+    with pytest.raises((ValueError, ValidationError)):
+        project_result(
+            contract,
+            {"download_url": url, "status": "pending", "expires_in_seconds": 60},
+        )

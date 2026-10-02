@@ -15,13 +15,7 @@ from src.control_plane.relay.protocol import (
     ShipAgentStatus,
 )
 from src.control_plane.relay.registry import RelayDeviceRegistry
-
-PUBLIC_STATUS_CAPABILITIES = frozenset(
-    {
-        "get_shipagent_status",
-        "rate_shipment",
-    }
-)
+from src.registry.vocabulary import PUBLIC_STATUS_CAPABILITIES
 
 
 @dataclass(frozen=True)
