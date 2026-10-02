@@ -5,6 +5,8 @@ from __future__ import annotations
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
@@ -88,3 +90,24 @@ def test_sqlite_upgrade_to_head_has_relay_and_control_tables(tmp_path):
         "audit_events",
         "relay_devices",
     } <= tables
+
+
+def test_session_factory_quotes_mixed_case_search_path(monkeypatch):
+    """Quoted search_path keeps mixed-case schemas case-sensitive (as pre-merge)."""
+    from src.control_plane import db as cp_db
+
+    captured = {}
+
+    def fake_create(url, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(cp_db, "create_async_engine", fake_create)
+    with pytest.raises(RuntimeError, match="stop"):
+        build_session_factory(
+            "postgresql+asyncpg://u:p@localhost/db",
+            control_plane_schema='Mixed"Case',
+        )
+    assert captured["connect_args"] == {
+        "server_settings": {"search_path": '"Mixed""Case"'}
+    }
