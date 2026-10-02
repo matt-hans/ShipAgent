@@ -66,7 +66,19 @@ revert PR #50; no data migrations, no handlers or exports were enabled.
 | Handler returns | consumed (one-time) |
 | Handler raises `PreAcceptFailure` (provably before the target accepted) | released, one retry allowed |
 | Any other exception or cancellation | held non-reusable; replay denied `reconciliation_pending` until reconciled by idempotency key |
-| Malformed or mismatched binding | released, call denied `execution_grant_invalid` |
+| Handler returns but `consume` fails | acceptance still reported; grant held non-reusable (best effort) |
+| Malformed, mismatched or non-exact-type binding | released, call denied `execution_grant_invalid` |
+
+The gate reads `reservation.binding` once, requires the exact
+`ExecutionGrantBinding` type (a subclass could override `validate`), and hands
+that same validated object to the handler. Consume, release and hold steps run
+shielded: cancellation arriving mid-step is re-raised only after the step
+completes, so it never undoes an acceptance. A failed `release` or `hold` is
+logged and leaves the grant reserved (fail-closed until the authority expires or
+reconciles it). Cancellation during `reserve` itself, or a hung settlement step,
+is not bounded here; an authority must make `reserve` atomic.
+A handler-raised `ToolAuthorizationError` is projected as the generic provider
+error like any other handler failure; only gate-raised errors keep their code.
 | No authority, bad reference, authority error | denied `execution_grant_unavailable` |
 
 **Caller obligations** (`src/control_plane/execution_grants.py`):

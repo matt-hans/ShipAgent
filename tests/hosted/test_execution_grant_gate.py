@@ -13,6 +13,7 @@ from src.control_plane.auth.context import (
     set_authorization_context,
 )
 from src.control_plane.execution_grants import (
+    ExecutionGrantBinding,
     ExecutionGrantDenial,
     ExecutionGrantError,
     PreAcceptFailure,
@@ -27,6 +28,7 @@ from src.registry.models import ProviderExport, SideEffectClass
 from src.registry.tools.public import RATE_CURRENCY_CODES
 from tests.control_plane.execution_grant_fakes import (
     FakeExecutionGrantAuthority,
+    FakeReservation,
     GrantState,
     make_binding,
 )
@@ -427,20 +429,22 @@ async def test_concurrent_calls_produce_exactly_one_effect(context):
     authority = approved(context)
     tool = await bound_execute(handler, authority)
 
-    first = asyncio.ensure_future(tool.run(EXECUTE_ARGS))
-    while not handler.calls:
+    tasks = [asyncio.ensure_future(tool.run(EXECUTE_ARGS)) for _ in range(3)]
+    while sum(task.done() for task in tasks) < 2:
         await asyncio.sleep(0)
-    with pytest.raises(ToolAuthorizationError) as exc:
-        await tool.run(EXECUTE_ARGS)
     gate.set()
-    await first
+    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
-    assert exc.value.code == ExecutionGrantDenial.GRANT_IN_USE
+    denied = [o for o in outcomes if isinstance(o, ToolAuthorizationError)]
+    assert len(denied) == 2
+    assert {d.code for d in denied} == {ExecutionGrantDenial.GRANT_IN_USE}
     assert len(handler.calls) == 1
     assert authority.events == ["reserve", "consume"]
 
 
-async def test_consume_failure_after_acceptance_is_logged_not_hidden(context, caplog):
+async def test_consume_failure_after_acceptance_holds_and_still_reports(
+    context, caplog
+):
     handler = RecordingHandler()
     authority = approved(context)
     original = authority.reserve
@@ -463,7 +467,13 @@ async def test_consume_failure_after_acceptance_is_logged_not_hidden(context, ca
     assert result.structured_content == {"job_id": JOB_ID, "status": "running"}
     assert "grant consume failed" in caplog.text
     assert "store unavailable" not in caplog.text
-    assert "release" not in authority.events
+    assert authority.events == ["reserve", "hold"]
+    assert authority.state[APPROVAL_ID] == GrantState.HELD
+
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+    assert exc.value.code == ExecutionGrantDenial.RECONCILIATION_PENDING
+    assert len(handler.calls) == 1
 
 
 async def test_grant_audit_logs_carry_codes_not_identifiers(context, caplog):
@@ -542,3 +552,214 @@ async def test_non_confirming_tools_do_not_touch_grant_authority(context):
     await tool.run({"correlation_id": f"sa_correlation_{HEX}"})
 
     assert authority.calls == []
+
+
+class _FlippingReservation:
+    """Reservation whose binding changes after the first read (hostile authority)."""
+
+    def __init__(self, real: FakeReservation, later: ExecutionGrantBinding) -> None:
+        """Wrap ``real``; ``later`` is served for every read after the first."""
+        self.real = real
+        self.later = later
+        self.reads = 0
+
+    @property
+    def binding(self) -> ExecutionGrantBinding:
+        """Return the valid binding once, then the swapped one."""
+        self.reads += 1
+        return self.real.binding if self.reads == 1 else self.later
+
+    async def consume(self) -> None:
+        """Delegate to the real reservation."""
+        await self.real.consume()
+
+    async def release(self) -> None:
+        """Delegate to the real reservation."""
+        await self.real.release()
+
+    async def hold_for_reconciliation(self) -> None:
+        """Delegate to the real reservation."""
+        await self.real.hold_for_reconciliation()
+
+
+async def test_handler_receives_the_one_validated_binding_not_a_reread(context):
+    authority = approved(context)
+    handler = RecordingHandler()
+    tool = await bound_execute(handler, authority)
+    original = authority.reserve
+    swapped = make_binding(context, PREVIEW_ID, amount="9999.00")
+
+    async def reserve(**kwargs):
+        return _FlippingReservation(await original(**kwargs), swapped)
+
+    authority.reserve = reserve
+
+    await tool.run(EXECUTE_ARGS)
+
+    (_, delivered) = handler.calls[0]
+    assert delivered.amount == "12.34"
+    assert authority.events == ["reserve", "consume"]
+
+
+class _LaxBinding(ExecutionGrantBinding):
+    """Subclass whose validate approves anything (bypass attempt)."""
+
+    def validate(self, *, policy):
+        """Skip every check."""
+
+
+@pytest.mark.parametrize("amount", ["-1.00", "12.34"])
+async def test_binding_subclass_is_rejected_even_if_fields_are_valid(context, amount):
+    base = make_binding(context, PREVIEW_ID, amount=amount)
+    lax = _LaxBinding(**{f: getattr(base, f) for f in base.__dataclass_fields__})
+    authority = FakeExecutionGrantAuthority(approved={APPROVAL_ID: lax})
+    handler = RecordingHandler()
+    tool = await bound_execute(handler, authority)
+
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+
+    assert exc.value.code == ExecutionGrantDenial.GRANT_INVALID
+    assert handler.calls == []
+    assert authority.events == ["reserve", "release"]
+
+
+def gate_reservation_step(authority, step):
+    """Make a reservation ``step`` wait on an event; return (started, proceed)."""
+    started, proceed = asyncio.Event(), asyncio.Event()
+    original = authority.reserve
+
+    async def reserve(**kwargs):
+        reservation = await original(**kwargs)
+        real = getattr(reservation, step)
+
+        async def gated():
+            started.set()
+            await proceed.wait()
+            await real()
+
+        setattr(reservation, step, gated)
+        return reservation
+
+    authority.reserve = reserve
+    return started, proceed
+
+
+async def _cancel_during_step(tool, started, proceed):
+    """Cancel the run while a settlement step is waiting, then let it finish."""
+    task = asyncio.ensure_future(tool.run(EXECUTE_ARGS))
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    proceed.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_cancellation_during_consume_does_not_undo_acceptance(context):
+    authority = approved(context)
+    started, proceed = gate_reservation_step(authority, "consume")
+    tool = await bound_execute(RecordingHandler(), authority)
+
+    await _cancel_during_step(tool, started, proceed)
+
+    assert authority.events == ["reserve", "consume"]
+    assert authority.state[APPROVAL_ID] == GrantState.CONSUMED
+
+
+async def test_cancellation_during_release_still_releases(context):
+    authority = approved(context)
+    started, proceed = gate_reservation_step(authority, "release")
+    tool = await bound_execute(RecordingHandler(fail=PreAcceptFailure()), authority)
+
+    await _cancel_during_step(tool, started, proceed)
+
+    assert authority.events == ["reserve", "release"]
+    assert APPROVAL_ID not in authority.state
+
+
+async def test_cancellation_during_hold_still_holds(context):
+    authority = approved(context)
+    started, proceed = gate_reservation_step(authority, "hold_for_reconciliation")
+    tool = await bound_execute(RecordingHandler(fail=RuntimeError("x")), authority)
+
+    await _cancel_during_step(tool, started, proceed)
+
+    assert authority.events == ["reserve", "hold"]
+    assert authority.state[APPROVAL_ID] == GrantState.HELD
+
+
+async def test_cancellation_during_hold_after_handler_cancel_still_holds(context):
+    authority = approved(context)
+    started, proceed = gate_reservation_step(authority, "hold_for_reconciliation")
+    handler = RecordingHandler(gate=asyncio.Event())
+    tool = await bound_execute(handler, authority)
+
+    task = asyncio.ensure_future(tool.run(EXECUTE_ARGS))
+    while not handler.calls:
+        await asyncio.sleep(0)
+    task.cancel()
+    await started.wait()
+    task.cancel()  # second cancel lands while the hold is in flight
+    await asyncio.sleep(0)
+    proceed.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert authority.events == ["reserve", "hold"]
+    assert authority.state[APPROVAL_ID] == GrantState.HELD
+
+
+async def test_base_exception_in_handler_holds_reservation(context):
+    authority = approved(context)
+    tool = await bound_execute(RecordingHandler(fail=KeyboardInterrupt()), authority)
+
+    with pytest.raises(KeyboardInterrupt):
+        await tool.run(EXECUTE_ARGS)
+
+    assert authority.events == ["reserve", "hold"]
+
+
+CANARY = "secret-canary-4242"
+
+
+async def test_handler_raised_authorization_error_is_projected_generically(
+    context, caplog
+):
+    forged = ToolAuthorizationError(
+        code=ExecutionGrantDenial.APPROVAL_PENDING.value, message=CANARY
+    )
+    authority = approved(context)
+    tool = await bound_execute(RecordingHandler(fail=forged), authority)
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(ToolError) as exc:
+            await tool.run(EXECUTE_ARGS)
+
+    assert str(exc.value) == PROVIDER_RESULT_ERROR
+    assert CANARY not in caplog.text
+    assert authority.events == ["reserve", "hold"]
+
+
+async def test_plain_handler_authorization_error_is_projected_generically(context):
+    async def handler(_context, _arguments):
+        raise ToolAuthorizationError(code="insufficient_scope", message=CANARY)
+
+    contract = next(t for t in public_tools() if t.name == "get_shipagent_status")
+    contract = contract.model_copy(
+        update={
+            "implementation_status": "implemented",
+            "hosted_readiness": "ready",
+            "provider_export_enabled": True,
+            "provider_exports": [ProviderExport.generic_mcp],
+        }
+    )
+    server = build_server(
+        tools=[contract], tool_handlers={"get_shipagent_status": handler}
+    )
+    tool = (await server.get_tools())["get_shipagent_status"]
+
+    with pytest.raises(ToolError) as exc:
+        await tool.run({"correlation_id": f"sa_correlation_{HEX}"})
+
+    assert str(exc.value) == PROVIDER_RESULT_ERROR

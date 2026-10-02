@@ -120,14 +120,16 @@ class BoundRegistryTool(Tool):
         self,
         context: AuthorizationContext,
         arguments: dict[str, Any],
-    ) -> ExecutionGrantReservation:
+    ) -> tuple[ExecutionGrantReservation, ExecutionGrantBinding]:
         """Reserve the server-side grant for a confirming tool or fail closed.
 
         Authority comes only from the server-side grant resolved through the
         opaque Approval Request reference; model arguments and history never
         grant it. A reservation whose binding is malformed or does not exactly
         match the caller, requested preview and tool policy is released and
-        rejected.
+        rejected. Returns the reservation with the one binding that was
+        validated; only that object reaches the handler. Raises only
+        ``ToolAuthorizationError`` (or cancellation), never a handler error.
         """
         authority = getattr(self, "_execution_grants", None)
         approval_request_id = arguments.get(APPROVAL_REQUEST_ID_FIELD)
@@ -159,12 +161,13 @@ class BoundRegistryTool(Tool):
                 ExecutionGrantDenial.GRANT_UNAVAILABLE, cause=type(err).__name__
             )
             raise self._grant_unavailable_error() from err
-        if not self._binding_matches(reservation, context, preview_id):
-            await self._release_quietly(reservation)
+        binding = self._validated_binding(reservation, context, preview_id)
+        if binding is None:
+            await self._settle(self._release_quietly(reservation))
             self._audit_denial(ExecutionGrantDenial.GRANT_INVALID)
             raise self._grant_invalid_error()
         logger.info("Execution grant reserved for tool %s", self._contract.name)
-        return reservation
+        return reservation, binding
 
     def _audit_denial(
         self, denial: ExecutionGrantDenial, cause: str | None = None
@@ -177,33 +180,58 @@ class BoundRegistryTool(Tool):
             cause,
         )
 
-    def _binding_matches(
+    def _validated_binding(
         self,
         reservation: ExecutionGrantReservation,
         context: AuthorizationContext,
         preview_id: str,
-    ) -> bool:
-        """Check the binding is well formed and fits this caller, preview and tool.
+    ) -> ExecutionGrantBinding | None:
+        """Read the binding once and return it only if valid for this call.
 
-        Any malformed reservation or binding (missing, wrong types, naive expiry)
-        is a mismatch rather than an exception, so the caller can release it.
+        The exact ``ExecutionGrantBinding`` type is required so a subclass cannot
+        override ``validate``. Any malformed reservation or binding (missing,
+        wrong type or fields, naive expiry) yields ``None`` rather than an
+        exception so the caller can release it.
         """
         try:
             binding = reservation.binding
-            if not isinstance(binding, ExecutionGrantBinding):
-                return False
+            if type(binding) is not ExecutionGrantBinding:
+                return None
             binding.validate(policy=self._contract.confirmation_policy)
-            return (
+            if (
                 binding.account_id == context.account_id
                 and binding.provider_connection_id == context.provider_connection_id
                 and binding.preview_id == preview_id
                 and binding.expires_at > datetime.now(UTC)
-            )
+            ):
+                return binding
         except Exception:  # noqa: BLE001 - a malformed binding must fail closed.
-            return False
+            pass
+        return None
+
+    @staticmethod
+    async def _settle(step: Awaitable[None]) -> None:
+        """Run a never-raising settlement step to completion despite cancellation.
+
+        The step runs as its own task, so a cancelled caller cannot interrupt it
+        and lose the grant state; cancellation is re-raised once it finishes.
+        """
+        task = asyncio.ensure_future(step)
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _release_quietly(self, reservation: ExecutionGrantReservation) -> None:
-        """Release a reservation without masking the primary failure."""
+        """Release a reservation without masking the primary failure.
+
+        A failed release leaves the grant reserved, which is fail-closed: it
+        stays unusable until the authority expires or reconciles it.
+        """
         try:
             await reservation.release()
         except Exception as err:  # noqa: BLE001 - release is best effort; expiry bounds it.
@@ -231,7 +259,11 @@ class BoundRegistryTool(Tool):
     async def _consume_after_acceptance(
         self, reservation: ExecutionGrantReservation
     ) -> None:
-        """Consume the grant once the target accepted; never hide the acceptance."""
+        """Consume the grant once the target accepted; never hide the acceptance.
+
+        If consume fails the grant is held so it can never be reserved again
+        before accepted work is reconciled.
+        """
         try:
             await reservation.consume()
         except Exception as err:  # noqa: BLE001 - accepted work must still be reported.
@@ -240,32 +272,32 @@ class BoundRegistryTool(Tool):
                 self._contract.name,
                 type(err).__name__,
             )
+            await self._hold_quietly(reservation)
 
     async def _invoke_confirmed(
         self,
         context: AuthorizationContext,
         arguments: dict[str, Any],
         reservation: ExecutionGrantReservation,
+        binding: ExecutionGrantBinding,
     ) -> Any:
         """Run the confirmed handler and settle the reservation by outcome.
 
         Success consumes; a ``PreAcceptFailure`` releases; any other failure or
-        cancellation holds the reservation because acceptance is unknown.
+        cancellation holds the reservation because acceptance is unknown. Every
+        settlement step is shielded so cancellation cannot undo it.
         """
         try:
-            result = self._handler(context, arguments, reservation.binding)
+            result = self._handler(context, arguments, binding)
             if inspect.isawaitable(result):
                 result = await result
         except PreAcceptFailure:
-            await self._release_quietly(reservation)
+            await self._settle(self._release_quietly(reservation))
             raise
-        except asyncio.CancelledError:
-            await asyncio.shield(self._hold_quietly(reservation))
+        except BaseException:
+            await self._settle(self._hold_quietly(reservation))
             raise
-        except Exception:
-            await self._hold_quietly(reservation)
-            raise
-        await self._consume_after_acceptance(reservation)
+        await self._settle(self._consume_after_acceptance(reservation))
         return result
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
@@ -297,20 +329,22 @@ class BoundRegistryTool(Tool):
                 except RequestControlError as err:
                     raise self._loop_guard_or_rate_limit_error(err) from err
 
+            # Gate denials raise ToolAuthorizationError and pass through; handler
+            # errors never do, so a handler cannot forge a gate-specific error.
+            reservation = None
+            if self._contract.requires_confirmation:
+                reservation, binding = await self._reserve_execution_grant(
+                    context, arguments
+                )
             try:
-                if self._contract.requires_confirmation:
-                    reservation = await self._reserve_execution_grant(
-                        context, arguments
-                    )
+                if reservation is not None:
                     result = await self._invoke_confirmed(
-                        context, arguments, reservation
+                        context, arguments, reservation, binding
                     )
                 else:
                     result = self._handler(context, arguments)
                     if inspect.isawaitable(result):
                         result = await result
-            except ToolAuthorizationError:
-                raise
             except Exception:  # noqa: BLE001 - provider handler is a safe boundary.
                 failure_category = "handler"
 
