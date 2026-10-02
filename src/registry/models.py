@@ -4,7 +4,23 @@ from typing import Any, Literal
 from jsonschema import SchemaError, validators
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from src.registry.privacy import provider_schema_privacy_violations
+from src.registry.privacy import (
+    EXPIRES_IN_FIELD,
+    MAX_SIGNED_DOWNLOAD_TTL_SECONDS,
+    MAX_SIGNED_DOWNLOAD_URL_LENGTH,
+    provider_schema_privacy_violations,
+)
+
+
+def _output_node(schema: dict[str, Any], dotted_path: str) -> dict[str, Any] | None:
+    """Return the output-schema property at a dotted path, if it exists."""
+    node: Any = schema
+    for part in dotted_path.split("."):
+        properties = node.get("properties") if isinstance(node, dict) else None
+        if not isinstance(properties, dict) or part not in properties:
+            return None
+        node = properties[part]
+    return node if isinstance(node, dict) else None
 
 
 class ToolVisibility(StrEnum):
@@ -83,6 +99,8 @@ class ToolContract(BaseModel):
     )
     max_sync_seconds: int = Field(default=30, ge=1, le=300)
     max_result_bytes: int = Field(default=65536, ge=1024)
+    provider_originated_fields: list[str] = Field(default_factory=list)
+    signed_download_fields: list[str] = Field(default_factory=list)
     minimum_capabilities: dict[str, str] = Field(default_factory=dict)
     rate_limit_class: str = "default"
 
@@ -115,6 +133,51 @@ class ToolContract(BaseModel):
         return value
 
     @model_validator(mode="after")
+    def _validate_origin_declarations(self) -> "ToolContract":
+        """Check ADR 0007 origin declarations independently of export state."""
+        for path in self.provider_originated_fields:
+            if self.result_profile != "provider_ingress_echo":
+                raise ValueError(
+                    "provider_originated_fields require result_profile "
+                    "provider_ingress_echo"
+                )
+            if _output_node(self.output_schema, path) is None:
+                raise ValueError(f"{path} is not an output property")
+        for path in self.signed_download_fields:
+            if self.result_profile != "artifact_action":
+                raise ValueError(
+                    "signed_download_fields require result_profile artifact_action"
+                )
+            node = _output_node(self.output_schema, path)
+            if node is None:
+                raise ValueError(f"{path} is not an output property")
+            if (
+                node.get("type") != "string"
+                or not str(node.get("pattern", "")).startswith("^https://")
+                or node.get("maxLength", MAX_SIGNED_DOWNLOAD_URL_LENGTH + 1)
+                > MAX_SIGNED_DOWNLOAD_URL_LENGTH
+            ):
+                raise ValueError(
+                    f"{path} must be a bounded https string for signed downloads"
+                )
+            parent_path, _, _ = path.rpartition(".")
+            sibling_path = (
+                f"{parent_path}.{EXPIRES_IN_FIELD}" if parent_path else EXPIRES_IN_FIELD
+            )
+            ttl = _output_node(self.output_schema, sibling_path)
+            if (
+                ttl is None
+                or ttl.get("type") != "integer"
+                or ttl.get("maximum", MAX_SIGNED_DOWNLOAD_TTL_SECONDS + 1)
+                > MAX_SIGNED_DOWNLOAD_TTL_SECONDS
+            ):
+                raise ValueError(
+                    f"{EXPIRES_IN_FIELD} must accompany {path} with maximum "
+                    f"<= {MAX_SIGNED_DOWNLOAD_TTL_SECONDS}"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _validate_public_export(self) -> "ToolContract":
         if self.visibility == ToolVisibility.public and self.provider_export_enabled:
             if self.implementation_status != "implemented":
@@ -125,11 +188,20 @@ class ToolContract(BaseModel):
                 raise ValueError("public exported tools must be hosted-ready")
             privacy_violations = [
                 f"{direction}.{path}"
-                for direction, schema in (
-                    ("input", self.input_schema),
-                    ("output", self.output_schema),
+                for direction, schema, origin_kwargs in (
+                    ("input", self.input_schema, {}),
+                    (
+                        "output",
+                        self.output_schema,
+                        {
+                            "provider_originated": self.provider_originated_fields,
+                            "signed_downloads": self.signed_download_fields,
+                        },
+                    ),
                 )
-                for path in provider_schema_privacy_violations(self.name, schema)
+                for path in provider_schema_privacy_violations(
+                    self.name, schema, **origin_kwargs
+                )
             ]
             if privacy_violations:
                 raise ValueError(
