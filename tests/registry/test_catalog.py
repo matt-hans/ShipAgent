@@ -10,7 +10,6 @@ from src.registry.tools.schema import object_schema
 
 EXPECTED_PUBLIC = {
     "get_shipagent_status",
-    "submit_one_off_shipment",
     "validate_shipment_address",
     "get_shipment_rates",
     "prepare_shipments",
@@ -95,9 +94,9 @@ def test_execute_shipments_declares_prepare_tool_and_execution_gate():
     assert tool.prepare_tool == "prepare_shipments"
     assert tool.execution_target_required is True
     assert tool.confirmation_policy == "provider_and_shipagent"
-    confirmation_schema = tool.input_schema["properties"]["confirmation_artifact_id"]
-    assert confirmation_schema["pattern"].startswith("^sa_")
-    assert confirmation_schema["maxLength"] <= 128
+    approval_schema = tool.input_schema["properties"]["approval_request_id"]
+    assert approval_schema["pattern"].startswith("^sa_approval_request_")
+    assert approval_schema["maxLength"] <= 128
 
 
 def test_public_input_schemas_are_closed():
@@ -569,7 +568,6 @@ def test_public_provider_contract_preserves_legitimate_compact_fields(
 
 def test_shipment_content_tools_accept_only_bounded_shipagent_references():
     reference_fields = {
-        "submit_one_off_shipment": "ingress_reference",
         "validate_shipment_address": "input_reference",
         "get_shipment_rates": "input_reference",
         "prepare_shipments": "input_reference",
@@ -673,18 +671,6 @@ def test_rate_results_use_closed_provider_safe_items():
     }
 
 
-def test_submit_one_off_shipment_is_non_confirming_input_reference_entrypoint():
-    tool = next(
-        tool for tool in public_tools() if tool.name == "submit_one_off_shipment"
-    )
-
-    assert tool.requires_confirmation is False
-    assert tool.side_effect == "estimate"
-    assert tool.prepare_tool is None
-    assert set(tool.input_schema["properties"]) == {"ingress_reference"}
-    assert set(tool.output_schema["properties"]) == {"input_reference"}
-
-
 def test_every_exported_scalar_family_is_bounded():
     violations: list[str] = []
 
@@ -784,3 +770,48 @@ def test_registry_loads_all_tools():
     assert raw_ups_tool.visibility == ToolVisibility.private
     assert raw_ups_tool.provider_export_enabled is False
     assert raw_ups_tool.tenant_safe is False
+
+
+def test_public_catalog_has_no_separate_one_off_purchase_tool():
+    names = {tool.name for tool in public_tools()}
+
+    assert "submit_one_off_shipment" not in names
+    purchase_tools = [
+        tool.name for tool in public_tools() if tool.side_effect == "purchase"
+    ]
+    assert purchase_tools == ["execute_shipments"]
+
+
+def test_execute_shipments_binds_to_opaque_approval_request_reference():
+    tool = next(tool for tool in public_tools() if tool.name == "execute_shipments")
+    properties = tool.input_schema["properties"]
+
+    assert set(properties) == {"preview_id", "approval_request_id"}
+    assert tool.input_schema["required"] == ["preview_id", "approval_request_id"]
+    assert properties["approval_request_id"] == shipagent_id_schema(
+        ShipAgentIdFamily.APPROVAL_REQUEST,
+        properties["approval_request_id"]["description"],
+    )
+    assert "confirmation_artifact_id" not in properties
+    # No execution credential, amount or grant material is model-suppliable.
+    assert not {"amount", "currency_code", "execution_grant", "idempotency_key"} & set(
+        properties
+    )
+
+
+def test_prepare_shipments_may_return_only_the_opaque_approval_reference():
+    tool = next(tool for tool in public_tools() if tool.name == "prepare_shipments")
+    properties = tool.output_schema["properties"]
+
+    assert properties["approval_request_id"]["pattern"].startswith(
+        "^sa_approval_request_"
+    )
+    assert "approval_request_id" not in tool.output_schema["required"]
+    assert not {"execution_grant", "approval_url", "amount"} & set(properties)
+
+
+def test_confirming_public_tools_declare_prepare_tool_and_approval_reference():
+    for tool in public_tools():
+        if tool.requires_confirmation:
+            assert tool.prepare_tool is not None
+            assert "approval_request_id" in tool.input_schema["properties"]

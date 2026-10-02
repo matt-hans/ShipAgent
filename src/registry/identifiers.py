@@ -17,6 +17,7 @@ class ShipAgentIdFamily(StrEnum):
     VALIDATION = "validation"
     PREVIEW = "preview"
     CONFIRMATION = "confirmation"
+    APPROVAL_REQUEST = "approval_request"
     JOB = "job"
     LABEL = "label"
 
@@ -31,6 +32,7 @@ PROVIDER_VISIBLE_FIELD_FAMILIES = {
     "validation_artifact_id": ShipAgentIdFamily.VALIDATION,
     "preview_id": ShipAgentIdFamily.PREVIEW,
     "confirmation_artifact_id": ShipAgentIdFamily.CONFIRMATION,
+    "approval_request_id": ShipAgentIdFamily.APPROVAL_REQUEST,
     "job_id": ShipAgentIdFamily.JOB,
     "label_artifact_id": ShipAgentIdFamily.LABEL,
 }

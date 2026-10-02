@@ -51,7 +51,6 @@ def test_gemini_function_declaration_has_parameters():
     ("tool_name", "read_only", "destructive", "open_world", "consequential"),
     [
         ("get_shipagent_status", True, False, False, False),
-        ("submit_one_off_shipment", True, False, True, False),
         ("validate_shipment_address", True, False, True, False),
         ("get_shipment_rates", True, False, True, False),
         ("prepare_shipments", True, False, True, False),

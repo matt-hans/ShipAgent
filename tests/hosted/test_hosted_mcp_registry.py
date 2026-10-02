@@ -21,17 +21,19 @@ from src.registry.catalog import public_tools
 from src.registry.identifiers import ShipAgentIdFamily, shipagent_id_prefix
 from src.registry.models import ProviderExport
 from src.registry.tools.public import FIRST_SLICE_TOOL_NAMES
+from tests.control_plane.execution_grant_fakes import approved_authority
 
 VALID_HEX_BODY = "0123456789abcdef0123456789abcdef"
-VALID_CONFIRMATION_ID = f"sa_confirmation_{VALID_HEX_BODY}"
+VALID_APPROVAL_ID = f"sa_approval_request_{VALID_HEX_BODY}"
 VALID_CORRELATION_ID = f"sa_correlation_{VALID_HEX_BODY}"
 VALID_DEVICE_ID = f"sa_device_{VALID_HEX_BODY}"
-VALID_INGRESS_ID = f"sa_ingress_{VALID_HEX_BODY}"
 VALID_INPUT_ID = f"sa_input_{VALID_HEX_BODY}"
 VALID_JOB_ID = f"sa_job_{VALID_HEX_BODY}"
 VALID_LABEL_ID = f"sa_label_{VALID_HEX_BODY}"
 VALID_PREVIEW_ID = f"sa_preview_{VALID_HEX_BODY}"
 VALID_VALIDATION_ID = f"sa_validation_{VALID_HEX_BODY}"
+
+GRANTS = approved_authority(VALID_APPROVAL_ID, VALID_PREVIEW_ID)
 
 PREFIXED_COMPACT_CANARY_BODIES = (
     "ApiKeyLiveValue01",
@@ -108,16 +110,17 @@ async def test_hosted_mcp_server_requires_exportable_and_bound_tools():
         return {"job_id": arguments["job_id"], "status": "running"}
 
     registered_tool = exportable_mcp_tool("get_shipagent_status")
-    provider_excluded = exportable_mcp_tool("submit_one_off_shipment").model_copy(
+    provider_excluded = exportable_mcp_tool("get_job_status").model_copy(
         update={"provider_exports": [ProviderExport.openai]}
     )
     unbound_tool = exportable_mcp_tool("get_shipment_rates")
 
     server = build_server(
+        execution_grants=GRANTS,
         tools=[registered_tool, provider_excluded, unbound_tool],
         tool_handlers={
             "get_shipagent_status": track_package_handler,
-            "submit_one_off_shipment": job_status_handler,
+            "get_job_status": job_status_handler,
         },
     )
     tools = await server.get_tools()
@@ -169,11 +172,12 @@ async def test_loopback_execution_target_status_hides_target_id_and_message():
         pytest.fail(f"execution target status handler is not available: {exc}")
 
     server = build_server(
+        execution_grants=GRANTS,
         tool_handlers=build_execution_target_tool_handlers(
             LoopbackExecutionTarget(
                 capabilities=["rate_shipment", "get_shipagent_status"]
             )
-        )
+        ),
     )
     tools = await server.get_tools()
     context = AuthorizationContext(
@@ -233,7 +237,8 @@ async def test_execution_target_status_handler_passes_mcp_arguments():
             ).model_dump(mode="json", by_alias=True)
 
     server = build_server(
-        tool_handlers=build_execution_target_tool_handlers(CapturingExecutionTarget())
+        execution_grants=GRANTS,
+        tool_handlers=build_execution_target_tool_handlers(CapturingExecutionTarget()),
     )
     tools = await server.get_tools()
     context = AuthorizationContext(
@@ -271,6 +276,7 @@ async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
     contract = exportable_mcp_tool("get_shipagent_status")
     descriptor = to_mcp_tool_descriptor(contract)
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={"get_shipagent_status": handler},
     )
@@ -290,6 +296,7 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
 
     contract = exportable_mcp_tool("get_shipagent_status")
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={"get_shipagent_status": handler},
     )
@@ -325,6 +332,7 @@ async def test_hosted_mcp_handler_rejects_missing_authorization_context():
 
     contract = exportable_mcp_tool("get_shipagent_status")
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={"get_shipagent_status": handler},
     )
@@ -345,6 +353,7 @@ async def test_hosted_mcp_handler_rejects_missing_scopes():
 
     contract = exportable_mcp_tool("get_shipagent_status")
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={"get_shipagent_status": handler},
     )
@@ -402,6 +411,7 @@ async def test_hosted_mcp_handler_applies_request_controls_before_invocation():
         update={"rate_limit_class": "estimate"}
     )
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={"get_shipment_rates": handler},
         request_controls=_RequestControls(),
@@ -459,6 +469,7 @@ async def test_hosted_mcp_handler_translates_request_control_deny():
 
     contract = exportable_mcp_tool("get_shipagent_status")
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={"get_shipagent_status": handler},
         request_controls=_RequestControls(),
@@ -513,11 +524,6 @@ def rate_result(**overrides):
             status_result(capabilities=["shipment_ingress"]),
         ),
         (
-            "submit_one_off_shipment",
-            {"ingress_reference": VALID_INGRESS_ID},
-            {"input_reference": VALID_INPUT_ID},
-        ),
-        (
             "validate_shipment_address",
             {"input_reference": VALID_INPUT_ID},
             {
@@ -543,7 +549,7 @@ def rate_result(**overrides):
             "execute_shipments",
             {
                 "preview_id": VALID_PREVIEW_ID,
-                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+                "approval_request_id": VALID_APPROVAL_ID,
             },
             {"job_id": VALID_JOB_ID, "status": "running"},
         ),
@@ -570,6 +576,7 @@ async def test_real_mcp_round_trips_canonical_identifier_fixtures(
         return result
 
     server = build_server(
+        execution_grants=GRANTS,
         tools=[exportable_mcp_tool(tool_name)],
         tool_handlers={tool_name: handler},
     )
@@ -592,6 +599,7 @@ async def test_real_mcp_round_trips_completed_with_warnings_job_status():
         return result
 
     server = build_server(
+        execution_grants=GRANTS,
         tools=[exportable_mcp_tool("get_job_status")],
         tool_handlers={"get_job_status": handler},
     )
@@ -614,6 +622,7 @@ async def test_hosted_mcp_execute_shipments_metadata_and_schemas_come_from_regis
     contract = exportable_mcp_tool("execute_shipments")
     descriptor = to_mcp_tool_descriptor(contract)
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={"execute_shipments": handler},
     )
@@ -637,6 +646,7 @@ async def test_hosted_mcp_execute_shipments_result_matches_advertised_schema():
 
     contract = exportable_mcp_tool("execute_shipments")
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={"execute_shipments": handler},
     )
@@ -645,7 +655,7 @@ async def test_hosted_mcp_execute_shipments_result_matches_advertised_schema():
     result = await tools["execute_shipments"].run(
         {
             "preview_id": VALID_PREVIEW_ID,
-            "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+            "approval_request_id": VALID_APPROVAL_ID,
         }
     )
 
@@ -681,12 +691,6 @@ async def test_hosted_mcp_execute_shipments_result_matches_advertised_schema():
                 "capabilities": ["Bearer scalar-credential"],
             },
             "Bearer scalar-credential",
-        ),
-        (
-            "submit_one_off_shipment",
-            {"ingress_reference": VALID_INGRESS_ID},
-            {"input_reference": "Private Recipient at 17 Confidential Avenue"},
-            "Private Recipient",
         ),
         (
             "validate_shipment_address",
@@ -756,7 +760,7 @@ async def test_hosted_mcp_execute_shipments_result_matches_advertised_schema():
             "execute_shipments",
             {
                 "preview_id": VALID_PREVIEW_ID,
-                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+                "approval_request_id": VALID_APPROVAL_ID,
             },
             {
                 "job_id": "https://private.invalid/job?token=scalar-credential",
@@ -798,6 +802,7 @@ async def test_real_mcp_rejects_canaries_in_every_scalar_family(
 
     contract = exportable_mcp_tool(tool_name)
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={tool_name: handler},
     )
@@ -820,10 +825,6 @@ async def test_real_mcp_rejects_canaries_in_every_scalar_family(
             {"correlation_id": "https://private.invalid/correlation"},
         ),
         (
-            "submit_one_off_shipment",
-            {"ingress_reference": "Private Recipient at 17 Confidential Avenue"},
-        ),
-        (
             "validate_shipment_address",
             {"input_reference": "Bearer input-credential"},
         ),
@@ -839,14 +840,14 @@ async def test_real_mcp_rejects_canaries_in_every_scalar_family(
             "execute_shipments",
             {
                 "preview_id": "https://private.invalid/preview",
-                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+                "approval_request_id": VALID_APPROVAL_ID,
             },
         ),
         (
             "execute_shipments",
             {
                 "preview_id": VALID_PREVIEW_ID,
-                "confirmation_artifact_id": "Bearer confirmation-credential",
+                "approval_request_id": "Bearer approval-credential",
             },
         ),
         (
@@ -874,6 +875,7 @@ async def test_real_mcp_rejects_canaries_in_every_input_identifier(
 
     contract = exportable_mcp_tool(tool_name)
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={tool_name: handler},
     )
@@ -912,12 +914,6 @@ async def test_real_mcp_rejects_prefixed_compact_canaries_for_every_id_family(
             },
             True,
         ),
-        ShipAgentIdFamily.INGRESS: (
-            "submit_one_off_shipment",
-            {"ingress_reference": canary},
-            {},
-            False,
-        ),
         ShipAgentIdFamily.INPUT: (
             "validate_shipment_address",
             {"input_reference": canary},
@@ -938,16 +934,16 @@ async def test_real_mcp_rejects_prefixed_compact_canaries_for_every_id_family(
             "execute_shipments",
             {
                 "preview_id": canary,
-                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+                "approval_request_id": VALID_APPROVAL_ID,
             },
             {},
             False,
         ),
-        ShipAgentIdFamily.CONFIRMATION: (
+        ShipAgentIdFamily.APPROVAL_REQUEST: (
             "execute_shipments",
             {
                 "preview_id": VALID_PREVIEW_ID,
-                "confirmation_artifact_id": canary,
+                "approval_request_id": canary,
             },
             {},
             False,
@@ -965,6 +961,8 @@ async def test_real_mcp_rejects_prefixed_compact_canaries_for_every_id_family(
             True,
         ),
     }
+    if family not in cases:
+        pytest.skip(f"no public tool field uses the {family.value} family")
     tool_name, arguments, unsafe_result, handler_expected = cases[family]
     handler_called = False
 
@@ -974,6 +972,7 @@ async def test_real_mcp_rejects_prefixed_compact_canaries_for_every_id_family(
         return unsafe_result
 
     server = build_server(
+        execution_grants=GRANTS,
         tools=[exportable_mcp_tool(tool_name)],
         tool_handlers={tool_name: handler},
     )
@@ -1007,6 +1006,7 @@ async def test_direct_handler_failures_have_no_provider_or_exception_leakage(
 
     handler = async_handler if async_failure else sync_handler
     server = build_server(
+        execution_grants=GRANTS,
         tools=[exportable_mcp_tool("execute_shipments")],
         tool_handlers={"execute_shipments": handler},
     )
@@ -1017,7 +1017,7 @@ async def test_direct_handler_failures_have_no_provider_or_exception_leakage(
         await registered.run(
             {
                 "preview_id": VALID_PREVIEW_ID,
-                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+                "approval_request_id": VALID_APPROVAL_ID,
             }
         )
 
@@ -1042,6 +1042,7 @@ async def test_direct_projection_failure_has_no_exception_context(caplog):
         }
 
     server = build_server(
+        execution_grants=GRANTS,
         tools=[exportable_mcp_tool("execute_shipments")],
         tool_handlers={"execute_shipments": handler},
     )
@@ -1052,7 +1053,7 @@ async def test_direct_projection_failure_has_no_exception_context(caplog):
         await registered.run(
             {
                 "preview_id": VALID_PREVIEW_ID,
-                "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+                "approval_request_id": VALID_APPROVAL_ID,
             }
         )
 
@@ -1084,6 +1085,7 @@ async def test_real_mcp_handler_failures_are_provider_and_log_safe(
 
     handler = async_handler if async_failure else sync_handler
     server = build_server(
+        execution_grants=GRANTS,
         tools=[exportable_mcp_tool("execute_shipments")],
         tool_handlers={"execute_shipments": handler},
     )
@@ -1095,7 +1097,7 @@ async def test_real_mcp_handler_failures_are_provider_and_log_safe(
                 "execute_shipments",
                 {
                     "preview_id": VALID_PREVIEW_ID,
-                    "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+                    "approval_request_id": VALID_APPROVAL_ID,
                 },
             )
 
@@ -1157,6 +1159,7 @@ async def test_hosted_mcp_projection_failures_are_provider_and_log_safe(
     if failure_mode == "size":
         contract = contract.model_copy(update={"max_result_bytes": 1})
     server = build_server(
+        execution_grants=GRANTS,
         tools=[contract],
         tool_handlers={"execute_shipments": handler},
     )
@@ -1168,7 +1171,7 @@ async def test_hosted_mcp_projection_failures_are_provider_and_log_safe(
                 "execute_shipments",
                 {
                     "preview_id": VALID_PREVIEW_ID,
-                    "confirmation_artifact_id": VALID_CONFIRMATION_ID,
+                    "approval_request_id": VALID_APPROVAL_ID,
                 },
             )
 
@@ -1215,3 +1218,17 @@ def test_status_schema_admits_every_relay_target_state():
         set(schema["properties"]["executionTarget"]["properties"]["state"]["enum"])
         == states
     )
+
+
+def test_skipped_canary_families_have_no_public_tool_field():
+    """Families skipped above must not be referenced by any public contract."""
+    from src.registry.identifiers import PROVIDER_VISIBLE_FIELD_FAMILIES
+
+    used = {
+        PROVIDER_VISIBLE_FIELD_FAMILIES[name]
+        for contract in public_tools()
+        for schema in (contract.input_schema, contract.output_schema)
+        for name in PROVIDER_VISIBLE_FIELD_FAMILIES
+        if name in schema.get("properties", {})
+    }
+    assert not used & {ShipAgentIdFamily.INGRESS, ShipAgentIdFamily.CONFIRMATION}
