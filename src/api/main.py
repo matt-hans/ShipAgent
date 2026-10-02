@@ -43,6 +43,9 @@ from src.api.middleware.auth import (  # noqa: E402
     maybe_require_api_key,
     validate_api_key_strength,
 )
+from src.api.middleware.listener_guard import (  # noqa: E402
+    enforce_effective_listener_security,
+)
 from src.api.routes import (  # noqa: E402
     agent_audit,
     auth_session,
@@ -62,7 +65,7 @@ from src.api.routes import (  # noqa: E402
 )
 from src.control_plane.config import ControlPlaneSettings  # noqa: E402
 from src.control_plane.startup import (  # noqa: E402
-    validate_desktop_listener_security,
+    validate_effective_listener_security,
     validate_startup_security,
 )
 from src.db.connection import init_db  # noqa: E402
@@ -466,9 +469,8 @@ async def lifespan(app: FastAPI):
     # --- Startup ---
     _startup_time = _time.time()
     validate_api_key_strength()  # Fail fast on weak API keys (F-6)
-    _listener_settings = ControlPlaneSettings()
-    validate_startup_security(_listener_settings)
-    validate_desktop_listener_security(_listener_settings.bind_host)
+    validate_startup_security(ControlPlaneSettings())
+    validate_effective_listener_security()
 
     # Create data/log/label directories (no-op in dev, creates platformdirs in bundled)
     from src.utils.paths import ensure_dirs_exist
@@ -686,6 +688,8 @@ app = FastAPI(
 
 # Optional API auth for /api/* when SHIPAGENT_API_KEY is configured.
 app.middleware("http")(maybe_require_api_key)
+# Registered after auth so it runs first: rejects non-loopback sockets without a key.
+app.middleware("http")(enforce_effective_listener_security)
 
 # CORS allowlist is env-driven. If unset, CORS is disabled (same-origin only).
 allowed_origins = _parse_allowed_origins()

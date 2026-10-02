@@ -67,3 +67,27 @@ def test_desktop_listener_still_requires_api_key_on_public_bind(monkeypatch):
         validated_listener_host("0.0.0.0")
     monkeypatch.setenv("SHIPAGENT_API_KEY", "s" * 64)
     assert validated_listener_host("0.0.0.0") == "0.0.0.0"
+
+
+def test_lifespan_gate_uses_attested_launcher_host_not_default_setting(monkeypatch):
+    """The API lifespan must gate the host the launcher bound, not the env default."""
+    from src.control_plane import startup
+
+    monkeypatch.setenv("SHIPAGENT_API_KEY", "s" * 64)
+    startup.validated_listener_host("0.0.0.0")
+    monkeypatch.delenv("SHIPAGENT_API_KEY", raising=False)
+    monkeypatch.delenv("SHIPAGENT_BIND_HOST", raising=False)
+    try:
+        with pytest.raises(RuntimeError, match="SHIPAGENT_API_KEY"):
+            startup.validate_effective_listener_security()
+    finally:
+        startup.reset_attested_listener_host()
+
+
+def test_lifespan_gate_passes_without_attestation_on_default_loopback(monkeypatch):
+    from src.control_plane import startup
+
+    startup.reset_attested_listener_host()
+    monkeypatch.delenv("SHIPAGENT_API_KEY", raising=False)
+    monkeypatch.delenv("SHIPAGENT_BIND_HOST", raising=False)
+    startup.validate_effective_listener_security()
