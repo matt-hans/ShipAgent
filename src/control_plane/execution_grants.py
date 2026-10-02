@@ -22,7 +22,10 @@ Responsibility split (callers must honour it):
   with the binding's idempotency key and approved amount. It signals a failure
   that provably happened before the target accepted anything by raising
   ``PreAcceptFailure``; every other failure or cancellation is ambiguous and
-  keeps the grant non-reusable until accepted work is reconciled.
+  keeps the grant non-reusable until accepted work is reconciled. A failed
+  ``consume`` after acceptance is also held.
+* The gate reads ``reservation.binding`` once and accepts only the exact
+  ``ExecutionGrantBinding`` type; that validated object is what the handler gets.
 """
 
 import re

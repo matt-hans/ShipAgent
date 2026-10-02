@@ -5,6 +5,7 @@ approve -> reserve -> consume/release lifecycle so gate behaviour can be
 asserted without a control-plane store.
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -81,6 +82,7 @@ class FakeExecutionGrantAuthority:
     calls: list[dict[str, str]] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
     fail_with: Exception | None = None
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     async def reserve(
         self,
@@ -105,15 +107,19 @@ class FakeExecutionGrantAuthority:
         binding = self.approved.get(approval_request_id)
         if binding is None:
             raise ExecutionGrantError(ExecutionGrantDenial.APPROVAL_PENDING)
-        current = self.state.get(approval_request_id)
-        if current == GrantState.CONSUMED:
-            raise ExecutionGrantError(ExecutionGrantDenial.GRANT_CONSUMED)
-        if current == GrantState.HELD:
-            raise ExecutionGrantError(ExecutionGrantDenial.RECONCILIATION_PENDING)
-        if current == GrantState.RESERVED:
-            raise ExecutionGrantError(ExecutionGrantDenial.GRANT_IN_USE)
-        self.state[approval_request_id] = GrantState.RESERVED
-        self.events.append("reserve")
+        # The lock makes check-and-set exclusive even though the sleep yields
+        # between them, so concurrent reserves genuinely interleave.
+        async with self._lock:
+            current = self.state.get(approval_request_id)
+            await asyncio.sleep(0)
+            if current == GrantState.CONSUMED:
+                raise ExecutionGrantError(ExecutionGrantDenial.GRANT_CONSUMED)
+            if current == GrantState.HELD:
+                raise ExecutionGrantError(ExecutionGrantDenial.RECONCILIATION_PENDING)
+            if current == GrantState.RESERVED:
+                raise ExecutionGrantError(ExecutionGrantDenial.GRANT_IN_USE)
+            self.state[approval_request_id] = GrantState.RESERVED
+            self.events.append("reserve")
         return FakeReservation(binding, approval_request_id, self)
 
 
