@@ -4,10 +4,6 @@ from src.api.middleware.auth import get_expected_api_key, validate_api_key_stren
 from src.control_plane.config import AuthMode, ControlPlaneSettings, Environment
 from src.utils.network import is_loopback_host
 
-# Host a supported launcher (daemon, bundled sidecar) validated and will bind.
-# In-process only: never derived from environment variables a caller could set.
-_attested_listener_host: str | None = None
-
 
 def validate_startup_security(settings: ControlPlaneSettings) -> None:
     if settings.auth_mode == AuthMode.fake_local:
@@ -38,29 +34,23 @@ def validate_desktop_listener_security(bind_host: str) -> None:
 
 
 def validated_listener_host(host: str) -> str:
-    """Validate and return the exact host a server launcher will bind."""
+    """Validate and return the exact host a server launcher will bind.
+
+    Launchers (daemon, bundled sidecar) call this before binding, so an unsafe
+    host fails before any socket opens. Stateless by design: nothing is retained
+    for the app lifespan, which gates only its own configuration.
+    """
     settings = ControlPlaneSettings(bind_host=host)
     validate_startup_security(settings)
     validate_desktop_listener_security(settings.bind_host)
-    global _attested_listener_host
-    _attested_listener_host = settings.bind_host
     return settings.bind_host
 
 
-def reset_attested_listener_host() -> None:
-    """Forget the launcher-attested host (used by tests)."""
-    global _attested_listener_host
-    _attested_listener_host = None
-
-
 def validate_effective_listener_security() -> None:
-    """Gate the API lifespan on every host this process is known to bind.
+    """Gate the API lifespan on the configured ``SHIPAGENT_BIND_HOST``.
 
-    The lifespan cannot observe uvicorn's bind host. It checks the configured
-    ``SHIPAGENT_BIND_HOST`` plus the host a supported launcher attested in
-    process. A direct ``uvicorn ... --host`` launch attests nothing; that path
-    is enforced per request by the listener guard middleware instead.
+    The lifespan cannot observe uvicorn's bind host. A direct
+    ``uvicorn ... --host`` launch is enforced per request by the listener guard
+    middleware against the real socket addresses instead.
     """
     validate_desktop_listener_security(ControlPlaneSettings().bind_host)
-    if _attested_listener_host is not None:
-        validate_desktop_listener_security(_attested_listener_host)

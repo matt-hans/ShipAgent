@@ -45,6 +45,7 @@ from src.api.middleware.auth import (  # noqa: E402
 )
 from src.api.middleware.listener_guard import (  # noqa: E402
     enforce_effective_listener_security,
+    is_remote_scope,
 )
 from src.api.routes import (  # noqa: E402
     agent_audit,
@@ -958,18 +959,18 @@ def _is_request_authenticated(request: Request) -> bool:
     """Check if the request carries a valid API key (CWE-200 mitigation).
 
     Used by /health and /readyz to gate detailed diagnostics. When no API key
-    is configured (single-user desktop mode), returns True so diagnostics are
-    still available.
+    is configured (single-user desktop mode), diagnostics are available only to
+    loopback sockets; a remote peer on a keyless listener gets binary status.
 
     Args:
         request: Incoming HTTP request.
 
     Returns:
-        True if authenticated or auth is disabled.
+        True if authenticated, or auth is disabled and the peer is local.
     """
     expected = get_expected_api_key()
     if not expected:
-        return True  # Auth disabled — desktop single-user mode
+        return not is_remote_scope(request.scope)  # Keyless: local desktop only
     provided = request.headers.get("X-API-Key", "")
     return bool(provided and _hmac.compare_digest(provided, expected))
 
