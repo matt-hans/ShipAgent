@@ -40,7 +40,7 @@ commits unmatched in main).
 
 | Area | Finding | Decision |
 |---|---|---|
-| Startup security gate | Findings' stricter `validate_startup_security` (`src/control_plane/startup.py`) is the only gate; main's `app.py` calls it once. | Retained; no duplicate gate. |
+| Startup security gate | Main's `validate_startup_security` checked only `fake_local` loopback restrictions. Findings added a non-loopback `SHIPAGENT_API_KEY` requirement into the same function, which also ran for the hosted Auth0 app (`app.py`) and conflated desktop API-key auth with ADR 0001 Auth0 identity. | **Fixed in phase 6:** `validate_startup_security` is auth-mode only again; the API-key rule is `validate_desktop_listener_security`, called by `validated_listener_host` (daemon, bundle entry) and the desktop API lifespan. Tests in `tests/control_plane/test_startup.py`. |
 | Redaction | `request_controls._SENSITIVE_ARGUMENT_KEYS` redacts values before hashing for loop detection; `registry/privacy.py` validates provider-visible *schemas* at registration; `result_projection.project_result` filters runtime output. Three layers, three purposes. | Retained; not duplicates. Unifying the key vocabulary is deferred (below). |
 | Result projection | Main's tests asserted `target_id`/`message`; findings' privacy rules forbid them. | Findings' rule wins; status projected by `project_status_for_provider`. Main's tests updated. |
 | `BoundRegistryTool.run` | Both added gates. | Single ordered pipeline (auth, scope, schema validation, request controls, handler, projection, fail-closed). |
@@ -55,6 +55,8 @@ commits unmatched in main).
   request controls, device keys, forward-only relay migrations, MIT license).
 
 ### Deferred (with reasons)
+
+Phase 6 follow-up issues: #46 (dormant tool contracts vs ADR 0003/0008, `BoundRegistryTool.run` confirming-tool guard) and #47 (ADR 0007 vs opaque-only contracts, sensitive-key and capability vocabularies). Both block exporting any tool except `get_shipagent_status`; neither affects runtime today because only the status handler is registered.
 
 1. **Export of the 7 non-status public tools.** Only `get_shipagent_status` is
    `provider_export_enabled`. Reason: no relay handlers, reviewed per-provider
@@ -75,8 +77,10 @@ commits unmatched in main).
 
 ### Unresolved / known
 
-- Stream/SSE tests in `tests/api/test_progress.py` hang (see Validation).
-  Pre-existing; not addressed in this ticket.
+- Stream tests `TestProgressStream::test_stream_endpoint_exists` and
+  `::test_stream_returns_event_format` hang. **Confirmed pre-existing:** both
+  time out at 60 s on a pristine detached `a4a4bd1` worktree as well as on the
+  candidate. Not addressed in this ticket (root cause not investigated).
 - Frontend checks: see Validation.
 - Eight pre-existing main files would be reformatted by `ruff format`
   (`app.py`, `jwt_verifier.py`, `provider_clients.py`, `service.py`,
@@ -87,7 +91,13 @@ commits unmatched in main).
   `benchmark_regression_check.py`, `test_pipeline.py`), outside the documented
   `src/ tests/` lint scope.
 
-## Seam defects fixed in this phase
+## Defects fixed in phase 6 (review findings, each reproduced first)
+
+- Hosted Auth0 startup required the desktop API key on non-loopback bind (above).
+- `alembic/env.py`: ambient `SHIPAGENT_DATABASE_URL`/`DATABASE_URL` overrode an explicit `sqlalchemy.url`. Now an explicit non-placeholder URL wins; the `CONFIGURE_ME` placeholder or empty value falls back to the environment (the #42 fail-closed and env-driven cases both preserved).
+- `src/control_plane/db.py`: asyncpg `server_settings` `search_path` was unquoted, so a mixed-case schema folded to lowercase (the pre-merge listener quoted it). Now quoted; verified on a disposable PG 14 (`SHOW search_path` returns `"MixedCase"`).
+
+## Seam defects fixed in phase 4
 
 - `tests/control_plane/test_migrations_postgres.py` asserted revision
   `20260609_0001` and omitted `relay_devices`; it failed against PostgreSQL once
@@ -106,12 +116,15 @@ classification; summary below.
 |---|---|
 | Full `pytest tests` (attempted, bounded by 240 s faulthandler) | **Incomplete.** Run 1 hung at `tests/api/test_progress.py::TestProgressStream::test_stream_endpoint_exists`; run 2 (that case deselected) hung at `tests/api/test_progress.py::TestProgressStream::test_stream_returns_event_format`. Both killed; neither reached a result. 4158 tests collect without errors. |
 | Reduced `pytest -k "not stream and not sse and not progress"` | 4019 passed, 21 skipped, 117 deselected, **1 failed** (`tests/cli/test_daemon.py::TestPidFile::test_is_pid_alive_non_daemon_process`). Does not substitute for the full suite. |
-| The 1 failure | Classified pre-existing/environmental: `is_pid_alive` logic is unchanged by the merge (formatting plus an unrelated host-validation line); the test fails whenever the pytest command line contains `shipagent` (this checkout path does). |
+| The 1 failure | **Confirmed pre-existing:** `test_is_pid_alive_non_daemon_process` fails identically on pristine `a4a4bd1` (1 failed) and the candidate; cause is path-dependent (pytest command line contains `shipagent`). |
 | PostgreSQL 14 disposable (`initdb` in a job temp dir, port 55432) | `test_migrations_postgres.py` 3 passed after fix; `alembic upgrade head`, `downgrade base`, `upgrade head` ok; head `20260723_0003`; 4 tables plus `relay_devices` in `shipagent_private`. Docker daemon was not running; local PG binaries used. |
 | Frontend `nx typecheck` | Pass with `--parallel=1`. First parallel run failed with TS6305 (project-reference output not yet built, cold cache race). |
 | Frontend `nx lint` / `test` / `build --configuration=production` | Pass; tests 41+36+1+1+1+105 passed. |
 | `ruff check src tests alembic` | Clean. |
 | Backend type checking | None configured (no mypy/pyright in `pyproject.toml` or CI); `compileall` of `src tests alembic scripts` ok. |
+| Phase 6 bounded repros (60 s each, pristine `a4a4bd1` detached worktree vs candidate) | Both hung stream tests: TIMEOUT on both trees. Daemon test: fails on both trees. |
+| Phase 6 remaining stream/sse/progress cases (everything matching the reduced-run `-k` exclusion except the two hung tests) | 114 passed, 4048 deselected, 7.55 s. (Phase 4 counted 117 deselected; 114 + 2 hung = 116; the 1-case difference is unexplained and not chased.) |
+| Phase 6 focused | `tests/control_plane` + drift + daemon (minus pid test) + bundle entry + auth middleware: 428 passed, 1 skipped. PG 14: `test_migrations_postgres.py` 3 passed; mixed-case `search_path` verified. `ruff check src tests alembic` clean. |
 | Artifact drift | `tests/registry/test_artifact_drift.py` pass. |
 
 
