@@ -4,16 +4,26 @@ Tests the /api/v1/jobs/{job_id}/progress endpoints for
 SSE streaming and fallback progress retrieval.
 """
 
+import asyncio
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from src.api.routes.progress import _event_generator, sse_observer
+from src.api.routes.progress import _event_generator, sse_observer, stream_progress
 from src.db.models import Job, JobRow, JobStatus, RowStatus
 from src.errors.terminal_diagnostics import (
     MAX_TERMINAL_ROW_DIAGNOSTICS,
     MAX_TERMINAL_ROW_NUMBER,
 )
+
+
+class _ConnectedRequest:
+    """Minimal request double whose client never disconnects."""
+
+    async def is_disconnected(self) -> bool:
+        return False
 
 
 class TestProgressFallback:
@@ -270,32 +280,44 @@ class TestProgressStream:
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
-    def test_stream_endpoint_exists(self, client: TestClient, sample_job: Job):
-        """SSE endpoint accepts connection for valid job."""
-        # Start the SSE connection but close immediately
-        # We can't fully test SSE with sync TestClient, but we can verify
-        # the endpoint responds correctly
-        response = client.get(
-            f"/api/v1/jobs/{sample_job.id}/progress/stream",
-            headers={"Accept": "text/event-stream"},
-        )
+    # The stream is open-ended by design: a sync TestClient only returns once the
+    # response body completes, so a pending job would block it forever. These
+    # tests drive the endpoint coroutine and its generator directly instead.
 
-        # Should return event stream content type
-        assert response.status_code == 200
-        assert "text/event-stream" in response.headers.get("content-type", "")
+    @pytest.mark.asyncio
+    async def test_stream_endpoint_returns_event_stream_response(
+        self, test_db: Session, sample_job: Job
+    ):
+        """Endpoint returns an SSE response and subscribes the job's queue."""
+        response = await stream_progress(_ConnectedRequest(), sample_job.id, db=test_db)
+        try:
+            assert response.status_code == 200
+            assert "text/event-stream" in response.media_type
+            assert sse_observer.has_subscribers(sample_job.id)
+            await sse_observer.on_batch_started(sample_job.id, total_rows=5)
+            await asyncio.wait_for(anext(response.body_iterator), timeout=5)
+        finally:
+            await response.body_iterator.aclose()
 
-    def test_stream_returns_event_format(self, client: TestClient, sample_job: Job):
-        """SSE stream returns properly formatted events."""
-        # Note: Full SSE testing requires async client or special handling
-        # This test verifies the endpoint is configured for SSE
-        response = client.get(
-            f"/api/v1/jobs/{sample_job.id}/progress/stream",
-            headers={"Accept": "text/event-stream"},
-        )
+        # Closing a started stream releases the subscription (client disconnect).
+        assert not sse_observer.has_subscribers(sample_job.id)
 
-        assert response.status_code == 200
-        # EventSourceResponse should set the correct content type
-        assert "text/event-stream" in response.headers.get("content-type", "")
+    @pytest.mark.asyncio
+    async def test_stream_emits_json_message_events(
+        self, test_db: Session, sample_job: Job
+    ):
+        """Batch events are delivered as unnamed SSE messages with a JSON body."""
+        response = await stream_progress(_ConnectedRequest(), sample_job.id, db=test_db)
+        try:
+            await sse_observer.on_batch_started(sample_job.id, total_rows=5)
+            event = await asyncio.wait_for(anext(response.body_iterator), timeout=5)
+        finally:
+            await response.body_iterator.aclose()
+
+        payload = json.loads(event["data"])
+        assert payload["event"] == "batch_started"
+        assert payload["data"]["total_rows"] == 5
+        assert "event" not in event
 
 
 @pytest.mark.asyncio

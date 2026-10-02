@@ -29,8 +29,41 @@ PROJECT_ROOT = Path(__file__).parent.parent
 # ============================================================================
 
 
+AMBIENT_ENV_PREFIX = "SHIPAGENT_"
+# Deliberate opt-in test inputs (e.g. SHIPAGENT_TEST_DATABASE_URL) are kept.
+EXPLICIT_TEST_ENV_PREFIX = "SHIPAGENT_TEST_"
+_scrubbed_ambient_env_names: list[str] = []
+
+
+def pytest_report_header(config):
+    """Report (names only, never values) which ambient variables were removed."""
+    if _scrubbed_ambient_env_names:
+        return "scrubbed ambient env: " + ", ".join(_scrubbed_ambient_env_names)
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_environment() -> Generator[None, None, None]:
+    """Undo any os.environ change a test makes so tests cannot leak into each other."""
+    snapshot = dict(os.environ)
+    yield
+    os.environ.clear()
+    os.environ.update(snapshot)
+
+
 def pytest_configure(config):
-    """Register custom markers and set required env vars."""
+    """Register custom markers, scrub ambient config and set required env vars."""
+    # Docker launches and developer shells export SHIPAGENT_* settings (API key,
+    # bind host, auth mode). They change auth and startup behaviour for every
+    # app-level test, so the suite starts from a clean slate and tests set what
+    # they need explicitly.
+    for name in sorted(os.environ):
+        if name.startswith(AMBIENT_ENV_PREFIX) and not name.startswith(
+            EXPLICIT_TEST_ENV_PREFIX
+        ):
+            del os.environ[name]
+            _scrubbed_ambient_env_names.append(name)
+
     config.addinivalue_line(
         "markers", "integration: marks tests requiring external services"
     )
