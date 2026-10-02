@@ -4,8 +4,7 @@
     {
       "audit_level": "basic",
       "auth_scopes": [
-        "account:read",
-        "device:read"
+        "shipagent.status"
       ],
       "availability": [
         "hosted",
@@ -13,7 +12,7 @@
       ],
       "confirmation_policy": null,
       "contract_version": "1.0.0",
-      "description": "Return operational status for the active account and device.",
+      "description": "Return operational status for the active account execution target.",
       "execution_target_required": false,
       "hosted_readiness": "ready",
       "implementation_status": "implemented",
@@ -41,43 +40,55 @@
       "output_schema": {
         "additionalProperties": false,
         "properties": {
-          "active_device_id": {
-            "description": "Opaque ShipAgent execution device identifier.",
-            "maxLength": 42,
-            "minLength": 42,
-            "pattern": "^sa_device_[0-9a-f]{32}$",
-            "type": "string"
-          },
-          "capabilities": {
-            "items": {
-              "enum": [
-                "shipment_ingress",
-                "address_validation",
-                "rate_shopping",
-                "shipment_preview",
-                "shipment_execution",
-                "job_status",
-                "label_handoff"
-              ],
-              "type": "string"
+          "executionTarget": {
+            "additionalProperties": false,
+            "properties": {
+              "capabilities": {
+                "items": {
+                  "enum": [
+                    "shipment_ingress",
+                    "address_validation",
+                    "rate_shopping",
+                    "shipment_preview",
+                    "shipment_execution",
+                    "job_status",
+                    "label_handoff",
+                    "get_shipagent_status",
+                    "rate_shipment"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 9,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "state": {
+                "enum": [
+                  "ready",
+                  "offline",
+                  "update_required"
+                ],
+                "type": "string"
+              }
             },
-            "maxItems": 7,
-            "type": "array",
-            "uniqueItems": true
+            "required": [
+              "state",
+              "capabilities"
+            ],
+            "type": "object"
           },
           "status": {
             "enum": [
               "ready",
-              "degraded",
-              "unavailable"
+              "offline",
+              "update_required"
             ],
             "type": "string"
           }
         },
         "required": [
           "status",
-          "active_device_id",
-          "capabilities"
+          "executionTarget"
         ],
         "type": "object"
       },
@@ -151,7 +162,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": true,
+      "provider_export_enabled": false,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -244,7 +255,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": true,
+      "provider_export_enabled": false,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -392,7 +403,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": true,
+      "provider_export_enabled": false,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -476,7 +487,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": true,
+      "provider_export_enabled": false,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -565,7 +576,7 @@
         "type": "object"
       },
       "prepare_tool": "prepare_shipments",
-      "provider_export_enabled": true,
+      "provider_export_enabled": false,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -646,7 +657,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": true,
+      "provider_export_enabled": false,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",
@@ -724,7 +735,7 @@
         "type": "object"
       },
       "prepare_tool": null,
-      "provider_export_enabled": true,
+      "provider_export_enabled": false,
       "provider_exports": [
         "openai_apps_public",
         "claude_remote_mcp_public",

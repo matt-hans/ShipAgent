@@ -11,6 +11,9 @@ registry exports, and CLI.
 - `src/api/` is the HTTP adapter. Routes validate input, call services, translate
   errors, stream SSE events, and return response schemas. Do not put shipping
   workflow decisions in routes.
+- `src/control_plane/` owns relay-first control-plane models, startup security
+  settings, execution-target contracts, confirmation artifacts, and result
+  projection constraints used by hosted/public tools.
 - `src/services/` owns business logic: job lifecycle, batch execution, payload
   building, credentials, settings, contacts, audit, labels, write-back, MCP
   client gateways, and provider-neutral conversation ownership.
@@ -46,6 +49,11 @@ registry exports, and CLI.
   async locking.
 - No mode leakage between batch and interactive agent sessions.
 - No scattered carrier/platform constants. Add canonical modules and import them.
+- Keep relay control-plane identities in `src/control_plane` and desktop/job
+  identities in `src/db`; no hosted tenant ownership fields on core shipment
+  business models.
+- Keep hosted/public mutating tools in a two-step execute model (`prepare_*` and
+  `execute_*`) with confirmation token semantics.
 - All user-visible or API-visible errors must be sanitized and fit the existing
   error registry/error translation patterns.
 
@@ -77,6 +85,9 @@ registry exports, and CLI.
 - When adding or changing provider exports, edit the canonical registry source,
   run `python scripts/generate_provider_artifacts.py`, and verify
   `tests/registry/test_artifact_drift.py`.
+- After control-plane changes, also run targeted control-plane tests under
+  `tests/control_plane`, and review result projection in
+  `src/control_plane/result_projection.py` for forbidden aggregate outputs.
 - Keep logging redaction-aware. Do not log credentials, tokens, customer payloads,
   raw labels, or full row data.
 

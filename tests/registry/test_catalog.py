@@ -1,5 +1,6 @@
 import pytest
 
+from src.control_plane.routes.oauth_metadata import SUPPORTED_SCOPES
 from src.registry.catalog import load_registry, public_tools
 from src.registry.identifiers import ShipAgentIdFamily, shipagent_id_schema
 from src.registry.models import ProviderExport, SideEffectClass, ToolVisibility
@@ -17,6 +18,8 @@ EXPECTED_PUBLIC = {
     "get_job_status",
     "create_label_download",
 }
+
+DEFAULT_EXPORTED_PUBLIC = {"get_shipagent_status"}
 
 
 def bounded_test_string_schema():
@@ -38,7 +41,7 @@ def test_public_tools_are_tenant_safe_and_provider_exportable():
         assert tool.tenant_safe is True
         assert tool.implementation_status == "implemented"
         assert tool.hosted_readiness == "ready"
-        assert tool.provider_export_enabled is True
+        assert tool.provider_export_enabled is (tool.name in DEFAULT_EXPORTED_PUBLIC)
         assert ProviderExport.openai_apps_public in tool.provider_exports
         assert ProviderExport.claude_remote_mcp_public in tool.provider_exports
         assert ProviderExport.generic_mcp in tool.provider_exports
@@ -60,6 +63,19 @@ def test_public_tool_requires_explicit_provider_export_opt_in():
     )
 
     assert tool.provider_export_enabled is False
+
+
+def test_exported_public_tool_scopes_are_advertised_in_oauth_metadata():
+    supported = set(SUPPORTED_SCOPES)
+    missing = {
+        scope
+        for tool in public_tools()
+        if tool.provider_export_enabled
+        for scope in tool.auth_scopes
+        if scope not in supported
+    }
+
+    assert missing == set()
 
 
 def test_side_effecting_public_tools_require_confirmation():
@@ -591,7 +607,7 @@ def test_label_download_returns_only_an_opaque_handoff_artifact():
 @pytest.mark.parametrize(
     ("tool_name", "expected_statuses"),
     [
-        ("get_shipagent_status", ["ready", "degraded", "unavailable"]),
+        ("get_shipagent_status", ["ready", "offline", "update_required"]),
         (
             "execute_shipments",
             [
