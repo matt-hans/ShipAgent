@@ -17,7 +17,6 @@ from src.services.ups_service_codes import SERVICE_CODE_NAMES, ServiceCode
 
 FIRST_SLICE_TOOL_NAMES = (
     "get_shipagent_status",
-    "submit_one_off_shipment",
     "validate_shipment_address",
     "get_shipment_rates",
     "prepare_shipments",
@@ -62,7 +61,7 @@ UPS_SERVICE_CODES = [code.value for code in ServiceCode]
 UPS_SERVICE_NAMES = list(SERVICE_CODE_NAMES.values())
 RATE_CURRENCY_CODES = [DEFAULT_CURRENCY_CODE]
 
-_MONEY_PATTERN = r"^(0|[1-9][0-9]{0,9})\.[0-9]{2}$"
+MONEY_PATTERN = r"^(0|[1-9][0-9]{0,9})\.[0-9]{2}$"
 _ISO_DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 
 
@@ -155,31 +154,6 @@ PUBLIC_TOOLS = [
         provider_export_enabled=True,
     ),
     public_tool(
-        "submit_one_off_shipment",
-        "Submit one off shipment",
-        "Register a ShipAgent-owned ingress artifact for one-off shipment workflows.",
-        SideEffectClass.estimate,
-        ["shipments:create"],
-        object_schema(
-            {
-                "ingress_reference": shipagent_id_schema(
-                    ShipAgentIdFamily.INGRESS,
-                    "Opaque reference minted by the authenticated ShipAgent ingress channel.",
-                ),
-            },
-            ["ingress_reference"],
-        ),
-        object_schema(
-            {
-                "input_reference": shipagent_id_schema(
-                    ShipAgentIdFamily.INPUT,
-                    "Opaque ShipAgent shipment input reference.",
-                )
-            },
-            ["input_reference"],
-        ),
-    ),
-    public_tool(
         "validate_shipment_address",
         "Validate shipment address",
         "Validate a destination and return canonical address guidance.",
@@ -246,7 +220,7 @@ PUBLIC_TOOLS = [
                             },
                             "total_charge": {
                                 "type": "string",
-                                "pattern": _MONEY_PATTERN,
+                                "pattern": MONEY_PATTERN,
                                 "minLength": 4,
                                 "maxLength": 13,
                             },
@@ -301,6 +275,10 @@ PUBLIC_TOOLS = [
                     ShipAgentIdFamily.PREVIEW,
                     "Opaque ShipAgent shipment preview identifier.",
                 ),
+                "approval_request_id": shipagent_id_schema(
+                    ShipAgentIdFamily.APPROVAL_REQUEST,
+                    "Opaque Approval Request reference; carries no execution authority.",
+                ),
                 "summary": {
                     "type": "object",
                     "properties": {
@@ -331,12 +309,12 @@ PUBLIC_TOOLS = [
                     ShipAgentIdFamily.PREVIEW,
                     "Opaque ShipAgent shipment preview identifier.",
                 ),
-                "confirmation_artifact_id": shipagent_id_schema(
-                    ShipAgentIdFamily.CONFIRMATION,
-                    "Opaque confirmation artifact minted by an authenticated ShipAgent channel.",
+                "approval_request_id": shipagent_id_schema(
+                    ShipAgentIdFamily.APPROVAL_REQUEST,
+                    "Opaque Approval Request reference returned by prepare_shipments.",
                 ),
             },
-            ["preview_id", "confirmation_artifact_id"],
+            ["preview_id", "approval_request_id"],
         ),
         object_schema(
             {
