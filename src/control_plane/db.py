@@ -37,6 +37,11 @@ def control_plane_schema_for_database_url(
     )
 
 
+def _quote_identifier(identifier: str) -> str:
+    """Quote a schema name so Postgres keeps its case (matches alembic env)."""
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 def build_session_factory(
     database_url: str,
     *,
@@ -50,7 +55,7 @@ def build_session_factory(
     else:
         schema = control_plane_schema_for_database_url(database_url)
     connect_args = (
-        {"server_settings": {"search_path": schema}}
+        {"server_settings": {"search_path": _quote_identifier(schema)}}
         if schema is not None and database_url.startswith("postgresql+asyncpg://")
         else {}
     )
