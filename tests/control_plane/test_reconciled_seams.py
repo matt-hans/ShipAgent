@@ -65,6 +65,17 @@ def test_env_database_url_overrides_placeholder_ini_url(monkeypatch):
     assert "env_private" in output.getvalue()
 
 
+def test_explicit_config_url_beats_ambient_env_database_url(monkeypatch, tmp_path):
+    """A caller-supplied sqlalchemy.url must not be redirected by ambient env."""
+    ambient = tmp_path / "ambient.db"
+    explicit = tmp_path / "explicit.db"
+    monkeypatch.setenv("SHIPAGENT_DATABASE_URL", f"sqlite:///{ambient}")
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{ambient}")
+    command.upgrade(_alembic_config(f"sqlite:///{explicit}"), "head")
+    assert explicit.exists()
+    assert not ambient.exists()
+
+
 def test_sqlite_upgrade_to_head_has_relay_and_control_tables(tmp_path):
     url = f"sqlite:///{tmp_path / 'seam.db'}"
     command.upgrade(_alembic_config(url), "head")

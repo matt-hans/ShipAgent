@@ -26,14 +26,25 @@ if config.config_file_name is not None:
 target_metadata = ControlPlaneBase.metadata
 
 
+_URL_PLACEHOLDER = "CONFIGURE_ME"
+
+
 def _database_url() -> str:
-    """Resolve the control-plane URL: environment first, then alembic.ini."""
-    configured_url = (
-        os.environ.get("SHIPAGENT_DATABASE_URL")
-        or os.environ.get("DATABASE_URL")
-        or config.get_main_option("sqlalchemy.url")
-        or ""
-    )
+    """Resolve the control-plane URL: explicit config first, then environment.
+
+    An explicit ``sqlalchemy.url`` (programmatic or edited alembic.ini) always wins
+    so ambient env vars cannot redirect a migration. The ``CONFIGURE_ME``
+    placeholder or an empty value falls back to the environment.
+    """
+    explicit_url = (config.get_main_option("sqlalchemy.url") or "").strip()
+    if explicit_url and explicit_url != _URL_PLACEHOLDER:
+        configured_url = explicit_url
+    else:
+        configured_url = (
+            os.environ.get("SHIPAGENT_DATABASE_URL")
+            or os.environ.get("DATABASE_URL")
+            or explicit_url
+        )
     return normalize_control_plane_database_url(configured_url)
 
 
