@@ -154,7 +154,7 @@
             "description": "Echo of address text the user supplied through the provider conversation; never imported-source data.",
             "maxLength": 500,
             "minLength": 1,
-            "pattern": "^[^\\\\x00-\\\\x1f]{1,500}$",
+            "pattern": "^[^\\x00-\\x1f\\x7f]{1,500}$",
             "type": "string"
           },
           "guidance_codes": {
@@ -667,7 +667,7 @@
       "max_sync_seconds": 30,
       "minimum_capabilities": {},
       "name": "create_label_download",
-      "notes": "ADR 0007 obligations for any future implementation: the URL is minted by the Execution Target flow, single-use, and bound to an Auth0 browser session of the same Cloud Account; possession alone is not authorization. Bytes stream desktop-to-browser with no cloud persistence. Only ready labels carry download_url.",
+      "notes": "ADR 0007 obligations for any future implementation: the URL is minted by the Execution Target flow, single-use, and bound to an Auth0 browser session of the same Cloud Account; possession alone is not authorization. Bytes stream desktop-to-browser with no cloud persistence. Projection enforces only shape: https, no whitespace/credentials/fragment, ready status, and expires_in_seconds <= 300 accompanying the URL. Signature verification, single-use and account binding are deferred trusted-minting obligations and are NOT enforced here.",
       "output_schema": {
         "additionalProperties": false,
         "properties": {
@@ -675,7 +675,7 @@
             "description": "Short-lived signed download URL; label bytes never pass through the provider.",
             "maxLength": 2048,
             "minLength": 9,
-            "pattern": "^https://[^\\\\s]{1,2040}$",
+            "pattern": "^https://[^\\s\\x00-\\x1f\\x7f]{1,2040}$",
             "type": "string"
           },
           "expires_in_seconds": {

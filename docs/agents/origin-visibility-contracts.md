@@ -22,9 +22,20 @@ key sets), `src/registry/vocabulary.py` (status capability vocabulary),
 ## Runtime gate
 
 `project_result(contract, result, field_origins=...)` fails closed when a
-declared echo field is present without `DataOrigin.provider_supplied` metadata,
-and rejects signed URLs that are not plain `https` (no userinfo, no fragment).
+declared echo field is present without a `DataOrigin.provider_supplied`
+instance (a plain string with the same value is rejected), and rejects echo text
+containing control characters. Trusted service metadata (`field_origins`) is a
+keyword-only argument kept separate from provider arguments.
+
+Signed label URLs must be plain `https` (no userinfo, fragment, whitespace or
+control characters), must be accompanied by `expires_in_seconds` (<= 300), and
+are allowed only when `status` is `ready`. These are runtime projection checks
+(the closed output schema keeps its keywords simple); they verify shape only.
 Error messages never include the offending value.
+
+**Deferred, not enforced by projection:** signature verification, single-use
+redemption, host allow-listing and Cloud Account / Auth0 session binding. No
+signer exists in this repo; these remain trusted-minting obligations below.
 
 ## Implementation obligations (not implemented here)
 

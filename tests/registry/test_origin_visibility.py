@@ -3,6 +3,8 @@
 All values are synthetic canaries; nothing here is real customer data.
 """
 
+import re
+
 import pytest
 from pydantic import ValidationError
 
@@ -12,7 +14,11 @@ from src.registry.privacy import (
     MAX_SIGNED_DOWNLOAD_TTL_SECONDS,
     provider_schema_privacy_violations,
 )
-from src.registry.tools.public import public_tool
+from src.registry.tools.public import (
+    PROVIDER_ECHO_TEXT_PATTERN,
+    SIGNED_LABEL_URL_PATTERN,
+    public_tool,
+)
 from src.registry.tools.schema import object_schema
 
 ECHO_TEXT = {
@@ -23,7 +29,7 @@ ECHO_TEXT = {
 }
 SIGNED_URL = {
     "type": "string",
-    "pattern": r"^https://[^\s]{1,2040}$",
+    "pattern": SIGNED_LABEL_URL_PATTERN,
     "minLength": 9,
     "maxLength": 2048,
 }
@@ -170,3 +176,26 @@ def test_registry_address_validation_declares_provider_originated_echo():
 def test_only_status_tool_is_exported():
     exported = [t.name for t in public_tools() if t.provider_export_enabled]
     assert exported == ["get_shipagent_status"]
+
+
+@pytest.mark.parametrize("text", ["123 Main St", "Maple Road", "Apt #4B, O'Brien Ave"])
+def test_echo_pattern_matches_realistic_text(text):
+    assert re.search(PROVIDER_ECHO_TEXT_PATTERN, text)
+
+
+@pytest.mark.parametrize("text", ["", "a\x00b", "a\tb", "a\x1fb", "a\x7fb"])
+def test_echo_pattern_rejects_control_characters(text):
+    assert not re.search(PROVIDER_ECHO_TEXT_PATTERN, text)
+
+
+def test_signed_url_pattern_matches_realistic_url():
+    url = "https://dl.example.com/a?sig=abc&exp=1"
+    assert re.search(SIGNED_LABEL_URL_PATTERN, url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://x.io/a b", "https://x.io/a\tb", "https://x.io/a\x00", "http://x.io/a"],
+)
+def test_signed_url_pattern_rejects_whitespace_control_and_http(url):
+    assert not re.search(SIGNED_LABEL_URL_PATTERN, url)

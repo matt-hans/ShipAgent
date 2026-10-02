@@ -33,7 +33,7 @@ def test_status_schema_enum_is_the_canonical_vocabulary():
 
 
 def test_sensitive_key_vocabularies_are_canonical():
-    assert request_controls._SENSITIVE_ARGUMENT_KEYS is privacy.CREDENTIAL_ARGUMENT_KEYS
+    assert request_controls.CREDENTIAL_ARGUMENT_KEYS is privacy.CREDENTIAL_ARGUMENT_KEYS
     assert result_projection.FORBIDDEN_AGGREGATE_KEYS == (
         privacy.ALWAYS_FORBIDDEN_RESULT_KEYS | privacy.LOCAL_DATA_RESULT_KEYS
     )
