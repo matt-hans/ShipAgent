@@ -5,7 +5,15 @@
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import copy_metadata
+
 block_cipher = None
+# Packages that read their own distribution metadata at import time
+# (importlib.metadata.version) fail in the frozen app without it.
+METADATA_PACKAGES = ['fastmcp', 'shipagent']
+package_metadata = [
+    item for name in METADATA_PACKAGES for item in copy_metadata(name)
+]
 project_root = Path(SPECPATH)
 
 a = Analysis(
@@ -24,9 +32,10 @@ a = Analysis(
             ),
             'shipagent-frontend/dist/apps/shell/browser',
         ),
-    ],
+    ] + package_metadata,
     hiddenimports=[
-        # FastAPI + Uvicorn
+        # FastAPI + Uvicorn (the ASGI app is imported by string at runtime)
+        'src.api.main',
         'uvicorn.logging',
         'uvicorn.lifespan.on',
         'uvicorn.lifespan.off',
@@ -88,7 +97,6 @@ a = Analysis(
         'setuptools',
         'pip',
         'wheel',
-        'distutils',
         '_pytest',
     ],
     win_no_prefer_redirects=False,

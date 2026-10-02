@@ -119,6 +119,35 @@ def test_pyinstaller_collects_the_self_contained_shell_at_the_runtime_path():
     assert "'shipagent-frontend/dist/apps/shell/browser'" in spec
 
 
+def test_pyinstaller_spec_does_not_exclude_setuptools_vendored_distutils():
+    """Python 3.12 builds alias setuptools' distutils; excluding it aborts analysis."""
+    spec = (REPOSITORY_ROOT / "shipagent-core.spec").read_text()
+    excludes = re.search(r"excludes=\[(.*?)\]", spec, re.DOTALL)
+
+    assert excludes is not None
+    assert "'distutils'" not in excludes.group(1)
+
+
+def test_pyinstaller_spec_collects_the_app_module_uvicorn_imports_by_string():
+    """bundle_entry serves "src.api.main:app" by string, so analysis cannot see it."""
+    spec = (REPOSITORY_ROOT / "shipagent-core.spec").read_text()
+    hidden_imports = re.search(r"hiddenimports=\[(.*?)\],\s*hookspath", spec, re.DOTALL)
+
+    assert hidden_imports is not None
+    assert "'src.api.main'" in hidden_imports.group(1)
+
+
+def test_pyinstaller_spec_bundles_metadata_read_at_import_time():
+    """fastmcp reads its own metadata on import; /health reports shipagent's."""
+    spec = (REPOSITORY_ROOT / "shipagent-core.spec").read_text()
+    packages = re.search(r"METADATA_PACKAGES = \[(.*?)\]", spec, re.DOTALL)
+
+    assert packages is not None
+    assert "'fastmcp'" in packages.group(1)
+    assert "'shipagent'" in packages.group(1)
+    assert "+ package_metadata" in spec
+
+
 def test_remote_linker_fails_when_a_required_remote_is_missing(tmp_path):
     frontend_root = _create_frontend_root(tmp_path)
 
