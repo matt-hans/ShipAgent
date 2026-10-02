@@ -6,7 +6,6 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
-
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
 
