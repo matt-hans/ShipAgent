@@ -5,11 +5,22 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from jsonschema import validate
 
-from src.hosted_mcp.server import PROVIDER_RESULT_ERROR, build_server
+from src.control_plane.auth.context import (
+    AuthorizationContext,
+    clear_authorization_context,
+    set_authorization_context,
+)
+from src.control_plane.request_controls import RequestControlError, hash_arguments
+from src.hosted_mcp.server import (
+    PROVIDER_RESULT_ERROR,
+    ToolAuthorizationError,
+    build_server,
+)
 from src.provider_adapters.mcp_projection import to_mcp_tool_descriptor
 from src.registry.catalog import public_tools
 from src.registry.identifiers import ShipAgentIdFamily, shipagent_id_prefix
 from src.registry.models import ProviderExport
+from src.registry.tools.public import FIRST_SLICE_TOOL_NAMES
 
 VALID_HEX_BODY = "0123456789abcdef0123456789abcdef"
 VALID_CONFIRMATION_ID = f"sa_confirmation_{VALID_HEX_BODY}"
@@ -32,6 +43,24 @@ PREFIXED_COMPACT_CANARY_BODIES = (
 )
 
 
+@pytest.fixture
+def all_scopes_context():
+    """Authorize provider calls with every registered public tool scope."""
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset(
+            scope for item in public_tools() for scope in item.auth_scopes
+        ),
+    )
+    token = set_authorization_context(context)
+    yield context
+    clear_authorization_context(token)
+
+
 def tool(name: str):
     return next(item for item in public_tools() if item.name == name)
 
@@ -45,6 +74,422 @@ def exportable_mcp_tool(name: str):
             "provider_exports": [ProviderExport.generic_mcp],
         }
     )
+
+
+def status_result(
+    *,
+    status: str = "ready",
+    state: str = "ready",
+    capabilities: list[str] | None = None,
+):
+    return {
+        "status": status,
+        "executionTarget": {
+            "state": state,
+            "capabilities": capabilities or ["rate_shipment"],
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_hosted_mcp_server_does_not_register_unbound_catalog_tools():
+    server = build_server()
+    tools = await server.get_tools()
+
+    assert tools == {}
+
+
+@pytest.mark.asyncio
+async def test_hosted_mcp_server_requires_exportable_and_bound_tools():
+    async def track_package_handler(context, arguments):
+        return {"status": "in_transit", "events": []}
+
+    async def job_status_handler(context, arguments):
+        return {"job_id": arguments["job_id"], "status": "running"}
+
+    registered_tool = exportable_mcp_tool("get_shipagent_status")
+    provider_excluded = exportable_mcp_tool("submit_one_off_shipment").model_copy(
+        update={"provider_exports": [ProviderExport.openai]}
+    )
+    unbound_tool = exportable_mcp_tool("get_shipment_rates")
+
+    server = build_server(
+        tools=[registered_tool, provider_excluded, unbound_tool],
+        tool_handlers={
+            "get_shipagent_status": track_package_handler,
+            "submit_one_off_shipment": job_status_handler,
+        },
+    )
+    tools = await server.get_tools()
+
+    assert set(tools) == {"get_shipagent_status"}
+
+
+@pytest.mark.asyncio
+async def test_status_tool_bound_from_default_catalog_projects_execution_target_schema():
+    async def handler(context, arguments):
+        return status_result(capabilities=["get_shipagent_status"])
+
+    server = build_server(tool_handlers={"get_shipagent_status": handler})
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    token = set_authorization_context(context)
+    try:
+        result = await tools["get_shipagent_status"].run(
+            {"correlation_id": VALID_CORRELATION_ID}
+        )
+    finally:
+        clear_authorization_context(token)
+
+    assert result.structured_content == status_result(
+        capabilities=["get_shipagent_status"]
+    )
+    validate(
+        instance=result.structured_content,
+        schema=tools["get_shipagent_status"].output_schema,
+    )
+
+
+@pytest.mark.asyncio
+async def test_loopback_execution_target_status_hides_target_id_and_message():
+    try:
+        from src.control_plane.execution_targets import LoopbackExecutionTarget
+        from src.hosted_mcp.execution_target_handlers import (
+            build_execution_target_tool_handlers,
+        )
+    except ModuleNotFoundError as exc:
+        pytest.fail(f"execution target status handler is not available: {exc}")
+
+    server = build_server(
+        tool_handlers=build_execution_target_tool_handlers(
+            LoopbackExecutionTarget(
+                capabilities=["rate_shipment", "get_shipagent_status"]
+            )
+        )
+    )
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    token = set_authorization_context(context)
+    try:
+        result = await tools["get_shipagent_status"].run(
+            {"correlation_id": VALID_CORRELATION_ID}
+        )
+    finally:
+        clear_authorization_context(token)
+
+    assert result.structured_content == {
+        "status": "ready",
+        "executionTarget": {
+            "state": "ready",
+            "capabilities": ["rate_shipment", "get_shipagent_status"],
+        },
+    }
+    validate(
+        instance=result.structured_content,
+        schema=tools["get_shipagent_status"].output_schema,
+    )
+
+
+@pytest.mark.asyncio
+async def test_execution_target_status_handler_passes_mcp_arguments():
+    from src.control_plane.execution_targets import TargetToolRequest
+    from src.control_plane.relay.protocol import (
+        ExecutionTargetStatus,
+        RelayTargetState,
+        ShipAgentStatus,
+    )
+    from src.hosted_mcp.execution_target_handlers import (
+        build_execution_target_tool_handlers,
+    )
+
+    captured = {}
+
+    class CapturingExecutionTarget:
+        async def invoke(self, request):
+            captured["request"] = request
+            return ShipAgentStatus(
+                status=RelayTargetState.READY,
+                execution_target=ExecutionTargetStatus(
+                    state=RelayTargetState.READY,
+                    target_id="target-1",
+                    capabilities=["get_shipagent_status"],
+                ),
+            ).model_dump(mode="json", by_alias=True)
+
+    server = build_server(
+        tool_handlers=build_execution_target_tool_handlers(CapturingExecutionTarget())
+    )
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    token = set_authorization_context(context)
+    try:
+        await tools["get_shipagent_status"].run(
+            {"correlation_id": VALID_CORRELATION_ID}
+        )
+    finally:
+        clear_authorization_context(token)
+
+    assert captured["request"] == TargetToolRequest(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        tool_name="get_shipagent_status",
+        arguments={"correlation_id": VALID_CORRELATION_ID},
+        correlation_id=VALID_CORRELATION_ID,
+    )
+
+
+@pytest.mark.asyncio
+async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
+    async def handler(context, arguments):
+        return status_result()
+
+    contract = exportable_mcp_tool("get_shipagent_status")
+    descriptor = to_mcp_tool_descriptor(contract)
+    server = build_server(
+        tools=[contract],
+        tool_handlers={"get_shipagent_status": handler},
+    )
+    tools = await server.get_tools()
+    registered = tools["get_shipagent_status"]
+
+    assert registered.title == contract.title
+    assert registered.description == contract.description
+    assert registered.parameters == descriptor["inputSchema"]
+    assert registered.output_schema == descriptor["outputSchema"]
+
+
+@pytest.mark.asyncio
+async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
+    async def handler(context, arguments):
+        return status_result()
+
+    contract = exportable_mcp_tool("get_shipagent_status")
+    server = build_server(
+        tools=[contract],
+        tool_handlers={"get_shipagent_status": handler},
+    )
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+
+    token = set_authorization_context(context)
+    try:
+        result = await tools["get_shipagent_status"].run(
+            {"correlation_id": VALID_CORRELATION_ID}
+        )
+    finally:
+        clear_authorization_context(token)
+
+    assert result.structured_content == status_result()
+    validate(
+        instance=result.structured_content,
+        schema=tools["get_shipagent_status"].output_schema,
+    )
+
+
+@pytest.mark.asyncio
+async def test_hosted_mcp_handler_rejects_missing_authorization_context():
+    async def handler(context, arguments):
+        return status_result()
+
+    contract = exportable_mcp_tool("get_shipagent_status")
+    server = build_server(
+        tools=[contract],
+        tool_handlers={"get_shipagent_status": handler},
+    )
+    tools = await server.get_tools()
+
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tools["get_shipagent_status"].run(
+            {"correlation_id": VALID_CORRELATION_ID}
+        )
+
+    assert exc.value.code == "missing_authorization_context"
+
+
+@pytest.mark.asyncio
+async def test_hosted_mcp_handler_rejects_missing_scopes():
+    async def handler(context, arguments):
+        return status_result()
+
+    contract = exportable_mcp_tool("get_shipagent_status")
+    server = build_server(
+        tools=[contract],
+        tool_handlers={"get_shipagent_status": handler},
+    )
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"account:read"}),
+    )
+    token = set_authorization_context(context)
+    try:
+        with pytest.raises(ToolAuthorizationError) as exc:
+            await tools["get_shipagent_status"].run(
+                {"correlation_id": VALID_CORRELATION_ID}
+            )
+    finally:
+        clear_authorization_context(token)
+
+    assert exc.value.code == "insufficient_scope"
+    assert exc.value.required_scopes == ["shipagent.status"]
+
+
+@pytest.mark.asyncio
+async def test_hosted_mcp_handler_applies_request_controls_before_invocation():
+    calls = []
+
+    class _RequestControls:
+        async def require_allowed(
+            self,
+            *,
+            connection_id: str,
+            tool_name: str,
+            rate_limit_class: str,
+            arguments_hash: str,
+        ) -> None:
+            calls.append(
+                {
+                    "connection_id": connection_id,
+                    "tool_name": tool_name,
+                    "rate_limit_class": rate_limit_class,
+                    "arguments_hash": arguments_hash,
+                }
+            )
+
+    invoked = {"value": False}
+
+    async def handler(context, arguments):
+        invoked["value"] = True
+        return rate_result()
+
+    contract = exportable_mcp_tool("get_shipment_rates").model_copy(
+        update={"rate_limit_class": "estimate"}
+    )
+    server = build_server(
+        tools=[contract],
+        tool_handlers={"get_shipment_rates": handler},
+        request_controls=_RequestControls(),
+    )
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipments:rate"}),
+    )
+    token = set_authorization_context(context)
+    try:
+        result = await tools["get_shipment_rates"].run(
+            {"input_reference": VALID_INPUT_ID}
+        )
+    finally:
+        clear_authorization_context(token)
+
+    assert invoked["value"] is True
+    assert result.structured_content == rate_result()
+    assert calls == [
+        {
+            "connection_id": "pc-1",
+            "tool_name": "get_shipment_rates",
+            "rate_limit_class": "estimate",
+            "arguments_hash": hash_arguments({"input_reference": VALID_INPUT_ID}),
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hosted_mcp_handler_translates_request_control_deny():
+    invoked = {"value": False}
+
+    async def handler(context, arguments):
+        invoked["value"] = True
+        return status_result()
+
+    class _RequestControls:
+        async def require_allowed(
+            self,
+            *,
+            connection_id: str,
+            tool_name: str,
+            rate_limit_class: str,
+            arguments_hash: str,
+        ) -> None:
+            raise RequestControlError(
+                code="provider_loop_detected",
+                message="identical call loop detected",
+            )
+
+    contract = exportable_mcp_tool("get_shipagent_status")
+    server = build_server(
+        tools=[contract],
+        tool_handlers={"get_shipagent_status": handler},
+        request_controls=_RequestControls(),
+    )
+    tools = await server.get_tools()
+    context = AuthorizationContext(
+        account_id="acct-1",
+        provider_connection_id="pc-1",
+        provider_surface="chatgpt",
+        subject="auth0|owner-1",
+        client_id="chatgpt-client",
+        scopes=frozenset({"shipagent.status"}),
+    )
+    token = set_authorization_context(context)
+    try:
+        with pytest.raises(ToolAuthorizationError) as exc:
+            await tools["get_shipagent_status"].run(
+                {"correlation_id": VALID_CORRELATION_ID}
+            )
+    finally:
+        clear_authorization_context(token)
+
+    assert exc.value.code == "provider_loop_detected"
+    assert invoked["value"] is False
+
+
+@pytest.mark.parametrize("tool_name", FIRST_SLICE_TOOL_NAMES)
+def test_first_slice_public_input_schema_rejects_identity_fields(tool_name: str):
+    prohibited = {"account_id", "tenant_id", "provider_connection_id", "user_id"}
+    contract = tool(tool_name)
+    assert prohibited.isdisjoint(set(contract.input_schema["properties"]))
 
 
 def rate_result(**overrides):
@@ -65,11 +510,7 @@ def rate_result(**overrides):
         (
             "get_shipagent_status",
             {"correlation_id": VALID_CORRELATION_ID},
-            {
-                "status": "ready",
-                "active_device_id": VALID_DEVICE_ID,
-                "capabilities": ["shipment_ingress"],
-            },
+            status_result(capabilities=["shipment_ingress"]),
         ),
         (
             "submit_one_off_shipment",
@@ -119,12 +560,13 @@ def rate_result(**overrides):
     ],
 )
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("all_scopes_context")
 async def test_real_mcp_round_trips_canonical_identifier_fixtures(
     tool_name,
     arguments,
     result,
 ):
-    async def handler(_arguments):
+    async def handler(_context, _arguments):
         return result
 
     server = build_server(
@@ -139,13 +581,14 @@ async def test_real_mcp_round_trips_canonical_identifier_fixtures(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("all_scopes_context")
 async def test_real_mcp_round_trips_completed_with_warnings_job_status():
     result = {
         "job_id": VALID_JOB_ID,
         "status": "completed_with_warnings",
     }
 
-    async def handler(_arguments):
+    async def handler(_context, _arguments):
         return result
 
     server = build_server(
@@ -163,42 +606,9 @@ async def test_real_mcp_round_trips_completed_with_warnings_job_status():
 
 
 @pytest.mark.asyncio
-async def test_hosted_mcp_server_does_not_register_unbound_catalog_tools():
-    server = build_server()
-    tools = await server.get_tools()
-
-    assert tools == {}
-
-
-@pytest.mark.asyncio
-async def test_hosted_mcp_server_requires_exportable_and_bound_tools():
-    async def execute_shipments_handler(arguments):
-        return {"job_id": VALID_JOB_ID, "status": "running"}
-
-    async def job_status_handler(arguments):
-        return {"job_id": arguments["job_id"], "status": "running"}
-
-    registered_tool = exportable_mcp_tool("execute_shipments")
-    provider_excluded = exportable_mcp_tool("get_job_status").model_copy(
-        update={"provider_exports": [ProviderExport.openai]}
-    )
-    unbound_tool = exportable_mcp_tool("create_label_download")
-
-    server = build_server(
-        tools=[registered_tool, provider_excluded, unbound_tool],
-        tool_handlers={
-            "execute_shipments": execute_shipments_handler,
-            "get_job_status": job_status_handler,
-        },
-    )
-    tools = await server.get_tools()
-
-    assert set(tools) == {"execute_shipments"}
-
-
-@pytest.mark.asyncio
-async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
-    async def handler(arguments):
+@pytest.mark.usefixtures("all_scopes_context")
+async def test_hosted_mcp_execute_shipments_metadata_and_schemas_come_from_registry():
+    async def handler(_context, arguments):
         return {"job_id": VALID_JOB_ID, "status": "running"}
 
     contract = exportable_mcp_tool("execute_shipments")
@@ -220,8 +630,9 @@ async def test_hosted_mcp_tool_metadata_and_schemas_come_from_registry():
 
 
 @pytest.mark.asyncio
-async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
-    async def handler(arguments):
+@pytest.mark.usefixtures("all_scopes_context")
+async def test_hosted_mcp_execute_shipments_result_matches_advertised_schema():
+    async def handler(_context, arguments):
         return {"job_id": VALID_JOB_ID, "status": "running"}
 
     contract = exportable_mcp_tool("execute_shipments")
@@ -374,6 +785,7 @@ async def test_hosted_mcp_bound_handler_result_matches_advertised_schema():
     ],
 )
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("all_scopes_context")
 async def test_real_mcp_rejects_canaries_in_every_scalar_family(
     caplog,
     tool_name,
@@ -381,7 +793,7 @@ async def test_real_mcp_rejects_canaries_in_every_scalar_family(
     unsafe_result,
     canary,
 ):
-    async def handler(_arguments):
+    async def handler(_context, _arguments):
         return unsafe_result
 
     contract = exportable_mcp_tool(tool_name)
@@ -448,13 +860,14 @@ async def test_real_mcp_rejects_canaries_in_every_scalar_family(
     ],
 )
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("all_scopes_context")
 async def test_real_mcp_rejects_canaries_in_every_input_identifier(
     tool_name,
     arguments,
 ):
     handler_called = False
 
-    async def handler(_arguments):
+    async def handler(_context, _arguments):
         nonlocal handler_called
         handler_called = True
         return {}
@@ -475,6 +888,7 @@ async def test_real_mcp_rejects_canaries_in_every_input_identifier(
 @pytest.mark.parametrize("family", list(ShipAgentIdFamily))
 @pytest.mark.parametrize("canary_body", PREFIXED_COMPACT_CANARY_BODIES)
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("all_scopes_context")
 async def test_real_mcp_rejects_prefixed_compact_canaries_for_every_id_family(
     caplog,
     family,
@@ -554,7 +968,7 @@ async def test_real_mcp_rejects_prefixed_compact_canaries_for_every_id_family(
     tool_name, arguments, unsafe_result, handler_expected = cases[family]
     handler_called = False
 
-    async def handler(_arguments):
+    async def handler(_context, _arguments):
         nonlocal handler_called
         handler_called = True
         return unsafe_result
@@ -576,6 +990,7 @@ async def test_real_mcp_rejects_prefixed_compact_canaries_for_every_id_family(
 
 @pytest.mark.parametrize("async_failure", [False, True])
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("all_scopes_context")
 async def test_direct_handler_failures_have_no_provider_or_exception_leakage(
     caplog,
     async_failure,
@@ -584,10 +999,10 @@ async def test_direct_handler_failures_have_no_provider_or_exception_leakage(
         "handler credential and private recipient at confidential address"
     )
 
-    def sync_handler(_arguments):
+    def sync_handler(_context, _arguments):
         raise RuntimeError(sensitive_failure)
 
-    async def async_handler(_arguments):
+    async def async_handler(_context, _arguments):
         raise RuntimeError(sensitive_failure)
 
     handler = async_handler if async_failure else sync_handler
@@ -618,8 +1033,9 @@ async def test_direct_handler_failures_have_no_provider_or_exception_leakage(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("all_scopes_context")
 async def test_direct_projection_failure_has_no_exception_context(caplog):
-    async def handler(_arguments):
+    async def handler(_context, _arguments):
         return {
             "job_id": "projection credential and private recipient address",
             "status": "running",
@@ -653,16 +1069,17 @@ async def test_direct_projection_failure_has_no_exception_context(caplog):
 
 @pytest.mark.parametrize("async_failure", [False, True])
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("all_scopes_context")
 async def test_real_mcp_handler_failures_are_provider_and_log_safe(
     caplog,
     async_failure,
 ):
     sensitive_failure = "handler token with private customer and address"
 
-    def sync_handler(_arguments):
+    def sync_handler(_context, _arguments):
         raise RuntimeError(sensitive_failure)
 
-    async def async_handler(_arguments):
+    async def async_handler(_context, _arguments):
         raise RuntimeError(sensitive_failure)
 
     handler = async_handler if async_failure else sync_handler
@@ -727,12 +1144,13 @@ async def test_real_mcp_handler_failures_are_provider_and_log_safe(
     ],
 )
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("all_scopes_context")
 async def test_hosted_mcp_projection_failures_are_provider_and_log_safe(
     caplog,
     failure_mode,
     unsafe_result,
 ):
-    async def handler(arguments):
+    async def handler(_context, arguments):
         return unsafe_result
 
     contract = exportable_mcp_tool("execute_shipments")
@@ -771,3 +1189,29 @@ async def test_hosted_mcp_projection_failures_are_provider_and_log_safe(
         "17 Confidential Avenue",
     ):
         assert sensitive_value not in provider_and_log_output
+
+
+def test_status_schema_admits_every_capability_the_relay_publishes():
+    from src.control_plane.execution_targets import PUBLIC_STATUS_CAPABILITIES
+
+    schema = tool("get_shipagent_status").output_schema
+    capability_enum = set(
+        schema["properties"]["executionTarget"]["properties"]["capabilities"]["items"][
+            "enum"
+        ]
+    )
+
+    assert PUBLIC_STATUS_CAPABILITIES <= capability_enum
+
+
+def test_status_schema_admits_every_relay_target_state():
+    from src.control_plane.relay.protocol import RelayTargetState
+
+    schema = tool("get_shipagent_status").output_schema
+    states = {state.value for state in RelayTargetState}
+
+    assert set(schema["properties"]["status"]["enum"]) == states
+    assert (
+        set(schema["properties"]["executionTarget"]["properties"]["state"]["enum"])
+        == states
+    )

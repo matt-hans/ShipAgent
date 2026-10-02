@@ -43,7 +43,8 @@ ADDRESS_VALIDATION_GUIDANCE_CODES = [
     "carrier_validation_unavailable",
 ]
 
-SYSTEM_STATUS_CODES = ["ready", "degraded", "unavailable"]
+# Relay execution target states; mirrors RelayTargetState in the control plane.
+EXECUTION_TARGET_STATE_CODES = ["ready", "offline", "update_required"]
 LABEL_STATUS_CODES = ["pending", "ready", "unavailable"]
 SHIPAGENT_CAPABILITY_CODES = [
     "shipment_ingress",
@@ -53,6 +54,9 @@ SHIPAGENT_CAPABILITY_CODES = [
     "shipment_execution",
     "job_status",
     "label_handoff",
+    # Tool-name capabilities the relay execution target reports today.
+    "get_shipagent_status",
+    "rate_shipment",
 ]
 UPS_SERVICE_CODES = [code.value for code in ServiceCode]
 UPS_SERVICE_NAMES = list(SERVICE_CODE_NAMES.values())
@@ -112,9 +116,9 @@ PUBLIC_TOOLS = [
     public_tool(
         "get_shipagent_status",
         "Get shipagent status",
-        "Return operational status for the active account and device.",
+        "Return operational status for the active account execution target.",
         SideEffectClass.read,
-        ["account:read", "device:read"],
+        ["shipagent.status"],
         object_schema(
             {
                 "correlation_id": shipagent_id_schema(
@@ -126,22 +130,27 @@ PUBLIC_TOOLS = [
         ),
         object_schema(
             {
-                "status": {"type": "string", "enum": SYSTEM_STATUS_CODES},
-                "active_device_id": shipagent_id_schema(
-                    ShipAgentIdFamily.DEVICE,
-                    "Opaque ShipAgent execution device identifier.",
-                ),
-                "capabilities": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": SHIPAGENT_CAPABILITY_CODES,
+                "status": {"type": "string", "enum": EXECUTION_TARGET_STATE_CODES},
+                "executionTarget": object_schema(
+                    {
+                        "state": {
+                            "type": "string",
+                            "enum": EXECUTION_TARGET_STATE_CODES,
+                        },
+                        "capabilities": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": SHIPAGENT_CAPABILITY_CODES,
+                            },
+                            "maxItems": len(SHIPAGENT_CAPABILITY_CODES),
+                            "uniqueItems": True,
+                        },
                     },
-                    "maxItems": len(SHIPAGENT_CAPABILITY_CODES),
-                    "uniqueItems": True,
-                },
+                    ["state", "capabilities"],
+                ),
             },
-            ["status", "active_device_id", "capabilities"],
+            ["status", "executionTarget"],
         ),
         provider_export_enabled=True,
     ),
@@ -169,7 +178,6 @@ PUBLIC_TOOLS = [
             },
             ["input_reference"],
         ),
-        provider_export_enabled=True,
     ),
     public_tool(
         "validate_shipment_address",
@@ -206,7 +214,6 @@ PUBLIC_TOOLS = [
             },
             ["validation_artifact_id", "valid", "guidance_codes"],
         ),
-        provider_export_enabled=True,
     ),
     public_tool(
         "get_shipment_rates",
@@ -272,7 +279,6 @@ PUBLIC_TOOLS = [
         ),
         ui_resource="ui://shipagent/rates.html",
         execution_target_required=True,
-        provider_export_enabled=True,
     ),
     public_tool(
         "prepare_shipments",
@@ -312,7 +318,6 @@ PUBLIC_TOOLS = [
         ),
         ui_resource="ui://shipagent/preview.html",
         execution_target_required=True,
-        provider_export_enabled=True,
     ),
     public_tool(
         "execute_shipments",
@@ -351,7 +356,6 @@ PUBLIC_TOOLS = [
         prepare_tool="prepare_shipments",
         ui_resource="ui://shipagent/confirmation.html",
         execution_target_required=True,
-        provider_export_enabled=True,
     ),
     public_tool(
         "get_job_status",
@@ -381,7 +385,6 @@ PUBLIC_TOOLS = [
             },
             ["job_id", "status"],
         ),
-        provider_export_enabled=True,
     ),
     public_tool(
         "create_label_download",
@@ -408,6 +411,5 @@ PUBLIC_TOOLS = [
             },
             ["label_artifact_id", "status"],
         ),
-        provider_export_enabled=True,
     ),
 ]

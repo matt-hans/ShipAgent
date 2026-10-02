@@ -2103,6 +2103,7 @@ dependencies = [
     { name = "ups-mcp" },
     { name = "uvicorn" },
     { name = "watchdog" },
+    { name = "websockets" },
     { name = "xmltodict" },
 ]
 
@@ -2154,6 +2155,7 @@ requires-dist = [
     { name = "ups-mcp", git = "https://github.com/matt-hans/ups-mcp.git?rev=f4eee8d8e598cf7000ddb7120f7bb6a03c21317a" },
     { name = "uvicorn", specifier = ">=0.23.0" },
     { name = "watchdog", specifier = ">=4.0.0" },
+    { name = "websockets", specifier = ">=16.0" },
     { name = "xmltodict", specifier = ">=0.13.0" },
 ]
 provides-extras = ["dev"]

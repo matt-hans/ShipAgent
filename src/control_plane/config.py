@@ -33,3 +33,11 @@ class ControlPlaneSettings(BaseSettings):
     auth0_audience: str = ""
     relay_signing_secret: str = Field(default="", min_length=0)
     control_plane_schema: str = "shipagent_private"
+    auth0_provider_clients: dict[str, str] = Field(
+        default_factory=lambda: {
+            "chatgpt-client": "chatgpt",
+            "claude-client": "claude_ai",
+            "desktop-client": "desktop",
+            "operator-client": "operator",
+        }
+    )

@@ -241,8 +241,10 @@ def test_project_result_validates_against_schema():
             "get_shipagent_status",
             {
                 "status": "ready",
-                "active_device_id": VALID_DEVICE_ID,
-                "capabilities": ["shipment_ingress"],
+                "executionTarget": {
+                    "state": "ready",
+                    "capabilities": ["shipment_ingress"],
+                },
             },
         ),
         (
@@ -289,26 +291,34 @@ def test_real_public_contract_rejects_data_smuggled_in_status(
             "get_shipagent_status",
             {
                 "status": "ready",
-                "active_device_id": VALID_DEVICE_ID,
-                "capabilities": ["shipment_ingress"],
+                "executionTarget": {
+                    "state": "ready",
+                    "capabilities": ["shipment_ingress"],
+                },
             },
             {
                 "status": "ready",
-                "active_device_id": "https://private.invalid/device",
-                "capabilities": ["shipment_ingress"],
+                "executionTarget": {
+                    "state": "https://private.invalid/device",
+                    "capabilities": ["shipment_ingress"],
+                },
             },
         ),
         (
             "get_shipagent_status",
             {
                 "status": "ready",
-                "active_device_id": VALID_DEVICE_ID,
-                "capabilities": ["shipment_ingress"],
+                "executionTarget": {
+                    "state": "ready",
+                    "capabilities": ["shipment_ingress"],
+                },
             },
             {
                 "status": "ready",
-                "active_device_id": VALID_DEVICE_ID,
-                "capabilities": ["Bearer projection-credential"],
+                "executionTarget": {
+                    "state": "ready",
+                    "capabilities": ["Bearer projection-credential"],
+                },
             },
         ),
         (

@@ -55,7 +55,10 @@ def test_every_provider_visible_identifier_schema_uses_its_exact_family_format()
         assert_identifiers(contract.input_schema)
         assert_identifiers(contract.output_schema)
 
-    assert seen_fields == set(PROVIDER_VISIBLE_FIELD_FAMILIES)
+    # The relay status tool replaced active_device_id with executionTarget.state, so
+    # the registered device field is reserved until a public tool exposes it again.
+    reserved_unused_fields = {"active_device_id"}
+    assert seen_fields == set(PROVIDER_VISIBLE_FIELD_FAMILIES) - reserved_unused_fields
 
 
 def test_public_provider_contract_rejects_handwritten_permissive_identifier_schema():
