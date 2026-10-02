@@ -55,9 +55,9 @@ UPS_SERVICE_CODES = [code.value for code in ServiceCode]
 UPS_SERVICE_NAMES = list(SERVICE_CODE_NAMES.values())
 RATE_CURRENCY_CODES = [DEFAULT_CURRENCY_CODE]
 
-PROVIDER_ECHO_TEXT_PATTERN = r"^[^\\x00-\\x1f]{1,500}$"
+PROVIDER_ECHO_TEXT_PATTERN = r"^[^\x00-\x1f\x7f]{1,500}$"
 PROVIDER_ECHO_TEXT_MAX_LENGTH = 500
-SIGNED_LABEL_URL_PATTERN = r"^https://[^\\s]{1,2040}$"
+SIGNED_LABEL_URL_PATTERN = r"^https://[^\s\x00-\x1f\x7f]{1,2040}$"
 MONEY_PATTERN = r"^(0|[1-9][0-9]{0,9})\.[0-9]{2}$"
 _ISO_DATE_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 
@@ -432,7 +432,11 @@ PUBLIC_TOOLS = [
             "minted by the Execution Target flow, single-use, and bound to an "
             "Auth0 browser session of the same Cloud Account; possession alone "
             "is not authorization. Bytes stream desktop-to-browser with no "
-            "cloud persistence. Only ready labels carry download_url."
+            "cloud persistence. Projection enforces only shape: https, no "
+            "whitespace/credentials/fragment, ready status, and "
+            "expires_in_seconds <= 300 accompanying the URL. Signature "
+            "verification, single-use and account binding are deferred "
+            "trusted-minting obligations and are NOT enforced here."
         ),
     ),
 ]

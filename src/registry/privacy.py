@@ -28,7 +28,8 @@ class DataOrigin(StrEnum):
 
 
 # Canonical sensitive-key vocabularies shared by the registry, request controls
-# and result projection.
+# and result projection. Exact lowercase keys checked at runtime; the schema-time
+# token sets below (_KEY_QUALIFIER_TOKENS etc.) must stay consistent with them.
 CREDENTIAL_ARGUMENT_KEYS = frozenset(
     {
         "secret",

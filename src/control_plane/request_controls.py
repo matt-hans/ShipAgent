@@ -28,7 +28,7 @@ def _canonicalize_argument_value(value):
         return {
             key: (
                 "[redacted]"
-                if key.lower() in _SENSITIVE_ARGUMENT_KEYS
+                if key.lower() in CREDENTIAL_ARGUMENT_KEYS
                 else _canonicalize_argument_value(val)
             )
             for key, val in value.items()
@@ -38,9 +38,6 @@ def _canonicalize_argument_value(value):
     if isinstance(value, tuple):
         return [_canonicalize_argument_value(item) for item in value]
     return value
-
-
-_SENSITIVE_ARGUMENT_KEYS = CREDENTIAL_ARGUMENT_KEYS
 
 
 def hash_arguments(arguments: Mapping[str, object]) -> str:

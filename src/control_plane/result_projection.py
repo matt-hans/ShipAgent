@@ -8,6 +8,7 @@ from jsonschema import validate
 from src.registry.models import ToolContract
 from src.registry.privacy import (
     ALWAYS_FORBIDDEN_RESULT_KEYS,
+    EXPIRES_IN_FIELD,
     LOCAL_DATA_RESULT_KEYS,
     DataOrigin,
 )
@@ -107,6 +108,16 @@ def _result_value(result: Mapping[str, Any], dotted_path: str) -> Any:
     return node
 
 
+def _has_control_chars(text: str, *, allow_space: bool) -> bool:
+    """Report control characters (and whitespace unless allowed) in text."""
+    return any(
+        ord(ch) < 0x20
+        or ord(ch) == 0x7F
+        or (not allow_space and (ch.isspace() or ch in "\u0085\u2028\u2029"))
+        for ch in text
+    )
+
+
 def _assert_provider_origins(
     contract: ToolContract,
     result: dict,
@@ -116,16 +127,39 @@ def _assert_provider_origins(
     for path in contract.provider_originated_fields:
         if _result_value(result, path) is None:
             continue
-        if (field_origins or {}).get(path) != DataOrigin.provider_supplied:
+        origin = (field_origins or {}).get(path)
+        # Identity check: a plain string equal to the enum value is not trusted
+        # service metadata and must not unlock echo.
+        if (
+            not isinstance(origin, DataOrigin)
+            or origin is not DataOrigin.provider_supplied
+        ):
             raise ValueError(f"provider-originated field {path} lacks provider origin")
+        value = _result_value(result, path)
+        if isinstance(value, str) and _has_control_chars(value, allow_space=True):
+            raise ValueError(f"provider-originated field {path} has control characters")
 
 
 def _assert_signed_download_urls(contract: ToolContract, result: dict) -> None:
-    """Allow only plain https signed URLs; never credentials or other schemes."""
+    """Allow only plain https signed URLs that carry a short expiry and ready status.
+
+    Shape checks only: signature verification, single-use and account binding
+    are deferred trusted-minting obligations (ADR 0007), not enforced here.
+    """
     for path in contract.signed_download_fields:
         url = _result_value(result, path)
         if url is None:
             continue
+        parent, _, _ = path.rpartition(".")
+        prefix = f"{parent}." if parent else ""
+        if _result_value(result, f"{prefix}{EXPIRES_IN_FIELD}") is None:
+            raise ValueError(
+                f"signed download URL at {path} requires {EXPIRES_IN_FIELD}"
+            )
+        if _result_value(result, f"{prefix}status") != "ready":
+            raise ValueError(f"signed download URL at {path} requires ready status")
+        if isinstance(url, str) and _has_control_chars(url, allow_space=False):
+            raise ValueError(f"signed download URL at {path} is not allowed")
         try:
             parsed = urlsplit(url) if isinstance(url, str) else None
             valid = (
