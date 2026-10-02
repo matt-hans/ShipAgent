@@ -238,9 +238,56 @@ class TestStartupRecovery:
         assert marker not in caplog.text
         assert "UNSAFE_STARTUP_JOB_REFERENCE" not in caplog.text
         assert (
-            "startup_recovery_complete action=recovery recovered=0 "
-            "needs_review=1 unresolved=0" in caplog.text
+            "startup_recovery_complete action=recovery job_id=unknown "
+            "recovered=0 needs_review=1 unresolved=0" in caplog.text
         )
+
+    @pytest.mark.asyncio
+    async def test_recovery_failure_log_includes_canonical_job_id_only(
+        self,
+        caplog,
+    ) -> None:
+        """Server-generated UUID job ids are traceable; error text is not logged."""
+        job_id = "123e4567-e89b-42d3-a456-426614174000"
+        marker = "UNSAFE_RECOVERY_EXCEPTION_TEXT"
+        mock_engine = AsyncMock()
+        mock_engine.recover_in_flight_rows = AsyncMock(side_effect=Exception(marker))
+
+        with (
+            patch("src.api.main.BatchEngine", return_value=mock_engine),
+            patch("src.api.main.BatchEngine.cleanup_staging", return_value=0),
+            patch("src.api.main.UPSMCPClient", return_value=AsyncMock()),
+        ):
+            mock_js = MagicMock()
+            mock_job = MagicMock()
+            mock_job.id = job_id
+            mock_js.list_jobs.return_value = [mock_job]
+            in_flight_row = MagicMock()
+            in_flight_row.status = "in_flight"
+            mock_js.get_rows.return_value = [in_flight_row]
+
+            await run_startup_recovery(MagicMock(), mock_js)
+
+        assert f"job_id={job_id}" in caplog.text
+        assert marker not in caplog.text
+
+    def test_reaper_delete_failure_log_includes_job_id_only(self, caplog) -> None:
+        """Reaper delete failures name the UUID job without the error text."""
+        from src.api.main import _reap_orphan_pending_jobs
+
+        job_id = "123e4567-e89b-42d3-a456-426614174001"
+        stale = MagicMock()
+        stale.id = job_id
+        stale.created_at = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+        mock_js = MagicMock()
+        mock_js.list_jobs.return_value = [stale]
+        mock_js.get_rows.return_value = []
+        mock_js.delete_job.side_effect = RuntimeError("UNSAFE_DELETE_TEXT")
+
+        assert _reap_orphan_pending_jobs(mock_js) == 0
+
+        assert f"job_id={job_id}" in caplog.text
+        assert "UNSAFE_DELETE_TEXT" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_ups_unavailable_graceful_fallback(self) -> None:

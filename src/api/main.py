@@ -294,6 +294,14 @@ def _parse_iso_timestamp(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _safe_job_ref(job_id: object) -> str:
+    """Return a log-safe job reference: canonical UUID text, else ``unknown``."""
+    try:
+        return str(uuid.UUID(str(job_id)))
+    except (ValueError, AttributeError, TypeError):
+        return "unknown"
+
+
 def _reap_orphan_pending_jobs(job_service: object) -> int:
     """Delete stale pending jobs with zero rows (crash leftovers)."""
     from src.services.job_service import JobService
@@ -333,8 +341,9 @@ def _reap_orphan_pending_jobs(job_service: object) -> int:
                 deleted += 1
         except Exception:
             logger.warning(
-                "orphan_job_reaper_failed action=delete_job "
-                "error_code=E-4001 failure_count=1"
+                "orphan_job_reaper_failed action=delete_job job_id=%s "
+                "error_code=E-4001 failure_count=1",
+                _safe_job_ref(job.id),
             )
     return deleted
 
@@ -411,16 +420,18 @@ async def run_startup_recovery(db: object, job_service: object) -> None:
                     rows,
                 )
                 logger.info(
-                    "startup_recovery_complete action=recovery recovered=%d "
-                    "needs_review=%d unresolved=%d",
+                    "startup_recovery_complete action=recovery job_id=%s "
+                    "recovered=%d needs_review=%d unresolved=%d",
+                    _safe_job_ref(job.id),
                     recovery_result["recovered"],
                     recovery_result["needs_review"],
                     recovery_result["unresolved"],
                 )
             except Exception:
                 logger.error(
-                    "startup_recovery_failed action=recovery "
+                    "startup_recovery_failed action=recovery job_id=%s "
                     "error_code=E-4001 failure_count=%d",
+                    _safe_job_ref(job.id),
                     len(rows),
                 )
 

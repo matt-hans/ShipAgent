@@ -172,15 +172,54 @@ reads `SHIPAGENT_BIND_HOST`, not the host uvicorn binds, so
 Launchers (`daemon`, `bundle_entry`) pass the real host and are covered. Not
 introduced by the merge; tracked as **#48**, a blocker for #32.
 
-## Tracked evidence directory
+## Findings-branch working reports (removed from PR #49)
 
 `.superpowers/sdd/final-review-fixes-report.md` and
-`.superpowers/sdd/final-review-round-14-findings.md` are tracked on purpose as
-preserved findings-branch review evidence even though `.gitignore` lists
-`.superpowers/*` (they were force-added on the findings branch; `a4a4bd1` has
-none). A regex scan (API-key, cloud-key, token and private-key patterns) over
-`.superpowers/` found no secrets. They are historical reports, not proof of
-merged correctness.
+`.superpowers/sdd/final-review-round-14-findings.md` were force-added on the
+findings branch despite `.gitignore` listing `.superpowers/*` (`a4a4bd1` has
+none). PR review (LOOP-PR49-REVIEW1, S1) flagged them as agent transcripts that
+add review noise, so they were `git rm`-ed from this branch. The contents are
+**not lost**: both files, byte-identical (sha256/sha1 verified against the
+removed blobs), plus the rest of `.superpowers/sdd/`, are in the out-of-tree
+archive `~/ShipAgent-issue31-reconciliation/artifacts/findings-worktree-ignored-superpowers-sdd.tgz`
+(listed in that directory's `SHA256SUMS`). They remain recoverable from earlier
+commits of this branch (`git show 9ac6c61:.superpowers/sdd/<file>`) and from
+`artifacts/issue31-all-refs.bundle`. A regex scan for key/token/private-key
+patterns over `.superpowers/` found no secrets. They were historical reports,
+not proof of merged correctness.
+
+## Launcher, compose, and listener behaviour changes
+
+These ride along with the preserved hardening commits and were not described in
+issue #31 itself (LOOP-PR49-REVIEW1 S2/ST6):
+
+- `docker-compose.yml`: `SHIPAGENT_API_KEY` is now **required** (`:?`); compose
+  fails fast unless a generated 32+ character key is set. Compose also loads
+  `docker.env` after `.env`.
+- `docker.env` (new): `SHIPAGENT_AUTH_MODE=auth0` and
+  `SHIPAGENT_BIND_HOST=0.0.0.0` for the container only. The `auth0` value is
+  used to step outside the `fake_local` loopback-only gate in
+  `validate_startup_security`; it does not configure Auth0 (that function only
+  checks `fake_local`). The real protection for this listener is the required
+  API key plus `validate_desktop_listener_security`.
+- `Dockerfile` `CMD`: `uvicorn src.api.main:app --host 0.0.0.0` was replaced by
+  `python -m src.bundle_entry serve --host 0.0.0.0`, so the container goes
+  through the same listener gate as the desktop launchers (see #48 for the
+  direct-`uvicorn` bypass that remains).
+- `scripts/start-backend.sh`: honours `SHIPAGENT_ENV_FILE` (default `.env`) and
+  `SHIPAGENT_PYTHON` (default `.venv/bin/python`).
+- `scripts/bundle_backend.sh`: runs `shipagent-frontend/scripts/link-remotes.sh`
+  after the production frontend build.
+- `shipagent-frontend/apps/shell/proxy.conf.json`: dev proxy target `8000` to
+  `8080`, matching `SHIPAGENT_PORT`'s default.
+- `src-tauri`: `withGlobalTauri: true` and `"local": true` capability; the
+  `connect-src http://127.0.0.1:*` CSP is unchanged (needed because the
+  sidecar port is OS-assigned). Not exercised by a Tauri build in this PR.
+- Startup recovery and orphan-reaper logs carry a bounded structured message
+  plus `job_id` (only when it is a canonical UUID; otherwise `unknown`) and
+  never include exception text.
+
+Rollback: revert the PR commit(s); none of these change persisted data.
 
 ## Alembic `search_path` check (mixed-case schema)
 

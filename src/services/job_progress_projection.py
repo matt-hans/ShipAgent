@@ -23,12 +23,14 @@ _PROCESSED_STATUSES = {
 
 
 def _bounded_nonnegative_int(value: Any, upper_bound: int) -> int:
+    """Clamp an int to [0, upper_bound]; non-int and bool values become 0."""
     if isinstance(value, bool) or not isinstance(value, int):
         return 0
     return max(0, min(value, upper_bound))
 
 
 def _bounded_sum(values: list[Any]) -> int:
+    """Sum positive ints, ignoring malformed values and saturating at the cap."""
     total = 0
     for value in values:
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -52,6 +54,7 @@ class AuthoritativeJobProgress:
     omitted_failure_count: int
 
     def row_failures_json(self) -> list[dict[str, Any]]:
+        """Return row failure diagnostics as JSON-ready dicts."""
         return [diagnostic.model_dump(mode="json") for diagnostic in self.row_failures]
 
 
