@@ -77,6 +77,7 @@ async def test_alembic_downgrade_preserves_preexisting_postgres_schema() -> None
 
     try:
         from alembic.config import Config
+        from alembic.script import ScriptDirectory
 
         from alembic import command
     except Exception as exc:  # pragma: no cover - environment without alembic package
@@ -117,7 +118,12 @@ async def test_alembic_downgrade_preserves_preexisting_postgres_schema() -> None
 
         await asyncio.to_thread(command.upgrade, alembic_cfg, "head")
 
-        expected = {"cloud_accounts", "provider_connections", "audit_events"}
+        expected = {
+            "cloud_accounts",
+            "provider_connections",
+            "audit_events",
+            "relay_devices",
+        }
         async with engine.connect() as connection:
             table_result = await connection.execute(
                 text(
@@ -125,7 +131,12 @@ async def test_alembic_downgrade_preserves_preexisting_postgres_schema() -> None
                         SELECT table_name
                         FROM information_schema.tables
                         WHERE table_schema = :schema
-                          AND table_name IN ('cloud_accounts', 'provider_connections', 'audit_events')
+                          AND table_name IN (
+                            'cloud_accounts',
+                            'provider_connections',
+                            'audit_events',
+                            'relay_devices'
+                          )
                         """
                 ),
                 {"schema": schema},
@@ -135,7 +146,9 @@ async def test_alembic_downgrade_preserves_preexisting_postgres_schema() -> None
             revision = await connection.scalar(
                 text(f'SELECT version_num FROM "{schema}".alembic_version')
             )
-            assert revision == "20260609_0001"
+            assert revision == ScriptDirectory.from_config(
+                alembic_cfg
+            ).get_current_head()
 
         async with session_factory() as session:
             account = CloudAccount(id=str(uuid.uuid4()), auth0_subject="subject-1")
