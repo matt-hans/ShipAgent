@@ -69,3 +69,16 @@ def test_wal_mode_enabled():
     with engine.connect() as conn:
         result = conn.execute(text("PRAGMA journal_mode;")).scalar()
         assert result == "wal", f"Expected WAL mode, got {result}"
+
+
+def test_shipagent_data_dir_env_overrides_data_log_and_db(tmp_path):
+    """SHIPAGENT_DATA_DIR relocates data, labels, logs and the default DB."""
+    import sys
+    override = tmp_path / "app data"
+    with patch.dict(os.environ, {"SHIPAGENT_DATA_DIR": str(override)}):
+        for frozen in (True, False):
+            with patch.object(sys, "frozen", frozen, create=True):
+                assert get_data_dir() == override
+                assert get_labels_dir() == override / "labels"
+                assert get_log_dir() == override / "logs"
+                assert get_default_db_path() == override / "shipagent.db"

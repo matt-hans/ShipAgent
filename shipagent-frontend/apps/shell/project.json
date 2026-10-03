@@ -75,6 +75,7 @@
           "apps/shell/src/styles.css"
         ],
         "polyfills": [
+          "apps/shell/src/desktop-boot.ts",
           "zone.js",
           "es-module-shims"
         ]

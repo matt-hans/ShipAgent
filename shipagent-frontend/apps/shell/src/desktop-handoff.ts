@@ -56,3 +56,34 @@ export async function handoffToSidecarShell(
   location.replace(`http://127.0.0.1:${port}/`);
   return true;
 }
+
+interface BootRoot {
+  textContent: string | null;
+}
+
+interface RunDesktopBootOptions extends SidecarHandoffOptions {
+  readonly root?: BootRoot | null;
+  readonly report?: (error: unknown) => void;
+}
+
+/**
+ * Hand off to the sidecar shell from the polyfills entry. A failure is shown in
+ * the document rather than leaving a blank window.
+ */
+export async function runDesktopBoot(
+  options: RunDesktopBootOptions = {}
+): Promise<void> {
+  try {
+    await handoffToSidecarShell(options);
+  } catch (error) {
+    (options.report ?? console.error)(error);
+    const root =
+      options.root === undefined
+        ? document.querySelector('app-root')
+        : options.root;
+    if (root) {
+      const detail = error instanceof Error ? error.message : String(error);
+      root.textContent = `ShipAgent could not start its local service: ${detail}`;
+    }
+  }
+}

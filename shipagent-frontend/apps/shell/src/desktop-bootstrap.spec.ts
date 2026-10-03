@@ -1,5 +1,5 @@
 import { canUseTauriIpc, computeApiBaseUrl } from '@shipagent/shared-tauri';
-import { handoffToSidecarShell } from './desktop-handoff';
+import { handoffToSidecarShell, runDesktopBoot } from './desktop-handoff';
 import { startShell } from './shell-startup';
 
 describe('production desktop bootstrap', () => {
@@ -24,45 +24,52 @@ describe('production desktop bootstrap', () => {
     expect(replace).toHaveBeenCalledWith('http://127.0.0.1:43123/');
   });
 
-  it('does not initialize federation or Angular before the sidecar reload', async () => {
-    const initializeFederation = vi.fn();
-    const bootstrapAngular = vi.fn();
+  it('reports a visible error instead of a blank window when the sidecar fails', async () => {
+    const root = { textContent: '' };
+    const report = vi.fn();
 
-    const result = await startShell({
-      handoffToSidecar: vi.fn().mockResolvedValue(true),
-      initializeFederation,
-      bootstrapAngular,
+    await runDesktopBoot({
+      location: {
+        protocol: 'tauri:',
+        hostname: 'localhost',
+        port: '',
+        replace: vi.fn(),
+      },
+      invoke: vi.fn().mockRejectedValue('Backend binary not found'),
+      root,
+      report,
     });
 
-    expect(result).toBe('handed-off');
-    expect(initializeFederation).not.toHaveBeenCalled();
-    expect(bootstrapAngular).not.toHaveBeenCalled();
+    expect(root.textContent).toContain('Backend binary not found');
+    expect(report).toHaveBeenCalledOnce();
   });
 
-  it('boots once without native IPC when reloaded from the sidecar origin', async () => {
+  it('leaves the document untouched when the boot hands off or is not packaged', async () => {
+    const root = { textContent: 'unchanged' };
     const invoke = vi.fn();
-    const replace = vi.fn();
+
+    await runDesktopBoot({
+      location: {
+        protocol: 'http:',
+        hostname: '127.0.0.1',
+        port: '43123',
+        replace: vi.fn(),
+      },
+      invoke,
+      root,
+      report: vi.fn(),
+    });
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(root.textContent).toBe('unchanged');
+  });
+
+  it('always initializes federation and Angular on the normal shell path', async () => {
     const initializeFederation = vi.fn();
     const bootstrapAngular = vi.fn();
 
-    const result = await startShell({
-      handoffToSidecar: () =>
-        handoffToSidecarShell({
-          location: {
-            protocol: 'http:',
-            hostname: '127.0.0.1',
-            port: '43123',
-            replace,
-          },
-          invoke,
-        }),
-      initializeFederation,
-      bootstrapAngular,
-    });
+    await startShell({ initializeFederation, bootstrapAngular });
 
-    expect(result).toBe('bootstrapped');
-    expect(invoke).not.toHaveBeenCalled();
-    expect(replace).not.toHaveBeenCalled();
     expect(initializeFederation).toHaveBeenCalledOnce();
     expect(bootstrapAngular).toHaveBeenCalledOnce();
   });

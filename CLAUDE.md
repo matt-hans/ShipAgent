@@ -237,7 +237,7 @@ shipagent-frontend/                     # Angular 21 + Nx + Native Federation
 
 src-tauri/                          # Tauri v2 desktop wrapper (Rust)
 ├── src/main.rs                     # Sidecar lifecycle — spawn, port discovery, timeout handling
-├── tauri.conf.json                 # Bundle config, CSP, auto-updater (Ed25519), resources
+├── tauri.conf.json                 # Bundle config, CSP, resources (auto-updater NOT configured: `plugins` is empty)
 ├── Cargo.toml                      # Rust deps (tauri v2, shell plugin, updater plugin)
 ├── entitlements.plist              # macOS code-signing entitlements (Keychain access)
 └── capabilities/                   # Tauri permission grants (shell, dialog, updater)
@@ -313,7 +313,7 @@ All endpoints use `/api/v1/` prefix. See route files in `src/api/routes/` for fu
 
 | Component | Technology |
 |-----------|------------|
-| Desktop App | Tauri v2 (Rust), tauri-plugin-shell, tauri-plugin-updater (Ed25519) |
+| Desktop App | Tauri v2 (Rust), tauri-plugin-shell, tauri-plugin-updater (Ed25519; inactive until `plugins.updater` is configured) |
 | Backend | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
 | Bundling | PyInstaller (one-folder), `bundle_entry.py` subcommand dispatch |
 | Runtime Adapter | Claude Agent SDK adapter (`claude-agent-sdk>=0.1.22`), Anthropic API, extensible provider adapters |
@@ -469,6 +469,8 @@ All enums inherit from both `str` and `Enum` for JSON serialization.
 
 ## Known Issues
 
+- **Desktop startup path:** the packaged window loads `tauri://localhost`; `apps/shell/src/desktop-boot.ts` (first entry of the shell `polyfills`, a native module script) invokes `start_sidecar` and replaces the document with the sidecar-served shell at `http://127.0.0.1:<port>/`. The handoff deliberately does not live in `main`: es-module-shims' init waits on a blob classic script that the Tauri CSP blocks without any `error` handling, so the `module-shim` `main` graph never starts on the custom-protocol origin.
+- Isolated runs/tests: `SHIPAGENT_DATA_DIR` relocates data, labels, logs and the default DB; set `SHIPAGENT_KEYRING_DISABLED=1` and synthetic credentials so nothing touches real app data or the keychain. `scripts/bundle_backend.sh` smoke test already does this.
 - SSE/streaming tests may hang — use `pytest -k "not stream and not sse and not progress"`
 - After backend restart, Shopify connection lost (in-memory) — call `GET /api/v1/platforms/shopify/env-status`
 - EDI adapter test collection errors (10 tests, unrelated to core features)
@@ -497,7 +499,7 @@ All extensions MUST integrate through agent tools/MCP and follow canonical data 
 ## Roadmap (Agent Capabilities)
 
 - **P0 — International Shipping (CA/MX)**: COMPLETE.
-- **P0 — Production Packaging**: COMPLETE — Tauri v2, PyInstaller, keyring, settings, onboarding, CI/CD, auto-updater.
+- **P0 — Production Packaging**: COMPLETE except auto-update — Tauri v2, PyInstaller, keyring, settings, onboarding, CI/CD. The updater plugin is only registered when `plugins.updater` (Ed25519 pubkey + endpoints) is configured in `tauri.conf.json`; it is not configured today, so desktop builds do not auto-update.
 - **P0 — Address Book**: COMPLETE — `ContactService` + `contacts.py` tool module with @handle resolution.
 - **P1 — Multi-Carrier (FedEx, USPS)**: New MCP servers per carrier, `compare_carriers` tool. Not started.
 - **P2 — Google Sheets, Webhooks**: New adapters/tools. Not started.
