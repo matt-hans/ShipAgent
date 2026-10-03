@@ -30,8 +30,9 @@ worktree-local locked environments:
   13; control plane 431 passed, 1 skipped.
 - Migrations: SQLite and disposable PostgreSQL 17 up/down/up chains pass;
   control-plane PostgreSQL tests pass.
-- Frontend (Node 20.20.2): `npm ci`, lint, 185 unit tests and production build
-  pass; authenticated production and development-proxy smoke tests pass.
+- Frontend (Node 20.20.2): `npm ci`, lint, typecheck, 186 unit tests and production
+  build pass; authenticated production and development-proxy smoke tests passed
+  on the earlier baseline and were not rerun after the polyfills change.
 - Packaging: PyInstaller sidecar builds on Python 3.12 and its hermetic smoke
   test (throwaway `SHIPAGENT_DATA_DIR`, keyring disabled) reports a port and
   passes `/health`. The build logs `Hidden import 'calamine' not found`; the warning is unresolved and its runtime
