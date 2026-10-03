@@ -53,7 +53,9 @@ async def test_denies_filter_spec_without_root() -> None:
     assert result.code is PolicyDenialCode.INVALID_FILTER_STRUCTURE
 
 
-async def test_denies_resolve_filter_intent_with_invalid_operator_without_echo() -> None:
+async def test_denies_resolve_filter_intent_with_invalid_operator_without_echo() -> (
+    None
+):
     engine = RuntimePolicyEngine(interactive_shipping=False)
     leaky = "Jane 1 Main St jane@example.com"
 
@@ -90,7 +92,9 @@ async def test_allows_well_formed_filter_calls() -> None:
 
 
 @pytest.mark.parametrize("interactive", [True, False])
-async def test_denies_direct_shipment_creation_in_either_mode(interactive: bool) -> None:
+async def test_denies_direct_shipment_creation_in_either_mode(
+    interactive: bool,
+) -> None:
     engine = RuntimePolicyEngine(interactive_shipping=interactive)
 
     result = await engine.check_pre_tool(_call("mcp__ups__create_shipment"))
