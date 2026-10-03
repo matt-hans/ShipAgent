@@ -319,6 +319,42 @@ class TestProgressStream:
         assert payload["data"]["total_rows"] == 5
         assert "event" not in event
 
+    @pytest.mark.asyncio
+    async def test_cancelling_a_stream_waiting_for_events_releases_subscription(
+        self, test_db: Session, sample_job: Job
+    ):
+        """A task blocked on the next event unsubscribes when cancelled in flight."""
+        response = await stream_progress(_ConnectedRequest(), sample_job.id, db=test_db)
+        waiting = asyncio.ensure_future(anext(response.body_iterator))
+        await asyncio.sleep(0.05)  # let the generator block on the empty queue
+        assert not waiting.done()
+        assert sse_observer.has_subscribers(sample_job.id)
+
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        await response.body_iterator.aclose()
+
+        assert not sse_observer.has_subscribers(sample_job.id)
+
+    @pytest.mark.asyncio
+    async def test_disconnected_client_ends_stream_and_releases_subscription(
+        self, test_db: Session, sample_job: Job
+    ):
+        """The generator stops on client disconnect without yielding more events."""
+
+        class _DisconnectedRequest:
+            async def is_disconnected(self) -> bool:
+                return True
+
+        response = await stream_progress(
+            _DisconnectedRequest(), sample_job.id, db=test_db
+        )
+        events = [event async for event in response.body_iterator]
+
+        assert events == []
+        assert not sse_observer.has_subscribers(sample_job.id)
+
 
 @pytest.mark.asyncio
 async def test_sse_api_serializer_never_emits_raw_row_failure_text():

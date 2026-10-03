@@ -24,19 +24,31 @@ Evidence recorded on 2026-10-02, all against disposable databases and
 worktree-local locked environments:
 
 - Backend: ruff clean; full pytest suite passes with hermetic environment
-  isolation (see the PR for the final count).
+  isolation: `4376 passed, 33 skipped` in 66 s (2026-10-03, branch head plus the
+  review-fix commit). Focused suites in the same tree: registry 250 passed;
+  hosted 248 passed, 12 skipped; security 31; provider adapters 20; packaging
+  13; control plane 431 passed, 1 skipped.
 - Migrations: SQLite and disposable PostgreSQL 17 up/down/up chains pass;
   control-plane PostgreSQL tests pass.
 - Frontend (Node 20.20.2): `npm ci`, lint, 185 unit tests and production build
   pass; authenticated production and development-proxy smoke tests pass.
-- Packaging: PyInstaller sidecar builds on Python 3.12 and starts, reporting its
-  port with `/health` and the shell returning 200; the same holds for the copy
-  bundled inside the Tauri `.app`. `cargo tauri build --bundles app` succeeds
-  (tauri-cli 2.12.1). The desktop shell previously aborted at startup because
-  the updater plugin was registered without `plugins.updater` configuration; it
-  is now registered only when configured. The in-webview sidecar handoff was
-  not driven end to end, and auto-update remains off until a real Ed25519
-  updater key is provisioned.
+- Packaging: PyInstaller sidecar builds on Python 3.12 and its hermetic smoke
+  test (throwaway `SHIPAGENT_DATA_DIR`, keyring disabled) reports a port and
+  passes `/health`. The build logs `Hidden import 'calamine' not found`; the warning is unresolved and its runtime
+  effect has not been investigated. `cargo tauri build --bundles app`
+  (tauri-cli 2.12.1) succeeds for debug and release.
+- Desktop startup: the shell previously aborted at launch because the updater
+  plugin was registered without `plugins.updater`; it is now registered only
+  when configured. The packaged window then stayed blank because the sidecar
+  handoff lived in `main`, loaded through es-module-shims, whose init waits on a
+  blob classic script the CSP blocks (no `error` handler, so it hangs silently).
+  The handoff now runs from the native `polyfills` entry. Verified once each on a
+  debug and a release `.app` built on this machine with isolated data and
+  synthetic credentials: the app spawned its own
+  `backend-dist/shipagent-core` child (parent = app PID) and the window reached
+  the sidecar-served onboarding screen, with the default CSP and no diagnostic
+  invoke. The DMG, code signing, and other machines are not verified. Auto-update remains off until a real Ed25519 updater key is
+  provisioned; `capabilities/default.json` still grants `updater:default`.
 - Deferred: issue #51 (hosted grant authority/store) stays deferred and blocks
   enabling the dormant public mutation tools.
 

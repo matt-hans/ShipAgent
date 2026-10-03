@@ -6,6 +6,7 @@ for clean start/stop/status lifecycle.
 
 import logging
 import os
+import re
 import signal
 import sys
 from pathlib import Path
@@ -17,14 +18,37 @@ logger = logging.getLogger(__name__)
 
 # The daemon is recognised by what it runs, never by the repository path it
 # happens to live under (any process started from a ShipAgent checkout would
-# otherwise look like a daemon and block `daemon start`).
-_DAEMON_EXECUTABLES = frozenset({"shipagent", "shipagent-core", "uvicorn"})
-_DAEMON_MODULES = frozenset(
-    {"shipagent", "uvicorn", "src.api.main", "src.bundle_entry", "src.cli.main"}
+# otherwise look like a daemon and block `daemon start`). A command qualifies
+# only as an exact launcher plus the subcommand that actually serves:
+#   shipagent [opts] daemon start | shipagent-core serve | uvicorn src.api.main:app
+# optionally behind an interpreter (`python /bin/shipagent ...`, `python -m ...`).
+_APP_TARGET = "src.api.main:app"
+_INTERPRETER = r"(?:(?:/.*/)?python[\d.]*\s+)"
+_EXECUTABLE_RE = re.compile(
+    rf"^{_INTERPRETER}?(?:/.*/)?(?P<exe>shipagent-core|shipagent|uvicorn)(?P<rest>(?:\s.*)?)$"
 )
-# Launcher positions that may name the daemon: the executable itself, or the
-# script after an interpreter (`python /path/bin/shipagent ...`).
-_LAUNCHER_TOKEN_COUNT = 2
+_MODULE_RE = re.compile(
+    r"^(?:/.*/)?python[\d.]*\s+-m\s+(?P<module>\S+)(?P<rest>(?:\s.*)?)$"
+)
+# Launcher name -> predicate over the remaining argument tokens.
+_MODULE_LAUNCHERS = {
+    "shipagent": "shipagent",
+    "src.cli.main": "shipagent",
+    "src.bundle_entry": "shipagent-core",
+    "uvicorn": "uvicorn",
+    "src.api.main": "uvicorn",
+}
+
+
+def _serves(launcher: str, args: list[str]) -> bool:
+    """Return True if ``args`` start the daemon/server for ``launcher``."""
+    if launcher == "shipagent":
+        return any(
+            a == "daemon" and b == "start" for a, b in zip(args, args[1:], strict=False)
+        )
+    if launcher == "shipagent-core":
+        return "serve" in args
+    return _APP_TARGET in args
 
 
 def write_pid_file(pid_file: str, pid: int) -> None:
@@ -69,23 +93,28 @@ def remove_pid_file(pid_file: str) -> None:
 
 
 def is_daemon_command(cmdline: str) -> bool:
-    """Return True if a process command line is a ShipAgent daemon launcher.
+    """Return True if a process command line is a running ShipAgent daemon.
 
     Args:
         cmdline: Full command line as reported by ``ps -o command=``.
 
     Returns:
-        True when the launcher executable/script or ``-m`` module is a known
-        ShipAgent server entry point; paths of unrelated processes never match.
+        True only for an exact launcher (``shipagent``, ``shipagent-core``,
+        ``uvicorn``, or those via ``python -m``) carrying the serving
+        subcommand. Other ShipAgent subcommands, editors, pagers, and anything
+        merely under a ShipAgent path never match. Paths may contain spaces.
     """
-    tokens = cmdline.split()
-    launchers = tokens[:_LAUNCHER_TOKEN_COUNT]
-    if any(t.rsplit("/", 1)[-1].lower() in _DAEMON_EXECUTABLES for t in launchers):
-        return True
-    return any(
-        flag == "-m" and module.lower() in _DAEMON_MODULES
-        for flag, module in zip(tokens, tokens[1:], strict=False)
-    )
+    line = cmdline.strip()
+    module_match = _MODULE_RE.match(line)
+    if module_match:
+        launcher = _MODULE_LAUNCHERS.get(module_match["module"].lower())
+        return launcher is not None and _serves(
+            launcher, module_match["rest"].split()
+        )
+    exe_match = _EXECUTABLE_RE.match(line)
+    if exe_match:
+        return _serves(exe_match["exe"], exe_match["rest"].split())
+    return False
 
 
 def is_pid_alive(pid: int) -> bool:

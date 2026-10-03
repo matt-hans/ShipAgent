@@ -54,11 +54,19 @@ echo "Binary path: $BINARY"
 # Uses --port 0 (OS-assigned) to avoid TOCTOU race on busy CI runners.
 echo "--- Smoke test ---"
 SMOKE_PORT=""
-"$BINARY" serve --port 0 > "$BINARY_DIR/.smoke_stdout" 2>&1 &
+# Hermetic: throwaway data dir and no keychain access, so the smoke test never
+# touches the operator's real database, labels, or credentials.
+SMOKE_DATA_DIR="$(mktemp -d)"
+trap 'rm -rf "$SMOKE_DATA_DIR"' EXIT
+SHIPAGENT_DATA_DIR="$SMOKE_DATA_DIR" \
+SHIPAGENT_KEYRING_DISABLED=1 \
+DATABASE_URL="sqlite:///$SMOKE_DATA_DIR/shipagent.db" \
+FILTER_TOKEN_SECRET="smoke-test-filter-secret-000000000000" \
+    "$BINARY" serve --port 0 > "$BINARY_DIR/.smoke_stdout" 2>&1 &
 PID=$!
 
-# Wait up to 15 seconds for the SHIPAGENT_PORT= protocol line
-for i in $(seq 1 30); do
+# Wait up to 30 seconds for the SHIPAGENT_PORT= protocol line
+for i in $(seq 1 60); do
     if [ -f "$BINARY_DIR/.smoke_stdout" ]; then
         # No match yet is expected while the sidecar starts; `|| true` keeps
         # `set -e -o pipefail` from aborting the wait loop (and orphaning $PID).

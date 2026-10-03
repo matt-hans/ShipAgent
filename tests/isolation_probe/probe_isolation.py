@@ -4,9 +4,15 @@
 ``test_b`` (collected after it) must observe a clean process. They are run both
 in the normal suite and, by ``tests/test_environment_isolation.py``, in a
 subprocess whose parent environment is polluted with ShipAgent variables.
+
+The file name deliberately does not match ``test_*.py``: the main suite must
+not collect it (``test_c`` is only meaningful with ``SHIPAGENT_TEST_PROBE``
+exported), so it runs only when named explicitly by the isolation tests.
 """
 
 import os
+
+import pytest
 
 LEAK_NAME = "SHIPAGENT_API_KEY"
 AUTH_AND_LISTENER_SETTINGS = (
@@ -29,8 +35,6 @@ def test_b_no_auth_or_listener_environment_visible():
 
 def test_c_explicit_test_configuration_is_preserved():
     """SHIPAGENT_TEST_* variables are deliberate test inputs and survive the scrub."""
-    import pytest
-
     if "SHIPAGENT_TEST_PROBE" not in os.environ:
         pytest.skip("only meaningful when the parent exports SHIPAGENT_TEST_PROBE")
     assert os.environ["SHIPAGENT_TEST_PROBE"] == "kept"

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-PROBE_DIR = "tests/isolation_probe"
+PROBE_FILE = "tests/isolation_probe/probe_isolation.py"
 SUBPROCESS_TIMEOUT_SECONDS = 120
 
 
@@ -19,7 +19,7 @@ def test_ambient_shipagent_environment_does_not_reach_tests():
     environment["SHIPAGENT_AUTH_MODE"] = "auth0"
 
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", PROBE_DIR, "-q", "-p", "no:cacheprovider"],
+        [sys.executable, "-m", "pytest", PROBE_FILE, "-q", "-p", "no:cacheprovider"],
         cwd=PROJECT_ROOT,
         env=environment,
         capture_output=True,
@@ -40,7 +40,7 @@ def test_explicit_shipagent_test_variables_are_preserved():
             sys.executable,
             "-m",
             "pytest",
-            f"{PROBE_DIR}/test_probe.py::test_c_explicit_test_configuration_is_preserved",
+            f"{PROBE_FILE}::test_c_explicit_test_configuration_is_preserved",
             "-q",
             "-p",
             "no:cacheprovider",
