@@ -20,7 +20,9 @@ registry exports, and CLI.
 - `src/services/conversation_runtime/` owns provider-neutral model/runtime
   contracts, OpenAI/Gemini adapters, fake-provider tests, tool catalog projection,
   policy gates, local tool dispatch, safe tool-result projection, and runtime
-  session loops.
+  session loops. Policy gates return the vendor-free `PolicyDecision` /
+  `PolicyDenialCode` from `src/services/policy_decision.py`; only
+  `src/orchestrator/agent/hooks.py` projects them into Claude hook envelopes.
 - `src/orchestrator/agent/` owns the Claude Agent SDK compatibility adapter,
   dynamic system prompt, mode-aware tool registration, hooks, and deterministic
   tool handlers used by Claude and by neutral workflow wrappers.

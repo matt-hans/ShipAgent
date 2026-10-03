@@ -12,6 +12,7 @@ from src.services.conversation_runtime.models import (
     ProviderToolResult,
 )
 from src.services.conversation_runtime.policy import RuntimePolicyEngine
+from src.services.policy_decision import GENERIC_DENIAL_REASON, PolicyDecision
 from src.utils.redaction import sanitize_error_message
 
 logger = logging.getLogger(__name__)
@@ -532,8 +533,6 @@ _SAFE_STRING_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-",
 )
 
-_GENERIC_POLICY_DENIAL_CONTENT = "Tool call denied by policy."
-
 
 class LocalToolDispatcher:
     def __init__(
@@ -557,7 +556,7 @@ class LocalToolDispatcher:
     async def execute(self, call: ProviderToolCall) -> ProviderToolResult:
         decision = await self.policy.check_pre_tool(call)
         if not decision.allowed:
-            content = _policy_denial_content(decision.reason)
+            content = _policy_denial_content(decision)
             return ProviderToolResult(
                 call_id=call.call_id,
                 tool_name=call.tool_name,
@@ -644,16 +643,9 @@ def _generic_error_content(tool_name: str) -> str:
     return f"{tool_name} failed."
 
 
-def _policy_denial_content(reason: str) -> str:
-    if reason.startswith(
-        (
-            "Raw SQL keys ",
-            "Direct mcp__ups__",
-            "Direct shipment creation ",
-        )
-    ):
-        return sanitize_error_message(reason) or _GENERIC_POLICY_DENIAL_CONTENT
-    return _GENERIC_POLICY_DENIAL_CONTENT
+def _policy_denial_content(decision: PolicyDecision) -> str:
+    # Decision reasons are fixed safe text by contract; still sanitize defensively.
+    return sanitize_error_message(decision.reason) or GENERIC_DENIAL_REASON
 
 
 def _detect_dispatch_error(
