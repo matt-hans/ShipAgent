@@ -131,7 +131,7 @@ class RuntimePolicyEngine:
             PolicyDenialCode.RAW_SQL_NOT_ALLOWED,
             f"Raw SQL keys {sorted(found_keys)} are not allowed in "
             f"{call.tool_name}. Use resolve_filter_intent to create a "
-            "filter_spec instead."
+            "filter_spec instead.",
         )
 
     def _validate_filter_structure(self, call: ProviderToolCall) -> PolicyDecision | None:
