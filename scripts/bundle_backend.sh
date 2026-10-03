@@ -57,7 +57,9 @@ SMOKE_PORT=""
 # Hermetic: throwaway data dir and no keychain access, so the smoke test never
 # touches the operator's real database, labels, or credentials.
 SMOKE_DATA_DIR="$(mktemp -d)"
-trap 'rm -rf "$SMOKE_DATA_DIR"' EXIT
+PID=""
+# Also stop the smoke sidecar on any abort (set -e) so it is never orphaned.
+trap '[ -n "$PID" ] && kill "$PID" 2>/dev/null; rm -rf "$SMOKE_DATA_DIR"' EXIT
 SHIPAGENT_DATA_DIR="$SMOKE_DATA_DIR" \
 SHIPAGENT_KEYRING_DISABLED=1 \
 DATABASE_URL="sqlite:///$SMOKE_DATA_DIR/shipagent.db" \
@@ -121,7 +123,7 @@ PY
 IMPORT_BODY=$(curl -s -X POST "$BASE_URL/api/v1/data-sources/import" \
     -H 'Content-Type: application/json' \
     -d "{\"type\":\"excel\",\"file_path\":\"$SMOKE_XLSX\"}" || true)
-echo "$IMPORT_BODY" | grep -q '"row_count": *2' || smoke_fail "Excel import ($IMPORT_BODY)"
+echo "$IMPORT_BODY" | grep -Eq '"row_count": *2[^0-9]' || smoke_fail "Excel import ($IMPORT_BODY)"
 echo "Excel import: PASSED"
 
 kill $PID 2>/dev/null || true

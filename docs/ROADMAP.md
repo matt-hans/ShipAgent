@@ -22,8 +22,7 @@ Issue #32 establishes the validated baseline in
 independent review), branch `codex/issue32-validated-baseline`, based on main
 `6db9e41` (PR #53 merge, after the reconciliation PRs #49, #50, #52 and #53 closed
 issues #31 and #42–#48). Candidate head reviewed so far: `690be08`; the review-2
-blocker fixes are in the commit that follows it on the same branch (PR #54 lists
-the final head). Evidence recorded 2026-10-02 and 2026-10-03, against disposable
+blocker fixes are in `dcb3b5a` on the same branch (PR #54 lists the final head). Evidence recorded 2026-10-02 and 2026-10-03, against disposable
 databases, isolated data directories and worktree-local locked environments:
 
 - Backend: ruff check clean; full pytest suite passes with hermetic environment
