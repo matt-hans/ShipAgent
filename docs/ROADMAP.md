@@ -1,6 +1,6 @@
 # ShipAgent development roadmap
 
-Updated 2026-10-01. This is the entry point for current development priorities,
+Updated 2026-10-03. This is the entry point for current development priorities,
 implemented milestones, and the specifications that govern remaining work.
 ShipAgent owns conversation orchestration and deterministic shipping workflows;
 model providers and client surfaces connect through adapters.
@@ -17,38 +17,55 @@ tickets can start.
 
 ## Current baseline
 
-Issue #32 establishes the validated baseline on branch
-`codex/issue32-validated-baseline`, based on main `6db9e41` (PR #53 merge, after
-the reconciliation PRs #49, #50, #52 and #53 closed issues #31 and #42–#48).
-Evidence recorded on 2026-10-02, all against disposable databases and
-worktree-local locked environments:
+Issue #32 establishes the validated baseline in
+[PR #54](https://github.com/matt-hans/ShipAgent/pull/54) (draft; merge pending
+independent review), branch `codex/issue32-validated-baseline`, based on main
+`6db9e41` (PR #53 merge, after the reconciliation PRs #49, #50, #52 and #53 closed
+issues #31 and #42–#48). Candidate head reviewed so far: `690be08`; the review-2
+blocker fixes are in the commit that follows it on the same branch (PR #54 lists
+the final head). Evidence recorded 2026-10-02 and 2026-10-03, against disposable
+databases, isolated data directories and worktree-local locked environments:
 
-- Backend: ruff clean; full pytest suite passes with hermetic environment
-  isolation: `4376 passed, 33 skipped` in 66 s (2026-10-03, branch head plus the
-  review-fix commit). Focused suites in the same tree: registry 250 passed;
-  hosted 248 passed, 12 skipped; security 31; provider adapters 20; packaging
-  13; control plane 431 passed, 1 skipped.
-- Migrations: SQLite and disposable PostgreSQL 17 up/down/up chains pass;
-  control-plane PostgreSQL tests pass.
-- Frontend (Node 20.20.2): `npm ci`, lint, typecheck, 186 unit tests and production
+- Backend: ruff check clean; full pytest suite passes with hermetic environment
+  isolation: `4387 passed, 33 skipped` (2026-10-03, review-2 fix tree). Focused
+  suites on `690be08`: registry 250 passed; hosted 248 passed, 12 skipped;
+  security 31; provider adapters 20; packaging 13; control plane 431 passed,
+  1 skipped. Drift/privacy coverage (provider-artifact drift, contract and
+  privacy/redaction suites) is inside the hosted, security and provider-adapter
+  counts above and in the full run.
+- Migrations: SQLite and disposable PostgreSQL 17 up/down/up chains passed on
+  2026-10-02 (revision `20260723_0003`). They were not rerun: no model or
+  alembic change since commit `5e21a0c` (2026-10-01) — `git diff 6db9e41..HEAD`
+  over `src/db` and `alembic` is empty.
+- Frontend (Node 20.x): `npm ci`, lint, typecheck, 186 unit tests and production
   build pass; authenticated production and development-proxy smoke tests passed
-  on the earlier baseline and were not rerun after the polyfills change.
-- Packaging: PyInstaller sidecar builds on Python 3.12 and its hermetic smoke
-  test (throwaway `SHIPAGENT_DATA_DIR`, keyring disabled) reports a port and
-  passes `/health`. The build logs `Hidden import 'calamine' not found`; the warning is unresolved and its runtime
-  effect has not been investigated. `cargo tauri build --bundles app`
-  (tauri-cli 2.12.1) succeeds for debug and release.
-- Desktop startup: the shell previously aborted at launch because the updater
-  plugin was registered without `plugins.updater`; it is now registered only
-  when configured. The packaged window then stayed blank because the sidecar
-  handoff lived in `main`, loaded through es-module-shims, whose init waits on a
-  blob classic script the CSP blocks (no `error` handler, so it hangs silently).
-  The handoff now runs from the native `polyfills` entry. Verified once each on a
-  debug and a release `.app` built on this machine with isolated data and
-  synthetic credentials: the app spawned its own
-  `backend-dist/shipagent-core` child (parent = app PID) and the window reached
-  the sidecar-served onboarding screen, with the default CSP and no diagnostic
-  invoke. The DMG, code signing, and other machines are not verified. Auto-update remains off until a real Ed25519 updater key is
+  on 2026-10-03 (independent review run) after the polyfills change. No frontend
+  source changed afterwards, so they were not rerun.
+- Packaging: PyInstaller sidecar builds on Python 3.12. Its hermetic smoke test
+  (throwaway `SHIPAGENT_DATA_DIR`, keyring disabled, synthetic secret) now
+  requires `/health`, `GET /api/v1/data-sources/status` = 200 and a synthetic
+  `.xlsx` import (2 rows) through the bundled data-source MCP child. Review 2
+  found that this path was broken in the frozen app and it is fixed: the
+  programmatic MCP clients spawned `python -m <module>` (rejected by the frozen
+  binary) instead of `mcp-data`/`mcp-external`/`mcp-ups`; and the spec lacked
+  `rich._unicode_data` submodules, `lupa.lua51` and fakeredis data that
+  fastmcp's `docket` needs at startup. The `calamine` hidden import was a wrong
+  module name (`python_calamine`). `.xls` import through calamine was not
+  exercised. `cargo tauri build --bundles app` (tauri-cli 2.12.1) succeeds.
+- Desktop: the shell previously aborted at launch because the updater plugin was
+  registered without `plugins.updater`; it is now registered only when
+  configured. The window then stayed blank because the sidecar handoff lived in
+  `main`, behind es-module-shims, whose init waits on a blob script the CSP
+  blocks; the handoff now runs from the native `polyfills` entry. Verified on a
+  release `.app` built on this machine with isolated data and synthetic
+  credentials: the app spawns its own `backend-dist/shipagent-core` child, the
+  window shows the onboarding screen, `data-sources/status` returns 200 and a
+  synthetic Excel import succeeds. Normal Apple-event quit and `SIGTERM` of the
+  app both leave no app, sidecar or MCP child (the app kills the exact retained
+  child on `RunEvent::Exit` and on SIGTERM). A crash or `SIGKILL` of the app
+  cannot be intercepted and leaves the sidecar running until stopped manually;
+  there is no automatic parent-death cleanup. DMG, code signing and other
+  machines are not verified. Auto-update remains off until a real Ed25519 key is
   provisioned; `capabilities/default.json` still grants `updater:default`.
 - Deferred: issue #51 (hosted grant authority/store) stays deferred and blocks
   enabling the dormant public mutation tools.

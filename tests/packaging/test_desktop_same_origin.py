@@ -131,7 +131,9 @@ def test_pyinstaller_spec_does_not_exclude_setuptools_vendored_distutils():
 def test_pyinstaller_spec_collects_the_app_module_uvicorn_imports_by_string():
     """bundle_entry serves "src.api.main:app" by string, so analysis cannot see it."""
     spec = (REPOSITORY_ROOT / "shipagent-core.spec").read_text()
-    hidden_imports = re.search(r"hiddenimports=\[(.*?)\],\s*hookspath", spec, re.DOTALL)
+    hidden_imports = re.search(
+        r"hiddenimports=.*?\[(.*?)\],\s*hookspath", spec, re.DOTALL
+    )
 
     assert hidden_imports is not None
     assert "'src.api.main'" in hidden_imports.group(1)
@@ -236,3 +238,42 @@ def test_remote_linker_fails_when_remote_entry_is_missing_from_nonempty_output(
 
     assert result.returncode != 0
     assert "chat-remote remoteEntry.json not found" in result.stdout
+
+
+def test_pyinstaller_spec_bundles_frozen_dynamic_imports():
+    spec = (REPOSITORY_ROOT / "shipagent-core.spec").read_text()
+
+    # rich imports rich._unicode_data.unicodeNN-N-N via importlib; without them
+    # every bundled stdio MCP child dies in the fastmcp banner.
+    assert "collect_submodules('rich._unicode_data')" in spec
+    assert "hiddenimports=rich_unicode_data + lupa_runtime + [" in spec
+    # fastmcp -> docket -> fakeredis: lua runtime by name + commands.json on disk.
+    assert "lupa_runtime = ['lupa.lua51']" in spec
+    assert "collect_data_files('fakeredis', include_py_files=True)" in spec
+    # The Excel adapter imports python_calamine, not "calamine".
+    assert "'python_calamine'" in spec
+    assert "'calamine'" not in spec
+
+
+def test_tauri_kills_owned_sidecar_on_exit_and_sigterm():
+    rust_main = (TAURI_ROOT / "src" / "main.rs").read_text()
+
+    assert "RunEvent::Exit" in rust_main
+    assert ".build(context)" in rust_main
+    # Kills the retained child handle, never a process found by name.
+    assert "guard.take()" in rust_main and "child.kill()" in rust_main
+    assert "pkill" not in rust_main and "killall" not in rust_main
+    assert "SignalKind::terminate()" in rust_main
+    assert '"signal"' in (TAURI_ROOT / "Cargo.toml").read_text()
+    assert "auto-kills on parent crash" not in rust_main
+
+
+def test_bundle_smoke_requires_data_source_status_and_excel_import():
+    bundler = (REPOSITORY_ROOT / "scripts" / "bundle_backend.sh").read_text()
+
+    assert "/api/v1/data-sources/status" in bundler
+    assert '"$STATUS_CODE" = "200"' in bundler
+    assert "/api/v1/data-sources/import" in bundler
+    assert '"row_count": *2' in bundler
+    # Hermetic: synthetic workbook in the throwaway data dir.
+    assert "$SMOKE_DATA_DIR/smoke.xlsx" in bundler

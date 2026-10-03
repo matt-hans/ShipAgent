@@ -88,14 +88,41 @@ fi
 
 echo "Sidecar bound to port $SMOKE_PORT"
 
-if curl -sf "http://127.0.0.1:${SMOKE_PORT}/health" > /dev/null 2>&1; then
-    echo "Health check: PASSED"
-else
-    echo "Health check: FAILED"
+smoke_fail() {
+    echo "$1: FAILED"
     kill $PID 2>/dev/null || true
     rm -f "$BINARY_DIR/.smoke_stdout"
     exit 1
-fi
+}
+
+BASE_URL="http://127.0.0.1:${SMOKE_PORT}"
+curl -sf "$BASE_URL/health" > /dev/null 2>&1 || smoke_fail "Health check"
+echo "Health check: PASSED"
+
+# The data-source MCP child is this same binary, so a 200 here proves the
+# frozen app can spawn and handshake with a bundled MCP server.
+STATUS_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/api/v1/data-sources/status" || true)
+[ "$STATUS_CODE" = "200" ] || smoke_fail "Data-source status (HTTP $STATUS_CODE)"
+echo "Data-source status: PASSED"
+
+# Deterministic synthetic workbook proves the bundled Excel adapter imports.
+SMOKE_XLSX="$SMOKE_DATA_DIR/smoke.xlsx"
+.venv/bin/python - "$SMOKE_XLSX" <<'PY'
+import sys
+from openpyxl import Workbook
+
+wb = Workbook()
+ws = wb.active
+ws.append(["name", "city"])
+ws.append(["Alice Example", "Springfield"])
+ws.append(["Bob Example", "Shelbyville"])
+wb.save(sys.argv[1])
+PY
+IMPORT_BODY=$(curl -s -X POST "$BASE_URL/api/v1/data-sources/import" \
+    -H 'Content-Type: application/json' \
+    -d "{\"type\":\"excel\",\"file_path\":\"$SMOKE_XLSX\"}" || true)
+echo "$IMPORT_BODY" | grep -q '"row_count": *2' || smoke_fail "Excel import ($IMPORT_BODY)"
+echo "Excel import: PASSED"
 
 kill $PID 2>/dev/null || true
 wait $PID 2>/dev/null || true
