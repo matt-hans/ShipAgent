@@ -30,7 +30,7 @@ _EXECUTABLE_RE = re.compile(
 _MODULE_RE = re.compile(
     r"^(?:/.*/)?python[\d.]*\s+-m\s+(?P<module>\S+)(?P<rest>(?:\s.*)?)$"
 )
-# Launcher name -> predicate over the remaining argument tokens.
+# Module name -> canonical launcher name understood by ``_serves``.
 _MODULE_LAUNCHERS = {
     "shipagent": "shipagent",
     "src.cli.main": "shipagent",
@@ -108,9 +108,7 @@ def is_daemon_command(cmdline: str) -> bool:
     module_match = _MODULE_RE.match(line)
     if module_match:
         launcher = _MODULE_LAUNCHERS.get(module_match["module"].lower())
-        return launcher is not None and _serves(
-            launcher, module_match["rest"].split()
-        )
+        return launcher is not None and _serves(launcher, module_match["rest"].split())
     exe_match = _EXECUTABLE_RE.match(line)
     if exe_match:
         return _serves(exe_match["exe"], exe_match["rest"].split())

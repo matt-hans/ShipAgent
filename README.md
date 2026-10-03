@@ -24,7 +24,7 @@ Available as a native desktop app (macOS/Windows/Linux) or Docker deployment.
 
 ### Desktop App
 - **Native Desktop** — Tauri v2 desktop app for macOS
-- **Auto-Updater** — Ed25519-signed updates via GitHub Releases
+- **Auto-Updater** — Ed25519-signed updates via GitHub Releases; code is in place but inactive until a real updater key and `plugins.updater` config are provisioned
 - **Onboarding Wizard** — 3-step setup: Anthropic API key, UPS credentials, shipper address
 - **Settings Flyout** — Connections, shipment behavior, address book, custom commands
 
@@ -150,7 +150,7 @@ ShipAgent is moving toward a canonical workflow/tool registry. Public app-store 
 
 | Component | Technology |
 |-----------|------------|
-| **Desktop App** | Tauri v2 (Rust), tauri-plugin-shell, tauri-plugin-updater (Ed25519) |
+| **Desktop App** | Tauri v2 (Rust), tauri-plugin-shell, tauri-plugin-updater (registered only when `plugins.updater` is configured; currently not) |
 | **Backend** | Python 3.12+, FastAPI, SQLAlchemy, SQLite |
 | **Bundling** | PyInstaller (one-folder), `bundle_entry.py` subcommand dispatch |
 | **Runtime Adapter** | Claude Agent SDK adapter, Anthropic API, extensible provider adapters |
@@ -604,7 +604,7 @@ cargo tauri dev
 # Sync versions across pyproject.toml, tauri.conf.json, package.json
 ./scripts/bump-version.sh 1.2.3
 
-# Generate Ed25519 updater keypair
+# Generate Ed25519 updater keypair (only needed once auto-update is enabled)
 ./scripts/generate-updater-key.sh
 ```
 
@@ -744,7 +744,7 @@ shipagent/
 │   └── package.json                # Frontend scripts and dependencies
 ├── src-tauri/                      # Tauri v2 desktop wrapper (Rust)
 │   ├── src/main.rs                 # Sidecar lifecycle (spawn, port discovery, timeout)
-│   ├── tauri.conf.json             # Bundle config, CSP, auto-updater (Ed25519)
+│   ├── tauri.conf.json             # Bundle config, CSP (updater not configured)
 │   ├── Cargo.toml                  # Rust deps (tauri v2, shell plugin, updater plugin)
 │   ├── entitlements.plist          # macOS code-signing entitlements
 │   └── capabilities/              # Tauri permission grants
@@ -858,7 +858,7 @@ Follow the UPSMCPClient pattern:
 - [x] Phase 12: Decision Audit Ledger
 - [x] Phase 13: Chat Persistence & Universal Data Ingestion (JSON, XML, Fixed-Width)
 - [x] Phase 14: Address Book, Custom Commands, Settings UI
-- [x] Phase 15: Production Packaging (Tauri v2, PyInstaller, Keyring, Onboarding, Auto-Updater)
+- [x] Phase 15: Production Packaging (Tauri v2, PyInstaller, Keyring, Onboarding; auto-updater not yet enabled)
 - [x] Phase 16: Connection Management & Security Hardening
 
 ---

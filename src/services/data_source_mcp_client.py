@@ -18,6 +18,7 @@ from src.services.mapping_cache import (
     should_invalidate as mapping_cache_should_invalidate,
 )
 from src.services.mcp_client import MCPClient
+from src.utils.runtime import bundled_mcp_command
 
 # -- Gateway-local DTOs --------------------------------------------------------
 
@@ -93,9 +94,13 @@ class DataSourceMCPClient:
         Returns:
             Configured StdioServerParameters.
         """
+        command, args = bundled_mcp_command("mcp-data") or (
+            _get_python_command(),
+            ["-m", "src.mcp.data_source.server"],
+        )
         return StdioServerParameters(
-            command=_get_python_command(),
-            args=["-m", "src.mcp.data_source.server"],
+            command=command,
+            args=args,
             env={
                 "PYTHONPATH": _PROJECT_ROOT,
                 "PATH": os.environ.get("PATH", ""),
