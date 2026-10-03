@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(scriptDirectory, '..');
 const repositoryRoot = path.resolve(frontendRoot, '..');
-const frontendOrigin = 'http://127.0.0.1:4200';
+// `localhost`, as documented: the dev server may bind only ::1 or only 127.0.0.1.
+const frontendOrigin = 'http://localhost:4200';
 const backendOrigin = 'http://127.0.0.1:8080';
 
 function findPython() {

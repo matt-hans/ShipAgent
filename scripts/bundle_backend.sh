@@ -54,13 +54,25 @@ echo "Binary path: $BINARY"
 # Uses --port 0 (OS-assigned) to avoid TOCTOU race on busy CI runners.
 echo "--- Smoke test ---"
 SMOKE_PORT=""
-"$BINARY" serve --port 0 > "$BINARY_DIR/.smoke_stdout" 2>&1 &
+# Hermetic: throwaway data dir and no keychain access, so the smoke test never
+# touches the operator's real database, labels, or credentials.
+SMOKE_DATA_DIR="$(mktemp -d)"
+PID=""
+# Also stop the smoke sidecar on any abort (set -e) so it is never orphaned.
+trap '[ -n "$PID" ] && kill "$PID" 2>/dev/null; rm -rf "$SMOKE_DATA_DIR"' EXIT
+SHIPAGENT_DATA_DIR="$SMOKE_DATA_DIR" \
+SHIPAGENT_KEYRING_DISABLED=1 \
+DATABASE_URL="sqlite:///$SMOKE_DATA_DIR/shipagent.db" \
+FILTER_TOKEN_SECRET="smoke-test-filter-secret-000000000000" \
+    "$BINARY" serve --port 0 > "$BINARY_DIR/.smoke_stdout" 2>&1 &
 PID=$!
 
-# Wait up to 15 seconds for the SHIPAGENT_PORT= protocol line
-for i in $(seq 1 30); do
+# Wait up to 30 seconds for the SHIPAGENT_PORT= protocol line
+for i in $(seq 1 60); do
     if [ -f "$BINARY_DIR/.smoke_stdout" ]; then
-        SMOKE_PORT=$(grep -o 'SHIPAGENT_PORT=[0-9]*' "$BINARY_DIR/.smoke_stdout" | head -1 | cut -d= -f2)
+        # No match yet is expected while the sidecar starts; `|| true` keeps
+        # `set -e -o pipefail` from aborting the wait loop (and orphaning $PID).
+        SMOKE_PORT=$(grep -o 'SHIPAGENT_PORT=[0-9]*' "$BINARY_DIR/.smoke_stdout" | head -1 | cut -d= -f2 || true)
         if [ -n "$SMOKE_PORT" ]; then
             break
         fi
@@ -78,14 +90,41 @@ fi
 
 echo "Sidecar bound to port $SMOKE_PORT"
 
-if curl -sf "http://127.0.0.1:${SMOKE_PORT}/health" > /dev/null 2>&1; then
-    echo "Health check: PASSED"
-else
-    echo "Health check: FAILED"
+smoke_fail() {
+    echo "$1: FAILED"
     kill $PID 2>/dev/null || true
     rm -f "$BINARY_DIR/.smoke_stdout"
     exit 1
-fi
+}
+
+BASE_URL="http://127.0.0.1:${SMOKE_PORT}"
+curl -sf "$BASE_URL/health" > /dev/null 2>&1 || smoke_fail "Health check"
+echo "Health check: PASSED"
+
+# The data-source MCP child is this same binary, so a 200 here proves the
+# frozen app can spawn and handshake with a bundled MCP server.
+STATUS_CODE=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL/api/v1/data-sources/status" || true)
+[ "$STATUS_CODE" = "200" ] || smoke_fail "Data-source status (HTTP $STATUS_CODE)"
+echo "Data-source status: PASSED"
+
+# Deterministic synthetic workbook proves the bundled Excel adapter imports.
+SMOKE_XLSX="$SMOKE_DATA_DIR/smoke.xlsx"
+.venv/bin/python - "$SMOKE_XLSX" <<'PY'
+import sys
+from openpyxl import Workbook
+
+wb = Workbook()
+ws = wb.active
+ws.append(["name", "city"])
+ws.append(["Alice Example", "Springfield"])
+ws.append(["Bob Example", "Shelbyville"])
+wb.save(sys.argv[1])
+PY
+IMPORT_BODY=$(curl -s -X POST "$BASE_URL/api/v1/data-sources/import" \
+    -H 'Content-Type: application/json' \
+    -d "{\"type\":\"excel\",\"file_path\":\"$SMOKE_XLSX\"}" || true)
+echo "$IMPORT_BODY" | grep -Eq '"row_count": *2[^0-9]' || smoke_fail "Excel import ($IMPORT_BODY)"
+echo "Excel import: PASSED"
 
 kill $PID 2>/dev/null || true
 wait $PID 2>/dev/null || true

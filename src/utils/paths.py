@@ -7,6 +7,7 @@ In bundled mode (PyInstaller), paths use platform-appropriate directories:
   Linux: ~/.local/share/shipagent/  (future)
 """
 
+import os
 from pathlib import Path
 
 import platformdirs
@@ -24,7 +25,11 @@ def get_data_dir() -> Path:
 
     In dev mode: project root (where shipagent.db lives today).
     In bundled mode: platform user data dir.
+    ``SHIPAGENT_DATA_DIR`` overrides both (isolated runs, tests).
     """
+    override = os.environ.get("SHIPAGENT_DATA_DIR", "").strip()
+    if override:
+        return Path(override)
     if is_bundled():
         return Path(platformdirs.user_data_dir(_BUNDLE_ID, appauthor=False))
     # Dev mode: project root
@@ -42,7 +47,11 @@ def get_log_dir() -> Path:
 
     In dev mode: project root.
     In bundled mode: platform log dir (macOS: ~/Library/Logs/com.shipagent.app/).
+    ``SHIPAGENT_DATA_DIR`` overrides both (logs go to ``<dir>/logs``).
     """
+    override = os.environ.get("SHIPAGENT_DATA_DIR", "").strip()
+    if override:
+        return Path(override) / "logs"
     if is_bundled():
         return Path(platformdirs.user_log_dir(_BUNDLE_ID, appauthor=False))
     return Path(__file__).resolve().parent.parent.parent

@@ -5,7 +5,25 @@
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+
 block_cipher = None
+# Packages that read their own distribution metadata at import time
+# (importlib.metadata.version) fail in the frozen app without it.
+METADATA_PACKAGES = ['fastmcp', 'shipagent']
+package_metadata = [
+    item for name in METADATA_PACKAGES for item in copy_metadata(name)
+]
+# rich loads rich._unicode_data.unicodeNN-N-N by hyphenated name through
+# importlib, which static analysis cannot see; without them every stdio MCP
+# child dies in the fastmcp banner and data sources cannot connect.
+rich_unicode_data = collect_submodules('rich._unicode_data')
+# fastmcp -> docket -> fakeredis imports lupa.lua51 (default Lua runtime) by
+# name through importlib, so the compiled extension must be named explicitly.
+lupa_runtime = ['lupa.lua51']
+# fakeredis opens <pkg>/model/../commands.json; that path only resolves when
+# the model/ directory exists on disk, so ship the package sources as data too.
+fakeredis_data = collect_data_files('fakeredis', include_py_files=True)
 project_root = Path(SPECPATH)
 
 a = Analysis(
@@ -24,9 +42,10 @@ a = Analysis(
             ),
             'shipagent-frontend/dist/apps/shell/browser',
         ),
-    ],
-    hiddenimports=[
-        # FastAPI + Uvicorn
+    ] + package_metadata + fakeredis_data,
+    hiddenimports=rich_unicode_data + lupa_runtime + [
+        # FastAPI + Uvicorn (the ASGI app is imported by string at runtime)
+        'src.api.main',
         'uvicorn.logging',
         'uvicorn.lifespan.on',
         'uvicorn.lifespan.off',
@@ -52,7 +71,7 @@ a = Analysis(
         # Data formats
         'openpyxl',
         'xmltodict',
-        'calamine',
+        'python_calamine',
         # Credential storage
         'keyring',
         'keyring.backends',
@@ -88,7 +107,6 @@ a = Analysis(
         'setuptools',
         'pip',
         'wheel',
-        'distutils',
         '_pytest',
     ],
     win_no_prefer_redirects=False,

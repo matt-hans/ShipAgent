@@ -15,6 +15,7 @@ from typing import Any
 
 from mcp import StdioServerParameters
 from src.services.mcp_client import MCPClient
+from src.utils.runtime import bundled_mcp_command
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +63,13 @@ class ExternalSourcesMCPClient:
         Returns:
             Configured StdioServerParameters.
         """
+        command, args = bundled_mcp_command("mcp-external") or (
+            _get_python_command(),
+            ["-m", "src.mcp.external_sources.server"],
+        )
         return StdioServerParameters(
-            command=_get_python_command(),
-            args=["-m", "src.mcp.external_sources.server"],
+            command=command,
+            args=args,
             env={
                 "PYTHONPATH": _PROJECT_ROOT,
                 "PATH": os.environ.get("PATH", ""),
