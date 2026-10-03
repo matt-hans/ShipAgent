@@ -143,15 +143,17 @@ fn main() {
     let app = builder
         .manage(BackendProcess(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![start_sidecar])
-        .setup(|_app| {
+        .setup(|app| {
             // The trusted bootstrap calls `invoke('start_sidecar')` once and
             // navigates to the returned loopback origin.
+            #[cfg(not(unix))]
+            let _ = app;
             #[cfg(unix)]
             {
                 // A bare SIGTERM would end the app without any RunEvent; turn
                 // it into a normal exit so the sidecar is cleaned up.
                 use tokio::signal::unix::{signal, SignalKind};
-                let handle = _app.handle().clone();
+                let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     if let Ok(mut term) = signal(SignalKind::terminate()) {
                         term.recv().await;
