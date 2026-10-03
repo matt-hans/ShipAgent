@@ -2,66 +2,111 @@ import pytest
 
 from src.services.conversation_runtime.models import ProviderToolCall
 from src.services.conversation_runtime.policy import RuntimePolicyEngine
+from src.services.policy_decision import PolicyDecision, PolicyDenialCode
+
+
+def _call(tool_name: str, parsed_input: dict | None = None) -> ProviderToolCall:
+    return ProviderToolCall(
+        call_id="call-1",
+        tool_name=tool_name,
+        parsed_input=parsed_input or {},
+    )
+
+
+def test_allow_decision_has_no_denial_code_or_reason() -> None:
+    decision = PolicyDecision.allow()
+
+    assert decision.allowed is True
+    assert decision.code is None
+    assert decision.reason == ""
+
+
+def test_deny_decision_requires_stable_code_and_exposes_no_hook_envelope() -> None:
+    decision = PolicyDecision.deny(PolicyDenialCode.RAW_SQL_NOT_ALLOWED, "nope")
+
+    assert decision.allowed is False
+    assert decision.code is PolicyDenialCode.RAW_SQL_NOT_ALLOWED
+    assert decision.reason == "nope"
+    assert not hasattr(decision, "payload")
 
 
 async def test_denies_raw_sql_before_filter_structure_check() -> None:
     engine = RuntimePolicyEngine(interactive_shipping=False)
-    call = ProviderToolCall(
-        call_id="call-1",
-        tool_name="ship_command_pipeline",
-        parsed_input={"filter_spec": {"where_clause": "state='CA'"}},
+
+    result = await engine.check_pre_tool(
+        _call("ship_command_pipeline", {"filter_spec": {"where_clause": "state='CA'"}})
     )
 
-    result = await engine.check_pre_tool(call)
-
     assert result.allowed is False
-    assert result.payload["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "where_clause" in result.payload["hookSpecificOutput"][
-        "permissionDecisionReason"
-    ]
+    assert result.code is PolicyDenialCode.RAW_SQL_NOT_ALLOWED
+    assert "where_clause" in result.reason
 
 
 async def test_denies_filter_spec_without_root() -> None:
     engine = RuntimePolicyEngine(interactive_shipping=False)
-    call = ProviderToolCall(
-        call_id="call-1",
-        tool_name="ship_command_pipeline",
-        parsed_input={"filter_spec": {"status": "RESOLVED"}},
+
+    result = await engine.check_pre_tool(
+        _call("ship_command_pipeline", {"filter_spec": {"status": "RESOLVED"}})
     )
 
-    result = await engine.check_pre_tool(call)
-
     assert result.allowed is False
-    assert result.payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
-    assert result.payload["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "root" in result.reason
+    assert result.code is PolicyDenialCode.INVALID_FILTER_STRUCTURE
 
 
-async def test_denies_resolve_filter_intent_with_invalid_operator() -> None:
+async def test_denies_resolve_filter_intent_with_invalid_operator_without_echo() -> None:
     engine = RuntimePolicyEngine(interactive_shipping=False)
-    call = ProviderToolCall(
-        call_id="call-1",
-        tool_name="resolve_filter_intent",
-        parsed_input={
-            "intent": {
-                "root": {
-                    "logic": "AND",
-                    "conditions": [
-                        {
-                            "column": "state",
-                            "operator": "EXPLODE",
-                            "operands": [],
-                        }
-                    ],
+    leaky = "Jane 1 Main St jane@example.com"
+
+    result = await engine.check_pre_tool(
+        _call(
+            "resolve_filter_intent",
+            {
+                "intent": {
+                    "root": {
+                        "logic": "AND",
+                        "conditions": [
+                            {"column": "state", "operator": leaky, "operands": []}
+                        ],
+                    }
                 }
-            }
-        },
+            },
+        )
     )
 
-    result = await engine.check_pre_tool(call)
+    assert result.allowed is False
+    assert result.code is PolicyDenialCode.INVALID_FILTER_STRUCTURE
+    assert "jane" not in result.reason.lower()
+    assert "Main St" not in result.reason
+
+
+async def test_allows_well_formed_filter_calls() -> None:
+    engine = RuntimePolicyEngine(interactive_shipping=False)
+
+    result = await engine.check_pre_tool(
+        _call("fetch_rows", {"filter_spec": {"root": {"logic": "AND"}}})
+    )
+
+    assert result == PolicyDecision.allow()
+
+
+@pytest.mark.parametrize("interactive", [True, False])
+async def test_denies_direct_shipment_creation_in_either_mode(interactive: bool) -> None:
+    engine = RuntimePolicyEngine(interactive_shipping=interactive)
+
+    result = await engine.check_pre_tool(_call("mcp__ups__create_shipment"))
 
     assert result.allowed is False
-    assert "Invalid operator" in result.reason
+    assert result.code is PolicyDenialCode.DIRECT_SHIPMENT_CREATION_NOT_ALLOWED
+
+
+async def test_allow_never_grants_purchase_authority_to_shipment_tools() -> None:
+    """Allow is only 'not denied by this gate'; it carries no approval data."""
+    engine = RuntimePolicyEngine(interactive_shipping=True)
+
+    result = await engine.check_pre_tool(_call("preview_interactive_shipment"))
+
+    assert result.allowed is True
+    assert set(vars(result)) == {"allowed", "code", "reason"}
 
 
 @pytest.mark.parametrize(
@@ -98,6 +143,12 @@ async def test_denies_direct_ups_tools(
 
     assert result.allowed is False
     assert expected_wrapper in result.reason
+    expected_code = (
+        PolicyDenialCode.DIRECT_SHIPMENT_CREATION_NOT_ALLOWED
+        if tool_name == "mcp__ups__create_shipment"
+        else PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED
+    )
+    assert result.code is expected_code
 
 
 def test_post_tool_error_detection_for_dict_and_string() -> None:

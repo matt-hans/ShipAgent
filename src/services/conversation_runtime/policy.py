@@ -1,38 +1,19 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from typing import Any
 
 from src.orchestrator.models.filter_spec import FilterOperator
 from src.services.conversation_runtime.models import ProviderToolCall
+from src.services.policy_decision import (
+    GENERIC_DENIAL_REASON,
+    PolicyDecision,
+    PolicyDenialCode,
+)
 
 
-@dataclass(frozen=True)
-class PolicyDecision:
-    allowed: bool
-    payload: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def reason(self) -> str:
-        hook_output = self.payload.get("hookSpecificOutput")
-        if not isinstance(hook_output, dict):
-            return ""
-        reason = hook_output.get("permissionDecisionReason")
-        return reason if isinstance(reason, str) else ""
-
-
-def _deny(reason: str) -> PolicyDecision:
-    return PolicyDecision(
-        allowed=False,
-        payload={
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        },
-    )
+def _deny(code: PolicyDenialCode, reason: str) -> PolicyDecision:
+    return PolicyDecision.deny(code, reason)
 
 
 def _find_banned_keys_recursive(obj: Any, banned: set[str]) -> set[str]:
@@ -133,7 +114,7 @@ class RuntimePolicyEngine:
         if direct_ups_decision is not None:
             return direct_ups_decision
 
-        return PolicyDecision(allowed=True)
+        return PolicyDecision.allow()
 
     def _deny_raw_sql(self, call: ProviderToolCall) -> PolicyDecision | None:
         if call.tool_name not in self._FILTER_TOOLS:
@@ -147,6 +128,7 @@ class RuntimePolicyEngine:
             return None
 
         return _deny(
+            PolicyDenialCode.RAW_SQL_NOT_ALLOWED,
             f"Raw SQL keys {sorted(found_keys)} are not allowed in "
             f"{call.tool_name}. Use resolve_filter_intent to create a "
             "filter_spec instead."
@@ -164,8 +146,8 @@ class RuntimePolicyEngine:
             )
             if invalid_operator is not None:
                 return _deny(
-                    f"FilterIntent validation failed: Invalid operator "
-                    f"{invalid_operator!r}."
+                    PolicyDenialCode.INVALID_FILTER_STRUCTURE,
+                    GENERIC_DENIAL_REASON,
                 )
 
             return None
@@ -182,8 +164,8 @@ class RuntimePolicyEngine:
 
         if "root" not in filter_spec:
             return _deny(
-                "filter_spec must contain a 'root' field. "
-                "Use resolve_filter_intent to create a valid filter_spec."
+                PolicyDenialCode.INVALID_FILTER_STRUCTURE,
+                GENERIC_DENIAL_REASON,
             )
 
         return None
@@ -192,19 +174,21 @@ class RuntimePolicyEngine:
         if call.tool_name == "mcp__ups__create_shipment":
             if self.interactive_shipping:
                 return _deny(
+                    PolicyDenialCode.DIRECT_SHIPMENT_CREATION_NOT_ALLOWED,
                     "Direct shipment creation is not allowed in interactive mode. "
-                    "Use the preview_interactive_shipment tool instead."
+                    "Use the preview_interactive_shipment tool instead.",
                 )
             return _deny(
+                PolicyDenialCode.DIRECT_SHIPMENT_CREATION_NOT_ALLOWED,
                 "Interactive shipping is disabled. "
-                "Use batch processing for shipment creation."
+                "Use batch processing for shipment creation.",
             )
 
         reason = self._DIRECT_UPS_DENIAL_REASONS.get(call.tool_name)
         if reason is None:
             return None
 
-        return _deny(reason)
+        return _deny(PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED, reason)
 
     def detect_error_response(self, response: Any) -> bool:
         return _detect_error_response(response)
