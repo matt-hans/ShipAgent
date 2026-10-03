@@ -76,8 +76,9 @@ dispatcher use `PolicyDecision`/`PolicyDenialCode`; the Claude hook envelope is
 now a projection localized in `hooks.py`. Scripted-provider acceptance
 scenarios live in `tests/services/conversation_acceptance.py`. Issue #51 stays
 deferred; no dormant hosted tools were enabled. Evidence 2026-10-03: full
-`pytest` `4416 passed, 33 skipped` (isolated data dir, keyring off); `ruff check`
-clean. Claude SDK removal remains issue #40.
+`pytest` `4416 passed, 33 skipped` at implementation round 1 (isolated data dir,
+keyring off); after round 2 the full suite was not re-run, and the focused run
+is `273 passed`; `ruff check` clean. Claude SDK removal remains issue #40.
 
 Earlier statements about commit `a4a4bd1` are superseded by this baseline.
 
