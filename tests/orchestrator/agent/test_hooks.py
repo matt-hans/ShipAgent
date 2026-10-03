@@ -1199,3 +1199,46 @@ class TestSimplifiedFilterSpecHook:
         ]
         assert len(pipeline_matchers) == 1
         assert len(pipeline_matchers[0].hooks) == 2  # deny_raw_sql + validate_filter_spec
+
+
+class TestClaudeHookProjectionOfNeutralDecisions:
+    """The Claude hook envelope is a localized projection of PolicyDecision."""
+
+    def test_denied_decision_projects_to_pre_tool_use_envelope(self):
+        from src.orchestrator.agent.hooks import claude_hook_output
+        from src.services.policy_decision import PolicyDecision, PolicyDenialCode
+
+        output = claude_hook_output(
+            PolicyDecision.deny(PolicyDenialCode.RAW_SQL_NOT_ALLOWED, "blocked")
+        )
+
+        assert output == {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": "blocked",
+            }
+        }
+
+    def test_allowed_decision_projects_to_empty_dict(self):
+        from src.orchestrator.agent.hooks import claude_hook_output
+        from src.services.policy_decision import PolicyDecision
+
+        assert claude_hook_output(PolicyDecision.allow()) == {}
+
+    @pytest.mark.asyncio
+    async def test_raw_sql_hook_denial_matches_neutral_engine_code(self):
+        from src.orchestrator.agent.hooks import deny_raw_sql_in_filter_tools
+        from src.services.conversation_runtime.models import ProviderToolCall
+        from src.services.conversation_runtime.policy import RuntimePolicyEngine
+
+        payload = {"filter_spec": {"where_clause": "1=1"}}
+        hook = await deny_raw_sql_in_filter_tools(
+            {"tool_name": "fetch_rows", "tool_input": payload}, "id-1", None
+        )
+        neutral = await RuntimePolicyEngine(interactive_shipping=False).check_pre_tool(
+            ProviderToolCall(call_id="c", tool_name="fetch_rows", parsed_input=payload)
+        )
+
+        assert hook["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert neutral.allowed is False
