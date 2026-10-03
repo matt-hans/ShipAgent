@@ -414,7 +414,7 @@ def claude_hook_output(decision: PolicyDecision) -> dict[str, Any]:
 
 def _deny_with_reason(
     reason: str,
-    code: PolicyDenialCode = PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
+    code: PolicyDenialCode,
 ) -> dict[str, Any]:
     """Create a Claude denial response from a neutral denial decision.
 
@@ -471,7 +471,8 @@ async def validate_schedule_pickup(
     return _deny_with_reason(
         "Direct mcp__ups__schedule_pickup is not allowed. "
         "Use the schedule_pickup orchestrator tool instead, which enforces "
-        "user confirmation before committing."
+        "user confirmation before committing.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -499,7 +500,8 @@ async def validate_cancel_pickup(
     return _deny_with_reason(
         "Direct mcp__ups__cancel_pickup is not allowed. "
         "Use the cancel_pickup orchestrator tool instead, which enforces "
-        "user confirmation before committing."
+        "user confirmation before committing.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -529,7 +531,8 @@ async def validate_track_package(
     return _deny_with_reason(
         "Direct mcp__ups__track_package is not allowed. "
         "Use the track_package orchestrator tool instead, which emits "
-        "tracking result events for the UI."
+        "tracking result events for the UI.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -558,7 +561,8 @@ async def validate_find_locations(
     return _deny_with_reason(
         "Direct mcp__ups__find_locations is not allowed. "
         "Use the find_locations orchestrator tool instead, which emits "
-        "location result events for the UI."
+        "location result events for the UI.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -587,7 +591,8 @@ async def validate_get_service_center_facilities(
     return _deny_with_reason(
         "Direct mcp__ups__get_service_center_facilities is not allowed. "
         "Use the get_service_center_facilities orchestrator tool instead, "
-        "which emits location result events for the UI."
+        "which emits location result events for the UI.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -616,7 +621,8 @@ async def validate_landed_cost_quote(
     return _deny_with_reason(
         "Direct mcp__ups__get_landed_cost_quote is not allowed. "
         "Use the get_landed_cost orchestrator tool instead, which emits "
-        "landed cost result events for the UI."
+        "landed cost result events for the UI.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 

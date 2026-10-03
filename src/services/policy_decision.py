@@ -30,8 +30,10 @@ GENERIC_DENIAL_REASON = "Tool call denied by policy."
 class PolicyDecision:
     """Allowed/denied outcome of a pre-tool policy check.
 
-    ``reason`` is always safe to show to a model or end user: it is composed
-    from fixed text and never echoes caller-supplied values.
+    ``reason`` is safe to show to a model or end user: it is fixed text, plus
+    at most canonical identifiers (banned key names from a fixed set, the
+    denied tool name) and never arbitrary caller-supplied values. (The legacy Claude hook adapter
+    keeps its detailed validation text for backward compatibility.)
     """
 
     allowed: bool

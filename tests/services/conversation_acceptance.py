@@ -27,7 +27,12 @@ from src.services.conversation_runtime.models import (
 from src.services.conversation_runtime.runtime_session import (
     ConversationRuntimeSession,
 )
-from src.services.conversation_runtime.tool_catalog import WorkflowToolCatalog
+from src.services.conversation_runtime.tool_catalog import (
+    SideEffectClass,
+    ToolMode,
+    WorkflowToolCatalog,
+    WorkflowToolDefinition,
+)
 
 _CONTACTS_PATCH = "src.services.conversation_handler._get_mru_contacts_for_prompt"
 
@@ -108,6 +113,7 @@ async def run_scenario(
     user_message: str = "go",
     interactive: bool = False,
     spy_handlers: dict[str, ToolHandler] | None = None,
+    exposed_dangerous_tools: dict[str, ToolHandler] | None = None,
     session_id: str = "acceptance",
 ) -> Observation:
     """Run one scripted turn through the shared conversation service.
@@ -115,6 +121,12 @@ async def run_scenario(
     ``spy_handlers`` replace the named catalog tools' handlers (they receive
     ``(args, bridge)``) so tests can count and simulate side effects while the
     real policy gate and dispatcher still run in front of them.
+
+    ``exposed_dangerous_tools`` additionally *register* tools that are absent
+    from the real catalog (e.g. raw ``mcp__ups__*`` carrier tools) so they are
+    declared to the provider and reachable by the dispatcher. Their handlers are
+    spies, so a denial test fails meaningfully if policy stops blocking them:
+    the spy would run and ``Observation.handler_calls`` would be non-empty.
     """
     observation = Observation()
     provider = FakeProviderClient(script=script)
@@ -145,7 +157,21 @@ async def run_scenario(
         catalog = real_for_mode(
             cls, interactive_shipping=interactive_shipping, bridge=bridge
         )
-        for name, spy in (spy_handlers or {}).items():
+        extras = [
+            WorkflowToolDefinition(
+                name=name,
+                description=f"Exposed dangerous tool {name} (spy)",
+                input_schema={"type": "object"},
+                handler=_spy,
+                mode=ToolMode.BOTH,
+                side_effect_class=SideEffectClass.MONEY_CHANGING,
+            )
+            for name, _spy in (exposed_dangerous_tools or {}).items()
+        ]
+        if extras:
+            catalog = WorkflowToolCatalog([*catalog.tools, *extras])
+        all_spies = {**(spy_handlers or {}), **(exposed_dangerous_tools or {})}
+        for name, spy in all_spies.items():
             if not catalog.has(name):
                 continue
             tool = catalog.get(name)

@@ -47,19 +47,49 @@ async def test_raw_sql_is_denied_before_any_gateway_effect(sql_key: str) -> None
     assert _CANARY not in repr(obs.persisted_artifacts)
 
 
+_RAW_CARRIER_TOOLS = [
+    "mcp__ups__create_shipment",
+    "mcp__ups__void_shipment",
+    "mcp__ups__rate_shipment",
+    "mcp__ups__schedule_pickup",
+]
+
+
 @pytest.mark.parametrize("interactive", [False, True])
-@pytest.mark.parametrize(
-    "raw_tool",
-    [
-        "mcp__ups__create_shipment",
-        "mcp__ups__void_shipment",
-        "mcp__ups__rate_shipment",
-        "mcp__ups__schedule_pickup",
-    ],
-)
-async def test_raw_carrier_calls_are_denied_with_zero_effects(
+@pytest.mark.parametrize("raw_tool", _RAW_CARRIER_TOOLS)
+async def test_exposed_raw_carrier_tool_is_denied_before_its_handler_runs(
     raw_tool: str, interactive: bool
 ) -> None:
+    """The raw tool is registered with a spy; only policy keeps it from running."""
+    obs = await run_scenario(
+        script=[
+            tool_call_turn("c1", raw_tool, {"Shipment": {"ShipTo": {"Name": _CANARY}}}),
+            text_turn("That is not available."),
+        ],
+        interactive=interactive,
+        exposed_dangerous_tools={raw_tool: _unexpected},
+    )
+
+    assert obs.handler_calls == {}
+    assert obs.ups_gateway_acquisitions == 0
+    assert obs.data_gateway_acquisitions == 0
+    [result] = obs.tool_results_seen_by_provider()
+    assert result["is_error"] is True
+    assert result["content"] != ""
+    assert _CANARY not in result["content"]
+    assert obs.persisted_messages == [("acceptance", "That is not available.")]
+
+
+@pytest.mark.parametrize("interactive", [False, True])
+@pytest.mark.parametrize("raw_tool", _RAW_CARRIER_TOOLS)
+async def test_unregistered_raw_carrier_tool_is_refused_without_effects(
+    raw_tool: str, interactive: bool
+) -> None:
+    """Layered defense: even when absent from the catalog, nothing runs.
+
+    This passes without the policy gate (unknown-tool handling also refuses), so
+    it does not prove policy; see the exposed-tool test above for that.
+    """
     obs = await run_scenario(
         script=[
             tool_call_turn("c1", raw_tool, {"Shipment": {"ShipTo": {"Name": _CANARY}}}),
@@ -74,7 +104,6 @@ async def test_raw_carrier_calls_are_denied_with_zero_effects(
     [result] = obs.tool_results_seen_by_provider()
     assert result["is_error"] is True
     assert _CANARY not in result["content"]
-    assert "error" in obs.event_names() or obs.persisted_messages
 
 
 async def test_filter_structure_denial_is_generic_and_never_echoes_input() -> None:
