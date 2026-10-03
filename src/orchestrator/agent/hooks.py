@@ -25,6 +25,8 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
+from src.services.policy_decision import PolicyDecision, PolicyDenialCode
+
 try:
     from claude_agent_sdk import HookMatcher
 except ModuleNotFoundError as exc:
@@ -105,7 +107,8 @@ async def validate_shipping_input(
         if not isinstance(tool_input, dict):
             return _deny_with_reason(
                 "Invalid tool_input: expected a dict, "
-                f"got {type(tool_input).__name__}."
+                f"got {type(tool_input).__name__}.",
+                PolicyDenialCode.INVALID_TOOL_INPUT,
             )
 
     return {}  # Allow operation
@@ -146,7 +149,8 @@ async def validate_void_shipment(
         if not tracking:
             return _deny_with_reason(
                 "Missing required shipment identifier. "
-                "The 'trackingNumber' or 'ShipmentIdentificationNumber' field is required to void a shipment."
+                "The 'trackingNumber' or 'ShipmentIdentificationNumber' field is required to void a shipment.",
+                PolicyDenialCode.INVALID_TOOL_INPUT,
             )
 
     return {}  # Allow operation
@@ -391,22 +395,37 @@ def _extract_error_detail(response: Any) -> str:
     return str(response)[:max_length]
 
 
-def _deny_with_reason(reason: str) -> dict[str, Any]:
-    """Create a denial response for pre-tool hooks.
+def claude_hook_output(decision: PolicyDecision) -> dict[str, Any]:
+    """Project a provider-neutral decision into the Claude PreToolUse envelope.
 
-    Args:
-        reason: Human-readable explanation of why the tool call was denied
-
-    Returns:
-        Hook output dict with permissionDecision: "deny"
+    This is the only place the Claude hook wire shape is built; policy
+    decisions themselves stay vendor-free.
     """
+    if decision.allowed:
+        return {}
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
+            "permissionDecisionReason": decision.reason,
         }
     }
+
+
+def _deny_with_reason(
+    reason: str,
+    code: PolicyDenialCode,
+) -> dict[str, Any]:
+    """Create a Claude denial response from a neutral denial decision.
+
+    Args:
+        reason: Human-readable explanation of why the tool call was denied
+        code: Stable provider-neutral denial code
+
+    Returns:
+        Hook output dict with permissionDecision: "deny"
+    """
+    return claude_hook_output(PolicyDecision.deny(code, reason))
 
 
 def _log_to_stderr(message: str) -> None:
@@ -452,7 +471,8 @@ async def validate_schedule_pickup(
     return _deny_with_reason(
         "Direct mcp__ups__schedule_pickup is not allowed. "
         "Use the schedule_pickup orchestrator tool instead, which enforces "
-        "user confirmation before committing."
+        "user confirmation before committing.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -480,7 +500,8 @@ async def validate_cancel_pickup(
     return _deny_with_reason(
         "Direct mcp__ups__cancel_pickup is not allowed. "
         "Use the cancel_pickup orchestrator tool instead, which enforces "
-        "user confirmation before committing."
+        "user confirmation before committing.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -510,7 +531,8 @@ async def validate_track_package(
     return _deny_with_reason(
         "Direct mcp__ups__track_package is not allowed. "
         "Use the track_package orchestrator tool instead, which emits "
-        "tracking result events for the UI."
+        "tracking result events for the UI.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -539,7 +561,8 @@ async def validate_find_locations(
     return _deny_with_reason(
         "Direct mcp__ups__find_locations is not allowed. "
         "Use the find_locations orchestrator tool instead, which emits "
-        "location result events for the UI."
+        "location result events for the UI.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -568,7 +591,8 @@ async def validate_get_service_center_facilities(
     return _deny_with_reason(
         "Direct mcp__ups__get_service_center_facilities is not allowed. "
         "Use the get_service_center_facilities orchestrator tool instead, "
-        "which emits location result events for the UI."
+        "which emits location result events for the UI.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -597,7 +621,8 @@ async def validate_landed_cost_quote(
     return _deny_with_reason(
         "Direct mcp__ups__get_landed_cost_quote is not allowed. "
         "Use the get_landed_cost orchestrator tool instead, which emits "
-        "landed cost result events for the UI."
+        "landed cost result events for the UI.",
+        PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
     )
 
 
@@ -678,7 +703,8 @@ async def deny_raw_sql_in_filter_tools(
         )
         return _deny_with_reason(
             f"Raw SQL keys {sorted(found_keys)} are not allowed in {tool_name}. "
-            "Use resolve_filter_intent to create a filter_spec instead."
+            "Use resolve_filter_intent to create a filter_spec instead.",
+            PolicyDenialCode.RAW_SQL_NOT_ALLOWED,
         )
 
     return {}
@@ -739,7 +765,10 @@ async def validate_intent_on_resolve(
             _log_to_stderr(
                 f"[FILTER ENFORCEMENT] DENYING invalid intent: {err} | ID: {tool_use_id}"
             )
-            return _deny_with_reason(f"FilterIntent validation failed: {err}")
+            return _deny_with_reason(
+                f"FilterIntent validation failed: {err}",
+                PolicyDenialCode.INVALID_FILTER_STRUCTURE,
+            )
 
     return {}
 
@@ -785,7 +814,8 @@ async def validate_filter_spec_on_pipeline(
         )
         return _deny_with_reason(
             "filter_spec must contain a 'root' field. "
-            "Use resolve_filter_intent to create a valid filter_spec."
+            "Use resolve_filter_intent to create a valid filter_spec.",
+            PolicyDenialCode.INVALID_FILTER_STRUCTURE,
         )
 
     return {}
@@ -832,12 +862,14 @@ def create_shipping_hook(
             if not interactive_shipping:
                 return _deny_with_reason(
                     "Interactive shipping is disabled. "
-                    "Use batch processing for shipment creation."
+                    "Use batch processing for shipment creation.",
+                    PolicyDenialCode.DIRECT_SHIPMENT_CREATION_NOT_ALLOWED,
                 )
             else:
                 return _deny_with_reason(
                     "Direct shipment creation is not allowed in interactive mode. "
-                    "Use the preview_interactive_shipment tool instead."
+                    "Use the preview_interactive_shipment tool instead.",
+                    PolicyDenialCode.DIRECT_SHIPMENT_CREATION_NOT_ALLOWED,
                 )
 
         return {}

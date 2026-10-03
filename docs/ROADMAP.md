@@ -69,6 +69,17 @@ databases, isolated data directories and worktree-local locked environments:
 - Deferred: issue #51 (hosted grant authority/store) stays deferred and blocks
   enabling the dormant public mutation tools.
 
+Issue #33 (neutral policy decisions) is implemented on branch
+`codex/issue33-neutral-policy` from baseline `ccaf0e9` (PR #54 merged); see its
+draft PR for the head and evidence. Shared runtime policy gates and the
+dispatcher use `PolicyDecision`/`PolicyDenialCode`; the Claude hook envelope is
+now a projection localized in `hooks.py`. Scripted-provider acceptance
+scenarios live in `tests/services/conversation_acceptance.py`. Issue #51 stays
+deferred; no dormant hosted tools were enabled. Evidence 2026-10-03: full
+`pytest` `4416 passed, 33 skipped` at implementation round 1 (isolated data dir,
+keyring off); after round 2 the full suite was not re-run, and the focused run
+is `273 passed`; `ruff check` clean. Claude SDK removal remains issue #40.
+
 Earlier statements about commit `a4a4bd1` are superseded by this baseline.
 
 | Capability | Evidence-backed state | Remaining work |
