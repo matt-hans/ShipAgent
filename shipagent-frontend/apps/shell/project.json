@@ -33,6 +33,7 @@
     },
     "typecheck": {
       "executor": "nx:run-commands",
+      "dependsOn": ["^build"],
       "options": {
         "command": "tsc --noEmit -p apps/shell/tsconfig.app.json"
       },
@@ -74,6 +75,7 @@
           "apps/shell/src/styles.css"
         ],
         "polyfills": [
+          "apps/shell/src/desktop-boot.ts",
           "zone.js",
           "es-module-shims"
         ]

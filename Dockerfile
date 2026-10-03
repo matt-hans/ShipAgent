@@ -1,12 +1,17 @@
 # syntax=docker/dockerfile:1
 
-FROM node:20-alpine AS frontend-builder
+FROM node:20.19-alpine AS frontend-builder
 
 WORKDIR /app/shipagent-frontend
 COPY shipagent-frontend/package.json shipagent-frontend/package-lock.json ./
 RUN npm ci --prefer-offline --no-audit
 COPY shipagent-frontend/ ./
-RUN npx nx run-many -t build --configuration=production && ./scripts/link-remotes.sh
+# NODE_OPTIONS preload avoids an intermittent Node require(esm) race in the
+# Angular build (see scripts/preload-compiler-cli.cjs); NX_DAEMON=false avoids a
+# stale daemon, NX_NO_CLOUD=true skips unauthenticated Nx Cloud calls.
+RUN NODE_OPTIONS="--require /app/shipagent-frontend/scripts/preload-compiler-cli.cjs" \
+    NX_DAEMON=false NX_NO_CLOUD=true \
+    npx nx run-many -t build --configuration=production && ./scripts/link-remotes.sh
 
 
 FROM python:3.12-slim AS python-builder

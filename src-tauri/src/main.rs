@@ -1,9 +1,12 @@
 // ShipAgent Tauri v2 desktop wrapper.
 //
 // Spawns the shipagent-core Python backend from the bundled resources
-// directory using tauri-plugin-shell (auto-kills on parent crash — no
-// zombies). Reads the dynamically assigned port from sidecar stdout
-// ("SHIPAGENT_PORT=XXXXX").
+// directory using tauri-plugin-shell. tauri-plugin-shell does NOT kill the
+// child when the parent goes away, so this file kills the exact owned child
+// (the retained `CommandChild`) on normal quit (`RunEvent::Exit`) and on
+// SIGTERM. A crash or SIGKILL of the app cannot be intercepted and leaves the
+// sidecar running until it is stopped manually. Reads the dynamically assigned
+// port from sidecar stdout ("SHIPAGENT_PORT=XXXXX").
 //
 // IMPORTANT: We use shell.command() with a dynamic resource_dir() path,
 // NOT shell.sidecar(). Tauri's sidecar() is for externalBin (single files).
@@ -15,7 +18,7 @@
 // relative API URLs and receives no remote-origin Tauri capability.
 
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
@@ -25,6 +28,22 @@ const SIDECAR_TIMEOUT_SECS: u64 = 30;
 /// Holds the backend child process handle so it isn't dropped prematurely.
 /// Stored in Tauri managed state for explicit lifecycle control.
 struct BackendProcess(Mutex<Option<CommandChild>>);
+
+/// Kill the sidecar this app spawned, if any. Only the retained child handle is
+/// signalled, never a process found by name or path.
+fn kill_backend(app: &tauri::AppHandle) {
+    let child = app
+        .state::<BackendProcess>()
+        .0
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take());
+    if let Some(child) = child {
+        if let Err(e) = child.kill() {
+            eprintln!("Failed to stop backend sidecar: {e}");
+        }
+    }
+}
 
 #[tauri::command]
 async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
@@ -111,16 +130,45 @@ async fn start_sidecar(app: tauri::AppHandle) -> Result<u16, String> {
 }
 
 fn main() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+    let context = tauri::generate_context!();
+    // The updater plugin requires `plugins.updater` (signing pubkey + endpoints)
+    // in tauri.conf.json; registering it without that config aborts startup.
+    // Auto-update stays off until a real Ed25519 key is provisioned.
+    let updater_configured = context.config().plugins.0.contains_key("updater");
+
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_shell::init());
+    if updater_configured {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    let app = builder
         .manage(BackendProcess(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![start_sidecar])
-        .setup(|_app| {
+        .setup(|app| {
             // The trusted bootstrap calls `invoke('start_sidecar')` once and
             // navigates to the returned loopback origin.
+            #[cfg(not(unix))]
+            let _ = app;
+            #[cfg(unix)]
+            {
+                // A bare SIGTERM would end the app without any RunEvent; turn
+                // it into a normal exit so the sidecar is cleaned up.
+                use tokio::signal::unix::{signal, SignalKind};
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(mut term) = signal(SignalKind::terminate()) {
+                        term.recv().await;
+                        handle.exit(0);
+                    }
+                });
+            }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running ShipAgent");
+        .build(context)
+        .expect("error while building ShipAgent");
+
+    app.run(|handle, event| {
+        if let RunEvent::Exit = event {
+            kill_backend(handle);
+        }
+    });
 }

@@ -28,6 +28,7 @@ from src.services.mcp_client import (
 )
 from src.services.ups_service_codes import SERVICE_CODE_NAMES
 from src.services.ups_specs import ensure_ups_specs_dir
+from src.utils.runtime import bundled_mcp_command
 
 logger = logging.getLogger(__name__)
 
@@ -179,9 +180,13 @@ class UPSMCPClient:
             Configured StdioServerParameters.
         """
         specs_dir = ensure_ups_specs_dir()
+        command, args = bundled_mcp_command("mcp-ups") or (
+            _get_python_command(),
+            ["-m", "ups_mcp"],
+        )
         return StdioServerParameters(
-            command=_get_python_command(),
-            args=["-m", "ups_mcp"],
+            command=command,
+            args=args,
             env={
                 "CLIENT_ID": self._client_id,
                 "CLIENT_SECRET": self._client_secret,

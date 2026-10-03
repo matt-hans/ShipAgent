@@ -28,3 +28,15 @@ def get_resource_dir() -> Path:
         # One-folder build: resources live next to the executable
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent.parent.parent
+
+
+def bundled_mcp_command(subcommand: str) -> tuple[str, list[str]] | None:
+    """Return ``(command, args)`` that spawn this binary as an MCP server.
+
+    In a PyInstaller bundle ``sys.executable`` is the shipagent-core binary,
+    which only understands the ``mcp-*`` subcommands (not ``-m <module>``).
+    Returns None in dev mode so callers fall back to ``python -m <module>``.
+    """
+    if not is_bundled():
+        return None
+    return sys.executable, [subcommand]

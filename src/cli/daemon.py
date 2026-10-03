@@ -6,6 +6,7 @@ for clean start/stop/status lifecycle.
 
 import logging
 import os
+import re
 import signal
 import sys
 from pathlib import Path
@@ -14,6 +15,40 @@ from src.control_plane.startup import validated_listener_host
 from src.utils.runtime import get_default_port
 
 logger = logging.getLogger(__name__)
+
+# The daemon is recognised by what it runs, never by the repository path it
+# happens to live under (any process started from a ShipAgent checkout would
+# otherwise look like a daemon and block `daemon start`). A command qualifies
+# only as an exact launcher plus the subcommand that actually serves:
+#   shipagent [opts] daemon start | shipagent-core serve | uvicorn src.api.main:app
+# optionally behind an interpreter (`python /bin/shipagent ...`, `python -m ...`).
+_APP_TARGET = "src.api.main:app"
+_INTERPRETER = r"(?:(?:/.*/)?python[\d.]*\s+)"
+_EXECUTABLE_RE = re.compile(
+    rf"^{_INTERPRETER}?(?:/.*/)?(?P<exe>shipagent-core|shipagent|uvicorn)(?P<rest>(?:\s.*)?)$"
+)
+_MODULE_RE = re.compile(
+    r"^(?:/.*/)?python[\d.]*\s+-m\s+(?P<module>\S+)(?P<rest>(?:\s.*)?)$"
+)
+# Module name -> canonical launcher name understood by ``_serves``.
+_MODULE_LAUNCHERS = {
+    "shipagent": "shipagent",
+    "src.cli.main": "shipagent",
+    "src.bundle_entry": "shipagent-core",
+    "uvicorn": "uvicorn",
+    "src.api.main": "uvicorn",
+}
+
+
+def _serves(launcher: str, args: list[str]) -> bool:
+    """Return True if ``args`` start the daemon/server for ``launcher``."""
+    if launcher == "shipagent":
+        return any(
+            a == "daemon" and b == "start" for a, b in zip(args, args[1:], strict=False)
+        )
+    if launcher == "shipagent-core":
+        return "serve" in args
+    return _APP_TARGET in args
 
 
 def write_pid_file(pid_file: str, pid: int) -> None:
@@ -57,12 +92,35 @@ def remove_pid_file(pid_file: str) -> None:
         path.unlink()
 
 
+def is_daemon_command(cmdline: str) -> bool:
+    """Return True if a process command line is a running ShipAgent daemon.
+
+    Args:
+        cmdline: Full command line as reported by ``ps -o command=``.
+
+    Returns:
+        True only for an exact launcher (``shipagent``, ``shipagent-core``,
+        ``uvicorn``, or those via ``python -m``) carrying the serving
+        subcommand. Other ShipAgent subcommands, editors, pagers, and anything
+        merely under a ShipAgent path never match. Paths may contain spaces.
+    """
+    line = cmdline.strip()
+    module_match = _MODULE_RE.match(line)
+    if module_match:
+        launcher = _MODULE_LAUNCHERS.get(module_match["module"].lower())
+        return launcher is not None and _serves(launcher, module_match["rest"].split())
+    exe_match = _EXECUTABLE_RE.match(line)
+    if exe_match:
+        return _serves(exe_match["exe"], exe_match["rest"].split())
+    return False
+
+
 def is_pid_alive(pid: int) -> bool:
     """Check if a process with the given PID is running.
 
     Uses os.kill(pid, 0) for existence check, then verifies the process
-    command line contains 'shipagent' or 'uvicorn' to avoid targeting
-    a reused PID from an unrelated process.
+    command line is a ShipAgent daemon launcher (see ``is_daemon_command``)
+    to avoid targeting a reused PID from an unrelated process.
 
     Args:
         pid: Process ID to check.
@@ -85,10 +143,7 @@ def is_pid_alive(pid: int) -> bool:
             text=True,
             timeout=2,
         )
-        cmdline = result.stdout.strip().lower()
-        return any(
-            marker in cmdline for marker in ["shipagent", "uvicorn", "src.api.main"]
-        )
+        return is_daemon_command(result.stdout.strip())
     except Exception:
         # If ps fails, fall back to existence-only
         return True
