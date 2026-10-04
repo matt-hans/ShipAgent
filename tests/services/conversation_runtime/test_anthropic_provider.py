@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -598,6 +599,69 @@ async def test_cancel_with_no_active_stream_is_a_noop() -> None:
     client, _ = make_client(ok(b""))
     await client.cancel()
     assert client.capabilities.supports_cancellation is True
+
+
+async def test_cancel_mid_stream_closes_response_and_emits_no_later_deltas() -> None:
+    first = sse(message_start(), TEXT_BLOCK, text_delta(0, "early"))
+    late = sse(text_delta(0, "LATE"), stop(0), *message_end())
+    closed = asyncio.Event()
+    release_late = asyncio.Event()
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield first
+            await release_late.wait()
+            yield late
+
+        async def aclose(self) -> None:
+            closed.set()
+
+    client, _ = make_client(
+        lambda _r: httpx.Response(
+            200, stream=Body(), headers={"content-type": "text/event-stream"}
+        )
+    )
+    stream = client.stream_turn(
+        messages=[
+            ProviderInputMessage(role="user", content=[ProviderContentPart(text="hi")])
+        ],
+        system_instructions=[],
+        tools=[],
+    )
+    seen: list[ProviderStreamEvent] = []
+    async with asyncio.timeout(5):
+        async for event in stream:
+            seen.append(event)
+            if event.type == T.TEXT_DELTA:
+                await client.cancel()
+                assert closed.is_set()  # response really closed, not just flagged
+                release_late.set()  # the transport would now deliver more data
+    assert [e.text for e in seen if e.type == T.TEXT_DELTA] == ["early"]
+    assert not any(e.type == T.STREAM_COMPLETE for e in seen)
+    assert all(e.text != "LATE" for e in seen)
+    assert client._active_response is None
+
+
+async def test_max_tokens_stop_reason_is_metadata_only_like_other_providers() -> None:
+    # Contract (see _parse_stream): truncation is surfaced via ResultMetadata
+    # stop_reason, not a new UI event; the OpenAI adapter does the same.
+    client, _ = make_client(
+        ok(
+            sse(
+                message_start(),
+                TEXT_BLOCK,
+                text_delta(0, "cut off"),
+                stop(0),
+                *message_end("max_tokens"),
+            )
+        )
+    )
+
+    events = await collect(client)
+
+    meta = next(e.metadata for e in events if e.type == T.RESULT_METADATA)
+    assert meta.stop_reason == "max_tokens"
+    assert events[-1].type == T.STREAM_COMPLETE
 
 
 # ---- boundary ---------------------------------------------------------------

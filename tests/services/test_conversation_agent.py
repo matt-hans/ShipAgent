@@ -224,7 +224,24 @@ def test_anthropic_messages_runtime_rejects_mismatched_model(
     agent = create_conversation_agent(model=model)
 
     assert isinstance(agent, UnavailableConversationAgent)
-    assert "does not match" in agent.reason
+    assert "full Claude model id" in agent.reason
+    assert f"'{model}'" in agent.reason
+    assert "None" not in agent.reason
+    assert "test-anthropic-key" not in agent.reason
+
+
+@pytest.mark.parametrize("model", ["haiku", "sonnet", "Haiku 4.5"])
+def test_anthropic_messages_runtime_alias_error_is_actionable(
+    monkeypatch: pytest.MonkeyPatch, model: str
+):
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "anthropic_messages")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    agent = create_conversation_agent(model=model)
+
+    assert isinstance(agent, UnavailableConversationAgent)
+    assert "claude-haiku-4-5-20251001" in agent.reason
+    assert "Settings or AGENT_MODEL" in agent.reason
 
 
 @pytest.mark.parametrize("runtime", ["auto", "claude", "claude_sdk", "anthropic"])

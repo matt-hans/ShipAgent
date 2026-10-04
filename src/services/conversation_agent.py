@@ -164,11 +164,8 @@ def create_conversation_agent(
         # Explicit opt-in only; auto/claude/anthropic keep the legacy SDK path
         # until the cutover.
         if model and model_provider != "anthropic":
-            return _runtime_model_mismatch(
-                runtime=runtime,
-                model_provider=model_provider,
-                session_id=session_id,
-                model=model,
+            return _anthropic_model_mismatch(
+                runtime=runtime, session_id=session_id, model=model
             )
         return _create_anthropic_conversation_agent(
             system_prompt=system_prompt,
@@ -388,6 +385,29 @@ def _runtime_model_mismatch(
             f"Configured runtime '{runtime}' does not match selected "
             f"model provider '{model_provider}'. Choose a matching "
             "runtime before sending shipping commands."
+        ),
+        session_id=session_id,
+        model=model,
+    )
+
+
+def _anthropic_model_mismatch(
+    *,
+    runtime: str,
+    session_id: str | None,
+    model: str,
+) -> ConversationAgent:
+    """Actionable error for a non-Claude or alias model under the Anthropic runtime.
+
+    ``model`` is operator configuration (Settings/AGENT_MODEL), never a secret.
+    """
+    return UnavailableConversationAgent(
+        reason=(
+            f"Configured runtime '{runtime}' requires a full Claude model id "
+            f"(for example 'claude-haiku-4-5-20251001'), but the configured "
+            f"model is '{model}'. Aliases such as 'haiku' or 'sonnet' and "
+            "other providers' models are not supported by this runtime. Update "
+            "the agent model in Settings or AGENT_MODEL."
         ),
         session_id=session_id,
         model=model,
