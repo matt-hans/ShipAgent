@@ -118,7 +118,7 @@ class OpenAIProviderClient:
         openai_tools = [to_openai_tool(tool) for tool in tools]
         text_parts: list[str] = []
         pending_calls: dict[str, dict[str, Any]] = {}
-        emitted_call_ids: set[str] = set()
+        emitted_calls: dict[str, tuple[str, str]] = {}
         completed_response: Any | None = None
 
         try:
@@ -160,9 +160,7 @@ class OpenAIProviderClient:
                         )
                 elif event_type == "response.function_call_arguments.done":
                     call = _tool_call_from_openai_event(event, pending_calls)
-                    if call is not None and call.call_id not in emitted_call_ids:
-                        if call.call_id is not None:
-                            emitted_call_ids.add(call.call_id)
+                    if call is not None and _is_new_call(call, emitted_calls):
                         yield ProviderStreamEvent(
                             type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
                             tool_call=call,
@@ -197,11 +195,14 @@ class OpenAIProviderClient:
                         item=item,
                     ),
                 )
-            for call in response_calls:
-                if call.call_id is not None and call.call_id in emitted_call_ids:
-                    continue
-                if call.call_id is not None:
-                    emitted_call_ids.add(call.call_id)
+            try:
+                new_calls = [
+                    call for call in response_calls if _is_new_call(call, emitted_calls)
+                ]
+            except _MalformedToolArguments:
+                yield _malformed_arguments_error()
+                return
+            for call in new_calls:
                 yield ProviderStreamEvent(
                     type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
                     tool_call=call,
@@ -426,6 +427,26 @@ def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise _MalformedToolArguments
     return value
+
+
+def _is_new_call(call: ProviderToolCall, emitted: dict[str, tuple[str, str]]) -> bool:
+    """Record a call by its stable ``call_id``; False for an exact repeat.
+
+    The streamed ``done`` event and the completed response describe the same
+    call, so repeats are expected. A call without a ``call_id`` cannot be
+    paired with its output or told apart from a repeat, and a repeated id with a
+    different name/arguments is ambiguous; both fail closed.
+    """
+    if call.call_id is None:
+        raise _MalformedToolArguments
+    fingerprint = (call.tool_name, json.dumps(call.parsed_input, sort_keys=True))
+    known = emitted.get(call.call_id)
+    if known is None:
+        emitted[call.call_id] = fingerprint
+        return True
+    if known != fingerprint:
+        raise _MalformedToolArguments
+    return False
 
 
 def _malformed_arguments_error() -> ProviderStreamEvent:

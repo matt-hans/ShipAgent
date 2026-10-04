@@ -27,6 +27,8 @@ from tests.services.provider_scenarios import (
     Reason,
     Rendered,
     Say,
+    Signed,
+    Think,
     build_provider,
     wire_tool_results,
 )
@@ -449,9 +451,10 @@ async def test_gemini_function_response_follows_function_call_by_name() -> None:
     ]
     assert roles_and_parts[-2:] == [
         ("model", ["functionCall"]),
-        ("tool", ["functionResponse"]),
+        ("user", ["functionResponse"]),
     ]
     call_part = rendered.requests[1]["contents"][-2]["parts"][0]["functionCall"]
+    # Id-less call: no ShipAgent-synthesised id may reach the Gemini wire.
     assert call_part == {
         "name": "rate_shipment",
         "args": {"request_body": _RATE_REQUEST},
@@ -459,3 +462,329 @@ async def test_gemini_function_response_follows_function_call_by_name() -> None:
     response = rendered.requests[1]["contents"][-1]["parts"][0]["functionResponse"]
     assert response["name"] == "rate_shipment"
     assert len(gateway.rate_calls) == 1
+
+
+# ---- gemini: private continuation, grouping, ids --------------------------------
+
+_SIG_A = "c2lnLUEtUFJJVkFURS1DQU5BUlk="  # b64("sig-A-PRIVATE-CANARY")
+_SIG_B = "c2lnLUItUFJJVkFURS1DQU5BUlk="  # b64("sig-B-PRIVATE-CANARY")
+_SIG_TAIL = "c2lnLVRBSUwtUFJJVkFURS1DQU5BUlk="  # b64("sig-TAIL-PRIVATE-CANARY")
+
+
+def _gemini_continuation(rendered: Rendered) -> list[dict[str, Any]]:
+    return rendered.requests[1]["contents"]
+
+
+async def test_gemini_thought_signatures_round_trip_exactly_and_stay_private() -> None:
+    gateway = DeterministicUPSGateway()
+
+    obs, rendered = await _run(
+        "gemini",
+        [
+            [
+                Think("PRIVATE-THOUGHT", signature=_SIG_B),
+                Say("Checking."),
+                Call(
+                    "c1",
+                    "rate_shipment",
+                    {"request_body": _RATE_REQUEST},
+                    signature=_SIG_A,
+                ),
+                Call("c2", "validate_address", _ADDRESS),
+                Signed(_SIG_TAIL),
+            ],
+            [Say("Done.")],
+        ],
+        gateway,
+    )
+
+    contents = _gemini_continuation(rendered)
+    model, responses = contents[-2], contents[-1]
+    assert model["role"] == "model"
+    # Every part, signature and thought flag exactly as Gemini sent them, in
+    # the order received (the signature stays on its original part).
+    assert model["parts"] == [
+        {"text": "PRIVATE-THOUGHT", "thought": True, "thoughtSignature": _SIG_B},
+        {"text": "Checking."},
+        {
+            "functionCall": {
+                "name": "rate_shipment",
+                "args": {"request_body": _RATE_REQUEST},
+            },
+            "thoughtSignature": _SIG_A,
+        },
+        {"functionCall": {"name": "validate_address", "args": _ADDRESS}},
+        {"text": "", "thoughtSignature": _SIG_TAIL},
+    ]
+    # Parallel calls are answered by one content: a response per call, in order.
+    assert responses["role"] == "user"
+    assert [p["functionResponse"]["name"] for p in responses["parts"]] == [
+        "rate_shipment",
+        "validate_address",
+    ]
+    assert len(gateway.rate_calls) == 1 and len(gateway.address_calls) == 1
+    # Signatures and thoughts never enter normalized events, SSE or history.
+    visible = obs.everything_externally_visible()
+    for private in ("PRIVATE-THOUGHT", _SIG_A, _SIG_B, _SIG_TAIL, "PRIVATE-CANARY"):
+        assert private not in visible
+    assert obs.persisted_messages == [
+        ("acceptance", "Checking."),
+        ("acceptance", "Done."),
+    ]
+
+
+async def test_gemini_same_name_calls_without_ids_each_run_and_pair_in_order() -> None:
+    gateway = DeterministicUPSGateway()
+    same = {"request_body": _RATE_REQUEST}
+
+    obs, rendered = await _run(
+        "gemini",
+        [
+            [
+                Call("x", "rate_shipment", same, signature=_SIG_A),
+                Call("y", "rate_shipment", {"request_body": _SHOP_REQUEST}),
+                # Identical to the first: Gemini asked twice; id-less calls are
+                # distinct requests, so both run and both get a response.
+                Call("z", "rate_shipment", same),
+            ],
+            [Say("Done.")],
+        ],
+        gateway,
+    )
+
+    assert [c["request_body"] for c in gateway.rate_calls] == [
+        _RATE_REQUEST,
+        _SHOP_REQUEST,
+        _RATE_REQUEST,
+    ]
+    model, responses = _gemini_continuation(rendered)[-2:]
+    calls = [p["functionCall"] for p in model["parts"]]
+    assert all("id" not in c for c in calls)
+    assert model["parts"][0]["thoughtSignature"] == _SIG_A
+    assert [c["args"]["request_body"] for c in calls] == [
+        _RATE_REQUEST,
+        _SHOP_REQUEST,
+        _RATE_REQUEST,
+    ]
+    assert len(responses["parts"]) == 3
+    assert all(
+        "id" not in p["functionResponse"] and "ShipAgent" not in json.dumps(p)
+        for p in responses["parts"]
+    )
+    assert obs.persisted_messages == [("acceptance", "Done.")]
+
+
+async def test_gemini_ids_issued_by_the_provider_pair_calls_and_responses() -> None:
+    gateway = DeterministicUPSGateway()
+
+    obs, rendered = await _run(
+        "gemini",
+        [
+            [
+                Call(
+                    "g-1",
+                    "rate_shipment",
+                    {"request_body": _RATE_REQUEST},
+                    wire_id=True,
+                ),
+                Call(
+                    "g-2",
+                    "rate_shipment",
+                    {"request_body": _SHOP_REQUEST},
+                    wire_id=True,
+                ),
+            ],
+            [Say("Done.")],
+        ],
+        gateway,
+    )
+
+    model, responses = _gemini_continuation(rendered)[-2:]
+    assert [p["functionCall"]["id"] for p in model["parts"]] == ["g-1", "g-2"]
+    assert [p["functionResponse"]["id"] for p in responses["parts"]] == ["g-1", "g-2"]
+    assert len(gateway.rate_calls) == 2
+    assert obs.persisted_messages == [("acceptance", "Done.")]
+
+
+async def test_gemini_repeated_provider_id_in_one_message_runs_once_and_replays_once() -> (
+    None
+):
+    gateway = DeterministicUPSGateway()
+    call = Call("g-1", "rate_shipment", {"request_body": _RATE_REQUEST}, wire_id=True)
+
+    obs, rendered = await _run("gemini", [[call, call], [Say("Once.")]], gateway)
+
+    assert len(gateway.rate_calls) == 1
+    model, responses = _gemini_continuation(rendered)[-2:]
+    assert len(model["parts"]) == len(responses["parts"]) == 1
+    assert obs.persisted_messages == [("acceptance", "Once.")]
+
+
+async def test_gemini_fragment_free_calls_dispatch_whole_objects() -> None:
+    """Gemini never streams partial JSON, so a call is complete on arrival."""
+    gateway = DeterministicUPSGateway()
+
+    await _run(
+        "gemini",
+        [[Call("c1", "rate_shipment", {"request_body": _RATE_REQUEST})], [Say("ok")]],
+        gateway,
+    )
+
+    assert gateway.rate_calls[0]["request_body"] == _RATE_REQUEST
+
+
+@pytest.mark.parametrize("raw", ["[1, 2]", '"text"', "7"])
+async def test_gemini_non_object_arguments_never_reach_a_handler(raw: str) -> None:
+    gateway = DeterministicUPSGateway()
+    spied: list[dict[str, Any]] = []
+
+    async def spy(args: dict[str, Any], _bridge: Any) -> dict[str, Any]:
+        spied.append(args)
+        return {"isError": False, "content": [{"type": "text", "text": "{}"}]}
+
+    obs, rendered = await _run(
+        "gemini",
+        [
+            [
+                Call("good", "rate_shipment", {"request_body": _RATE_REQUEST}),
+                Call("bad", "get_platform_status", raw),
+            ],
+            [Say("should never be requested")],
+        ],
+        gateway,
+        spy_handlers={"get_platform_status": spy},
+    )
+
+    assert spied == []
+    assert obs.handler_calls == {}
+    assert gateway.rate_calls == []
+    assert obs.event_names()[-1] == "error"
+    assert "tool_call" not in obs.event_names()
+    assert obs.persisted_messages == []
+    assert len(rendered.requests) == 1
+
+
+# ---- same id, different request: fail closed ------------------------------------
+
+
+@pytest.mark.parametrize("kind", ("scripted", "anthropic", "openai"))
+@pytest.mark.parametrize("changed", ("input", "name"))
+async def test_reused_call_id_with_a_different_request_stops_before_anything_runs(
+    kind: str, changed: str
+) -> None:
+    gateway = DeterministicUPSGateway()
+    first = Call("dup", "rate_shipment", {"request_body": _RATE_REQUEST})
+    second = (
+        Call("dup", "rate_shipment", {"request_body": _SHOP_REQUEST})
+        if changed == "input"
+        else Call("dup", "validate_address", _ADDRESS)
+    )
+
+    obs, rendered = await _run(kind, [[first, second], [Say("never")]], gateway)
+
+    assert gateway.rate_calls == [] and gateway.address_calls == []
+    assert obs.event_names()[-1] == "error"
+    assert "tool_call" not in obs.event_names()
+    assert obs.persisted_messages == []
+    if kind != "scripted":
+        assert len(rendered.requests) == 1
+
+
+@pytest.mark.parametrize("kind", ("scripted", "anthropic", "openai"))
+async def test_changed_request_replaying_an_executed_id_later_runs_nothing_more(
+    kind: str,
+) -> None:
+    gateway = DeterministicUPSGateway()
+
+    obs, _ = await _run(
+        kind,
+        [
+            [Call("dup", "rate_shipment", {"request_body": _RATE_REQUEST})],
+            [Call("dup", "rate_shipment", {"request_body": _SHOP_REQUEST})],
+            [Say("never")],
+        ],
+        gateway,
+    )
+
+    assert [c["request_body"] for c in gateway.rate_calls] == [_RATE_REQUEST]
+    assert obs.event_names()[-1] == "error"
+    assert len([e for e in obs.events if e["event"] == "tool_call"]) == 1
+
+
+async def test_gemini_provider_id_reused_for_a_different_request_is_rejected() -> None:
+    gateway = DeterministicUPSGateway()
+
+    obs, rendered = await _run(
+        "gemini",
+        [
+            [
+                Call(
+                    "g", "rate_shipment", {"request_body": _RATE_REQUEST}, wire_id=True
+                ),
+                Call(
+                    "g", "rate_shipment", {"request_body": _SHOP_REQUEST}, wire_id=True
+                ),
+            ],
+            [Say("never")],
+        ],
+        gateway,
+    )
+
+    assert gateway.rate_calls == []
+    assert obs.event_names()[-1] == "error"
+    assert len(rendered.requests) == 1
+
+
+# ---- openai: streamed vs completed disagreement ---------------------------------
+
+
+async def test_malformed_arguments_only_in_completed_output_are_not_dispatched() -> (
+    None
+):
+    gateway = DeterministicUPSGateway()
+
+    obs, rendered = await _run(
+        "openai",
+        [
+            [
+                Call(
+                    "c1",
+                    "rate_shipment",
+                    {"request_body": _RATE_REQUEST},
+                    completed_args='{"request_body": {"Rate',
+                )
+            ],
+            [Say("never")],
+        ],
+        gateway,
+    )
+
+    assert gateway.rate_calls == []
+    assert obs.handler_calls == {}
+    assert obs.event_names()[-1] == "error"
+    assert "tool_call" not in obs.event_names()
+    assert len(rendered.requests) == 1
+
+
+async def test_valid_but_different_completed_arguments_are_not_dispatched() -> None:
+    gateway = DeterministicUPSGateway()
+
+    obs, rendered = await _run(
+        "openai",
+        [
+            [
+                Call(
+                    "c1",
+                    "rate_shipment",
+                    {"request_body": _RATE_REQUEST},
+                    completed_args=json.dumps({"request_body": _SHOP_REQUEST}),
+                )
+            ],
+            [Say("never")],
+        ],
+        gateway,
+    )
+
+    assert gateway.rate_calls == []
+    assert obs.event_names()[-1] == "error"
+    assert len(rendered.requests) == 1

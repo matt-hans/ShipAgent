@@ -314,3 +314,87 @@ async def test_function_call_without_arguments_still_means_empty_input() -> None
 
     [call] = [e.tool_call for e in events if e.tool_call is not None]
     assert call.parsed_input == {}
+
+
+def _openai_stub(events: list[dict]) -> OpenAIProviderClient:
+    class Stream:
+        async def __aiter__(self):
+            for event in events:
+                yield event
+
+    class Responses:
+        async def create(self, **_kwargs):
+            return Stream()
+
+    return OpenAIProviderClient(
+        model="openai:gpt-5-mini",
+        client=SimpleNamespace(responses=Responses()),
+    )
+
+
+async def _drain(provider: OpenAIProviderClient) -> list:
+    return [
+        event
+        async for event in provider.stream_turn(
+            messages=[
+                ProviderInputMessage(
+                    role="user", content=[ProviderContentPart(text="hi")]
+                )
+            ],
+            system_instructions=[],
+            tools=[],
+        )
+    ]
+
+
+def _done(call_id: str | None, arguments: str = "{}") -> dict:
+    return {
+        "type": "response.function_call_arguments.done",
+        "item_id": "fc_1",
+        "name": "get_platform_status",
+        "arguments": arguments,
+        **({"call_id": call_id} if call_id else {}),
+    }
+
+
+def _completed(call_id: str | None, arguments: str = "{}") -> dict:
+    item = {
+        "type": "function_call",
+        "id": "fc_1",
+        "name": "get_platform_status",
+        "arguments": arguments,
+    }
+    if call_id:
+        item["call_id"] = call_id
+    return {"type": "response.completed", "response": {"output": [item]}}
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        pytest.param([_done(None)], id="streamed-done-without-call-id"),
+        pytest.param([_completed(None)], id="completed-output-without-call-id"),
+        pytest.param(
+            [_done("call_1"), _completed(None)], id="streamed-then-id-less-copy"
+        ),
+    ],
+)
+async def test_function_call_without_call_id_fails_closed(events: list[dict]) -> None:
+    from src.services.conversation_runtime.openai_provider import (
+        MALFORMED_ARGUMENTS_MESSAGE,
+    )
+
+    produced = await _drain(_openai_stub(events))
+
+    assert produced[-1].type == ProviderStreamEventType.PROVIDER_ERROR
+    assert produced[-1].safe_error_message == MALFORMED_ARGUMENTS_MESSAGE
+    assert ProviderStreamEventType.STREAM_COMPLETE not in {e.type for e in produced}
+
+
+async def test_streamed_and_completed_copies_of_one_call_emit_it_once() -> None:
+    produced = await _drain(
+        _openai_stub([_done("call_1", '{"a": 1}'), _completed("call_1", '{"a": 1}')])
+    )
+
+    calls = [e.tool_call for e in produced if e.tool_call is not None]
+    assert [(c.call_id, c.parsed_input) for c in calls] == [("call_1", {"a": 1})]

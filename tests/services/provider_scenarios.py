@@ -32,7 +32,10 @@ from src.services.conversation_runtime.openai_provider import OpenAIProviderClie
 
 SYNTHETIC_KEY = "sk-synthetic-provider-canary"
 PROVIDERS = ("scripted", "anthropic", "openai", "gemini")
-# Gemini function calls carry no call id and always arrive as whole JSON objects.
+# Gemini API function calls normally carry no call id (Call.wire_id opts in,
+# as Vertex-style ids do) and never stream partial JSON: args always arrive as
+# one complete object per functionCall (``will_continue`` is unsupported by the
+# Gemini API), so there is no fragmentation scenario for it.
 ID_PROVIDERS = ("scripted", "anthropic", "openai")
 FRAGMENTING_PROVIDERS = ("anthropic", "openai")
 
@@ -50,12 +53,34 @@ class Reason:
 
 
 @dataclass(frozen=True)
+class Think:
+    """Gemini thought part (never user text), optionally signed."""
+
+    text: str = "private reasoning"
+    signature: str | None = None
+
+
+@dataclass(frozen=True)
+class Signed:
+    """Gemini signature-only trailing part (empty text + thoughtSignature)."""
+
+    signature: str
+
+
+@dataclass(frozen=True)
 class Call:
     call_id: str
     name: str
     # dict -> valid arguments; str -> raw (possibly malformed) JSON text.
     args: dict[str, Any] | str = field(default_factory=dict)
     fragment_size: int = 9
+    # Gemini only: send ``call_id`` as the functionCall id (default: id-less).
+    wire_id: bool = False
+    # Gemini only: base64 thoughtSignature carried on this call's part.
+    signature: str | None = None
+    # OpenAI only: arguments in the completed response when they differ from
+    # what was streamed (None = identical).
+    completed_args: str | None = None
 
     def raw(self) -> str:
         return self.args if isinstance(self.args, str) else json.dumps(self.args)
@@ -68,7 +93,7 @@ class Call:
         ] or [""]
 
 
-Turn = list[Say | Reason | Call]
+Turn = list[Say | Reason | Call | Think | Signed]
 
 
 @dataclass
@@ -312,7 +337,15 @@ def _openai_body(turn: Turn) -> bytes:
                     "arguments": item.raw(),
                 }
             )
-            output.append({**base, "arguments": item.raw(), "status": "completed"})
+            output.append(
+                {
+                    **base,
+                    "arguments": item.raw()
+                    if item.completed_args is None
+                    else item.completed_args,
+                    "status": "completed",
+                }
+            )
     events.append(
         {
             "type": "response.completed",
@@ -356,11 +389,23 @@ def _gemini_body(turn: Turn) -> bytes:
     for item in turn:
         if isinstance(item, Say):
             parts = [{"text": item.text}]
+        elif isinstance(item, Think):
+            part: dict[str, Any] = {"text": item.text, "thought": True}
+            if item.signature:
+                part["thoughtSignature"] = item.signature
+            parts = [part]
+        elif isinstance(item, Signed):
+            parts = [{"text": "", "thoughtSignature": item.signature}]
         elif isinstance(item, Call):
-            args = item.args
-            if not isinstance(args, dict):
-                raise ValueError("Gemini function calls carry only whole JSON objects")
-            parts = [{"functionCall": {"name": item.name, "args": args}}]
+            # Malformed values are embedded as-is when they are valid JSON.
+            args = item.args if isinstance(item.args, dict) else json.loads(item.args)
+            function_call: dict[str, Any] = {"name": item.name, "args": args}
+            if item.wire_id:
+                function_call["id"] = item.call_id
+            part = {"functionCall": function_call}
+            if item.signature:
+                part["thoughtSignature"] = item.signature
+            parts = [part]
         else:
             continue
         chunks.append({"candidates": [{"content": {"role": "model", "parts": parts}}]})
@@ -394,7 +439,7 @@ def _sse(events: list[tuple[str, dict[str, Any]]]) -> bytes:
 def wire_tool_results(kind: str, body: dict[str, Any]) -> list[dict[str, Any]]:
     """Tool results in a provider request body, in order, as ``{key, content}``.
 
-    ``key`` is the call id where the protocol has one, else the function name.
+    ``key`` is the call id where the wire carries one, else the function name.
     """
     results: list[dict[str, Any]] = []
     if kind == "anthropic":
@@ -425,7 +470,7 @@ def wire_tool_results(kind: str, body: dict[str, Any]) -> list[dict[str, Any]]:
                 if response:
                     results.append(
                         {
-                            "key": response["name"],
+                            "key": response.get("id") or response["name"],
                             "content": json.dumps(response["response"]),
                         }
                     )
