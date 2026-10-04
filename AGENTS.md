@@ -67,7 +67,10 @@ workflow and tool backbone. They do not own shipping business logic.
 - Conversation providers are selected with `AGENT_MODEL`: Claude-style model names
   use the Claude Agent SDK compatibility path; `openai:*` and `gemini:*` use the
   provider-neutral runtime. Keep all providers on shared workflow tools and
-  provider-safe result projections.
+  provider-safe result projections. `SHIPAGENT_AGENT_RUNTIME=anthropic_messages`
+  explicitly opts Claude models (`ANTHROPIC_API_KEY`) into the shared-runtime
+  Anthropic Messages adapter; the legacy default stays on the SDK path until the
+  cutover (#40).
 - Raw UPS MCP calls are not provider-neutral behavior. Expose UPS capabilities
   through workflow wrappers such as `rate_shipment`, `validate_address`,
   `get_time_in_transit`, tracking, pickup, landed-cost, and preview/execute tools.

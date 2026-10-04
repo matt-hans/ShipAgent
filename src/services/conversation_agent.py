@@ -10,6 +10,11 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
+# Explicit selectors for the shared-runtime Anthropic Messages adapter. The
+# legacy "auto"/"claude"/"claude_sdk"/"anthropic" selectors still resolve to the
+# Claude Agent SDK path until the cutover.
+_ANTHROPIC_MESSAGES_RUNTIMES = {"anthropic_messages", "anthropic-messages"}
+
 
 class ConversationAgent(Protocol):
     """Runtime-agnostic interface used by conversation sessions."""
@@ -155,6 +160,25 @@ def create_conversation_agent(
             model=model,
         )
 
+    if runtime in _ANTHROPIC_MESSAGES_RUNTIMES:
+        # Explicit opt-in only; auto/claude/anthropic keep the legacy SDK path
+        # until the cutover.
+        if model and model_provider != "anthropic":
+            return _runtime_model_mismatch(
+                runtime=runtime,
+                model_provider=model_provider,
+                session_id=session_id,
+                model=model,
+            )
+        return _create_anthropic_conversation_agent(
+            system_prompt=system_prompt,
+            interactive_shipping=interactive_shipping,
+            session_id=session_id,
+            max_turns=max_turns,
+            prior_conversation=prior_conversation,
+            model=model,
+        )
+
     if runtime in {"", "auto"} and model_provider == "gemini":
         return _create_gemini_conversation_agent(
             system_prompt=system_prompt,
@@ -254,6 +278,42 @@ def _create_openai_conversation_agent(
         )
 
         provider = OpenAIProviderClient(model=model, api_key=api_key)
+    except RuntimeError as exc:
+        return UnavailableConversationAgent(
+            reason=str(exc),
+            session_id=session_id,
+            model=model,
+        )
+
+    return ConversationRuntimeSession(
+        provider=provider,
+        system_prompt=system_prompt,
+        interactive_shipping=interactive_shipping,
+        session_id=session_id,
+        max_turns=max_turns,
+        prior_conversation=prior_conversation,
+    )
+
+
+def _create_anthropic_conversation_agent(
+    *,
+    system_prompt: str | None,
+    interactive_shipping: bool,
+    session_id: str | None,
+    max_turns: int,
+    prior_conversation: list[dict[str, Any]] | None,
+    model: str | None,
+) -> ConversationAgent:
+    from src.services.conversation_runtime.anthropic_provider import (
+        AnthropicProviderClient,
+    )
+    from src.services.conversation_runtime.runtime_session import (
+        ConversationRuntimeSession,
+    )
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    try:
+        provider = AnthropicProviderClient(model=model, api_key=api_key)
     except RuntimeError as exc:
         return UnavailableConversationAgent(
             reason=str(exc),
