@@ -155,6 +155,26 @@ async def test_denies_direct_ups_tools(
     assert result.code is expected_code
 
 
+@pytest.mark.parametrize("interactive", [False, True])
+@pytest.mark.parametrize("approved", [True, False, "yes", None])
+async def test_denies_model_initiated_batch_execution_regardless_of_approved_flag(
+    interactive: bool,
+    approved: object,
+) -> None:
+    """``approved`` is model-supplied, so it can never stand in for the user's
+    Confirm gesture; execution only starts from the confirm route."""
+    engine = RuntimePolicyEngine(interactive_shipping=interactive)
+
+    result = await engine.check_pre_tool(
+        _call("batch_execute", {"job_id": "job-1", "approved": approved})
+    )
+
+    assert result.allowed is False
+    assert result.code is PolicyDenialCode.EXECUTION_REQUIRES_USER_CONFIRMATION
+    assert "Confirm" in result.reason
+    assert "job-1" not in result.reason
+
+
 def test_post_tool_error_detection_for_dict_and_string() -> None:
     engine = RuntimePolicyEngine(interactive_shipping=False)
 

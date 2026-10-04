@@ -21,6 +21,7 @@ class PolicyDenialCode(str, Enum):
     RAW_CARRIER_CALL_NOT_ALLOWED = "raw_carrier_call_not_allowed"
     DIRECT_SHIPMENT_CREATION_NOT_ALLOWED = "direct_shipment_creation_not_allowed"
     INVALID_TOOL_INPUT = "invalid_tool_input"
+    EXECUTION_REQUIRES_USER_CONFIRMATION = "execution_requires_user_confirmation"
 
 
 GENERIC_DENIAL_REASON = "Tool call denied by policy."

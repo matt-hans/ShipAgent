@@ -48,6 +48,10 @@ def _find_invalid_filter_operator(obj: Any, valid_operators: set[str]) -> str | 
 class RuntimePolicyEngine:
     _FILTER_TOOLS = {"resolve_filter_intent", "ship_command_pipeline", "fetch_rows"}
     _BANNED_SQL_KEYS = {"where_clause", "sql", "query", "raw_sql"}
+    # Purchases the user starts only by pressing Confirm on a priced preview
+    # (the confirm route). Model arguments such as ``approved`` are not proof of
+    # that gesture, so the model can never run these directly.
+    _USER_CONFIRMED_EXECUTION_TOOLS = {"batch_execute"}
     _DIRECT_UPS_DENIAL_REASONS = {
         "mcp__ups__rate_shipment": (
             "Direct mcp__ups__rate_shipment is not allowed. "
@@ -114,7 +118,23 @@ class RuntimePolicyEngine:
         if direct_ups_decision is not None:
             return direct_ups_decision
 
+        unconfirmed_decision = self._deny_model_initiated_execution(call)
+        if unconfirmed_decision is not None:
+            return unconfirmed_decision
+
         return PolicyDecision.allow()
+
+    def _deny_model_initiated_execution(
+        self, call: ProviderToolCall
+    ) -> PolicyDecision | None:
+        if call.tool_name not in self._USER_CONFIRMED_EXECUTION_TOOLS:
+            return None
+
+        return _deny(
+            PolicyDenialCode.EXECUTION_REQUIRES_USER_CONFIRMATION,
+            f"{call.tool_name} cannot be called by the assistant. Shipments "
+            "are only purchased when the user presses Confirm on the preview.",
+        )
 
     def _deny_raw_sql(self, call: ProviderToolCall) -> PolicyDecision | None:
         if call.tool_name not in self._FILTER_TOOLS:

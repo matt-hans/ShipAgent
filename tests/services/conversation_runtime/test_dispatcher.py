@@ -3157,3 +3157,53 @@ async def test_dispatcher_preserves_confirmed_filter_spec_wrapper() -> None:
     for leaked_text in ("Jane", "https://documents.example/leak"):
         assert leaked_text not in provider_payload
         assert leaked_text not in result.content
+
+
+async def test_dispatcher_audits_tool_calls_and_policy_denials_without_inputs(
+    dispatcher: LocalToolDispatcher,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[dict] = []
+    monkeypatch.setattr(
+        "src.services.conversation_runtime.dispatcher.DecisionAuditService"
+        ".log_event_from_context",
+        lambda **kwargs: events.append(kwargs),
+    )
+    secret = "CANARY-job-secret-value"
+
+    await dispatcher.dispatch(
+        ProviderToolCall(
+            call_id="call-1",
+            tool_name="batch_execute",
+            parsed_input={"job_id": secret, "approved": True},
+        )
+    )
+
+    assert [(e["event_name"], e["tool_name"]) for e in events] == [
+        ("agent.tool_call.observed", "batch_execute"),
+        ("policy.tool_denied", "batch_execute"),
+    ]
+    assert events[1]["payload"] == {
+        "denial_code": "execution_requires_user_confirmation"
+    }
+    assert secret not in json.dumps(events, default=str)
+
+
+async def test_dispatcher_audit_failure_never_blocks_tool_execution(
+    dispatcher: LocalToolDispatcher,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(**_kwargs):
+        raise RuntimeError("audit store down")
+
+    monkeypatch.setattr(
+        "src.services.conversation_runtime.dispatcher.DecisionAuditService"
+        ".log_event_from_context",
+        broken,
+    )
+
+    result = await dispatcher.dispatch(
+        ProviderToolCall(call_id="call-1", tool_name="fetch_rows", parsed_input={})
+    )
+
+    assert result.is_error is False
