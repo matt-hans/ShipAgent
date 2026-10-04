@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
@@ -23,6 +24,17 @@ logger = logging.getLogger(__name__)
 _GENERIC_PROVIDER_ERROR_MESSAGE = "Provider error"
 _MAX_PROVIDER_HISTORY_MESSAGES = 30
 _HISTORY_ROLES = {"user", "assistant"}
+CONFLICTING_TOOL_CALL_ID_MESSAGE = (
+    "The model reused a tool call ID for a different request. The turn was "
+    "stopped before running it; retry the request."
+)
+
+
+def _call_fingerprint(call: ProviderToolCall) -> tuple[str, str]:
+    return (
+        call.tool_name,
+        json.dumps(call.parsed_input, sort_keys=True, default=str),
+    )
 
 
 class ConversationRuntimeSession:
@@ -127,7 +139,7 @@ class ConversationRuntimeSession:
         )
         system_instructions = [ProviderSystemInstruction(content=self._system_prompt)]
         metadata_turn_count: int | None = None
-        emitted_tool_call_ids: set[str] = set()
+        emitted_tool_call_ids: dict[str, tuple[str, str]] = {}
         turn_history_messages: list[ProviderInputMessage] = [user_message]
 
         try:
@@ -221,13 +233,30 @@ class ConversationRuntimeSession:
                     }
                     return
 
+                # Same ID + same request is a replay (skipped). Same ID with a
+                # different name/input is a conflict: stop before anything in
+                # this batch runs rather than guess which one was meant.
                 unique_tool_calls: list[ProviderToolCall] = []
+                batch_ids: dict[str, tuple[str, str]] = {}
                 for call in tool_calls:
-                    if call.call_id is not None:
-                        if call.call_id in emitted_tool_call_ids:
-                            continue
-                        emitted_tool_call_ids.add(call.call_id)
+                    if call.call_id is None:
+                        unique_tool_calls.append(call)
+                        continue
+                    fingerprint = _call_fingerprint(call)
+                    known = emitted_tool_call_ids.get(call.call_id) or batch_ids.get(
+                        call.call_id
+                    )
+                    if known is not None:
+                        if known != fingerprint:
+                            yield {
+                                "event": "error",
+                                "data": {"message": CONFLICTING_TOOL_CALL_ID_MESSAGE},
+                            }
+                            return
+                        continue
+                    batch_ids[call.call_id] = fingerprint
                     unique_tool_calls.append(call)
+                emitted_tool_call_ids.update(batch_ids)
 
                 if not unique_tool_calls:
                     if assistant_parts:
