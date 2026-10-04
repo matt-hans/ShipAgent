@@ -173,3 +173,85 @@ def test_claude_runtime_fails_closed_when_optional_sdk_unavailable(
 
     assert isinstance(agent, UnavailableConversationAgent)
     assert "Claude SDK runtime is not installed" in agent.reason
+
+
+# ---- explicit Anthropic Messages runtime selection --------------------------
+
+
+def test_anthropic_messages_runtime_creates_shared_runtime_session(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "anthropic_messages")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    agent = create_conversation_agent(
+        model="claude-haiku-4-5-20251001", session_id="anth-sess"
+    )
+
+    assert agent.__class__.__name__ == "ConversationRuntimeSession"
+    assert agent._provider.capabilities.provider == "anthropic"
+    assert agent.emitter_bridge.session_id == "anth-sess"
+
+
+def test_anthropic_messages_runtime_without_model_uses_default_model(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "anthropic-messages")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    agent = create_conversation_agent(model=None)
+
+    assert agent._provider.capabilities.model == "claude-haiku-4-5-20251001"
+
+
+def test_anthropic_messages_runtime_requires_api_key(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "anthropic_messages")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    agent = create_conversation_agent(model="claude-haiku-4-5-20251001")
+
+    assert isinstance(agent, UnavailableConversationAgent)
+    assert "ANTHROPIC_API_KEY" in agent.reason
+
+
+@pytest.mark.parametrize("model", ["openai:gpt-5-mini", "gemini:default", "mystery-1"])
+def test_anthropic_messages_runtime_rejects_mismatched_model(
+    monkeypatch: pytest.MonkeyPatch, model: str
+):
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "anthropic_messages")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    agent = create_conversation_agent(model=model)
+
+    assert isinstance(agent, UnavailableConversationAgent)
+    assert "full Claude model id" in agent.reason
+    assert f"'{model}'" in agent.reason
+    assert "None" not in agent.reason
+    assert "test-anthropic-key" not in agent.reason
+
+
+@pytest.mark.parametrize("model", ["haiku", "sonnet", "Haiku 4.5"])
+def test_anthropic_messages_runtime_alias_error_is_actionable(
+    monkeypatch: pytest.MonkeyPatch, model: str
+):
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", "anthropic_messages")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    agent = create_conversation_agent(model=model)
+
+    assert isinstance(agent, UnavailableConversationAgent)
+    assert "claude-haiku-4-5-20251001" in agent.reason
+    assert "Settings or AGENT_MODEL" in agent.reason
+
+
+@pytest.mark.parametrize("runtime", ["auto", "claude", "claude_sdk", "anthropic"])
+def test_legacy_claude_selectors_never_select_the_messages_adapter(
+    monkeypatch: pytest.MonkeyPatch, runtime: str
+):
+    """Legacy default stays on the SDK path until the cutover."""
+    monkeypatch.setenv("SHIPAGENT_AGENT_RUNTIME", runtime)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+
+    agent = create_conversation_agent(model="claude-haiku-4-5-20251001")
+
+    assert agent.__class__.__name__ != "ConversationRuntimeSession"

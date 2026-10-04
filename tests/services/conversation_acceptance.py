@@ -115,6 +115,7 @@ async def run_scenario(
     spy_handlers: dict[str, ToolHandler] | None = None,
     exposed_dangerous_tools: dict[str, ToolHandler] | None = None,
     session_id: str = "acceptance",
+    provider: Any | None = None,
 ) -> Observation:
     """Run one scripted turn through the shared conversation service.
 
@@ -127,9 +128,13 @@ async def run_scenario(
     declared to the provider and reachable by the dispatcher. Their handlers are
     spies, so a denial test fails meaningfully if policy stops blocking them:
     the spy would run and ``Observation.handler_calls`` would be non-empty.
+
+    ``provider`` substitutes a concrete adapter (e.g. an Anthropic client over a
+    mocked transport) for the scripted fake; ``script`` is then ignored and
+    ``Observation.provider_requests`` stays empty (the transport records them).
     """
     observation = Observation()
-    provider = FakeProviderClient(script=script)
+    provider = provider or FakeProviderClient(script=script)
     agent = ConversationRuntimeSession(
         provider=provider,
         system_prompt="system",
@@ -222,5 +227,5 @@ async def run_scenario(
         ):
             observation.events.append(event)
 
-    observation.provider_requests = provider.requests
+    observation.provider_requests = getattr(provider, "requests", [])
     return observation
