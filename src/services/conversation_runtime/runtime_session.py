@@ -187,9 +187,18 @@ class ConversationRuntimeSession:
                                 metadata_turn_count = event.metadata.num_turns
                                 self._last_turn_count = event.metadata.num_turns
                         elif event.type == ProviderStreamEventType.PROVIDER_ERROR:
+                            # Only adapter-vetted safe text may replace the
+                            # generic message; error_message is never shown.
+                            message = event.safe_error_message
                             yield {
                                 "event": "error",
-                                "data": {"message": _GENERIC_PROVIDER_ERROR_MESSAGE},
+                                "data": {
+                                    "message": (
+                                        message
+                                        if isinstance(message, str) and message
+                                        else _GENERIC_PROVIDER_ERROR_MESSAGE
+                                    )
+                                },
                             }
                             return
                         elif event.type == ProviderStreamEventType.STREAM_COMPLETE:

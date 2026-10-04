@@ -134,3 +134,7 @@ class ProviderStreamEvent:
     provider_output_item: ProviderOutputItem | None = None
     metadata: ProviderResultMetadata | None = None
     error_message: str | None = None
+    # Adapter-authored text that is safe to show users verbatim (no response
+    # bodies, headers, or credentials). ``error_message`` stays untrusted and is
+    # never surfaced; only this field may replace the generic provider error.
+    safe_error_message: str | None = None
