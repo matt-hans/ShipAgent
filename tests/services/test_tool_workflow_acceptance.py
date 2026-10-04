@@ -17,6 +17,10 @@ from typing import Any
 
 import pytest
 
+from src.services.conversation_runtime.runtime_session import (
+    MISSING_TOOL_CALL_ID_MESSAGE,
+    REPLAYED_TOOL_CALL_ID_MESSAGE,
+)
 from tests.services.conversation_acceptance import Observation, run_scenario
 from tests.services.provider_scenarios import (
     FRAGMENTING_PROVIDERS,
@@ -372,8 +376,50 @@ async def test_completed_call_id_replayed_in_a_later_turn_does_not_run_again(
     assert len(gateway.rate_calls) == 1
     assert len([e for e in obs.events if e["event"] == "tool_call"]) == 1
     assert obs.ups_gateway_acquisitions == 1
+    # The replay is answered with an explicit error, never a silent end.
+    assert obs.event_names()[-1] == "error"
+    assert REPLAYED_TOOL_CALL_ID_MESSAGE in obs.everything_externally_visible()
     if kind != "scripted":
-        assert len(rendered.requests) == 2  # replay ends the turn; no third request
+        assert len(rendered.requests) == 2  # no third request
+    _assert_no_leak(obs, rendered)
+
+
+@pytest.mark.parametrize("kind", ID_PROVIDERS)
+async def test_replay_alongside_a_new_call_runs_neither(kind: str) -> None:
+    gateway = DeterministicUPSGateway()
+    first = Call("dup", "rate_shipment", {"request_body": _RATE_REQUEST})
+    fresh = Call("new", "rate_shipment", {"request_body": _SHOP_REQUEST})
+
+    obs, _ = await _run(kind, [[first], [first, fresh], [Say("never")]], gateway)
+
+    assert [c["request_body"] for c in gateway.rate_calls] == [_RATE_REQUEST]
+    assert obs.event_names()[-1] == "error"
+    assert len([e for e in obs.events if e["event"] == "tool_call"]) == 1
+
+
+# ---- calls the core cannot pair with a result -----------------------------------
+
+
+@pytest.mark.parametrize("bad_id", ("", None))
+async def test_core_rejects_a_call_without_an_id_before_anything_runs(
+    bad_id: str | None,
+) -> None:
+    gateway = DeterministicUPSGateway()
+    good = Call("ok", "rate_shipment", {"request_body": _RATE_REQUEST})
+    bad = Call(
+        bad_id or "",
+        "rate_shipment",
+        {"request_body": _SHOP_REQUEST},
+        no_id=bad_id is None,
+    )
+
+    obs, _ = await _run("scripted", [[good, bad], [Say("never")]], gateway)
+
+    assert gateway.rate_calls == [] and obs.handler_calls == {}
+    assert obs.event_names()[-1] == "error"
+    assert "tool_call" not in obs.event_names()
+    assert MISSING_TOOL_CALL_ID_MESSAGE in obs.everything_externally_visible()
+    assert obs.persisted_messages == []
 
 
 # ---- provider-private continuation stays inside each adapter -------------------
@@ -788,3 +834,59 @@ async def test_valid_but_different_completed_arguments_are_not_dispatched() -> N
     assert gateway.rate_calls == []
     assert obs.event_names()[-1] == "error"
     assert len(rendered.requests) == 1
+
+
+# ---- openai: a call without a name cannot be dispatched or replayed --------------
+
+
+@pytest.mark.parametrize("nameless", ("both", "completed"))
+async def test_openai_unnamed_call_stops_the_turn_before_its_sibling_runs(
+    nameless: str,
+) -> None:
+    gateway = DeterministicUPSGateway()
+
+    obs, rendered = await _run(
+        "openai",
+        [
+            [
+                Call(
+                    "c1",
+                    "rate_shipment",
+                    {"request_body": _SHOP_REQUEST},
+                    nameless=nameless,
+                ),
+                Call("c2", "rate_shipment", {"request_body": _RATE_REQUEST}),
+            ],
+            [Say("never")],
+        ],
+        gateway,
+    )
+
+    assert gateway.rate_calls == [] and obs.handler_calls == {}
+    assert obs.event_names()[-1] == "error"
+    assert "tool_call" not in obs.event_names()
+    assert obs.persisted_messages == []
+    assert len(rendered.requests) == 1  # no orphaned function_call replayed
+    _assert_no_leak(obs, rendered)
+
+
+# ---- whitespace-only arguments mean "no arguments" everywhere --------------------
+
+
+@pytest.mark.parametrize("kind", FRAGMENTING_PROVIDERS)
+@pytest.mark.parametrize("blank", ("   ", "\n"))
+async def test_whitespace_only_arguments_are_empty_input_on_every_adapter(
+    kind: str, blank: str
+) -> None:
+    gateway = DeterministicUPSGateway()
+
+    obs, _ = await _run(
+        kind,
+        [[Call("c1", "rate_shipment", blank)], [Say("done")]],
+        gateway,
+    )
+
+    # Dispatched once with no input; the handler (not the adapter) refuses it.
+    assert len([e for e in obs.events if e["event"] == "tool_call"]) == 1
+    assert gateway.rate_calls == []
+    assert obs.persisted_messages == [("acceptance", "done")]

@@ -28,6 +28,14 @@ CONFLICTING_TOOL_CALL_ID_MESSAGE = (
     "The model reused a tool call ID for a different request. The turn was "
     "stopped before running it; retry the request."
 )
+MISSING_TOOL_CALL_ID_MESSAGE = (
+    "The model returned a tool request without a call ID. The turn was stopped "
+    "before running it; retry the request."
+)
+REPLAYED_TOOL_CALL_ID_MESSAGE = (
+    "The model repeated a tool call that already ran. The turn was stopped "
+    "without running it again; retry the request."
+)
 
 
 def _call_fingerprint(call: ProviderToolCall) -> tuple[str, str]:
@@ -233,29 +241,38 @@ class ConversationRuntimeSession:
                     }
                     return
 
-                # Same ID + same request is a replay (skipped). Same ID with a
-                # different name/input is a conflict: stop before anything in
-                # this batch runs rather than guess which one was meant.
+                # Nothing runs until every call in the batch is vetted: a call
+                # without an ID cannot be paired with its result, a repeated ID
+                # with a different request is ambiguous, and a repeat of a call
+                # from an earlier turn must not run (or end the turn silently).
+                # Exact repeats inside one batch are stream copies and skipped.
                 unique_tool_calls: list[ProviderToolCall] = []
                 batch_ids: dict[str, tuple[str, str]] = {}
+                batch_error: str | None = None
                 for call in tool_calls:
-                    if call.call_id is None:
-                        unique_tool_calls.append(call)
-                        continue
+                    if not isinstance(call.call_id, str) or not call.call_id:
+                        batch_error = MISSING_TOOL_CALL_ID_MESSAGE
+                        break
                     fingerprint = _call_fingerprint(call)
-                    known = emitted_tool_call_ids.get(call.call_id) or batch_ids.get(
-                        call.call_id
-                    )
+                    earlier = emitted_tool_call_ids.get(call.call_id)
+                    if earlier is not None:
+                        batch_error = (
+                            REPLAYED_TOOL_CALL_ID_MESSAGE
+                            if earlier == fingerprint
+                            else CONFLICTING_TOOL_CALL_ID_MESSAGE
+                        )
+                        break
+                    known = batch_ids.get(call.call_id)
                     if known is not None:
                         if known != fingerprint:
-                            yield {
-                                "event": "error",
-                                "data": {"message": CONFLICTING_TOOL_CALL_ID_MESSAGE},
-                            }
-                            return
+                            batch_error = CONFLICTING_TOOL_CALL_ID_MESSAGE
+                            break
                         continue
                     batch_ids[call.call_id] = fingerprint
                     unique_tool_calls.append(call)
+                if batch_error is not None:
+                    yield {"event": "error", "data": {"message": batch_error}}
+                    return
                 emitted_tool_call_ids.update(batch_ids)
 
                 if not unique_tool_calls:

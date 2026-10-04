@@ -14,7 +14,10 @@ from src.services.conversation_runtime.models import (
     ProviderToolCall,
     ProviderToolDeclaration,
 )
-from src.services.conversation_runtime.runtime_session import ConversationRuntimeSession
+from src.services.conversation_runtime.runtime_session import (
+    MISSING_TOOL_CALL_ID_MESSAGE,
+    ConversationRuntimeSession,
+)
 
 
 class FakeRuntimeTool:
@@ -437,7 +440,7 @@ async def test_runtime_dedupes_duplicate_stable_tool_call_ids(
 
 
 @pytest.mark.asyncio
-async def test_runtime_dispatches_missing_tool_call_id_as_canonical_call(
+async def test_runtime_rejects_missing_tool_call_id_before_dispatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     call = ProviderToolCall(
@@ -478,15 +481,10 @@ async def test_runtime_dispatches_missing_tool_call_id_as_canonical_call(
 
     events = [event async for event in runtime.process_message_stream("Show schema")]
 
-    assert events[0] == {
-        "event": "tool_call",
-        "data": {
-            "tool_name": "get_schema",
-            "tool_input": {},
-        },
-    }
-    assert len(tool.calls) == 1
-    assert provider.requests[1]["messages"][-1].tool_call_id is None
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["data"]["message"] == MISSING_TOOL_CALL_ID_MESSAGE
+    assert tool.calls == []
+    assert len(provider.requests) == 1
 
 
 @pytest.mark.asyncio

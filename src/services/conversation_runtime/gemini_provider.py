@@ -175,8 +175,10 @@ class GeminiProviderClient:
                 safe_error_message=MALFORMED_ARGUMENTS_MESSAGE,
             )
             return
-        except Exception:
-            logger.warning("Gemini content stream failed", exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "Gemini content stream failed exception_type=%s", type(exc).__name__
+            )
             raise
 
         if _needs_private_continuation(raw_parts):
@@ -203,7 +205,9 @@ class GeminiProviderClient:
         name = _field(function_call, "name")
         if not isinstance(name, str) or not name:
             raise _MalformedToolCall
-        if _field(function_call, "will_continue") is True:
+        if _field(function_call, "will_continue") is True or _field(
+            function_call, "partial_args"
+        ):
             # Partial (streamed) arguments are never dispatched.
             raise _MalformedToolCall
         args = _field(function_call, "args")

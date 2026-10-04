@@ -176,8 +176,11 @@ class OpenAIProviderClient:
         except _MalformedToolArguments:
             yield _malformed_arguments_error()
             return
-        except Exception:
-            logger.warning("OpenAI response stream failed", exc_info=True)
+        except Exception as exc:
+            logger.warning(
+                "OpenAI response stream failed exception_type=%s",
+                type(exc).__name__,
+            )
             raise
 
         if completed_response is not None:
@@ -322,7 +325,9 @@ def _tool_call_from_openai_event(
     call_id = _field(event, "call_id") or _field(item, "call_id")
     item_id = _field(event, "item_id") or _field(item, "id")
     if not isinstance(name, str) or not name:
-        return None
+        # An unnamed call can never be dispatched or paired with an output;
+        # dropping it would silently run its siblings and orphan it on replay.
+        raise _MalformedToolArguments
     parsed_input = _parse_tool_arguments(raw_arguments)
     return ProviderToolCall(
         call_id=call_id if isinstance(call_id, str) and call_id else None,
@@ -343,7 +348,7 @@ def _tool_calls_from_openai_response(response: Any) -> list[ProviderToolCall]:
             continue
         name = item.get("name")
         if not isinstance(name, str) or not name:
-            continue
+            raise _MalformedToolArguments
         raw_arguments = item.get("arguments") or ""
         call_id = item.get("call_id")
         item_id = item.get("id")
@@ -416,10 +421,12 @@ def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
     """
     if isinstance(raw, dict):
         return dict(raw)
-    if raw is None or raw == "":
-        return {}
     if not isinstance(raw, str):
+        if raw is None:
+            return {}
         raise _MalformedToolArguments
+    if not raw.strip():
+        return {}
     try:
         value = json.loads(raw)
     except json.JSONDecodeError:
