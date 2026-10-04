@@ -116,6 +116,7 @@ async def run_scenario(
     exposed_dangerous_tools: dict[str, ToolHandler] | None = None,
     session_id: str = "acceptance",
     provider: Any | None = None,
+    ups_gateway: Any | None = None,
 ) -> Observation:
     """Run one scripted turn through the shared conversation service.
 
@@ -128,6 +129,9 @@ async def run_scenario(
     declared to the provider and reachable by the dispatcher. Their handlers are
     spies, so a denial test fails meaningfully if policy stops blocking them:
     the spy would run and ``Observation.handler_calls`` would be non-empty.
+
+    ``ups_gateway`` is the deterministic gateway handed to real UPS workflow
+    handlers (default: an inert ``MagicMock``); acquisitions are still counted.
 
     ``provider`` substitutes a concrete adapter (e.g. an Anthropic client over a
     mocked transport) for the scripted fake; ``script`` is then ignored and
@@ -194,7 +198,7 @@ async def run_scenario(
 
     async def count_ups_gateway() -> Any:
         observation.ups_gateway_acquisitions += 1
-        return MagicMock()
+        return ups_gateway if ups_gateway is not None else MagicMock()
 
     with (
         patch(

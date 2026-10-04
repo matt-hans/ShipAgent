@@ -256,3 +256,61 @@ async def test_openai_stream_normalizes_text_and_function_call_events() -> None:
         },
     ]
     assert fake_responses.kwargs["model"] == "gpt-5-mini"
+
+
+@pytest.mark.parametrize("raw", ['{"a": ', "[1]", '"s"', "null"])
+async def test_malformed_function_arguments_end_in_safe_error_without_a_call(
+    raw: str,
+) -> None:
+    from src.services.conversation_runtime.openai_provider import (
+        MALFORMED_ARGUMENTS_MESSAGE,
+    )
+    from tests.services.provider_scenarios import Call, build_provider
+
+    rendered = build_provider("openai", [[Call("call_1", "get_schema", raw)]])
+
+    events = [
+        event
+        async for event in rendered.provider.stream_turn(
+            messages=[
+                ProviderInputMessage(
+                    role="user", content=[ProviderContentPart(text="hi")]
+                )
+            ],
+            system_instructions=[],
+            tools=[],
+        )
+    ]
+
+    assert events[-1].type == ProviderStreamEventType.PROVIDER_ERROR
+    assert events[-1].safe_error_message == MALFORMED_ARGUMENTS_MESSAGE
+    assert all(
+        event.type
+        not in {
+            ProviderStreamEventType.TOOL_CALL_COMPLETE,
+            ProviderStreamEventType.STREAM_COMPLETE,
+        }
+        for event in events
+    )
+
+
+async def test_function_call_without_arguments_still_means_empty_input() -> None:
+    from tests.services.provider_scenarios import Call, build_provider
+
+    rendered = build_provider("openai", [[Call("call_1", "get_platform_status", "")]])
+
+    events = [
+        event
+        async for event in rendered.provider.stream_turn(
+            messages=[
+                ProviderInputMessage(
+                    role="user", content=[ProviderContentPart(text="hi")]
+                )
+            ],
+            system_instructions=[],
+            tools=[],
+        )
+    ]
+
+    [call] = [e.tool_call for e in events if e.tool_call is not None]
+    assert call.parsed_input == {}

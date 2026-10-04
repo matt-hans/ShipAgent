@@ -31,6 +31,14 @@ else:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_OPENAI_MODEL = "gpt-5-mini"
+MALFORMED_ARGUMENTS_MESSAGE = (
+    "OpenAI returned a tool request ShipAgent could not interpret (malformed "
+    "arguments). Retry the request; if it persists, check the configured model."
+)
+
+
+class _MalformedToolArguments(Exception):
+    """A function call's arguments are not a JSON object; never dispatch it."""
 
 
 def is_openai_sdk_available() -> bool:
@@ -167,11 +175,19 @@ class OpenAIProviderClient:
                         error_message="Provider error",
                     )
                     return
+        except _MalformedToolArguments:
+            yield _malformed_arguments_error()
+            return
         except Exception:
             logger.warning("OpenAI response stream failed", exc_info=True)
             raise
 
         if completed_response is not None:
+            try:
+                response_calls = _tool_calls_from_openai_response(completed_response)
+            except _MalformedToolArguments:
+                yield _malformed_arguments_error()
+                return
             output_items = _openai_output_items(completed_response)
             for item in output_items:
                 yield ProviderStreamEvent(
@@ -181,7 +197,7 @@ class OpenAIProviderClient:
                         item=item,
                     ),
                 )
-            for call in _tool_calls_from_openai_response(completed_response):
+            for call in response_calls:
                 if call.call_id is not None and call.call_id in emitted_call_ids:
                     continue
                 if call.call_id is not None:
@@ -306,7 +322,7 @@ def _tool_call_from_openai_event(
     item_id = _field(event, "item_id") or _field(item, "id")
     if not isinstance(name, str) or not name:
         return None
-    parsed_input = _parse_json_object(raw_arguments)
+    parsed_input = _parse_tool_arguments(raw_arguments)
     return ProviderToolCall(
         call_id=call_id if isinstance(call_id, str) and call_id else None,
         tool_name=name,
@@ -334,7 +350,7 @@ def _tool_calls_from_openai_response(response: Any) -> list[ProviderToolCall]:
             ProviderToolCall(
                 call_id=call_id if isinstance(call_id, str) and call_id else None,
                 tool_name=name,
-                parsed_input=_parse_json_object(raw_arguments),
+                parsed_input=_parse_tool_arguments(raw_arguments),
                 raw_arguments=raw_arguments if isinstance(raw_arguments, str) else None,
                 metadata={
                     "provider": "openai",
@@ -391,16 +407,33 @@ def _metadata_from_openai_response(response: Any, model: str) -> ProviderResultM
     )
 
 
-def _parse_json_object(raw: Any) -> dict[str, Any]:
+def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
+    """Parse complete function-call arguments; absent means ``{}``.
+
+    Anything present but not a JSON object is malformed: treating it as ``{}``
+    would dispatch a call the model did not actually specify.
+    """
     if isinstance(raw, dict):
         return dict(raw)
-    if not isinstance(raw, str) or not raw:
+    if raw is None or raw == "":
         return {}
+    if not isinstance(raw, str):
+        raise _MalformedToolArguments
     try:
         value = json.loads(raw)
     except json.JSONDecodeError:
-        return {}
-    return value if isinstance(value, dict) else {}
+        raise _MalformedToolArguments from None
+    if not isinstance(value, dict):
+        raise _MalformedToolArguments
+    return value
+
+
+def _malformed_arguments_error() -> ProviderStreamEvent:
+    return ProviderStreamEvent(
+        type=ProviderStreamEventType.PROVIDER_ERROR,
+        error_message="Malformed tool arguments",
+        safe_error_message=MALFORMED_ARGUMENTS_MESSAGE,
+    )
 
 
 def _event_call_key(event: Any, item: Any | None = None) -> str:
