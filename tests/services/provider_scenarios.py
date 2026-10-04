@@ -81,6 +81,11 @@ class Call:
     # OpenAI only: arguments in the completed response when they differ from
     # what was streamed (None = identical).
     completed_args: str | None = None
+    # OpenAI only: drop the function name on the wire ("both" = streamed events
+    # and completed output, "completed" = completed output only).
+    nameless: str | None = None
+    # Scripted only: hand the runtime a call whose call_id is None.
+    no_id: bool = False
 
     def raw(self) -> str:
         return self.args if isinstance(self.args, str) else json.dumps(self.args)
@@ -147,7 +152,7 @@ def _scripted(turns: list[Turn]) -> list[list[ProviderStreamEvent]]:
                     ProviderStreamEvent(
                         type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
                         tool_call=ProviderToolCall(
-                            call_id=item.call_id,
+                            call_id=None if item.no_id else item.call_id,
                             tool_name=item.name,
                             parsed_input=item.args
                             if isinstance(item.args, dict)
@@ -312,11 +317,18 @@ def _openai_body(turn: Turn) -> bytes:
                 "call_id": item.call_id,
                 "name": item.name,
             }
+            streamed_base = (
+                {k: v for k, v in base.items() if k != "name"}
+                if item.nameless == "both"
+                else base
+            )
+            if item.nameless:
+                base = {k: v for k, v in base.items() if k != "name"}
             events.append(
                 {
                     "type": "response.output_item.added",
                     "output_index": position,
-                    "item": {**base, "arguments": "", "status": "in_progress"},
+                    "item": {**streamed_base, "arguments": "", "status": "in_progress"},
                 }
             )
             for fragment in item.fragments():
@@ -333,7 +345,7 @@ def _openai_body(turn: Turn) -> bytes:
                     "type": "response.function_call_arguments.done",
                     "item_id": item_id,
                     "output_index": position,
-                    "name": item.name,
+                    **({} if item.nameless == "both" else {"name": item.name}),
                     "arguments": item.raw(),
                 }
             )

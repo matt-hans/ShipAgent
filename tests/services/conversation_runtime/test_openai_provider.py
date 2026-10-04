@@ -398,3 +398,86 @@ async def test_streamed_and_completed_copies_of_one_call_emit_it_once() -> None:
 
     calls = [e.tool_call for e in produced if e.tool_call is not None]
     assert [(c.call_id, c.parsed_input) for c in calls] == [("call_1", {"a": 1})]
+
+
+def _unnamed_done(call_id: str = "call_x") -> dict:
+    event = _done(call_id)
+    del event["name"]
+    return event
+
+
+def _unnamed_completed(call_id: str = "call_x") -> dict:
+    event = _completed(call_id)
+    del event["response"]["output"][0]["name"]
+    return event
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        pytest.param([_done("call_ok"), _unnamed_done()], id="streamed-unnamed"),
+        pytest.param([_done("call_ok"), _unnamed_completed()], id="completed-unnamed"),
+        pytest.param(
+            [
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "id": "fc_2",
+                                "call_id": "call_blank",
+                                "name": "",
+                                "arguments": "{}",
+                            }
+                        ]
+                    },
+                }
+            ],
+            id="completed-empty-name",
+        ),
+    ],
+)
+async def test_unnamed_function_call_fails_closed_without_a_sibling_dispatch(
+    events: list[dict],
+) -> None:
+    from src.services.conversation_runtime.openai_provider import (
+        MALFORMED_ARGUMENTS_MESSAGE,
+    )
+
+    produced = await _drain(_openai_stub(events))
+
+    assert produced[-1].type == ProviderStreamEventType.PROVIDER_ERROR
+    assert produced[-1].safe_error_message == MALFORMED_ARGUMENTS_MESSAGE
+    kinds = {e.type for e in produced}
+    assert ProviderStreamEventType.STREAM_COMPLETE not in kinds
+    # Nothing is offered for replay either: no orphaned function_call item.
+    assert ProviderStreamEventType.PROVIDER_OUTPUT_ITEM not in kinds
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "\n\t"])
+async def test_blank_arguments_mean_empty_input(raw: str) -> None:
+    produced = await _drain(_openai_stub([_done("call_1", raw)]))
+
+    [call] = [e.tool_call for e in produced if e.tool_call is not None]
+    assert call.parsed_input == {}
+
+
+async def test_stream_failure_logs_only_the_exception_type(caplog) -> None:
+    canary = "CANARY-ACCT-0042-jane@example.com"
+
+    class Responses:
+        async def create(self, **_kwargs):
+            raise RuntimeError(canary)
+
+    provider = OpenAIProviderClient(
+        model="openai:gpt-5-mini",
+        client=SimpleNamespace(responses=Responses()),
+    )
+
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
+        await _drain(provider)
+
+    assert "RuntimeError" in caplog.text
+    assert canary not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)

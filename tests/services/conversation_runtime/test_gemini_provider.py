@@ -279,8 +279,9 @@ async def test_non_object_function_arguments_end_in_safe_error_without_a_call(
         {"name": "", "args": {}},
         {"args": {}},
         {"name": "x", "args": {}, "will_continue": True},
+        {"name": "x", "partial_args": [{"json_path": "$.a", "string_value": "p"}]},
     ],
-    ids=["empty-name", "no-name", "partial-call"],
+    ids=["empty-name", "no-name", "partial-call", "partial-args"],
 )
 async def test_incomplete_function_calls_fail_closed(function_call: dict) -> None:
     provider = _real_stream_client([_chunk({"function_call": function_call})])
@@ -405,3 +406,23 @@ def test_replay_omits_a_call_the_runtime_did_not_dispatch() -> None:
     assert [p.function_call.id for p in contents[0].parts] == ["g2"]
     assert contents[1].parts[0].function_response.id == "g2"
     assert isinstance(contents[0].parts[0], types.Part)
+
+
+async def test_stream_failure_logs_only_the_exception_type(caplog) -> None:
+    canary = "CANARY-ACCT-0042-jane@example.com"
+
+    class Models:
+        async def generate_content_stream(self, **_kwargs):
+            raise RuntimeError(canary)
+
+    provider = GeminiProviderClient(
+        model="gemini:gemini-2.5-flash",
+        client=SimpleNamespace(aio=SimpleNamespace(models=Models())),
+    )
+
+    with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
+        await _drain_gemini(provider)
+
+    assert "RuntimeError" in caplog.text
+    assert canary not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
