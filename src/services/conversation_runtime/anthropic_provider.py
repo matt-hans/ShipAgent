@@ -98,6 +98,7 @@ class AnthropicProviderClient:
         self._base_url = base_url.rstrip("/")
         self._max_tokens = max_tokens
         self._active_response: httpx.Response | None = None
+        self._cancelled = False
         self._capabilities = ProviderCapabilities(
             provider="anthropic",
             model=self._model,
@@ -129,6 +130,7 @@ class AnthropicProviderClient:
     async def cancel(self) -> None:
         response = self._active_response
         if response is not None:
+            self._cancelled = True
             await response.aclose()
 
     async def _stream_turn(
@@ -151,6 +153,7 @@ class AnthropicProviderClient:
             "content-type": "application/json",
             "accept": "text/event-stream",
         }
+        self._cancelled = False
         client = self._http_client or httpx.AsyncClient(timeout=_TIMEOUT)
         try:
             request = client.build_request(
@@ -181,7 +184,9 @@ class AnthropicProviderClient:
                     return
                 async for event in self._parse_stream(response):
                     yield event
-            except httpx.HTTPError as exc:
+            except (httpx.HTTPError, httpx.StreamError) as exc:
+                if self._cancelled:
+                    return  # reading a response we closed ourselves is not an error
                 logger.warning(
                     "Anthropic stream failed exception_type=%s", type(exc).__name__
                 )
@@ -198,6 +203,8 @@ class AnthropicProviderClient:
     ) -> AsyncIterator[ProviderStreamEvent]:
         state = _StreamState(default_model=self._model)
         async for payload in _iter_sse_payloads(response):
+            if self._cancelled:
+                return  # cancelled: emit nothing further, even if bytes arrive
             if payload is None:
                 yield _error_event(PROTOCOL_ERROR_MESSAGE)
                 return
@@ -211,6 +218,8 @@ class AnthropicProviderClient:
             if finished:
                 break
 
+        if self._cancelled:
+            return
         if not state.message_stopped:
             yield _error_event(PROTOCOL_ERROR_MESSAGE)
             return
@@ -220,6 +229,8 @@ class AnthropicProviderClient:
         if not state.text_parts and not state.emitted_tool_calls:
             yield _error_event(EMPTY_RESPONSE_MESSAGE)
             return
+        # A max_tokens stop is reported only via metadata.stop_reason, the same
+        # contract as the OpenAI adapter; the UI has no truncation affordance.
         yield ProviderStreamEvent(
             type=ProviderStreamEventType.RESULT_METADATA,
             metadata=state.metadata(),
