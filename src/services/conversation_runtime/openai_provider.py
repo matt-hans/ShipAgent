@@ -31,6 +31,14 @@ else:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_OPENAI_MODEL = "gpt-5-mini"
+MALFORMED_ARGUMENTS_MESSAGE = (
+    "OpenAI returned a tool request ShipAgent could not interpret (malformed "
+    "arguments). Retry the request; if it persists, check the configured model."
+)
+
+
+class _MalformedToolArguments(Exception):
+    """A function call's arguments are not a JSON object; never dispatch it."""
 
 
 def is_openai_sdk_available() -> bool:
@@ -110,7 +118,7 @@ class OpenAIProviderClient:
         openai_tools = [to_openai_tool(tool) for tool in tools]
         text_parts: list[str] = []
         pending_calls: dict[str, dict[str, Any]] = {}
-        emitted_call_ids: set[str] = set()
+        emitted_calls: dict[str, tuple[str, str]] = {}
         completed_response: Any | None = None
 
         try:
@@ -152,9 +160,7 @@ class OpenAIProviderClient:
                         )
                 elif event_type == "response.function_call_arguments.done":
                     call = _tool_call_from_openai_event(event, pending_calls)
-                    if call is not None and call.call_id not in emitted_call_ids:
-                        if call.call_id is not None:
-                            emitted_call_ids.add(call.call_id)
+                    if call is not None and _is_new_call(call, emitted_calls):
                         yield ProviderStreamEvent(
                             type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
                             tool_call=call,
@@ -167,11 +173,22 @@ class OpenAIProviderClient:
                         error_message="Provider error",
                     )
                     return
-        except Exception:
-            logger.warning("OpenAI response stream failed", exc_info=True)
+        except _MalformedToolArguments:
+            yield _malformed_arguments_error()
+            return
+        except Exception as exc:
+            logger.warning(
+                "OpenAI response stream failed exception_type=%s",
+                type(exc).__name__,
+            )
             raise
 
         if completed_response is not None:
+            try:
+                response_calls = _tool_calls_from_openai_response(completed_response)
+            except _MalformedToolArguments:
+                yield _malformed_arguments_error()
+                return
             output_items = _openai_output_items(completed_response)
             for item in output_items:
                 yield ProviderStreamEvent(
@@ -181,11 +198,14 @@ class OpenAIProviderClient:
                         item=item,
                     ),
                 )
-            for call in _tool_calls_from_openai_response(completed_response):
-                if call.call_id is not None and call.call_id in emitted_call_ids:
-                    continue
-                if call.call_id is not None:
-                    emitted_call_ids.add(call.call_id)
+            try:
+                new_calls = [
+                    call for call in response_calls if _is_new_call(call, emitted_calls)
+                ]
+            except _MalformedToolArguments:
+                yield _malformed_arguments_error()
+                return
+            for call in new_calls:
                 yield ProviderStreamEvent(
                     type=ProviderStreamEventType.TOOL_CALL_COMPLETE,
                     tool_call=call,
@@ -305,8 +325,10 @@ def _tool_call_from_openai_event(
     call_id = _field(event, "call_id") or _field(item, "call_id")
     item_id = _field(event, "item_id") or _field(item, "id")
     if not isinstance(name, str) or not name:
-        return None
-    parsed_input = _parse_json_object(raw_arguments)
+        # An unnamed call can never be dispatched or paired with an output;
+        # dropping it would silently run its siblings and orphan it on replay.
+        raise _MalformedToolArguments
+    parsed_input = _parse_tool_arguments(raw_arguments)
     return ProviderToolCall(
         call_id=call_id if isinstance(call_id, str) and call_id else None,
         tool_name=name,
@@ -326,7 +348,7 @@ def _tool_calls_from_openai_response(response: Any) -> list[ProviderToolCall]:
             continue
         name = item.get("name")
         if not isinstance(name, str) or not name:
-            continue
+            raise _MalformedToolArguments
         raw_arguments = item.get("arguments") or ""
         call_id = item.get("call_id")
         item_id = item.get("id")
@@ -334,7 +356,7 @@ def _tool_calls_from_openai_response(response: Any) -> list[ProviderToolCall]:
             ProviderToolCall(
                 call_id=call_id if isinstance(call_id, str) and call_id else None,
                 tool_name=name,
-                parsed_input=_parse_json_object(raw_arguments),
+                parsed_input=_parse_tool_arguments(raw_arguments),
                 raw_arguments=raw_arguments if isinstance(raw_arguments, str) else None,
                 metadata={
                     "provider": "openai",
@@ -391,16 +413,55 @@ def _metadata_from_openai_response(response: Any, model: str) -> ProviderResultM
     )
 
 
-def _parse_json_object(raw: Any) -> dict[str, Any]:
+def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
+    """Parse complete function-call arguments; absent means ``{}``.
+
+    Anything present but not a JSON object is malformed: treating it as ``{}``
+    would dispatch a call the model did not actually specify.
+    """
     if isinstance(raw, dict):
         return dict(raw)
-    if not isinstance(raw, str) or not raw:
+    if not isinstance(raw, str):
+        if raw is None:
+            return {}
+        raise _MalformedToolArguments
+    if not raw.strip():
         return {}
     try:
         value = json.loads(raw)
     except json.JSONDecodeError:
-        return {}
-    return value if isinstance(value, dict) else {}
+        raise _MalformedToolArguments from None
+    if not isinstance(value, dict):
+        raise _MalformedToolArguments
+    return value
+
+
+def _is_new_call(call: ProviderToolCall, emitted: dict[str, tuple[str, str]]) -> bool:
+    """Record a call by its stable ``call_id``; False for an exact repeat.
+
+    The streamed ``done`` event and the completed response describe the same
+    call, so repeats are expected. A call without a ``call_id`` cannot be
+    paired with its output or told apart from a repeat, and a repeated id with a
+    different name/arguments is ambiguous; both fail closed.
+    """
+    if call.call_id is None:
+        raise _MalformedToolArguments
+    fingerprint = (call.tool_name, json.dumps(call.parsed_input, sort_keys=True))
+    known = emitted.get(call.call_id)
+    if known is None:
+        emitted[call.call_id] = fingerprint
+        return True
+    if known != fingerprint:
+        raise _MalformedToolArguments
+    return False
+
+
+def _malformed_arguments_error() -> ProviderStreamEvent:
+    return ProviderStreamEvent(
+        type=ProviderStreamEventType.PROVIDER_ERROR,
+        error_message="Malformed tool arguments",
+        safe_error_message=MALFORMED_ARGUMENTS_MESSAGE,
+    )
 
 
 def _event_call_key(event: Any, item: Any | None = None) -> str:
