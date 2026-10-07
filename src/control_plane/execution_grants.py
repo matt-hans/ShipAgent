@@ -12,7 +12,7 @@ Responsibility split (callers must honour it):
   data: caller account and Provider Connection, requested preview, expiry,
   policy equal to the tool's ``confirmation_policy``, and well-formed target,
   amount (``MONEY_PATTERN``, positive), currency (``RATE_CURRENCY_CODES``) and
-  idempotency key. Anything else denies the call and releases the reservation.
+  idempotency key. Anything else denies the call and attempts pre-dispatch release.
 * The authority owns live verification. Before ``reserve`` returns, it must
   compare the exact Execution Target, policy, amount, currency and payload of
   the approved preview against the *live* approved preview, and reject drift,
@@ -23,9 +23,18 @@ Responsibility split (callers must honour it):
   that provably happened before the target accepted anything by raising
   ``PreAcceptFailure``; every other failure or cancellation is ambiguous and
   keeps the grant non-reusable until accepted work is reconciled. A failed
-  ``consume`` after acceptance is also held.
+  ``consume`` after acceptance also attempts hold; even if that fails the
+  original reservation must remain non-reusable.
 * The gate reads ``reservation.binding`` once and accepts only the exact
   ``ExecutionGrantBinding`` type; that validated object is what the handler gets.
+
+The reservation is already non-reusable before dispatch. Settlement has a bounded
+local wait; timeout or cancellation does not prove a remote write was rolled back.
+An authority must fence every mutation against the original reservation owner,
+keep failed/unknown settlements non-reusable, and recheck expiry at consume.
+Expiry or lost Redis state denies old authorization; it never remints a grant.
+See ``docs/components/execution-grant-authority-contract.md`` for the contract
+and the still-missing real-store and invocation-recovery prerequisites.
 """
 
 import re
@@ -119,21 +128,38 @@ class ExecutionGrantBinding:
 
 
 class ExecutionGrantReservation(Protocol):
-    """A grant held while the exact Execution Target is being invoked."""
+    """Exclusive, fenced ownership while the exact target is being invoked.
+
+    Operations must be idempotent, use bounded I/O, and cooperate with local
+    cancellation. A delayed write must never downgrade consumed/held state or
+    mutate a replacement reservation. A failed hold is safe only because the
+    original reserve already denies reuse. No implementation exists here.
+    """
 
     binding: ExecutionGrantBinding
 
     async def consume(self) -> None:
-        """Mark the grant used once the target durably accepts the invocation."""
+        """Record durable acceptance, rechecking original expiry and ownership.
+
+        Expired/lost ownership requires reconciliation, never release or renewed
+        authorization. Already accepted target work stays accepted even if this
+        write fails. Use the shared Plan 2 lifecycle for acceptance evidence.
+        """
 
     async def release(self) -> None:
-        """Return the grant for retry after a provable failure before acceptance."""
+        """Allow retry only on proof of nonacceptance within original expiry.
+
+        Compare the reservation fence atomically; never make held/consumed,
+        expired, missing, or another owner's reservation reusable.
+        """
 
     async def hold_for_reconciliation(self) -> None:
         """Keep the grant non-reusable when acceptance is unknown.
 
-        The authority later resolves it from the idempotency key: repeated calls
-        return the original or recovered job rather than a second purchase.
+        The authority later resolves it from the exact target and server-owned
+        idempotency key through Plan 2. Its job-reference path returns original
+        or recovered work; this gate denies replay until then. Unknown evidence
+        stays non-reusable. Neither hold nor recovery renews approval expiry.
         """
 
 
@@ -152,5 +178,10 @@ class ExecutionGrantAuthority(Protocol):
         """Exclusively reserve the approved grant or raise ``ExecutionGrantError``.
 
         Must verify the live approved preview (see module docstring) and must
-        deny a second reservation of the same grant while one is held.
+        atomically deny a second reservation while one is held. Cancellation or
+        a lost response after committing leaves a stranded exclusive reserve:
+        clean it up only with fenced proof of no dispatch/acceptance, otherwise
+        reconcile or expire to denial. Never suppress cancellation and return
+        dispatchable ownership. Missing state cannot be rebuilt from an approved
+        request or the SQL ledger. Redis/ledger implementation is separate work.
         """

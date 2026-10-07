@@ -18,6 +18,7 @@ from src.control_plane.execution_grants import (
     ExecutionGrantError,
     PreAcceptFailure,
 )
+from src.hosted_mcp import server as hosted_server
 from src.hosted_mcp.server import (
     PROVIDER_RESULT_ERROR,
     ToolAuthorizationError,
@@ -153,6 +154,30 @@ async def test_every_denial_code_is_surfaced_and_blocks_handler(context, denial)
         await tool.run(EXECUTE_ARGS)
 
     assert exc.value.code == denial.value
+    assert handler.calls == []
+
+
+@pytest.mark.parametrize(
+    "denial",
+    [
+        ExecutionGrantDenial.GRANT_IN_USE,
+        ExecutionGrantDenial.GRANT_CONSUMED,
+        ExecutionGrantDenial.RECONCILIATION_PENDING,
+        ExecutionGrantDenial.GRANT_UNAVAILABLE,
+    ],
+)
+async def test_unsettled_or_used_grant_does_not_recommend_another_approval(
+    context, denial
+):
+    handler = RecordingHandler()
+    authority = FakeExecutionGrantAuthority(fail_with=ExecutionGrantError(denial))
+    tool = await bound_execute(handler, authority)
+
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+
+    assert "approve again" not in str(exc.value)
+    assert "check" in str(exc.value)
     assert handler.calls == []
 
 
@@ -430,16 +455,30 @@ async def test_concurrent_calls_produce_exactly_one_effect(context):
     tool = await bound_execute(handler, authority)
 
     tasks = [asyncio.ensure_future(tool.run(EXECUTE_ARGS)) for _ in range(3)]
-    while sum(task.done() for task in tasks) < 2:
-        await asyncio.sleep(0)
-    gate.set()
-    outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+    try:
+        async with asyncio.timeout(2):
+            while sum(task.done() for task in tasks) < 2:
+                await asyncio.sleep(0)
+        gate.set()
+        done, pending = await asyncio.wait(tasks, timeout=2)
+        assert not pending, "concurrent grant calls did not settle"
+        outcomes = [task.exception() or task.result() for task in done]
 
-    denied = [o for o in outcomes if isinstance(o, ToolAuthorizationError)]
-    assert len(denied) == 2
-    assert {d.code for d in denied} == {ExecutionGrantDenial.GRANT_IN_USE}
-    assert len(handler.calls) == 1
-    assert authority.events == ["reserve", "consume"]
+        denied = [o for o in outcomes if isinstance(o, ToolAuthorizationError)]
+        assert len(denied) == 2
+        assert {d.code for d in denied} == {ExecutionGrantDenial.GRANT_IN_USE}
+        assert len(handler.calls) == 1
+        assert authority.events == ["reserve", "consume"]
+    finally:
+        gate.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        done, pending = await asyncio.wait(tasks, timeout=2)
+        for task in done:
+            if not task.cancelled():
+                task.exception()
+        assert not pending, "concurrent grant test left unfinished tasks"
 
 
 async def test_consume_failure_after_acceptance_holds_and_still_reports(
@@ -667,6 +706,41 @@ async def test_cancellation_during_consume_does_not_undo_acceptance(context):
     assert authority.state[APPROVAL_ID] == GrantState.CONSUMED
 
 
+async def test_consume_deadline_preserves_accepted_result_and_denies_replay(
+    context, monkeypatch
+):
+    """Fake-backed gate liveness; this does not prove persistent store safety."""
+    monkeypatch.setattr(
+        hosted_server, "GRANT_SETTLEMENT_TIMEOUT_SECONDS", 0.05, raising=False
+    )
+    authority = approved(context)
+    started, proceed = gate_reservation_step(authority, "consume")
+    handler = RecordingHandler()
+    tool = await bound_execute(handler, authority)
+    task = asyncio.create_task(tool.run(EXECUTE_ARGS))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        done, _ = await asyncio.wait([task], timeout=1)
+        assert task in done, "accepted call exceeded its settlement deadline"
+        assert task.result().structured_content == {
+            "job_id": JOB_ID,
+            "status": "running",
+        }
+        assert authority.state[APPROVAL_ID] == GrantState.RESERVED
+        with pytest.raises(ToolAuthorizationError) as exc:
+            await tool.run(EXECUTE_ARGS)
+        assert exc.value.code == ExecutionGrantDenial.GRANT_IN_USE
+        assert len(handler.calls) == 1
+        assert "release" not in authority.events
+    finally:
+        proceed.set()
+        done, pending = await asyncio.wait([task], timeout=2)
+        for finished in done:
+            if not finished.cancelled():
+                finished.exception()
+        assert not pending, "deadline regression left an unfinished call"
+
+
 async def test_cancellation_during_release_still_releases(context):
     authority = approved(context)
     started, proceed = gate_reservation_step(authority, "release")
@@ -763,3 +837,394 @@ async def test_plain_handler_authorization_error_is_projected_generically(contex
         await tool.run({"correlation_id": f"sa_correlation_{HEX}"})
 
     assert str(exc.value) == PROVIDER_RESULT_ERROR
+
+
+async def finish_test_calls(tasks, *gates):
+    """Open owned gates and observe calls without an unbounded test cleanup."""
+    for gate in gates:
+        gate.set()
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    done, pending = await asyncio.wait(tasks, timeout=2)
+    for task in done:
+        if not task.cancelled():
+            task.exception()
+    assert not pending, "grant regression left unfinished tasks"
+
+
+@pytest.mark.parametrize(
+    ("step", "failure"),
+    [
+        ("consume", None),
+        ("release", PreAcceptFailure()),
+        ("hold_for_reconciliation", RuntimeError("ambiguous")),
+    ],
+)
+async def test_repeated_cancellation_cannot_extend_settlement_deadline(
+    context, monkeypatch, step, failure
+):
+    monkeypatch.setattr(hosted_server, "GRANT_SETTLEMENT_TIMEOUT_SECONDS", 0.05)
+    authority = approved(context)
+    started, proceed = gate_reservation_step(authority, step)
+    tool = await bound_execute(RecordingHandler(fail=failure), authority)
+    task = asyncio.create_task(tool.run(EXECUTE_ARGS))
+
+    async def cancel_repeatedly():
+        while not task.done():
+            task.cancel()
+            await asyncio.sleep(0.01)
+
+    canceller = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        canceller = asyncio.create_task(cancel_repeatedly())
+        done, _ = await asyncio.wait([task], timeout=0.5)
+        assert task in done, "repeated cancellation extended the settlement budget"
+        with pytest.raises(asyncio.CancelledError):
+            task.result()
+        assert authority.state[APPROVAL_ID] == GrantState.RESERVED
+        assert authority.events == ["reserve"]
+    finally:
+        await finish_test_calls([task, *([canceller] if canceller else [])], proceed)
+
+
+async def test_consume_self_cancellation_preserves_acceptance_and_holds(context):
+    authority = approved(context)
+    original = authority.reserve
+
+    async def reserve(**kwargs):
+        reservation = await original(**kwargs)
+
+        async def self_cancel():
+            raise asyncio.CancelledError
+
+        reservation.consume = self_cancel
+        return reservation
+
+    authority.reserve = reserve
+    handler = RecordingHandler()
+    tool = await bound_execute(handler, authority)
+    result = await tool.run(EXECUTE_ARGS)
+
+    assert result.structured_content == {"job_id": JOB_ID, "status": "running"}
+    assert authority.events == ["reserve", "hold"]
+    assert authority.state[APPROVAL_ID] == GrantState.HELD
+    assert len(handler.calls) == 1
+
+
+@pytest.mark.parametrize("self_cancel", [False, True])
+async def test_caller_cancel_racing_consume_completion_still_propagates(
+    context, self_cancel
+):
+    authority = approved(context)
+    original = authority.reserve
+    caller = None
+
+    async def reserve(**kwargs):
+        reservation = await original(**kwargs)
+        consume = reservation.consume
+
+        async def complete_and_cancel():
+            caller.cancel()
+            if self_cancel:
+                raise asyncio.CancelledError
+            await consume()
+
+        reservation.consume = complete_and_cancel
+        return reservation
+
+    authority.reserve = reserve
+    tool = await bound_execute(RecordingHandler(), authority)
+    caller = asyncio.create_task(tool.run(EXECUTE_ARGS))
+    try:
+        done, _ = await asyncio.wait([caller], timeout=1)
+        assert caller in done
+        with pytest.raises(asyncio.CancelledError):
+            caller.result()
+        expected = GrantState.HELD if self_cancel else GrantState.CONSUMED
+        assert authority.state[APPROVAL_ID] == expected
+        assert "release" not in authority.events
+    finally:
+        await finish_test_calls([caller])
+
+
+@pytest.mark.parametrize("late_failure", [False, True])
+async def test_late_consume_outcome_is_observed_without_new_hold_or_release(
+    context, monkeypatch, caplog, late_failure
+):
+    monkeypatch.setattr(hosted_server, "GRANT_SETTLEMENT_TIMEOUT_SECONDS", 0.03)
+    authority = approved(context)
+    original = authority.reserve
+    started, proceed, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    operation = None
+
+    async def reserve(**kwargs):
+        reservation = await original(**kwargs)
+        consume = reservation.consume
+
+        async def delayed():
+            nonlocal operation
+            operation = asyncio.current_task()
+            started.set()
+            try:
+                await proceed.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                await proceed.wait()
+            if late_failure:
+                raise RuntimeError(CANARY)
+            await consume()
+
+        reservation.consume = delayed
+        return reservation
+
+    authority.reserve = reserve
+    handler = RecordingHandler()
+    tool = await bound_execute(handler, authority)
+    call = asyncio.create_task(tool.run(EXECUTE_ARGS))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=1)
+        done, _ = await asyncio.wait([call], timeout=1)
+        assert call in done
+        assert call.result().structured_content["job_id"] == JOB_ID
+        await asyncio.wait_for(cancelled.wait(), timeout=1)
+        with pytest.raises(ToolAuthorizationError) as exc:
+            await tool.run(EXECUTE_ARGS)
+        assert exc.value.code == ExecutionGrantDenial.GRANT_IN_USE
+        with caplog.at_level(logging.ERROR):
+            proceed.set()
+            done, _ = await asyncio.wait([operation], timeout=1)
+            assert operation in done
+            await asyncio.sleep(0)  # allow the registered outcome observer to run
+        assert len(handler.calls) == 1
+        assert "release" not in authority.events
+        assert "hold" not in authority.events
+        assert CANARY not in caplog.text
+        if late_failure:
+            assert "consume failed" in caplog.text
+            assert authority.state[APPROVAL_ID] == GrantState.RESERVED
+        else:
+            assert authority.state[APPROVAL_ID] == GrantState.CONSUMED
+    finally:
+        await finish_test_calls([call, *([operation] if operation else [])], proceed)
+
+
+@pytest.mark.parametrize(
+    ("step", "failure"),
+    [
+        ("release", PreAcceptFailure()),
+        ("hold_for_reconciliation", RuntimeError("ambiguous")),
+    ],
+)
+async def test_failed_release_or_hold_keeps_replay_denied(context, step, failure):
+    authority = approved(context)
+    original = authority.reserve
+
+    async def reserve(**kwargs):
+        reservation = await original(**kwargs)
+
+        async def fail():
+            raise RuntimeError(CANARY)
+
+        setattr(reservation, step, fail)
+        return reservation
+
+    authority.reserve = reserve
+    handler = RecordingHandler(fail=failure)
+    tool = await bound_execute(handler, authority)
+    with pytest.raises(ToolError, match=PROVIDER_RESULT_ERROR):
+        await tool.run(EXECUTE_ARGS)
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+    assert exc.value.code == ExecutionGrantDenial.GRANT_IN_USE
+    assert authority.state[APPROVAL_ID] == GrantState.RESERVED
+    assert len(handler.calls) == 1
+
+
+async def test_failed_consume_and_hold_still_reports_original_acceptance(context):
+    authority = approved(context)
+    original = authority.reserve
+
+    async def reserve(**kwargs):
+        reservation = await original(**kwargs)
+
+        async def fail():
+            raise RuntimeError(CANARY)
+
+        reservation.consume = fail
+        reservation.hold_for_reconciliation = fail
+        return reservation
+
+    authority.reserve = reserve
+    handler = RecordingHandler()
+    tool = await bound_execute(handler, authority)
+    result = await tool.run(EXECUTE_ARGS)
+    assert result.structured_content == {"job_id": JOB_ID, "status": "running"}
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+    assert exc.value.code == ExecutionGrantDenial.GRANT_IN_USE
+    assert authority.state[APPROVAL_ID] == GrantState.RESERVED
+    assert len(handler.calls) == 1
+
+
+@pytest.mark.parametrize("remaining_budget", [0.01, -0.01])
+async def test_consume_failure_cannot_restart_the_hold_deadline(
+    context, monkeypatch, remaining_budget
+):
+    """Advance the gate's clock at consume failure, without wall-clock sleeps."""
+    from types import SimpleNamespace
+
+    loop = asyncio.get_running_loop()
+    elapsed = 0.0
+    clock = SimpleNamespace(time=lambda: loop.time() + elapsed)
+    gate_asyncio = SimpleNamespace(**vars(asyncio))
+    gate_asyncio.get_running_loop = lambda: clock
+    monkeypatch.setattr(hosted_server, "asyncio", gate_asyncio)
+    authority = approved(context)
+    original = authority.reserve
+    hold_started, proceed = asyncio.Event(), asyncio.Event()
+
+    async def reserve(**kwargs):
+        reservation = await original(**kwargs)
+
+        async def fail_consume():
+            nonlocal elapsed
+            elapsed = hosted_server.GRANT_SETTLEMENT_TIMEOUT_SECONDS - remaining_budget
+            raise RuntimeError(CANARY)
+
+        async def delayed_hold():
+            hold_started.set()
+            await proceed.wait()
+
+        reservation.consume = fail_consume
+        reservation.hold_for_reconciliation = delayed_hold
+        return reservation
+
+    authority.reserve = reserve
+    tool = await bound_execute(RecordingHandler(), authority)
+    task = asyncio.create_task(tool.run(EXECUTE_ARGS))
+    try:
+        done, _ = await asyncio.wait([task], timeout=0.5)
+        assert task in done, "consume failure restarted the settlement budget"
+        assert task.result().structured_content["job_id"] == JOB_ID
+        assert hold_started.is_set() is (remaining_budget > 0)
+        assert authority.events == ["reserve"]
+    finally:
+        await finish_test_calls([task], proceed)
+
+
+@pytest.mark.parametrize("commit_before_cancel", [False, True])
+async def test_reserve_cancellation_never_dispatches_or_implies_rollback(
+    context, commit_before_cancel
+):
+    authority = approved(context)
+    original = authority.reserve
+    paused, proceed = asyncio.Event(), asyncio.Event()
+
+    async def interrupted_reserve(**kwargs):
+        if commit_before_cancel:
+            await original(**kwargs)
+        paused.set()
+        await proceed.wait()
+        return await original(**kwargs)
+
+    authority.reserve = interrupted_reserve
+    handler = RecordingHandler()
+    tool = await bound_execute(handler, authority)
+    task = asyncio.create_task(tool.run(EXECUTE_ARGS))
+    try:
+        await asyncio.wait_for(paused.wait(), timeout=1)
+        task.cancel()
+        done, _ = await asyncio.wait([task], timeout=1)
+        assert task in done
+        with pytest.raises(asyncio.CancelledError):
+            task.result()
+        assert handler.calls == []
+        authority.reserve = original
+        if commit_before_cancel:
+            with pytest.raises(ToolAuthorizationError) as exc:
+                await tool.run(EXECUTE_ARGS)
+            assert exc.value.code == ExecutionGrantDenial.GRANT_IN_USE
+            assert authority.state[APPROVAL_ID] == GrantState.RESERVED
+            assert handler.calls == []
+        else:
+            assert authority.state == {}
+    finally:
+        await finish_test_calls([task], proceed)
+
+
+async def test_expiry_rejection_at_consume_never_releases_accepted_work(context):
+    """Authority expiry is injected, not proof a real store rechecks it."""
+    authority = approved(context)
+    original = authority.reserve
+    target_accepted = False
+    now = authority.approved[APPROVAL_ID].expires_at - timedelta(seconds=1)
+
+    async def reserve(**kwargs):
+        reservation = await original(**kwargs)
+
+        consume = reservation.consume
+
+        async def expired_consume():
+            assert target_accepted
+            if now >= reservation.binding.expires_at:
+                raise ExecutionGrantError(ExecutionGrantDenial.APPROVAL_EXPIRED)
+            await consume()
+
+        reservation.consume = expired_consume
+        return reservation
+
+    async def handler(_context, _arguments, binding):
+        nonlocal target_accepted, now
+        assert binding is authority.approved[APPROVAL_ID]
+        now = binding.expires_at + timedelta(seconds=1)
+        target_accepted = True
+        return {"job_id": JOB_ID, "status": "running"}
+
+    authority.reserve = reserve
+    tool = await bound_execute(handler, authority)
+    result = await tool.run(EXECUTE_ARGS)
+    assert result.structured_content["job_id"] == JOB_ID
+    assert authority.events == ["reserve", "hold"]
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+    assert exc.value.code == ExecutionGrantDenial.RECONCILIATION_PENDING
+
+    # Simulated external reconciliation tests only the gate's terminal denial.
+    # It does not implement or prove Plan 2 original-job recovery.
+    authority.state[APPROVAL_ID] = GrantState.CONSUMED
+    with pytest.raises(ToolAuthorizationError) as exc:
+        await tool.run(EXECUTE_ARGS)
+    assert exc.value.code == ExecutionGrantDenial.GRANT_CONSUMED
+
+
+async def test_reserve_suppressing_cancellation_cannot_dispatch(context):
+    authority = approved(context)
+    original = authority.reserve
+    paused, proceed = asyncio.Event(), asyncio.Event()
+
+    async def suppressing_reserve(**kwargs):
+        reservation = await original(**kwargs)
+        paused.set()
+        try:
+            await proceed.wait()
+        except asyncio.CancelledError:
+            return reservation
+        return reservation
+
+    authority.reserve = suppressing_reserve
+    handler = RecordingHandler()
+    tool = await bound_execute(handler, authority)
+    task = asyncio.create_task(tool.run(EXECUTE_ARGS))
+    try:
+        await asyncio.wait_for(paused.wait(), timeout=1)
+        task.cancel()
+        done, _ = await asyncio.wait([task], timeout=1)
+        assert task in done
+        assert handler.calls == [], "cancelled reserve dispatched a purchase"
+        with pytest.raises(asyncio.CancelledError):
+            task.result()
+        assert authority.events == ["reserve", "release"]
+    finally:
+        await finish_test_calls([task], proceed)
