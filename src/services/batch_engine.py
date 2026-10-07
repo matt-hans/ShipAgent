@@ -23,6 +23,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
+from src.db.models import Job
 from src.errors.terminal_diagnostics import (
     MAX_TERMINAL_COUNT,
     project_terminal_diagnostic,
@@ -608,6 +609,11 @@ class BatchEngine:
 
                     # PHASE 1: Mark in-flight BEFORE UPS call
                     async with db_lock:
+                        # Query the persisted column, not a cached Job object:
+                        # queued rows must observe cancellation from another session.
+                        status = self._db.query(Job.status).filter(Job.id == job_id).scalar()
+                        if status is None or status == "cancelled":
+                            return
                         row.status = "in_flight"
                         row.idempotency_key = idem_key
                         self._db.commit()
@@ -634,6 +640,17 @@ class BatchEngine:
                             request_body=api_payload,
                         )
                         ups_call_succeeded = True
+                    except asyncio.CancelledError:
+                        # Cancellation is a BaseException. The request may already
+                        # have reached UPS, so persist ambiguity before propagating.
+                        # No await here: cleanup cannot itself be interrupted while
+                        # waiting for another task or an external service.
+                        row.status = "needs_review"
+                        diagnostic = project_terminal_diagnostic("E-4001")
+                        row.error_code = diagnostic.error_code
+                        row.error_message = diagnostic.message
+                        self._db.commit()
+                        raise
                     except UPSServiceError as e:
                         # Hard rejection — no shipment created. Safe to mark failed.
                         diagnostic = project_terminal_diagnostic(e.code)

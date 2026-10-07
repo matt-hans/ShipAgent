@@ -252,7 +252,12 @@ async def _execute_batch(
             service_code_override=selected_service_code,
         )
 
-        if result["failed"] == 0:
+        if result.get("status") == "cancelled":
+            await observer.on_batch_failed(
+                job_id, "E-4012", "Batch cancelled.",
+                result["successful"] + result["failed"], status="cancelled",
+            )
+        elif result["failed"] == 0:
             await observer.on_batch_completed(
                 job_id,
                 result["successful"] + result["failed"],
@@ -271,6 +276,13 @@ async def _execute_batch(
                 duties_taxes_cents=result.get("total_duties_taxes_cents", 0),
                 international_row_count=result.get("international_row_count", 0),
             )
+    except asyncio.CancelledError:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        await observer.on_batch_failed(
+            job_id, "E-4012", "Batch cancelled.",
+            job.processed_rows if job else 0, status="cancelled",
+        )
+        raise
     except Exception:
         logger.error("Background batch execution failed for job %s", job_id)
         await observer.on_batch_failed(job_id, "E-4001", "Batch execution failed.", 0)
