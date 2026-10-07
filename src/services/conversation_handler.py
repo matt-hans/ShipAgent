@@ -796,6 +796,8 @@ async def process_message(
                         if not _turn_active():
                             return
                         yield bridge_event
+                        if not _turn_active():
+                            return
 
                     event_type = event.get("event")
                     data = event.get("data", {})
@@ -842,6 +844,8 @@ async def process_message(
                                 "event": "agent_message_delta",
                                 "data": {"text": text},
                             }
+                        if not _turn_active():
+                            return
                         if hide_transient_chat:
                             if text:
                                 buffered_agent_messages.append(text)
@@ -854,6 +858,8 @@ async def process_message(
                         run_status = AgentDecisionRunStatus.failed
 
                     yield event
+                    if not _turn_active():
+                        return
 
                 if not _turn_active():
                     return
@@ -870,6 +876,8 @@ async def process_message(
                     if not _turn_active():
                         return
                     yield bridge_event
+                    if not _turn_active():
+                        return
 
                 if hide_transient_chat:
                     if not _turn_active():
