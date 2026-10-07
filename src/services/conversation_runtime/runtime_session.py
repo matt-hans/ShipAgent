@@ -8,6 +8,9 @@ from typing import Any
 
 from src.orchestrator.agent.tools.core import EventEmitterBridge
 from src.services.conversation_privacy import (
+    TEXT_BLOCK_PRIVACY_ERROR,
+    PublicTextBlock,
+    TextBlockPrivacyError,
     provider_authored_text,
     provider_conversation_history,
 )
@@ -22,6 +25,7 @@ from src.services.conversation_runtime.models import (
     ProviderToolCall,
 )
 from src.services.conversation_runtime.policy import RuntimePolicyEngine
+from src.services.conversation_runtime.stream_cleanup import close_owned_stream
 from src.services.conversation_runtime.tool_catalog import WorkflowToolCatalog
 
 logger = logging.getLogger(__name__)
@@ -158,6 +162,8 @@ class ConversationRuntimeSession:
             for _provider_turn in range(self._max_turns):
                 assistant_parts: list[ProviderContentPart] = []
                 tool_calls: list[ProviderToolCall] = []
+                text_block = PublicTextBlock()
+                stream = None
                 try:
                     stream = self._provider.stream_turn(
                         messages=messages,
@@ -172,21 +178,20 @@ class ConversationRuntimeSession:
                             event.type == ProviderStreamEventType.TEXT_DELTA
                             and event.text
                         ):
-                            yield {
-                                "event": "agent_message_delta",
-                                "data": {"text": event.text},
-                            }
-                        elif (
-                            event.type == ProviderStreamEventType.TEXT_BLOCK_COMPLETE
-                            and event.text
-                        ):
+                            text_block.observe(event.text)
+                        elif event.type == ProviderStreamEventType.TEXT_BLOCK_COMPLETE:
+                            text, streamed = text_block.complete(event.text or "")
+                            if not text:
+                                continue
                             if metadata_turn_count is None:
                                 self._last_turn_count += 1
-                            assistant_parts.append(ProviderContentPart(text=event.text))
-                            yield {
-                                "event": "agent_message",
-                                "data": {"text": event.text},
-                            }
+                            assistant_parts.append(ProviderContentPart(text=text))
+                            if streamed:
+                                yield {
+                                    "event": "agent_message_delta",
+                                    "data": {"text": text},
+                                }
+                            yield {"event": "agent_message", "data": {"text": text}}
                         elif (
                             event.type == ProviderStreamEventType.PROVIDER_OUTPUT_ITEM
                             and event.provider_output_item
@@ -227,6 +232,15 @@ class ConversationRuntimeSession:
                             return
                         elif event.type == ProviderStreamEventType.STREAM_COMPLETE:
                             break
+                    if text_block.length:
+                        raise TextBlockPrivacyError(TEXT_BLOCK_PRIVACY_ERROR)
+                except TextBlockPrivacyError:
+                    await self.interrupt()
+                    yield {
+                        "event": "error",
+                        "data": {"message": TEXT_BLOCK_PRIVACY_ERROR},
+                    }
+                    return
                 except Exception as exc:
                     if self._is_generation_interrupted(generation):
                         return
@@ -244,6 +258,9 @@ class ConversationRuntimeSession:
                         },
                     }
                     return
+
+                finally:
+                    await close_owned_stream(stream)
 
                 # Nothing runs until every call in the batch is vetted: a call
                 # without an ID cannot be paired with its result, a repeated ID

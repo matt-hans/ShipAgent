@@ -139,8 +139,7 @@ async def test_runtime_streams_text_delta_and_complete_message() -> None:
     events = [event async for event in runtime.process_message_stream("Hi")]
 
     assert events == [
-        {"event": "agent_message_delta", "data": {"text": "Hel"}},
-        {"event": "agent_message_delta", "data": {"text": "lo"}},
+        {"event": "agent_message_delta", "data": {"text": "Hello"}},
         {"event": "agent_message", "data": {"text": "Hello"}},
     ]
     assert runtime.last_turn_count == 1
