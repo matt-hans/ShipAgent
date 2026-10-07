@@ -122,6 +122,7 @@ async def run_scenario(
     source_info: Any | None = None,
     contacts: list[dict[str, Any]] | None = None,
     prior_conversation: list[dict[str, Any]] | None = None,
+    session: Any | None = None,
 ) -> Observation:
     """Run one scripted turn through the shared conversation service.
 
@@ -155,7 +156,7 @@ async def run_scenario(
     )
     await agent.start()
 
-    session = MagicMock()
+    session = session or MagicMock()
     session.session_id = session_id
     session.agent = None if fresh_agent else agent
     contacts_hash = hashlib.sha256(

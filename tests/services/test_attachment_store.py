@@ -47,3 +47,26 @@ class TestAttachmentStore:
         stage("b", {"file_name": "b.pdf"})
         assert consume("a")["file_name"] == "a.pdf"  # type: ignore[index]
         assert consume("b")["file_name"] == "b.pdf"  # type: ignore[index]
+
+
+def test_grants_are_immutable_and_bound_to_attachment_id_and_carrier():
+    gateway = object()
+    data = {"file_content_base64": "original", "document_type": "003"}
+    first = stage("owner", data, gateway=gateway)
+    data["file_content_base64"] = "changed"
+    assert consume("other", first, gateway=gateway) is None
+    assert consume("owner", "wrong", gateway=gateway) is None
+    assert consume("owner", first, gateway=gateway)["file_content_base64"] == "original"
+    second = stage("owner", data, gateway=gateway)
+    replacement = stage(
+        "owner", {"file_content_base64": "replacement"}, gateway=gateway
+    )
+    assert consume("owner", second, gateway=gateway) is None
+    assert consume("owner", replacement, gateway=object()) is None
+    assert consume("owner", replacement, gateway=gateway) is None
+
+
+def test_expired_upload_cannot_be_consumed(monkeypatch):
+    monkeypatch.setattr("src.services.attachment_store._ATTACHMENT_TTL_SECONDS", -1)
+    token = stage("expired", {"file_content_base64": "synthetic"})
+    assert consume("expired", token) is None

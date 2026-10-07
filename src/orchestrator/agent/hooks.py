@@ -239,6 +239,16 @@ async def validate_pre_tool(
     elif tool_name == "mcp__data_source__query_data":
         return await validate_data_query(input_data, tool_use_id, context)
 
+    if tool_name in {
+        "mcp__ups__upload_paperless_document",
+        "mcp__ups__push_document_to_shipment",
+        "mcp__ups__delete_paperless_document",
+    }:
+        return _deny_with_reason(
+            "Raw document mutations are not allowed. Use the document workflow and user confirmation.",
+            PolicyDenialCode.RAW_CARRIER_CALL_NOT_ALLOWED,
+        )
+
     # Default: allow all other tools
     return {}
 

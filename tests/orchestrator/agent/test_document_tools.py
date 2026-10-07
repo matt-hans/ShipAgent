@@ -31,6 +31,7 @@ class TestRequestDocumentUpload:
     async def test_emits_upload_prompt_event(self):
         """Emits paperless_upload_prompt event with format/type info."""
         bridge = EventEmitterBridge()
+        bridge.session_id = "document-test"
         events: list[tuple[str, dict]] = []
         bridge.callback = lambda t, d: events.append((t, d))
 
@@ -51,6 +52,7 @@ class TestRequestDocumentUpload:
     async def test_custom_prompt(self):
         """Custom prompt text is passed through."""
         bridge = EventEmitterBridge()
+        bridge.session_id = "document-test"
         events: list[tuple[str, dict]] = []
         bridge.callback = lambda t, d: events.append((t, d))
 
@@ -64,6 +66,7 @@ class TestRequestDocumentUpload:
     async def test_suggested_document_type(self):
         """Suggested document type is included when provided."""
         bridge = EventEmitterBridge()
+        bridge.session_id = "document-test"
         events: list[tuple[str, dict]] = []
         bridge.callback = lambda t, d: events.append((t, d))
 
@@ -77,6 +80,7 @@ class TestRequestDocumentUpload:
     async def test_no_suggested_type_omitted(self):
         """No suggested_document_type key when not provided."""
         bridge = EventEmitterBridge()
+        bridge.session_id = "document-test"
         events: list[tuple[str, dict]] = []
         bridge.callback = lambda t, d: events.append((t, d))
 
@@ -88,6 +92,7 @@ class TestRequestDocumentUpload:
     async def test_document_type_options_match(self):
         """Document type options match the module-level constant."""
         bridge = EventEmitterBridge()
+        bridge.session_id = "document-test"
         events: list[tuple[str, dict]] = []
         bridge.callback = lambda t, d: events.append((t, d))
 
@@ -121,25 +126,30 @@ class TestUploadPaperlessDocumentWithStore:
         }
 
         mock_client = AsyncMock()
-        mock_client.upload_document.return_value = {"documentId": "DOC123"}
+        mock_client.upload_document.return_value = {
+            "success": True,
+            "documentId": "DOC123",
+        }
 
         with (
             patch(
                 "src.orchestrator.agent.tools.documents._get_ups_client",
                 return_value=mock_client,
             ),
+            patch("src.services.attachment_store.has_pending", return_value=True),
             patch(
                 "src.services.attachment_store.consume",
                 return_value=attachment,
             ),
         ):
             result = await upload_paperless_document_tool(
-                {"document_type": "002"}, bridge=bridge,
+                {"attachment_id": "user-approved-attachment"},
+                bridge=bridge,
             )
 
         assert result["isError"] is False
         data = json.loads(result["content"][0]["text"])
-        assert "DOC123" in data
+        assert data["document_handle"].startswith("doc_")
 
         # Verify enriched SSE event
         assert len(events) == 1
@@ -151,8 +161,8 @@ class TestUploadPaperlessDocumentWithStore:
         assert evt["fileSizeBytes"] == 1234
 
     @pytest.mark.asyncio
-    async def test_direct_base64_arg_still_works(self):
-        """When file_content_base64 is in args, attachment store is skipped."""
+    async def test_direct_base64_cannot_authorize_upload(self):
+        """Model-supplied bytes never replace the user upload gesture."""
         bridge = EventEmitterBridge()
         bridge.session_id = "test-session"
 
@@ -173,7 +183,8 @@ class TestUploadPaperlessDocumentWithStore:
                 bridge=bridge,
             )
 
-        assert result["isError"] is False
+        assert result["isError"] is True
+        mock_client.upload_document.assert_not_awaited()
         # attachment_store.consume should NOT be called
         # (no patch needed — absence of patch confirms it)
 
@@ -188,7 +199,8 @@ class TestUploadPaperlessDocumentWithStore:
             return_value=None,
         ):
             result = await upload_paperless_document_tool(
-                {"document_type": "002"}, bridge=bridge,
+                {"attachment_id": "user-approved-attachment"},
+                bridge=bridge,
             )
 
         assert result["isError"] is True
@@ -201,7 +213,8 @@ class TestUploadPaperlessDocumentWithStore:
         # session_id is None by default
 
         result = await upload_paperless_document_tool(
-            {"document_type": "002"}, bridge=bridge,
+            {"attachment_id": "user-approved-attachment"},
+            bridge=bridge,
         )
 
         assert result["isError"] is True
@@ -222,6 +235,7 @@ class TestUploadPaperlessDocumentWithStore:
                 "src.orchestrator.agent.tools.documents._get_ups_client",
                 return_value=mock_client,
             ),
+            patch("src.services.attachment_store.has_pending", return_value=True),
             patch(
                 "src.services.attachment_store.consume",
                 return_value={
@@ -233,7 +247,8 @@ class TestUploadPaperlessDocumentWithStore:
             ),
         ):
             result = await upload_paperless_document_tool(
-                {"document_type": "002"}, bridge=bridge,
+                {"attachment_id": "user-approved-attachment"},
+                bridge=bridge,
             )
 
         assert result["isError"] is True
@@ -252,6 +267,7 @@ class TestPushAndDeleteTools:
     async def test_push_document_emits_event(self):
         """Push tool emits paperless_result with action=pushed."""
         bridge = EventEmitterBridge()
+        bridge.session_id = "document-test"
         events: list[tuple[str, dict]] = []
         bridge.callback = lambda t, d: events.append((t, d))
 
@@ -268,12 +284,14 @@ class TestPushAndDeleteTools:
             )
 
         assert result["isError"] is False
-        assert events[0][1]["action"] == "pushed"
+        assert events[0][1]["action"] == "push_preview"
+        mock_client.push_document.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_document_emits_event(self):
         """Delete tool emits paperless_result with action=deleted."""
         bridge = EventEmitterBridge()
+        bridge.session_id = "document-test"
         events: list[tuple[str, dict]] = []
         bridge.callback = lambda t, d: events.append((t, d))
 
@@ -290,4 +308,5 @@ class TestPushAndDeleteTools:
             )
 
         assert result["isError"] is False
-        assert events[0][1]["action"] == "deleted"
+        assert events[0][1]["action"] == "delete_preview"
+        mock_client.delete_document.assert_not_awaited()
